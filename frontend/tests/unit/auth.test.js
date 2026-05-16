@@ -249,7 +249,11 @@ describe('auth store', () => {
       localStorage.setItem.mockClear();
 
       // Kick off the check, then disconnect before the fetch settles.
-      const checkPromise = store._checkAccreditation();
+      // Pass the current generation so the stale-fetch gen guard admits
+      // this call; the disconnect race is then guarded by the post-await
+      // `!this.username || !this.isConnected` check, which is what this
+      // test exercises.
+      const checkPromise = store._checkAccreditation(store._pollingGeneration);
       store.disconnect();
 
       // Resolve the in-flight fetch with a positive accreditation. The post-
@@ -308,7 +312,7 @@ describe('auth store', () => {
       store.isAccredited = true;
       store.accreditation = { type: 'orcid' };
       mockFetchAccreditationStatus.mockResolvedValueOnce({ data: null });
-      await store._checkAccreditation();
+      await store._checkAccreditation(store._pollingGeneration);
       expect(store.isAccredited).toBe(true);
       expect(store.accreditation).toEqual({ type: 'orcid' });
     });
@@ -320,7 +324,7 @@ describe('auth store', () => {
       mockFetchAccreditationStatus.mockResolvedValueOnce({
         data: { is_accredited: true, accreditation: { type: 'orcid' } },
       });
-      await store._checkAccreditation();
+      await store._checkAccreditation(store._pollingGeneration);
       expect(store.isAccredited).toBe(true);
       expect(store.accreditation).toEqual({ type: 'orcid' });
       const sessionCall = localStorage.setItem.mock.calls.find((c) => c[0] === 'pevo_session');

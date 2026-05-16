@@ -272,8 +272,11 @@ export function initOrcidCallbackPage() {
       this.status = 'accredit-success';
       this.resultUsername = data.username;
 
-      // Refresh accreditation data in auth store
-      Alpine.store('auth')._checkAccreditation();
+      // Refresh accreditation data in auth store. Pass the current polling
+      // generation so a concurrent in-flight poll fetch cannot clobber this
+      // one-shot result via the stale-fetch race.
+      const auth = Alpine.store('auth');
+      auth._checkAccreditation(auth._pollingGeneration);
       Alpine.store('toast').show(this.$t('orcid.verificationSuccess'), 'success');
     },
 

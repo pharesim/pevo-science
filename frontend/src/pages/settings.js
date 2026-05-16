@@ -500,8 +500,11 @@ export function initSettingsPage() {
       const orcidLinked = localStorage.getItem('pevo_orcid_link_complete');
       if (orcidLinked) {
         localStorage.removeItem('pevo_orcid_link_complete');
-        // Refresh accreditation data to pick up the new ORCID
-        Alpine.store('auth')._checkAccreditation();
+        // Refresh accreditation data to pick up the new ORCID. Pass the
+        // current polling generation so a concurrent in-flight poll fetch
+        // cannot clobber this one-shot result via the stale-fetch race.
+        const auth = Alpine.store('auth');
+        auth._checkAccreditation(auth._pollingGeneration);
         Alpine.store('toast').show(this.$t('settings.orcidLinkSuccess'), 'success');
       }
     },
@@ -931,6 +934,10 @@ export function initSettingsPage() {
       try {
         const proof = await this._signUpgradeProof(newSeedPhrase);
         const result = await this._postUpgradeBackend(proof);
+        // Post-await unmount guard mirrors executeUpgrade: the backend
+        // cleanup can take up to 20s and post-503 retry is exactly when
+        // the user is most likely to navigate away.
+        if (!this._mounted) return;
         Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
           expires_at: result.data?.expires_at,

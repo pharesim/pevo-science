@@ -149,3 +149,30 @@ The learnings researcher flagged the precise governing convention for finding 1:
 ### Re-review signal
 
 When items 1 and 2 (both 2a and 2b) land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit. Anchor: item 1 is a single-line `settings.js` change; item 2a is a docblock rewrite in `auth.js`; item 2b is two call-site updates (`settings.js:504`, `orcid-callback.js:276`) plus the simplification of the gen-guard in `auth.js`. All three are independent and can land in one commit; if you prefer to split, do 2b first (closes the race the gen-counter was filed for) → 1 (sibling guard) → 2a (docblock).
+
+## UI re-review signal (2026-05-16, round-4 fix landed)
+
+All 3 round-3 hold items landed in a single commit, ordered per the architect's anchor (2b → 1 → 2a).
+
+- **Item 2b (P2, gen passing + guard simplification).** `frontend/src/pages/settings.js:504` (ORCID-return init) and `frontend/src/pages/orcid-callback.js:276` (`_handleAccredit`) now both pass `auth._pollingGeneration` to `_checkAccreditation`. In `frontend/src/auth.js:194` the `gen !== undefined && gen !== this._pollingGeneration` guard is simplified to `gen !== this._pollingGeneration`. The dead `gen === undefined` admit branch is gone; the surrounding comment is rewritten to enumerate the three live call sites (polling loop, settings ORCID-return init, orcid-callback `_handleAccredit`) rather than reference hypothetical future callers.
+- **Item 1 (P2, `retryUpgradeBackend` missing `_mounted` guard).** Added `if (!this._mounted) return;` in `frontend/src/pages/settings.js` immediately after `const result = await this._postUpgradeBackend(proof);` in `retryUpgradeBackend`, mirroring the existing `executeUpgrade` pattern. Comment cites the 20s post-503 cleanup window and post-503 user-navigation likelihood, matching the round-2 fix's framing.
+- **Item 2a (P2, `loginFromResponse` docblock false claim).** Rewrote the `username, is_accredited, accreditation` preserve-on-undefined bullet in `frontend/src/auth.js`. Replaces the now-wrong claim ("Login-style callers always emit all six fields") with the actual rule: callers whose response shape omits `is_accredited`/`accreditation` (`sign-in-modal.js#handleEmailLogin`, `signup.js#_resolveExistingAccount`) MUST pass explicit `false`/`null` overrides via spread. Names both canonical examples and the stale-state-leak failure mode if omitted.
+
+### Test updates
+
+`frontend/tests/unit/auth.test.js` had 3 `_checkAccreditation()` calls that became dead under the simplified gen guard (the no-arg path returns early under `undefined !== this._pollingGeneration`):
+
+- **Line 252** (`disconnect race` test) updated to pass `store._pollingGeneration` so the gen guard admits the call and the disconnect race is then caught by the post-await `!this.username || !this.isConnected` second guard (which is the invariant this test actually exercises, per architect-dismissed-R2).
+- **Line 311** (`leaves state untouched when response data is null`) and **line 323** (`updates state and persists the session on successful fetch`) updated identically.
+
+The other 3 call sites in `auth.test.js` (lines 280, 287, 298) exit on the earlier `!this.username || !this.isConnected` or fetch-throw paths and never reach the gen guard, so they didn't need updating.
+
+### Verification
+
+`npx vitest run tests/unit/auth.test.js` → **23/23 pass** (matches the round-2 baseline).
+
+`npx vitest run tests/unit/pages-orcid-callback.test.js tests/unit/pages-settings.test.js` → **88 pass / 19 fail**. The 19 failures are the pre-existing baseline failures from commit `8a373e7` (the dhive mock missing `privateKey.createPublic`, called by `_signUpgradeProof`) noted in the round-2 UI re-review signal block above. None are caused by this diff: the failing tests all live in `FE-KEYCHAIN-API-MISUSE regression` describe blocks that exercise the proof-signing path, which my `_mounted` guard addition does not touch.
+
+Parent did NOT run Playwright in this round — same precedent as the round-2 signal block on the sibling `ui-e2e-edit-paper-flow` task. Architect re-review can run e2e or defer to a user-initiated pass.
+
+NOT in scope (dismissed at architect triage): regression tests for the gen-counter discard branch (T1) and `_mounted: false` discard branch (T2) — both `feedback_dismiss_preemptive_test_hardening`; `disconnect()` not bumping `_pollingGeneration` (correctness R2) — covered by the post-await second guard.

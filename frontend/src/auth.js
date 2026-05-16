@@ -104,8 +104,16 @@ export function initAuth() {
     // - `username`, `is_accredited`, `accreditation` are preserve-on-
     //   undefined: the upgrade response carries only `{token, expires_at,
     //   custody}` and must not clobber the user's accreditation or
-    //   username. Login-style callers always emit all six fields, so
-    //   they're unaffected by the preserve-on-undefined branch.
+    //   username. Callers whose response shape omits `is_accredited` or
+    //   `accreditation` (e.g., the bare password-login responses at
+    //   `sign-in-modal.js#handleEmailLogin` and `signup.js#_resolveExistingAccount`)
+    //   MUST pass explicit `false` / `null` overrides via spread, e.g.:
+    //
+    //     auth.loginFromResponse({ ...res.data, is_accredited: false, accreditation: null });
+    //
+    //   Otherwise the preserve-on-undefined branch keeps whatever the
+    //   prior session wrote, leaking user-A's accreditation badge into
+    //   user-B's session on cross-user re-login.
     //
     // - `custody` is preserve-on-undefined for the same reason: callers
     //   pass an explicit custody (login → 'light', upgrade → 'self',
@@ -188,10 +196,10 @@ export function initAuth() {
         // Stale-fetch guard: a newer _startAccreditationPolling() has bumped
         // _pollingGeneration. The polling loop that owned this gen is gone;
         // its in-flight result must not clobber whatever the new loop has
-        // written to the store. `gen === undefined` (callers that don't pass
-        // a generation) is admitted unconditionally for backward compat with
-        // future call sites that haven't yet adopted the gen-token pattern.
-        if (gen !== undefined && gen !== this._pollingGeneration) return;
+        // written to the store. Every call site passes the current
+        // generation (polling loop, settings ORCID-return init,
+        // orcid-callback _handleAccredit).
+        if (gen !== this._pollingGeneration) return;
         // disconnect() may have run while the fetch was in flight; drop the
         // stale result rather than re-persisting a cleared session.
         if (!this.username || !this.isConnected) return;
