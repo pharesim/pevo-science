@@ -1553,3 +1553,105 @@ describe('BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions
     }
   });
 });
+
+// ──────────────────────────────────────────────
+// BACKEND-ACCREDITATION-LIMITER-SKIP-FAILED P1 canary: the accred-req
+// limiter at accreditation.ts:25 uses `skipFailedRequests: true` so a 5xx
+// SMTP-failure response refunds the per-account slot. Without it, transient
+// SMTP outages burn the user's 3/24h budget; three failures lock the
+// account out for a full day with no recourse. This test pins the slot-
+// refund behaviour. Mirrors the canary at
+// `backend/tests/routes/custody-upgrade.test.ts:498`.
+//
+// Carve-out justification (root CLAUDE.md test-mock carve-out clauses a/b/c):
+//   (a) Real-path impracticality: driving 3 deterministic SMTP failures
+//       against a real relay is slow + non-deterministic; the nodemailer
+//       transporter spy used by the sibling BE-LOG-SHAPE-CONVERGENCE specs
+//       is the canonical pattern for this surface in this file.
+//   (b) Mock targets: `nodemailer.createTransport` (same target as
+//       sibling specs). `verifyHiveSignature` is mocked at the file level
+//       via MOCK_VERIFY_SIGNATURE (file-header carve-out); this test's
+//       focus is rate-limit slot-refund mechanics, not cryptographic
+//       verification.
+//   (c) Real-path companion: the rate-limit primitive's slot-refund
+//       semantics have real-Redis coverage at
+//       `backend/tests/routes/custody-upgrade.test.ts:498` against the
+//       upgradeLimiter; that sibling canary exercises the same
+//       skipFailedRequests path through the rateLimit middleware against a
+//       different transient-failure source (Hive RPC throw → 503).
+// ──────────────────────────────────────────────
+
+describe('BE-ACCRED-REQ-LIMITER — accred-req limiter refunds slot on transient SMTP failure', () => {
+  it('three SMTP-failure 500s do NOT exhaust the 3/24h budget; fourth request succeeds (not 429)', async () => {
+    // Three failures then a success — without skipFailedRequests, the
+    // first three calls consume all three slots and the fourth 429s.
+    // With skipFailedRequests the failed slots are refunded, so the
+    // fourth call sees an empty bucket and succeeds.
+    const sendMailSpy = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('SMTP connection refused'))
+      .mockRejectedValueOnce(new Error('SMTP connection refused'))
+      .mockRejectedValueOnce(new Error('SMTP connection refused'))
+      .mockResolvedValue({ messageId: 'ok' });
+    const transportSpy = vi
+      .spyOn(nodemailer, 'createTransport')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockReturnValue({ sendMail: sendMailSpy } as any);
+    const prevHost = config.smtpHost;
+    // Non-empty host so the route takes the sendMail branch.
+    config.smtpHost = 'smtp-fail-test.invalid';
+    // Suppress the canonical-shape error logs that the SMTP-failure path
+    // emits — three failures would otherwise spam the test output.
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+
+    // Unique per-account username so this spec gets its own fresh limiter
+    // bucket and does not collide with sibling specs that consume the same
+    // namespace.
+    const username = `aclimrefnd${Date.now() % 1000}${Math.floor(Math.random() * 1000)}`;
+    const redis = getRedis();
+    const limiterKey = `${config.appTag}:rl:accred-req:${username}`;
+    if (redis) await redis.del(limiterKey);
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        const failRes = await request(app)
+          .post('/api/accreditation/request')
+          .set('X-Hive-Username', username)
+          .set('X-Hive-Signature', 'mock')
+          .send({
+            full_name: 'Limiter Refund Tester',
+            institution: 'MIT',
+            field: 'physics',
+            email: `${username}@harvard.edu`,
+          });
+        expect(failRes.status).toBe(500);
+      }
+
+      // res.on('finish') runs the deferred consume on the next tick; the
+      // 5xx responses above each take the `if (res.statusCode >= 400) return`
+      // early-out and never INCR. Supertest awaits the response body, which
+      // resolves after res.end → the `finish` event has already fired by the
+      // time await returns. No explicit wait needed.
+
+      const successRes = await request(app)
+        .post('/api/accreditation/request')
+        .set('X-Hive-Username', username)
+        .set('X-Hive-Signature', 'mock')
+        .send({
+          full_name: 'Limiter Refund Tester',
+          institution: 'MIT',
+          field: 'physics',
+          email: `${username}@harvard.edu`,
+        });
+      // Without skipFailedRequests this would be 429. The 200 is the
+      // load-bearing assertion against the slot-burn cascade documented in
+      // backend-accreditation-limiter-skip-failed.
+      expect(successRes.status).toBe(200);
+    } finally {
+      transportSpy.mockRestore();
+      errorSpy.mockRestore();
+      config.smtpHost = prevHost;
+      if (redis) await redis.del(limiterKey);
+    }
+  });
+});

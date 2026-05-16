@@ -22,7 +22,17 @@ import { getPool, isHafConfigured } from '../db.js';
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount });
+// Consume-on-success-only: the 3/24h cap exists to bound the email-send
+// expense (one SMTP roundtrip + one issued verification token per allowed
+// slot), not to penalize transient SMTP/mail-provider failures. Without this
+// flag, a `sendMail` throw or an empty-smtpHost 500 burns one of the user's
+// three daily slots; three transient outages in 24h lock them out of
+// accreditation requests entirely. 4xx responses (400 validation, 422
+// non-institutional email) still consume a slot, so the limiter still
+// rate-limits brute-force schema probing. Mirrors the upgradeLimiter shape
+// at backend/src/routes/custody.ts:50 and the rationale recorded for
+// backend-custody-upgrade-limiter-skip-failed.
+const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount, skipFailedRequests: true });
 const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp });
 
 const router = Router();
