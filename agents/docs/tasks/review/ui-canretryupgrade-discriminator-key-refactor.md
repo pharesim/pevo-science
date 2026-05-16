@@ -138,3 +138,12 @@ Round-7 `/ce-code-review` on commit `aba3dc3` of `ui-keychain-api-misuse`. Findi
 After landing items 1 and 2, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
 
 Anchor: items 1 and 2 are independent small fixes; they can land in one commit or two. Item 1 is the P1 correctness fix on the same try/catch the refactor edited.
+
+## UI re-review signal (2026-05-16, commit 0f9255c)
+
+Both hold items landed in single commit `0f9255c ui(custody-upgrade): gate timeout-shortcut on broadcastLanded + hoist non-retryable key list`.
+
+- **Item 1 (P1, TimeoutError/AbortError shortcut unconditional).** Gated on `broadcastLanded` per the architect's exact snippet at `frontend/src/pages/settings.js:818`. Now reads `if (err && (err.name === 'TimeoutError' || err.name === 'AbortError') && broadcastLanded)`. A pre-broadcast TimeoutError/AbortError (dhive surfacing a hung connection on the account_update sign, or a future timeout added to the broadcast) falls through to the pre-broadcast `upgrade.failed` catch-all where retry is genuinely safe — chain has not rotated. Added an inline comment block above the conditional explaining the gate's purpose so a future reader doesn't drop it as a no-op.
+- **Item 2 (P2, NON_RETRYABLE_KEYS inside getter body).** Extracted to module-level constant `NON_RETRYABLE_UPGRADE_ERROR_KEYS` at `settings.js:16-25` (above `Alpine.data` / `pickRandomIndices`). The `canRetryUpgrade` getter at `settings.js:441-443` now references the named constant; the per-reactive-read array reallocation is gone. Updated the field-level comment paired with `upgradeErrorKey` (lines 410-418) to direct future devs to "add to NON_RETRYABLE_UPGRADE_ERROR_KEYS at module top" rather than the old "add to NON_RETRYABLE_KEYS" pointer that named a getter-local.
+
+Verification: `npm run build` produces clean output (no errors); `node --check frontend/src/pages/settings.js` parses. Unit-test coverage for the gated shortcut is via the existing post-broadcast TimeoutError spec at `pages-settings.test.js:1747` ("backend cleanup fetch timeout → upgradeError + phase=error, mnemonic IS wiped") which exercises broadcastLanded=true and asserts the shortcut still fires — that test is one of the 19 pre-existing baseline failures from `8a373e7` (incomplete dhive mock missing `createPublic`), distinct from this diff. No new tests are required for item 2 (pure structural extraction with identical runtime behavior).

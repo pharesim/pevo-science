@@ -103,3 +103,13 @@ Spec parses (`npx playwright test --list` discovers 6 tests). Parent will run Pl
 After landing item 1 (the caveat restoration + folded subtitems 1b and 1c), `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
 
 Anchor: all three sub-items touch nearby lines (header block + line 263 mock body). Single commit recommended.
+
+## UI re-review signal (2026-05-16, round-3, commit b030e6a)
+
+All 3 sub-items landed in single commit `b030e6a ui(tests): restore bridge-paper caveat + renumber test refs + fix mock error envelope on /search e2e` (cherry-picked from worker subagent worktree-agent-a2c22407ca0288c28 SHA cdd284c).
+
+- **Item 1 (P1, missing bridge-paper caveat).** Restored to `frontend/tests/e2e/search.spec.js` header: "Bridge papers bypass the accreditation filter server-side, so the corpus is non-empty even with an empty pevo_app_test accreditation table." New header is 18 LOC (round-1 item 7's "~12 LOC" target widened slightly to accommodate the caveat — round-2 architect explicitly required restoring it, so the variance is by directive).
+- **Item 1b (P3 correctness, stale test references).** Renumbered: header now reads "tests 4 and 6 mock /api/search" (was "4 and 9", which referenced a non-existent test 9 — the file has only 6 tests). Companion-tests reference at "tests 1/2/3/5" was already correct, kept as-is.
+- **Item 1c (P3 testing, mock body envelope drift).** Fixed at `search.spec.js:268-271`: changed `{status:'error', error:'mocked failure'}` (string) to `{status:'error', error: {code: 'INTERNAL_ERROR', message: 'mocked failure'}}`. Now matches the real backend envelope per `api.js:55-62` which destructures `errorBody.error.code` and `.message`. Test 6 now exercises the structured-error path it was always intended to assert; the previous accidental fallback through `INTERNAL_ERROR` no longer masks fidelity drift.
+
+Verification: `npx playwright test --list tests/e2e/search.spec.js` discovers all 6 tests cleanly. Parent will run Playwright once across the three UI re-review tasks before final archive.

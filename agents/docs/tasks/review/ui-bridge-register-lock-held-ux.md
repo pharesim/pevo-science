@@ -105,3 +105,12 @@ UI implementer: no need to re-verify the wire shape; it's stable in the committe
 ### Architect signal
 
 After landing items 1-2, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written. Both items are trivial; they can land in one commit.
+
+## UI re-review signal (2026-05-16, commit 1da2750)
+
+Both hold items landed in single commit `1da2750 ui(bridge): tighten LOCK_HELD catch branch in handleRegister` (cherry-picked from worker subagent worktree-agent-a4825fa4a34d74f03 SHA f8da7f0).
+
+- **Item 1 (P2, redundant `err &&` prefix).** Dropped at `frontend/src/pages/bridge.js:329`. Conditional now reads `if (err.code === 'LOCK_HELD')`, matching the codebase-wide idiom (`bridge.js:291` lookup catch, settings.js DUPLICATE branch). Inside a catch block `err` is always truthy; the prefix was cognitive noise.
+- **Item 2 (P2, console.warn before LOCK_HELD branch).** Reordered the catch so the LOCK_HELD branch returns BEFORE `console.warn('[bridge register]', err)`. Routine contention retries no longer log-spam; the warn now fires only on unexpected-failure paths (DUPLICATE existing-post, 503/500/network), matching `agents/docs/solutions/conventions/frontend-error-sanitization-2026-04-21.md`.
+
+Verification: 39/39 unit tests in `frontend/tests/unit/pages-bridge.test.js` pass; `node --check` confirms parse. No Playwright run by the worker per the parent's serialization rule; parent will serialize the E2E run after merging the three worktrees.

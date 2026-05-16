@@ -100,3 +100,19 @@ P2 because the user-visible failure mode is concrete (wrong-page data shown with
 After landing items 1 and 2, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
 
 Anchor: item 1 (api.js) and item 2 (search.js) touch different files; one or two commits.
+
+## UI re-review signal (2026-05-16, commit e01cd79)
+
+Both hold items landed in single commit `e01cd79 ui(search): land architect P2 fixes for doSearch in-flight guard` (cherry-picked from worker subagent worktree-agent-a1e49d88e695400be SHA c6840e8).
+
+- **Item 1 (P2, signal spread regression in `request()` helper).** Composed via `AbortSignal.any()` at `frontend/src/api.js`:
+  ```js
+  const composedSignal = init?.signal
+    ? AbortSignal.any([init.signal, AbortSignal.timeout(DEFAULT_TIMEOUT_MS)])
+    : AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
+  const res = await fetch(url, { ...init, signal: composedSignal });
+  ```
+  Signal order is correct: the composed `signal` lives AFTER the `...init` spread so any signal re-introduced by the spread is overridden. Signaled callers (search.js's new doSearch in-flight guard, plus any future `{signal}` adopter) and unsignaled callers both get the 30s server-hang safeguard. Closes the regression vector flagged for `researchers.js` and any future `{signal}` adopter.
+- **Item 2 (P2, unreachable third clause in supersession guard).** Option (a) taken: removed the `(err && (err.name === 'AbortError' || err.code === 'ABORT_ERR'))` clause from the catch-block guard at `frontend/src/pages/search.js`. The first two clauses (`controller.signal.aborted` and `this._searchController !== controller`) cover every abort path because `_searchController.abort()` synchronously sets both. Replaced the rationale comment to reflect why the explicit error-name check would be dead code.
+
+Verification: 40/40 unit tests in `pages-search.test.js` pass (existing race-guard tests still green under the third-clause removal). `node --check` confirms both files parse.
