@@ -76,3 +76,28 @@ Both keys are already tracked as English stubs in STUBS.md (lines 642-656 for `s
 ## Priority rationale
 
 P1 because the live UI affordance is broken (broadcasts silently filtered) and the copy strings actively misinform users about who can edit. The fix is small (one line of code + template collapse + 32 i18n string updates + test alignment) and the operational gate is already in place server-side.
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` against commit `00d3f97` with 7 personas (correctness, testing, maintainability, project-standards, security, adversarial, learnings-researcher; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). 4 items must land before re-review:
+
+1. **P1 — `howToEditClaim` locale string still says "or you are an accredited researcher publishing a revision" in all 16 locale files (`frontend/public/messages/*.json`).** Cross-reviewer agreement: correctness (P1/100), adversarial (P1), learnings-echo. Task §2 listed `signInHint` and `howToEditIntro` for update but missed the third bullet rendered as the gating-panel item (`edit.js:87` → `howToEditClaim`). An accredited non-author lands on the gating panel and reads bullet #3 telling them editing is possible — directly contradicting the new `isAuthorized`. Fix direction: trim the trailing clause in all 16 locales:
+   - English (en.json:205): `"howToEditClaim": "You file an authorship claim from the paper page and the author approves it."`
+   - Parallel trims in `ar.json`, `cs.json`, `da.json`, `de.json`, `es.json`, `fa.json`, `fr.json`, `he.json`, `it.json`, `nl.json`, `pl.json`, `pt.json`, `sv.json`, `tr.json`, `zh.json`. STUBS.md stub status unchanged.
+
+2. **P2 — Dead getters `isAccredited` (`edit.js:418`) and `accreditation` (`edit.js:420`).** maintainability (M3/M4 P2/100). After the narrowing, both getters are unused on this page (template no longer references them; no method body reads them). Verified by `grep -n 'isAccredited' frontend/src/pages/edit.js` matching only the declaration line. Delete both getters (4-line deletion).
+
+3. **P3 — Task §3 acceptance gap: zero unit-test coverage for `isAuthorized` paths.** Cross-reviewer agreement: correctness (P3/75), testing (high), adversarial (P2). Task §3 explicitly required (a) audit and flip pre-existing `isAuthorized === true` assertions for accredited non-authors (the audit-half is vacuously satisfied — file has zero references), and (b) **add a positive unit test for the three authorized paths**. Half (b) was not landed. Add a `describe('isAuthorized', ...)` block to `frontend/tests/unit/pages-edit.test.js` with 4 cases:
+   - Original author: `comp.paper.author = 'alice'; comp.username = 'alice';` → `isAuthorized === true`
+   - Named co-author: `comp.paper.authors = [{hive: 'bob'}]; comp.username = 'bob';` → `true`
+   - Accepted claimer: `comp.paper.authorship_claims = [{claimer: 'carol', status: 'accepted'}]; comp.username = 'carol';` → `true`
+   - Accredited non-author (regression-kill for the dropped fallback): `comp.isAccredited = true; comp.username = 'dave';` → `false`
+   ~15-line `describe` addition. Mutation-kill: restoring `|| this.isAccredited` to `isAuthorized` makes the last assertion fail.
+
+4. **P3 — Dead i18n keys `edit.notAuthorized` and `edit.accreditationRequired` in all 16 locale files.** Cross-reviewer agreement: correctness (P3/100) + maintainability (M1/M2 P1/100, severity downgraded by synthesis). Both were rendered only by the deleted second template branch / dropped `accreditationBannerTemplate` call. Zero callsites in `frontend/src/`. Task §2 explicitly gave implementer discretion to leave them, but cross-reviewer agreement leans cleanup. Delete both keys from all 16 locale files (32 line deletions) AND trim the corresponding STUBS.md entries (search for `edit.accreditationRequired` and `edit.notAuthorized` and drop their rows).
+
+When all 4 items are landed, `git mv` this file back to `tasks/review/`.
+
+Dismissed at user triage (audit, not blocking): (P2 adversarial) `handleSubmit` has no `isAuthorized` guard — template-only gate; any Hive account can broadcast directly via Keychain/dhive regardless of the UI, backend is authoritative (security reviewer concurred). (P3 adversarial) `paper.authors[]` self-asserted, symmetric FE+BE trust model — out of scope; pre-existing data model. (P3 testing) Stale comment in accepted-claimer e2e test at `edit-paper.spec.js:472` referencing the now-deleted "Test 2 via isAccredited route" — routed to the e2e re-review task's hold block, not this one.
+
+Cross-references: `frontend/src/pages/edit.js:435-447` (narrowed `isAuthorized`); `frontend/src/pages/edit.js:80-92` (collapsed template); `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md` (learnings-researcher cited as relevant — the UI-side gate removal is correctly paired with a surviving E2E gating-panel assertion, so the canary discipline is satisfied).
