@@ -110,3 +110,15 @@ Worker ran 109 tests across the three target unit files; all pass. No Playwright
 After landing items 1-3, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
 
 Anchor: items 1, 2, 3 are independent small fixes; they can land in one commit or three. Item 2 (delete dead export) is trivial; item 1 (mirror test) is mechanical; item 3 (comment + test) closes a documentation gap on the new shared lib.
+
+## UI re-review signal (2026-05-16, round-2, commits 4a28f79, b0bc48c)
+
+All 3 round-2 P2 hold items landed across 2 commits.
+
+- Item 1 (P2, stay-accredited hive change rewrites ORCID test for `updateNewCoAuthor`) — `4a28f79`. Added `updateNewCoAuthor: stay-accredited hive change rewrites ORCID to the new accreditation` test in `frontend/tests/unit/pages-edit.test.js`, mirroring the publish-side test at `pages-publish.test.js:563`. Bob was already in the page-integration fixture directory but never asserted in a transition; the new test now exercises the alice→bob (both accredited) path and asserts the prefilled ORCID is rewritten to bob's value.
+- Item 2 (P2, delete unused `filterAccreditedByPrefix` export) — `b0bc48c`. Removed the export from `frontend/src/lib/accredited-directory.js`. Grep across `frontend/src/` confirmed zero consumers; the export, its 4 unit tests, and its named import in the test file were introduced speculatively for an autocomplete affordance that did not land in `publish.js` / `edit.js`. Test block and named import removed alongside.
+- Item 3 (P2, document + test no-negative-cache retry semantic) — `b0bc48c`. Added an inline comment in the catch block of `loadAccreditedDirectory` (`frontend/src/lib/accredited-directory.js`) documenting that `cache` is intentionally NOT assigned on rejection so a transient failure can recover on the next call. Added a unit test in `lib-accredited-directory.test.js` that mocks `fetchAccreditations` to reject once, asserts the result is `{}` and `fetchAccreditations` was called 1×, then mocks a success on the second call and asserts the result fetches fresh (`fetchAccreditations` called 2× total), pinning the no-negative-caching behavior.
+
+Worker ran the two target unit files: `pages-edit.test.js` 36 tests pass (was 35; +1 stay-accredited test), `lib-accredited-directory.test.js` 25 tests pass (was 28; −4 filter tests, +1 retry-after-failure test). No Playwright run for this task (no E2E scope).
+
+NOT in scope per parent triage (dismissed at architect triage): carve-out header cosmetic typo, item-9 empty-to-empty test, alpine reactivity (separate task at `tasks/pending/ui-applyaccreditedprefill-reactivity-verify.md`).
