@@ -3057,6 +3057,20 @@ describe('POST /api/orcid/callback — fresh_auth mode (round-4 hold #6)', () =>
     expect(parsedExpiresAtMs).toBeGreaterThan(nowMs);
     expect(parsedExpiresAtMs).toBeGreaterThan(nowMs + 60_000);
     expect(parsedExpiresAtMs).toBeLessThanOrEqual(nowMs + 302_000);
+    // BACKEND-ORCID-FRESH-AUTH-CALLBACK-ECHOES-TARGET-TRIPLE (2026-05-16):
+    // Wire-contract pin. The frontend `cacheConsentOpProof` helper keys the
+    // issued proof on (action, root_author, root_permlink) so the cache
+    // lookup at broadcast time matches the proof's actual binding. The
+    // backend has the target in hand at /callback time (read from Redis
+    // state via `storedFreshAuthTarget`, already passed into
+    // `issueFreshAuthToken`) and MUST echo it back; without this, the cache
+    // is written with three undefined fields and the strict-equality
+    // lookup becomes a permanent no-op the moment a real consumer wires up.
+    // Values match `startAuthed('fresh_auth', ...)` helper defaults at the
+    // top of this file (author_accept / someroot / somepermlink-v1).
+    expect(res.body.data.action).toBe('author_accept');
+    expect(res.body.data.root_author).toBe('someroot');
+    expect(res.body.data.root_permlink).toBe('somepermlink-v1');
     // No broadcast on this path (fresh_auth is read-only against the chain).
     expect(broadcastJsonMock).not.toHaveBeenCalled();
   });

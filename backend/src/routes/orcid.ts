@@ -1142,11 +1142,23 @@ async function handleFreshAuth(
   }
 
   const issued = await issueFreshAuthToken(username, 'orcid', target);
+  // BACKEND-ORCID-FRESH-AUTH-CALLBACK-ECHOES-TARGET-TRIPLE:
+  // Echo the target triple so the SPA can cache the issued proof keyed on
+  // its actual binding. `target` is non-null here: the dispatch-site
+  // defensive 400 above (search for `fresh_auth state is missing the
+  // per-op target binding`) fires BEFORE handleFreshAuth, so
+  // `storedFreshAuthTarget` is guaranteed defined at the call site that
+  // passes it in. Without this echo, the frontend's `cacheConsentOpProof`
+  // helper writes the cache entry with undefined target fields and the
+  // subsequent strict-equality lookup becomes a permanent no-op.
   sendOk(res, {
     mode: 'fresh_auth',
     fresh_auth_proof: issued.token,
     expires_at: issued.expires_at,
     mechanism: issued.mechanism,
+    action: target.action,
+    root_author: target.root_author,
+    root_permlink: target.root_permlink,
   });
 }
 
