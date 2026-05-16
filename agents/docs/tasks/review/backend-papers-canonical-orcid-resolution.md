@@ -233,3 +233,67 @@ List endpoint (`fetchPapersFromHaf`) passes `{ includeAffiliation: false }`; det
 ### Re-review signal
 
 When items 1-4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round.md`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `2c40f3a`. Items 1+2 are SQL+JS parity items and should land in a focused commit (with the parity test); items 3+4 can be the same commit or separate at the implementer's discretion.
+
+---
+
+## Backend re-review signal (2026-05-16, round-2 — working tree of this commit)
+
+All 4 hold-block items land in a single commit alongside this signal block + the `git mv` back to `tasks/review/`.
+
+### Items addressed
+
+**Item 1 — Hive-key normalization parity across the three supersession paths.** Adopted option (b) from the hold block: extracted a single `canonicalHiveKey(hive: unknown): string | null` helper at `backend/src/routes/papers.ts:259` and used it from all JS-side paths.
+
+- **SQL** (`backend/src/hafsql.ts:authorsWithSupersessionSelect`): JOIN predicate switched to `LEFT JOIN active_accreditations aa ON aa.account = LOWER(TRIM(a.elem ->> 'hive'))`. The `aa.account` column is already lowercase by Hive consensus (chain-enforced), so only the chain `authors[i].hive` metadata needs canonicalization on this side. `LOWER(TRIM(...))` is the parity-symmetric operator on `.trim().toLowerCase()`.
+- **JS `computeSupersession`** (line 293): now canonicalizes its `hive` argument via `canonicalHiveKey` before the `orcidMap` lookup. The function's docstring notes that callers MAY pre-canonicalize (e.g., `buildCumulativeAuthorsForChain` does for its own bookkeeping) and that doing so a second time is idempotent.
+- **JS `applyAuthorSupersession`** (line 314): unchanged — it delegates the lookup to `computeSupersession`, which now centralizes the normalization.
+- **JS `buildCumulativeAuthorsForChain`** (line 358): replaced the inline `entry.hive.trim().toLowerCase()` with `canonicalHiveKey(entry.hive)`. Behavior-equivalent; reduces duplication and pins the parity through a single helper.
+
+**Item 2 — SQL/JS empty-string chain-orcid parity.** SQL CASE expression now wraps the chain orcid in `NULLIF((a.elem ->> 'orcid'), '')` so an empty-string broadcast (the publish form's default) is normalized to "no claim" before the equality check, matching the JS-side `claimed = typeof chainOrcid === 'string' && chainOrcid.length > 0 ? chainOrcid : null` semantics.
+
+**Item 3 — `affiliation` parameterization on `authorsWithSupersessionSelect`.** Added `opts: { includeAffiliation?: boolean } = {}` parameter; default `false` (the more restrictive PaperSummary shape). The list endpoint's call site at `papers.ts:703` passes `{ includeAffiliation: false }`; the detail endpoint's call site at `papers.ts:957` passes `{ includeAffiliation: true }`. The `'affiliation', a.elem ->> 'affiliation'` line is now conditionally emitted inside `jsonb_build_object`.
+
+**Item 4 — Fallback branch supersession canaries.** Added two route-level canaries that drive the `?version=N` cache-miss branch and the `metadata_restored` fallback path through to response. Both stage `getAccreditedOrcidsByAccount`'s SQL to return a mismatching accredited ORCID for `alice`, and the version-reconstruction SQL to return chain `authors[]` with a different `orcid`. Each asserts `res.body.data.authors[0].orcid_verified` matches the accredited value and `orcid_discrepancy` is `true`. Mutation kill: deleting `detail.authors = applyAuthorSupersession(...)` from either branch fails the corresponding canary red.
+
+### Test coverage added
+
+Extended `backend/tests/routes/papers-canonical-orcid-resolution.test.ts` (12 new tests, 20 total):
+
+- **Item 1 parity (4 tests):**
+  - `canonicalHiveKey` unit test: mixed-case, whitespace, null/undefined/non-string inputs.
+  - `computeSupersession` mixed-case parity: `'Alice'` and `'  alice  '` resolve identically against a lowercase `orcidMap`.
+  - `applyAuthorSupersession` parity invariant: the same `authors[]` with mixed-case `hive` values produces identical `(orcid_verified, orcid_discrepancy)` output to its lowercase counterpart.
+  - SQL canary: list and detail SQL fragments both contain `LOWER(TRIM(a.elem ->> 'hive'))`.
+
+- **Item 2 empty-string parity (3 tests):**
+  - `computeSupersession`: empty-string chain orcid + accredited author → `orcid_verified` populated, `orcid_discrepancy: false`.
+  - `applyAuthorSupersession`: `{hive: 'alice', orcid: ''}` end-to-end via the helper → discrepancy=false.
+  - SQL canary: both list and detail SQL contain `NULLIF((a.elem ->> 'orcid'), '')`.
+
+- **Item 3 affiliation parameterization (3 tests):**
+  - List endpoint SQL omits `'affiliation', a.elem ->> 'affiliation'`.
+  - Detail endpoint SQL retains it.
+  - List response `authors[i]` does NOT have an `affiliation` key (behavior canary; complements the SQL canary).
+
+- **Item 4 fallback-branch canaries (2 tests):**
+  - `?version=N` route → assert supersession fields on response authors.
+  - `metadata_restored` fallback → assert `metadata_restored=true` AND supersession fields populated.
+
+### Item 1 helper-extraction note
+
+The hold block offered two implementation options. Option (b) (extracted `canonicalHiveKey` helper) was chosen because (a) it reduces three potential drift sites to one, (b) it forms a natural extension point for the `backend-profile-papers-supersession-parity` follow-up's helper-extraction to `lib/author-supersession.ts`, and (c) the inline-cleanup of `buildCumulativeAuthorsForChain`'s existing `.trim().toLowerCase()` becomes a one-line call-site swap. The helper lives in `routes/papers.ts` next to the other supersession helpers; the follow-up task moves all three to a shared `lib/author-supersession.ts` together.
+
+The follow-up task `backend-profile-papers-supersession-parity` (created at round-1 architect triage) is the natural site for `canonicalHiveKey`, `computeSupersession`, and `applyAuthorSupersession` to migrate to `backend/src/lib/author-supersession.ts`. The exports added in this round (named exports on all three helpers) make that migration a straight `import-from-rename`, not a refactor.
+
+### Verification
+
+- `npm run typecheck` from `backend/`: clean.
+- `npm run lint` from `backend/`: clean.
+- `npx vitest run tests/routes/papers-canonical-orcid-resolution.test.ts` (Redis+Postgres reachable via Docker IPs): **20/20 pass.**
+- Broader regression sweep (`papers`, `paper-detail-v3`, `cite`, `papers-enrichment-parity-gate`, `papers-canonical-orcid-resolution`, `canonical-root-walker`): **64/66 pass, 1 skipped, 1 pre-existing real-HAF flake** on `paper-detail-v3.test.ts > 'includes versions array and retraction fields when paper exists'` — the same `jesusalejos/...` wall-clock-exceeded flicker the round-1 verification noted on `papers.test.ts`. Verified pre-existing via `git stash` round-trip against `main`.
+
+### Findings noted-for-awareness — status update
+
+The round-1 "Scalar coercion divergence for malformed `authors[{hive: 42, orcid: true}]`" awareness item noted: "If a hive-normalization helper is extracted per item 1 option (b), consider extending it to reject non-string hive shapes at the same boundary." The new `canonicalHiveKey` does exactly that — its `typeof hive !== 'string'` early-return rejects non-string shapes uniformly across all JS paths, returning `null` (which falls through to case-1 "no hive → no verified ORCID"). The unit test pins this behavior on `42` and `{ hive: 'alice' }` inputs.
+
+The round-1 "`applyAuthorSupersession` spread keeps `affiliation` in fallback paths (api-contract P3/75)" awareness item: still latent. The Item 4 fallback-branch canaries surface `orcid_verified`/`orcid_discrepancy` correctly, but they don't run against a list-endpoint JS fallback (the list endpoint has no JS fallback today). If a future change routes the list through a JS fallback, the `applyAuthorSupersession` spread would surface the `affiliation` field; that's the same risk the round-1 P3 noted, addressed at that future site.

@@ -767,25 +767,53 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
  *     `orcid_verified = aa.orcid`; `orcid_discrepancy = true` IFF the
  *     chain `orcid` is also non-null AND differs from `aa.orcid`.
  *
+ * The LEFT JOIN normalizes the chain `authors[i].hive` via `LOWER(TRIM(...))`
+ * before keying against `active_accreditations.account`. Hive consensus
+ * enforces lowercase account names at op level, but chain `json_metadata`
+ * payloads can carry mixed-case or whitespace-padded variants (a co-author
+ * input form that doesn't normalize, or hand-broadcast metadata). Without
+ * normalization a vouched co-author can suppress the `orcid_verified`
+ * surface — silencing the discrepancy audit signal — by varying case on the
+ * `hive` field. Matches the JS-side normalization in `canonicalHiveKey`
+ * (see `backend/src/routes/papers.ts`); the parity is the contract.
+ *
+ * Chain orcid is wrapped in `NULLIF(..., '')` so an empty-string broadcast
+ * value (publishers default the publish form to `orcid: ''`) is normalized
+ * to "no claim", matching the JS-side `computeSupersession` semantics. The
+ * raw `IS NOT NULL` check admits empty strings, which would mark every
+ * accredited author who left the orcid field blank as having a discrepancy.
+ *
  * @param commentAlias - SQL alias for the post row (e.g., 'c', 'p').
  * @param appTagParam - bind-param placeholder for `config.appTag` (e.g., '$3').
+ * @param opts.includeAffiliation - when true, the projected jsonb objects
+ *   include the chain `affiliation` field. PaperDetail wants it; PaperSummary
+ *   omits it per `agents/docs/api-contracts/papers.md`. Defaults to false
+ *   (the more restrictive PaperSummary shape) so the list-endpoint default
+ *   is contract-correct; the detail endpoint opts in explicitly.
  * @returns SQL fragment (parenthesized subselect) suitable for inlining in
  *   a SELECT projection. Aliased by the caller via `AS authors_with_supersession`
  *   or similar; the fragment itself is column-alias-free for placement
  *   flexibility.
  */
-export function authorsWithSupersessionSelect(commentAlias: string, appTagParam: string): string {
+export function authorsWithSupersessionSelect(
+  commentAlias: string,
+  appTagParam: string,
+  opts: { includeAffiliation?: boolean } = {},
+): string {
+  const includeAffiliation = opts.includeAffiliation ?? false;
+  const affiliationField = includeAffiliation
+    ? `'affiliation',       a.elem ->> 'affiliation',\n        `
+    : '';
   return `COALESCE((
     SELECT jsonb_agg(
       jsonb_build_object(
         'name',              a.elem ->> 'name',
         'hive',              a.elem ->> 'hive',
         'orcid',             a.elem ->> 'orcid',
-        'affiliation',       a.elem ->> 'affiliation',
-        'orcid_verified',    aa.orcid,
+        ${affiliationField}'orcid_verified',    aa.orcid,
         'orcid_discrepancy', CASE
                                WHEN aa.orcid IS NOT NULL
-                                AND (a.elem ->> 'orcid') IS NOT NULL
+                                AND NULLIF((a.elem ->> 'orcid'), '') IS NOT NULL
                                 AND aa.orcid <> (a.elem ->> 'orcid')
                                THEN true
                                ELSE false
@@ -799,7 +827,7 @@ export function authorsWithSupersessionSelect(commentAlias: string, appTagParam:
            ELSE '[]'::jsonb
       END
     ) WITH ORDINALITY AS a(elem, ordinality)
-    LEFT JOIN active_accreditations aa ON aa.account = (a.elem ->> 'hive')
+    LEFT JOIN active_accreditations aa ON aa.account = LOWER(TRIM(a.elem ->> 'hive'))
   ), '[]'::jsonb)`;
 }
 

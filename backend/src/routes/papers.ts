@@ -238,6 +238,31 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
  *   revoked split.
  */
 /**
+ * Normalize a chain-metadata `hive` value to its lookup-canonical form.
+ *
+ * Hive consensus enforces lowercase account names at op level — every
+ * `account` value in `active_accreditations` is lowercase by chain rule.
+ * But chain `json_metadata` payloads (`authors[i].hive`) can carry
+ * mixed-case or whitespace-padded variants: a co-author input form that
+ * doesn't normalize, or hand-broadcast metadata. Without canonicalization
+ * before the supersession lookup, a vouched co-author can suppress the
+ * `orcid_verified` surface (silencing the discrepancy audit signal) by
+ * varying case on the `hive` field.
+ *
+ * The SQL-side LEFT JOIN in `authorsWithSupersessionSelect` uses
+ * `LOWER(TRIM(a.elem ->> 'hive'))` for the same purpose. The two paths
+ * MUST stay in lockstep; the parity is the contract.
+ *
+ * Returns `null` for non-string inputs or strings that canonicalize to
+ * empty (preserves the case-1 behavior: "no hive → no verified ORCID").
+ */
+export function canonicalHiveKey(hive: unknown): string | null {
+  if (typeof hive !== 'string') return null;
+  const norm = hive.trim().toLowerCase();
+  return norm.length === 0 ? null : norm;
+}
+
+/**
  * Compute `orcid_verified` and `orcid_discrepancy` for a single author
  * entry per `agents/docs/hive-schemas.md` § 1.1 supersession rule.
  * Mirrors the SQL-side `authorsWithSupersessionSelect` semantics for
@@ -252,23 +277,29 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
  *   - hive in `orcidMap` with non-null attestation, chain orcid non-empty AND
  *     differs from attestation → verified=attestation, discrepancy=true.
  *
- * @param hive - the author entry's hive username (already-normalized
- *   lowercase form preferred; `orcidMap` keys are exact account names
- *   from `active_accreditations`).
+ * The hive value is canonicalized via `canonicalHiveKey` before the
+ * `orcidMap` lookup — see the helper's docstring for why. Callers MAY
+ * pre-canonicalize (e.g., `buildCumulativeAuthorsForChain` already
+ * lowercases for its own bookkeeping); canonicalizing again is idempotent.
+ *
+ * @param hive - the author entry's hive username; canonicalized
+ *   internally via `canonicalHiveKey`. `orcidMap` keys are exact
+ *   (already-lowercase) account names from `active_accreditations`.
  * @param chainOrcid - the chain-stored `authors[i].orcid` value, or null
  *   when the field is missing/empty.
  * @param orcidMap - per-accredited-account ORCID map from
  *   `getAccreditedOrcidsByAccount` (`null` value = accredited without ORCID).
  */
-function computeSupersession(
+export function computeSupersession(
   hive: string | undefined | null,
   chainOrcid: string | undefined | null,
   orcidMap: Map<string, string | null>,
 ): { orcid_verified: string | null; orcid_discrepancy: boolean } {
-  if (!hive || typeof hive !== 'string') {
+  const key = canonicalHiveKey(hive);
+  if (key === null) {
     return { orcid_verified: null, orcid_discrepancy: false };
   }
-  const attested = orcidMap.has(hive) ? (orcidMap.get(hive) ?? null) : null;
+  const attested = orcidMap.has(key) ? (orcidMap.get(key) ?? null) : null;
   const claimed = typeof chainOrcid === 'string' && chainOrcid.length > 0 ? chainOrcid : null;
   const discrepancy = attested !== null && claimed !== null && attested !== claimed;
   return { orcid_verified: attested, orcid_discrepancy: discrepancy };
@@ -280,7 +311,7 @@ function computeSupersession(
  * preserved verbatim; `orcid_verified` and `orcid_discrepancy` are added
  * per the four-case rule in `computeSupersession`.
  */
-function applyAuthorSupersession(
+export function applyAuthorSupersession(
   authors: unknown,
   orcidMap: Map<string, string | null>,
 ): Array<Record<string, unknown>> {
@@ -335,9 +366,8 @@ function buildCumulativeAuthorsForChain(
     for (const e of authorsArr) {
       if (!e || typeof e !== 'object') continue;
       const entry = e as Record<string, unknown>;
-      if (typeof entry.hive !== 'string') continue;
-      const hive = entry.hive.trim().toLowerCase();
-      if (hive.length === 0) continue;
+      const hive = canonicalHiveKey(entry.hive);
+      if (hive === null) continue;
 
       if (!firstOccurrence.has(hive)) {
         firstOccurrence.set(hive, occurrenceCounter++);
@@ -700,7 +730,7 @@ async function fetchPapersFromHaf(
           ${reviewCountSelect},
           ${citationCountSelect},
           ${avgRatingSelect},
-          ${authorsWithSupersessionSelect('c', appTagParam)} AS authors_with_supersession,
+          ${authorsWithSupersessionSelect('c', appTagParam, { includeAffiliation: false })} AS authors_with_supersession,
           0 AS author_reputation
         FROM ${T.comments} c
         WHERE ${where}
@@ -954,7 +984,7 @@ async function fetchPaperDetailFromHaf(
         `WITH ${detailCte.sql}
          SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
                 c.created, c.last_edited,
-                ${authorsWithSupersessionSelect('c', '$4')} AS authors_with_supersession
+                ${authorsWithSupersessionSelect('c', '$4', { includeAffiliation: true })} AS authors_with_supersession
          FROM ${T.comments} c
          WHERE c.author = $1 AND c.permlink = $2
            AND c.parent_author = '' AND c.parent_permlink = $4
