@@ -67,11 +67,10 @@ import { PrivateKey } from '@hiveio/dhive';
 // real `redis.expire`); the carve-out is narrow to the deterministic-race
 // and Redis-flap variants.
 //
-// BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION (this round): the
-// post-broadcast severity-classification matrix inside the SEC-002-TOCTOU-LOCK
-// describe.each (search for "post-broadcast severity classification") drives
-// `__test_seams.updateAccountOrcid` to reject with the four error classes the
-// task pins:
+// Post-broadcast severity-classification matrix: the matrix inside the
+// SEC-002-TOCTOU-LOCK describe.each (search for "post-broadcast severity
+// classification") drives `__test_seams.updateAccountOrcid` to reject with
+// the four error classes the route pins:
 //   * TypeError                        → 502 POST_BROADCAST_OPERATOR_REQUIRED
 //   * generic Error                    → 502 POST_BROADCAST_FAILED
 //   * PG 23xxx (unique violation)      → 502 POST_BROADCAST_OPERATOR_REQUIRED
@@ -2761,7 +2760,7 @@ describe.each([
   );
 
   // ─────────────────────────────────────────────────────────────────────────
-  // BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION — integration matrix
+  // Post-broadcast severity classification — route integration matrix
   //
   // The post-broadcast cascade wrap in handleAccredit/handleLink classifies
   // the re-thrown cascade error via `classifyPostBroadcastSeverity` and
@@ -2804,7 +2803,7 @@ describe.each([
   // function layer; this matrix is the route-integration companion that
   // proves the helper is wired into the wrap site and the resulting
   // severity flows through to the envelope code.
-  describe('post-broadcast severity classification (BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION)', () => {
+  describe('post-broadcast severity classification (permanent → OPERATOR_REQUIRED, transient → FAILED)', () => {
     type SeverityCase = {
       label: string;
       makeError: () => unknown;

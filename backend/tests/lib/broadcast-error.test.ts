@@ -6,6 +6,7 @@ import {
   makeLogBroadcastAttempt,
   PostBroadcastWriteError,
   classifyPostBroadcastSeverity,
+  AppPoolNotInitialisedError,
   type LogContext,
 } from '../../src/lib/broadcast-error.js';
 import { BroadcastTimeoutError } from '../../src/hive.js';
@@ -1207,16 +1208,17 @@ describe('makeLogBroadcastAttempt', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION — classifyPostBroadcastSeverity
+// classifyPostBroadcastSeverity — permanent-vs-transient post-broadcast classifier
 //
 // Helper that maps a post-broadcast cascade error to a `PostBroadcastSeverity`
 // discriminator. The permanent-class union mirrors the rethrow convention's
 // permanent classes: `TypeError`/`SyntaxError`/`RangeError` (programmer-error
-// shape regressions) plus PostgreSQL SQLSTATE classes `23xxx` (integrity
-// constraint violation) and `42xxx` (syntax/access-rule violation, typically
-// schema drift). Everything else → `'transient'` (the user-message says
-// "will reconcile automatically" and routes to the standard 502
-// POST_BROADCAST_FAILED envelope).
+// shape regressions), `AppPoolNotInitialisedError` (pre-pool throw —
+// no batch cycle re-derives against a missing pool), plus PostgreSQL SQLSTATE
+// classes `23xxx` (integrity constraint violation) and `42xxx` (syntax/
+// access-rule violation, typically schema drift). Everything else →
+// `'transient'` (the user-message says "will reconcile automatically" and
+// routes to the standard 502 POST_BROADCAST_FAILED envelope).
 //
 // Single source of truth at the route-handler layer (`routes/orcid.ts`'s
 // handleAccredit / handleLink call sites today, with signup-verify as a
@@ -1227,7 +1229,7 @@ describe('makeLogBroadcastAttempt', () => {
 // refactor that loosens the rethrow filter.
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('classifyPostBroadcastSeverity', () => {
+describe('classifyPostBroadcastSeverity (permanent vs transient post-broadcast classification)', () => {
   it('returns "permanent" for TypeError (programmer-error shape regression)', () => {
     expect(classifyPostBroadcastSeverity(new TypeError('cannot read property of undefined'))).toBe('permanent');
   });
@@ -1238,6 +1240,20 @@ describe('classifyPostBroadcastSeverity', () => {
 
   it('returns "permanent" for RangeError', () => {
     expect(classifyPostBroadcastSeverity(new RangeError('out of range'))).toBe('permanent');
+  });
+
+  // AppPoolNotInitialisedError sentinel: pre-pool throw at the cascade fn
+  // boundary. No batch cycle re-derives the denormalized write against a
+  // missing pool — operator must restore the pool first. A bare `new Error(...)`
+  // would have leaked as 'transient' (the helper's Error.code branch defaults
+  // through to transient for sentinel-less Errors), mis-routing to the "will
+  // reconcile automatically" copy when no reconciler exists. Pin the named
+  // sentinel as 'permanent' here so the orcid pre-pool path stays correctly
+  // classified.
+  it('returns "permanent" for AppPoolNotInitialisedError (pre-pool sentinel)', () => {
+    expect(
+      classifyPostBroadcastSeverity(new AppPoolNotInitialisedError('App pool not initialised. accounts.orcid update unavailable')),
+    ).toBe('permanent');
   });
 
   it('returns "permanent" for PostgreSQL 23xxx (integrity constraint violation)', () => {

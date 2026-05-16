@@ -10,6 +10,7 @@ import {
   handleBroadcastErrorAmbiguous,
   PostBroadcastWriteError,
   classifyPostBroadcastSeverity,
+  AppPoolNotInitialisedError,
   type HandleBroadcastErrorOpts,
   type HandleBroadcastErrorAmbiguousOpts,
   type PostBroadcastFailedStep,
@@ -895,22 +896,23 @@ async function handleAccredit(
 
       await seedAccreditationBonus(username);
     } catch (postErr) {
-      // BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION: classify the
-      // re-thrown cascade error at the wrap site so handleBroadcastError emits
-      // 502 POST_BROADCAST_OPERATOR_REQUIRED (with the "please contact
-      // support" message — round-3 hold #3 honest copy) for the permanent-
-      // class union — TypeError / SyntaxError / RangeError or PostgreSQL
-      // 23xxx/42xxx — and 502 POST_BROADCAST_FAILED (with the "will
-      // reconcile automatically" message) for everything else. Today the
-      // three cascade fns above
-      // already filter and only re-throw permanent-class errors per the
-      // `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` convention, so the
-      // helper's `'transient'` branch is effectively dead code on this path.
-      // It's kept as defense-in-depth: a future cascade-fn refactor that
-      // loosens the re-throw filter (e.g. starts re-throwing transient HAF
-      // errors) would otherwise mis-route to `OPERATOR_REQUIRED` and page
-      // operators for self-healing failures. Routing through the helper
-      // keeps the user-message accurate across that refactor surface.
+      // Classify the re-thrown cascade error at the wrap site so
+      // handleBroadcastError emits 502 POST_BROADCAST_OPERATOR_REQUIRED
+      // (with the "please contact support" copy) for the permanent-class
+      // union — TypeError / SyntaxError / RangeError, AppPoolNotInitialisedError,
+      // or PostgreSQL 23xxx/42xxx — and 502 POST_BROADCAST_FAILED (with
+      // the "will reconcile automatically" copy) for everything else.
+      // The three cascade fns above already filter and only re-throw
+      // permanent-class errors per the
+      // `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` convention, but the
+      // `'transient'` branch is NOT dead code — `updateAccountOrcid`'s
+      // pre-pool guard throws before its per-error filter runs, so a
+      // sentinel-less pool-missing throw would have leaked as transient.
+      // The sentinel + classifier pairing closes that path. The remaining
+      // `'transient'` branch defends against a future cascade-fn refactor
+      // that loosens the re-throw contract (e.g. starts re-throwing
+      // transient HAF errors), keeping the user-message accurate across
+      // that refactor surface.
       throw new PostBroadcastWriteError(
         result.id,
         postErr,
@@ -1055,15 +1057,14 @@ async function handleLink(
       // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
       await __test_seams.updateAccountOrcid(username, orcidId);
     } catch (postErr) {
-      // BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION: see handleAccredit
-      // counterpart for full rationale. handleLink's cascade is narrower (no
-      // seedAccreditationBonus step), but the classification helper applies
-      // uniformly across the failing-step union — TypeError / SyntaxError /
-      // RangeError or PostgreSQL 23xxx/42xxx → `'permanent'` →
+      // See handleAccredit counterpart for full rationale. handleLink's
+      // cascade is narrower (no seedAccreditationBonus step), but the
+      // classification helper applies uniformly across the failing-step
+      // union — TypeError / SyntaxError / RangeError, AppPoolNotInitialisedError,
+      // or PostgreSQL 23xxx/42xxx → `'permanent'` →
       // POST_BROADCAST_OPERATOR_REQUIRED with the "please contact support"
-      // message (round-3 hold #3 honest copy); everything else →
-      // `'transient'` → POST_BROADCAST_FAILED with the "will reconcile
-      // automatically" message.
+      // copy; everything else → `'transient'` → POST_BROADCAST_FAILED with
+      // the "will reconcile automatically" copy.
       throw new PostBroadcastWriteError(
         result.id,
         postErr,
@@ -1891,13 +1892,20 @@ function isPermanentDbError(err: unknown): boolean {
 async function updateAccountOrcid(username: string, orcidId: string): Promise<void> {
   const pool = getAppPool();
   if (!pool) {
-    // Permanent: app pool not initialised. Re-thrown so the orcid post-broadcast
-    // cascade wrap surfaces 502 POST_BROADCAST_FAILED with
-    // `failed_step:'account_update'`. Production-pathological — the app
-    // should fail to start if the DB pool isn't configured — but if it
-    // somehow reaches this site, the chain op IS confirmed and the user
-    // deserves the discriminated envelope (not silent staleness).
-    throw new Error('App pool not initialised — accounts.orcid update unavailable');
+    // Permanent: app pool not initialised. Throw the named-sentinel
+    // AppPoolNotInitialisedError so the post-broadcast cascade wrap's
+    // classifyPostBroadcastSeverity helper returns 'permanent' and the
+    // route emits 502 POST_BROADCAST_OPERATOR_REQUIRED ("please contact
+    // support") instead of 502 POST_BROADCAST_FAILED ("will reconcile
+    // automatically"). A bare `new Error(...)` here would fall through the
+    // helper's Error.code-based branch to 'transient' and mis-route to the
+    // self-healing copy, but no reconciler exists for an uninitialised pool
+    // — the pool must come back up first, which requires operator action.
+    // Production-pathological — the app should fail to start if the DB
+    // pool isn't configured — but if it somehow reaches this site, the
+    // chain op IS confirmed and the user deserves the discriminated
+    // envelope (not silent staleness or a misleading reconcile promise).
+    throw new AppPoolNotInitialisedError('App pool not initialised. accounts.orcid update unavailable');
   }
   try {
     await pool.query(

@@ -114,3 +114,62 @@ The task file in `tasks/review/` (before this hold) lacked a Backend re-review s
 - `backend/tests/lib/broadcast-error.test.ts` (item 1: unit test for sentinel; item 2: describe-name rename)
 - `backend/tests/routes/orcid.test.ts` (item 2: slug cleanup)
 - This task file (item 3: implementer signal block when moving back to review/)
+
+---
+
+## Backend re-review (2026-05-16) — ROUND-2 LANDED
+
+Round-2 fixes from the architect round-1 hold block landed in worktree-agent-aaa9e2939c6484c80 at the SHA listed below. The parent agent merges and `git mv`s this file back to `review/` after merge.
+
+**Items landed:**
+
+1. **Item 1 (P1) — `AppPoolNotInitialisedError` sentinel + classifier wiring.** Added a named-sentinel `AppPoolNotInitialisedError extends Error` class in `backend/src/lib/broadcast-error.ts`. Updated `updateAccountOrcid`'s pre-pool throw at `backend/src/routes/orcid.ts:1815-1822` to throw `AppPoolNotInitialisedError` in place of the bare `new Error(...)`. Extended `classifyPostBroadcastSeverity`'s `'permanent'` union to include `AppPoolNotInitialisedError` alongside `TypeError`/`SyntaxError`/`RangeError`. Replaced the helper docblock's "transient branch is dead code on the orcid call path" framing with an honest acknowledgment that the branch IS reachable via the pre-pool guard (and explains why the sentinel closes that path). Added a unit-test case `'returns "permanent" for AppPoolNotInitialisedError (pre-pool sentinel)'` in `backend/tests/lib/broadcast-error.test.ts` pinning the helper output. Result: a pre-pool throw at the orcid post-broadcast cascade site now emits 502 `POST_BROADCAST_OPERATOR_REQUIRED` with the "please contact support" copy instead of 502 `POST_BROADCAST_FAILED` with the misleading "will reconcile automatically" copy. The em-dash in the original sentinel message ("App pool not initialised — accounts.orcid update unavailable") was replaced with a period since the message is user-facing via the operator-required envelope path. (User-facing message text comes from `defaultPostBroadcastOperatorRequiredMsg`, not from the sentinel itself, but the conservative choice keeps em-dashes out of any error message string the user could conceivably see.)
+
+2. **Item 2 (P2) — Slug-citation cleanup.** Removed the task slug `backend-orcid-post-broadcast-severity-classification` / `BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION` from all 7 sites the hold block enumerated, per the slug-citation-staleness convention. Sites cleaned:
+   - `backend/src/routes/orcid.ts` handleAccredit catch block (around line 869) — removed the `BACKEND-...:` slug prefix and the "filed by ..." framing; rewrote as a behavioral description of the classification helper's role at the wrap site. Also expanded the rationale to acknowledge the sentinel + classifier pairing closes the pre-pool path (no longer dead code).
+   - `backend/src/routes/orcid.ts` handleLink catch block (around line 1029) — same slug removal; rewrote as behavioral description referencing handleAccredit for the full rationale.
+   - `backend/src/lib/broadcast-error.ts` classifyPostBroadcastSeverity docblock — entire docblock rewritten in Item 1 (slug citation `Filed by 'backend-orcid-post-broadcast-severity-classification'` removed; replaced with the honest pre-pool path acknowledgment plus AppPoolNotInitialisedError context).
+   - `backend/tests/lib/broadcast-error.test.ts` describe-block name + section banner — renamed `describe('classifyPostBroadcastSeverity', ...)` to `describe('classifyPostBroadcastSeverity (permanent vs transient post-broadcast classification)', ...)`. Section banner heading `BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION — classifyPostBroadcastSeverity` rewritten to `classifyPostBroadcastSeverity — permanent-vs-transient post-broadcast classifier`. AppPoolNotInitialisedError noted in the rewritten section banner's permanent-class enumeration.
+   - `backend/tests/routes/orcid.test.ts` file header (around line 70) — `BACKEND-... (this round):` slug-tag rewritten to behavioral framing `Post-broadcast severity-classification matrix:`.
+   - `backend/tests/routes/orcid.test.ts` integration-matrix banner (around line 2757) — `BACKEND-... — integration matrix` rewritten to `Post-broadcast severity classification — route integration matrix`.
+   - `backend/tests/routes/orcid.test.ts` integration-matrix describe-block name (around line 2800) — slug removed; describe rewritten to `'post-broadcast severity classification (permanent → OPERATOR_REQUIRED, transient → FAILED)'`.
+
+3. **Item 3 (P3) — Re-review signal block.** This block.
+
+**Verification commands (run from `backend/`):**
+
+```
+source ~/.nvm/nvm.sh && nvm use 20
+npx tsc --noEmit -p tsconfig.json
+npm run lint
+REDIS_PASSWORD=$(grep REDIS_PASSWORD ../.env | cut -d= -f2) \
+  REDIS_IP=$(docker inspect pevo-redis-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}') \
+  POSTGRES_IP=$(docker inspect pevo-postgres-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}') \
+  REDIS_URL="redis://:${REDIS_PASSWORD}@${REDIS_IP}:6379" \
+  APP_DATABASE_URL="postgresql://pevo:pevo_dev@${POSTGRES_IP}:5432/pevo_app" \
+  npx vitest run tests/lib/broadcast-error.test.ts tests/routes/orcid.test.ts
+```
+
+**Results:**
+
+- `npx tsc --noEmit -p tsconfig.json` → clean (no output).
+- `npm run lint` → clean (2 pre-existing warnings in `src/seed-phrase.ts` unrelated to this change).
+- `tests/lib/broadcast-error.test.ts` → 42 passed (up from 41 — the new AppPoolNotInitialisedError unit test).
+- `tests/routes/orcid.test.ts` → 81 passed.
+- Combined targeted run: 123 tests passed.
+
+**Files staged this round:**
+
+```
+backend/src/lib/broadcast-error.ts
+backend/src/routes/orcid.ts
+backend/tests/lib/broadcast-error.test.ts
+backend/tests/routes/orcid.test.ts
+```
+
+**Architect-attention notes from the hold block** (carried forward; NOT addressed this round per the parent's instructions):
+
+- Missing convention slug for task-slug-citations-in-code-comments. The architect will dispose of this post-archive (e.g. via `/ce-compound` to file the convention).
+- `Error.cause` unwrap in the classifier. The classifier currently inspects `err instanceof X` directly; it does not walk `err.cause` chains. The architect will dispose of this post-archive.
+
+**Round-2 commit SHA:** (filled in after `git commit` lands below)

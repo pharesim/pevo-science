@@ -56,6 +56,36 @@ export type PostBroadcastFailedStep = 'cache_write' | 'account_update' | 'reputa
 export type PostBroadcastSeverity = 'transient' | 'permanent';
 
 /**
+ * Sentinel error thrown by cascade fns when the app DB pool is not initialised
+ * at the time a post-broadcast write is attempted (e.g. `updateAccountOrcid`
+ * called before `initAppDb()` has resolved, or after a hot-rotation tore down
+ * the pool). Production-pathological — the app should fail to start before
+ * any route handler runs without a configured pool — but if it does reach a
+ * post-broadcast cascade site, the chain op IS confirmed and there is no
+ * retry/batch-cycle that re-attempts the write against an uninitialised pool.
+ *
+ * Classified as `'permanent'` by {@link classifyPostBroadcastSeverity} so the
+ * route emits 502 `POST_BROADCAST_OPERATOR_REQUIRED` with the "please contact
+ * support" copy instead of 502 `POST_BROADCAST_FAILED` with the "will
+ * reconcile automatically" copy — the latter would mislead the user because
+ * no reconciler exists for this state (no batch process re-derives the
+ * denormalized `accounts.orcid` column against a missing pool; the pool
+ * must come back up first, which requires operator action).
+ *
+ * Named-sentinel form (vs. a bare `new Error(...)`) so the classification
+ * helper can match it via `instanceof` rather than scraping the message
+ * string. A bare `Error` whose `.code` is unset falls through the helper's
+ * `Error.code`-based branch to `'transient'`, which is the misclassification
+ * this sentinel fixes.
+ */
+export class AppPoolNotInitialisedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AppPoolNotInitialisedError';
+  }
+}
+
+/**
  * Classify a post-broadcast cascade error as `'permanent'` (operator-actionable;
  * no batch cycle will self-heal) or `'transient'` (may self-heal via retry,
  * batch re-derivation, or HAF replay). The classification rule mirrors the
@@ -66,6 +96,9 @@ export type PostBroadcastSeverity = 'transient' | 'permanent';
  *     regressions (e.g. `getReputationWeights()` output drift; coercion-path
  *     bugs in `provisionalScore`). No batch cycle re-derives these; operator
  *     must fix the code.
+ *   * {@link AppPoolNotInitialisedError}: the app DB pool is missing at the
+ *     time of a post-broadcast write. No batch cycle re-attempts the write
+ *     against an uninitialised pool — operator must restore the pool first.
  *   * PostgreSQL errors with SQLSTATE class `23xxx` (integrity-constraint
  *     violation: unique key conflict, foreign-key violation, NOT NULL
  *     violation) or `42xxx` (syntax / access-rule violation: undefined
@@ -88,16 +121,27 @@ export type PostBroadcastSeverity = 'transient' | 'permanent';
  * etc.) can adopt this helper as the canonical classification surface
  * without each call site re-deriving the union.
  *
- * Filed by `backend-orcid-post-broadcast-severity-classification`. The orcid
- * cascade today produces only `'permanent'`-class throws (the cascade fns
- * already swallow transient errors per the rethrow convention), but routing
- * through this helper makes the classification explicit at the call site
- * AND defends against a future cascade-fn refactor that loosens the
- * re-throw contract — at that point the helper's `'transient'` branch is
- * what catches it and keeps the user-message accurate.
+ * The orcid cascade callers route through this helper at the
+ * `PostBroadcastWriteError` wrap site. The cascade fns already filter out
+ * transient errors at their own throw boundary per the rethrow convention,
+ * so the `'transient'` branch is rarely taken from the orcid happy path —
+ * BUT it IS reachable: the pre-pool guard inside `updateAccountOrcid` throws
+ * before the cascade fn's per-error filter runs, so a `'transient'`-class
+ * pre-pool throw would have mis-routed to 502 `POST_BROADCAST_FAILED` with
+ * the "will reconcile automatically" copy. The
+ * {@link AppPoolNotInitialisedError} sentinel above closes that path by
+ * routing pre-pool throws to `'permanent'`. The remaining `'transient'`
+ * branch defends against a future cascade-fn refactor that loosens the
+ * re-throw contract — at that point any leaked transient-class throw is
+ * what keeps the user-message accurate.
  */
 export function classifyPostBroadcastSeverity(err: unknown): PostBroadcastSeverity {
-  if (err instanceof TypeError || err instanceof SyntaxError || err instanceof RangeError) {
+  if (
+    err instanceof TypeError ||
+    err instanceof SyntaxError ||
+    err instanceof RangeError ||
+    err instanceof AppPoolNotInitialisedError
+  ) {
     return 'permanent';
   }
   if (err instanceof Error) {
