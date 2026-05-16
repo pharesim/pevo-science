@@ -799,6 +799,13 @@ describe('editPage handleSubmit sanitization', () => {
       expect(mockCreateEditor).not.toHaveBeenCalled();
       expect(comp._abstractEditor).toBe(null);
       expect(comp._bodyEditor).toBe(null);
+      // Mutation-kill for `if (!this._mounted) { ...; return; }`: the reset of
+      // _editorsInitialized to false is reachable ONLY via the mounted-guard
+      // early-return branch (the synchronous prefix sets it to true; the
+      // null-ref guards in production return BEFORE any reset). If the
+      // mounted-guard block is removed, _editorsInitialized stays true and
+      // this assertion fails.
+      expect(comp._editorsInitialized).toBe(false);
     });
 
     it('still mounts editors when the component is alive at import resolution', async () => {
