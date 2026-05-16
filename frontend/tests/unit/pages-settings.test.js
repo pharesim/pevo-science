@@ -20,13 +20,20 @@ vi.mock('../../src/keychain.js', () => ({
   isKeychainInstalled: (...args) => mockIsKeychainInstalled(...args),
 }));
 
+// Per-role stub WIFs. Real Hive WIFs are 50 chars (2-char prefix + 48
+// base58). Distinct first chars so the FE-KEYCHAIN-API-MISUSE regression
+// test can assert three distinct imports and exclude the owner WIF.
+const STUB_WIFS = {
+  owner: '5K' + 'A'.repeat(48),
+  active: '5K' + 'B'.repeat(48),
+  posting: '5K' + 'C'.repeat(48),
+  memo: '5K' + 'D'.repeat(48),
+};
+
 vi.mock('../../src/hive-keys.js', () => ({
-  deriveHiveKeys: vi.fn(() => ({
-    owner: 'a'.repeat(64),
-    active: 'b'.repeat(64),
-    posting: 'c'.repeat(64),
-    memo: 'd'.repeat(64),
-  })),
+  // FE-SEED-PHRASE-KEYCHAIN-COMPAT: deriveHiveKeys is now async and returns
+  // per-role WIFs (not hex seeds) via PrivateKey.fromLogin.
+  deriveHiveKeys: vi.fn(async () => ({ ...STUB_WIFS })),
   deriveHivePublicKeys: vi.fn(async () => ({
     owner: 'STM' + 'o'.repeat(50),
     active: 'STM' + 'a'.repeat(50),
@@ -38,39 +45,35 @@ vi.mock('../../src/hive-keys.js', () => ({
   // a single entropy/wordlist policy applies across callers.
   generateMnemonic: vi.fn(() => Array(12).fill('test').join(' ')),
   validateMnemonic: vi.fn(() => true),
-  mnemonicToSeedSync: vi.fn(() => new Uint8Array(64)),
 }));
 
 // dhive mock for the executeUpgrade() credential-wipe test.
-// The executeUpgrade path: validateMnemonic(old) → mnemonicToSeedSync →
-// deriveHiveKeys → new dhive.Client → sendOperations → requestImportKey →
-// fetch('/api/custody/upgrade'). BIP39 wrappers are mocked via
-// `vi.mock('../../src/hive-keys.js', ...)` above (settings.js imports them
-// from the wrapper, not raw @scure/bip39, after FE-UPGRADE-KEY-WRAPPER-ADOPT).
-// Map each hex seed char to a distinct WIF so the three Keychain
-// `requestImportKey` calls (posting + active + memo) get distinguishable
-// WIFs — required by the FE-KEYCHAIN-API-MISUSE regression test that
-// asserts three distinct WIFs.
-function stubWifForHex(hex) {
-  // Real Hive WIFs are 50 chars (2-char prefix + 48 base58). Match that
-  // exactly so the owner-exclusion assertion below can derive its expected
-  // value from this same stub function (see `ownerWif = stubWifForHex(...)`).
-  if (typeof hex !== 'string' || hex.length === 0) return '5K' + 'x'.repeat(48);
-  const tag = hex[0].toLowerCase();
-  const pad = ({ a: 'A', b: 'B', c: 'C', d: 'D' }[tag]) || 'x';
-  return '5K' + pad.repeat(48);
+// The executeUpgrade path: validateMnemonic(old) → deriveHiveKeys (returns
+// WIFs) → new dhive.Client → sendOperations → PrivateKey.fromString (for
+// _signUpgradeProof signing) → requestImportKey → fetch('/api/custody/upgrade').
+// BIP39 wrappers and key derivation are mocked via `vi.mock('../../src/hive-keys.js', ...)`
+// above; the dhive mock only needs to support PrivateKey.fromString (used
+// directly by _signUpgradeProof + _performUpgradeKeyRotation to wrap the
+// WIFs returned by the deriveHiveKeys mock) and cryptoUtils.sha256.
+function fakePrivateKey() {
+  return {
+    toString: () => STUB_WIFS.active,
+    createPublic: () => ({ toString: () => 'STM' + 'a'.repeat(50) }),
+    sign: () => ({ toString: () => '20' + 'f'.repeat(128) }),
+  };
 }
 vi.mock('@hiveio/dhive', () => ({
   PrivateKey: {
-    fromSeed: vi.fn((hex) => ({
-      toString: () => stubWifForHex(hex),
-    })),
+    fromString: vi.fn(() => fakePrivateKey()),
   },
   Client: vi.fn(() => ({
     broadcast: {
       sendOperations: vi.fn(async () => ({ id: 'stub-tx' })),
     },
   })),
+  cryptoUtils: {
+    sha256: vi.fn(() => new Uint8Array(32)),
+  },
 }));
 
 // The shared mockLoginFromResponse fixture's preserve-on-undefined branch
@@ -109,10 +112,10 @@ vi.mock('alpinejs', () => ({
 import Alpine from 'alpinejs';
 import { initSettingsPage } from '../../src/pages/settings.js';
 // Imported for round-4 hold #1 regression test which forces the 3rd
-// mnemonicToSeedSync call (inside _performKeychainImport's pre-loop work)
+// deriveHiveKeys call (inside _performKeychainImport's pre-loop work)
 // to throw, simulating an unguarded helper-internal failure that the
 // try/finally wrap around _performKeychainImport must absorb.
-import { mnemonicToSeedSync } from '../../src/hive-keys.js';
+import { deriveHiveKeys } from '../../src/hive-keys.js';
 // Imported so FE-UPGRADE-CLOSURE-WIPE round-1 hold items #2 and #3 can
 // override the per-test Client.broadcast.sendOperations spy: item #2 to
 // force a helper-internal broadcast rejection, item #3 to assert the
@@ -635,19 +638,19 @@ describe('settingsPage', () => {
       seedUpgradeState(comp);
 
       const events = [];
-      // Round-1 hold item #1: instrument mnemonicToSeedSync to record WHEN
+      // Round-1 hold item #1: instrument deriveHiveKeys to record WHEN
       // it's called. A no-op `_performUpgradeKeyRotation` stub passes the
       // ordering-only assertion (perform:enter < perform:exit < wipe holds
       // trivially around an empty function), so the architect's ordering
       // check alone doesn't enforce that the helper actually contains
-      // derivation work. Recording each mnemonicToSeedSync call as a timed
-      // event lets the assertion below force `mnemonicToSeed:call` between
+      // derivation work. Recording each deriveHiveKeys call as a timed
+      // event lets the assertion below force `deriveHiveKeys:call` between
       // perform:enter and perform:exit. A no-op helper would never push
       // that event from inside its frame; an inlined-into-caller refactor
       // would push it BEFORE perform:enter. Both fail the ordering check.
-      vi.mocked(mnemonicToSeedSync).mockImplementation(() => {
-        events.push('mnemonicToSeed:call');
-        return new Uint8Array(64);
+      vi.mocked(deriveHiveKeys).mockImplementation(async () => {
+        events.push('deriveHiveKeys:call');
+        return { ...STUB_WIFS };
       });
       const origPerform = comp._performUpgradeKeyRotation.bind(comp);
       comp._performUpgradeKeyRotation = async (...args) => {
@@ -678,20 +681,20 @@ describe('settingsPage', () => {
       const enterIdx = events.indexOf('perform:enter');
       const exitIdx = events.indexOf('perform:exit');
       const wipeIdx = events.indexOf('wipe');
-      // Find the FIRST mnemonicToSeed:call that occurs inside the helper
+      // Find the FIRST deriveHiveKeys:call that occurs inside the helper
       // window (between perform:enter and perform:exit). The settings page
-      // also calls mnemonicToSeedSync from _performKeychainImport AFTER the
+      // also calls deriveHiveKeys from _performKeychainImport AFTER the
       // broadcast helper exits — those calls are legitimate and should be
       // ignored by this invariant; the helper-window call is the one that
       // proves derivation lives inside `_performUpgradeKeyRotation`.
       const firstSeedCallInHelper = events.findIndex(
-        (e, i) => e === 'mnemonicToSeed:call' && i > enterIdx && i < exitIdx,
+        (e, i) => e === 'deriveHiveKeys:call' && i > enterIdx && i < exitIdx,
       );
       expect(enterIdx).toBeGreaterThanOrEqual(0);
       expect(exitIdx).toBeGreaterThanOrEqual(0);
       expect(wipeIdx).toBeGreaterThanOrEqual(0);
       // Mutation-kill: a no-op `_performUpgradeKeyRotation` would never call
-      // mnemonicToSeedSync between perform:enter and perform:exit, so this
+      // deriveHiveKeys between perform:enter and perform:exit, so this
       // assertion fails (-1 → not greater than enterIdx).
       expect(firstSeedCallInHelper).toBeGreaterThan(enterIdx);
       expect(firstSeedCallInHelper).toBeLessThan(exitIdx);
@@ -1125,12 +1128,10 @@ describe('settingsPage', () => {
       const distinctWifs = new Set(importKeyCalls.map((c) => c.wifKey));
       expect(distinctWifs.size).toBe(3);
       // Belt-and-suspenders: owner WIF must NOT have been imported. The
-      // deriveHiveKeys mock above returns `owner: 'a'.repeat(64)`; derive the
-      // expected owner WIF via the same stub function so a stub-shape change
-      // (e.g. WIF length fix) flows through automatically.
-      const ownerWif = stubWifForHex('a'.repeat(64));
+      // deriveHiveKeys mock above returns `STUB_WIFS.owner`; reference the
+      // shared constant so a stub-shape change flows through automatically.
       for (const call of importKeyCalls) {
-        expect(call.wifKey).not.toBe(ownerWif);
+        expect(call.wifKey).not.toBe(STUB_WIFS.owner);
       }
     });
 
@@ -1252,16 +1253,18 @@ describe('settingsPage', () => {
 
     // FE-KEYCHAIN-API-MISUSE round-4 hold #1 (P1):
     // The try/catch only wraps requestImportKey inside the per-role loop. The
-    // helper's pre-loop work (`await import('@hiveio/dhive')`,
-    // `mnemonicToSeedSync`, `deriveHiveKeys`, `PrivateKey.fromSeed`) is
-    // unguarded. A throw from any of those escapes both the helper and
-    // executeUpgrade, leaving chain rotated + backend cleaned up + mnemonic
-    // NOT wiped (re-opens the FE-UPGRADE-CREDENTIAL-WIPE invariant via a
-    // different injection point) + upgradePhase stuck at 'upgrading' with no
-    // recovery UI. Fix: wrap the helper call site in try/catch/finally so
-    // wipe + upgradePhase = 'done' run unconditionally and the failure
-    // surfaces as a single fallback warning.
-    it('best-effort: helper throws (mnemonicToSeedSync rejects pre-loop) → done + fallback warning', async () => {
+    // helper's pre-loop work (deriveHiveKeys) is unguarded. A throw from
+    // there escapes both the helper and executeUpgrade, leaving chain
+    // rotated + backend cleaned up + mnemonic NOT wiped (re-opens the
+    // FE-UPGRADE-CREDENTIAL-WIPE invariant via a different injection point)
+    // + upgradePhase stuck at 'upgrading' with no recovery UI. Fix: wrap
+    // the helper call site in try/catch/finally so wipe + upgradePhase =
+    // 'done' run unconditionally and the failure surfaces as a single
+    // fallback warning. After FE-SEED-PHRASE-KEYCHAIN-COMPAT (2026-05-16)
+    // the helper's pre-loop work is just `deriveHiveKeys(newSeedPhrase, account)`
+    // — async, calling PrivateKey.fromLogin internally; the same try/finally
+    // shape absorbs its rejections.
+    it('best-effort: helper throws (deriveHiveKeys rejects pre-loop) → done + fallback warning', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       vi.stubGlobal('window', {
         ...globalThis.window,
@@ -1275,17 +1278,17 @@ describe('settingsPage', () => {
         ok: true,
         json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
       })));
-      // Force the 3rd mnemonicToSeedSync call to throw. Calls 1+2 happen
+      // Force the 3rd deriveHiveKeys call to reject. Calls 1+2 happen
       // inside _performUpgradeKeyRotation (oldWords + newSeedPhrase for the
       // broadcast step) and must succeed so the broadcast lands and backend
       // cleanup fires; only call 3 (inside _performKeychainImport's pre-loop
       // work) must throw — that's the injection point the round-4 fix
       // targets.
-      let mnemonicCallCount = 0;
-      vi.mocked(mnemonicToSeedSync).mockImplementation(() => {
-        mnemonicCallCount += 1;
-        if (mnemonicCallCount >= 3) throw new Error('seed corruption mid-helper');
-        return new Uint8Array(64);
+      let deriveCallCount = 0;
+      vi.mocked(deriveHiveKeys).mockImplementation(async () => {
+        deriveCallCount += 1;
+        if (deriveCallCount >= 3) throw new Error('seed corruption mid-helper');
+        return { ...STUB_WIFS };
       });
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 

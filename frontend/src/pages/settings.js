@@ -1,7 +1,7 @@
 import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
 import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword } from '../api.js';
-import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, validateMnemonic, mnemonicToSeedSync } from '../hive-keys.js';
+import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, validateMnemonic } from '../hive-keys.js';
 import { isPasswordValid } from '../password-policy.js';
 import { getAppTag } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
@@ -996,12 +996,12 @@ export function initSettingsPage() {
     //   - backend custody cleanup succeeded
     // Per-role failures inside `_performKeychainImport` push a localized
     // warning string and never re-throw; if the helper itself throws
-    // before the loop runs (dynamic dhive import, mnemonicToSeedSync,
-    // deriveHiveKeys, PrivateKey.fromSeed), the outer try/catch ensures
-    // the wipe + 'done' transition still happen — without it, the
-    // mnemonic would stay in Alpine reactive state (XSS surface) and
-    // upgradePhase would stick at 'upgrading' (no recovery UI). Failures
-    // surface as a single fallback warning on the 'done' screen.
+    // before the loop runs (dynamic dhive import, deriveHiveKeys), the
+    // outer try/catch ensures the wipe + 'done' transition still happen
+    // — without it, the mnemonic would stay in Alpine reactive state
+    // (XSS surface) and upgradePhase would stick at 'upgrading' (no
+    // recovery UI). Failures surface as a single fallback warning on
+    // the 'done' screen.
     async _completeUpgradeAfterBackend(newSeedPhrase) {
       try {
         await this._performKeychainImport(newSeedPhrase);
@@ -1035,9 +1035,8 @@ export function initSettingsPage() {
     // owner rotation capacity.
     async _signUpgradeProof(newSeedPhrase) {
       const dhive = await import('@hiveio/dhive');
-      const newSeed = mnemonicToSeedSync(newSeedPhrase);
-      const newKeys = deriveHiveKeys(newSeed, this.username);
-      const privateKey = dhive.PrivateKey.fromSeed(newKeys.active);
+      const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
+      const privateKey = dhive.PrivateKey.fromString(newKeys.active);
       const derivedPubkey = privateKey.createPublic().toString();
       const signedAt = new Date().toISOString();
       const challenge = `${getAppTag()}-custody-upgrade|v1|${this.username}|${signedAt}`;
@@ -1103,16 +1102,14 @@ export function initSettingsPage() {
     async _performUpgradeKeyRotation(oldWords, newSeedPhrase) {
       // Derive keys from old and new seed phrases
       const dhive = await import('@hiveio/dhive');
-      const oldSeed = mnemonicToSeedSync(oldWords);
-      const oldKeys = deriveHiveKeys(oldSeed, this.username);
-      const newSeed = mnemonicToSeedSync(newSeedPhrase);
-      const newKeys = deriveHiveKeys(newSeed, this.username);
+      const oldKeys = await deriveHiveKeys(oldWords, this.username);
+      const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
       const newPubKeys = await deriveHivePublicKeys(newKeys);
 
       // Broadcast account_update signed with old owner key
       const client = new dhive.Client(['https://api.hive.blog']);
 
-      const ownerKey = dhive.PrivateKey.fromSeed(oldKeys.owner);
+      const ownerKey = dhive.PrivateKey.fromString(oldKeys.owner);
       const op = {
         account: this.username,
         owner: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.owner, 1]] },
@@ -1170,12 +1167,10 @@ export function initSettingsPage() {
         }
         return;
       }
-      const dhive = await import('@hiveio/dhive');
-      const newSeed = mnemonicToSeedSync(newSeedPhrase);
-      const newKeys = deriveHiveKeys(newSeed, this.username);
+      const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
       const importRoles = ['posting', 'active', 'memo'];
       for (const role of importRoles) {
-        const wif = dhive.PrivateKey.fromSeed(newKeys[role]).toString();
+        const wif = newKeys[role];
         try {
           // Promise.race against a 45s timeout: the Hive Keychain extension
           // does not guarantee its callback fires if the popup is dismissed
