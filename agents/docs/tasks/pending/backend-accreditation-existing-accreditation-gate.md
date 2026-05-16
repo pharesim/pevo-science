@@ -276,3 +276,50 @@ Replace the catch-and-degrade fallthrough at `backend/src/routes/accreditation.t
 Implementer picks up at next startup. The round-2 hold items (rounds 1-2) are all clean — round-3 lands the 503 change + the new test only.
 
 **Note for the implementer:** when landing round-3, add a Backend re-review signal block at the bottom of the task file enumerating the round-3 fix + the test, and `git mv` to `tasks/review/` for architect intake.
+
+---
+
+## Backend re-review signal (round-3, 2026-05-16, commit `8acb5b0`)
+
+**Worker:** Backend worktree subagent (rebased onto main `69eb8aa` before editing).
+
+**Round-3 hold-block items addressed:** the single α-disposition item (replace gate-query catch-and-degrade fallthrough with explicit 503).
+
+### Item α — 503 ACCREDITATION_GATE_UNAVAILABLE on gate-query throw
+
+File: `backend/src/routes/accreditation.ts` gate `catch (gateErr)` branch.
+
+- Catch branch no longer falls through to the per-token check or broadcast. It now `return sendError(res, 503, 'ACCREDITATION_GATE_UNAVAILABLE', 'Verification temporarily unavailable. Please retry shortly.', { retriable: true })`. The error envelope shape matches the sibling `SERVICE_UNAVAILABLE` envelope at the pre-INCR cap-counter failure site (line ~689) and the file-wide `sendError` discipline.
+- Token cleanup (`deleteTokenBestEffort`) does NOT fire — the token remains valid so the user can retry once HAF recovers (deliberate divergence from the gate-hit and idempotency-hit cleanup branches per acceptance criterion #3).
+- Pre-INCR rate-limit counter (`incrementBroadcastAttempts`) is NOT incremented — the return short-circuits before the counter section (acceptance criterion #2; consistent with the gate-hit / idempotency-hit short-circuits).
+- Structured-log event renamed: `accreditation.verify.existing_accreditation_lookup_failed` → `accreditation.verify.existing_accreditation_gate_unavailable`. Level remains `warn` per the project log-volume-minimal stance — this is an external-dependency degraded-state, not a server-internal bug (criterion #4).
+- Inline comment block at the catch site rewritten to explain WHY the round-2 fix reshaped what fallthrough means (revoke-handling now lets fallthrough OVERRIDE a chain-recorded revoke, not just permit a bounded duplicate accredit) and that under operator-only-reversible revoke semantics the structural gap is closed at the cost of /verify availability during HAF outage.
+
+### Type addition
+
+File: `backend/src/types/api.ts`.
+
+- Added `'ACCREDITATION_GATE_UNAVAILABLE'` to the `ErrorCode` union. Stable discriminator distinct from the generic `'SERVICE_UNAVAILABLE'` used by the pre-INCR cap-counter failure path. Operators can dashboard the gate-unavailable rate separately from the broader Redis-pre-INCR class.
+
+### Test changes
+
+File: `backend/tests/routes/accreditation-idempotency.test.ts`.
+
+- Replaced the prior `gate HAF throw degrades to per-token idempotency check, broadcast proceeds + existing_accreditation_lookup_failed warn` spec (which asserted the now-removed fallthrough behavior) with `gate HAF throw returns 503 ACCREDITATION_GATE_UNAVAILABLE — token preserved, no broadcast, no cap INCR (round-3 α)`. The spec covers all five acceptance assertions: 503 status + stable error code + retriable hint, broadcast NOT fired (`broadcastJsonMock` count zero), token still present (`tokenExists(token) === true`), rate-limit counter null/zero (`readBroadcastAttemptsCounter`), and structured-log event `existing_accreditation_gate_unavailable` at `warn` level with the expected context fields.
+- Sibling specs in the same describe block (`gate hit ...`, `gate hit returns 200 even when broadcast-attempts counter is at cap ...`, `gate-hit token cleanup failure ...`, `revoke→re-accredit flow ...`) untouched — gate-hit and revoke-fallthrough paths are unaffected by the throw-path change. The lib-level helper test in `tests/lib/idempotency.test.ts` is also unaffected (the helper itself is unchanged; only the route's catch handler changed).
+
+### Verification
+
+- `npx tsc --noEmit -p tsconfig.json` → clean.
+- `npm run lint` → 0 errors (2 pre-existing warnings in unrelated `seed-phrase.ts`).
+- `npx vitest run tests/routes/accreditation-idempotency.test.ts` → **12 passed** (all prior specs + the rewritten 503 spec).
+
+### Files staged for this round (commit `8acb5b0`)
+
+- `backend/src/routes/accreditation.ts` (gate catch branch + comment)
+- `backend/src/types/api.ts` (new ErrorCode member)
+- `backend/tests/routes/accreditation-idempotency.test.ts` (replaced fallthrough spec with 503 spec)
+
+(This signal block lands in a separate follow-up commit because the SHA for round-3's code change is the input to this paragraph.)
+
+**Architect:** parent worker will `git mv` this file to `tasks/review/` after merging the worktree.
