@@ -115,3 +115,67 @@ the field, the positive-hit assertions auto-activate without test edits.
 scope: Changing the lookup SQL queries themselves").
 
 **Architect: please mv to `review/` on intake.**
+
+---
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES (round 1)
+
+`/ce-code-review` on commit `42ac79c` dispatched 6 reviewers (correctness on Opus; testing, maintainability, project-standards, kieran-typescript, ce-learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). User-triaged 2026-05-16. Three items held below; other findings dismissed at triage.
+
+The implementation lands the real-HAF integration test per the carve-out clause-(c) requirement. Approach (pre-existing-fixture discovery + `ctx.skip()` on positive-hit when no fixtures exist) mirrors `consent-ops-real-haf.test.ts`. Three issues prevent archive: one P0 structural inversion where the test catches exactly the regression class it was filed to prevent and silently treats it as "no fixture", one P1 scope gap where the third in-scope function is missing, and one P1 narrowing-correctness bug at the load-bearing assertions.
+
+### Items to address
+
+#### P0 — critical
+
+**1. (P0) Bare `catch {}` swallows schema-mismatch errors — file mechanically inverts its stated purpose.**
+
+**Where:** `backend/tests/lib/idempotency-real-haf.test.ts:93-127, 130-163, 182-211, 428-462` (every fixture-discovery function + the forged-op probe).
+
+**Why:** Cross-corroborated at conf 100 by correctness #1 (medium/conf 70), testing T3+T4 (low/conf 80 ×2), kieran-typescript KT-1 (P0/conf 90), maintainability R1 (residual/conf 50), plus the learnings convention `inner-catch-shadows-outer-catch-in-route-tests-2026-04-28`. `queryWithRetry` deliberately re-throws non-transient errors (it only retries ECONNRESET/ETIMEDOUT/EPIPE/ECONNREFUSED). A column rename (Postgres error 42703) or relation-not-found (42P01) — the load-bearing regression class the file header explicitly names at lines 14-21 — propagates out of `queryWithRetry` as a throw, hits the bare `catch {}`, returns `null`, triggers `ctx.skip('HAF has no op carrying idempotency_key yet ...')`. The test reports SKIPPED instead of FAILED. The file does the mechanical inverse of its stated purpose.
+
+**Fix:** in each discovery function and the forged-op probe, narrow the catch to specific pg error codes (transient set) and re-throw the rest:
+
+```ts
+try {
+  // ... query
+} catch (err) {
+  const code = (err as { code?: string })?.code;
+  if (code && TRANSIENT_PG_CODES.has(code)) return null;
+  throw err;
+}
+```
+
+Or simpler: drop the try/catch entirely. If the SQL is correct, the query won't throw; if the SQL is wrong, the test SHOULD fail loudly. The whole point of the file is to catch SQL regressions.
+
+#### P1 — high
+
+**2. (P1) `findExistingAccreditation` NOT tested — task spec lists it as 1 of 3 in-scope functions; companion file header advertises coverage that doesn't exist.**
+
+**Where:** `backend/tests/lib/idempotency-real-haf.test.ts` (entire file — no `describe` block) + `backend/tests/lib/idempotency.test.ts:13-21` (header claims real-path companion for `findExistingAccreditation`).
+
+**Why:** Cross-corroborated at conf 100 by correctness #2 (low/conf 80), testing T1 (medium/conf 90), project-standards PS-1 (P1/conf 90). Task spec lines 9 + 17 explicitly group `findExistingAccreditation` with the other two functions as a single risk class. The implementation covers 2 of 3 silently. The signal block doesn't acknowledge the omission. Per CLAUDE.md "Asking Questions": scope narrowed without flagging ambiguity or asking architect.
+
+**Fix:** add a `describe('findExistingAccreditation — real HAF SQL shape', ...)` block exercising the same three scenarios (positive hit via fixture discovery, negative miss, per-route scoping). The function lives in `backend/src/lib/idempotency.ts`; read it for the SQL shape and write a sibling discovery helper.
+
+**3. (P1) `result?.tx_id` after `expect(result).not.toBeNull()` doesn't narrow — confusing failure messages at the load-bearing positive-hit assertions.**
+
+**Where:** `backend/tests/lib/idempotency-real-haf.test.ts:310-312, 390-392`.
+
+**Why:** Kieran-typescript KT-2 (P1/conf 80). `expect(result).not.toBeNull()` is a runtime assertion; TypeScript's view of `result` remains `IdempotencyHit | null` afterward. `result?.tx_id` compiles, but if a regression makes the result actually null (the very class the assertion guards), the optional chain produces `undefined` and the next assertion fails with "expected undefined to be <trxid>" instead of a clear null-vs-value signal at the right line.
+
+**Fix:** replace `result?.tx_id` and `result?.block_num` with `result!.tx_id` / `result!.block_num` at both sites after the `not.toBeNull` guard. One-line edits.
+
+### Findings dismissed at triage (no action)
+
+- **(testing T2 + correctness #2 reframe)** vacuous skip on positive-hit until /broadcast traffic populates HAF: acknowledged trade-off; the test auto-activates once live data exists. Item 1's fix is the structural defense (regression class fails loud rather than skipping), bounding the vacuous-skip risk.
+- **(maintainability M1)** discovery query duplication: item 1's fix will reshape the discovery functions anyway; deferring dedup is reasonable.
+- **(maintainability M2)** 56-line header docblock: documented operator-facing context, not dead weight.
+- **(maintainability M3)** three negative-miss tests differ only in `opType` arg: preemptive cosmetic refactor.
+- **(correctness #3)** `block_num` `toBe()` type coercion: theoretical, subsumed by item 1's broader correctness pass.
+- **(project-standards PS-2)** signal block instruction error ("Architect: please mv to `review/`"): the implementer did move the file correctly via a follow-on commit; only the wording is wrong. Process note, no action.
+- **(project-standards PS-3)** commit body contradiction about blocked→pending move: minor doc-trail drift.
+
+### Re-review signal
+
+When items 1, 2, 3 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `42ac79c`. Items can land in one commit (all three touch the same file) or fan out — item 1 is the load-bearing structural fix; items 2 and 3 are additive.
