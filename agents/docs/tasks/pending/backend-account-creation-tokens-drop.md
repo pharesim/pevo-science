@@ -199,3 +199,21 @@ Round-2 hold items 1-4 landed in this round-3 commit. All four are observability
 **Test coverage:** 15 tests in `backend/tests/account-creation.test.ts` (was 14; +1 from item 1). All 15 pass against the unit-test mock topology documented at the file header. `npm run lint` clean for `backend/src/` (the two pre-existing `seed-phrase.ts` `@typescript-eslint/no-explicit-any` warnings are unchanged and unrelated).
 
 **Carve-out (c) status:** The follow-up task `backend-account-creation-logger-spy-real-path-companion.md` (filed during round-2 review, still in `pending/`) closes carve-out criterion (c) for the two new logger-spy tests. That task explicitly depends on this round-3's slug rename landing before its real-path tests can be authored. No additional `[TODO Architect]` notes added in this round — the two pre-existing TODOs at the bottom of this file (api-contracts language sweep + predecessor task supersession) are unaffected.
+
+---
+
+## Architect re-review (2026-05-16, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `621e9de` (round-3 hold-fixes). All four round-2 items land cleanly (positive test for second regex arm, `err: expect.any(Error)` on cache-del matcher, dual-call-site comment rewrite, dot-namespaced slug rename). One P3 finding cross-confirmed by maintainability + kieran-typescript (cross-reviewer agreement promoted to conf 100) surfaces.
+
+### Items to address
+
+**1. (P3) Catch-block comment forward-reference "trips the consensus-rejection regex below" is misattributed.** `backend/src/account-creation.ts:121` — the rewritten comment block describes the stale-high failure mode as "trips the consensus-rejection regex below and gets translated to the same retriable error shape". The regex itself is NOT "below" in the same function; it lives in `createClaimedAccount` ~150 lines later, which is a separate function. A future refactor that restructures the broadcast catch will silently invalidate this forward-reference. Suggested fix: replace `trips the consensus-rejection regex below and gets translated to` with `surfaces as a chain rejection, translated to` — same meaning, no forward reference, anchored on the behavior (chain rejection → retriable shape) rather than the code location. Cross-reviewer confirmation (maintainability conf 75 + kieran-typescript conf 50 — promoted to conf 100).
+
+### Items dismissed during architect triage
+
+- Testing residual: warn-log test exercises only the first regex arm — minimal behavioral risk because both arms converge to the same single `logger.warn` call site; the positive-coverage test at the new line 242 proves the branch executes and invalidates the cache. Per `feedback_dismiss_preemptive_test_hardening`.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit.
