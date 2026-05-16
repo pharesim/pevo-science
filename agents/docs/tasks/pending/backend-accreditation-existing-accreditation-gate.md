@@ -247,3 +247,32 @@ When the architect commits to (α) explicit 503 fallthrough or (β) document-the
 - β: `git mv` back to `review/` directly — architect adds the disposition comment to `accreditation.ts:520-537` in the unblock commit, and re-reviews the diff (architect-self-task disposition per backend CLAUDE.md). No implementer cycle needed.
 
 The round-2 hold items themselves are clean — this is a fresh design question surfaced BY the round-2 fix, not a defect in the round-2 fix.
+
+---
+
+## Architect unblock (2026-05-16) — Disposition: α (revoke is operator-only-reversible)
+
+Revoking accreditation is an operator-only action; revoke→re-request→re-verify is NOT a legitimate user-driven flow. The HAF-outage fallthrough that allows a fresh `accredit` op to override a chain-recorded revoke is therefore a **structural gap**, not an accepted trade-off.
+
+### Fix shape (for round-3 implementer)
+
+Replace the catch-and-degrade fallthrough at `backend/src/routes/accreditation.ts:478-537` (the gate-query `try/catch`) with an explicit **503 SERVICE_UNAVAILABLE** response on gate-query failure. Closes the override class at the cost of `/verify` availability during HAF outage — that is the correct trade-off under the operator-only-reversible revoke semantic.
+
+**Acceptance:**
+
+1. When `findExistingAccreditation` throws (HAF outage, query timeout, helper-internal error), the route returns `503 SERVICE_UNAVAILABLE` with a stable error code (suggested: `ACCREDITATION_GATE_UNAVAILABLE` or similar). The response body should not leak HAF-specific detail beyond what the existing `details.reason` machine-readable discriminator pattern uses elsewhere.
+2. The pre-INCR rate-limit counter is **not** incremented on the 503 path (consistent with the gate-hit / idempotency-hit short-circuits described in the original task).
+3. Token cleanup (`deleteTokenBestEffort`) does **not** fire on the 503 path — the token must remain valid so the user can retry once HAF recovers. This is a deliberate divergence from the gate-hit and idempotency-hit cleanup branches.
+4. A structured-log event (suggested: `accreditation.verify.existing_accreditation_gate_unavailable` at `warn` per the project-wide log-volume-minimal stance — NOT `error`, this is an external-dependency degraded-state, not a server-internal bug) records the throw cause for operator visibility.
+5. **New route-level test** at `backend/tests/routes/accreditation-idempotency.test.ts`: gate-query mocked to reject → 503 response, error code asserted, broadcast NOT fired, token NOT deleted, rate-limit counter NOT incremented.
+
+### Out of scope for round-3 (separate follow-ups if needed)
+
+- The per-token cache flap risk (Redis-cached `lookupAccreditationBroadcastIdempotency` can carry pre-revoke state across the revoke boundary) is bounded by 60s+ TTL + same-token replay; under the operator-only-reversible semantic it's a smaller class than the gate-throw case. Architect's call after round-3 lands whether to file a separate hardening task.
+- The unknown-future-action silent-fallthrough concern (`'suspend'` etc.) is a coordination concern across the six accreditation-state-read sites; the helper itself behaves correctly given today's schema. Defer.
+
+### Per the original task's disposition note: α means git mv blocked/ → pending/
+
+Implementer picks up at next startup. The round-2 hold items (rounds 1-2) are all clean — round-3 lands the 503 change + the new test only.
+
+**Note for the implementer:** when landing round-3, add a Backend re-review signal block at the bottom of the task file enumerating the round-3 fix + the test, and `git mv` to `tasks/review/` for architect intake.
