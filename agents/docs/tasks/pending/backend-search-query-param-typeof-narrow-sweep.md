@@ -112,3 +112,40 @@ All 4 hold-block items landed in a single commit. Files touched:
 - `backend/tests/routes/search.test.ts` — item 4: 4 new route-level specs mirroring the `?type=foo` line-143 pattern — `?source=foo` → 400, `?sort=foo` → 400, `?source=native` → 200, `?source=bridge` → 200. Closes the "inverted predicate would silently 400 every valid request" risk class.
 
 `npm run lint` clean (pre-existing seed-phrase.ts warnings only); `npx tsc --noEmit` clean. Vitest deferred to the parent's serialized run after all in-flight backend tasks land.
+
+## Architect re-review (2026-05-16, round-2 → round-3) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `06a9ac4` with 7 personas (correctness opus; testing, maintainability, project-standards, security, kieran-typescript, ce-learnings-researcher sonnet). `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md. `ce-adversarial-reviewer` skipped (production change ~6 lines, no auth/payments/mutations; well below the 50-line threshold). Cluster-3 architect triage produced 2 items to address.
+
+### Items to address
+
+1. **(P2 kieran-typescript, anchor 90)** `searchReviewsFromHaf` sort param not tightened — sweep incomplete. The round-2 sweep tightened `searchPapersFromHaf` (signature around `backend/src/routes/search.ts:46`) and `searchFromHaf` (signature around `:263`) to `sort: SearchSort`, but `searchReviewsFromHaf` at `backend/src/routes/search.ts:162` retains `sort: string`. The two call sites in `searchFromHaf` now pass a `SearchSort`-typed argument to a `string`-typed parameter — TypeScript accepts this because `SearchSort` is assignable to `string`, so the mismatch is invisible to the checker. Currently inert (the function only uses `sort` for a hardcoded `ORDER BY 'c.created DESC'`), but the sweep was supposed to thread through all 3 internal functions and this is 1 of 3 missed. The asymmetry defeats the point of the sweep and will silently widen again if a relevance-sort branch is ever added to the reviews function.
+
+   Fix: change `searchReviewsFromHaf`'s `sort` parameter from `sort: string` to `sort: SearchSort`. Import is already present in the file. One-line touch.
+
+2. **(P3 testing+kieran-typescript, anchor 100 cross-reviewer)** No `?sort=relevance` → 200 happy-path test. Round-2 added `?source=native` → 200 and `?source=bridge` → 200 specs because `isSearchSource` had no incidental coverage. The same rationale applies to `?sort=relevance`: the only spec sending `sort=relevance` is the repeated-param 400 test at `backend/tests/routes/search.test.ts:195-200`. `?sort=date` is incidentally covered by accreditation-gate tests further down; `?sort=relevance` has zero happy-path coverage anywhere in the file. An accidentally inverted `isSearchSort` (e.g. `!includes()` typo) would 400 every request with `?sort=relevance`, and no spec in the file would catch it.
+
+   Fix: add one route-level spec mirroring the `?source=native` / `?source=bridge` pattern at `backend/tests/routes/search.test.ts:218-237`:
+
+   ```ts
+   it('?sort=relevance returns 200', { timeout: 60_000 }, async () => {
+     const res = await request(app).get('/api/search?q=science&sort=relevance');
+     expect(res.status).toBe(200);
+     expect(res.body.status).toBe('ok');
+   });
+   ```
+
+### Items dismissed during architect triage
+
+- (P3 project-standards PS-001, anchor 75) Re-review signal heading format `(2026-05-16, round-2)` vs backend-CLAUDE.md spec `(<date>, working tree or commit SHA):` — dismissed as cosmetic. The architect locates commits via `git log` regardless of the parenthetical content. Worth a backend-protocol nudge (systemic across the session's 3 backend commits) but not held on any individual task.
+- (P3 testing T-2, anchor 65) `isSearchSource`/`isSearchSort` lack case-sensitivity symmetry with `isSearchType` — dismissed per `feedback_dismiss_preemptive_test_hardening`. All three guards share the identical `(SEARCH_X as readonly string[]).includes(s)` implementation; the failure mode is theoretical-only (no live drift, no pending refactor that would touch one without the others).
+- (P3 sub-confidence) KT-2/KT-3 anchor 50; MAINT-RR anchor 50 — below confidence gate.
+
+### Items handed to separate architect actions (not held on this task)
+
+- (Learnings advisory) `backend/src/routes/papers.ts:477,479,517-519` is a known-remaining `req.query.x as string` sweep target per the `req-query-as-string-cast-silent-coerce-2026-05-16` learning. Out of scope for this task; the architect should verify a follow-up `backend-papers-query-cast-sweep` task exists in `tasks/pending/` or file one before archiving the cluster.
+- Vitest was deferred per the signal block; the architect should confirm a green Vitest pass on the parent serialized run before archiving the cluster.
+
+### Re-review signal
+
+When both items above land, `git mv` this file back to `tasks/review/`. Round-3 architect re-review scopes `/ce-code-review` to the round-3 commit. Anchor: item 1 is a one-line touch at `search.ts`; item 2 is a one-spec addition at `search.test.ts`. Single commit reasonable.
