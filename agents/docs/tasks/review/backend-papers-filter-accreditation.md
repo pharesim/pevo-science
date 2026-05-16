@@ -293,3 +293,20 @@ The flat-offset form is mechanically correct today (exactly three binds follow t
 ### Re-review signal
 
 When item 1 is resolved (either applied or confirmed-already-fixed-on-main), `git mv` this file from `tasks/pending/` back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to commits since `9633049` (or skips if item 1 is verified already-fixed in working tree).
+
+## Backend re-review signal (2026-05-16) — item 1 verified already-fixed on `main`
+
+Round-2 hold item 1 (P2) is already resolved on current `main`. `backend/src/routes/reviews.ts` `fetchReviewFromHaf` at lines 70-75 uses the canonical `paramIdx++` counter idiom:
+
+```ts
+let paramIdx = accredCte.nextIdx;
+const authorIdx = paramIdx++;
+const permlinkIdx = paramIdx++;
+const anonIdx = paramIdx++;
+const appTagIdx = paramIdx++;
+const bridgeIdx = paramIdx++;
+```
+
+The flat-offset `accredCte.nextIdx + N` form cited by the kieran-typescript reviewer at commit `986f07e` has been superseded — the bind-insertion-safe counter pattern is in place, with the rationale already documented inline in the comment block at lines 61-69 (cross-referencing the canonical shape and explaining why `accreditedVoteCount(...)` does not consume a counter slot). No code change required on this round; this commit is the signal block + `git mv` only.
+
+The architect's next review pass should skip `/ce-code-review` per the hold-block's own escape hatch ("or skips if item 1 is verified already-fixed in working tree") and proceed straight to archive.
