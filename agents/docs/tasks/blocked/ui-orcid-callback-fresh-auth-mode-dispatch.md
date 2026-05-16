@@ -129,3 +129,48 @@ Added a `sessionStorage` global stub to the test file's `beforeEach` (the existi
 Per task acceptance §4 "May not be implementable until the SPA caller side exists; in that case, add at minimum a unit test." — only unit tests added; the E2E test waits for the consumer-side caller (`ui-multi-author-consent-affordances`) to land.
 
 **Out of scope as documented:** no backend changes (the `mode: 'fresh_auth'` issuance path at `backend/src/routes/orcid.ts:1144` already works); no consent-op broadcast helper (consumer side); no consent-op UI itself.
+
+## Architect re-review (2026-05-16, round-1) — HELD PENDING FIXES + BLOCKED by Backend:
+
+`/ce-code-review` ran on commit `c0a6e8e` with 10 personas (correctness Opus; testing/maintainability/project-standards/security/reliability/api-contract/julik-frontend-races/learnings-researcher Sonnet; adversarial Opus; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). One P0 wire-contract finding with 5-reviewer corroboration plus two folded sub-items. The implementer's working assumption — that `data.action` / `data.root_author` / `data.root_permlink` arrive in the `/api/orcid/callback` fresh_auth response — does not match the current backend. The cache as currently shipped is a guaranteed no-op the moment the consumer side wires up.
+
+### Items to address (after blocker resolves)
+
+**1. (P0 wire-contract) Cache write stores `{action: undefined, rootAuthor: undefined, rootPermlink: undefined}` because the backend `fresh_auth` callback response doesn't echo those fields.** Cross-reviewer agreement: api-contract (P0/100), security SEC-1 (P2/100), reliability R1 (high/95), adversarial-2 (low/80), correctness (P2/75). The fix path chosen at architect triage is **option (a) backend echoes the target triple** — filed as `agents/docs/tasks/pending/backend-orcid-fresh-auth-callback-echoes-target-triple.md`. This UI task is moved to `tasks/blocked/` `[BLOCKED by Backend]` pending that landing.
+
+   **When unblocked:** verify the existing unit tests in `frontend/tests/unit/pages-orcid-callback.test.js` still pass against the now-correct wire shape (they should — the mocks already include the triple, so the assertions become accurate rather than fabricated). No code change to `_handleFreshAuth` expected (it already reads the right fields). If the backend chose a slightly different field naming, adjust `_handleFreshAuth`'s data-field reads.
+
+   **Folded sub-item 2 (was Finding 2 at triage, P2 correctness/75):** correctness-reviewer flagged that the existing mocks fabricate fields the real backend doesn't return — a false-green. Folds into item 1: once backend echoes the triple, the mock-fabricated state becomes the real state and the assertions are valid. No separate work needed beyond verifying after the backend fix lands.
+
+   **Folded sub-item 3 (was Finding 3 at triage, P2 project-standards/75):** test file `frontend/tests/unit/pages-orcid-callback.test.js` is missing the root CLAUDE.md clause (a) carve-out justification header. The file pre-dates this commit but this commit extends the mock surface (new sessionStorage stub + 4 mocked test cases). While in the file addressing item 1, add a file-header comment naming the mock targets and rationale, e.g.:
+
+   ```js
+   /**
+    * Unit tests for the orcid-callback Alpine page.
+    *
+    * Carve-out for deterministic edge-case coverage (root CLAUDE.md clause a):
+    * mocks `alpinejs` and `completeOrcid` from api.js. Real paths are impractical
+    * per-test (Alpine store/data wiring is non-trivial to bootstrap; completeOrcid
+    * hits the live /api/orcid/callback endpoint and requires a full OAuth round-trip).
+    * Real-path companion: the future E2E test in ui-multi-author-consent-affordances
+    * exercises the live callback against a running backend (deferred per task §4).
+    */
+   ```
+
+   **Folded sub-item 4 (was Finding 4 at triage, P3 security/75):** `getCachedConsentOpProof` (and its pre-existing sibling `getCachedSessionProof`) treat malformed-but-truthy `expiresAt` as never-expiring because `Date.now() >= NaN` returns `false`. Parallel-fix both helpers in the same commit: compute `const ts = new Date(entry.expiresAt).getTime();` once, then `if (!Number.isFinite(ts)) { sessionStorage.removeItem(...); return null; }` before the TTL comparison. ~4 LOC each; clears the slot on corruption like the other defensive branches do.
+
+### Items dismissed at architect triage
+
+- adversarial-1 (medium/70): expires_at format drift between backend and cache — bounded by the prior `backend-expires-at-iso-conformance` fix per learnings-researcher; below anchor-75 gate.
+- adversarial-3 (low/55): shared return-path slot couples session_auth and fresh_auth flows — pre-existing single-slot design, below anchor-75 gate.
+- adversarial-4 (low/75): mismatch path in `getCachedConsentOpProof` doesn't clear the slot — **intentional by design** (the proof remains valid for its actual target until TTL), confirmed in the task signal block and by learnings-researcher.
+
+### Learnings surfaced
+
+- **Known Pattern:** `agents/docs/solutions/conventions/wire-contract-shape-pinned-on-backend-not-stub-2026-05-16.md` is exactly this failure mode: a stubbed test masks a backend-emit gap. The backend integration-test pin asked for in the new backend task is this convention's prescription.
+- **Known Pattern:** `agents/docs/solutions/conventions/synchronous-flag-before-await-idempotency-guard-2026-05-16.md` — the `_handleFreshAuth` self-guard placement (entry-only, since handler is synchronous) is correctly applied.
+- **Known Pattern:** `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md` — the dispatch switch + `init()` backPath branch are sibling-paired and currently in sync; any future mode addition must touch both.
+
+### Architect signal
+
+[BLOCKED by Backend] This task is moved to `tasks/blocked/` pending `agents/docs/tasks/pending/backend-orcid-fresh-auth-callback-echoes-target-triple.md` landing. When the backend task is archived, the architect will move this file back to `tasks/pending/` (per root CLAUDE.md rule #8 the HELD PENDING FIXES move from review goes to pending, and the BLOCKED move goes to blocked — this task is currently in the latter state). The UI implementer then addresses items 1 (verify) + folded sub-items 3 + 4 in a single commit, then `git mv`s the file back to `tasks/review/` for round-2 architect re-review.
