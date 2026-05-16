@@ -177,7 +177,7 @@ const template = `
                 <p class="text-xs text-ink-muted mb-3" x-text="$t('edit.authorsAddOnly')"></p>
                 <!-- Existing authors (read-only) -->
                 <template x-for="(ca, i) in existingCoAuthors" :key="'existing-' + i">
-                  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-3 p-3 bg-parchment rounded-lg opacity-75">
+                  <div data-testid="existing-coauthor-row" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-3 p-3 bg-parchment rounded-lg opacity-75">
                     <input type="text" class="select-control text-xs bg-parchment-warm cursor-not-allowed" :value="ca.name" disabled />
                     <input type="text" class="select-control text-xs bg-parchment-warm cursor-not-allowed" :value="ca.hive || ''" disabled />
                     <input type="text" class="select-control text-xs bg-parchment-warm cursor-not-allowed" :value="ca.orcid || ''" disabled />
@@ -190,7 +190,7 @@ const template = `
                     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                       <input type="text" class="select-control text-xs" :placeholder="$t('publish.fullName')" :value="ca.name" @input="updateNewCoAuthor(i, 'name', $event.target.value)" />
                       <input type="text" class="select-control text-xs" :placeholder="$t('publish.hiveUsername')" :value="ca.hive" list="pevo-accredited-usernames" @input="updateNewCoAuthor(i, 'hive', $event.target.value)" />
-                      <input type="text" class="select-control text-xs" :class="{ 'bg-parchment-warm cursor-not-allowed': isNewCoAuthorAccredited(i) }" :placeholder="$t('publish.orcidOptional')" :value="ca.orcid" :disabled="isNewCoAuthorAccredited(i)" @input="updateNewCoAuthor(i, 'orcid', $event.target.value)" />
+                      <input type="text" data-testid="coauthor-orcid-input" class="select-control text-xs" :class="{ 'bg-parchment-warm cursor-not-allowed': isNewCoAuthorAccredited(i) }" :placeholder="$t('publish.orcidOptional')" :value="ca.orcid" :disabled="isNewCoAuthorAccredited(i)" @input="updateNewCoAuthor(i, 'orcid', $event.target.value)" />
                       <div class="flex gap-2">
                         <input type="text" class="select-control text-xs flex-1" :placeholder="$t('publish.affiliation')" :value="ca.affiliation" @input="updateNewCoAuthor(i, 'affiliation', $event.target.value)" />
                         <button type="button" class="text-ink-muted hover:text-ink shrink-0 px-1" @click="removeNewCoAuthor(i)">

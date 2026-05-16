@@ -140,19 +140,27 @@ export function mintSessionJwt(username, { custody = 'self', expiresInSec = 3600
 }
 
 /**
- * Pick an already-accredited researcher from HAF and return the info the
- * frontend would normally populate into the session on login.
+ * Pick `count` already-accredited researchers from HAF and return the info
+ * the frontend would normally populate into the session on login. The
+ * optional `predicate` filters the list rows BEFORE the per-user status
+ * fetch (e.g. drop rows without a non-empty `orcid`).
  *
- * Returns null if HAF has no accreditations (CI misconfigured).
+ * Returns an array of length `count`, or `null` if HAF could not yield
+ * enough rows across `attempts` retries.
+ *
+ * Why the retry+backoff shell lives here: HAF reads can transiently fail or
+ * time out when multiple Playwright workers query concurrently
+ * (/api/accreditations proxies to HAF SQL). Centralising the retry shell
+ * lets callers vary only the selection predicate; the
+ * `coauthor-accredited-prefill.spec.js` use case ("find 2 with non-empty
+ * ORCID") and the single-researcher login fixture share one retry policy.
  */
-export async function pickAccreditedResearcher(request) {
-  // HAF reads can transiently fail or time out when multiple Playwright
-  // workers query concurrently (/api/accreditations proxies to HAF SQL).
-  // Retry with backoff so the spec-level assertion "at least one accredited
-  // researcher" stays deterministic under the default parallel worker count.
-  const attempts = 4;
+export async function pickAccreditedResearchers(
+  request,
+  { count = 1, predicate = null, limit = 10, attempts = 4 } = {},
+) {
   for (let i = 0; i < attempts; i++) {
-    const picked = await pickAccreditedResearcherOnce(request);
+    const picked = await pickAccreditedResearchersOnce(request, { count, predicate, limit });
     if (picked) return picked;
     if (i < attempts - 1) {
       await new Promise((r) => setTimeout(r, 500 * (i + 1)));
@@ -161,29 +169,55 @@ export async function pickAccreditedResearcher(request) {
   return null;
 }
 
-async function pickAccreditedResearcherOnce(request) {
+/**
+ * Backwards-compatible single-pick wrapper. Existing callers
+ * (`edit-paper.spec.js`, `publish.spec.js`, etc.) consume the original
+ * "return one researcher or null" contract.
+ */
+export async function pickAccreditedResearcher(request) {
+  const picked = await pickAccreditedResearchers(request, { count: 1 });
+  return picked ? picked[0] : null;
+}
+
+/**
+ * Single-attempt multi-pick. The retry loop above repeats this primitive
+ * with backoff; tests that need finer-grained control over retry behaviour
+ * can call this directly.
+ */
+export async function pickAccreditedResearchersOnce(
+  request,
+  { count = 1, predicate = null, limit = 10 } = {},
+) {
   // Any `request.get` here can throw (ECONNREFUSED while the backend is
   // still starting, a DNS blip against the shared HAF, etc.). Without this
-  // try/catch the throw escapes the retry loop in pickAccreditedResearcher
+  // try/catch the throw escapes the retry loop in pickAccreditedResearchers
   // and fails the whole spec immediately — defeating the purpose of the
   // retry wrapper.
   try {
-    const listResp = await request.get('/api/accreditations?limit=10');
+    const listResp = await request.get(`/api/accreditations?limit=${limit}`);
     if (!listResp.ok()) return null;
     const list = (await listResp.json()).data || [];
     if (list.length === 0) return null;
 
+    const found = [];
     // Re-fetch via the status endpoint — that's the shape auth.js actually
     // saves into the session (the list endpoint uses a slightly leaner shape).
     for (const r of list) {
+      if (predicate && !predicate(r)) continue;
       const statusResp = await request.get(
         `/api/accreditations/${encodeURIComponent(r.username)}`,
       );
       if (!statusResp.ok()) continue;
       const status = (await statusResp.json()).data;
-      if (status?.is_accredited) {
-        return { username: status.username, accreditation: status.accreditation };
-      }
+      if (!status?.is_accredited) continue;
+      found.push({
+        username: status.username,
+        accreditation: status.accreditation,
+        // Carry the list-row's `orcid` field so callers that filtered on it
+        // can read the value they predicated against without an extra fetch.
+        orcid: r.orcid,
+      });
+      if (found.length === count) return found;
     }
     return null;
   } catch {

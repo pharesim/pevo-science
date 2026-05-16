@@ -34,6 +34,7 @@ import {
   seedAccreditedSession,
   seedUnaccreditedSession,
 } from './fixtures/auth.js';
+import { installPaperMocks } from './fixtures/paper-mocks.js';
 
 // SEC-002: disable trace/video/screenshot. The spec mints JWTs via
 // SESSION_SECRET; retained traces would expose the bearer token.
@@ -84,55 +85,6 @@ function buildPaperFixture({ author, permlink, coAuthorHive = null }) {
     versions: [{ version_number: 1, author, permlink }],
     authorship_claims: [],
   };
-}
-
-function envelope(data) {
-  return { status: 'ok', data };
-}
-
-async function installPaperMocks(page, { paper, reviews = [], claims = [] }) {
-  const paperPath = `/api/papers/${encodeURIComponent(paper.author)}/${encodeURIComponent(paper.permlink)}`;
-
-  // Playwright dispatches page.route matches in REVERSE registration order
-  // (most-recently-registered first), with route.fallback() walking back
-  // through earlier handlers. So we register the suffix-specific handlers
-  // (enrichment, invalidate) FIRST and the bare paper route LAST. At
-  // runtime the bare matcher fires first; for /enrichment and /invalidate
-  // URLs its else-branch calls route.fallback(), which then resolves to the
-  // earlier-registered specific handlers below.
-  await page.route(`**${paperPath}/enrichment`, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(envelope({ reviews, authorship_claims: claims })),
-    });
-  });
-
-  await page.route(`**${paperPath}/invalidate`, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(envelope({ ok: true })),
-    });
-  });
-
-  await page.route(`**${paperPath}**`, async (route) => {
-    const url = route.request().url();
-    // This bare-paper route is registered LAST and therefore fires FIRST by
-    // Playwright's dispatch order. For suffix URLs (/enrichment,
-    // /invalidate, /comments) we call route.fallback() to hand off to the
-    // earlier-registered specific handlers above; the bare matcher itself
-    // services the exact `/papers/:a/:p` request and the `?version=` query
-    // variants.
-    if (url.includes('/enrichment') || url.includes('/invalidate') || url.includes('/comments')) {
-      return route.fallback();
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(envelope(paper)),
-    });
-  });
 }
 
 async function clearDraft(page, author, permlink) {

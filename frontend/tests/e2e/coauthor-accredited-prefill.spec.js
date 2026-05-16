@@ -26,9 +26,11 @@
 
 import { test, expect } from './fixtures/keychain.js';
 import {
+  pickAccreditedResearchers,
   seedAccreditedSession,
   minimalPdfBuffer,
 } from './fixtures/auth.js';
+import { installPaperMocks } from './fixtures/paper-mocks.js';
 
 // SEC-002 (matches publish.spec.js): minted JWTs end up in localStorage; do
 // not retain traces/videos.
@@ -38,41 +40,17 @@ const APP_TAG = 'pevotest';
 
 // Pick two distinct accredited researchers (A, B) from HAF with non-empty
 // ORCIDs. Without an ORCID on B, scenario (1) "ORCID prefilled to B's ORCID"
-// has no value to assert against. Mirrors the retry shape of
-// `pickAccreditedResearcher` in fixtures/auth.js — HAF reads can flake under
-// concurrent worker load.
+// has no value to assert against. Consumes the shared retry-shell helper in
+// fixtures/auth.js; only the selection predicate (non-empty ORCID) is local
+// to this spec. The retry-policy parameters (4 attempts, 500*(i+1) ms
+// backoff, 20-row list page) live in one place across all multi-pick
+// callers.
 async function pickTwoAccreditedResearchersWithOrcid(request) {
-  const attempts = 4;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    try {
-      const listResp = await request.get('/api/accreditations?limit=20');
-      if (listResp.ok()) {
-        const list = (await listResp.json()).data || [];
-        const found = [];
-        for (const r of list) {
-          if (!r.username || !r.orcid) continue;
-          const statusResp = await request.get(
-            `/api/accreditations/${encodeURIComponent(r.username)}`,
-          );
-          if (!statusResp.ok()) continue;
-          const status = (await statusResp.json()).data;
-          if (!status?.is_accredited) continue;
-          found.push({
-            username: status.username,
-            accreditation: status.accreditation,
-            orcid: r.orcid,
-          });
-          if (found.length === 2) return found;
-        }
-      }
-    } catch {
-      // swallow and retry — same posture as pickAccreditedResearcherOnce
-    }
-    if (attempt < attempts - 1) {
-      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-    }
-  }
-  return null;
+  return pickAccreditedResearchers(request, {
+    count: 2,
+    limit: 20,
+    predicate: (r) => !!r.username && !!r.orcid,
+  });
 }
 
 // Build a deterministic non-accredited handle. The accredited directory caps
@@ -105,8 +83,13 @@ function hiveInputForRow(page, rowIdx) {
   return page.locator('input[list="pevo-accredited-usernames"]').nth(rowIdx);
 }
 
+// The ORCID input on each new-co-author row carries a stable
+// `data-testid="coauthor-orcid-input"` (publish.js / edit.js), set on the
+// new-row template only (existing-author rows do not render this testid).
+// `.nth(rowIdx)` therefore addresses the Nth new co-author's ORCID input
+// regardless of grid-layout refactors.
 function orcidInputForRow(page, rowIdx) {
-  return hiveInputForRow(page, rowIdx).locator('xpath=following-sibling::input[1]');
+  return page.getByTestId('coauthor-orcid-input').nth(rowIdx);
 }
 
 const ACCREDITED_BADGE_TEXT = 'ORCID is bound to the accredited Hive account.';
@@ -287,45 +270,6 @@ test('publish broadcast carries accredited co-author ORCID in json_metadata.auth
 // EDIT FORM — scenario 5
 // ─────────────────────────────────────────────────────────────────────────
 
-function envelope(data) {
-  return { status: 'ok', data };
-}
-
-// Mirrors the paper-mock harness from edit-paper.spec.js. Kept inline rather
-// than imported because that file does not export its helpers and the
-// fixture is small.
-async function installPaperMocks(page, { paper, reviews = [], claims = [] }) {
-  const paperPath = `/api/papers/${encodeURIComponent(paper.author)}/${encodeURIComponent(paper.permlink)}`;
-
-  await page.route(`**${paperPath}/enrichment`, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(envelope({ reviews, authorship_claims: claims })),
-    });
-  });
-
-  await page.route(`**${paperPath}/invalidate`, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(envelope({ ok: true })),
-    });
-  });
-
-  await page.route(`**${paperPath}**`, async (route) => {
-    const url = route.request().url();
-    if (url.includes('/enrichment') || url.includes('/invalidate') || url.includes('/comments')) {
-      return route.fallback();
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(envelope(paper)),
-    });
-  });
-}
-
 test('edit form: existing co-author with accredited hive stays disabled; new co-author row prefills, locks, and clears on transition', async ({
   page,
   request,
@@ -402,12 +346,13 @@ test('edit form: existing co-author with accredited hive stays disabled; new co-
 
   // ─── Existing co-author B's ORCID input stays disabled ────────────────
   // The existing-authors block has no `list=` attribute on its hive input
-  // (see edit.js:189-195). We locate by the existing row container and
-  // verify the ORCID input renders the recorded value and is disabled.
-  // edit.js renders existingCoAuthors as the FIRST set of rows; in this
-  // fixture there's exactly one existing co-author (slice(1) of authors).
-  // Inputs in that row sit inside an `.opacity-75` grid container.
-  const existingRow = page.locator('div.opacity-75').first();
+  // (see edit.js:189-195). We locate by the existing row container's stable
+  // `data-testid="existing-coauthor-row"` (edit.js:180) and verify the
+  // ORCID input renders the recorded value and is disabled. Using a
+  // dedicated testid (vs. the previous `.opacity-75` class match) keeps the
+  // selector durable when supplementary-file rows — which share the
+  // `opacity-75` class — appear in the fixture.
+  const existingRow = page.getByTestId('existing-coauthor-row').first();
   await expect(existingRow).toBeVisible();
   // The grid renders 4 disabled inputs (name, hive, orcid, affiliation).
   const existingInputs = existingRow.locator('input');

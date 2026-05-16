@@ -181,7 +181,7 @@ const template = `
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                   <input type="text" class="select-control text-xs" :placeholder="$t('publish.fullName')" :value="ca.name" @input="updateCoAuthor(i, 'name', $event.target.value)" />
                   <input type="text" class="select-control text-xs" :placeholder="$t('publish.hiveUsername')" :value="ca.hive" list="pevo-accredited-usernames" @input="updateCoAuthor(i, 'hive', $event.target.value)" />
-                  <input type="text" class="select-control text-xs" :class="{ 'bg-parchment-warm cursor-not-allowed': isCoAuthorAccredited(i) }" :placeholder="$t('publish.orcidOptional')" :value="ca.orcid" :disabled="isCoAuthorAccredited(i)" @input="updateCoAuthor(i, 'orcid', $event.target.value)" />
+                  <input type="text" data-testid="coauthor-orcid-input" class="select-control text-xs" :class="{ 'bg-parchment-warm cursor-not-allowed': isCoAuthorAccredited(i) }" :placeholder="$t('publish.orcidOptional')" :value="ca.orcid" :disabled="isCoAuthorAccredited(i)" @input="updateCoAuthor(i, 'orcid', $event.target.value)" />
                   <div class="flex gap-2">
                     <input type="text" class="select-control text-xs flex-1" :placeholder="$t('publish.affiliation')" :value="ca.affiliation" @input="updateCoAuthor(i, 'affiliation', $event.target.value)" />
                     <button type="button" class="text-ink-muted hover:text-ink shrink-0 px-1" @click="removeCoAuthor(i)">
