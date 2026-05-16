@@ -2227,6 +2227,468 @@ describe('settingsPage', () => {
     });
   });
 
+  // UI-RETRY-UPGRADE-BACKEND-TEST-COVERAGE: unit coverage for the
+  // post-broadcast 503-retry path. `retryUpgradeBackend()` is reachable
+  // only from the error screen with `upgradeErrorKey ===
+  // 'upgrade.backendUnavailable'`; it re-signs a fresh proof and
+  // re-POSTs the backend cleanup call without re-broadcasting the
+  // (already-landed) chain rotation. `handleRetry()` is the dispatcher
+  // that the Try Again button binds to.
+  //
+  // Branches enumerated (from frontend/src/pages/settings.js as of
+  // 2026-05-16; line numbers may shift across rounds — search by symbol):
+  //   handleRetry()
+  //     H1. upgradeErrorKey === 'upgrade.backendUnavailable' → retryUpgradeBackend()
+  //     H2. else → resetUpgrade() (phase → 'idle', state wiped)
+  //   retryUpgradeBackend()
+  //     R1. guard: upgradePhase !== 'error' → early return (no-op)
+  //     R2. guard: upgradeErrorKey !== 'upgrade.backendUnavailable' → early return
+  //     R3. defensive: !newSeedPhrase → wipe + partialApplyFailed (terminal)
+  //     R4. happy path: 2xx → loginFromResponse + _completeUpgradeAfterBackend → 'done'
+  //     R5. post-await unmount guard: !_mounted after _postUpgradeBackend → early return
+  //     R6. post-await unmount guard: !_mounted after loginFromResponse → early return
+  //         // untestable without DI: the mock auth store's loginFromResponse is
+  //         // synchronous, so there is no suspension window between the two
+  //         // _mounted checks for a navigate-away to land in. Stubbing
+  //         // loginFromResponse to flip _mounted would test the stub, not the
+  //         // production code path. R5's unmount-after-post case proves the
+  //         // shared "early-return short-circuits _completeUpgradeAfterBackend"
+  //         // invariant the R6 site also relies on.
+  //     R7. catch TimeoutError/AbortError → wipe + backendTimeout (terminal)
+  //     R8. catch status===503 → KEEP state + backendUnavailable (still retryable)
+  //     R9. catch status===409 → wipe + alreadyUpgraded (terminal)
+  //     R10. catch status===429 → wipe + rateLimited (terminal)
+  //     R11. catch-all (no status / other status / network drop) → wipe + partialApplyFailed
+  describe('UI-RETRY-UPGRADE-BACKEND-TEST-COVERAGE: handleRetry + retryUpgradeBackend', () => {
+    // Pre-existing tests in this file override the module-level
+    // `deriveHiveKeys` mock via `vi.mocked(deriveHiveKeys).mockImplementation(...)`
+    // to inject mid-helper throws. `vi.clearAllMocks()` in the outer
+    // beforeEach clears call history but NOT the overriding
+    // implementation, so the override survives into the next test. Reset
+    // back to the default per-WIF success here so each retry-branch test
+    // starts from a known good derivation path.
+    beforeEach(() => {
+      vi.mocked(deriveHiveKeys).mockImplementation(async () => ({ ...STUB_WIFS }));
+    });
+
+    // Seeds the post-broadcast 503 error state: phase 'error',
+    // backendUnavailable discriminator, newSeedPhrase preserved (only the
+    // 503 sub-case keeps it across the failure). Mirrors the state
+    // executeUpgrade() leaves behind when it falls into the 503 branch.
+    function seedBackendUnavailableErrorState(comp) {
+      comp.upgradePhase = 'error';
+      comp.upgradeErrorKey = 'upgrade.backendUnavailable';
+      comp.upgradeError = 'upgrade.backendUnavailable';
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      // The 503 catch in executeUpgrade does NOT wipe; mirror that.
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.upgradePassword = 'light-password';
+      return comp;
+    }
+
+    function stubKeychainImportKeySuccess() {
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+    }
+
+    // _signUpgradeProof calls getAppTag() which reads `window.__PEVO_CONFIG__`.
+    // Vitest's default env doesn't define `window`, so non-keychain catch-branch
+    // tests must still stub a bare window or _signUpgradeProof throws a
+    // ReferenceError before fetch is even called, and every error routes to
+    // the partialApplyFailed catch-all instead of the branch under test.
+    function stubBareWindow() {
+      vi.stubGlobal('window', { ...globalThis.window });
+    }
+
+    // H1: dispatcher routes the 503 sub-case to retryUpgradeBackend.
+    // retryUpgradeBackend's first synchronous side-effect (before any
+    // await) is `this.upgradePhase = 'upgrading'`. resetUpgrade, by
+    // contrast, synchronously sets phase to 'idle'. The two dispatch
+    // arms can therefore be discriminated by observing phase immediately
+    // after the synchronous handleRetry() call returns. handleRetry()
+    // itself is non-async and does NOT return the retry promise, so
+    // awaiting it is a no-op for the underlying retry continuation;
+    // the synchronous phase check is the only fair assertion at the
+    // dispatcher boundary.
+    it('handleRetry: dispatches to retryUpgradeBackend on upgrade.backendUnavailable sub-case', () => {
+      const comp = createComponent();
+      seedBackendUnavailableErrorState(comp);
+
+      comp.handleRetry();
+
+      // retryUpgradeBackend's synchronous prologue (after the guards
+      // pass) flips phase to 'upgrading'. resetUpgrade would have set
+      // phase to 'idle' instead.
+      expect(comp.upgradePhase).toBe('upgrading');
+      // newSeedPhrase preserved across handleRetry: the 503 retry path
+      // re-derives from it, so resetUpgrade (which wipes) was NOT taken.
+      expect(comp.newSeedPhrase).not.toBe('');
+    });
+
+    // H2: dispatcher resets the wizard on every non-503 retryable
+    // sub-case. The pre-broadcast `upgrade.failed` key is the canonical
+    // example (Keychain denial, chain rejection, invalid old seed) —
+    // canRetryUpgrade returns true and Try Again is shown; clicking it
+    // must clear the wizard back to 'idle' so a fresh attempt
+    // regenerates the new mnemonic.
+    it('handleRetry: resets wizard to idle on non-backendUnavailable retryable sub-case', () => {
+      const comp = createComponent();
+      comp.upgradePhase = 'error';
+      comp.upgradeErrorKey = 'upgrade.failed';
+      comp.upgradeError = 'upgrade.failed';
+      comp.oldSeedPhrase = 'old old old old old old old old old old old old';
+      comp.newSeedPhrase = 'new new new new new new new new new new new new';
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.upgradePassword = 'light-password';
+      comp.upgradeWarnings = ['stale warning'];
+
+      comp.handleRetry();
+
+      expect(comp.upgradePhase).toBe('idle');
+      expect(comp.upgradeError).toBeNull();
+      expect(comp.upgradeErrorKey).toBeNull();
+      expect(comp.upgradeWarnings).toEqual([]);
+      // resetUpgrade() runs _clearSensitiveUpgradeState() so seed material
+      // is gone.
+      expect(comp.oldSeedPhrase).toBe('');
+      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.upgradePassword).toBe('');
+    });
+
+    // R1: phase guard. Reaching retryUpgradeBackend from a non-error
+    // phase (e.g. mid-flow re-entry via a stray $watch) must be a no-op.
+    // The function is exposed on the Alpine component so anything with a
+    // reference can call it directly; the guard prevents that from
+    // double-firing the backend cleanup.
+    it('retryUpgradeBackend: no-op when upgradePhase !== "error"', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const comp = createComponent();
+      comp.upgradePhase = 'upgrading'; // wrong phase
+      comp.upgradeErrorKey = 'upgrade.backendUnavailable';
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+
+      await comp.retryUpgradeBackend();
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // Phase untouched.
+      expect(comp.upgradePhase).toBe('upgrading');
+    });
+
+    // R2: discriminator guard. Reaching retryUpgradeBackend from a
+    // non-backendUnavailable error sub-case (e.g. someone wired the
+    // dispatcher wrong, or the field was stale) must short-circuit —
+    // retrying a terminal sub-case would re-broadcast against an
+    // already-rotated chain.
+    it('retryUpgradeBackend: no-op when upgradeErrorKey !== "upgrade.backendUnavailable"', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const comp = createComponent();
+      comp.upgradePhase = 'error';
+      comp.upgradeErrorKey = 'upgrade.partialApplyFailed'; // terminal sub-case
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+
+      await comp.retryUpgradeBackend();
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // upgradeErrorKey untouched — caller-set terminal state survives.
+      expect(comp.upgradeErrorKey).toBe('upgrade.partialApplyFailed');
+    });
+
+    // R3: defensive branch. newSeedPhrase is cleared on every terminal
+    // catch sub-case, so reaching the retry path with an empty
+    // newSeedPhrase means the state machine drifted. Route to the
+    // terminal partialApplyFailed sub-case (a fresh derive from "" would
+    // produce a meaningless proof against the chain).
+    it('retryUpgradeBackend: empty newSeedPhrase routes to partialApplyFailed (terminal)', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const comp = createComponent();
+      comp.upgradePhase = 'error';
+      comp.upgradeErrorKey = 'upgrade.backendUnavailable';
+      comp.newSeedPhrase = ''; // drifted state — no seed to re-derive from
+
+      await comp.retryUpgradeBackend();
+
+      expect(comp.upgradeErrorKey).toBe('upgrade.partialApplyFailed');
+      expect(comp.upgradeError).toBe('upgrade.partialApplyFailed');
+      // Sensitive state wiped on the defensive path.
+      expect(comp.newSeedPhrase).toBe('');
+      // No backend call — there was nothing to retry against.
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    // R4: happy path. Backend cleanup succeeds on the retry, the
+    // session rotates via loginFromResponse with the self-custody
+    // claim, and _completeUpgradeAfterBackend transitions phase to
+    // 'done' (zeroing sensitive state in its finally block).
+    it('retryUpgradeBackend: happy path → 2xx, loginFromResponse(self), phase=done, state wiped', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      stubKeychainImportKeySuccess();
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          data: { token: 'rotated-jwt', expires_at: '2099-01-01T00:00:00.000Z', custody: 'self' },
+        }),
+      })));
+
+      const comp = createComponent();
+      seedBackendUnavailableErrorState(comp);
+
+      await comp.retryUpgradeBackend();
+
+      expect(comp.upgradePhase).toBe('done');
+      expect(mockAuthStore.loginFromResponse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: 'rotated-jwt',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          custody: 'self',
+        }),
+      );
+      // _completeUpgradeAfterBackend's finally block wipes sensitive state.
+      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.newSeedWords).toEqual([]);
+      expect(comp.upgradePassword).toBe('');
+    });
+
+    // R5: post-await unmount guard. If the user navigates away during
+    // the (up-to-20s) backend cleanup POST, the post-fetch _mounted
+    // check must short-circuit so loginFromResponse is NOT called on
+    // the orphaned component and _completeUpgradeAfterBackend does NOT
+    // start its Keychain loop.
+    it('retryUpgradeBackend: navigate-away during _postUpgradeBackend → no loginFromResponse, no Keychain loop', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      // Capture the component so the fetch stub can flip _mounted on
+      // the same instance retryUpgradeBackend is running against.
+      let compRef = null;
+      // Keychain stub must NOT fire — if the post-fetch unmount guard
+      // works, _completeUpgradeAfterBackend never runs.
+      const importKeyCalls = [];
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            importKeyCalls.push({ account, wifKey });
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        // Simulate the unmount-during-await: flip _mounted=false before
+        // returning the response. The post-await check on line ~960 of
+        // settings.js must observe this and short-circuit.
+        if (compRef) compRef._mounted = false;
+        return {
+          ok: true,
+          json: async () => ({ data: { token: 'rotated-jwt', custody: 'self' } }),
+        };
+      }));
+
+      const comp = createComponent();
+      compRef = comp;
+      seedBackendUnavailableErrorState(comp);
+
+      await comp.retryUpgradeBackend();
+
+      // Unmount guard fired: no session rotation, no Keychain popups,
+      // no phase='done' write on the orphaned component.
+      expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+      expect(importKeyCalls).toHaveLength(0);
+      expect(comp.upgradePhase).not.toBe('done');
+    });
+
+    // R7: TimeoutError. AbortSignal.timeout(20_000) in
+    // _postUpgradeBackend produces a TimeoutError DOMException when the
+    // 20s budget elapses. Route to the terminal backendTimeout sub-case
+    // (canRetryUpgrade=false): the retry already consumed the user's
+    // patience window once; offering another retry on the same hung
+    // backend is dead-end UX.
+    it('retryUpgradeBackend: TimeoutError → backendTimeout terminal sub-case, state wiped', async () => {
+      stubBareWindow();
+      const timeoutErr = new Error('signal timed out');
+      timeoutErr.name = 'TimeoutError';
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(timeoutErr)));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      seedBackendUnavailableErrorState(comp);
+
+      await comp.retryUpgradeBackend();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.backendTimeout');
+      expect(comp.upgradeError).toBe('upgrade.backendTimeout');
+      // Terminal sub-case wipes sensitive state — no point holding the
+      // mnemonic past a non-retryable error screen.
+      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.upgradePassword).toBe('');
+      warnSpy.mockRestore();
+    });
+
+    // R7 sibling: AbortError (older runtimes / dhive-side abort surface
+    // the same condition under a different DOMException name). Same
+    // routing as TimeoutError.
+    it('retryUpgradeBackend: AbortError → backendTimeout terminal sub-case', async () => {
+      stubBareWindow();
+      const abortErr = new Error('aborted');
+      abortErr.name = 'AbortError';
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(abortErr)));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      seedBackendUnavailableErrorState(comp);
+
+      await comp.retryUpgradeBackend();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.backendTimeout');
+      expect(comp.newSeedPhrase).toBe('');
+      warnSpy.mockRestore();
+    });
+
+    // R8: 503 again. Stays in the retryable state so the user can click
+    // Try Again another time. State is NOT wiped — the retry needs
+    // newSeedPhrase to re-derive on the next attempt. This is the only
+    // catch branch that preserves state.
+    it('retryUpgradeBackend: 503 again → stays retryable, newSeedPhrase preserved (no wipe)', async () => {
+      stubBareWindow();
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({ error: 'service unavailable' }),
+      })));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      const preservedSeed = Array(12).fill('new').join(' ');
+      seedBackendUnavailableErrorState(comp);
+      comp.newSeedPhrase = preservedSeed;
+
+      await comp.retryUpgradeBackend();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.backendUnavailable');
+      expect(comp.upgradeError).toBe('upgrade.backendUnavailable');
+      // canRetryUpgrade contract: backendUnavailable is retryable, so
+      // Try Again stays visible.
+      expect(comp.canRetryUpgrade).toBe(true);
+      // CRITICAL: state preserved so a subsequent retry can re-derive.
+      expect(comp.newSeedPhrase).toBe(preservedSeed);
+      warnSpy.mockRestore();
+    });
+
+    // R9: 409 ALREADY_UPGRADED. A concurrent flow (different tab, or a
+    // timed-out previous request that actually committed) finished the
+    // backend cleanup. Route to the terminal alreadyUpgraded sub-case
+    // and wipe — nothing further to do in this flow.
+    it('retryUpgradeBackend: 409 → alreadyUpgraded terminal sub-case, state wiped', async () => {
+      stubBareWindow();
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: false,
+        status: 409,
+        json: async () => ({ error: 'ALREADY_UPGRADED' }),
+      })));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      seedBackendUnavailableErrorState(comp);
+
+      await comp.retryUpgradeBackend();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.alreadyUpgraded');
+      expect(comp.upgradeError).toBe('upgrade.alreadyUpgraded');
+      expect(comp.canRetryUpgrade).toBe(false);
+      // Terminal sub-case wipes sensitive state.
+      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.upgradePassword).toBe('');
+      warnSpy.mockRestore();
+    });
+
+    // R10: 429 rate-limited. Per-account-hour budget exhausted. Wipe
+    // and route to the terminal rateLimited sub-case — nothing the user
+    // can do in-app.
+    it('retryUpgradeBackend: 429 → rateLimited terminal sub-case, state wiped', async () => {
+      stubBareWindow();
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: false,
+        status: 429,
+        json: async () => ({ error: 'rate limited' }),
+      })));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      seedBackendUnavailableErrorState(comp);
+
+      await comp.retryUpgradeBackend();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.rateLimited');
+      expect(comp.upgradeError).toBe('upgrade.rateLimited');
+      expect(comp.canRetryUpgrade).toBe(false);
+      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.upgradePassword).toBe('');
+      warnSpy.mockRestore();
+    });
+
+    // R11a: catch-all via non-special HTTP status (500). Routes to the
+    // terminal partialApplyFailed sub-case. The chain has already
+    // rotated, so any further attempt would sign account_update with
+    // stale keys; retry is structurally unavailable.
+    it('retryUpgradeBackend: 500 → partialApplyFailed terminal sub-case (catch-all)', async () => {
+      stubBareWindow();
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: 'internal' }),
+      })));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      seedBackendUnavailableErrorState(comp);
+
+      await comp.retryUpgradeBackend();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.partialApplyFailed');
+      expect(comp.upgradeError).toBe('upgrade.partialApplyFailed');
+      expect(comp.canRetryUpgrade).toBe(false);
+      expect(comp.newSeedPhrase).toBe('');
+      warnSpy.mockRestore();
+    });
+
+    // R11b: catch-all via network drop (TypeError "Failed to fetch").
+    // err.status is null (not a number), so the status-keyed branches
+    // do NOT match; falls through to the terminal partialApplyFailed
+    // sub-case. Mirrors the executeUpgrade post-broadcast network-drop
+    // case in the existing canRetryUpgrade specs.
+    it('retryUpgradeBackend: network drop (TypeError) → partialApplyFailed (catch-all, no status)', async () => {
+      stubBareWindow();
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      seedBackendUnavailableErrorState(comp);
+
+      await comp.retryUpgradeBackend();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.partialApplyFailed');
+      expect(comp.canRetryUpgrade).toBe(false);
+      expect(comp.newSeedPhrase).toBe('');
+      warnSpy.mockRestore();
+    });
+  });
+
   describe('init - orcid link completion', () => {
     it('detects orcid link completion from localStorage', () => {
       localStorageData.pevo_orcid_link_complete = '1';
