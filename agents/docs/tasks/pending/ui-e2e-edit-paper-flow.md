@@ -71,3 +71,54 @@ All 7 hold items landed across two commits. Worker rebased onto main before appl
 - Item 7 (P3, `uniquePermlink` helper) — `3532fa2`. Added `function uniquePermlink(prefix)` at file scope; replaced 4 callsites in original tests; the 3 new tests in `5ba7b17` use it from the start.
 
 Spec parses (`npx playwright test --list` discovers 7 tests, 4 original + 3 new). Worker flagged the editor-ready-gate pattern (`waitForEditorsMounted` + `setEditorContent` with `emitUpdate:false`) as a possible separate `/ce-compound` capture — distinct mechanism from the alpine attribute trap; left for architect to evaluate. Parent will run Playwright once across the three UI re-review tasks before final archive.
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES (round-2):
+
+Reviewed via `/ce-code-review` against commits `3532fa2 + 5ba7b17 + d0165a8` with 7 personas (correctness, testing, maintainability, project-standards, julik-frontend-races, adversarial, learnings-researcher; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). **All 7 round-1 hold items verified landed** (correctness reviewer cross-checked each item against the commits; julik-frontend-races answered 6 race-shape questions and found no residual race). 5 delta-finding items must land before re-review:
+
+1. **P2 — Diff-broadcast branch in `handleSubmit` has no positive test coverage (`frontend/src/pages/edit.js:1033-1057`, `frontend/tests/e2e/edit-paper.spec.js:197-274`).** adversarial (P2/75). Test 7 covers the non-head full-body branch via `body.startsWith('## Abstract\n\n')` + `!startsWith('@@')`, but test 1 (in-place author edit at line 197) does NOT assert `body.startsWith('@@')`. A mutation that removes the diff branch (always broadcasting full body) passes all 7 tests. The diff-broadcast optimization is PEvO's only Hive-bandwidth-conscious code in the edit flow; a silent regression doubles every paper-revision chain footprint. Fix: add one assertion to test 1 around line 273:
+   ```js
+   expect(commentBody.body.startsWith('@@')).toBe(true);
+   ```
+
+2. **P2 — `setEditorContent` docblock ghost-references a removed call (`frontend/tests/e2e/edit-paper.spec.js:180-184`).** maintainability (M-E2E-1 P2/75). Current docblock says "We deliberately do NOT call `editor.setContent()` here" — but the helper never calls it in its current shape; that call was removed in `d0165a8`. Reads as if there's an active suppression of a temptation. Rephrase to positive framing:
+   ```
+   // Alpine state write is sufficient. Calling editor.setContent() after
+   // the editor's own initialMarkdown application produces a tiptap
+   // "Applying a mismatched transaction" RangeError (the in-progress
+   // initial transaction conflicts with the imperative replace), so we
+   // avoid the imperative path entirely. Verified the editor's onUpdate
+   // does not fire on constructor content-init (tiptap dispatchTransaction
+   // gates the callback to user transactions, not constructor init).
+   ```
+
+3. **P3 — Accepted-claimer test missing 4 continuation-broadcast assertions (`frontend/tests/e2e/edit-paper.spec.js:537-540`).** Cross-reviewer agreement: testing (P3/70) + adversarial (P3/75). The claimer test asserts the gate lets the user through (form renders, broadcast fires) but does not pin the broadcast-payload shape that test 1 establishes for in-place edits. Add 4 small assertions modeled after test 1's invariants (around line 540):
+   - `expect(commentBody.parent_author).toBe('');` (top-level Hive post invariant)
+   - `expect(meta[APP_TAG].version).toBeGreaterThan(1);` (continuation has version >1)
+   - `expect(meta[APP_TAG].continues).toBeTruthy();` and `expect(meta[APP_TAG].continues.author).toBe(paper.author);` + `expect(meta[APP_TAG].continues.permlink).toBe(paper.permlink);` (chain pointer present)
+   - `const optionsOp = broadcast.operations.find((op) => op[0] === 'comment_options'); expect(optionsOp).toBeTruthy();` (PEvO no-Hive-rewards principle is enforced via `comment_options.allow_curation_rewards: false`; a regression dropping this op enables curation rewards on continuations)
+
+4. **P3 — Discipline disabled-state assertion lost when test 2 was rewritten by the narrow-gating commit (`frontend/tests/e2e/edit-paper.spec.js`, around line 508 in the accepted-claimer test).** adversarial (P3/75). The original test 2 was the ONLY assertion that the discipline input is disabled on continuations — the "discipline fixed across continuations" chain-coherence invariant. Narrow-gating's rewrite (commit 00d3f97) deleted that test; the new accepted-claimer test renders a continuation form but does not assert the disabled state. Restore the lost coverage in the claimer test, after `await expect(page.locator('input#edit-title')).toBeVisible();` (~line 508):
+   ```js
+   // Continuation forms freeze the discipline (chain-coherence invariant).
+   const disciplineInput = page.locator('input.select-control[disabled]').first();
+   await expect(disciplineInput).toBeDisabled();
+   await expect(disciplineInput).toHaveValue('Computer Science');
+   ```
+
+5. **P3 — Stale comment in accepted-claimer test references the now-deleted "Test 2 via isAccredited route" (`frontend/tests/e2e/edit-paper.spec.js:472-477`).** testing (medium). The accepted-claimer docblock says "Test 2's continuation path exercises the accredited-non-author route via isAccredited" — but test 2 was rewritten by 00d3f97 to be the gating-panel assertion; the via-isAccredited path no longer exists in the suite by design. Comment misdescribes the current test layout. Rewrite (3 lines) to reflect current state:
+   ```
+   // edit.js:isAuthorized returns true for an accredited user with an
+   // accepted authorship_claim against the paper. This is the only
+   // positive non-author isAuthorized path in the suite (test 2 asserts
+   // the negative gating for accredited non-authors without a claim).
+   // A regression dropping the `claims.some(c => c.claimer === username &&
+   // c.status === 'accepted')` check from isAuthorized would not be caught
+   // by any other test.
+   ```
+
+When all 5 items are landed, `git mv` this file back to `tasks/review/`.
+
+Dismissed at user triage (audit, not blocking): P3 `addresses_reviews` `length > 0` vs `toHaveLength(1)` (preemptive — no concrete signal of `toggleAddressedReview` regression risk); P3 `waitForEditorsMounted` no timeout arg (preemptive); P3 `errorMessage.toContain('No changes')` locale-fragile (test pins `/en/`); P3 `pickAccreditedResearcher` HAF-backpressure cascade (known tradeoff accepted on round-1); P3 latent discipline-field Alpine attribute trap "instance 3" (already noted in solutions doc as future-work).
+
+**`/ce-compound` for the editor-ready gate pattern (`waitForEditorsMounted` + `setEditorContent` with Alpine-only-write + Tiptap mismatched-transaction trap)**: deferred to the next archive checkpoint when the task lands clean. The pattern is a non-obvious learning future agents could not reconstruct from code/docs alone (per learnings-researcher search), but per architect protocol the `/ce-compound` checkpoint is gated on Review→archive — invoke at archive time, not on hold.
