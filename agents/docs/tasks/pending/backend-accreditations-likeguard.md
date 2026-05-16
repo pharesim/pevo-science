@@ -86,3 +86,40 @@ Landed the BE-SEARCH-Q-LIKEGUARD defenses on `/api/accreditations`'s `?field=` a
 ### [TODO Architect]
 
 Contract update needed: `agents/docs/api-contracts/accreditations.md` (or wherever the `/api/accreditations` contract lives) — add the new validity rules on `?field=` and `?institution=` filters (200-char cap, LIKE-metacharacter literal-treatment, repeated-param silent-unfilter, per-param "too long" 400 message).
+
+---
+
+## Architect round-1 re-review (2026-05-16) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `fc0aa29` had **partial reviewer coverage** — see "Reviewer re-run window" note below. The reviewers that returned (correctness, performance, maintainability, project-standards) found the diff substantively clean. The fix correctly ports the BE-SEARCH-Q-LIKEGUARD pattern, both ILIKE call sites carry `ESCAPE '\\'`, `validateOptionalLikeFilter` is a defensible sibling helper, and 13 test specs cover the boundaries. Performance is a net win (pre-fix N-wildcard backtrack → post-fix literal byte compare).
+
+One item held; one item flagged for round-2 review.
+
+### Item 1 (P2) — Slug-citation cleanup (3 sites)
+
+Per `agents/docs/solutions/conventions/task-slug-citations-in-code-comments-go-stale-on-archive-2026-05-15.md`. Sites to clean up:
+
+- `backend/src/types/search-filters.ts:82` — `BE-ACCREDITATIONS-LIKEGUARD` citation
+- `backend/src/routes/accreditations.ts:28` — `BE-ACCREDITATIONS-LIKEGUARD` citation
+- `backend/src/routes/accreditations.ts:98` — `BE-ACCREDITATIONS-LIKEGUARD` citation (the route-entry comment that also restates the helper's JSDoc — when cleaning the slug, trim to 2 lines pointing at the helper rather than re-explaining)
+
+Replace each slug lead with a behavioral description per the convention.
+
+### Item 2 (note) — Reviewer re-run window when round-2 mv to review/
+
+The original round-1 review hit the platform rate-limit (Anthropic Claude API limit) midway through the persona fan-out. **5 reviewer dispatches failed to complete:** `ce-security-reviewer`, `ce-adversarial-reviewer`, `ce-testing-reviewer`, `ce-kieran-typescript-reviewer`, `ce-api-contract-reviewer`. For a P1 security fix on an unauthenticated route, this is a meaningful coverage gap.
+
+When the implementer mv's this task back to `tasks/review/` for round-2 architect intake, the architect will re-run `/ce-code-review` scoped to commit `fc0aa29` PLUS the round-2 cleanup commit. The re-run will dispatch the 5 missing reviewers (now that rate budget has reset) to close the coverage gap. This is NOT an implementer item — it's an architect intake protocol note so the round-2 review pass explicitly runs the deferred personas.
+
+Implementer should mv back to `tasks/review/` once item 1's slug-cleanup commit lands. No additional implementer action expected for item 2.
+
+### Triage decisions (not held)
+
+- **Maintainability flagged the route-entry comment at `accreditations.ts:98` as restating helper JSDoc.** Folded into item 1's cleanup scope — trim to 2 lines pointing at the helper when removing the slug lead. P3, low-effort, while-in-the-area.
+- No other findings from the returned reviewers.
+
+### Files for round-2
+
+- `backend/src/types/search-filters.ts` (item 1)
+- `backend/src/routes/accreditations.ts` (item 1)
+- This task file (round-2 implementer signal block when moving back to review/)
