@@ -66,6 +66,50 @@ end
 ` as const;
 
 /**
+ * Atomic rate-limit check-and-consume Lua script.
+ *
+ * KEYS[1] = redis key for this (limiter-name, account/ip) bucket
+ * ARGV[1] = max (decimal string)
+ * ARGV[2] = windowMs (decimal string; PEXPIRE argument)
+ *
+ * Returns: { passed (1|0), pttlMs }
+ *
+ * On entry:
+ *   1. INCR the counter (atomic; first INCR returns 1).
+ *   2. If new count > max: DECR back (slot not consumed) and return
+ *      {0, currentPttl} → caller sends 429 with Retry-After.
+ *   3. If new count ≤ max: PEXPIRE unconditionally and return {1, 0} →
+ *      caller passes through.
+ *
+ * The PEXPIRE is unconditional — not "only on count==1" — to close a
+ * permanent-lockout bug. Under skipFailedRequests=true, a deferred-INCR
+ * pattern where PEXPIRE only fired on count==1 would, under concurrent
+ * post-success INCRs, leave the key at count>1 with no TTL ever. The key
+ * never expires, every subsequent request sees count > max, the user is
+ * permanently locked out until the Redis key is manually deleted.
+ * Re-priming PEXPIRE on every successful pass costs one extra command and
+ * eliminates the failure mode entirely.
+ *
+ * Refund of failed responses (status >= 400 under skipFailedRequests) is
+ * a separate one-command DECR fired in the `res.on('finish')` callback;
+ * the atomic limit-check Lua doesn't know the response outcome at entry
+ * time and doesn't need to — the refund path is a single round-trip.
+ */
+export const RATE_LIMIT_CHECK_AND_CONSUME_LUA = `
+local count = redis.call('INCR', KEYS[1])
+local max = tonumber(ARGV[1])
+local windowMs = tonumber(ARGV[2])
+if count > max then
+  redis.call('DECR', KEYS[1])
+  local pttl = redis.call('PTTL', KEYS[1])
+  if pttl < 0 then pttl = windowMs end
+  return {0, pttl}
+end
+redis.call('PEXPIRE', KEYS[1], windowMs)
+return {1, 0}
+` as const;
+
+/**
  * Registry of shared Lua scripts dispatched via `evalScript`. The registry
  * key is the canonical short name; the value is the script body. Adding a
  * new entry here is the entire registration step — `loadAllScripts` picks
@@ -74,6 +118,7 @@ end
 export const SHARED_SCRIPTS = {
   INCR_AND_EXPIRE_ON_ZERO_TO_ONE: INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA,
   RELEASE_LOCK_IF_TOKEN_MATCHES: RELEASE_LOCK_IF_TOKEN_MATCHES_LUA,
+  RATE_LIMIT_CHECK_AND_CONSUME: RATE_LIMIT_CHECK_AND_CONSUME_LUA,
 } as const;
 
 export type SharedScriptName = keyof typeof SHARED_SCRIPTS;

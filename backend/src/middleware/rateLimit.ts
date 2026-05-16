@@ -3,6 +3,7 @@ import { sendError } from '../response.js';
 import { getRedis } from '../redis.js';
 import { config as appConfig } from '../config.js';
 import { logger } from '../logger.js';
+import { evalScript } from '../lib/redis-scripts.js';
 
 interface RateLimitEntry {
   timestamps: number[];
@@ -15,15 +16,35 @@ interface RateLimitConfig {
   name: string;
   /**
    * When true, consume a slot only on successful responses (status < 400).
-   * 4xx/5xx responses do NOT count against the limit. This protects against
+   * 4xx/5xx responses are refunded after `res.on('finish')` so the limit
+   * counts SUCCESSFUL operations, not all requests. This protects against
    * two DoS patterns on expensive-but-rare operations:
    *   1. Transient upstream failures (e.g. Hive RPC 503) burning the slot,
    *      locking the legitimate user out of a retry within the window.
    *   2. A stolen-JWT attacker sending malformed bodies (400 VALIDATION_ERROR)
    *      to lock out the legitimate user.
+   *
    * Requests are still REJECTED with 429 when the current count is already at
    * the limit; this option only changes the consume policy on the outcome of
    * the downstream handler. Defaults to false (consume on every request).
+   *
+   * Implementation note: the Redis path uses an atomic Lua EVAL script
+   * (INCR → check ≤ max → on overflow DECR + return 429, on success
+   * PEXPIRE + return 200-pass). On `res.on('finish')`, if status >= 400 the
+   * slot is refunded by an unconditional DECR. The Lua script makes the
+   * limit check + slot-consume atomic so concurrent requests for the same
+   * key cannot both pass the `>= max` check and overshoot the limit (the
+   * pre-Lua GET → next() → deferred-INCR pattern had a TOCTOU race plus a
+   * permanent-lockout TTL bug where concurrent post-success INCRs after
+   * count=1 never refreshed PEXPIRE). The in-memory fallback path mirrors
+   * the same shape: push the timestamp synchronously on entry, splice it
+   * back out on finish when status >= 400.
+   *
+   * DO NOT use on credential-probing routes (e.g., /login, /recover) — failed
+   * probes would not consume slots, enabling unlimited account enumeration.
+   * The option is intended for one-shot ceremonies where failure is benign
+   * (transient infrastructure error, malformed body from a hijacked session)
+   * and the value at stake is operation success, not attempt-rate-limiting.
    */
   skipFailedRequests?: boolean;
 }
@@ -55,40 +76,37 @@ export function rateLimit(config: RateLimitConfig) {
     if (redis) {
       try {
         const redisKey = redisPrefix + key;
+        // Atomic INCR → check → DECR-or-EXPIRE in one round-trip via the
+        // shared `RATE_LIMIT_CHECK_AND_CONSUME` Lua script (EVALSHA via
+        // the SCRIPT-LOAD registry; falls back to EVAL on NOSCRIPT).
+        const result = (await evalScript(
+          redis,
+          'RATE_LIMIT_CHECK_AND_CONSUME',
+          [redisKey],
+          [String(config.max), String(config.windowMs)],
+        )) as [number, number];
+        const passed = result[0] === 1;
+        const pttl = result[1];
+        if (!passed) {
+          const retryAfter = Math.ceil(Math.max(pttl, 0) / 1000);
+          res.set('Retry-After', String(retryAfter));
+          return sendError(res, 429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
+        }
         if (skipFailed) {
-          // Inspect-only: check the current count before letting the request
-          // through, but defer the increment to res.on('finish') so only
-          // successful (status < 400) responses consume a slot.
-          const currentStr = await redis.get(redisKey);
-          const current = currentStr ? Number(currentStr) : 0;
-          if (current >= config.max) {
-            const ttl = await redis.pttl(redisKey);
-            const retryAfter = Math.ceil(Math.max(ttl, 0) / 1000);
-            res.set('Retry-After', String(retryAfter));
-            return sendError(res, 429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
-          }
+          // Refund the slot on failure (status >= 400). The DECR is
+          // unconditional within the >=400 branch; the previous
+          // GET → next() → deferred-INCR pattern is replaced by
+          // INCR-up-front (atomic check) and DECR-on-failure (refund).
           res.on('finish', () => {
-            if (res.statusCode >= 400) return;
+            if (res.statusCode < 400) return;
             void (async () => {
               try {
-                const count = await redis.incr(redisKey);
-                if (count === 1) await redis.pexpire(redisKey, config.windowMs);
+                await redis.decr(redisKey);
               } catch (err) {
-                logger.debug({ err }, 'Redis rate limit post-success increment failed');
+                logger.debug({ err }, 'Redis rate limit slot refund failed');
               }
             })();
           });
-          return next();
-        }
-        const count = await redis.incr(redisKey);
-        if (count === 1) {
-          await redis.pexpire(redisKey, config.windowMs);
-        }
-        if (count > config.max) {
-          const ttl = await redis.pttl(redisKey);
-          const retryAfter = Math.ceil(Math.max(ttl, 0) / 1000);
-          res.set('Retry-After', String(retryAfter));
-          return sendError(res, 429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
         }
         return next();
       } catch (err) {
@@ -106,21 +124,25 @@ export function rateLimit(config: RateLimitConfig) {
       return sendError(res, 429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
     }
 
+    // Push the timestamp synchronously on entry — matches the Redis path's
+    // INCR-up-front semantics. For skipFailed mode, splice it back out on
+    // finish when status >= 400 (refund). This avoids the in-memory TOCTOU
+    // overshoot where two concurrent requests would both pass the length
+    // check and then both push on finish, exceeding `max` by 1.
+    const pushedTs = now;
+    entry.timestamps.push(pushedTs);
+    memStore.set(key, entry);
+
     if (skipFailed) {
-      // Defer the in-memory consume to a successful response (status < 400).
-      memStore.set(key, entry);
       res.on('finish', () => {
-        if (res.statusCode >= 400) return;
-        const e = memStore.get(key) || { timestamps: [] };
-        e.timestamps = e.timestamps.filter((t) => Date.now() - t < config.windowMs);
-        e.timestamps.push(Date.now());
-        memStore.set(key, e);
+        if (res.statusCode < 400) return;
+        const e = memStore.get(key);
+        if (!e) return;
+        const idx = e.timestamps.indexOf(pushedTs);
+        if (idx >= 0) e.timestamps.splice(idx, 1);
       });
-      return next();
     }
 
-    entry.timestamps.push(now);
-    memStore.set(key, entry);
     next();
   };
 }
