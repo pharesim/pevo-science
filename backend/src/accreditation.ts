@@ -89,7 +89,7 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
  * server-override a chain post's claimed `orcid` for a hive when the
  * accredited record names a different ORCID — closes the direct-Keychain
  * spoof where a vouched co-author broadcasts a false ORCID for an
- * accredited peer (`backend-multi-author-cumulative-union.md` rule #3).
+ * accredited peer (`agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`).
  *
  * Distinguishes "HAF returned 0 accredited" (legitimate empty population —
  * cached) from "HAF query failed" (re-thrown so callers can fail loudly
@@ -99,6 +99,16 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
  * map — that is a startup condition, not a transient outage.
  */
 export async function getAccreditedOrcidsByAccount(): Promise<Map<string, string | null>> {
+  // Early-return on pool === null BEFORE entering hafCache.getOrSet. If we
+  // populated the cache with an empty array here, the degraded result would
+  // persist for the full 10-min TTL — and if HAF recovers mid-window, the
+  // ORCID server-overrides per rule "accredited ORCID is authoritative"
+  // would be silently suppressed until cache expiry (exactly the moment
+  // when spoof detection should re-engage). Skipping the cache write keeps
+  // the recovery edge clean: the next request after HAF connects re-tries
+  // the underlying query and populates the cache correctly. See
+  // agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model".
+  if (getPool() === null) return new Map();
   const arr = await hafCache.getOrSet<Array<{ account: string; orcid: string | null }>>(
     'accredited_account_orcids',
     async () => {

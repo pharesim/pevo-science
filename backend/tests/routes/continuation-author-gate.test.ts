@@ -912,6 +912,45 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     warnSpy.mockRestore();
   });
 
+  it('suppresses broadcaster ORCID claim when accredited target has no on-chain ORCID (spoof case)', async () => {
+    // Item 1 (round-2 hold): ORCID is optional on accreditation. An
+    // accredited user may choose not to share an ORCID — that is the
+    // normal state, and "no on-chain ORCID" is the authoritative
+    // statement, not an absence of authority. A vouched co-author who
+    // broadcasts a claimed ORCID for that accredited target must NOT
+    // surface as authoritative on the displayed entry. Expected
+    // behavior: out.orcid = null AND orcid_claim_mismatch audit event
+    // fires with accreditedOrcid: null so operators see the spoof.
+    const warnSpy = vi.spyOn(logger, 'warn');
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      headAuthors: [
+        // bob (vouched co-author) claims an ORCID for alice on his
+        // continuation, but alice's accreditation has no on-chain ORCID.
+        { hive: 'alice', orcid: 'spoofed-orcid' },
+        { hive: 'bob' },
+      ],
+      accredited: ['alice', 'bob'],
+      // alice has no on-chain ORCID; bob's accreditation has none either.
+      accreditedOrcids: [],
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const aliceEntry = ((res.body?.data.authors || []) as Array<{ hive?: string; orcid?: string | null }>).find((a) => a.hive === 'alice');
+    expect(aliceEntry?.orcid).toBeNull();
+    const fired = warnSpy.mock.calls.find(([payload]) => {
+      return typeof payload === 'object' && payload !== null
+        && (payload as { event?: string }).event === 'orcid_claim_mismatch'
+        && (payload as { hive?: string }).hive === 'alice';
+    });
+    expect(fired).toBeDefined();
+    const event = fired![0] as Record<string, unknown>;
+    expect(event.hive).toBe('alice');
+    expect(event.claimedOrcid).toBe('spoofed-orcid');
+    expect(event.accreditedOrcid).toBeNull();
+    warnSpy.mockRestore();
+  });
+
   it('per-hop cumulative admit-set admits an author added mid-chain', async () => {
     // Acceptance #9: root has [alice, bob]; bob/v2 adds carol;
     // carol/v3 attempts to broadcast. v3 admitted because carol is in
@@ -978,12 +1017,13 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(hives).not.toContain('mallory');
   });
 
-  it('accredited_authors rebuilt from cumulative union (closes round-3 finding #1 leak)', async () => {
+  it('accredited_authors rebuilt from cumulative union (head that drops an author cannot shrink accredited_authors)', async () => {
     // Acceptance #12: bob (vouched) drops alice from his head metadata,
     // but the cumulative union still carries alice. accredited_authors
     // must include alice (assuming accredited) — reading from
-    // detail.authors (the union), NOT detail.json_metadata's head pevo
-    // (which would have only bob). Closes round-3 finding #1.
+    // detail.authors (the cumulative union) so a head that drops an
+    // author cannot shrink accredited_authors. NOT detail.json_metadata's
+    // head pevo (which would have only bob).
     seedTwoLinkChain({
       rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
       headAuthors: [{ hive: 'bob' }], // head drops alice
@@ -1008,7 +1048,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       app: `${config.appTag}/test`,
       [config.appTag]: {
         type: 'paper',
-        authors: [{ hive: 'alice' }, { hive: 'bob' }], // satisfies no-shrink
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
         ipfs_cid: 'QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
         document_hash: 'sha256:head',
         ipfs_filename: 'head.pdf',

@@ -193,7 +193,8 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
 
 /**
  * Build the cumulative-union authors[] for a multi-link continuation chain
- * per `backend-multi-author-cumulative-union.md`. The displayed `authors[]`
+ * per `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`. The
+ * displayed `authors[]`
  * is the union of `pevo.authors[].hive` (lowercased, trimmed,
  * non-empty-string only) across all chain posts; per-hive sub-fields
  * (`name`, `affiliation`, etc.) resolve to the most-recent self-claim
@@ -204,8 +205,7 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
  * `orcid_claim_mismatch` audit warn for post-incident triage.
  *
  * Drops are forbidden by construction: the union map only grows, so a
- * later chain post cannot remove a hive that an earlier post added. This
- * supersedes the round-3 no-shrink check (`headAuthorsCoverRoot`); a
+ * later chain post cannot remove a hive that an earlier post added. A
  * mathematical invariant replaces a check that could be inverted or get
  * out of sync with the spec.
  *
@@ -389,6 +389,16 @@ function buildCumulativeAuthorsForChain(
     if (accreditedAccounts.has(hive)) {
       const accreditedOrcid = accreditedOrcids.get(hive) ?? null;
       const claimedOrcid = preOverrideChainOrcid;
+      // Four branches of the "accredited ORCID is authoritative" rule
+      // (see agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"):
+      //   (a) accreditedOrcid set, claim matches    → pass through
+      //   (b) accreditedOrcid set, claim mismatches → override + audit
+      //   (c) accreditedOrcid set, no claim         → prefill from accreditation
+      //   (d) accreditedOrcid null, claim present   → suppress + audit
+      //       (the accredited user opted not to share ORCID; a broadcaster
+      //       claim must not surface as authoritative — the accredited
+      //       user's silence IS the authority)
+      //   (e) accreditedOrcid null, no claim        → no-op
       if (accreditedOrcid) {
         if (claimedOrcid && claimedOrcid !== accreditedOrcid) {
           logger.warn(
@@ -409,9 +419,26 @@ function buildCumulativeAuthorsForChain(
           out.orcid = accreditedOrcid;
         }
         // else: claimedOrcid === accreditedOrcid — pass through unchanged.
+      } else if (claimedOrcid) {
+        // Accredited target with no on-chain ORCID + broadcaster claim
+        // present: suppress the claim (set to null) and emit audit event
+        // with accreditedOrcid: null so operators see the spoof attempt.
+        logger.warn(
+          {
+            event: 'orcid_claim_mismatch',
+            rootAuthor,
+            rootPermlink,
+            hive,
+            claimedOrcid,
+            accreditedOrcid: null,
+            claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
+          },
+          'broadcaster-claimed ORCID for accredited hive that has no on-chain ORCID; suppressing claim',
+        );
+        out.orcid = null;
       }
-      // else: accredited account but accreditation attestation has no
-      // on-chain ORCID — pass the chain-claim through unchanged.
+      // else: accredited but accreditation attestation has no on-chain
+      // ORCID AND no broadcaster claim — pass through unchanged (null).
     }
 
     // Supersession fields (BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION). The
@@ -910,7 +937,7 @@ async function fetchPaperDetailFromHaf(
         detail.last_update = latest.created;
 
         // Cumulative-union display construction
-        // (`backend-multi-author-cumulative-union.md`).
+        // (see `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`).
         //   - `detail.authors[]` is the cumulative union of
         //     `pevo.authors[].hive` across all chain posts (in
         //     first-occurrence order); per-hive sub-fields resolve to the
@@ -919,11 +946,10 @@ async function fetchPaperDetailFromHaf(
         //     overridden for accredited hives whose claim diverges from
         //     the on-chain accredited ORCID. Drops are forbidden by
         //     construction (the union only grows; no chain post can
-        //     remove a hive that another chain post added). This
-        //     supersedes the round-3 no-shrink check; an inversion-prone
-        //     check is replaced by a structural invariant. See
-        //     `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust
-        //     Model" (architect-rewritten at archive of this task).
+        //     remove a hive that another chain post added) — a structural
+        //     invariant replaces the prior inversion-prone explicit check.
+        //     See `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author
+        //     Trust Model" (architect-rewritten at archive of this task).
         //   - `pevo.ipfs_cid` / `pevo.document_hash` / `pevo.ipfs_filename`
         //     apply per-version: each chain post's pointers describe that
         //     version's PDF (alice's v1 has CID_A, bob's v2 may have
@@ -1019,8 +1045,7 @@ async function fetchPaperDetailFromHaf(
           // vs head-omitted distinction (the response surfaces both
           // as `ipfs_cid: null`); the sentinel-aware shape is
           // preemptive future-proofing aligned with the atomic-triple
-          // invariant. See round-6 signal block in
-          // `agents/docs/tasks/...continuation-post-author-consent-gate.md`.
+          // invariant.
           //
           // ipfs_cid is additionally passed through `validatedCid`
           // so attacker-controlled chain values that flow from
@@ -1059,10 +1084,10 @@ async function fetchPaperDetailFromHaf(
     // `getAllAccreditedAccounts` HAF query. `accredited_authors` reads
     // from `detail.authors` (the cumulative-union'd list for chain.length
     // > 1, or `pevo.authors[]` for single-link papers) rather than from
-    // `detail.json_metadata`. Reading the union closes round-3 finding #1
-    // by construction: a head post that drops a chain author from its own
-    // `pevo.authors[]` cannot leak the shrunken set into accreditation
-    // because the union still carries the dropped author.
+    // `detail.json_metadata`. Reading the union ensures by construction
+    // that a head post that drops a chain author from its own
+    // `pevo.authors[]` cannot leak the shrunken set into accreditation —
+    // the union still carries the dropped author.
     detail.is_accredited = accreditedAccountSet.has(author);
     // Symmetric chain pre-check: non-accredited author shows score 0 even
     // if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
@@ -1255,7 +1280,8 @@ async function fetchHeadAuthorizedAuthors(
  * Uses block_num to resolve collisions (earliest wins). 50-hop safety cap.
  *
  * **Author-consent gate (cumulative-union under
- * `backend-multi-author-cumulative-union.md`).** A candidate continuation
+ * `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`).** A candidate
+ * continuation
  * post `C` is admitted at hop N only if BOTH:
  *
  *   1. `C.author` (chain-level) is in the cumulative union of
@@ -2347,9 +2373,9 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
   // Per-request memo for `fetchHeadAuthorizedAuthors`. Threaded into
   // `resolveVersionsFromHaf` so that within a single enrichment request, the
   // forward-walker lookups initiated by `reconstructVersionsFromHaf` share the
-  // catch-block negative-cache benefit (round-3 hold item 1: third call site
-  // for memo threading, paralleling the `?version=N` branch and the
-  // metadata-restored fallback in the GET /:author/:permlink handler).
+  // catch-block negative-cache benefit (third call site for memo threading,
+  // paralleling the `?version=N` branch and the metadata-restored fallback
+  // in the GET /:author/:permlink handler).
   const headAuthorsMemo = makeHeadAuthorsMemo();
 
   try {

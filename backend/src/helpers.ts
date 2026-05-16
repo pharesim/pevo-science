@@ -108,9 +108,10 @@ export function isPevoAnyPaper(meta: Record<string, unknown>, author: string): b
 /**
  * Extract one chain post's contribution to the cumulative authorized
  * continuation-author set. The chain-walk admit-set under cumulative-union
- * (`backend-multi-author-cumulative-union.md`) is the union of the
- * per-post contributions across all chain posts walked so far; this helper
- * returns a single post's contribution. The set membership rule is:
+ * (see `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`) is the
+ * union of the per-post contributions across all chain posts walked so far;
+ * this helper returns a single post's contribution. The set membership
+ * rule is:
  *
  *   - **Native paper** (`pevo.type === 'paper'`): the `hive` field values
  *     from `pevo.authors[]`, lowercased. These are the named authors of

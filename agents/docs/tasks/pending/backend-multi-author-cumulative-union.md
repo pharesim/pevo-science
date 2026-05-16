@@ -334,3 +334,15 @@ The following architect-owned surfaces require updates AT ARCHIVE of this task. 
 ### Re-review signal
 
 When items 1-5 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round.md`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `b22ce5d`. Items can land in any order or in one combined commit; item 3 (slug → ARCHITECTURE.md § 2) should land AFTER the architect's [TODO Architect] item #1 doc rewrite so the section reference is stable.
+
+## Backend re-review signal (2026-05-16, round-2 fix commit)
+
+Round-1 hold items 1-5 landed.
+
+- Item 1 (P2) — spoof closure at papers.ts:422-439 (new `else if (claimedOrcid)` branch suppresses the claim, sets `out.orcid = null`, emits `orcid_claim_mismatch` with `accreditedOrcid: null`); canary at continuation-author-gate.test.ts under describe block "cumulative-union display construction" ("suppresses broadcaster ORCID claim when accredited target has no on-chain ORCID").
+- Item 2 (P2) — `pool === null` early-return at accreditation.ts:101 (`if (getPool() === null) return new Map();` BEFORE `hafCache.getOrSet`); unit canary at tests/lib/accreditation-orcid-cache.test.ts asserts `getOrSetSpy` not called on null-pool path AND sibling contrast that cache IS entered on live-pool path.
+- Item 3 (P2) — 5 slug citations replaced with `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"` references at papers.ts:196, :940, :1283; accreditation.ts:92; helpers.ts:111. `grep -rn "backend-multi-author-cumulative-union" backend/src/` returns zero.
+- Item 4 (P2) — 6 round-number citations purged: papers.ts:208 (round-3 no-shrink), :923 (round-3 no-shrink), :1022 (round-6 signal block ref), :1062 (closes round-3 finding #1), :2350 (round-3 hold item 1); test:981 (closes round-3 finding #1 leak — replaced in both `it()` title and body). Replacement language anchors on behavioral invariants (union-only growth, drops forbidden by construction).
+- Item 5 (P2) — stale `// satisfies no-shrink` comment removed at continuation-author-gate.test.ts:1011 (now line shifted by item-4 retitling).
+
+Tools note: this worktree has no `node_modules` (worktrees share `.git` but not installed deps). Could not run `npm run lint` or `npx tsc --noEmit` from inside the worktree; both fail with "Cannot find package 'typescript-eslint'" / "Cannot find module 'express'" respectively because the resolver cannot reach the parent's `node_modules`. Edits are syntactic-comment-only (items 3, 4, 5), a new `else if` branch inside an existing typed scope (item 1), an early-return statement (item 2), and two new test files using established mock patterns (item 1 canary, item 2 canary). No new types, no new imports, no signature changes — lint/tsc deltas should be invariant against the pre-existing seed-phrase.ts warnings baseline. Vitest not run per parent serialization rule.
