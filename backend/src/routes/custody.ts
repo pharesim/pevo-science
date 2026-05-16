@@ -2,13 +2,13 @@ import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
-import { PrivateKey } from '@hiveio/dhive';
+import { PrivateKey, Signature, cryptoUtils } from '@hiveio/dhive';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { sendOk, sendError } from '../response.js';
 import { config } from '../config.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { getAppPool } from '../app-db.js';
-import { broadcastSendOperationsWithTimeout, BroadcastTimeoutError } from '../hive.js';
+import { broadcastSendOperationsWithTimeout, BroadcastTimeoutError, hiveClient } from '../hive.js';
 import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast, type CustodyAuditExtras } from '../custody-audit.js';
 import { logger } from '../logger.js';
@@ -784,8 +784,51 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
 // ─────────────────────────────────────────────────────────────
 // POST /api/custody/upgrade — Notify backend that key upgrade completed (LA12)
 // ─────────────────────────────────────────────────────────────
+//
+// BACKEND-CUSTODY-UPGRADE-SEED-PHRASE-REAUTH: per ARCHITECTURE.md § 6.4, the
+// re-auth proof for the light→self upgrade is the seed-phrase-derived pubkey,
+// NOT a password. The UI derives keys client-side from the BIP39 mnemonic,
+// broadcasts an `account_update` on-chain with the new pubkeys, then calls
+// this route with proof that it holds the corresponding private key.
+//
+// Proof shape (`derived_pubkey` + `signed_proof` + `signed_at`):
+//   • The client signs a canonical challenge string with the new private key.
+//   • The challenge is `${appTag}-custody-upgrade|v1|${username}|${signed_at}`.
+//   • Backend recovers the pubkey from the signature, requires it to equal
+//     `derived_pubkey` (binding check), and requires that pubkey to appear in
+//     the on-chain account's posting/active/owner key-auths set fetched via
+//     `getAccounts(username)`.
+//   • `signed_at` is an ISO-8601 timestamp; we enforce a 60s window matching
+//     the `verifyHiveSignature` middleware's freshness guarantee. The `signed_at`
+//     is excluded from the request body when hashing for signature reconstruction
+//     because the entire body is what the client signs over; we re-build the
+//     canonical message from the body fields. This avoids the circular-hash
+//     problem of having the signature embedded in the message being signed.
+//
+// We require BOTH a `derived_pubkey` declaration AND a `signed_proof` signature
+// to match the rigor of existing fresh-auth primitives (`verifyHiveSignature`
+// recovers signatures against on-chain pubkeys). Pubkey-match alone would only
+// prove knowledge of the rotated pubkey (which is publicly readable on-chain
+// post-rotation); the signature requirement closes that gap by proving private-
+// key possession in addition.
+const UPGRADE_PROOF_TIMESTAMP_WINDOW_MS = 60_000;
+
+function buildCustodyUpgradeChallenge(input: {
+  appTag: string;
+  username: string;
+  signedAt: string;
+}): string {
+  return `${input.appTag}-custody-upgrade|v1|${input.username}|${input.signedAt}`;
+}
+
+function timingSafePubkeyEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
 router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request, res: Response) => {
-  const abortSignal = requestAbortSignal(req, res);
   const username = req.hiveUsername;
   const custody = req.hiveCustody;
 
@@ -797,9 +840,27 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
     return sendError(res, 403, 'FORBIDDEN', 'Only custodial accounts can upgrade');
   }
 
-  const { password } = req.body || {};
-  if (!password || typeof password !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const derivedPubkey = body.derived_pubkey;
+  const signedProof = body.signed_proof;
+  const signedAt = body.signed_at;
+
+  if (typeof derivedPubkey !== 'string' || derivedPubkey.length === 0) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'derived_pubkey is required');
+  }
+  if (typeof signedProof !== 'string' || signedProof.length === 0) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'signed_proof is required');
+  }
+  if (typeof signedAt !== 'string' || signedAt.length === 0) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'signed_at is required');
+  }
+
+  // Freshness gate: 60s window matches the verifyHiveSignature middleware.
+  // Protects against a stolen-JWT-plus-stolen-proof replay window beyond the
+  // ceremony the user just performed.
+  const tsMs = Date.parse(signedAt);
+  if (!Number.isFinite(tsMs) || Math.abs(Date.now() - tsMs) > UPGRADE_PROOF_TIMESTAMP_WINDOW_MS) {
+    return sendError(res, 401, 'UNAUTHORIZED', 'Upgrade proof expired or invalid timestamp');
   }
 
   const pool = getAppPool();
@@ -807,11 +868,9 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
 
   try {
     const { rows } = await pool.query<{
-      password_hash: string | null;
-      posting_key_enc: Buffer | null;
       upgraded_at: string | null;
     }>(
-      'SELECT password_hash, posting_key_enc, upgraded_at FROM accounts WHERE username = $1',
+      'SELECT upgraded_at FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -825,42 +884,106 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
       return sendError(res, 409, 'ALREADY_UPGRADED', 'Account has already been upgraded to self-custody');
     }
 
-    // BACKEND-ORCID-CUSTODY-DEFAULT-INVARIANT (Option A): the orcid.ts JWT
-    // mint now uses `custody: account.custody` (no `|| 'light'` default), so
-    // ORCID-only accounts carry `custody: null` in the JWT. The middleware
-    // (`verifyHiveSignature.ts:84`) coerces null → `'self'`, which fails the
-    // `custody !== 'light'` gate above and 403s before reaching this branch.
-    // The previous round-2 null-guard (`if (!account.password_hash)` with
-    // `burnSentinel` for timing-equalization) is now unreachable through
-    // any documented path; the JWT-vs-DB drift is closed at the source.
-    //
-    // The minimal narrowing guard below is a TypeScript-narrowing belt-and-
-    // suspenders for any hypothetical future direct caller that bypasses
-    // `verifyHiveSignature` (e.g., a new auth path) and arrives here with a
-    // null hash. No `burnSentinel` is needed: the timing-oracle attack
-    // requires the path to be reachable from an attacker-issued JWT, and
-    // the orcid.ts fix removes that reachability. A future direct caller
-    // would be a server-internal control-flow bug, not a timing oracle.
-    if (!account.password_hash) {
-      logger.error(
+    // Verify the signed_proof recovers a pubkey that matches `derived_pubkey`
+    // AND appears in the on-chain key set. Any failure collapses to the same
+    // 401 + generic message so the route does not become a key-existence /
+    // signature-validity oracle. Detailed reason lands in operator logs.
+    const challenge = buildCustodyUpgradeChallenge({
+      appTag: config.appTag,
+      username,
+      signedAt,
+    });
+    const msgHash = cryptoUtils.sha256(challenge);
+
+    let recoveredPubkey: string;
+    try {
+      const sig = Signature.fromString(signedProof);
+      recoveredPubkey = sig.recover(msgHash).toString();
+    } catch (sigErr) {
+      logger.warn(
         {
-          event: 'custody.upgrade.null_hash_unreachable',
+          event: 'custody.upgrade.proof_malformed',
+          route: 'custody.upgrade',
+          username,
+          err: sigErr instanceof Error ? sigErr.message : String(sigErr),
+        },
+        'Custody upgrade proof signature malformed',
+      );
+      logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid upgrade proof');
+    }
+
+    if (!timingSafePubkeyEqual(recoveredPubkey, derivedPubkey)) {
+      logger.warn(
+        {
+          event: 'custody.upgrade.pubkey_binding_mismatch',
           route: 'custody.upgrade',
           username,
         },
-        'Custody upgrade reached password-verify branch with null password_hash. The orcid.ts default removal should have made this unreachable; investigate any new direct caller of this route.',
+        'Custody upgrade proof: recovered pubkey does not match declared derived_pubkey',
       );
-      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
-    }
-    // Verify password re-entry. Canonical hoist pattern (see the
-    // `/resume-signup` handler in `signup-verify.ts` and
-    // BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT) — pin the narrowed type for
-    // the runWithArgon2Slot closure body.
-    const passwordHash = account.password_hash;
-    const valid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password), { signal: abortSignal });
-    if (!valid) {
       logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
-      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid upgrade proof');
+    }
+
+    // Fetch the on-chain key set. The derived_pubkey must appear in posting,
+    // active, or owner key_auths. After a successful `account_update` rotation
+    // the chain reflects the new (seed-derived) pubkeys, so the user's freshly
+    // derived key matches one of these auths.
+    let chainKeys: string[];
+    try {
+      const [hiveAccount] = await hiveClient.database.getAccounts([username]);
+      if (!hiveAccount) {
+        logger.warn(
+          {
+            event: 'custody.upgrade.hive_account_missing',
+            route: 'custody.upgrade',
+            username,
+          },
+          'Custody upgrade proof: on-chain account not found',
+        );
+        logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
+        return sendError(res, 401, 'UNAUTHORIZED', 'Invalid upgrade proof');
+      }
+      chainKeys = [
+        ...hiveAccount.posting.key_auths.map(([k]) => k.toString()),
+        ...hiveAccount.active.key_auths.map(([k]) => k.toString()),
+        ...hiveAccount.owner.key_auths.map(([k]) => k.toString()),
+      ];
+    } catch (hiveErr) {
+      logger.error(
+        {
+          event: 'custody.upgrade.hive_lookup_failed',
+          route: 'custody.upgrade',
+          username,
+          err: hiveErr,
+        },
+        'Custody upgrade: Hive getAccounts failed',
+      );
+      // Surface as 503 so the SPA can retry rather than treating the failure
+      // as a fatal proof rejection (the user's proof may be perfectly valid;
+      // the Hive read is the failure point).
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Could not verify upgrade proof against chain state. Please retry.');
+    }
+
+    let chainKeyMatched = false;
+    for (const chainKey of chainKeys) {
+      if (timingSafePubkeyEqual(chainKey, derivedPubkey)) {
+        chainKeyMatched = true;
+        break;
+      }
+    }
+    if (!chainKeyMatched) {
+      logger.warn(
+        {
+          event: 'custody.upgrade.chain_key_mismatch',
+          route: 'custody.upgrade',
+          username,
+        },
+        'Custody upgrade proof: derived_pubkey not present in on-chain key set',
+      );
+      logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid upgrade proof');
     }
 
     // Overwrite and NULL encrypted keys, set upgraded_at
@@ -886,7 +1009,6 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
 
     sendOk(res, { custody: 'self', token, expires_at: expiresAt });
   } catch (err) {
-    if (handleArgonError(res, err, { logContext: { username } }) === ARGON_HANDLED) return;
     logger.error(
       { event: 'custody.upgrade.failed', route: 'custody.upgrade', username, err },
       'Custody upgrade failed',

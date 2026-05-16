@@ -601,7 +601,7 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
 //       can be asserted while the production format string still fires.
 //   (c) Real-path companion: real-path coverage of `/fresh-auth` and
 //       `/upgrade` lives in `custody-fresh-auth-null-hash.test.ts` and
-//       `custody-upgrade-null-hash.test.ts` (real argon2, real pg pool,
+//       `custody-upgrade.test.ts` (real signature verify, real pg pool,
 //       real verifyHiveSignature middleware). Those exercise the documented-
 //       reachable branches end-to-end; this file pins the structured-log
 //       shape on the failure-path branches that the real-path companions
@@ -715,78 +715,33 @@ describe('BE-LOG-SHAPE-CONVERGENCE — custody.ts structured-log emissions (Item
     }
   });
 
-  it('custody.upgrade.null_hash_unreachable: light-custody JWT + null password_hash row fires safety-sentinel error log', async () => {
-    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
-    // The /upgrade route's per-account `upgradeLimiter` (max=1/hr keyed by
-    // account) means the per-account rate-limit bucket fills after one call.
-    // Use a fresh username per upgrade-test so the bucket starts empty —
-    // mirrors the same dodge in custody-upgrade-argon-error-translation.test.ts.
-    const upgradeUser = `lightupgnullhsh_${Date.now() % 100000}`;
-    // Drive the documented-unreachable branch: middleware passes `custody:
-    // 'light'`, route's SELECT returns a row with password_hash=null. Per
-    // custody.ts:803 the route emits a sentinel error log + returns 401
-    // UNAUTHORIZED. The branch is unreachable through the orcid.ts JWT mint
-    // (custody=null → middleware coerces to 'self' → 403 at the gate above);
-    // the sentinel exists for any hypothetical future direct caller.
-    appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
-      if (sql.includes('sessions_invalidated_at')) {
-        return { rows: [{ sessions_invalidated_at: null }] };
-      }
-      if (sql.includes('password_hash')) {
-        return {
-          rows: [{ password_hash: null, posting_key_enc: Buffer.from('x'), upgraded_at: null }],
-        };
-      }
-      return { rows: [] };
-    });
-    try {
-      const token = bearerFor(upgradeUser, 'light');
-      const res = await bearerPost('/api/custody/upgrade', token, { password: 'AnyPassword1' });
-      expect(res.status).toBe(401);
-      expect(res.body.error.code).toBe('UNAUTHORIZED');
-      expect(res.body.error.message).toBe('Invalid password');
-
-      const matchingCall = errorSpy.mock.calls.find((call) => {
-        const ctx = call[0] as Record<string, unknown> | undefined;
-        return ctx?.event === 'custody.upgrade.null_hash_unreachable';
-      });
-      expect(
-        matchingCall,
-        'expected logger.error with event:custody.upgrade.null_hash_unreachable',
-      ).toBeDefined();
-      expect(matchingCall![0]).toEqual(
-        expect.objectContaining({
-          event: 'custody.upgrade.null_hash_unreachable',
-          route: 'custody.upgrade',
-          username: upgradeUser,
-        }),
-      );
-    } finally {
-      errorSpy.mockRestore();
-      appQueryMock.mockImplementation(DEFAULT_APP_QUERY_IMPL);
-    }
-  });
-
   it('custody.upgrade.failed: outer-catch on /upgrade emits canonical error shape with err: <Error>', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
-    // Distinct username from the sibling null_hash_unreachable spec to dodge
-    // the per-account `upgradeLimiter` (max=1/hr) — see comment on the
-    // sibling spec for the rate-limiter bucket rationale.
+    // BACKEND-CUSTODY-UPGRADE-SEED-PHRASE-REAUTH: the /upgrade route now
+    // SELECTs only `upgraded_at` (password_hash branch removed). Drive the
+    // outer-catch by throwing on the route's `upgraded_at` SELECT (after the
+    // middleware's `sessions_invalidated_at` lookup succeeds). Username is
+    // unique to dodge the per-account `upgradeLimiter` (max=1/hr) bucket.
     const upgradeUser = `lightupgouterct_${Date.now() % 100000}`;
-    // Drive the outer-catch by throwing on the route's password_hash SELECT
-    // (after the middleware's sessions_invalidated_at lookup succeeds).
     appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
       if (sql.includes('sessions_invalidated_at')) {
         return { rows: [{ sessions_invalidated_at: null }] };
       }
-      if (sql.includes('password_hash')) {
+      if (sql.includes('upgraded_at') && sql.includes('SELECT')) {
         throw new Error('pg: connection terminated unexpectedly (upgrade)');
       }
       return { rows: [] };
     });
     try {
       const token = bearerFor(upgradeUser, 'light');
-      const res = await bearerPost('/api/custody/upgrade', token, { password: 'AnyPassword1' });
+      // Body shape post-reauth-change: derived_pubkey + signed_proof + signed_at.
+      // Values are syntactically valid but never reach signature verification —
+      // the outer-catch fires on the SELECT throw before we inspect the proof.
+      const res = await bearerPost('/api/custody/upgrade', token, {
+        derived_pubkey: 'STM5jYourPubKeyHereXXX',
+        signed_proof: '20'.repeat(65),
+        signed_at: new Date().toISOString(),
+      });
       expect(res.status).toBe(500);
       expect(res.body.error.code).toBe('INTERNAL_ERROR');
 
