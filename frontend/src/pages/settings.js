@@ -3,6 +3,7 @@ import { isKeychainInstalled } from '../keychain.js';
 import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword } from '../api.js';
 import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, validateMnemonic, mnemonicToSeedSync } from '../hive-keys.js';
 import { isPasswordValid } from '../password-policy.js';
+import { getAppTag } from '../config.js';
 
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
@@ -37,14 +38,19 @@ const template = `
                   <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
                     <p class="text-red-700 text-sm" x-text="upgradeError"></p>
                   </div>
-                  <!-- "Try Again" is hidden on the backend-timeout sub-case
+                  <!-- "Try Again" is hidden on terminal post-broadcast sub-cases
                        because resetUpgrade()→startUpgrade() generates a new
                        mnemonic and re-broadcasts account_update with the
                        OLD seed-derived keys, which the chain rejects (the
                        prior attempt's rotation already landed). The copy
-                       on this sub-case routes the user to support; no
-                       in-app retry is meaningful. See round-7 hold item #2. -->
-                  <button x-show="canRetryUpgrade" @click="resetUpgrade()" class="text-pevo-teal hover:underline text-sm" x-text="$t('common.tryAgain')"></button>
+                       on those sub-cases routes the user to support; no
+                       in-app retry is meaningful. The 503/backendUnavailable
+                       sub-case IS retryable but only against the backend
+                       cleanup call — handleRetry() dispatches to
+                       retryUpgradeBackend() in that case, preserving the
+                       already-rotated chain state and re-signing a fresh
+                       proof. See round-7 hold item #2. -->
+                  <button x-show="canRetryUpgrade" @click="handleRetry()" class="text-pevo-teal hover:underline text-sm" x-text="$t('common.tryAgain')"></button>
                 </div>
 
                 <!-- Step 1: New seed phrase display -->
@@ -83,7 +89,7 @@ const template = `
                           x-text="$t('upgrade.next')"></button>
                 </div>
 
-                <!-- Step 3: Enter old seed phrase + password -->
+                <!-- Step 3: Enter old seed phrase -->
                 <div x-show="upgradePhase === 'enter-old'">
                   <div class="space-y-4 mb-6">
                     <div>
@@ -93,13 +99,8 @@ const template = `
                                 :placeholder="$t('upgrade.oldSeedPlaceholder')"
                                 autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
                     </div>
-                    <div>
-                      <label class="block text-sm font-medium text-ink mb-1" x-text="$t('upgrade.passwordLabel')"></label>
-                      <input type="password" x-model="upgradePassword"
-                             class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
-                    </div>
                   </div>
-                  <button @click="executeUpgrade()" :disabled="!oldSeedPhrase.trim() || !upgradePassword"
+                  <button @click="executeUpgrade()" :disabled="!oldSeedPhrase.trim()"
                           class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
                           x-text="$t('upgrade.execute')"></button>
                 </div>
@@ -412,9 +413,6 @@ export function initSettingsPage() {
     // Old seed phrase entry
     oldSeedPhrase: '',
 
-    // Password re-entry
-    upgradePassword: '',
-
     get confirmCorrect() {
       return this.confirmIndices.every(
         (i) => this.confirmInputs[i]?.trim().toLowerCase() === this.newSeedWords[i]
@@ -422,17 +420,42 @@ export function initSettingsPage() {
     },
 
     // Drives the "Try Again" button visibility on the error screen. False
-    // when `upgradeErrorKey` is one of the post-broadcast sub-cases: on
-    // those paths the on-chain account_update has already landed, so a
+    // when `upgradeErrorKey` is one of the terminal post-broadcast sub-cases:
+    // on those paths the on-chain account_update has already landed, so a
     // fresh attempt would sign account_update with the OLD seed-derived
     // keys and the chain would reject it (auth mismatch). The error-copy
     // on those sub-cases directs the user to support; the in-app retry
-    // path is structurally unavailable. Compares discriminator keys, not
-    // translated strings, so the result is invariant to mid-error-screen
-    // locale switches.
+    // path is structurally unavailable. The `upgrade.backendUnavailable`
+    // sub-case (post-broadcast 503) IS retryable but only against the
+    // backend cleanup call — `handleRetry()` dispatches to
+    // `retryUpgradeBackend()` which keeps `newSeedPhrase` and re-signs the
+    // proof without re-broadcasting the now-stale chain rotation. The
+    // `alreadyUpgraded` and `rateLimited` sub-cases are non-retryable for
+    // semantic reasons (nothing to retry / per-account-hour budget burnt).
+    // Compares discriminator keys, not translated strings, so the result
+    // is invariant to mid-error-screen locale switches.
     get canRetryUpgrade() {
-      const NON_RETRYABLE_KEYS = ['upgrade.backendTimeout', 'upgrade.partialApplyFailed'];
+      const NON_RETRYABLE_KEYS = [
+        'upgrade.backendTimeout',
+        'upgrade.partialApplyFailed',
+        'upgrade.alreadyUpgraded',
+        'upgrade.rateLimited',
+      ];
       return !NON_RETRYABLE_KEYS.includes(this.upgradeErrorKey);
+    },
+
+    // Dispatch retry to the right action based on the error sub-case. The
+    // 503 post-broadcast sub-case (`upgrade.backendUnavailable`) preserves
+    // the chain-rotated state and retries only the backend cleanup call;
+    // every other retryable sub-case is a pre-broadcast failure that
+    // resets the wizard to idle so a fresh attempt regenerates the new
+    // mnemonic and re-broadcasts cleanly.
+    handleRetry() {
+      if (this.upgradeErrorKey === 'upgrade.backendUnavailable') {
+        this.retryUpgradeBackend();
+      } else {
+        this.resetUpgrade();
+      }
     },
 
     // Set-password validity mirrors signup/recover password policy
@@ -633,7 +656,6 @@ export function initSettingsPage() {
     proceedToOldSeed() {
       if (!this.confirmCorrect) return;
       this.oldSeedPhrase = '';
-      this.upgradePassword = '';
       this.upgradePhase = 'enter-old';
     },
 
@@ -653,7 +675,7 @@ export function initSettingsPage() {
       // two `account_update` broadcasts + two `/api/custody/upgrade` POSTs
       // + two 3-popup Keychain sequences.
       if (this.upgradePhase !== 'enter-old') return;
-      if (!this.oldSeedPhrase.trim() || !this.upgradePassword) return;
+      if (!this.oldSeedPhrase.trim()) return;
       this.upgradePhase = 'upgrading';
       this.upgradeError = null;
       this.upgradeErrorKey = null;
@@ -713,44 +735,24 @@ export function initSettingsPage() {
         await this._performUpgradeKeyRotation(oldWords, newSeedPhrase);
         broadcastLanded = true;
 
+        // Sign the upgrade proof with the NEW seed-derived active key. The
+        // proof binds the JWT-authenticated session to the seed phrase that
+        // just rotated the on-chain authorities. After
+        // `_performUpgradeKeyRotation` resolves the chain reflects the new
+        // pubkeys, so `derived_pubkey` (from newSeedPhrase) appears in the
+        // on-chain key_auths and the backend's chain-state check passes.
+        // The proof is built inside `_signUpgradeProof` (its own frame) so
+        // the derived private key stays local and doesn't escape into
+        // executeUpgrade's frame. See `_performUpgradeKeyRotation` for the
+        // closure-wipe invariant pattern this mirrors.
+        const proof = await this._signUpgradeProof(newSeedPhrase);
+
         // Notify backend to clean up stored keys. Failure here surfaces as
-        // upgradeError — this is the only remaining irreversible-pair gap
-        // (broadcast already landed; if cleanup fails the backend retains
-        // stale encrypted keys for now-superseded authorities). We keep it
-        // as a real error so the user can contact support to resolve.
-        const auth = Alpine.store('auth');
-        // Budget guard: a hung backend after the on-chain rotation would
-        // otherwise block on the fetch until OS-level TCP teardown
-        // (minutes for a half-open socket, unbounded for a stalled response
-        // stream). During the hang upgradePhase is stuck at 'upgrading'
-        // with no escape and the mnemonic stays in reactive state. The
-        // 20s budget is generous for a normal cleanup (p99 is well under
-        // a second) but bounded enough to surface a hang as an error
-        // screen the user can act on. Timeout produces a TimeoutError
-        // DOMException which the catch below routes to upgrade.backendTimeout
-        // with a timeout-specific message AND wipes the mnemonic. The
-        // user already confirmed the new mnemonic in the new-seed/confirm-new
-        // phases (they should have written it down before clicking Execute),
-        // so keeping it in reactive Alpine state past the error screen adds
-        // pure XSS surface with no recovery value. The copy on the error
-        // screen tells the user to verify Keychain has their keys or
-        // contact support with their account name.
-        const res = await fetch('/api/custody/upgrade', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${auth.token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ password: this.upgradePassword }),
-          signal: AbortSignal.timeout(20_000),
-        });
-
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || this.$t('upgrade.backendFailed'));
-        }
-
-        const result = await res.json();
+        // upgradeError. Post-broadcast 503 is retryable via
+        // `retryUpgradeBackend()` (chain rotation done, only the backend
+        // RPC lookup failed); other post-broadcast errors route to a
+        // terminal sub-case.
+        const result = await this._postUpgradeBackend(proof);
 
         // Update session via the shared helper. The upgrade response
         // rotates the session token; the helper enforces the atomic
@@ -762,7 +764,7 @@ export function initSettingsPage() {
         // payload so the helper preserves them (the upgrade flips
         // custody and rotates session credentials, not identity or
         // accreditation status).
-        auth.loginFromResponse({
+        Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
           expires_at: result.data?.expires_at,
           custody: 'self',
@@ -771,18 +773,19 @@ export function initSettingsPage() {
         // The (b)→(c) pair lives inside this try. A failure here means
         // either (b) reverted (Keychain-signing of account_update denied,
         // chain rejection) or (c) failed (backend refused). Both are real
-        // failures from the user's perspective.
-        //
-        // Special case: backend-cleanup timeout. AbortSignal.timeout() on
-        // the fetch above produces a TimeoutError DOMException when the
-        // 20s budget elapses. This is structurally distinct: the on-chain
-        // rotation succeeded (b), only the backend cleanup hung. Surface a
-        // timeout-specific message so the user-readable copy can name the
-        // chain-rotated-but-backend-pending state and direct the user to
-        // verify Keychain or contact support with their account name. We
-        // still wipe the mnemonic — the user keeps it via the earlier
-        // write-down step, and leaving it in reactive Alpine state past
-        // the error screen is pure XSS surface with no recovery value.
+        // failures from the user's perspective. Sanitization pattern:
+        // generic localized message to DOM, raw err to console.warn for
+        // diagnostics — never x-text `err.message` directly in case a
+        // future library revision embeds key material in error strings.
+        const status = err && typeof err.status === 'number' ? err.status : null;
+
+        // Backend-cleanup timeout. AbortSignal.timeout() in
+        // `_postUpgradeBackend` produces a TimeoutError DOMException when
+        // the 20s budget elapses. On-chain rotation succeeded (b), only
+        // the backend cleanup hung. Surface a timeout-specific message
+        // and wipe — leaving the mnemonic in reactive state past the
+        // error screen is pure XSS surface with no recovery value (the
+        // user wrote down the mnemonic at the new-seed phase).
         if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
           console.warn('[custody upgrade] backend cleanup timeout', err);
           this._clearSensitiveUpgradeState();
@@ -791,29 +794,62 @@ export function initSettingsPage() {
           this.upgradePhase = 'error';
           return;
         }
-        //
-        // Defense in depth: zero sensitive state on error. The 'error'
-        // phase routes the user to `resetUpgrade()` via the "try again"
-        // button which would clear these anyway, but a refresh or
-        // navigation away leaves them lingering otherwise.
+
+        // Post-broadcast 503: Hive RPC unavailable during the backend's
+        // chain-state lookup. The chain rotation already landed, so
+        // re-running the wizard from idle would generate a new mnemonic
+        // and re-broadcast account_update with stale old-seed keys (auth
+        // mismatch, chain reject). The retry path keeps `newSeedPhrase`,
+        // re-signs a fresh proof with a new `signed_at`, and re-POSTs —
+        // `retryUpgradeBackend()` handles this. State is NOT wiped here
+        // because the retry needs `newSeedPhrase` to re-derive.
+        if (broadcastLanded && status === 503) {
+          console.warn('[custody upgrade] backend 503', err);
+          this.upgradeError = this.$t('upgrade.backendUnavailable');
+          this.upgradeErrorKey = 'upgrade.backendUnavailable';
+          this.upgradePhase = 'error';
+          return;
+        }
+
+        // Post-broadcast 409 ALREADY_UPGRADED: backend cleanup already
+        // ran in an earlier attempt (timed-out request that actually
+        // committed, retried). On-chain rotation already landed too.
+        // Wipe state and surface a terminal sub-case — there's nothing
+        // for the user to retry, but the local session token may still
+        // be a `light` JWT, so the user should re-login to pick up the
+        // self-custody session.
+        if (broadcastLanded && status === 409) {
+          console.warn('[custody upgrade] already upgraded', err);
+          this._clearSensitiveUpgradeState();
+          this.upgradeError = this.$t('upgrade.alreadyUpgraded');
+          this.upgradeErrorKey = 'upgrade.alreadyUpgraded';
+          this.upgradePhase = 'error';
+          return;
+        }
+
+        // Post-broadcast 429: rate-limit budget (1/hour/account) exhausted.
+        // Nothing the user can do in-app; wipe and surface terminal copy.
+        if (broadcastLanded && status === 429) {
+          console.warn('[custody upgrade] rate limited', err);
+          this._clearSensitiveUpgradeState();
+          this.upgradeError = this.$t('upgrade.rateLimited');
+          this.upgradeErrorKey = 'upgrade.rateLimited';
+          this.upgradePhase = 'error';
+          return;
+        }
+
+        // Defense in depth: zero sensitive state on the catch-all path.
         this._clearSensitiveUpgradeState();
-        // Surface a generic localized message rather than `err.message`.
-        // Raw `err.message` is x-text'd directly into the DOM; if a library
-        // swap, future dhive error shape, or bug ever embeds key-material
-        // (seed words, hex private-key seeds) into the error message, the
-        // wiped Alpine state would be effectively un-wiped via a DOM-visible
-        // error string. The real error is still surfaced to the debugger via
-        // console.warn for developer diagnostics.
         console.warn('[custody upgrade]', err);
-        // Post-broadcast failures (network drop after the on-chain rotation
-        // landed, backend 500/503/429/409) are NOT retriable: the chain has
-        // already rotated to the new keys, so a fresh attempt would sign
-        // account_update with old seed-derived keys and the chain would
-        // reject with auth mismatch. Route to a non-retryable sub-case so
-        // `canRetryUpgrade` hides Try Again and the user-facing copy
-        // directs to support. Pre-broadcast failures (Keychain denial of
-        // account_update, chain rejection of the broadcast itself, invalid
-        // old seed) are genuinely retriable.
+        // Catch-all post-broadcast failures (401/403 proof rejection,
+        // 500 internal error, network drop) are NOT retriable: the chain
+        // has already rotated to the new keys, so a fresh attempt would
+        // sign account_update with old seed-derived keys and the chain
+        // would reject with auth mismatch. Route to a non-retryable
+        // sub-case so `canRetryUpgrade` hides Try Again and the
+        // user-facing copy directs to support. Pre-broadcast failures
+        // (Keychain denial of account_update, chain rejection of the
+        // broadcast itself, invalid old seed) are genuinely retriable.
         if (broadcastLanded) {
           this.upgradeError = this.$t('upgrade.partialApplyFailed');
           this.upgradeErrorKey = 'upgrade.partialApplyFailed';
@@ -825,20 +861,104 @@ export function initSettingsPage() {
         return;
       }
 
-      // Best-effort Keychain import. By this point:
-      //   - account_update has landed on-chain (b)
-      //   - backend custody cleanup succeeded (c)
-      // Per-role failures inside the loop push a localized warning string;
-      // the loop never re-throws, never wipes the mnemonic, never marks
-      // upgrade failed. But the helper has unguarded pre-loop work
-      // (dynamic dhive import, mnemonicToSeedSync, deriveHiveKeys,
-      // PrivateKey.fromSeed) that could throw before the loop's per-role
-      // try/catch even runs (e.g., flaky dynamic-chunk fetch). The
-      // try/catch/finally below ensures wipe + upgradePhase = 'done' run
-      // unconditionally — without it, a thrown helper would leave the
-      // mnemonic in Alpine reactive state (XSS-readable on /settings) and
-      // upgradePhase stuck at 'upgrading' (no recovery UI). Failures
-      // surface as a single fallback warning on the 'done' screen.
+      await this._completeUpgradeAfterBackend(newSeedPhrase);
+    },
+
+    // Backend-cleanup retry. Reachable only from the 'error' phase with
+    // `upgradeErrorKey === 'upgrade.backendUnavailable'` (post-broadcast
+    // 503). Keeps `newSeedPhrase` from the failed attempt, re-derives a
+    // fresh proof (new `signed_at` + new signature), and re-POSTs only
+    // the backend cleanup call. The chain rotation already landed in
+    // `executeUpgrade` and is NOT re-attempted — re-broadcasting
+    // account_update with stale old-seed keys would auth-fail at the
+    // chain. On success, runs the keychain-import tail and transitions
+    // to 'done' just like the happy path. On 503 again, stays in the
+    // retryable error state. On any other failure, terminal post-
+    // broadcast sub-case (wipe + partialApplyFailed).
+    async retryUpgradeBackend() {
+      if (this.upgradePhase !== 'error') return;
+      if (this.upgradeErrorKey !== 'upgrade.backendUnavailable') return;
+      const newSeedPhrase = this.newSeedPhrase;
+      if (!newSeedPhrase) {
+        // Defensive: `newSeedPhrase` is cleared on every terminal
+        // sub-case, so reaching here means the state machine drifted.
+        // Route to partialApplyFailed (terminal) rather than offering
+        // another retry that would re-derive from an empty string.
+        this._clearSensitiveUpgradeState();
+        this.upgradeError = this.$t('upgrade.partialApplyFailed');
+        this.upgradeErrorKey = 'upgrade.partialApplyFailed';
+        return;
+      }
+      this.upgradePhase = 'upgrading';
+      this.upgradeError = null;
+      this.upgradeErrorKey = null;
+      try {
+        const proof = await this._signUpgradeProof(newSeedPhrase);
+        const result = await this._postUpgradeBackend(proof);
+        Alpine.store('auth').loginFromResponse({
+          token: result.data?.token,
+          expires_at: result.data?.expires_at,
+          custody: 'self',
+        });
+      } catch (err) {
+        const status = err && typeof err.status === 'number' ? err.status : null;
+        if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+          console.warn('[custody upgrade retry] timeout', err);
+          this._clearSensitiveUpgradeState();
+          this.upgradeError = this.$t('upgrade.backendTimeout');
+          this.upgradeErrorKey = 'upgrade.backendTimeout';
+          this.upgradePhase = 'error';
+          return;
+        }
+        if (status === 503) {
+          // Stays retryable. State is preserved so the user can click
+          // Try Again again. No wipe.
+          console.warn('[custody upgrade retry] 503', err);
+          this.upgradeError = this.$t('upgrade.backendUnavailable');
+          this.upgradeErrorKey = 'upgrade.backendUnavailable';
+          this.upgradePhase = 'error';
+          return;
+        }
+        if (status === 409) {
+          console.warn('[custody upgrade retry] already upgraded', err);
+          this._clearSensitiveUpgradeState();
+          this.upgradeError = this.$t('upgrade.alreadyUpgraded');
+          this.upgradeErrorKey = 'upgrade.alreadyUpgraded';
+          this.upgradePhase = 'error';
+          return;
+        }
+        if (status === 429) {
+          console.warn('[custody upgrade retry] rate limited', err);
+          this._clearSensitiveUpgradeState();
+          this.upgradeError = this.$t('upgrade.rateLimited');
+          this.upgradeErrorKey = 'upgrade.rateLimited';
+          this.upgradePhase = 'error';
+          return;
+        }
+        this._clearSensitiveUpgradeState();
+        console.warn('[custody upgrade retry]', err);
+        this.upgradeError = this.$t('upgrade.partialApplyFailed');
+        this.upgradeErrorKey = 'upgrade.partialApplyFailed';
+        this.upgradePhase = 'error';
+        return;
+      }
+      await this._completeUpgradeAfterBackend(newSeedPhrase);
+    },
+
+    // Best-effort Keychain import + wipe + transition to 'done'. Reached
+    // from both the initial `executeUpgrade` happy path and the
+    // `retryUpgradeBackend` happy path. By this point:
+    //   - account_update has landed on-chain
+    //   - backend custody cleanup succeeded
+    // Per-role failures inside `_performKeychainImport` push a localized
+    // warning string and never re-throw; if the helper itself throws
+    // before the loop runs (dynamic dhive import, mnemonicToSeedSync,
+    // deriveHiveKeys, PrivateKey.fromSeed), the outer try/catch ensures
+    // the wipe + 'done' transition still happen — without it, the
+    // mnemonic would stay in Alpine reactive state (XSS surface) and
+    // upgradePhase would stick at 'upgrading' (no recovery UI). Failures
+    // surface as a single fallback warning on the 'done' screen.
+    async _completeUpgradeAfterBackend(newSeedPhrase) {
       try {
         await this._performKeychainImport(newSeedPhrase);
       } catch (err) {
@@ -848,12 +968,68 @@ export function initSettingsPage() {
         // FE-UPGRADE-CREDENTIAL-WIPE: zero all sensitive reactive state on
         // the happy path (success or partial-keychain-import) before
         // flipping to 'done'. Without this, the old and new 12-word
-        // mnemonics plus the re-entered password sit in Alpine's reactive
-        // data indefinitely; any XSS on /settings can read them via
-        // `window.Alpine.$data(el).oldSeedPhrase` etc.
+        // mnemonics sit in Alpine's reactive data indefinitely; any XSS
+        // on /settings can read them via `window.Alpine.$data(el).oldSeedPhrase`
+        // etc.
         this._clearSensitiveUpgradeState();
         this.upgradePhase = 'done';
       }
+    },
+
+    // FE-UPGRADE-CLOSURE-WIPE — derive + sign the upgrade proof inside its
+    // own frame so the private key never escapes. Returns only scalars
+    // (the public key, the hex signature, the ISO timestamp). Used both
+    // by `executeUpgrade` immediately after the chain rotation and by
+    // `retryUpgradeBackend` on a fresh attempt against the already-rotated
+    // chain state. The proof binds the JWT-authenticated session to a
+    // pubkey that appears in the on-chain account's key_auths (the
+    // backend independently verifies both the signature recovery and the
+    // on-chain presence) — see `agents/docs/api-contracts/custody.md`
+    // POST /api/custody/upgrade and `backend/src/routes/custody.ts`
+    // `buildCustodyUpgradeChallenge`. Recommended role is `active` per
+    // the task brief: strongest single-key authority that doesn't expose
+    // owner rotation capacity.
+    async _signUpgradeProof(newSeedPhrase) {
+      const dhive = await import('@hiveio/dhive');
+      const newSeed = mnemonicToSeedSync(newSeedPhrase);
+      const newKeys = deriveHiveKeys(newSeed, this.username);
+      const privateKey = dhive.PrivateKey.fromSeed(newKeys.active);
+      const derivedPubkey = privateKey.createPublic().toString();
+      const signedAt = new Date().toISOString();
+      const challenge = `${getAppTag()}-custody-upgrade|v1|${this.username}|${signedAt}`;
+      const msgHash = dhive.cryptoUtils.sha256(challenge);
+      const signedProof = privateKey.sign(msgHash).toString();
+      // Intentionally returns scalars only. Do NOT return `privateKey`,
+      // `newKeys`, or anything else that would re-escape derived material
+      // into the caller's frame.
+      return { derived_pubkey: derivedPubkey, signed_proof: signedProof, signed_at: signedAt };
+    },
+
+    // POST the proof to /api/custody/upgrade. Throws an Error with
+    // `.status` and `.code` attached on non-2xx responses so the caller's
+    // catch can branch on status (503 retryable, 409/429 terminal-sub-case,
+    // rest terminal). 20s budget guards against a hung backend after the
+    // on-chain rotation; TimeoutError DOMException surfaces via err.name
+    // in the caller's catch.
+    async _postUpgradeBackend(proof) {
+      const auth = Alpine.store('auth');
+      const res = await fetch('/api/custody/upgrade', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${auth.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(proof),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const err = new Error('Upgrade backend rejected');
+        err.status = res.status;
+        err.code = body?.error?.code ?? null;
+        throw err;
+      }
+      return res.json();
     },
 
     // FE-UPGRADE-CLOSURE-WIPE — narrower-scoped key-material handler.
@@ -1013,22 +1189,21 @@ export function initSettingsPage() {
     // Zero the plaintext-sensitive fields used during the custody upgrade
     // flow: the old mnemonic the user typed, the freshly-generated new
     // mnemonic (both as a string and as the words array used for the
-    // confirmation step), the confirmation inputs, and the re-entered
-    // light-account password. Callers that also need to reset phase/error
-    // should use `resetUpgrade()` instead.
+    // confirmation step), and the confirmation inputs. Callers that also
+    // need to reset phase/error should use `resetUpgrade()` instead.
     //
     // FE-UPGRADE-CLOSURE-WIPE — this helper zeros REACTIVE (Alpine `this.*`)
     // fields only. Closure-captured `const` bindings that held derived key
-    // material during the broadcast/import step live inside
-    // `_performUpgradeKeyRotation()` and are dropped when that method's
-    // frame pops, BEFORE this helper runs. See the big comment block on
+    // material during the broadcast/import/proof-signing step live inside
+    // `_performUpgradeKeyRotation()` / `_performKeychainImport()` /
+    // `_signUpgradeProof()` and are dropped when that method's frame
+    // pops, BEFORE this helper runs. See the big comment block on
     // `_performUpgradeKeyRotation()`.
     _clearSensitiveUpgradeState() {
       this.oldSeedPhrase = '';
       this.newSeedPhrase = '';
       this.newSeedWords = [];
       this.confirmInputs = {};
-      this.upgradePassword = '';
     },
 
     resetUpgrade() {

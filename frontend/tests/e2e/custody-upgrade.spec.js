@@ -236,15 +236,18 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
   expect(filledCount).toBe(3);
   await page.getByRole('button', { name: 'Next' }).click();
 
-  // Phase 4: enter-old — type the old seed phrase and password.
+  // Phase 4: enter-old — type the old seed phrase.
   // Generate an independent OLD mnemonic so the broadcast exercises a real
   // rotation (old keys ≠ new keys). The Hive node signature check never
   // runs because we stub `condenser_api.broadcast_transaction` above, so
   // the on-chain authority state for LIGHT_USERNAME is irrelevant here.
+  // The password input was removed from the wizard in
+  // ui-custody-upgrade-seed-phrase-derive-flow — the re-auth proof for
+  // /api/custody/upgrade is now a seed-phrase-derived pubkey + signature
+  // built inside `_signUpgradeProof`, no second user-facing factor.
   const oldMnemonic = generateMnemonic();
   expect(oldMnemonic).not.toBe(testMnemonic);
   await page.locator('textarea[x-model="oldSeedPhrase"]').fill(oldMnemonic);
-  await page.locator('input[x-model="upgradePassword"]').fill('irrelevant-password');
 
   const broadcastClickPromise = page.getByRole('button', { name: 'Upgrade Account' }).click();
 
@@ -412,12 +415,281 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
       newSeedPhrase: data.newSeedPhrase,
       newSeedWords: data.newSeedWords,
       confirmInputs: data.confirmInputs,
-      upgradePassword: data.upgradePassword,
     };
   });
   expect(sensitiveState.oldSeedPhrase).toBe('');
   expect(sensitiveState.newSeedPhrase).toBe('');
   expect(sensitiveState.newSeedWords).toEqual([]);
   expect(sensitiveState.confirmInputs).toEqual({});
-  expect(sensitiveState.upgradePassword).toBe('');
+
+  // ─── Assert upgrade proof body shape ─────────────────────────
+  // Beyond the chain broadcast, the SPA POSTs the seed-phrase-derived
+  // proof to /api/custody/upgrade. We don't introspect the captured body
+  // here because the stub above just fulfills; the dedicated proof-shape
+  // and 503-retry tests below exercise it and confirm it matches the
+  // wire contract in `agents/docs/api-contracts/custody.md`.
+});
+
+// ───────────────────────────────────────────────────────────────
+// Shared wizard-driver. Returns once the user has clicked the final
+// "Upgrade Account" button. Caller is responsible for stubbing the
+// Hive-node RPCs + /api/custody/upgrade interception. The first
+// successful test above is the canonical full-coverage exercise; the
+// tests below use this helper to isolate behavior around specific
+// /api/custody/upgrade rejection paths.
+// ───────────────────────────────────────────────────────────────
+async function driveWizardToBackendPost(page) {
+  // Stub the post-broadcast Keychain import calls so the helper never
+  // hangs waiting for callbacks the base fixture doesn't provide.
+  await page.addInitScript(() => {
+    if (window.hive_keychain) {
+      window.hive_keychain.requestImportKey = (_account, _wif, cb) => {
+        queueMicrotask(() => cb({ success: true, result: 'STUB' }));
+      };
+    }
+  });
+
+  // Stub api.hive.blog RPCs so the local broadcast resolves without
+  // hitting the network. Mirrors the canned response shape from the
+  // canonical happy-path test above.
+  await page.route('**/api.hive.blog/**', async (route) => {
+    const req = route.request();
+    if (req.method() !== 'POST') return route.continue();
+    const body = JSON.parse(req.postData() || '{}');
+    if (body.method === 'condenser_api.get_dynamic_global_properties') {
+      const iso = new Date().toISOString().slice(0, -5);
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: body.id,
+          jsonrpc: '2.0',
+          result: {
+            head_block_number: 80_000_000,
+            head_block_id: '04c4b40000000000000000000000000000000000',
+            time: iso,
+          },
+        }),
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: body.id, jsonrpc: '2.0', result: null }),
+    });
+  });
+
+  const { token, expiresAt } = mintSessionJwt(LIGHT_USERNAME, { custody: 'light' });
+  await page.addInitScript(
+    ({ session }) => {
+      window.localStorage.setItem('pevo_session', JSON.stringify(session));
+    },
+    {
+      session: {
+        token,
+        username: LIGHT_USERNAME,
+        expiresAt,
+        isAccredited: false,
+        accreditation: null,
+        custody: 'light',
+      },
+    },
+  );
+
+  await page.goto('/en/settings');
+  await page.waitForSelector('[x-data="settingsPage"]');
+  await page.getByRole('button', { name: 'Begin Upgrade' }).click();
+  await page.getByRole('button', { name: "I’ve written it down" }).waitFor();
+
+  // Fill confirm-new via Alpine proxy and advance.
+  await page.evaluate(() => {
+    const el = document.querySelector('[x-data="settingsPage"]');
+    const data = window.Alpine.$data(el);
+    for (const i of data.confirmIndices) {
+      data.confirmInputs[i] = data.newSeedWords[i];
+    }
+  });
+  await page.getByRole('button', { name: "I’ve written it down" }).click();
+  await page.getByRole('button', { name: 'Next' }).click();
+
+  // Type a real (independent) old mnemonic so validateMnemonic passes
+  // and the chain broadcast exercises a real key rotation.
+  await page.locator('textarea[x-model="oldSeedPhrase"]').fill(generateMnemonic());
+  await page.getByRole('button', { name: 'Upgrade Account' }).click();
+}
+
+test('upgrade proof body shape matches /api/custody/upgrade wire contract', async ({ page }) => {
+  const proofBodies = [];
+  await page.route('**/api/custody/upgrade', async (route) => {
+    const req = route.request();
+    proofBodies.push(JSON.parse(req.postData() || '{}'));
+    const { token } = mintSessionJwt(LIGHT_USERNAME, { custody: 'self' });
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'ok',
+        data: {
+          custody: 'self',
+          token,
+          expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        },
+      }),
+    });
+  });
+
+  await driveWizardToBackendPost(page);
+
+  await expect.poll(() => proofBodies.length, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+  const body = proofBodies[0];
+  // Three required fields per agents/docs/api-contracts/custody.md.
+  expect(typeof body.derived_pubkey).toBe('string');
+  expect(body.derived_pubkey.startsWith('STM')).toBe(true);
+  expect(typeof body.signed_proof).toBe('string');
+  // Hive compact signature is 65 bytes → 130 hex chars.
+  expect(body.signed_proof).toMatch(/^[0-9a-fA-F]{130}$/);
+  expect(typeof body.signed_at).toBe('string');
+  // ISO-8601 with milliseconds (Date.toISOString output).
+  expect(body.signed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  // Freshness gate: backend rejects timestamps outside a 60s window.
+  expect(Math.abs(Date.now() - Date.parse(body.signed_at))).toBeLessThan(60_000);
+  // The pubkey must match what hive-keys derives from the captured
+  // (post-rotation) seed phrase — proves the same derivation pipeline
+  // produced both the chain-rotated authorities and the proof.
+  const postRotationSeed = await page.evaluate(() => {
+    const el = document.querySelector('[x-data="settingsPage"]');
+    return window.Alpine.$data(el).newSeedPhrase;
+  });
+  // newSeedPhrase may already be wiped by the time we read (the success
+  // path wipes after backend POST). If so, skip the cross-check — the
+  // shape assertions above already confirm contract conformance.
+  if (postRotationSeed && postRotationSeed.length > 0) {
+    const rederived = await deriveAllKeys(postRotationSeed, LIGHT_USERNAME);
+    expect(body.derived_pubkey).toBe(rederived.active.public);
+  }
+});
+
+test('503 on /api/custody/upgrade is retryable via Try Again without re-broadcast', async ({ page }) => {
+  let callCount = 0;
+  await page.route('**/api/custody/upgrade', async (route) => {
+    callCount++;
+    if (callCount === 1) {
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'error',
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Hive RPC unavailable' },
+        }),
+      });
+    }
+    const { token } = mintSessionJwt(LIGHT_USERNAME, { custody: 'self' });
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'ok',
+        data: {
+          custody: 'self',
+          token,
+          expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        },
+      }),
+    });
+  });
+
+  await driveWizardToBackendPost(page);
+
+  // Wait for the first 503 to drive the UI to the retryable error state.
+  await expect
+    .poll(
+      async () => page.evaluate(() => {
+        const el = document.querySelector('[x-data="settingsPage"]');
+        return window.Alpine.$data(el).upgradeErrorKey;
+      }),
+      { timeout: 15_000 },
+    )
+    .toBe('upgrade.backendUnavailable');
+
+  // newSeedPhrase MUST still be in state — the retry path needs it to
+  // re-derive a fresh proof. State preservation is the explicit invariant
+  // that distinguishes 503 from the terminal post-broadcast sub-cases.
+  const preservedSeed = await page.evaluate(() => {
+    const el = document.querySelector('[x-data="settingsPage"]');
+    return window.Alpine.$data(el).newSeedPhrase;
+  });
+  expect(typeof preservedSeed).toBe('string');
+  expect(preservedSeed.split(' ')).toHaveLength(12);
+
+  // canRetryUpgrade must be true so the Try Again button renders.
+  const canRetry = await page.evaluate(() => {
+    const el = document.querySelector('[x-data="settingsPage"]');
+    return window.Alpine.$data(el).canRetryUpgrade;
+  });
+  expect(canRetry).toBe(true);
+
+  // Click Try Again → handleRetry() → retryUpgradeBackend().
+  await page.getByText('Try Again').click();
+
+  // Second POST lands; success this time.
+  await expect.poll(() => callCount, { timeout: 15_000 }).toBe(2);
+
+  // Wait for the wizard to reach 'done'.
+  await expect
+    .poll(
+      async () => page.evaluate(() => {
+        const el = document.querySelector('[x-data="settingsPage"]');
+        return window.Alpine.$data(el).upgradePhase;
+      }),
+      { timeout: 10_000 },
+    )
+    .toBe('done');
+
+  // After the successful retry the sensitive state IS wiped (the happy
+  // path tail runs).
+  const wipedSeed = await page.evaluate(() => {
+    const el = document.querySelector('[x-data="settingsPage"]');
+    return window.Alpine.$data(el).newSeedPhrase;
+  });
+  expect(wipedSeed).toBe('');
+});
+
+test('409 ALREADY_UPGRADED is terminal: state wiped, Try Again hidden', async ({ page }) => {
+  await page.route('**/api/custody/upgrade', async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'error',
+        error: { code: 'ALREADY_UPGRADED', message: 'Already upgraded' },
+      }),
+    });
+  });
+
+  await driveWizardToBackendPost(page);
+
+  await expect
+    .poll(
+      async () => page.evaluate(() => {
+        const el = document.querySelector('[x-data="settingsPage"]');
+        return window.Alpine.$data(el).upgradeErrorKey;
+      }),
+      { timeout: 15_000 },
+    )
+    .toBe('upgrade.alreadyUpgraded');
+
+  const state = await page.evaluate(() => {
+    const el = document.querySelector('[x-data="settingsPage"]');
+    const data = window.Alpine.$data(el);
+    return {
+      newSeedPhrase: data.newSeedPhrase,
+      oldSeedPhrase: data.oldSeedPhrase,
+      canRetry: data.canRetryUpgrade,
+    };
+  });
+  // 409 wipes (nothing to retry; user must re-login to pick up self
+  // session) and disables the Try Again button.
+  expect(state.newSeedPhrase).toBe('');
+  expect(state.oldSeedPhrase).toBe('');
+  expect(state.canRetry).toBe(false);
 });
