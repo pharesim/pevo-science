@@ -61,3 +61,21 @@ Make the 12-word mnemonic a literal Hive master password. After this change:
 - `frontend/src/hive-keys.js` — mirror change site (must match backend exactly).
 - `dhive.PrivateKey.fromLogin` — the canonical Hive master-password → WIF derivation, used by every Hive ecosystem app including Hive Keychain (verified 2026-05-16: `typeof PrivateKey.fromLogin === 'function'` in `@hiveio/dhive`).
 - Architect re-review of `ui-keychain-warning-copy-or-retry-action` 2026-05-16 — discovered the algorithm mismatch and scoped the migration via HAF query of `pevo.onboarding` + `pevotest.admin`.
+
+---
+
+## [BLOCKED by UI] 2026-05-16 — frontend mirror change needed
+
+Backend agent cannot land this task alone. Acceptance criterion #2 explicitly requires editing `frontend/src/hive-keys.js` to mirror the backend's `PrivateKey.fromLogin` derivation. That file is outside backend's zone (root CLAUDE.md "Files You Own" / `commit-msg` zone-audit hook). Per backend CLAUDE.md "Boundaries": "Any time a task is waiting on another agent ... you cannot proceed without ... `git mv` the task file from `pending/` to `blocked/` and append a `[BLOCKED by <Agent>]` note."
+
+The task's own header even codifies this: "Owner: Backend Agent (frontend mirror change required; backend is the canonical authority for the derivation algorithm; both files MUST change together in one PR/commit cluster)." The "single PR/commit cluster" requirement makes a backend-only landing impossible — backend's new `PrivateKey.fromLogin` derivation would diverge from frontend's still-HMAC derivation for every new signup until the UI agent lands its mirror, breaking the load-bearing invariant (frontend writes the keys to chain; backend's recovery/derivation must produce the same WIFs frontend produced).
+
+**What UI agent needs to do** (the frontend half of acceptance #2):
+1. Replace the `deriveHiveKeys` body in `frontend/src/hive-keys.js` so per-role WIFs come from `PrivateKey.fromLogin(account, mnemonic, role)`. Update `deriveAllKeys` (`hive-keys.js:78-92`) accordingly.
+2. Audit `frontend/src/pages/settings.js` for direct consumers of `mnemonicToSeedSync` — `grep -n mnemonicToSeedSync frontend/src/pages/settings.js`. If the seed bytes are only used for the HMAC step backend is removing, drop the import and the re-export at `hive-keys.js:98`. If `settings.js` uses the seed bytes for anything else (recovery-key proof, encrypted-storage key derivation), preserve or refactor.
+3. Add the frontend parity test in `frontend/tests/unit/hive-keys.test.js` (or sibling) asserting that for a fixed `(mnemonic, account)`, every role's WIF returned by `deriveAllKeys` equals `PrivateKey.fromLogin(account, mnemonic, role).toString()` computed directly.
+4. Regenerate any frontend test fixtures that pin specific WIFs/pubkeys derived from a fixed seed (search `frontend/tests/` for hardcoded keys in account-creation / custody-upgrade / seed-phrase tests).
+
+**Coordination protocol:** Once UI signals readiness (file moved back to `pending/` with a UI signal block, OR architect coordinates a two-zone fan-out), backend lands its half (`backend/src/seed-phrase.ts` + backend parity test + tests with pinned WIFs regenerated) in lockstep with UI's commit. Both halves should land in the same `git log` block before any new signup occurs against the new algorithm so the chain doesn't get a single account split across derivations. The architect's `[TODO ARCHITECT]` ARCHITECTURE.md doc update lands at archive after both halves are in.
+
+**Sibling impact:** `agents/docs/tasks/blocked/ui-keychain-warning-copy-or-retry-action.md` is also blocked on this task; its copy ("Use your seed phrase to import the account from the Keychain extension") becomes accurate only once both halves land. Don't move the sibling task until this one archives.
