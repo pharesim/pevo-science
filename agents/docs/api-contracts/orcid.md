@@ -21,7 +21,7 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 ```json
 {
   "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth" | "session_auth",
-  "action": "author_accept" | "author_resign" | "set_password",
+  "action": "author_accept" | "author_resign" | "set_password" | "change_email",
   "root_author": "<hive-account>",
   "root_permlink": "<paper-permlink>"
 }
@@ -36,7 +36,12 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 | `fresh_auth` | Yes (JWT) | Mint a per-op (consent_op-kind) fresh-auth proof via a fresh OAuth round-trip. Sibling to `POST /api/custody/fresh-auth` (password path). Bound to a specific `(action, root_author, root_permlink)` target. The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
 | `session_auth` | Yes (JWT) | Mint a target-less (session-kind) fresh-auth proof via a fresh OAuth round-trip. Used by State C (passwordless ORCID-only) accounts — and State B accounts — to authorize non-consent broadcasts (vote, comment, non-consent `custom_json`). The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
 
-`action`, `root_author`, and `root_permlink` are REQUIRED when `mode === "fresh_auth"` and IGNORED in all other modes (including `session_auth`, which is target-less by design). On a `fresh_auth` request these three fields form the per-op target the issued proof will bind to; the consent op submitted on a subsequent `POST /api/custody/broadcast` MUST match the triple exactly or the broadcast returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "target_mismatch"`. Any missing or malformed field on a `fresh_auth` request returns 400 `VALIDATION_ERROR`. Session-kind proofs minted via `session_auth` do NOT carry a target and are admitted only on the non-consent broadcast surface; submitting one to a consent-op bundle returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "kind_mismatch"`.
+`action`, `root_author`, and `root_permlink` semantics by `mode === "fresh_auth"` action category:
+
+- **Consent-op actions (`author_accept`, `author_resign`):** `action`, `root_author`, and `root_permlink` are all REQUIRED. The three fields form the per-op target the issued proof binds to; the consent op submitted on a subsequent `POST /api/custody/broadcast` MUST match the triple exactly or the broadcast returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "target_mismatch"`. Any missing or malformed field returns 400 `VALIDATION_ERROR`.
+- **Non-broadcast actions (`set_password`, `change_email`):** `action` is REQUIRED; `root_author` and `root_permlink` are IGNORED if present. The backend synthesizes the target as `(action, <authenticated username>, '')` — `root_author` defaults to the JWT subject and `root_permlink` to the empty string. Empty `root_permlink` is what makes these targets collision-free against consent-op targets at the hash layer (consent ops require non-empty `root_permlink` by the validation rule above). `set_password` proofs are consumed at `POST /api/settings/set-password`; `change_email` proofs at the JWT path of `POST /api/settings/email`. **Note (as of 2026-05-16):** the `set_password` mint path is live; the `change_email` mint path is documented here but the runtime widening on this endpoint (and on `POST /api/custody/fresh-auth`) lands in a follow-up. Until then `action: 'change_email'` returns 400 `VALIDATION_ERROR`. See `backend-change-email-mint-path-and-followups` in `tasks/pending/`.
+
+In all modes other than `fresh_auth`, the three fields are IGNORED. Session-kind proofs minted via `session_auth` do NOT carry a target and are admitted only on the non-consent broadcast surface; submitting one to a consent-op bundle returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "kind_mismatch"`.
 
 **State stored in Redis:** Key `orcid_state:{state}`, TTL 600s.
 
@@ -46,7 +51,7 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
   "username": "...",
   "timestamp": 1234567890,
   "fresh_auth_target": {
-    "action": "author_accept" | "author_resign" | "set_password",
+    "action": "author_accept" | "author_resign" | "set_password" | "change_email",
     "root_author": "<hive-account>",
     "root_permlink": "<paper-permlink>"
   }
@@ -207,15 +212,15 @@ No `custom_json` broadcast on this mode. No min works check.
   "fresh_auth_proof": "<single-use token>",
   "expires_at": "2026-05-06T12:05:00.000Z",
   "mechanism": "orcid",
-  "action": "author_accept" | "author_resign" | "set_password",
+  "action": "author_accept" | "author_resign" | "set_password" | "change_email",
   "root_author": "<hive-account>",
   "root_permlink": "<paper-permlink>"
 }
 ```
 
-`fresh_auth_proof` is a single-use bearer token bound to the JWT subject. TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request that contains a consent op (`author_accept` or `author_resign`). See [custody.md](custody.md) for the broadcast contract.
+`fresh_auth_proof` is a single-use bearer token bound to the JWT subject. TTL is 5 minutes. Where to submit it depends on the action category: consent-op proofs (`author_accept`, `author_resign`) go in the `fresh_auth_proof` field of a subsequent `POST /api/custody/broadcast` request containing the matching consent op (see [custody.md](custody.md)); non-broadcast proofs go in the request body of the matching settings endpoint (`set_password` → `POST /api/settings/set-password`; `change_email` → JWT path of `POST /api/settings/email`, see [settings.md](settings.md)).
 
-`action`, `root_author`, and `root_permlink` are the per-op target binding the proof was issued against, echoed from the Redis state's `fresh_auth_target` written at `/start`. The SPA caches the issued proof keyed on this triple so the broadcast-time lookup matches the proof's actual binding. For `set_password`, `root_author` is the authenticated username and `root_permlink` is the empty string (no paper is involved); for consent ops (`author_accept`, `author_resign`) both are derived from the paper the user is authorizing.
+`action`, `root_author`, and `root_permlink` are the per-op target binding the proof was issued against, echoed from the Redis state's `fresh_auth_target` written at `/start`. The SPA caches the issued proof keyed on this triple so the consume-time lookup matches the proof's actual binding. For non-broadcast actions (`set_password`, `change_email`), `root_author` is the authenticated username and `root_permlink` is the empty string (no paper is involved). For consent ops (`author_accept`, `author_resign`), both are derived from the paper the user is authorizing.
 
 **Errors specific to `fresh_auth`:**
 - `BAD_REQUEST` (400) — invalid ORCID iD format returned by the OAuth round-trip, OR the `fresh_auth_target` is missing from the Redis state map at `/callback`. The latter is a defensive closed-default rejection: `/start` enforces target presence on entry, so an absent `fresh_auth_target` at `/callback` indicates a corrupt state entry rather than a normal client flow. Message: `"fresh_auth state is missing the per-op target binding"`.

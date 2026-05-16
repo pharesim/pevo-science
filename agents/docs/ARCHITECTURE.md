@@ -610,7 +610,7 @@ Every critical action requires a fresh re-auth proof; the JWT alone is never suf
 | Set password from null | `POST /api/settings/set-password` | Fresh ORCID OAuth proof (null-hash accounts have ORCID as their only registered factor) | C only. A and B return 409 (`PASSWORD_ALREADY_SET`). |
 | Recover (lost email access) | `POST /api/auth/recover` | Seed-phrase derived key OR fresh ORCID OAuth, matching what the account has registered | All light states. Seed phrase works from any state (every light signup produces one); ORCID requires `orcid IS NOT NULL`. |
 | Reset (forgot password) | `POST /api/auth/reset-request` + `POST /api/auth/reset` | Email-link token | A and B (states with email AND password). C: not applicable. |
-| Change email | `POST /api/settings/email` | TBD — re-auth model unverified; see open audit task | All light states |
+| Change email | `POST /api/settings/email` (change-email branch on existing row) | Fresh-auth proof matching a factor registered on the account. JWT path requires the proof in the body; Keychain (Hive-signature) path is fresh-proof at the middleware and requires no body proof. Add-flow no-row branch is JWT-unreachable and remains Keychain-only. | A: password proof. B: password OR ORCID proof. C: ORCID proof. D: matches preserved factors (password and/or orcid columns). Implemented at `settings.ts` POST /email (commit `b27bcdf`, audit closed by `backend-settings-email-reauth-audit` 2026-05-16). |
 | Link ORCID | `POST /api/orcid/callback mode='link'` | Fresh ORCID OAuth | A → B |
 
 ### 6.5 Security Invariants
