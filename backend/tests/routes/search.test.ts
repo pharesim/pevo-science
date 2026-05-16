@@ -199,6 +199,43 @@ describe('GET /api/search', () => {
     expect(res.body.error.message).toMatch(/Must be one of/);
   });
 
+  // BE-SEARCH-QUERY-PARAM-TYPEOF-NARROW-SWEEP round-2: invalid-single-string
+  // 400 coverage for `?source=` and `?sort=`. The repeated-param contract is
+  // pinned above; this asserts the sibling unknown-enum branch matches the
+  // `?type=foo` pattern at line 143. Without these, an accidentally inverted
+  // `isSearchSource` / `isSearchSort` predicate would 400 every VALID request
+  // and no current spec would catch it (the happy-path tests cover both
+  // branches symmetrically below).
+  it('?source=foo returns 400 on unknown enum value', async () => {
+    const res = await request(app).get('/api/search?q=science&source=foo');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/Must be one of/);
+  });
+
+  it('?sort=foo returns 400 on unknown enum value', async () => {
+    const res = await request(app).get('/api/search?q=science&sort=foo');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/Must be one of/);
+  });
+
+  // Happy-path coverage for the two valid `?source=` values. `?sort=date`
+  // happy-path is incidentally covered by accreditation-gate tests below at
+  // line 367; `?source=` has no such incidental coverage, so an inverted
+  // `isSearchSource` predicate would silently 400 every valid request.
+  it('?source=native returns 200', { timeout: 60_000 }, async () => {
+    const res = await request(app).get('/api/search?q=science&source=native');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+  });
+
+  it('?source=bridge returns 200', { timeout: 60_000 }, async () => {
+    const res = await request(app).get('/api/search?q=science&source=bridge');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+  });
+
   // BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME: per-entry `discipline` response
   // field on `paper` / `bridge_paper` result types must be canon_name
   // (lowercased) if/when the search response shape adds one. The current

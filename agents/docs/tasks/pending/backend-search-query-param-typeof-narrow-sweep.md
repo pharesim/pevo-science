@@ -102,3 +102,13 @@ Three independent reviewer personas converged on this asymmetry during the `back
 ### Re-review signal
 
 When all 4 items above land, `git mv` this file back to `tasks/review/`. Round-2 architect re-review scopes `/ce-code-review` to the round-2 commit. Anchor: items 1+2 are TypeScript-narrow tightening (route + 2 internal signatures); items 3+4 are tests. Single commit reasonable; or split type-tightening from test-adds — implementer's choice.
+
+## Backend re-review signal (2026-05-16, round-2)
+
+All 4 hold-block items landed in a single commit. Files touched:
+
+- `backend/src/routes/search.ts` — items 1 + 2: imported `type SearchSource` from `search-filters.js`; route-level `source` binding narrowed from `string | undefined` → `SearchSource | undefined`; both internal signatures (`searchPapersFromHaf` and `searchFromHaf`) tightened from `source: string | undefined, sort: string` → `source: SearchSource | undefined, sort: SearchSort`. The downstream `sort === 'date'` ternary inside `searchPapersFromHaf` remains valid and is now exhaustive against the literal union.
+- `backend/tests/lib/search-filters.test.ts` — item 3: 4 new `describe` blocks covering the 4 helper-direct guards (`isSearchType`, `isSearchSource`, `isSearchSort`, `parseLanguageFilter`). Each guard's accept-set, reject-on-unknown, and (where relevant) case-sensitivity / repeated-param / non-string-non-array shapes are pinned. 11 specs total across the new describes.
+- `backend/tests/routes/search.test.ts` — item 4: 4 new route-level specs mirroring the `?type=foo` line-143 pattern — `?source=foo` → 400, `?sort=foo` → 400, `?source=native` → 200, `?source=bridge` → 200. Closes the "inverted predicate would silently 400 every valid request" risk class.
+
+`npm run lint` clean (pre-existing seed-phrase.ts warnings only); `npx tsc --noEmit` clean. Vitest deferred to the parent's serialized run after all in-flight backend tasks land.

@@ -3,6 +3,10 @@ import {
   validateSearchQuery,
   escapeLikePattern,
   SEARCH_QUERY_MAX_LEN,
+  isSearchType,
+  isSearchSource,
+  isSearchSort,
+  parseLanguageFilter,
 } from '../../src/types/search-filters.js';
 
 /**
@@ -144,5 +148,84 @@ describe('escapeLikePattern — direct exposure for SQL-binder reuse', () => {
     // is scoped to LIKE semantics, not a generic SQL-injection guard
     // (parameterization handles that at the bind layer).
     expect(escapeLikePattern("a*b?c[d](e);f'g")).toBe("a*b?c[d](e);f'g");
+  });
+});
+
+// BE-SEARCH-QUERY-PARAM-TYPEOF-NARROW-SWEEP round-2: helper-direct unit tests
+// for the four enum/optional guards (`isSearchType`, `isSearchSource`,
+// `isSearchSort`, `parseLanguageFilter`). Each predicate has multiple return
+// paths exercised today only at the route-level rejection assertions; an
+// inverted `(SEARCH_X as readonly string[]).includes(s)` or a broken
+// `parseLanguageFilter` undefined fast-path would not surface there. The
+// specs pin each branch at the helper boundary so a refactor on the helper
+// cannot mask a regression.
+
+describe('isSearchType — literal-tuple guard for ?type=', () => {
+  it('accepts the three valid values', () => {
+    expect(isSearchType('all')).toBe(true);
+    expect(isSearchType('paper')).toBe(true);
+    expect(isSearchType('review')).toBe(true);
+  });
+
+  it('rejects unknown values', () => {
+    expect(isSearchType('foo')).toBe(false);
+  });
+
+  it('rejects mixed-case (enum is case-sensitive)', () => {
+    // Mirrors the case-sensitive route-level contract pinned at
+    // search.test.ts:154 for `?type=PAPER` → 400.
+    expect(isSearchType('PAPER')).toBe(false);
+  });
+});
+
+describe('isSearchSource — literal-tuple guard for ?source=', () => {
+  it('accepts the two valid values', () => {
+    expect(isSearchSource('native')).toBe(true);
+    expect(isSearchSource('bridge')).toBe(true);
+  });
+
+  it('rejects unknown values', () => {
+    expect(isSearchSource('foo')).toBe(false);
+  });
+});
+
+describe('isSearchSort — literal-tuple guard for ?sort=', () => {
+  it('accepts the two valid values', () => {
+    expect(isSearchSort('date')).toBe(true);
+    expect(isSearchSort('relevance')).toBe(true);
+  });
+
+  it('rejects unknown values', () => {
+    expect(isSearchSort('foo')).toBe(false);
+  });
+});
+
+describe('parseLanguageFilter — typeof-narrow on ?language=', () => {
+  it('returns ok=true value=undefined when raw is undefined (absent)', () => {
+    expect(parseLanguageFilter(undefined)).toEqual({ ok: true, value: undefined });
+  });
+
+  it('returns ok=true value=raw for a single string', () => {
+    expect(parseLanguageFilter('en')).toEqual({ ok: true, value: 'en' });
+  });
+
+  it('rejects repeated-param string[] shape (?language=en&language=fr)', () => {
+    // Express types repeated params as string[]; the typeof-string narrow
+    // rejects so an `as string` cast cannot silently coerce to "en,fr"
+    // before reaching the downstream `c.json_metadata ->> 'language' = $N`
+    // bind, which would never match a stored value.
+    const result = parseLanguageFilter(['en', 'fr']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/language/i);
+    }
+  });
+
+  it('rejects non-string non-array input', () => {
+    const result = parseLanguageFilter(42);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/language/i);
+    }
   });
 });

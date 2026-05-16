@@ -19,6 +19,7 @@ import {
   isSearchSort,
   parseLanguageFilter,
   type SearchType,
+  type SearchSource,
   type SearchSort,
 } from '../types/search-filters.js';
 
@@ -44,9 +45,9 @@ async function searchPapersFromHaf(
   query: string,
   discipline: string | undefined,
   language: string | undefined,
-  source: string | undefined,
+  source: SearchSource | undefined,
   includeRetracted: boolean,
-  sort: string,
+  sort: SearchSort,
   limit: number,
   offset: number,
 ): Promise<{ rows: SearchRow[]; total: number } | null> {
@@ -265,9 +266,9 @@ async function searchFromHaf(
   type: SearchType,
   discipline: string | undefined,
   language: string | undefined,
-  source: string | undefined,
+  source: SearchSource | undefined,
   includeRetracted: boolean,
-  sort: string,
+  sort: SearchSort,
   limit: number,
   offset: number,
 ) {
@@ -383,7 +384,7 @@ router.get('/', async (req: Request, res: Response) => {
   }
 
   const rawSource = req.query.source;
-  let source: string | undefined;
+  let source: SearchSource | undefined;
   if (rawSource === undefined) {
     source = undefined;
   } else if (typeof rawSource === 'string' && isSearchSource(rawSource)) {
