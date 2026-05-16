@@ -179,3 +179,30 @@ Pre-fix numbers (for contrast): `_originalBody=104`, `newPostBody=146`, `diffTex
 Spec syntax verified via `node --check`. `npx playwright test --list edit-paper.spec.js` not run from the worktree (no local `node_modules`; the worker had no permission to symlink or write into the main checkout); test count unchanged structurally — `grep -cE '^test\(' edit-paper.spec.js` reports `7`, matching the prior signal block's count. No `test()` declarations added or removed.
 
 No additional `/ce-compound` candidates surfaced from this round. The diff-match-patch length-gate behavior is documented in production at `edit.js:1036-1044` inline; no separate solutions doc warranted.
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES (round-4):
+
+Reviewed via `/ce-code-review` against commit `5b9ff3d` with 6 personas (correctness Opus; testing/maintainability/project-standards/adversarial/learnings-researcher Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Both round-3 hold items verified clean: correctness independently confirmed the diff-match-patch math (`_originalBody=1237`, `newPostBody=1339`, `diffText=187`, branch=DIFF, `body.startsWith('@@')` holds), test 7 (full-body branch) unaffected because `targetIsHead===false` bypasses the diff calc unconditionally at `edit.js:1070`, and the `percent_hbd === 0` assertion correctly mutation-kills the rewards-policy regression class per `project_rewards_policy` memory. Adversarial replayed all 5 "always full body" / "swapped ternary" / "flipped targetIsHead" / "dropped composePostBody" mutations — all killed by the diff-branch assertion.
+
+One item to address before archive:
+
+1. **P2 — 1.2KB academic-prose body string duplicated verbatim between `buildPaperFixture.body` and `NEW_BODY` in test 1 (`frontend/tests/e2e/edit-paper.spec.js:84-89, 198-202`).** maintainability (P2/75). The four-section prose block (Introduction/Methodology/Results/Discussion) appears identically at the fixture body and NEW_BODY prefix, with NEW_BODY adding one final sentence. The duplication is LOAD-BEARING (test 1 depends on NEW_BODY being a near-superset of the fixture body to keep the diff smaller than the full body), which is exactly the reason to make the relationship structural rather than commented. As written, anyone editing the fixture body must also find and update NEW_BODY; the connection is documented in prose comments at the call sites but not enforced by code structure.
+
+   **Fix:** extract a module-scope constant for the shared paragraphs, then derive both fixture body and NEW_BODY from it:
+   ```js
+   const ORIG_BODY_PARAGRAPHS =
+     '## Introduction\n\n... (the 4 paragraphs) ...\n\n' +
+     '## Discussion\n\nThese findings reinforce...';
+
+   // fixture body becomes: '## Abstract\n\n... \n\n---\n\n' + ORIG_BODY_PARAGRAPHS
+   // NEW_BODY becomes: ORIG_BODY_PARAGRAPHS + ' We also note an open question around drift detection.'
+   ```
+   The additive relationship is then structural. The diff-branch assertion + comment block survive unchanged.
+
+When the item is landed, `git mv` this file back to `tasks/review/`. The next architect re-review will cover the single fixture-shape edit.
+
+Dismissed at architect triage (audit, not blocking): correctness residual risks (dmp `Patch_Margin/cleanup` defaults could shift diffText size on lib bump, conf 15; Tiptap roundtrip perturbation in test 5, conf 20 — both far below the 75 gate); testing residual (in-place edit path omits `comment_options`; no test asserts the absence — pre-existing, theoretical, dismissable per `feedback_dismiss_preemptive_test_hardening`); maintainability M-T3-R1 (`edit.js:1063` line-number cross-reference in comment will drift, conf 50 — below gate, but the same class of fragility flagged in this round's M-1 finding on the sibling task; if convenient while in this file, drop the line number too, otherwise carry as advisory); adversarial adv-task3-1 (diff-branch hard-coded prose word count, P3/60 — below gate) and adv-task3-2 (sibling rewards-policy regressions uncovered, P3/75 — `percent_hbd: 0` is the load-bearing field per project policy; other fields aren't load-bearing for the no-display invariant, so pinning only that one is correct and complete).
+
+Learnings-researcher flagged two `/ce-compound` candidates (diff-match-patch fixture-sizing pattern; `percent_hbd: 0` rewards-policy pinning) for the archive checkpoint when the task lands clean.
+
+Cross-references: `agents/docs/solutions/conventions/mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md` (round-3 hold item 1's corpus-conditional-kill is the cleanest instance of this convention; doc may want a third Example entry on archive); `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` (adjacent guidance for M-T3-R1).
