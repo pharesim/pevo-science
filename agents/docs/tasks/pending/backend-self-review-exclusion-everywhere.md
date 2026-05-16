@@ -435,3 +435,97 @@ All four round-3 hold items addressed in a single commit on `main` post-rebase f
 Verification: `tsc --noEmit` clean, `npm run lint` clean (0 errors, 2 pre-existing seed-phrase warnings), touched test files pass against real Postgres on retry. HAF connect flakes on first attempt (Mahdi node transient unreachability) resolved on retry per round-2 disposition.
 
 The `git mv` to `tasks/review/` is the re-review signal.
+
+---
+
+## Architect re-review round-4 (2026-05-16) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `ba95a4a` dispatched 7 reviewers (correctness on Opus; testing, maintainability, project-standards, ce-learnings-researcher, ce-reliability, ce-adversarial on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). User-triaged 2026-05-16. **Major surfacing:** reliability + adversarial + learnings-researcher independently converged on a load-bearing finding the round-3 hold missed — the previously-believed-safe "sibling sites with `jsonb_typeof='array'` WHERE-clause guards" (profile.ts, stats.ts, reputation.ts:799) are NOT actually protected because Postgres evaluates `CROSS JOIN LATERAL` BEFORE the WHERE filter. R-1 is the SAME cascade-fail class as round-3's hold #1, just at a different CTE.
+
+Six items held below; three dismissed at triage. A separate follow-up task (`backend-jsonb-array-elements-lateral-guard-sweep.md`) covers the per-user-fail sibling sites discovered in this pass.
+
+### Items to address
+
+#### P1 — critical (same-class cascade-fail + list-endpoint sweep)
+
+**1. (P1) `citing_papers` CTE has the SAME cascade-fail class round-4 just fixed at `paper_resolved_votes` — the WHERE-clause `jsonb_typeof='array'` guard does NOT protect `CROSS JOIN LATERAL` from raising on non-array `pevo.citations`.**
+
+**Where:** `backend/src/reputation.ts:793-799` (citing_papers CTE).
+
+**Why:** Cross-corroborated at conf 100 by reliability R-1 (P1, conf 90) + adversarial (P2, conf 50 framed as architectural pattern, promoted via cross-corroboration) + learnings researcher (catalogued the LATERAL-evaluation-order trap as a re-introduction risk). The WHERE-clause `jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'` at line 799 is evaluated AFTER `CROSS JOIN LATERAL jsonb_array_elements(...)` at line 793. Postgres expands the SRF before applying the WHERE filter; a chain post with non-array `pevo.citations` (null, string, integer, object) raises `cannot extract elements from a scalar` and **crashes the entire daily reputation cycle for every user** — the exact class round-3 hold #1 framed as the load-bearing concern. Round-4 fixed `paper_resolved_votes` but the sibling CTE `citing_papers` inside the same `computeReputationBatch` query carries the identical vulnerability.
+
+**Fix:** wrap the `jsonb_array_elements` argument in CASE-WHEN at the SRF argument position, identical to round-4's `paper_resolved_votes` fix:
+
+```sql
+CROSS JOIN LATERAL jsonb_array_elements(
+  CASE WHEN jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'
+       THEN citing.json_metadata -> $3 -> 'citations'
+       ELSE '[]'::jsonb
+  END
+) AS cit
+```
+
+The redundant WHERE-clause guard at line 799 can be removed. Add a behavioral-test case mirroring the `paper_resolved_votes` describe block in `hafsql.test.ts` (synthetic VALUES + real Postgres; same skip-on-no-pg gating as item 5 below).
+
+**2. (P1) `authorsWithSupersessionSelect` at `hafsql.ts:732` has unguarded `jsonb_array_elements(... -> 'authors')` — list endpoint `/api/papers` crashes site-wide on any paper with non-array `pevo.authors`.**
+
+**Where:** `backend/src/hafsql.ts:732` (authorsWithSupersessionSelect helper).
+
+**Why:** Adversarial (P1, conf 85). Architect's round-3 hold-block enumerated `paper_resolved_votes` as THE cascade-fail site. Grep across the codebase reveals this helper added in commit `469a571` (before round-4) carries the same unguarded shape. Consumed by `/api/papers` listing per `papers.ts:626`. Blast radius is per-request (not cycle-wide) — but every paper-listing request crashes if any paper in the listing has malformed `authors`. Same diagnosis class as item 1.
+
+**Fix:** apply the same CASE-WHEN at SRF argument position. If the helper's shape is more complex (e.g., uses WITH ORDINALITY), preserve the additional clauses but move the array-type guard to argument position.
+
+#### P2 — moderate
+
+**3. (P2) Carve-out clause-(c) header at `hafsql.test.ts:653-659` falsely claims `review-parity-invariant.test.ts` exercises `paper_resolved_votes` shape — that companion does not exist.**
+
+**Where:** `backend/tests/hafsql.test.ts:653-659` (the new describe block's header).
+
+**Why:** Cross-corroborated at conf 100 by testing T2 (P2, conf 80) + project-standards PS-1 (P2, conf 90). Verified: `review-parity-invariant.test.ts` exercises the `paper_reviews` CTE (reviewer identity via `excludeSelfReviewWhere`), NOT `paper_resolved_votes` (voter identity via the inline CASE-WHEN guard). These are distinct CTEs. No file in `backend/tests/` exercises `paper_resolved_votes` against well-formed HAF rows. The clause-(c) chain is self-referential.
+
+**Fix:** implementer chooses ONE of:
+- **(a) Downgrade the header.** Acknowledge that no real-path companion exists for `paper_resolved_votes` and that the synthetic-VALUES test is the load-bearing coverage. File a follow-up task for a real-path integration test (or fold into the sibling-sweep task).
+- **(b) Add the companion.** Extend `review-parity-invariant.test.ts` (or a sibling file) with a real-HAF integration test exercising the `paper_resolved_votes` integrated path. Wider scope.
+
+Architect preference: (a) — the synthetic-VALUES test plus item 1's behavioral coverage (after fix) is sufficient defense for the load-bearing cycle-cascade class.
+
+**4. (P2) New CTE block comment at `reputation.ts:597-600` carries the SAME misframing round-3 hold #2 just corrected at the helper site.**
+
+**Where:** `backend/src/reputation.ts:597-600` (the new block comment added with the paper_resolved_votes guard).
+
+**Why:** Correctness PS-1 (P2, conf 90). The comment claims the inner `jsonb_typeof(a) = 'object'` guard "mirrors the helper round-2 hold #1 tightening so bare-string elements (authors: [alice, bob]) do not admit a named-string co-author as a non-self voter via a ->> hive returning NULL." This is the same misframing the round-3 hold #2 corrected at `hafsql.ts:334-341`: the guard is a **cascade-fail defense**, NOT an admission-tightening. The new behavioral test at `hafsql.test.ts` (this commit's own item 1 work) confirms bare-string co-authors ARE admitted as voters. The round-4 commit fixed the helper comment but added a sibling comment with the original misframing.
+
+**Fix:** rewrite the comment block at `reputation.ts:597-600` to match the actual behavior. Mirror the corrected helper comment at `hafsql.ts:334-341`: explain that the inner `jsonb_typeof(a) = 'object'` guard prevents `jsonb_array_elements` from raising on scalar elements AND prevents `->>'hive'` from being called on JSONB scalars (a no-op that yields NULL anyway), but does NOT exclude bare-string elements from being admitted as non-self voters — bare-string entries are NOT identity claims per `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`.
+
+**5. (P2) `it.skipIf(!isHafConfigured())` on the new describe block — the test runs against app Postgres (not HAF), but skips on the most common CI failure mode (HAF transient unreachability).**
+
+**Where:** `backend/tests/hafsql.test.ts:661-766` (the new paper_resolved_votes describe block).
+
+**Why:** Testing T1 (P2, conf 85). The describe block uses synthetic VALUES + `getPool()` (app Postgres), with no HAF queries. Gating on `isHafConfigured()` means the cascade-fail-defense canary skips whenever HAF is unreachable — the same flake class the commit message explicitly cites for rounds 2 and 3. The canary's load-bearing assertion (Postgres does not raise on malformed authors) goes vacuously green on the most likely failure scenario.
+
+**Fix:** change `it.skipIf(!isHafConfigured())` to skip only if `getPool()` returns null, OR drop the skip-if entirely if app Postgres is required infrastructure. The decision turns on whether `getPool()` is reliable in CI without HAF — if it is, drop the gate entirely.
+
+#### P3 — polish
+
+**6. (P3) Task-slug citation in `reputation.ts:595` comment rots on archive per `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`.**
+
+**Where:** `backend/src/reputation.ts:595` (the block comment for the new paper_resolved_votes guard).
+
+**Why:** Learnings researcher. The comment cites "BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #2" — a per-task coordination artifact that becomes unfindable on archive. Per the convention: replace with the shipped code symbol (`excludeSelfReviewWhere`) + the solution-doc path (`pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12.md`). Both survive archive.
+
+**Fix:** rewrite the round-1-hold-#2 reference as "the symmetric guard in `excludeSelfReviewWhere`'s EXISTS predicate (per `agents/docs/solutions/conventions/pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12.md`)."
+
+### Findings dismissed at triage (no action)
+
+- **(testing T3, P2 conf 75)** SQL-shape canary `jsonb_typeof(auth)='object'` added only to first `it` block. Round-3 architect explicitly said "first site is sufficient mutation kill; optionally add the same assertion to the other 2 shape blocks for consistency." Per architect's own prior direction, optional.
+- **(maintainability MNT-R1, P1 conf 72)** `subqueryShape` hand-typed copy from production CTE — drift risk if `reputation.ts` shape changes. Round-3 architect explicitly noted helper extraction is OPTIONAL. Dismissed per `feedback_dismiss_preemptive_test_hardening`.
+- **(adversarial #5, P3 conf 75)** Missing edge cases (`authors:[]`, `authors:[{}]`, `authors:[{hive:null}]`, mixed). Adversarial argues high churn rate makes this non-preemptive; round-3 dismissed an identical lattice-coverage finding per `hold-block-shape-coverage-must-walk-full-lattice-2026-05-14`. Consistency: dismiss.
+- **(adversarial #4, P3 conf 70)** `user_papers` CTE doesn't gate on author accreditation. Pre-existing architectural assumption, not introduced by this commit. Out of scope.
+
+### Follow-up task filed this round
+
+- **`backend-jsonb-array-elements-lateral-guard-sweep.md`** (architect files in `tasks/pending/`): sweeps the per-user-fail sibling sites where WHERE-clause guards on `CROSS JOIN LATERAL jsonb_array_elements(...)` are ineffective. Covers `profile.ts:143`, `stats.ts:72`, `notification-queries.ts:329, 358`, plus an audit step to grep all `jsonb_array_elements` sites in `backend/src/` and confirm each uses the CASE-WHEN-at-argument-position pattern or document why exempt. Reputation-cycle cascade sites (item 1's `citing_papers` + this commit's `paper_resolved_votes`) are NOT in the sweep — they live in this task's scope.
+
+### Re-review signal
+
+When items 1, 2, 3, 4, 5, 6 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `ba95a4a`. Items can fan out independently — natural groupings: item 1 (citing_papers guard + behavioral test) at `reputation.ts` + `hafsql.test.ts`; item 2 (authors helper guard) at `hafsql.ts`; items 3 + 4 (comment fixes) at the same two files; item 5 (skip-if change) at `hafsql.test.ts`; item 6 (comment rewrite) at `reputation.ts`. Items 4 + 6 both touch `reputation.ts` comments so bundle them.
