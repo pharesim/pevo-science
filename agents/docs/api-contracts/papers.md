@@ -485,10 +485,10 @@ Full-text search across PEvO papers and reviews.
 | `q` | string | **required** | Search query |
 | `type` | enum | `all` | `paper`, `review`, or `all`. Invalid or repeated values return `400 BAD_REQUEST` with `{ code: 'BAD_REQUEST' }`; clients MUST send a single value from the enum (no silent coerce). |
 | `discipline` | string | — | Filter by discipline. Match is case-insensitive (the backend lowercases both the query param and the stored value via `LOWER()`). Case-variant values share a single Redis cache entry. Pass `canon_name` from `GET /api/disciplines` as the canonical form. Repeated params (`?discipline=a&discipline=b`) are treated as no-filter rather than coerced to a single value; clients SHOULD send exactly one value. Values must match `^[\p{L}\p{N} \-]+$` (Unicode letters/digits/space/hyphen) and be at most 100 characters; longer or other-charset values return `400 BAD_REQUEST` with `{ code: 'BAD_REQUEST', message: 'Discipline filter invalid' }`. (The publish form accepts free-form custom disciplines that are wider than this filter charset, so a non-conforming value could theoretically reach chain and become unfilterable via this param. HAF audit on 2026-04-28 confirmed zero non-conforming disciplines on chain; re-audit if a user reports a paper missing from discipline-filtered results.) |
-| `language` | string | — | Filter by language code (e.g. `en`, `de`, `es`) |
-| `source` | enum | — | Filter by paper source: `native`, `bridge`, or omit for both |
+| `language` | string | — | Filter by language code (e.g. `en`, `de`, `es`). Non-string shapes (including repeated params like `?language=en&language=fr` which Express parses as `string[]`) return `400 BAD_REQUEST` with `{ code: 'BAD_REQUEST' }`; clients MUST send a single value (no silent coerce). |
+| `source` | enum | — | Filter by paper source: `native`, `bridge`, or omit for both. Invalid or repeated values return `400 BAD_REQUEST` with `{ code: 'BAD_REQUEST' }`; clients MUST send a single value from the enum (no silent coerce). |
 | `include_retracted` | boolean | `false` | Include retracted papers in results |
-| `sort` | enum | `relevance` | `relevance`, `date` |
+| `sort` | enum | `relevance` | `date`, `relevance`. Invalid or repeated values return `400 BAD_REQUEST` with `{ code: 'BAD_REQUEST' }`; clients MUST send a single value from the enum (no silent coerce). Prior versions of this endpoint silently fell through to `relevance` on unknown values; that contract changed in the 2026-05-16 query-param sweep. |
 | `page` | integer | `1` | Page number |
 | `limit` | integer | `20` | Results per page (max 100) |
 
