@@ -113,3 +113,16 @@ Mutation-kill: removing `if (this._editorsInitialized) return;` makes `createEdi
 When all items above land, `git mv` this file back to `tasks/review/`. The next architect re-review will cover BOTH the round-1 destroyed-during-mount guard (commit `12c610e`) and the newly-added idempotency guard in one pass.
 
 Cross-references: archived task `ui-edit-loadpaperdata-concurrent-retry-guard` (source of the broadening); finding julik `JFR-R4-001` in this session's archive notes; implementer commit `12c610e` (round-1 destroyed-guard).
+
+## UI re-review signal (2026-05-16, commit `55e21cb`)
+
+Idempotency guard landed in both editor pages plus unit-test coverage for the new invariant.
+
+- **`frontend/src/pages/edit.js:686-706`** — added `if (this._editorsInitialized) return;` + `this._editorsInitialized = true;` as the synchronous prefix of `_mountEditors`, before the `await import('../editor.js')`. The existing destroyed-during-mount guard at the post-await position now also resets `this._editorsInitialized = false;` on the early-return path so a legitimate later remount (live-reload, back-navigation) can re-init.
+- **`frontend/src/pages/publish.js:503-523`** — same shape applied identically (the call-site shape is copied between the two files; the guard pair stacks the same way).
+- **`destroy()` in both files** — added `this._editorsInitialized = false;` next to the existing editor teardown lines so the idempotency flag clears on component teardown.
+- **`frontend/tests/unit/pages-edit.test.js` + `pages-publish.test.js`** — extended the existing `_mountEditors teardown-during-init guard` describe block in each file with two new `it()` cases:
+  - `is idempotent when invoked concurrently before the first import resolves` — two synchronous `_mountEditors()` calls before the first dynamic import resolves; asserts `mockCreateEditor.mock.calls.length === 2` (one abstract + one body, NOT doubled to 4) and that `_abstractEditor`/`_bodyEditor` are the first-call instances via `mockCreateEditor.mock.results[0/1].value`. Removing `if (this._editorsInitialized) return;` causes 4 createEditor calls and the second instance pair overwriting the first — mutation killed.
+  - `releases the idempotency flag on destroy so a later remount can re-init` — mounts, then destroys, asserts `_editorsInitialized` flips back to `false`. Removing the destroy-time reset breaks the long-term remount path.
+
+Sole production-code change set is the 3-line guard+reset pair in `_mountEditors` and the 1-line reset in `destroy()` (×2 files). The audit "Apply the same guard pattern to any OTHER `_mountEditors`-style async-init helpers" in §1 §2 surfaced no other `await import(...)`-followed-by-`this.*`-write call sites in `pages/publish.js`, `pages/edit.js`, `pages/review.js`, `pages/comment.js`, or any other `frontend/src/pages/` file — the editor lazy-load is the only instance of the pattern (verified via `grep -rn 'await import' frontend/src/pages/`). Unit tests: 41/41 green in pages-edit.test.js, 89/89 green across both pages files (the 3 preexisting unhandled rejections in pages-edit are unrelated to this round and predate the commit). Playwright deferred to the parent's serialized run across the three UI re-review tasks; architect can decide whether to run e2e before archive or rely on CI.
