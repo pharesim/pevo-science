@@ -134,3 +134,63 @@ Acceptance items 1, 2, 4, 5 landed; item 3 (`document_hash` validation) deferred
 **Verification:** `npx tsc --noEmit` clean; `npm run lint` clean (only pre-existing seed-phrase warnings); targeted vitest 72 pass + 1 skipped across `tests/lib/ipfs-validation.test.ts` + `tests/routes/continuation-author-gate.test.ts` + `tests/routes/papers.test.ts` + `tests/routes/canonical-root-walker.test.ts`.
 
 **Out of scope honored:** `document_hash` validation deferred (acceptance item 3 was explicitly optional); `pevoString` not strengthened with trim/validate; convention docs untouched (architect-owned).
+
+---
+
+## Architect re-review round-2 (2026-05-16) — HELD PENDING FIXES
+
+`/ce-code-review` on commits `7a5ccc1` + `a264ec3` dispatched 9 reviewers (correctness, security, adversarial, testing, maintainability, project-standards, learnings, api-contract, kieran-typescript; `ce-agent-native-reviewer` skipped per root CLAUDE.md). Surfaced 1 P1 missed emit site + 1 P1 dead branch + 1 P2 type-clarity. 3 held below; other findings dismissed or noted for future scope.
+
+### Items to address
+
+**1. (P1) Missed fourth `ipfs_cid` emit site at `helpers.ts:321` `toPaperSummary()`**
+
+**Where:** `backend/src/helpers.ts:321` — `toPaperSummary()` returns `ipfs_cid: pevoString(pevo, 'ipfs_cid')` unwrapped. Consumed by `backend/src/routes/profile.ts:279` for `GET /api/profile/:username/papers` (and any other route that builds `PaperSummary`).
+
+**Why:** Task acceptance #2 enumerated three emit sites in `papers.ts` (listing summary, head/root atomic-triple branch, single-paper `buildPaperDetail`) — all wrapped correctly. But `toPaperSummary()` in `helpers.ts` is a **fourth** path that produces a paper response payload with `ipfs_cid`, and it's unwrapped. The exact attack class the task defends against (whitespace / control char / null byte / zero-width CID broadcast by a vouched co-author) bypasses the defense on the profile-papers route. Current frontend consumers of profile-papers are truthy-checks only (`paper-card.js:80`), so blast radius is bounded today — but the "validate at every emit boundary" convention is broken at the moment it's claimed to be established, and a future feature URL-constructing from a profile-papers `ipfs_cid` re-opens the surface silently.
+
+**Fix:** Wrap the assignment at `helpers.ts:321`:
+
+```ts
+ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), { author: post.author, permlink: post.permlink }),
+```
+
+Add a canary on `/api/profile/:username/papers` asserting a profile-papers response with a malformed-CID paper returns `ipfs_cid: null` + warn fires. Re-run the wrapping-primitive grep audit per `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`:
+
+```bash
+grep -n "ipfs_cid\s*[:=]" backend/src/
+```
+
+Include the verbatim grep output in the re-review signal block so a fifth missed site would be self-documented. Expected: 4 occurrences in `papers.ts` (all `validatedCid`-wrapped) + 1 occurrence in `helpers.ts` (now `validatedCid`-wrapped post-fix).
+
+**2. (P1) Dead branch in `validatedCid` typeof guard at `ipfs-validation.ts:83-97`**
+
+**Where:** `backend/src/lib/ipfs-validation.ts:83-97`.
+
+**Why:** Parameter declared `value: string | null | undefined`. Line 83 returns null on `null | undefined`, narrowing `value` to `string`. The `typeof value !== 'string'` guard at line 84 is unreachable; the 14-line `logger.warn` inside the dead branch will never fire. The inline comment ("Defensive: callers pass through pevoString/safePevoMeta...") describes a concern the declared signature does not actually admit. The bug is a type lie in either direction: either the signature is too narrow (intent is to guard `unknown`) or the branch is dead (intent is for `pevoString` to be the intake guard).
+
+**Fix:** Implementer's design choice between two shapes:
+
+- **Widen to `unknown`** — change signature to `validatedCid(value: unknown, context)`, making the branch live. Removes need for `as` casts at any future call site passing non-string values. Consistent with `isValidIpfsCid` already accepting `unknown`. Add a unit canary covering the non-string path (logger.warn fires for non-string input).
+- **Delete the branch** — accept `pevoString` as the intake guard. Cleanest if you trust the upstream contract; the four current call sites all pass `pevoString(...)` which returns `string | null`. Delete the typeof check + the unreachable warn.
+
+Pick one and update the JSDoc to match. Note which path was taken in the re-review signal so future contributors don't re-litigate.
+
+**3. (P2) Extract named interface `CidValidationContext` for the `context` parameter**
+
+**Where:** `backend/src/lib/ipfs-validation.ts:79-82` (`validatedCid` signature).
+
+**Why:** The `context` parameter is typed inline as `{ author: string; permlink: string }`. Named interfaces surface by name in editor hover, are importable by tests that construct context objects explicitly, and signal that the shape is a deliberate contract rather than an anonymous bag.
+
+**Fix:** Export `interface CidValidationContext { author: string; permlink: string; }` from `ipfs-validation.ts` and use it in the `validatedCid` signature.
+
+### Findings dismissed at triage (no action)
+
+- Cache cascade for malformed-then-corrected CID (adversarial A3 P2/75): malicious-content path is closed (cache stores `null`, not the attacker payload). Remaining cost is "legitimate corrective re-broadcast doesn't take effect for up to 30 min" — bounded annoyance, not a defect. PEvO's cache-is-perf-layer posture stands.
+- `pevoString` + `validatedCid` two-layer contract unenforced (adversarial A2 P2/70): grep-audit convention captured in `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` and applied at item #1 above. Reconsider AST-rule/typed-newtype investment if a second emit-time validator emerges (e.g., `document_hash` gets the same treatment).
+- `ipfs_filename` + `document_hash` siblings unvalidated (security S2 P3/50): task acceptance #3 explicitly deferred `document_hash` validation as optional. Current consumers escape both via Alpine `x-text`. Reopen if a future feature URL-constructs from either.
+- Carve-out invocation header missing from `backend/tests/lib/ipfs-validation.test.ts` (learnings LOW): unit test of a pure function — carve-out is for mocked-pool / observability-spy patterns. The file does spy on `logger.warn` (carve-out-eligible); implementer's call whether to add the formal header while touching the file for item #2.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round.md`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `a264ec3`. Items can land in any order or in one combined commit.
