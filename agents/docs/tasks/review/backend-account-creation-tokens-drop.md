@@ -217,3 +217,9 @@ Round-2 hold items 1-4 landed in this round-3 commit. All four are observability
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit.
+
+## Backend re-review signal (2026-05-16, round-4 fix commit)
+
+Round-3 hold item 1 (P3) landed: replaced the forward-reference "trips the consensus-rejection regex below and gets translated to" in the `invalidatePendingClaimedAccountsCache` catch-block comment at `backend/src/account-creation.ts` (the wrapped phrase spans lines 119-120) with "surfaces as a chain rejection, translated to". Pure comment edit; no behavior change. Anchor is now the behavioral invariant (chain rejection → retriable shape) rather than a forward-reference to a regex that lives ~150 lines later in a separate function (`createClaimedAccount`), so a future refactor of the broadcast catch site can't silently invalidate the comment.
+
+No new code paths, no test changes, no event-slug renames. The two pre-existing TODOs at the bottom of this file (api-contracts language sweep + predecessor task supersession) are unaffected.

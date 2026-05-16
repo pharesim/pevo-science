@@ -116,10 +116,10 @@ export async function invalidatePendingClaimedAccountsCache(): Promise<void> {
     //   - After `createClaimedAccount` consumes capacity, a missed
     //     invalidation leaves the cached counter stale-high, so the next
     //     consume call passes the pre-broadcast capacity check and races
-    //     against the chain. The losing broadcast trips the consensus-
-    //     rejection regex below and gets translated to the same retriable
-    //     error shape — graceful, but the user pays a round-trip we could
-    //     have avoided with a fresh read.
+    //     against the chain. The losing broadcast surfaces as a chain
+    //     rejection, translated to the same retriable error shape —
+    //     graceful, but the user pays a round-trip we could have avoided
+    //     with a fresh read.
     // Warn so operators have a visible anchor to correlate signup-impact
     // incidents (stale-low) or extra broadcast traffic (stale-high) back to
     // a specific Redis failure.
