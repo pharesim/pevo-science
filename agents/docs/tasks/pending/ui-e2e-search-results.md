@@ -113,3 +113,27 @@ All 3 sub-items landed in single commit `b030e6a ui(tests): restore bridge-paper
 - **Item 1c (P3 testing, mock body envelope drift).** Fixed at `search.spec.js:268-271`: changed `{status:'error', error:'mocked failure'}` (string) to `{status:'error', error: {code: 'INTERNAL_ERROR', message: 'mocked failure'}}`. Now matches the real backend envelope per `api.js:55-62` which destructures `errorBody.error.code` and `.message`. Test 6 now exercises the structured-error path it was always intended to assert; the previous accidental fallback through `INTERNAL_ERROR` no longer masks fidelity drift.
 
 Verification: `npx playwright test --list tests/e2e/search.spec.js` discovers all 6 tests cleanly. Parent will run Playwright once across the three UI re-review tasks before final archive.
+
+## Architect re-review (2026-05-16, round-3 → round-4) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `b030e6a` with 5 personas (correctness Opus; testing/maintainability/project-standards/learnings-researcher Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Round-3's three sub-items verified clean: the structured error envelope at `search.spec.js:268-271` correctly matches `api.js:64-71` consumption, the "tests 4 and 6" renumber is accurate against the current 6-test file, and the bridge-paper caveat is restored to the header. One P3 delta-finding to address before archive — same rot class round-3 just partially fixed.
+
+### Items to address
+
+**1. (P3) Hard-coded ordinal references in the file header will recur the same rot the round-3 renumber just corrected (`frontend/tests/e2e/search.spec.js:7-17`).** Cross-reviewer agreement: maintainability M-1 (conf 75) + learnings-researcher recommendation #1, both anchored on `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`. Round-3 renumbered `tests 4 and 9` to `tests 4 and 6`, but the comment still anchors on counts. The next test insertion/removal silently breaks the comment again. The convention-compliant form anchors on stable behavioral descriptions or test titles.
+
+   Fix: rewrite the two ordinal-anchored phrases in the header carve-out block. Concretely:
+   - "tests 4 and 6 mock `/api/search` via `page.route()`" → behavioral form, e.g. "the URL-pagination test and the search-error test mock `/api/search` via `page.route()`"
+   - "(test 4) requires..." and "(test 6) needs..." → "the pagination test requires..." and "the error-path test needs..."
+   - "plus tests 1, 2, 3, 5 here" → "plus the live-route tests in this file (keyword query, empty-result state, discipline-filter combination, result-card navigation)" or similar behavioral description
+   
+   Pick whichever phrasing reads less awkwardly to you. The bar is "the comment survives a test addition/removal/reorder without going stale". Behavioral descriptions are preferred over quoted titles where titles are long. Verify after editing by reading the comment block top-to-bottom and confirming it makes sense without counting tests.
+
+### Items dismissed at architect triage
+
+- testing RR-1 + TG-1: depth-gap on error-code propagation assertions — test asserts visible DOM only, not the structured `error.code` / `error.message` values. Pre-existing pattern; `feedback_dismiss_preemptive_test_hardening` applies.
+- maintainability RR-2: inline mock body literal vs shared fixture — single-use literal, no duplication exists yet.
+
+### Re-review signal
+
+When the docblock fix lands, `git mv` this file back to `tasks/review/`. Round-4 architect re-review scopes `/ce-code-review` to the round-4 commit. Anchor: single header-comment edit; one commit. No production-code changes expected.
