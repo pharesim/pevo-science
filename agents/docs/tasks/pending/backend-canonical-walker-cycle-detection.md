@@ -100,3 +100,40 @@ Backend signal block must attest: cycle canaries fail when the visited-Set check
 The "Sequencing: lands AFTER `backend-canonical-root-walker-author-gate` round-2 archives" constraint at the top of this file is a hard ordering dependency on the parent task's archive. **Architect re-reviewed the parent on 2026-05-06 and held it for round-3** (memo-threading omission at `resolveVersionsFromHaf:1421` plus two polish items); see the round-3 hold block at the bottom of `agents/docs/tasks/review/backend-canonical-root-walker-author-gate.md` (which has been `git mv`'d back to `tasks/pending/`). Backend now holds the next-action; this file stays blocked until round-3 lands and the parent archives.
 
 **Unblocked 2026-05-11 (backend startup triage):** parent `BACKEND-CANONICAL-ROOT-WALKER-AUTHOR-GATE` archived 2026-05-06 round-3 clean (see `tasks-archive.md` heading). Both unblock conditions met (round-3 landed; parent archived). File moved `blocked/ → pending/`.
+
+## Architect re-review (2026-05-16, round-1) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `3b5ca55` with 10 reviewers (correctness, security, adversarial at opus; testing, maintainability, project-standards, learnings, reliability, kieran-typescript, performance at sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). Visited-Set primitive, seeding semantics (start + initial predecessor on backward; root on forward), check-before-push order on forward walker, mutation-kill matrix attestation, and the cycle-event emission discipline all land structurally correctly. Two items hold for round-2: one cross-reviewer-corroborated event-naming asymmetry (item 1, expanded to all 3 backward-walker events), and one convention violation on task-slug citations (item 2).
+
+Several review findings were dismissed during architect triage: the iter-0 abort + null-permlink + memoKey-separator + cycle-event-type-alias items are all either pre-existing patterns, data-model-guaranteed-safe, or YAGNI for the call-site count. The mutation-kill comment attribution gap (cont_columns_invalid canary's stated discriminator vs the actual probe-count assertion that kills `visited.add()` removal) was dismissed as comment-only; the kill is real and the test stays green-on-orthogonal-mutations.
+
+### Items to address (bundle into one round-2 commit)
+
+**1. (P2, anchor 100, cross-reviewer maintainability + reliability + adversarial — ALSO bundles cross-task work from sibling wall-clock task review)** — Standardize all backward-walker event hop fields from `hopNumber: i + 1` (1-based) to `hopIndex: i` (0-based) for symmetry with the forward walker and with the wall-clock-budget events.
+
+   Background: forward walker (`continuation_chain_*` events) emits `hopIndex: i`. Backward walker (`canonical_root_walker_*` events) emits `hopNumber: i + 1`. The wall-clock events landed in the sibling task (`backend-haf-walker-wall-clock-budget`) also use `hopIndex: i` on both walkers. So the 0-based form is the established convention; the backward walker's 1-based form is the outlier. An operator dashboard joining cycle-detected against unauthorized_hop against depth_exceeded against wall-clock-exceeded events on the same walker reads cycle depth off by 1 on the backward walker.
+
+   This task's diff introduced the `canonical_root_walker_cycle_detected` event — the immediate scope of the asymmetry. The bundled scope (per user triage 2026-05-16) extends to the two other pre-existing backward-walker events that share the same off-by-one shape so the backward walker's event vocabulary converges in a single diff:
+
+   Fix backward walker events to use `hopIndex: i`:
+   - `canonical_root_walker_cycle_detected` (this task's diff, `papers.ts:~1735`): `hopNumber: i + 1` → `hopIndex: i`.
+   - `canonical_root_walker_unauthorized_hop` (`papers.ts:~1662`, pre-existing): `hopNumber: i + 1` → `hopIndex: i`.
+   - `canonical_root_walker_depth_exceeded` (`papers.ts:~1756`, pre-existing): if the event payload includes `hopNumber` or equivalent 1-based field, normalize to `hopIndex`.
+
+   Update all test assertions that read these fields (canonical-root-walker.test.ts). Mutation-kill: any assertion still asserting `hopNumber` after the rename fails at type-check or at runtime; converge.
+
+**2. (P3, anchor 100, cross-reviewer maintainability + learnings, convention violation)** — Drop the `See agents/docs/tasks/pending/backend-canonical-walker-cycle-detection.md` sentences at the 2 cycle-detection comment blocks in `papers.ts:~1335-1337` (forward walker) and `papers.ts:~1724-1726` (backward walker).
+
+   Per convention `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, code comments citing task-file slugs become dead pointers when the task archives. The surrounding inline comments already explain the cycle-detection mechanism without needing a task citation; the "See..." sentences can be dropped entirely. ~2 LOC removed.
+
+### Items dismissed during architect triage
+
+- **(P1, kieran-typescript KT-1) Asymmetric null guard on `next.permlink as string` at `papers.ts:~1325`.** Dismissed on data-model grounds — the `IS NOT NULL` SQL guard upstream (loop-continuation probe predicate landed in sibling wall-clock task) prevents NULL `cont_permlink` from reaching this code path. Verified at user triage.
+- **(P2, kieran-typescript KT-2) `memoKey` `/` separator invariant undocumented.** Dismissed as preemptive hardening — Hive account-name validation upstream enforces the charset constraint.
+- **(P2, kieran-typescript KT-3) Cycle event string literals untyped (no `CanonicalRootCycleEvent` parallel to `CanonicalRootBailReason`).** Dismissed — only 2 events at low drift risk; type alias adds ceremony without much payoff.
+- **(P3, conf 80, reliability R4) Mutation-kill comment attribution gap.** Test header attributes the `visited.add()` mutation kill to the cycle-event assertion; the probe-count assertion is actually the load-bearing killer for that specific mutation. Dismissed as comment-only nit; the kill is real per the matrix attestation.
+- **Below-gate dropped:** adversarial ADV-1 (P3, conf 50) composition canonical-redirect surfaces; adversarial ADV-2 (info, conf 80) structural 1-extra-SQL on cycle (not actionable); reliability R2 (info, conf 70) missing startAuthor on backward; learnings #2/#4 (advisory polish); testing TG-1/TG-2 (theoretical-only per `feedback_dismiss_preemptive_test_hardening`); kieran-typescript KT-4 (P3, conf 50) test inline structural types.
+
+### Re-review signal
+
+When items 1-2 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Item 1 is structural (touches 3 event payloads + test assertions). Item 2 is comment-only.
