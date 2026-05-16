@@ -428,11 +428,22 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
       if (raw) {
         try {
           const parsed = JSON.parse(raw) as {
-            mode: OrcidMode;
+            mode: unknown;
             username?: string;
             fresh_auth_target?: FreshAuthTarget;
           };
-          storedMode = parsed.mode;
+          // Round-2 hold #3: runtime membership guard on the deserialized
+          // `mode`. The compile-time `as OrcidMode` cast was a lie — a stale
+          // Redis entry written by a prior code version carrying an
+          // unrecognized literal would assign that string into a variable
+          // typed `OrcidMode`, then fall out of the dispatch switch at the
+          // end of this function with no `default` arm and send no response.
+          // Reject explicitly here so the failure mode is a clean 400 with
+          // a structured error instead of a hung request.
+          if (typeof parsed.mode !== 'string' || !VALID_MODES.has(parsed.mode)) {
+            return sendError(res, 400, 'BAD_REQUEST', 'Unrecognized state mode');
+          }
+          storedMode = parsed.mode as OrcidMode;
           storedUsername = parsed.username;
           storedFreshAuthTarget = parsed.fresh_auth_target;
         } catch {
@@ -540,6 +551,13 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
         // proof for the non-consent broadcast surface. Same binding to the
         // (orcidId, username) pair as fresh_auth, no per-op target.
         return await handleSessionAuth(res, orcidId, storedUsername!);
+      default:
+        // Round-2 hold #2: explicit `assertNever` so a future arm added to
+        // `OrcidMode` without a switch case fails at compile time instead
+        // of falling off the end of the switch body and sending no
+        // response. Matches the pattern at the three other switches in
+        // this file (handleAccredit / handleLink failedStep / lock state).
+        return assertNever(storedMode);
     }
   } catch (err) {
     // Round-5 hold #4: surface ORCID provider hangs as 504 with a
@@ -1159,10 +1177,26 @@ async function handleSessionAuth(
     return;
   }
 
-  const result = await pool.query<{ orcid: string | null }>(
-    'SELECT orcid FROM accounts WHERE username = $1 LIMIT 1',
-    [username],
-  );
+  // Round-2 hold #4: scoped try/catch on the DB lookup so a Postgres
+  // connection error surfaces as a discriminated 500 with the structured
+  // `orcid.session_auth.db_failed` event slug rather than propagating to
+  // the outer `/callback` catch (which would emit a generic
+  // `orcid.callback.failed` log indistinguishable from token-exchange or
+  // dispatch failures). Mirrors the sibling-handler discriminator pattern.
+  let result;
+  try {
+    result = await pool.query<{ orcid: string | null }>(
+      'SELECT orcid FROM accounts WHERE username = $1 LIMIT 1',
+      [username],
+    );
+  } catch (err) {
+    logger.error(
+      { event: 'orcid.session_auth.db_failed', route: 'orcid.handleSessionAuth', username, err },
+      'ORCID session-auth DB lookup failed',
+    );
+    sendError(res, 500, 'INTERNAL_ERROR', 'Session authentication failed');
+    return;
+  }
   if (result.rows.length === 0) {
     sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
     return;

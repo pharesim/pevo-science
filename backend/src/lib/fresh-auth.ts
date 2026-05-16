@@ -14,8 +14,11 @@
  * Wire shape
  * ----------
  * Token: 32-byte hex string, opaque to clients. Stored at
- * `${appTag}:fresh_auth:consent_op:${token}` (Redis when available;
- * in-memory fallback). TTL: `FRESH_AUTH_TTL_SECONDS` (5 min). Stored value:
+ * `${appTag}:fresh_auth:token:${token}` (Redis when available;
+ * in-memory fallback). The key prefix is kind-neutral — both
+ * consent-op-kind and session-kind entries share it, discriminated by
+ * the `kind` field inside the stored JSON value (not by key namespace).
+ * TTL: `FRESH_AUTH_TTL_SECONDS` (5 min). Stored value:
  * `{ username, mechanism, issued_at }` JSON. Consumption is single-use via
  * Redis `GETDEL` (or `delete()` on the in-memory map).
  *
@@ -137,7 +140,15 @@ export function isFreshAuthMechanism(value: unknown): value is FreshAuthMechanis
 export const FRESH_AUTH_TTL_SECONDS = 300;
 
 const TOKEN_BYTES = 32;
-const KEY_PREFIX = `${config.appTag}:fresh_auth:consent_op:`;
+// Kind-neutral key prefix. Both consent-op-kind (issueFreshAuthToken) and
+// session-kind (issueSessionFreshAuthToken) entries are stored under this
+// single namespace; the `kind` field inside the JSON value (not the key)
+// discriminates. The historical name was `:fresh_auth:consent_op:`, which
+// became a mislabel once session entries started sharing the prefix —
+// operator inspections of the Redis keyspace saw `consent_op`-prefixed
+// keys that were actually session entries. Renamed to kind-neutral
+// `:fresh_auth:token:` so the keyspace shape matches the storage reality.
+const KEY_PREFIX = `${config.appTag}:fresh_auth:token:`;
 
 /** Discriminates per-op consent proofs (target-bound) from session-level
  *  broadcast proofs (target-less). Non-consent broadcast surfaces don't
@@ -361,6 +372,17 @@ export async function issueSessionFreshAuthToken(
   const expiresAt = Math.floor(issuedAt / 1000) + FRESH_AUTH_TTL_SECONDS;
   const memExpiresAtMs = issuedAt + FRESH_AUTH_TTL_SECONDS * 1000;
 
+  // Round-4 hold #3 (carried from `issueFreshAuthToken`): write to memStore
+  // as a backup whenever Redis-issuance succeeds. The pre-fix path stored
+  // the token only in Redis on the happy path; if Redis flapped between
+  // issue and consume, the consume side fell through to memStore.get(token)
+  // → empty → spurious 'expired' 401 (the user just authenticated). With
+  // the backup write, a Redis-down consume can recover the entry from
+  // memStore. Single-use semantics are preserved: a successful Redis GETDEL
+  // deletes the canonical entry; the mem-store fallback path also calls
+  // memStore.delete() so the entry is consumed exactly once across the
+  // storage tiers. This block is NOT dead code in the Redis-success branch
+  // — it is the recovery path for a flap between issue and consume.
   memStore.set(token, { entry, expiresAt: memExpiresAtMs });
 
   const redis = getRedis();
@@ -378,6 +400,8 @@ export async function issueSessionFreshAuthToken(
         { err, username, event: 'fresh_auth.redis_set_failed' },
         'Falling back to in-memory store for session fresh-auth token',
       );
+      // memStore was already populated above — the token survives the
+      // Redis-write failure.
       return { token, expires_at: expiresAt, mechanism };
     }
   }

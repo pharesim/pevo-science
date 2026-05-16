@@ -607,31 +607,34 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       // Audit log (DB write, non-blocking) — captures only the success path.
       // Round-3: consent-op broadcasts also persist auth-mechanism + session
       // + user-agent per ARCH.md "Light-account signing of consent ops".
-      // Round-4 hold #9: `auditExtras` is typed as the discriminated
-      // CustodyAuditExtras union; the consent-variant constructor below pins
-      // `auth_mechanism` + `fresh_auth_outcome` together (TS no longer admits
-      // the half-populated shape that motivated the convention).
-      const auditExtras: CustodyAuditExtras | undefined = freshAuthMechanism === null
-        ? undefined
-        : {
-            auth_mechanism: freshAuthMechanism,
-            fresh_auth_outcome: 'verified',
-            session_id: bearerSessionId(req) ?? undefined,
-            user_agent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
-          };
+      // Round-4 hold #9: `auditExtras` is typed as `CustodyAuditExtras`;
+      // the constructor below pins `auth_mechanism` + `fresh_auth_outcome`
+      // together (TS no longer admits the half-populated shape that
+      // motivated the convention).
+      //
+      // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH round-2 hold #6:
+      // `freshAuthMechanism` is universally non-null on the success path now
+      // — both consent (line 372) AND non-consent (line 399) branches set
+      // it from `consumeFreshAuthToken` / `consumeSessionFreshAuthToken`
+      // results, and both consume helpers early-return 401/403 on missing
+      // or invalid proof before reaching this block. The prior
+      // `=== null ? undefined : {...}` arm was unreachable; inlined the
+      // populated branch.
+      const auditExtras: CustodyAuditExtras = {
+        auth_mechanism: freshAuthMechanism,
+        fresh_auth_outcome: 'verified',
+        session_id: bearerSessionId(req) ?? undefined,
+        user_agent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
+      };
       logCustodyBroadcast(username, opTypes, result.id, result.block_num, auditExtras).catch(() => {});
       // Pino-side per-attempt signal (round-2 hold #4 — every attempt logged).
-      logBroadcastAttempt(
-        'success',
-        freshAuthMechanism === null
-          ? { tx_id: result.id, block_num: result.block_num }
-          : {
-              tx_id: result.id,
-              block_num: result.block_num,
-              consent_action: consentAction,
-              auth_mechanism: freshAuthMechanism,
-            },
-      );
+      // See hold #6 note above: `freshAuthMechanism` is non-null here.
+      logBroadcastAttempt('success', {
+        tx_id: result.id,
+        block_num: result.block_num,
+        consent_action: consentAction,
+        auth_mechanism: freshAuthMechanism,
+      });
 
       return sendOk(res, {
         tx_id: result.id,
