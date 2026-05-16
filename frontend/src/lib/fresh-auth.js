@@ -38,7 +38,16 @@ export function getCachedSessionProof() {
     const raw = sessionStorage.getItem(PROOF_KEY);
     if (!raw) return null;
     const { token, expiresAt } = JSON.parse(raw);
-    if (!token || !expiresAt || Date.now() >= new Date(expiresAt).getTime()) {
+    if (!token || !expiresAt) {
+      sessionStorage.removeItem(PROOF_KEY);
+      return null;
+    }
+    // Malformed expiresAt (non-parseable date) yields NaN; `Date.now() >= NaN`
+    // is false, so a naive comparison would treat the entry as never-expiring.
+    // Treat NaN as corruption: clear the slot and return null so the consumer
+    // mints fresh.
+    const ts = new Date(expiresAt).getTime();
+    if (!Number.isFinite(ts) || Date.now() >= ts) {
       sessionStorage.removeItem(PROOF_KEY);
       return null;
     }
@@ -94,7 +103,10 @@ export function getCachedConsentOpProof(action, rootAuthor, rootPermlink) {
       sessionStorage.removeItem(CONSENT_OP_PROOF_KEY);
       return null;
     }
-    if (Date.now() >= new Date(entry.expiresAt).getTime()) {
+    // Malformed expiresAt yields NaN; `Date.now() >= NaN` is false. Treat
+    // NaN as corruption — mirrors getCachedSessionProof.
+    const ts = new Date(entry.expiresAt).getTime();
+    if (!Number.isFinite(ts) || Date.now() >= ts) {
       sessionStorage.removeItem(CONSENT_OP_PROOF_KEY);
       return null;
     }

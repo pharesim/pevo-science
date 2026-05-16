@@ -182,3 +182,31 @@ Surfaced by `/ce-code-review` of the now-archived `backend-orcid-fresh-auth-call
 Add a `typeof data.action === 'string' && data.root_author && data.root_permlink` guard before calling `cacheConsentOpProof` in `_handleFreshAuth`. On a missing or malformed field, set `this.status = 'error'` and `this.errorMessage = this.$t('orcid.verificationFailed')` (mirror the default-case error surface in the dispatch switch) so the failure becomes loud rather than silent. Land in the same commit as item 1 (mocks now match the real wire shape) + sub-items 3 + 4.
 
 This is a defense-in-depth measure against future backend drift; the backend integration test pin at `orcid.test.ts:3050+` is the primary contract guard. The SPA-side validation catches the case where the backend echo regresses *between* test runs (a release that ships with the echo dropped but the test suite not re-run).
+
+## UI re-review signal (2026-05-16, round-2, working tree)
+
+All four architect items landed in one commit per the hold-block directive.
+
+**Item 1 (verify):** existing unit tests in `frontend/tests/unit/pages-orcid-callback.test.js` continue to pass against the now-correct wire shape (backend `backend-orcid-fresh-auth-callback-echoes-target-triple` archived 2026-05-16). The mock-fabricated `(action, root_author, root_permlink)` fields in the round-1 tests now reflect the real backend echo, so the assertions became accurate rather than fabricated. No code change to `_handleFreshAuth` was needed for the wire-contract item itself; the existing field reads still match.
+
+**Folded sub-item 3 (test-file carve-out header):** added a JSDoc header to `frontend/tests/unit/pages-orcid-callback.test.js` documenting the clause (a) carve-out — mocks `alpinejs` (Alpine.data, Alpine.store) and `completeOrcid` from `api.js`; real paths impractical per-test (Alpine wiring + OAuth round-trip); clause (b)'s real-middleware requirement does not apply (no `verifyHiveSignature` exercised); clause (c)'s real-path companion is the deferred E2E in `ui-multi-author-consent-affordances`.
+
+**Folded sub-item 4 (NaN expiresAt fix, both helpers):** parallel-fixed `getCachedSessionProof` and `getCachedConsentOpProof` in `frontend/src/lib/fresh-auth.js`. Pattern applied to both: compute `const ts = new Date(entry.expiresAt).getTime();` once, then `if (!Number.isFinite(ts) || Date.now() >= ts) { sessionStorage.removeItem(KEY); return null; }`. Corrupted TTL entries now clear the slot like every other defensive branch. No dedicated test file added — the failure mode requires a malformed `expiresAt` in sessionStorage which no current code path produces (backend emits ISO strings, helpers always write `new Date().toISOString()`), so test coverage of this branch would qualify as preemptive-hardening under the project's default-dismiss posture. Behavior verified by code-review.
+
+**Item 5 (defensive triple validation):** added a guard at the top of `_handleFreshAuth` matching the architect's prescribed shape: `if (typeof data.action !== 'string' || !data.root_author || !data.root_permlink) { this.status = 'error'; this.errorMessage = this.$t('orcid.verificationFailed'); return; }`. Mirrors the dispatch-switch default-case error surface so a future backend regression that drops one of the echoed fields becomes a loud failure (visible error page) instead of silent UX rot (cache write with `undefined` slots, every lookup misses, user re-OAuths indefinitely).
+
+**Tests added** to `frontend/tests/unit/pages-orcid-callback.test.js` (4 new cases under "_verify - error classification"):
+
+- `fresh_auth with missing action: surfaces error, no cache write, no navigation`
+- `fresh_auth with missing root_author: surfaces error, no cache write`
+- `fresh_auth with missing root_permlink: surfaces error, no cache write`
+- `fresh_auth with non-string action: surfaces error, no cache write` — `typeof` strictness on `action`
+
+All 54 tests in the file pass (50 prior + 4 new).
+
+**Files touched:**
+- `frontend/src/lib/fresh-auth.js` — NaN-finite guard added to both cached-proof getters
+- `frontend/src/pages/orcid-callback.js` — defensive triple validation prefix in `_handleFreshAuth`
+- `frontend/tests/unit/pages-orcid-callback.test.js` — carve-out file header + 4 new tests
+
+**Out of scope (unchanged from round-1):** no backend changes, no consent-op broadcast helper, no consent-op UI. The E2E test deferred per acceptance §4 still waits for `ui-multi-author-consent-affordances` to land the consumer side.

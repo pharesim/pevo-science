@@ -1,3 +1,21 @@
+/**
+ * Unit tests for the orcid-callback Alpine page.
+ *
+ * Carve-out for deterministic edge-case coverage (root CLAUDE.md clause a):
+ * mocks `alpinejs` (Alpine.data, Alpine.store) and `completeOrcid` from
+ * api.js. Real paths are impractical per-test — the Alpine store/data wiring
+ * is non-trivial to bootstrap in isolation, and completeOrcid hits the live
+ * /api/orcid/callback endpoint, which requires a full OAuth round-trip
+ * (browser redirect to orcid.org, user consent, callback) that cannot be
+ * deterministically reproduced inside a vitest unit run. No backend auth
+ * middleware (verifyHiveSignature etc.) is exercised by this file, so
+ * clause (b)'s real-middleware requirement does not apply here.
+ *
+ * Real-path companion (clause c): the deferred E2E test in
+ * ui-multi-author-consent-affordances will exercise the live fresh_auth
+ * callback against a running backend once the consent-op consumer side
+ * lands (per the task file's acceptance §4).
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 
@@ -907,6 +925,95 @@ describe('orcidCallbackPage', () => {
       expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
       expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
+    // Defense-in-depth against a future backend regression that drops one of
+    // the echoed target fields. Without the guard, the SPA would silently
+    // write `{action: undefined, …}` into the cache and every subsequent
+    // strict-equality lookup would miss, leaving the user re-OAuthing
+    // indefinitely with no error surface. The backend integration test pin
+    // is the primary contract guard; this catches the case where a release
+    // ships with the echo dropped between test runs.
+    it('fresh_auth with missing action: surfaces error, no cache write, no navigation', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          // action intentionally omitted
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
+    it('fresh_auth with missing root_author: surfaces error, no cache write', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'author_accept',
+          // root_author intentionally omitted
+          root_permlink: 'some-paper',
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+    });
+
+    it('fresh_auth with missing root_permlink: surfaces error, no cache write', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'author_accept',
+          root_author: 'alice',
+          // root_permlink intentionally omitted
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+    });
+
+    it('fresh_auth with non-string action: surfaces error, no cache write', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 42, // wrong type
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
     });
 
     it('init sets backPath from getReturnPath for fresh_auth mode', () => {

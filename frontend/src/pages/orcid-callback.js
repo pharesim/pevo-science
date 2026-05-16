@@ -297,6 +297,21 @@ export function initOrcidCallbackPage() {
 
     _handleFreshAuth(data) {
       if (!this._mounted) return;
+      // Defense-in-depth on the echoed target triple. The backend integration
+      // test pin is the primary contract guard; this guard catches a release
+      // that ships with the echo dropped between test runs. Without it the
+      // SPA would silently write `undefined` into a target field and every
+      // subsequent strict-equality lookup would miss, leaving the user
+      // re-OAuthing indefinitely with no error surface.
+      if (
+        typeof data.action !== 'string' ||
+        !data.root_author ||
+        !data.root_permlink
+      ) {
+        this.status = 'error';
+        this.errorMessage = this.$t('orcid.verificationFailed');
+        return;
+      }
       // Target-bound consent-op proof: cache against the triple the backend
       // bound at /start (action + root_author + root_permlink) so the eventual
       // broadcast consumer can look it up by matching target. Single-slot
