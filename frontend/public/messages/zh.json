@@ -978,11 +978,11 @@
     "doneDescription": "您的账户现已通过 Hive Keychain 完全自主托管。请保留旧恢复助记词 30 天作为备份。",
     "failed": "Account upgrade failed. Please try again. If the problem persists, contact support.",
     "keychainImportWarning": {
-      "posting": "Keychain import incomplete: your posting key was not imported. You can retry from settings later.",
-      "active": "Keychain import incomplete: your active key was not imported. You can retry from settings later.",
-      "memo": "Keychain import incomplete: your memo key was not imported. You can retry from settings later."
+      "posting": "Your posting key was not imported into Hive Keychain. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help.",
+      "active": "Your active key was not imported into Hive Keychain. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help.",
+      "memo": "Your memo key was not imported into Hive Keychain. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help."
     },
-    "keychainImportFailed": "Keychain import did not complete. You can retry from settings later."
+    "keychainImportFailed": "Hive Keychain import did not complete. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help."
   },
   "resetPassword": {
     "requestTitle": "重置密码",

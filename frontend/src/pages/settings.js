@@ -738,9 +738,10 @@ export function initSettingsPage() {
       // any role, the user sees the success screen WITH per-role warnings
       // — the upgrade succeeded on-chain and the backend cleared stored
       // keys; only Keychain's local convenience-import is incomplete and
-      // the user can retry from settings later. Mid-loop denials must NOT
-      // wipe the mnemonic, must NOT mark the upgrade as failed, and must
-      // NOT skip backend cleanup — backend cleanup happens BEFORE the loop.
+      // the user can re-import the account into the Keychain extension
+      // using their seed phrase. Mid-loop denials must NOT wipe the
+      // mnemonic, must NOT mark the upgrade as failed, and must NOT skip
+      // backend cleanup — backend cleanup happens BEFORE the loop.
       try {
         // Validate old seed phrase
         const oldWords = this.oldSeedPhrase.trim().toLowerCase();
@@ -1218,9 +1219,10 @@ export function initSettingsPage() {
           // Sanitization pattern: raw err to console.warn for diagnostics,
           // localized message to user-visible warnings array.
           // Both denial and timeout funnel through here; the user's
-          // recovery action is the same either way ("retry from settings
-          // later"), so we reuse the per-role keychainImportWarning keys
-          // for both paths rather than introducing a separate
+          // recovery action is the same either way (re-import the
+          // account into the Keychain extension using the seed phrase),
+          // so we reuse the per-role keychainImportWarning keys for both
+          // paths rather than introducing a separate
           // keychainImportTimeout family.
           console.warn(`[custody upgrade] keychain import ${role}`, err);
           const key = `upgrade.keychainImportWarning.${role}`;
