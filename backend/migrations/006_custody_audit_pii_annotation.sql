@@ -39,6 +39,15 @@
 -- signing (`author_accept` / `author_resign`) and non-consent broadcasts
 -- (e.g., vote, comment, custom_json) that answer a session-kind or
 -- consent_op-kind fresh-auth challenge.
+--
+-- Scope on the wider table: `custody_audit_log` also stores non-broadcast
+-- custody-audit events (e.g., `login_failure`, `password_reset`,
+-- `account_recovery`, `recovery_failure`, `email_deleted`, `upgrade`,
+-- `upgrade_failure`); these rows do not run the broadcast fresh-auth gate,
+-- so `user_agent` is written as NULL by default. A NULL on this column
+-- therefore means either (a) the row is a non-broadcast custody-audit event,
+-- or (b) the row is a broadcast call but the HTTP client did not send a
+-- User-Agent header.
 
 COMMENT ON COLUMN custody_audit_log.user_agent IS
   'PII (GDPR / CNPD). Raw HTTP User-Agent header captured when a fresh-auth '
@@ -55,4 +64,11 @@ COMMENT ON COLUMN custody_audit_log.user_agent IS
   'broadcasts (e.g., vote, comment, custom_json) that answer a session-kind or '
   'consent_op-kind fresh-auth challenge. See the success-path auditExtras constructor '
   'inside the POST /api/custody/broadcast handler in backend/src/routes/custody.ts '
-  'for the insert path.';
+  'for the insert path. '
+  'Scope on the wider table: custody_audit_log also stores non-broadcast '
+  'custody-audit events (e.g., login_failure, password_reset, account_recovery, '
+  'recovery_failure, email_deleted, upgrade, upgrade_failure); these rows do not '
+  'run the broadcast fresh-auth gate, so user_agent is written as NULL by default. '
+  'A NULL on this column therefore means either (a) the row is a non-broadcast '
+  'custody-audit event, or (b) the row is a broadcast call but the HTTP client '
+  'did not send a User-Agent header.';

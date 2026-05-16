@@ -270,3 +270,23 @@ Verification:
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-5 architect review scopes `/ce-code-review` to the round-5 commit only.
+
+---
+
+## Backend re-review signal (2026-05-16, round-5 fix commit)
+
+Round-4 hold item 1 landed via in-place edit of `backend/migrations/006_custody_audit_pii_annotation.sql` (migration remains idempotent; no migration 007 needed). Architect's Option B applied at both occurrences (SQL header comment block + `COMMENT ON COLUMN` body); the existing retention / legal-basis / right-to-erasure / kind-classifier paragraphs preserved unchanged.
+
+**Wording landed.** A new "Scope on the wider table:" paragraph appended at both occurrences:
+
+> Scope on the wider table: custody_audit_log also stores non-broadcast custody-audit events (e.g., login_failure, password_reset, account_recovery, recovery_failure, email_deleted, upgrade, upgrade_failure); these rows do not run the broadcast fresh-auth gate, so user_agent is written as NULL by default. A NULL on this column therefore means either (a) the row is a non-broadcast custody-audit event, or (b) the row is a broadcast call but the HTTP client did not send a User-Agent header.
+
+The non-broadcast event list mirrors the architect's hold-block enumeration (login_failure / password_reset / account_recovery / recovery_failure / email_deleted / upgrade / upgrade_failure) and is `e.g.,`-prefixed to signal illustration rather than exhaustion (same shape as the existing broadcast op-type list per the round-4 hold #3 fix). The two NULL paths are labelled (a) and (b) so a CNPD inspector reading `\d+ custody_audit_log` lands on the unambiguous interpretation. No emdashes used; the architect's template emdash before "they do not run the fresh-auth gate" was rewritten as a separate sentence ("...write this column as NULL by default. A NULL on this column therefore means either...") for natural flow.
+
+Header SQL-comment block carries the same paragraph (lines 43-50) under a new `-- Scope on the wider table:` lead-in, matching the existing `-- Insert path reference:` structure above it.
+
+**Verification gates run.**
+- `grep -nE 'login_failure|password_reset|account_recovery|upgrade' backend/migrations/006_custody_audit_pii_annotation.sql`: matches at header lines 44-46 AND body lines 69-70. New wording present at both occurrences.
+- `grep -nE 'consent-op fresh-auth request' backend/migrations/006_custody_audit_pii_annotation.sql`: no matches (round-3/4 fix preserved; the old narrow-scope opening sentence is gone).
+- `cd backend && npx tsc --noEmit`: clean (migrations are SQL so not directly typechecked; run as sanity to confirm no accidental TS edits leaked).
+- `./deploy.sh migrate`: not run in worktree (no Docker access); parent will re-apply post-merge. `COMMENT ON COLUMN` is unconditional and overwrites per the migration's own header, so re-apply is safe.
