@@ -673,6 +673,68 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
 }
 
 /**
+ * SQL fragment that projects the `authors[]` array with supersession
+ * fields (`orcid_verified`, `orcid_discrepancy`) joined per-author against
+ * the `active_accreditations` CTE. Used by the paper-listing and
+ * paper-detail endpoints to surface the discrepancy between the
+ * chain-stored ORCID and the accreditation-attested ORCID, per
+ * `agents/docs/hive-schemas.md` § 1.1 "Canonical SQL pattern".
+ *
+ * Requires `active_accreditations` CTE to be in scope (combine with
+ * `activeAccreditationsCteBody` in the same WITH block).
+ *
+ * The pattern uses `jsonb_array_elements WITH ORDINALITY` so the per-author
+ * lookup happens in a single query rather than a per-paper round-trip,
+ * which matters for list endpoints joining many papers' authors at once.
+ * `ORDER BY a.ordinality` preserves the chain `authors[]` array order; the
+ * outer `COALESCE(..., '[]'::jsonb)` collapses the SQL-NULL that
+ * `jsonb_agg` returns for an empty/missing `authors[]` array to a JSON
+ * empty array, matching the JS-side `pevo.authors || []` shape.
+ *
+ * Supersession cases handled naturally by the LEFT JOIN (per `hive-schemas.md`
+ * § 1.1 notes):
+ *   - `authors[i].hive` empty/absent → no JOIN match → `aa.orcid` NULL →
+ *     `orcid_verified` NULL → `orcid_discrepancy` false.
+ *   - `authors[i].hive` set but not currently accredited → no JOIN match →
+ *     same as above.
+ *   - `authors[i].hive` accredited but the accreditation carries NULL
+ *     `orcid` → JOIN matches but `aa.orcid` NULL → same as above.
+ *   - `authors[i].hive` accredited with a non-NULL accreditation `orcid` →
+ *     `orcid_verified = aa.orcid`; `orcid_discrepancy = true` IFF the
+ *     chain `orcid` is also non-null AND differs from `aa.orcid`.
+ *
+ * @param commentAlias - SQL alias for the post row (e.g., 'c', 'p').
+ * @param appTagParam - bind-param placeholder for `config.appTag` (e.g., '$3').
+ * @returns SQL fragment (parenthesized subselect) suitable for inlining in
+ *   a SELECT projection. Aliased by the caller via `AS authors_with_supersession`
+ *   or similar; the fragment itself is column-alias-free for placement
+ *   flexibility.
+ */
+export function authorsWithSupersessionSelect(commentAlias: string, appTagParam: string): string {
+  return `COALESCE((
+    SELECT jsonb_agg(
+      jsonb_build_object(
+        'name',              a.elem ->> 'name',
+        'hive',              a.elem ->> 'hive',
+        'orcid',             a.elem ->> 'orcid',
+        'affiliation',       a.elem ->> 'affiliation',
+        'orcid_verified',    aa.orcid,
+        'orcid_discrepancy', CASE
+                               WHEN aa.orcid IS NOT NULL
+                                AND (a.elem ->> 'orcid') IS NOT NULL
+                                AND aa.orcid <> (a.elem ->> 'orcid')
+                               THEN true
+                               ELSE false
+                             END
+      )
+      ORDER BY a.ordinality
+    )
+    FROM jsonb_array_elements(${commentAlias}.json_metadata -> ${appTagParam} -> 'authors') WITH ORDINALITY AS a(elem, ordinality)
+    LEFT JOIN active_accreditations aa ON aa.account = (a.elem ->> 'hive')
+  ), '[]'::jsonb)`;
+}
+
+/**
  * Build a combined WITH clause from multiple CTE body fragments.
  * Returns the combined SQL, all params, and the next available parameter index.
  */

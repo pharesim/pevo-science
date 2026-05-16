@@ -32,6 +32,7 @@ import {
   accreditedVoteCount,
   activeAccreditationsCteBody,
   authorshipClaimsCteBody,
+  authorsWithSupersessionSelect,
   retractedPapersCteBody,
   buildWith,
   getCachedGenesisBlock,
@@ -228,6 +229,64 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
  *   the account is accredited but the on-chain attestation does not
  *   carry an ORCID — pass-through is the policy in that case.
  */
+/**
+ * Compute `orcid_verified` and `orcid_discrepancy` for a single author
+ * entry per `agents/docs/hive-schemas.md` § 1.1 supersession rule.
+ * Mirrors the SQL-side `authorsWithSupersessionSelect` semantics for
+ * code paths that build authors arrays in JS (continuation-chain union,
+ * `?version=N` reconstruction, `metadata_restored` fallback).
+ *
+ * Four cases:
+ *   - hive empty/absent OR not in `orcidMap` → verified=null, discrepancy=false.
+ *   - hive in `orcidMap` with null attestation → verified=null, discrepancy=false.
+ *   - hive in `orcidMap` with non-null attestation, chain orcid empty →
+ *     verified=attestation, discrepancy=false (no claim to compare against).
+ *   - hive in `orcidMap` with non-null attestation, chain orcid non-empty AND
+ *     differs from attestation → verified=attestation, discrepancy=true.
+ *
+ * @param hive - the author entry's hive username (already-normalized
+ *   lowercase form preferred; `orcidMap` keys are exact account names
+ *   from `active_accreditations`).
+ * @param chainOrcid - the chain-stored `authors[i].orcid` value, or null
+ *   when the field is missing/empty.
+ * @param orcidMap - per-accredited-account ORCID map from
+ *   `getAccreditedOrcidsByAccount` (`null` value = accredited without ORCID).
+ */
+function computeSupersession(
+  hive: string | undefined | null,
+  chainOrcid: string | undefined | null,
+  orcidMap: Map<string, string | null>,
+): { orcid_verified: string | null; orcid_discrepancy: boolean } {
+  if (!hive || typeof hive !== 'string') {
+    return { orcid_verified: null, orcid_discrepancy: false };
+  }
+  const attested = orcidMap.has(hive) ? (orcidMap.get(hive) ?? null) : null;
+  const claimed = typeof chainOrcid === 'string' && chainOrcid.length > 0 ? chainOrcid : null;
+  const discrepancy = attested !== null && claimed !== null && attested !== claimed;
+  return { orcid_verified: attested, orcid_discrepancy: discrepancy };
+}
+
+/**
+ * Apply the supersession rule to a chain-shaped authors array. Returns a
+ * new array (does not mutate the input). Each entry's chain fields are
+ * preserved verbatim; `orcid_verified` and `orcid_discrepancy` are added
+ * per the four-case rule in `computeSupersession`.
+ */
+function applyAuthorSupersession(
+  authors: unknown,
+  orcidMap: Map<string, string | null>,
+): Array<Record<string, unknown>> {
+  if (!Array.isArray(authors)) return [];
+  return authors.map((entry) => {
+    if (!entry || typeof entry !== 'object') return {};
+    const e = entry as Record<string, unknown>;
+    const hive = typeof e.hive === 'string' ? e.hive : null;
+    const chainOrcid = typeof e.orcid === 'string' ? e.orcid : null;
+    const supersession = computeSupersession(hive, chainOrcid, orcidMap);
+    return { ...e, ...supersession };
+  });
+}
+
 function buildCumulativeAuthorsForChain(
   chainPosts: Array<{ author: string; permlink: string; pevo: Record<string, unknown> }>,
   rootAuthor: string,
@@ -316,11 +375,20 @@ function buildCumulativeAuthorsForChain(
     // signal. Mismatch emits an audit event so accreditation-revocation
     // triage can correlate spoof attempts; missing-claim prefills from
     // accreditation; matching claim passes through.
+    // Capture the chain-claimed ORCID BEFORE the existing server-override
+    // mutates `out.orcid`. The supersession fields (`orcid_verified`,
+    // `orcid_discrepancy`) per `hive-schemas.md` § 1.1 compare attestation
+    // against the chain-claimed value; if we sampled `out.orcid` after the
+    // override, the discrepancy signal would always be false on
+    // overridden chain papers (a known constraint of running both layers
+    // simultaneously, called out in the task body).
+    const preOverrideChainOrcid = typeof out.orcid === 'string' && (out.orcid as string).length > 0
+      ? (out.orcid as string)
+      : null;
+
     if (accreditedAccounts.has(hive)) {
       const accreditedOrcid = accreditedOrcids.get(hive) ?? null;
-      const claimedOrcid = typeof out.orcid === 'string' && (out.orcid as string).length > 0
-        ? (out.orcid as string)
-        : null;
+      const claimedOrcid = preOverrideChainOrcid;
       if (accreditedOrcid) {
         if (claimedOrcid && claimedOrcid !== accreditedOrcid) {
           logger.warn(
@@ -345,6 +413,15 @@ function buildCumulativeAuthorsForChain(
       // else: accredited account but accreditation attestation has no
       // on-chain ORCID — pass the chain-claim through unchanged.
     }
+
+    // Supersession fields (BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION). The
+    // attested ORCID and discrepancy signal must be computed against the
+    // PRE-override chain claim so consumers can see when the publisher's
+    // broadcast value diverged from the eventual attestation — even on
+    // chain papers where `out.orcid` has been server-overridden.
+    const supersession = computeSupersession(hive, preOverrideChainOrcid, accreditedOrcids);
+    out.orcid_verified = supersession.orcid_verified;
+    out.orcid_discrepancy = supersession.orcid_discrepancy;
 
     return out;
   });
@@ -519,6 +596,7 @@ async function fetchPapersFromHaf(
           ${reviewCountSelect},
           ${citationCountSelect},
           ${avgRatingSelect},
+          ${authorsWithSupersessionSelect('c', appTagParam)} AS authors_with_supersession,
           0 AS author_reputation
         FROM ${T.comments} c
         WHERE ${where}
@@ -555,6 +633,16 @@ async function fetchPapersFromHaf(
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {
       const meta = parseMeta(r.json_metadata);
       const pevo = safePevoMeta(meta);
+      // Supersession-aware authors from SQL (per
+      // BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION + `hive-schemas.md` § 1.1).
+      // The SQL helper LEFT JOINs each author against `active_accreditations`
+      // in a single query so the per-author lookup doesn't multiply by
+      // result-set size. The `pevoAuthors` raw projection below is kept for
+      // the `accredited_authors` filter (which only needs the hive list)
+      // and the `is_accredited` check.
+      const authorsWithSupersession = Array.isArray(r.authors_with_supersession)
+        ? (r.authors_with_supersession as Array<Record<string, unknown>>)
+        : [];
       const pevoAuthors: Array<{ hive?: string }> = (pevo.authors || []) as Array<{ hive?: string }>;
       const voteKey = `${r.author}/${r.permlink}`;
       const resolved = voteData.get(voteKey);
@@ -570,7 +658,7 @@ async function fetchPapersFromHaf(
         abstract: r.abstract,
         discipline: paperDisciplineField(pevo.discipline),
         keywords: pevoStringArray(pevo, 'keywords'),
-        authors: pevoAuthors,
+        authors: authorsWithSupersession,
         ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
           author: r.author as string,
           permlink: r.permlink as string,
@@ -730,7 +818,20 @@ async function fetchPaperDetailFromHaf(
     // (an unaccredited author posting type=bridge_paper) cannot reach the
     // post-fetch isPevoAnyPaper(meta, author) check — bridge identity is
     // enforced at the SQL layer for defense in depth.
-    const detailWhere = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$4', source: 'all' });
+    //
+    // Wraps the paper SELECT with `activeAccreditationsCteBody` so the
+    // `authorsWithSupersessionSelect` projection (per
+    // BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION + `hive-schemas.md` § 1.1)
+    // can LEFT JOIN per-author against the `active_accreditations` CTE
+    // in-query. Param layout: $1=author, $2=permlink, $3=bridgeAccount,
+    // $4=appTag (CTE), $5=authorities (CTE), $6=genesis (CTE). The
+    // author+permlink positions stay at $1+$2 to preserve the responder
+    // contract with existing tests; the CTE params anchor at $4 via
+    // `activeAccreditationsCteBody(4)`. `appTag` ($4) is reused for
+    // `parent_permlink`, the detailWhere helper, and the
+    // authors-projection's JSON path — same value, single bind position.
+    const detailCte = activeAccreditationsCteBody(4);
+    const detailWhere = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$4', bridgeAccountParam: '$3', source: 'all' });
     // Resolve the continuation chain ONCE up-front and hand it to
     // reconstructVersionsFromHaf to avoid duplicate
     // `fetchHeadAuthorizedAuthors` + chain-walk queries (one each from this
@@ -746,13 +847,15 @@ async function fetchPaperDetailFromHaf(
     // / fullVersions / retraction avoids serial latency on cold cache.
     const [paperResult, fullVersions, retraction, accreditedAccountSet, accreditedOrcidsByAccount, authorReputation] = await Promise.all([
       pool.query(
-        `SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
-                c.created, c.last_edited
+        `WITH ${detailCte.sql}
+         SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
+                c.created, c.last_edited,
+                ${authorsWithSupersessionSelect('c', '$4')} AS authors_with_supersession
          FROM ${T.comments} c
          WHERE c.author = $1 AND c.permlink = $2
-           AND c.parent_author = '' AND c.parent_permlink = $3
+           AND c.parent_author = '' AND c.parent_permlink = $4
            AND ${detailWhere}`,
-        [author, permlink, config.appTag, config.hiveBridgeAccount],
+        [author, permlink, config.hiveBridgeAccount, ...detailCte.params],
       ),
       reconstructVersionsFromHaf(author, permlink, chain, memo, signal),
       getRetractionInfo(author, permlink),
@@ -773,6 +876,16 @@ async function fetchPaperDetailFromHaf(
     if (!isPevoAnyPaper(meta, row.author as string)) return null;
 
     const detail = buildPaperDetail(row, meta, []);
+    // Supersession-aware authors from the SQL LEFT JOIN against
+    // `active_accreditations` (per `hive-schemas.md` § 1.1). Overrides
+    // `buildPaperDetail`'s raw `pevo.authors || []` so the response carries
+    // `orcid_verified` + `orcid_discrepancy`. Continuation-chain papers
+    // override this again further down via `buildCumulativeAuthorsForChain`,
+    // which populates the same fields from the request-scoped
+    // `accreditedOrcidsByAccount` map.
+    if (Array.isArray(row.authors_with_supersession)) {
+      detail.authors = row.authors_with_supersession as Array<Record<string, unknown>>;
+    }
     const versions = fullVersions.map(({ body: _body, json_metadata: _meta, post_author: _pa, post_permlink: _pp, ...entry }) => entry);
     detail.versions = versions.length > 0 ? versions : [{ version_number: 1, block_num: 0, created: detail.created as string, title: detail.title as string, is_content_revision: true }];
     detail.is_retracted = retraction.is_retracted;
@@ -2157,6 +2270,14 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
         const detail = buildPaperDetail(post, meta, []);
         detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
 
+        // Supersession (`hive-schemas.md` § 1.1) on the JS-reconstructed
+        // authors array: this branch builds `detail` from a version row
+        // without running the SQL-side `authorsWithSupersessionSelect`
+        // projection, so apply the same rule in JS via the per-request
+        // ORCID map.
+        const orcidMapForVersion = await getAccreditedOrcidsByAccount();
+        detail.authors = applyAuthorSupersession(detail.authors, orcidMapForVersion);
+
         const retraction = await getRetractionInfo(author, permlink);
         detail.is_retracted = retraction.is_retracted;
         detail.retraction_reason = retraction.retraction_reason ?? null;
@@ -2188,6 +2309,11 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
         const detail = buildPaperDetail(post, meta, []);
         detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
         detail.metadata_restored = true;
+
+        // Supersession on the metadata-restored fallback. Same shape as
+        // the ?version=N branch above.
+        const orcidMapForRestored = await getAccreditedOrcidsByAccount();
+        detail.authors = applyAuthorSupersession(detail.authors, orcidMapForRestored);
 
         const retraction = await getRetractionInfo(author, permlink);
         detail.is_retracted = retraction.is_retracted;
