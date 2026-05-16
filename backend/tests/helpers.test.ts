@@ -302,7 +302,7 @@ describe('toPaperSummary', () => {
         discipline: 'neuroscience',
         keywords: ['brain', 'cognition'],
         authors: [{ name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' }],
-        ipfs_cid: 'QmTest123',
+        ipfs_cid: 'QmS4ustL54uo8FzR9455qaxZwuMiUhyvMcX9Ba8nUH4uVv',
       },
     };
 
@@ -313,7 +313,7 @@ describe('toPaperSummary', () => {
     expect(result.abstract).toBe('Abstract text here that is short');
     expect(result.discipline).toBe('neuroscience');
     expect(result.keywords).toEqual(['brain', 'cognition']);
-    expect(result.ipfs_cid).toBe('QmTest123');
+    expect(result.ipfs_cid).toBe('QmS4ustL54uo8FzR9455qaxZwuMiUhyvMcX9Ba8nUH4uVv');
     expect(result.net_votes).toBe(5);
     expect(result.review_count).toBe(0); // accurate count requires HAF; defaults to 0
     expect(result.citation_count).toBe(0);
