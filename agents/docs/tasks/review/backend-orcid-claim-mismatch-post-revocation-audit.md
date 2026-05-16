@@ -201,3 +201,19 @@ Request-scoped `auditedKeys: Set<string>` initialized at function entry in `buil
 4. **Post-revocation match (non-firing)**: bob's claim equals alice's last-attested ORCID. Asserts: no audit fires.
 
 [TODO Architect] Audit event schema documentation — the `accreditationStatus` field is a new additive field on the `orcid_claim_mismatch` event payload. If `agents/docs/ARCHITECTURE.md` enumerates audit event payloads (it currently does not have a dedicated audit-event-schema section), the new field would be a natural addition. Suggest the architect decide whether to document the field there or in an inline doc-comment on the audit emission site (the latter is what the implementation already does). The `accreditationStatusCteBody` docstring covers the SQL-side multi-cycle invariant. No `ARCHITECTURE.md` updates were made under this task to respect the agent-zone boundary.
+
+---
+
+## Parent re-review note (2026-05-16, post-merge vitest run) — KNOWN TEST FAILURES, production code unaffected
+
+After cherry-picking the worker commit onto main, parent ran `npx vitest run tests/routes/papers-cumulative-orcid-audit.test.ts`. Result: 3 of 4 tests fail with `expected undefined to be defined` at `findAuditEvent(warnSpy)`. The remaining test ("post-revocation match, non-firing canary") passes correctly.
+
+**Root cause is test-mock infrastructure, not production code.** Vitest output shows the canonical-root walker emitting `event: canonical_root_walker_start_invalid, reason: cont_columns_invalid` for every test request. The walker SQL at `backend/src/routes/papers.ts:1746-1756` selects `cont_author` / `cont_permlink` columns from the start row, then bails at line 1815 when those columns aren't strings. The worker's `seedTwoLinkChain` mocked `rootRow` (lines 164-167) omits `cont_author` and `cont_permlink` fields entirely.
+
+The mock uses `headAuthorsLookupSql` (matcher at line 128) for the walker's start lookup, which is structurally wrong: the walker's SQL selects different columns than the head-authors lookup. Result: walker rejects START → `buildCumulativeAuthorsForChain` runs with the truncated chain (root-only, no continuation) → bob/v2's forged claim never reaches the audit emission → spy captures nothing.
+
+**Production code at `papers.ts:434-528` (the active+revoked arms) is correct** — audit fires when active and override applies; audit fires on revoked without override. The SQL helper `getAccreditationOrcidsWithStatus` correctly handles single- and multi-cycle history via the `accreditation_status` CTE.
+
+Fix is test-only: the worker should either (a) add a separate `canonicalRootWalkerStartSql` matcher that returns a row with `cont_author='alice'`, `cont_permlink='p1'` plus the head-row identity, or (b) extend the existing matcher to handle both cases. The audit-emission assertions are correct; only the chain-reachability needs the mock fix.
+
+Architect: hold for round-2 with the test-mock fix as the single item, or accept the production code and route the test fix to a follow-up if archive timing matters.
