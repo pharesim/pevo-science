@@ -4,26 +4,44 @@ import Alpine from 'alpinejs';
  * Broadcast operations to Hive, routing to either Keychain or the
  * custodial broadcast endpoint based on the session's custody claim.
  *
- * @param {string} username - Hive username performing the operations
+ * For light accounts the backend requires a single-use `fresh_auth_proof`
+ * on every call (consent and non-consent). Callers MUST mint one via
+ * `mintNonConsentProof()` (non-consent bundles) or the consent-op flow
+ * (consent bundles) and pass it as `opts.freshAuthProof`. The optionality
+ * at the JS API level is a migration affordance and will tighten once all
+ * call sites are wired; Keychain (self-custody) does not need a proof.
+ *
+ * @param {string} username
  * @param {Array} operations - Array of [opType, opBody] tuples
- * @param {string} [keyType='posting'] - Keychain key type (ignored for light accounts)
- * @returns {Promise<{tx_id?: string, block_num?: number}>}
+ * @param {object|string} [opts] - Options object, or legacy keyType string ('posting'|'active')
+ * @param {string} [opts.freshAuthProof] - Single-use proof token (light-account only)
+ * @param {string} [opts.keyType='posting'] - Keychain key type (self-custody only)
+ * @returns {Promise<{tx_id?: string, block_num?: number, outcome?: string}>}
  */
-export async function broadcastOps(username, operations, keyType = 'posting') {
+export async function broadcastOps(username, operations, opts = {}) {
+  // Back-compat: third arg used to be a bare keyType string.
+  const { freshAuthProof, keyType = 'posting' } =
+    typeof opts === 'string' ? { keyType: opts } : opts;
   const auth = Alpine.store('auth');
 
   if (auth.custody === 'light') {
+    const body = { operations };
+    if (freshAuthProof) body.fresh_auth_proof = freshAuthProof;
     const res = await fetch('/api/custody/broadcast', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${auth.token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ operations }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || 'Broadcast failed');
+      const respBody = await res.json().catch(() => ({}));
+      const err = new Error(respBody.error?.message || respBody.error || 'Broadcast failed');
+      err.status = res.status;
+      err.code = respBody.error?.code;
+      err.details = respBody.error?.details;
+      throw err;
     }
     return res.json();
   }

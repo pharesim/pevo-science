@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { completeOrcid } from '../api.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { cacheSessionProof, getReturnPath, clearReturnPath } from '../lib/fresh-auth.js';
 
 const template = `
       <div x-data="orcidCallbackPage" class="container-narrow py-8">
@@ -96,6 +97,8 @@ export function initOrcidCallbackPage() {
         this.backPath = '/accreditation';
       } else if (mode === 'link') {
         this.backPath = '/settings';
+      } else if (mode === 'session_auth') {
+        this.backPath = getReturnPath() || '/';
       }
 
       this._verify(code, state, mode);
@@ -212,6 +215,9 @@ export function initOrcidCallbackPage() {
         case 'link':
           this._handleLink(data);
           break;
+        case 'session_auth':
+          this._handleSessionAuth(data);
+          break;
         default:
           this.status = 'error';
           this.errorMessage = this.$t('orcid.verificationFailed');
@@ -276,6 +282,18 @@ export function initOrcidCallbackPage() {
       // Signal settings page to show success
       localStorage.setItem('pevo_orcid_link_complete', '1');
       this.navigate('/settings');
+    },
+
+    _handleSessionAuth(data) {
+      if (!this._mounted) return;
+      // Backend returns `fresh_auth_proof` + `expires_at`. Cache for re-use
+      // within the 5-minute TTL, then bounce the user back to where they
+      // initiated the broadcast so they can retry it.
+      cacheSessionProof(data.fresh_auth_proof, data.expires_at);
+      const returnPath = getReturnPath() || '/';
+      clearReturnPath();
+      Alpine.store('toast')?.show(this.$t('orcid.reauthSuccess'), 'success');
+      this.navigate(returnPath);
     },
   }));
 }

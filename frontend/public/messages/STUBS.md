@@ -959,3 +959,21 @@ pt: upgrade.rateLimited
 sv: upgrade.rateLimited
 tr: upgrade.rateLimited
 zh: upgrade.rateLimited
+
+### Added 2026-05-16 (UI-NON-CONSENT-BROADCAST-FRESH-AUTH-WIRING)
+
+ar: orcid.reauthSuccess
+cs: orcid.reauthSuccess
+da: orcid.reauthSuccess
+de: orcid.reauthSuccess
+es: orcid.reauthSuccess
+fa: orcid.reauthSuccess
+fr: orcid.reauthSuccess
+he: orcid.reauthSuccess
+it: orcid.reauthSuccess
+nl: orcid.reauthSuccess
+pl: orcid.reauthSuccess
+pt: orcid.reauthSuccess
+sv: orcid.reauthSuccess
+tr: orcid.reauthSuccess
+zh: orcid.reauthSuccess

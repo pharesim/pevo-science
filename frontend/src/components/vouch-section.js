@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchVouchStatus, notifyVouch, notifyRetractVouch } from '../api.js';
-import { broadcastOps } from '../signer.js';
+import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
 import { getAppTag } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 
@@ -82,7 +82,7 @@ export function initVouchSection() {
       this.message = '';
       try {
         const APP_TAG = getAppTag();
-        await broadcastOps(this.username, [['custom_json', {
+        const broadcastResult = await broadcastWithFreshAuth(this.username, [['custom_json', {
           required_auths: [],
           required_posting_auths: [this.username],
           id: APP_TAG,
@@ -95,6 +95,7 @@ export function initVouchSection() {
           }),
         }]]);
         if (!this._mounted) return;
+        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
         try {
           const res = await notifyVouch(this.targetUsername);
           if (!this._mounted) return;
@@ -124,7 +125,7 @@ export function initVouchSection() {
       this.message = '';
       try {
         const APP_TAG2 = getAppTag();
-        await broadcastOps(this.username, [['custom_json', {
+        const broadcastResult = await broadcastWithFreshAuth(this.username, [['custom_json', {
           required_auths: [],
           required_posting_auths: [this.username],
           id: APP_TAG2,
@@ -137,6 +138,7 @@ export function initVouchSection() {
           }),
         }]]);
         if (!this._mounted) return;
+        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
         try {
           const res = await notifyRetractVouch(this.targetUsername);
           if (!this._mounted) return;

@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, submitAnonymousReview } from '../api.js';
-import { broadcastOps } from '../signer.js';
+import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
 import { slugify } from '../crypto.js';
 import { getAppTag, getAppId } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
@@ -316,8 +316,9 @@ export function initReviewPage() {
               extensions: [],
             }],
           ];
-          await broadcastOps(username, reviewOps);
+          const broadcastResult = await broadcastWithFreshAuth(username, reviewOps);
           if (!this._mounted) return;
+          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
         }
 
         this.step = 'success';

@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } from '../api.js';
-import { broadcastOps } from '../signer.js';
+import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { loadAccreditedDirectory, lookupAccredited, applyHiveChangePrefill, applyAccreditedPrefill } from '../lib/accredited-directory.js';
@@ -1005,8 +1005,9 @@ export function initEditPage() {
               extensions: [],
             }],
           ];
-          await broadcastOps(username, continuationOps);
+          const continuationResult = await broadcastWithFreshAuth(username, continuationOps);
           if (!this._mounted) return;
+          if (continuationResult === FRESH_AUTH_REDIRECT_PENDING) return;
 
           // Invalidate cache for the canonical paper
           const canonicalAuthor = this.paper.canonical_author || this.paper.author;
@@ -1098,8 +1099,9 @@ export function initEditPage() {
               json_metadata: JSON.stringify(jsonMetadata),
             }],
           ];
-          await broadcastOps(username, editOps);
+          const editResult = await broadcastWithFreshAuth(username, editOps);
           if (!this._mounted) return;
+          if (editResult === FRESH_AUTH_REDIRECT_PENDING) return;
 
           // Cache invalidation keys off the canonical root, not the
           // edit target — the paper-detail endpoint resolves any chain

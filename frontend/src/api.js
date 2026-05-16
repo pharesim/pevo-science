@@ -231,20 +231,20 @@ export function fetchPlatformStats() {
 
 // ─── ORCID (Unified) ────────────────────────────────────────────
 
-export async function startOrcid(mode) {
-  const requiresAuth = mode === 'accredit' || mode === 'link';
-  const reqFn = requiresAuth ? authenticatedRequest : request;
+const ORCID_AUTHED_MODES = new Set(['accredit', 'link', 'fresh_auth', 'session_auth']);
+
+export async function startOrcid(mode, extra = {}) {
+  const reqFn = ORCID_AUTHED_MODES.has(mode) ? authenticatedRequest : request;
   const res = await reqFn('/orcid/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode }),
+    body: JSON.stringify({ mode, ...extra }),
   });
   return res.data;
 }
 
 export function completeOrcid(code, state, mode) {
-  const requiresAuth = mode === 'accredit' || mode === 'link';
-  const reqFn = requiresAuth ? authenticatedRequest : request;
+  const reqFn = ORCID_AUTHED_MODES.has(mode) ? authenticatedRequest : request;
   return reqFn('/orcid/callback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

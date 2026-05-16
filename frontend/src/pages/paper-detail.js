@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim } from '../api.js';
-import { broadcastOps } from '../signer.js';
+import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
 import { getAppTag } from '../config.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
@@ -1154,7 +1154,8 @@ export function initPaperDetailPage() {
         const res = await claimAuthorship(this.author, this.permlink, authorIndex);
         const op = res.data?.operation;
         if (op) {
-          await broadcastOps(username, [op]);
+          const broadcastResult = await broadcastWithFreshAuth(username, [op]);
+          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
         }
         this.$store.toast.show(this.$t('claims.claimSubmitted'), 'success');
         // Refresh enrichment to update claim status
@@ -1177,7 +1178,8 @@ export function initPaperDetailPage() {
           // Server-side broadcast (bridge papers)
           this.$store.toast.show(this.$t('claims.approveSuccess'), 'success');
         } else if (res.data?.operation) {
-          await broadcastOps(username, [res.data.operation]);
+          const broadcastResult = await broadcastWithFreshAuth(username, [res.data.operation]);
+          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
           this.$store.toast.show(this.$t('claims.approveSuccess'), 'success');
         }
         await this.loadEnrichment();
@@ -1198,7 +1200,8 @@ export function initPaperDetailPage() {
         if (res.data?.tx_id) {
           this.$store.toast.show(this.$t('claims.rejectSuccess'), 'success');
         } else if (res.data?.operation) {
-          await broadcastOps(username, [res.data.operation]);
+          const broadcastResult = await broadcastWithFreshAuth(username, [res.data.operation]);
+          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
           this.$store.toast.show(this.$t('claims.rejectSuccess'), 'success');
         }
         await this.loadEnrichment();

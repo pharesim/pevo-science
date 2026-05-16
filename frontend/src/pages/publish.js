@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { uploadToIpfs } from '../api.js';
-import { broadcastOps } from '../signer.js';
+import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { loadAccreditedDirectory, lookupAccredited, applyHiveChangePrefill, applyAccreditedPrefill } from '../lib/accredited-directory.js';
@@ -894,8 +894,9 @@ export function initPublishPage() {
             extensions: [],
           }],
         ];
-        await broadcastOps(username, operations);
+        const broadcastResult = await broadcastWithFreshAuth(username, operations);
         if (!this._mounted) return;
+        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
 
         this.step = 'success';
         localStorage.removeItem(DRAFT_KEY);

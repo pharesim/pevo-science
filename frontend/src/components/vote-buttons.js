@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { broadcastOps } from '../signer.js';
+import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
 import { invalidatePaperCache } from '../api.js';
 import { getAppTag } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
@@ -111,16 +111,17 @@ export function initVoteButtons() {
     async _broadcastVote(weight) {
       // Past payout window and user has already voted: Hive won't accept a
       // native vote weight change, so use custom_json revote instead.
+      // Returns FRESH_AUTH_REDIRECT_PENDING (null) when a re-auth round-trip
+      // was initiated; callers should bail without surfacing an error.
       if (this._isPastPayout() && this.voteState !== 'none') {
-        await broadcastOps(this.username, [['custom_json', {
+        return broadcastWithFreshAuth(this.username, [['custom_json', {
           required_auths: [],
           required_posting_auths: [this.username],
           id: getAppTag(),
           json: JSON.stringify({ action: 'revote', author: this.author, permlink: this.permlink, weight, version: this._latestVersion() }),
         }]]);
-      } else {
-        await broadcastOps(this.username, [['vote', { voter: this.username, author: this.author, permlink: this.permlink, weight }]]);
       }
+      return broadcastWithFreshAuth(this.username, [['vote', { voter: this.username, author: this.author, permlink: this.permlink, weight }]]);
     },
 
     async handleVote(weight) {
@@ -159,8 +160,9 @@ export function initVoteButtons() {
 
         this.isVoting = true;
         try {
-          await this._broadcastVote(0);
+          const broadcastResult = await this._broadcastVote(0);
           if (!this._mounted) return;
+          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
           const previousState = this.voteState;
           this.displayVotes += previousState === 'up' ? -1 : 1;
           this.voteState = 'none';
@@ -191,8 +193,9 @@ export function initVoteButtons() {
 
       this.isVoting = true;
       try {
-        await this._broadcastVote(weight);
+        const broadcastResult = await this._broadcastVote(weight);
         if (!this._mounted) return;
+        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
         const previousState = this.voteState;
         const direction = weight > 0 ? 'up' : 'down';
         this.voteState = direction;

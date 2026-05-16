@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { broadcastOps } from '../signer.js';
+import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
 import { getAppTag, getAppId } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 
@@ -75,8 +75,9 @@ export function initCommentComposer() {
             extensions: [],
           }],
         ];
-        await broadcastOps(this.username, operations);
+        const broadcastResult = await broadcastWithFreshAuth(this.username, operations);
         if (!this._mounted) return;
+        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
         this.body = '';
         // Dispatch event so parent can refresh
         this.$dispatch('comment-posted', { parentPermlink: this.parentPermlink });
