@@ -102,3 +102,49 @@ All three held items landed via in-place edit of `backend/migrations/006_custody
 - `cd backend && npx tsc --noEmit`: clean (no unrelated regressions; migrations are SQL so no direct typecheck coverage, run as sanity).
 - `./deploy.sh migrate` applied 006 to live dev DB; `SELECT col_description('custody_audit_log'::regclass, attnum) FROM pg_attribute WHERE attrelid = 'custody_audit_log'::regclass AND attname = 'user_agent';` returns the new comment text cleanly.
 - `grep -nE 'settings\.ts:|custody\.ts:' backend/migrations/006_custody_audit_pii_annotation.sql` returns no matches: every line-number citation in the migration is gone, replaced by symbol-anchored references.
+
+---
+
+## Architect re-review (2026-05-16, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `62fd447` (round-2 symbol-anchor fix). All three held items land cleanly (settings.ts symbol anchor verified at the `DELETE /api/settings/email` handler; custody.ts symbol anchor verified at the success-path `auditExtras` constructor inside `POST /api/custody/broadcast`; coupling claim rewritten from route-branch shape to fresh-auth-answered invariant).
+
+However: a cross-task interaction surfaced via the parallel review of `backend-custody-broadcast-orcid-fresh-auth` round-1 (commit `84602f8`, landed before this review). That task extended fresh-auth to non-consent broadcasts, which changed the underlying invariant the round-2 rewrite anchored on. The migration's new wording is now factually stale.
+
+### Item to address
+
+**1. (P1, conf 100) The "i.e., the consent-op signing flow (author_accept / author_resign); other broadcasts write NULL" parenthetical and trailer are factually wrong at HEAD.** `backend/migrations/006_custody_audit_pii_annotation.sql` — both the SQL header comment block (lines ~34-40) and the `COMMENT ON COLUMN` body (lines ~50-54). After commit `84602f8` landed, the non-consent broadcast path at `backend/src/routes/custody.ts:373-400` also sets `freshAuthMechanism = result.mechanism` (line 399) via `consumeSessionFreshAuthToken`. So the `auditExtras` gate at line 614 (`freshAuthMechanism === null ? undefined : {...}`) is now reached on BOTH consent and non-consent broadcasts that pass fresh-auth — `user_agent` populates for non-consent broadcasts too (votes, comments, custom_json).
+
+The round-2 hold #3 anchored the doc on "a fresh-auth challenge has been answered" (correct WHAT), but then narrowed it parenthetically to "i.e., the consent-op signing flow" (wrong scope). The architect's own hold-block warning ("A future change setting `freshAuthMechanism` outside the consent branch would silently invalidate the doc claim") materialized faster than expected — the parallel task 4 implementation landed before this task's annotation was re-validated.
+
+GDPR/CNPD audit-trail impact: a CNPD inspector reading `\d+ custody_audit_log` would believe `user_agent` is consent-op-only, but in fact it covers all fresh-auth-answered broadcasts. The 24-month retention policy and Art. 6(1)(f) legitimate-interest basis apply to a broader rowset than documented.
+
+Suggested fix: drop the `i.e., the consent-op signing flow (author_accept / author_resign)` parenthetical entirely; rewrite the trailer. New wording:
+
+```
+Populated whenever a fresh-auth challenge has been answered for the broadcast,
+i.e., the consent-op signing flow (author_accept / author_resign) OR any
+non-consent broadcast (vote, comment, custom_json) that submits a session-kind
+or consent_op-kind fresh-auth proof. Broadcasts that do not answer a fresh-auth
+challenge (none exist at HEAD — every /api/custody/broadcast call now requires
+fresh-auth) would write NULL.
+```
+
+Or, more compactly:
+
+```
+Populated whenever a fresh-auth challenge has been answered for the broadcast.
+At HEAD every /api/custody/broadcast call requires a fresh-auth proof
+(see backend-custody-broadcast-orcid-fresh-auth), so this column is populated
+on every successful broadcast row.
+```
+
+Apply the rewrite to both occurrences (SQL header block + `COMMENT ON COLUMN` string). The migration's idempotency claim still holds — in-place edit is appropriate; no migration 007 needed.
+
+### Items dismissed during architect triage
+
+- Maintainability "transactional-coupling assertion in DB string" residual (conf 50): the inline COMMENT string asserting "in the same transaction that drops the account row" is technically coupled to the route implementation but the assertion is durable (transactional behavior is a load-bearing GDPR property; a refactor that breaks it is a regression that should be caught at code review, not via DB-comment drift detection). Below the gate.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit.
