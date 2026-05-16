@@ -1,7 +1,7 @@
 import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
 import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword } from '../api.js';
-import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, validateMnemonic } from '../hive-keys.js';
+import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, loadDhive, validateMnemonic } from '../hive-keys.js';
 import { isPasswordValid } from '../password-policy.js';
 import { getAppTag } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
@@ -1034,7 +1034,7 @@ export function initSettingsPage() {
     // the task brief: strongest single-key authority that doesn't expose
     // owner rotation capacity.
     async _signUpgradeProof(newSeedPhrase) {
-      const dhive = await import('@hiveio/dhive');
+      const dhive = await loadDhive();
       const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
       const privateKey = dhive.PrivateKey.fromString(newKeys.active);
       const derivedPubkey = privateKey.createPublic().toString();

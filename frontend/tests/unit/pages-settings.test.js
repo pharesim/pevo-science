@@ -40,6 +40,10 @@ vi.mock('../../src/hive-keys.js', () => ({
     posting: 'STM' + 'p'.repeat(50),
     memo: 'STM' + 'm'.repeat(50),
   })),
+  // Round-4 hold #3: settings.js now reuses the lazy dhive loader exported
+  // from hive-keys.js instead of issuing its own `await import('@hiveio/dhive')`.
+  // The dynamic import here resolves to the dhive mock defined below.
+  loadDhive: vi.fn(async () => await import('@hiveio/dhive')),
   // BIP39 wrappers (re-exported from hive-keys.js, not from raw @scure/bip39).
   // FE-UPGRADE-KEY-WRAPPER-ADOPT routed settings.js through hive-keys.js so
   // a single entropy/wordlist policy applies across callers.
@@ -1278,16 +1282,17 @@ describe('settingsPage', () => {
         ok: true,
         json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
       })));
-      // Force the 3rd deriveHiveKeys call to reject. Calls 1+2 happen
+      // Force the 4th deriveHiveKeys call to reject. Calls 1+2 happen
       // inside _performUpgradeKeyRotation (oldWords + newSeedPhrase for the
       // broadcast step) and must succeed so the broadcast lands and backend
-      // cleanup fires; only call 3 (inside _performKeychainImport's pre-loop
-      // work) must throw — that's the injection point the round-4 fix
-      // targets.
+      // cleanup fires; call 3 happens inside _signUpgradeProof (also pre-
+      // broadcast, must succeed); only call 4 (inside _performKeychainImport's
+      // pre-loop work) must throw — that's the injection point the round-4
+      // fix targets.
       let deriveCallCount = 0;
       vi.mocked(deriveHiveKeys).mockImplementation(async () => {
         deriveCallCount += 1;
-        if (deriveCallCount >= 3) throw new Error('seed corruption mid-helper');
+        if (deriveCallCount >= 4) throw new Error('seed corruption mid-helper');
         return { ...STUB_WIFS };
       });
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
