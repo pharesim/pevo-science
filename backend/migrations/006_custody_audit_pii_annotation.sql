@@ -35,15 +35,14 @@
 -- the `POST /api/custody/broadcast` handler in `backend/src/routes/custody.ts`
 -- populates `user_agent` from `req.headers['user-agent']` and passes it to
 -- `logCustodyBroadcast`. The constructor is reached whenever a fresh-auth
--- challenge has been answered for the broadcast. At HEAD every
--- `/api/custody/broadcast` call requires a fresh-auth proof (see
--- `backend-custody-broadcast-orcid-fresh-auth`), so this column is populated
--- on every successful broadcast row, covering both consent-op signing
--- (`author_accept` / `author_resign`) and non-consent broadcasts (vote,
--- comment, custom_json).
+-- challenge has been answered for the broadcast, covering both consent-op
+-- signing (`author_accept` / `author_resign`) and non-consent broadcasts
+-- (e.g., vote, comment, custom_json) that answer a session-kind or
+-- consent_op-kind fresh-auth challenge.
 
 COMMENT ON COLUMN custody_audit_log.user_agent IS
-  'PII (GDPR / CNPD). Raw HTTP User-Agent header from the consent-op fresh-auth request. '
+  'PII (GDPR / CNPD). Raw HTTP User-Agent header captured when a fresh-auth '
+  'challenge is answered for the broadcast. '
   'Legal basis: legitimate interest in security audit, GDPR Art. 6(1)(f). '
   'Retention: 24 months from row insert (security-audit retention, balanced against '
   'GDPR data-minimization Art. 5(1)(c)/(e)); periodic cleanup job is a follow-up. '
@@ -51,9 +50,9 @@ COMMENT ON COLUMN custody_audit_log.user_agent IS
   'DELETE /api/settings/email handler in backend/src/routes/settings.ts runs '
   'DELETE FROM custody_audit_log WHERE username = $1 in the same transaction that '
   'drops the account row. '
-  'Populated whenever a fresh-auth challenge has been answered for the broadcast. '
-  'At HEAD every /api/custody/broadcast call requires a fresh-auth proof '
-  '(see backend-custody-broadcast-orcid-fresh-auth), so this column is populated '
-  'on every successful broadcast row. See the success-path auditExtras constructor '
+  'Populated whenever a fresh-auth challenge has been answered for the broadcast, '
+  'covering both consent-op signing (author_accept / author_resign) and non-consent '
+  'broadcasts (e.g., vote, comment, custom_json) that answer a session-kind or '
+  'consent_op-kind fresh-auth challenge. See the success-path auditExtras constructor '
   'inside the POST /api/custody/broadcast handler in backend/src/routes/custody.ts '
   'for the insert path.';

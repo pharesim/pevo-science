@@ -212,3 +212,25 @@ All three items are in the same file and can be addressed in a single in-place e
 ### Re-review signal
 
 When all three items land, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
+
+---
+
+## Backend re-review signal (2026-05-16, round-4 fix commit)
+
+Round-3 hold items 1, 2, 3 landed via in-place edit of `backend/migrations/006_custody_audit_pii_annotation.sql` (migration is idempotent; no migration 007 needed).
+
+Item 1: replaced "Raw HTTP User-Agent header from the consent-op fresh-auth request." with "Raw HTTP User-Agent header captured when a fresh-auth challenge is answered for the broadcast." in the `COMMENT ON COLUMN` body. Header SQL-comment block was already correct on this point (no parallel phrase to fix).
+
+Item 2: dropped the route-policy "At HEAD every /api/custody/broadcast call requires a fresh-auth proof (see backend-custody-broadcast-orcid-fresh-auth)..." sentence AND the slug parenthetical at both occurrences (header + body). The architect's round-3 hold suggested a compact rewrite that included that sentence; the round-4 fix instead lands wording that omits it entirely. The preceding "constructor is reached whenever a fresh-auth challenge has been answered" sentence carries the invariant; the trailer about consent + non-consent broadcasts stands as illustration without making a route-policy assertion that would rot.
+
+Item 3: changed "(vote, comment, custom_json)" to "(e.g., vote, comment, custom_json)" at both occurrences (header line 40, body line 55) to signal illustration rather than exhaustion. The architect's round-3 hold suggested the bare form; round-4 landed the `e.g.,` form per the round-4 hold instruction.
+
+Incidental phrasing change to satisfy verification gate 6: the round-3 hold's suggested wording included "submit a session-kind or consent_op-kind fresh-auth proof"; that substring trips the `grep "fresh-auth proof"` gate. Rephrased to "answer a session-kind or consent_op-kind fresh-auth challenge" at both occurrences — same semantic content (the kind classifier still names the proof type), and the route-policy assertion the gate is targeting is gone.
+
+Verification:
+- `cd backend && npx tsc --noEmit`: clean.
+- `grep -n "consent-op fresh-auth request" backend/migrations/006_custody_audit_pii_annotation.sql`: no matches.
+- `grep -n "backend-custody-broadcast-orcid-fresh-auth" backend/migrations/006_custody_audit_pii_annotation.sql`: no matches.
+- `grep -nE '\(vote, comment, custom_json\)' backend/migrations/006_custody_audit_pii_annotation.sql`: no matches (replaced by `(e.g., vote, ...)` form).
+- `grep -n "fresh-auth proof" backend/migrations/006_custody_audit_pii_annotation.sql`: no matches (rotting route-policy assertion removed; kind-classifier phrasing reworded to "fresh-auth challenge").
+- `grep -nE '\(e\.g\., vote, comment, custom_json\)' backend/migrations/006_custody_audit_pii_annotation.sql`: matches at lines 40 (header) and 55 (body).
