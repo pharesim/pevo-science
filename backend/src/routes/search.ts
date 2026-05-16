@@ -217,9 +217,17 @@ async function searchReviewsFromHaf(
   const limitParam = `$${paramIdx++}`;
   const offsetParam = `$${paramIdx++}`;
 
+  // Per-branch SQL sentinel: the partial-degradation test in
+  // `tests/routes/search-partial-degradation.test.ts` discriminates the
+  // reviews branch from the papers branch by matching this comment in the
+  // rendered SQL. Survives alias renames and JOIN restructuring (unlike the
+  // prior ` p ON ` substring match) because it's emitted from the helper
+  // itself rather than inferred from the rendered SQL shape.
+  const branchSentinel = '/* search.reviews.branch */';
   const [countResult, dataResult] = await Promise.all([
     pool.query(
-      `${cte.sql}
+      `${branchSentinel}
+       ${cte.sql}
        SELECT count(*)::int AS total
        FROM ${T.comments} c
        ${parentJoin}
@@ -228,7 +236,8 @@ async function searchReviewsFromHaf(
       [...params, ilikePattern],
     ),
     pool.query(
-      `${cte.sql}
+      `${branchSentinel}
+       ${cte.sql}
        SELECT
         c.author,
         c.permlink,
@@ -309,7 +318,7 @@ async function searchFromHaf(
         {
           event: 'search.type_all.partial_degradation',
           branch: 'papers',
-          errClass: (err as Error | null | undefined)?.constructor?.name ?? 'Unknown',
+          errClass: err instanceof Error ? err.constructor.name : 'Unknown',
           err,
           queryParams,
         },
@@ -322,7 +331,7 @@ async function searchFromHaf(
         {
           event: 'search.type_all.partial_degradation',
           branch: 'reviews',
-          errClass: (err as Error | null | undefined)?.constructor?.name ?? 'Unknown',
+          errClass: err instanceof Error ? err.constructor.name : 'Unknown',
           err,
           queryParams,
         },

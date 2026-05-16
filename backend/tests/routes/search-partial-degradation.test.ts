@@ -25,14 +25,17 @@
  *       bypass; the carve-out's "auth-focused" exclusion does not apply.
  *
  *   (c) Real-path companion: `backend/tests/routes/search.test.ts` exercises
- *       the integrated `?type=all` path end-to-end against real HAF for the
- *       happy-path case (both branches succeed, results merge by date, the
- *       envelope shape is correct, pagination caps apply, accreditation gate
- *       holds). Risk class covered there: "SQL-shape or accreditation-gate
- *       mutation breaks the integrated query" — orthogonal to this file's
- *       "JS-level allSettled discrimination + structured event emission"
- *       risk class. The two risk classes are independently mutable; each
- *       needs its own pinning test.
+ *       the integrated `?type=all` path implicitly via the no-type-param
+ *       default-type coverage (the route handler treats omitted `?type=` as
+ *       `'all'`, so every `/api/search?q=...` happy-path spec without an
+ *       explicit `?type=` is exercising the both-branches-succeed merge code
+ *       path end-to-end against real HAF — results merge by date, envelope
+ *       shape is correct, pagination caps apply, accreditation gate holds).
+ *       Risk class covered there: "SQL-shape or accreditation-gate mutation
+ *       breaks the integrated query" — orthogonal to this file's "JS-level
+ *       allSettled discrimination + structured event emission" risk class.
+ *       The two risk classes are independently mutable; each needs its own
+ *       pinning test.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -64,14 +67,19 @@ const request = (await import('supertest')).default;
 
 const app = createApp();
 
-// SQL discriminator: the reviews branch JOINs a parent comments row aliased
-// `p` (`JOIN ${T.comments} p ON ...`); the papers branch never JOINs. The
-// substring ` p ON ` is present in every reviews-branch SQL string and
-// absent from every papers-branch SQL string at runtime. The discriminator
-// is structural (driven by the rendered SQL the route actually executes),
-// not a brittle string match against a comment or alias name.
+// SQL discriminator: `searchReviewsFromHaf` prefixes both of its queries
+// (count + data) with a per-branch sentinel SQL comment
+// `/* search.reviews.branch */`. The papers branch never emits this
+// sentinel. Matching against the sentinel is robust against alias renames
+// or JOIN restructuring (the prior ` p ON ` substring was brittle: a
+// future rename of alias `p` to `parent`, or the papers branch acquiring
+// a coincidental ` p ON ` would silently misroute). The sentinel lives
+// in production code at `backend/src/routes/search.ts` inside
+// `searchReviewsFromHaf`'s two `pool.query` calls; grep `branchSentinel`
+// there to verify.
+const REVIEWS_BRANCH_SENTINEL = '/* search.reviews.branch */';
 function isReviewsBranchSql(sql: string): boolean {
-  return / p ON /.test(sql);
+  return sql.includes(REVIEWS_BRANCH_SENTINEL);
 }
 
 interface MockQueryResult {
@@ -79,22 +87,54 @@ interface MockQueryResult {
 }
 
 /**
+ * Synthetic surviving-branch row for the reviews branch. Shape matches the
+ * dataResult mapping inside `searchReviewsFromHaf` (`author`, `permlink`,
+ * `snippet`, `created`, `paper_author`, `paper_permlink`). The route's
+ * `type` field is hard-coded to `'review'` by the helper, not derived
+ * from the row.
+ */
+const SYNTHETIC_REVIEW_ROW = {
+  author: 'fixture-reviewer',
+  permlink: 'fixture-review-1',
+  snippet: 'fixture review body',
+  created: '2026-05-16T00:00:00Z',
+  paper_author: 'fixture-paper-author',
+  paper_permlink: 'fixture-paper-1',
+};
+
+/**
+ * Synthetic surviving-branch row for the papers branch. Shape matches the
+ * dataResult mapping inside `searchPapersFromHaf` (`type`, `author`,
+ * `permlink`, `title`, `snippet`, `created`). The helper passes the row's
+ * `type` through verbatim from the `json_metadata.app_tag_obj.type` SELECT
+ * expression; native PEvO papers stamp `paper`.
+ */
+const SYNTHETIC_PAPER_ROW = {
+  type: 'paper',
+  author: 'fixture-author',
+  permlink: 'fixture-paper-1',
+  title: 'fixture paper title',
+  snippet: 'fixture paper snippet',
+  created: '2026-05-16T00:00:00Z',
+};
+
+/**
  * Configure `hafQueryMock` so the papers branch throws and the reviews
- * branch returns empty rows (count + data both empty). The route should
- * return reviews-only results (an empty array, since the mock returns no
- * review rows) AND emit `search.type_all.partial_degradation` with
- * `branch: 'papers'`.
+ * branch returns ONE synthetic row (count = 1, data = 1 row). The route
+ * should return reviews-only results with `data.length === 1` AND emit
+ * `search.type_all.partial_degradation` with `branch: 'papers'`. The
+ * synthetic-row return pins the surviving-branch data-flow: a regression
+ * that swapped `paperResult?.rows ?? []` for an unconditional `[]` (i.e.
+ * dropping the merge step) would pass the warn-event assertion but fail
+ * the `data.length === 1` assertion.
  */
 function mockPapersBranchThrows(): void {
   hafQueryMock.mockImplementation((sql: string): Promise<MockQueryResult> => {
     if (isReviewsBranchSql(sql)) {
-      // Reviews branch: return empty count + empty rows. The count query
-      // fires first and shapes its row as `{ total: 0 }`; the data query
-      // returns `rows: []`. Discriminate by checking for `count(*)` in SQL.
       if (/count\(\*\)/.test(sql)) {
-        return Promise.resolve({ rows: [{ total: 0 }] });
+        return Promise.resolve({ rows: [{ total: 1 }] });
       }
-      return Promise.resolve({ rows: [] });
+      return Promise.resolve({ rows: [SYNTHETIC_REVIEW_ROW] });
     }
     // Papers branch: throw a recognizable error class.
     return Promise.reject(new Error('simulated HAF papers-branch failure'));
@@ -102,7 +142,8 @@ function mockPapersBranchThrows(): void {
 }
 
 /**
- * Mirror of `mockPapersBranchThrows` for the reviews branch.
+ * Mirror of `mockPapersBranchThrows` for the reviews branch. Reviews
+ * throws; papers returns ONE synthetic row.
  */
 function mockReviewsBranchThrows(): void {
   hafQueryMock.mockImplementation((sql: string): Promise<MockQueryResult> => {
@@ -110,9 +151,9 @@ function mockReviewsBranchThrows(): void {
       return Promise.reject(new Error('simulated HAF reviews-branch failure'));
     }
     if (/count\(\*\)/.test(sql)) {
-      return Promise.resolve({ rows: [{ total: 0 }] });
+      return Promise.resolve({ rows: [{ total: 1 }] });
     }
-    return Promise.resolve({ rows: [] });
+    return Promise.resolve({ rows: [SYNTHETIC_PAPER_ROW] });
   });
 }
 
@@ -145,10 +186,13 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
     expect(Array.isArray(res.body.data)).toBe(true);
-    // Papers branch returned empty rows in the mock, so data is empty.
-    // The load-bearing assertion is that the request completes (no 500/empty
-    // collapse via outer catch) AND the structured warn fires for the
-    // failed branch.
+    // Surviving-branch data-flow assertion: the papers branch returned ONE
+    // synthetic row, which must flow through `paperResult?.rows ?? []` into
+    // the merged `allRows` and out as `res.body.data`. A regression that
+    // swapped the merge for an unconditional `[]` would fail here.
+    expect(res.body.data.length).toBe(1);
+    expect(res.body.data[0].type).toBe('paper');
+    expect(res.body.data[0].author).toBe(SYNTHETIC_PAPER_ROW.author);
     const warnCalls = warnSpy.mock.calls.filter(
       (c) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
     );
@@ -164,6 +208,11 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
     expect(Array.isArray(res.body.data)).toBe(true);
+    // Surviving-branch data-flow assertion (mirror): the reviews branch
+    // returned ONE synthetic row; the helper hard-codes `type: 'review'`.
+    expect(res.body.data.length).toBe(1);
+    expect(res.body.data[0].type).toBe('review');
+    expect(res.body.data[0].author).toBe(SYNTHETIC_REVIEW_ROW.author);
     const warnCalls = warnSpy.mock.calls.filter(
       (c) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
     );
@@ -193,7 +242,9 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
   // Pins the queryParams payload shape on the warn event so future filter
   // additions get visibility in operator dashboards. If a new filter param
   // is added to the route but not threaded into the warn event, this spec
-  // fails first.
+  // fails first. Asserts every field of the route's `queryParams` object
+  // (type, discipline, language, source, includeRetracted, sort) so a
+  // partial omission can't slip through.
   it('warn event payload includes queryParams with the request filters', async () => {
     mockReviewsBranchThrows();
     const res = await request(app)
@@ -204,11 +255,23 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
     );
     expect(warnCalls.length).toBe(1);
     const payload = warnCalls[0][0] as {
-      queryParams: { type: string; discipline: string | undefined; language: string | undefined; sort: string };
+      queryParams: {
+        type: string;
+        discipline: string | undefined;
+        language: string | undefined;
+        source: string | undefined;
+        includeRetracted: boolean;
+        sort: string;
+      };
     };
     expect(payload.queryParams.type).toBe('all');
     expect(payload.queryParams.discipline).toBe('physics');
     expect(payload.queryParams.language).toBe('en');
     expect(payload.queryParams.sort).toBe('date');
+    // `?source=` and `?include_retracted=` were omitted from the request:
+    // source defaults to undefined, includeRetracted defaults to false.
+    // Pinning both closes the "new filter added but not threaded" gap.
+    expect(payload.queryParams.source).toBeUndefined();
+    expect(payload.queryParams.includeRetracted).toBe(false);
   });
 });

@@ -115,3 +115,17 @@ Acceptance items 1-4 + lint/tsc gate landed.
 ### Re-review signal
 
 When all 5 items above land, `git mv` this file back to `tasks/review/`. Round-2 architect re-review scopes `/ce-code-review` to the round-2 commit. Anchor: item 1 (errClass cast) is a 2-line touch at search.ts; items 2-5 are all in the test file. Single commit reasonable; or split production-code (item 1) from test changes (items 2-5) — implementer's choice.
+
+## Backend re-review signal (2026-05-16, round-2)
+
+All 5 hold-block items landed in a single commit. Files touched:
+
+- `backend/src/routes/search.ts` — **item 1 (P1):** both `errClass` cast sites at the two `logger.warn` blocks rewritten from
+  `(err as Error | null | undefined)?.constructor?.name ?? 'Unknown'`
+  to
+  `err instanceof Error ? err.constructor.name : 'Unknown'`.
+  Same runtime behavior, narrowing is now compiler-verified.
+  **Item 2 (P2) production-side:** added a `branchSentinel = '/* search.reviews.branch */'` constant inside `searchReviewsFromHaf` and prefixed both of its `pool.query` SQL strings (count + data) with it. The sentinel survives alias renames and JOIN restructuring; the brittle ` p ON ` substring discriminator is retired.
+- `backend/tests/routes/search-partial-degradation.test.ts` — **item 2 (P2) test-side:** `isReviewsBranchSql` now matches the new sentinel via `sql.includes('/* search.reviews.branch */')`; the discriminator constant is named `REVIEWS_BRANCH_SENTINEL` and its production cross-reference is documented in the helper comment. **Item 3 (P3):** canary 4's queryParams shape assertions extended to include `source` and `includeRetracted` (both with their request-time default values: `undefined` and `false`). **Item 4 (P3):** file header prose at line 27-34 rewritten to accurately describe the implicit real-path companion (no-type-param requests default to `type=all`, so existing happy-path specs cover the integrated path without an explicit `?type=all` literal). **Item 5 (P3):** `mockPapersBranchThrows` and `mockReviewsBranchThrows` now return one synthetic surviving-branch row each (`SYNTHETIC_PAPER_ROW` and `SYNTHETIC_REVIEW_ROW`, declared at module scope with shapes matching the helper dataResult mappers); canaries 1 and 2 assert `res.body.data.length === 1`, `data[0].type` matches the surviving branch, and `data[0].author` matches the synthetic row. The pre-existing data-flow regression that would have replaced `paperResult?.rows ?? []` with an unconditional `[]` is now caught.
+
+`npm run lint` clean (pre-existing seed-phrase.ts warnings only); `npx tsc --noEmit` clean. Vitest deferred to the parent's serialized run after all in-flight backend tasks land.
