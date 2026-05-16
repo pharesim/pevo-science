@@ -137,3 +137,16 @@ Verification: `npx playwright test --list tests/e2e/search.spec.js` discovers al
 ### Re-review signal
 
 When the docblock fix lands, `git mv` this file back to `tasks/review/`. Round-4 architect re-review scopes `/ce-code-review` to the round-4 commit. Anchor: single header-comment edit; one commit. No production-code changes expected.
+
+## UI re-review signal (2026-05-16, round-4, re-committed)
+
+Round-3 hold item 1 (P3, hard-coded ordinal references in header carve-out) landed in a single commit. The original round-4 commit `693df43` plus its task-move sibling were lost to a `git reset --hard b07d90f` (reflog `HEAD@{9}` on 2026-05-16) — a destructive-rewind incident of the exact class root `CLAUDE.md` "Shared-index race discipline" rule #2 warns about (an architect-compound commit landed between the two UI commits also went dangling and had to be re-applied separately as `2fb89f8`/`6fcd853`). The content below was re-committed cleanly on top of the current `main`; the new SHA is whichever round-4 commit precedes this signal block's landing.
+
+Rewrote the carve-out block at `frontend/tests/e2e/search.spec.js:10-19` to anchor every test reference on behavioral description, per `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`:
+
+- "tests 4 and 6 mock `/api/search` via `page.route()`" -> "the URL-pagination test and the search-error test mock `/api/search` via `page.route()`"
+- "(test 4) requires..." -> "the pagination test requires..."
+- "(test 6) needs..." -> "the error-path test needs..."
+- "plus tests 1, 2, 3, 5 here" -> "plus the live-route tests here (keyword query, empty-result state, discipline-filter combination, result-card navigation)"
+
+No production-code changes. `npx playwright test --list tests/e2e/search.spec.js` discovers all 6 tests cleanly post-edit. The comment now survives test addition/removal/reorder without going stale — re-read the carve-out block top-to-bottom and it reads correctly without counting tests.

@@ -7,14 +7,16 @@
  * Bridge papers bypass the accreditation filter server-side, so the corpus
  * is non-empty even with an empty pevo_app_test accreditation table.
  *
- * Carve-out for deterministic edge-case coverage (root CLAUDE.md): tests 4
- * and 6 mock `/api/search` via `page.route()`. Justification: pagination
- * (test 4) requires a known fixed-size collection so the active-page button
- * is deterministic regardless of corpus drift, and the error-path test
- * (test 6) needs a deterministic 500 which the live route does not produce.
- * The real-path companion exercising live `/api/search` is
- * `papers-browse.spec.js` (search-by-keyword block) plus tests 1, 2, 3, 5
- * here. URL params used by `search.js`: q, type, source, discipline, page.
+ * Carve-out for deterministic edge-case coverage (root CLAUDE.md): the
+ * URL-pagination test and the search-error test mock `/api/search` via
+ * `page.route()`. Justification: the pagination test requires a known
+ * fixed-size collection so the active-page button is deterministic
+ * regardless of corpus drift, and the error-path test needs a deterministic
+ * 500 which the live route does not produce. The real-path companion
+ * exercising live `/api/search` is `papers-browse.spec.js` (search-by-keyword
+ * block) plus the live-route tests here (keyword query, empty-result state,
+ * discipline-filter combination, result-card navigation). URL params used
+ * by `search.js`: q, type, source, discipline, page.
  */
 
 import { test, expect } from './fixtures/keychain.js';
