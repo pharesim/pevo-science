@@ -154,3 +154,62 @@ Round-1 hold items 1-6 landed.
 - Item 6 (P3) — added `rows.length === 0` 401 canary test at `backend/tests/routes/custody-upgrade.test.ts:498`. A mutation dropping the guard would TypeError on `rows[0]` → outer catch → 500; this test pins the 401 path so the silent 401-to-500 shift fails CI.
 
 `npm run lint` and `npx tsc --noEmit` not run in worktree (no local `node_modules` — backend deps live in the parent checkout only); parent will verify after cherry-pick. Vitest not run in worktree (parent serializes).
+
+---
+
+## Architect re-review (2026-05-16, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `9210dd2` (10 reviewers: correctness/security/adversarial on Opus; rest on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). All six round-1 hold items land cleanly (verified). Five items held; one item routed to a new task.
+
+### Items held (must fix before archive)
+
+**1. (P2, conf 75, reliability R1 — REAL FUNCTIONAL BUG) `skipFailedRequests` Redis path: concurrent INCRs leave the key at count=N with no TTL → permanent lockout.** `backend/src/middleware/rateLimit.ts:72-79` (deferred-INCR block). The `pexpire` is only called when `count === 1`. Two concurrent requests for the same key both pass the `>= max` check (count=0), both succeed (200), both finish handlers fire, both `redis.incr()` calls run. First INCR returns 1 and sets pexpire. Second INCR returns 2; `count === 1` is false, so pexpire is never called. The key now sits at count=2 with no TTL. Every subsequent GET sees 2 ≥ max(1) and returns 429 indefinitely. The key never expires; the user is **permanently locked out until the Redis key is manually deleted**.
+
+  Currently bounded by upgradeLimiter being the only opt-in (windowMs=3600000 = 1h; locked-out user gets the next hour back when the window naturally resets — IF the key gets a TTL eventually, but per the bug analysis it doesn't). At the conceptual level the key remains stuck at count=2 forever. In practice for upgradeLimiter the State D 409 idempotency masks the user-visible defect (a successful upgrade is one-shot anyway). But the option is now a reusable primitive (item 8 below addresses adoption discipline); future adopters with longer windows or larger max values hit visible permanent lockout.
+
+  Fix shape: call `redis.pexpire(redisKey, config.windowMs)` unconditionally after every deferred INCR (drop the `count === 1` guard), OR replace the GET→INCR pattern with a Lua script that does atomic check-INCR-EXPIRE in one round-trip. The Lua approach also addresses item 2 (TOCTOU) below — single fix for both. Verify with a concurrent-request test: `Promise.all([req1, req2])` for the same account where both should succeed; assert no key is stuck above max post-test.
+
+**2. (P2, conf 100 — cross-reviewer-promoted: correctness P2 + security P3 + adversarial P3) TOCTOU race on `skipFailedRequests` Redis path: GET→`next()`→deferred-INCR is non-atomic.** Same `backend/src/middleware/rateLimit.ts:62-82`. Two concurrent requests for the same key both see count=0 (each does a separate GET round-trip), both pass `>= max` check, both `next()` to the handler, both succeed. Final count=2 (above max=1). For `/upgrade` the over-admission is absorbed by State D's 409 idempotency. The risk is realized when the primitive is adopted by handlers that don't have an idempotency shield downstream.
+
+  Single fix together with item 1: replace GET+`next()`+deferred-INCR with a Lua EVAL script: `INCR → check ≤ max → on overflow DECR+return 429, on success EXPIRE+return 200-pass; on response finish, if status >= 400 DECR`. Atomic + skipFailed-aware in one round-trip. Document the choice in the JSDoc.
+
+**3. (P2, conf 100 — cross-reviewer-promoted: adversarial P2 + testing P2 + api-contract P2 + correctness P3 + security residual) Clock-skew lockout from one-sided `signed_at` window + contract doc drift.** `backend/src/routes/custody.ts:884-888` rejects any `tsMs > Date.now()` strictly. Round-1's symmetric `Math.abs(...) > 60s` form accepted up to 60s forward drift; round-2 collapsed to zero forward tolerance. A user with 100ms of normal forward clock drift (common on non-NTP devices, mobile, browsers without precision-time-sync) is rejected with 401. Compounded by `agents/docs/api-contracts/custody.md:181` still saying "outside a 60-second window relative to wall-clock time" — symmetric reading — so the contract claim and code behavior diverge.
+
+  Fix shape (two options; architect call):
+  - **Option A — add small forward skew tolerance** (preferred): introduce `UPGRADE_PROOF_FUTURE_SKEW_MS = 5_000` and gate on `tsMs > Date.now() + UPGRADE_PROOF_FUTURE_SKEW_MS`. Keeps the past-only intent; absorbs typical client drift; replay race window stays bounded at 65s (60s past + 5s forward). Update inline comment to explain the skew rationale.
+  - **Option B — accept zero-skew code, update doc to match**: change `agents/docs/api-contracts/custody.md:181` and the body field description at line 177 to "signed_at MUST NOT be future-dated; backend rejects future timestamps unconditionally and rejects past timestamps older than 60s". UI must derive signed_at from server time (or backdate by a safe margin) to avoid lockout. More work in UI agent's hands; less code-friendliness.
+  - Architect recommendation: Option A. The 5s window is below typical replay-attacker observation windows, doesn't materially extend the replay race, and matches the existing 60s past tolerance's purpose (clock-drift absorption). Less SPA-coordination burden.
+
+  Test gap (TG1 from testing review): add a test asserting future-timestamp rejection (e.g., `signed_at = Date.now() + 30_000` → 401 with Option A's 5s tolerance, OR Option B's "always reject future" semantics).
+
+  Contract doc update lands at archive (architect-zone follow-up; flag for inclusion in the same commit that archives).
+
+**4. (P2, conf 75, maintainability M1) Task-file path hardcoded in production code comment will rot on archive.** `backend/src/routes/custody.ts:48` — the inline comment block above `upgradeLimiter` cites `agents/docs/tasks/pending/backend-custody-upgrade-seed-phrase-reauth.md` as the rationale source. The path encodes the current lifecycle state (`pending/`). Once this task archives (next round, after held items land), the path points to a non-existent file — `git rm`'d on archive, content moved to `tasks-archive.md` which is trimmed to 250 lines.
+
+  The rationale (skipFailedRequests design choice + stolen-JWT-DoS protection) is already fully documented in the `RateLimitConfig.skipFailedRequests` JSDoc above the type definition. Fix: drop the `agents/docs/tasks/...` citation entirely. If a permanent cross-link is desired, point to a `docs/solutions/` entry (those are permanent; tasks are not). No solutions entry exists yet — `/ce-compound` after archive could file one for the skipFailedRequests + stolen-JWT-DoS pattern, then the citation can point there.
+
+**5. (P2, conf 90, learnings-researcher + security SEC-r2-1) Wrapping-primitive call-site audit gap (convention `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` violated) + JSDoc misuse-direction missing.** Two coupled issues:
+
+  - **(a) Call-site audit not run.** The convention requires that when a wrapped primitive gains a new behavioral mode (here: `skipFailedRequests`), every existing call site is re-evaluated against the new option's presence. The round-2 implementer signal claims "backward-compatible; no behavior change for the other 19 callsites" but no grep was run to confirm. The convention's rule: "claim, not evidence" must be backed by a grep at signal-block-write time. Fix: run `grep -rn 'rateLimit(' backend/src/ --include='*.ts'`, enumerate every call site, confirm each has intentionally omitted `skipFailedRequests` (a one-liner per site is fine — most are obviously not credential-probing routes). Include the grep output verbatim in the round-3 signal block.
+
+  - **(b) JSDoc missing misuse direction** (per convention `strict-superset-wrapper-inherits-escape-hatches-2026-05-12.md`). Current JSDoc on `skipFailedRequests` documents two legitimate use cases (transient upstream failure, stolen-JWT-DoS-on-1/hr-limiter). It does NOT document the misuse direction: setting `skipFailedRequests: true` on a credential-probing route (e.g., `/login`, `/recover`) would defeat the limiter's enumeration protection. Add a "DO NOT use on credential-probing routes (e.g., /login, /recover) — failed probes would not consume slots, enabling unlimited account enumeration" sentence to the JSDoc.
+
+### Items dismissed during architect triage
+
+- **(P3, conf 75, adversarial adv-2) Slot leak via `res.on('finish')` non-fire when client disconnects mid-handler.** Client TCP RST emits `'close'`, not `'finish'`; the deferred INCR never runs. For `/upgrade` benign (slot stays unconsumed → user gets another attempt). Documented residual; address if a future adopter cares about exact slot accounting under client-abandonment.
+- **(P3, conf 50, adversarial adv-5) Captured-proof replay race within 60s freshness window.** `signed_proof` body is not in `verifyHiveSignature`'s per-signature Redis replay cache (header-path only). If the legitimate user's first attempt 5xx's (no consume under skipFailedRequests), an attacker who captured the proof can replay within 60s. The state-machine irreversibility (State D → 409) is the substitute, IF the state check fires before signature validation. Architect verified order: `verifyHiveSignature` (middleware) runs first → JWT validation → upgradeLimiter → handler body → state check before signature verification → signature verification. State check fires before pubkey verification. Acceptable; documented for future audit.
+- **(P3, conf 50, adversarial adv-4) Hive RPC outage + skipFailedRequests opens unlimited free-retry for stolen JWT.** Bounded by Hive node availability; tolerable single-instance failure mode. Layered IP-keyed limiter is the standard mitigation if exposure increases; not warranted today.
+
+### Routed to follow-up tasks (not held here)
+
+- **(P2, conf 55, security SEC-r2-1 + partial overlap with item 2) Unbounded CPU/RPC amplification per authenticated account from `skipFailedRequests`.** With `skipFailedRequests:true`, the limiter caps successes only — not request rate. Stolen-JWT attacker (or just an aggressive client) can spray malformed bodies indefinitely; each spray pays verifyHiveSignature ECDSA verify + body parse + signature recovery + hiveClient.database.getAccounts RPC (up to 30s sequential failover on Hive nodes). The 1/hr success cap was specifically intended to bound that cost.
+
+  This is a design-level concern that needs a layered mitigation: a separate higher attempt-cap that counts failures (e.g., 50 failed attempts per IP per hour), OR moving body validation before the limiter so VALIDATION_ERROR doesn't reach the costly handler at all. Filed as `backend-custody-limiter-cpu-amplification-mitigation.md` in `tasks/blocked/` (blocked on this task's round-3 fixes — the mitigation pattern depends on the corrected limiter primitive). NOT held here because the fix is broader than this task's scope and the upgrade route's specific exposure is bounded by Hive RPC node count + State D idempotency.
+
+### Architect-zone work landing at archive (not held)
+
+- `agents/docs/api-contracts/custody.md:177,181,195` — update the `signed_at` window description to match the chosen Option (A or B from item 3) and add the "successful 200 only consumes the 1/hr slot" note from api-contract review's AC-02.
+
+### Re-review signal
+
+When items 1-5 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
