@@ -265,3 +265,72 @@ The following architect-owned surfaces require updates AT ARCHIVE of this task. 
 - **Pre-existing test failure unrelated to this task.** `backend/tests/routes/disciplines-canon-mocked.test.ts > GET /api/papers/:author/:permlink — continuation-chain head-override lowercases head metadata (chain length > 1)` fails with `expected 'physics' to be 'biology'` on UNCHANGED main (verified via `git stash` + targeted run). The mock's chain-walker response row omits `json_metadata`, which causes `isPevoAnyPaper(candidateMeta, 'bob')` to return false in `resolveContinuationChain`, breaking the chain at length 1 and skipping the head-override block. This bug pre-dates this task (existed since the consent-gate landed at `3ea8892` "update disciplines-canon-mocked fixture for the new author-consent gate"). Cumulative-union doesn't introduce the failure or worsen it. Optional follow-up: `backend-disciplines-canon-mocked-fixture-fix.md` adding `json_metadata` to the chain-walker mock row would close it (~3 LOC test fix). Backend leaves this for the architect's triage at archive — the fix is mechanical; if it's worth a task slug, the architect files one.
 
 - **`stats-profile-parity.test.ts` flake under full-suite run.** During the full-suite vitest pass, `'stats vs profile reader parity > stats ignores chain-revoked users with stale prod entries'` failed with shifted real-HAF values; running the same test file alone passes 4/4 cleanly. Likely a real-HAF + cache state flake (test pollution between concurrent suites or chain-state drift between test runs). Not a regression from this task's changes; flagged for architect awareness.
+
+---
+
+## Architect re-review round-2 (2026-05-16) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `b22ce5d` dispatched 11 reviewers (correctness, security, adversarial, testing, maintainability, project-standards, learnings, performance, api-contract, reliability, kieran-typescript; `ce-agent-native-reviewer` skipped per root CLAUDE.md project policy). Surfaced findings: 5 held below, 4 filed as separate tasks (`backend-cumulative-union-listing-surfaces-parity`, `backend-canonical-root-walker-cumulative-aware`, `backend-orcid-claim-mismatch-post-revocation-audit`, plus one already-existing `backend-search-partial-degradation-allsettled` filed from a sibling review), 4 dismissed at triage. The 5 held items are all in-scope of the cumulative-union task's stated invariants (ORCID server-override under rule #3; rule #3 cache-coherence; comment-rot from the round-3 → cumulative-union transition).
+
+### Items to address
+
+**1. (P2) ORCID server-override misses "accredited but no on-chain ORCID" spoof case**
+
+**Where:** `backend/src/routes/papers.ts:319-347` (ORCID branch inside `buildCumulativeAuthorsForChain`).
+
+**Why:** Rule #3 states "accredited ORCID is authoritative." ORCID is **optional** on accreditation — an accredited user may choose not to provide one, and that is the normal state, not an edge case. When an accredited hive has no on-chain ORCID, the current code's `if (accreditedOrcid)` gate skips the override branch entirely. A vouched co-author can broadcast `pevo.authors=[{hive:'alice', orcid:'fake'}]` for an accredited alice (who chose not to share an ORCID), and the forged value surfaces in `detail.authors[]` with no audit event. The spoof surface is broad (every accredited user who opted not to share), and "trust the broadcaster when authority is silent" contradicts the rule's intent — the accredited user's own claim of "no ORCID" IS the authority.
+
+**Fix:** When `cumulative.has(hive)` AND `accreditedAccountSet.has(hive)` AND `accreditedOrcid` is null AND a broadcaster claim is present: set `out.orcid = null` (suppress the claim) and emit `orcid_claim_mismatch` with `accreditedOrcid: null` so operators see the spoof attempt. Update rule #3 narrative in the task body to enumerate all four branches (match / mismatch / prefill / suppress) explicitly. Add a canary to `continuation-author-gate.test.ts`: accredited hive with no on-chain ORCID + claim present → `out.orcid = null` + warn fires.
+
+**2. (P2) Empty-map cache poisoning in `getAccreditedOrcidsByAccount` when `pool === null`**
+
+**Where:** `backend/src/accreditation.ts:101-130` + `backend/src/cache.ts:73` interaction.
+
+**Why:** When `getPool()` returns null (HAF not yet connected at startup, transient pool drop), `getAccreditedOrcidsByAccount` returns an empty map. The cache layer's null-skip rule treats `[]`/empty-Map as cacheable; the degraded result persists for the full 10-min TTL. If HAF recovers mid-window, rule #3's ORCID server-overrides are silently suppressed until cache expiry — exactly the moment when spoof detection should re-engage. Sibling `getAllAccreditedAccounts` has the same bug; this hold scopes to the new helper only — the sibling is acknowledged as a known limitation pending a separate audit.
+
+**Fix:** In `getAccreditedOrcidsByAccount`, early-return the empty map *before* entering `hafCache.getOrSet` when `pool === null`. Don't store the degraded result. The next request after HAF connects re-tries the underlying query and populates the cache correctly. Matches the documented "startup condition" intent without polluting the recovery window. Add a unit canary asserting the `pool === null` path skips the cache write.
+
+**3. (P2) Replace 5 task-slug citations with `ARCHITECTURE.md § 2` references**
+
+**Where:** `backend/src/routes/papers.ts:195`, `:800`, `:1145`; `backend/src/accreditation.ts:92`; `backend/src/helpers.ts:110` — comments citing `backend-multi-author-cumulative-union.md` by slug.
+
+**Why:** Per root CLAUDE.md "Don't reference the current task, fix, or callers in comments — those belong in the PR description and rot as the codebase evolves." Task slugs disappear from `tasks/` at archive; comments become dangling pointers. The permanent home for the rationale invoked is `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`, which the architect rewrites at archive per the existing [TODO Architect] item #1 in this task body.
+
+**Fix:** At each site, replace the slug citation with `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`. Wait for the architect's ARCHITECTURE.md § 2 rewrite to land at archive so the section heading is stable before swapping the citations.
+
+**4. (P2) Purge 6 round-number citations with permanent behavioral statements**
+
+**Where:** `backend/src/routes/papers.ts:207, :810, :949, :2224`; `backend/tests/routes/continuation-author-gate.test.ts:977, :982` — comments citing "round-3" or "round-6" as behavioral markers.
+
+**Why:** Same convention as item #3. Round numbers are task-history (a hold-cycle artifact internal to the workflow), not behavioral WHY. A future reader has no context for "round-3 no-shrink check" — round numbers rot fast and break en masse on hold collapse. Precedent: the recent `architect(review-validity-gate-and-display-reputation-parity)` round-3 hold items 2+5 directed the exact same purge on `reputation.ts:user_reviews` CTE comments; implementer's round-5 signal applied it.
+
+**Fix:** Replace each round-number citation with the permanent behavioral statement. Examples:
+
+- "supersedes the round-3 no-shrink check" → "drops are forbidden by construction (union-only growth)"
+- "closes round-3 finding #1" → "reads from detail.authors (cumulative union) so a head that drops an author cannot shrink accredited_authors"
+- "round-3 hold item 1: third call site" → brief description of why the memo is threaded through
+
+**5. (P2) Delete stale `// satisfies no-shrink` comment**
+
+**Where:** `backend/tests/routes/continuation-author-gate.test.ts:1007`.
+
+**Why:** Remnant of the removed round-3 no-shrink check. The no-shrink rule no longer exists; the cumulative-union construction supersedes it. The fixture data needs no annotation about a constraint that no longer exists.
+
+**Fix:** Delete the comment.
+
+### Findings filed as separate tasks (no action on this hold)
+
+- `backend-cumulative-union-listing-surfaces-parity.md` (P1) — listing/profile/search surfaces still derive `accredited_authors` from a single post's `pevo.authors[]` rather than the cumulative union; the task's "drops forbidden by construction" invariant holds only at detail. User triage 2026-05-16 ratified the cumulative policy as load-bearing across surfaces. Filed as follow-up because the task body's acceptance was detail-scoped; listing-surface closure is a design exercise (recursive CTE vs denormalization vs bounded approximation).
+- `backend-canonical-root-walker-cumulative-aware.md` (P2) — backward walker's stricter check causes two cached canonical roots for the same chain depending on URL entry, with divergent cached `accredited_authors` / `citation_count`. Task body already anticipated this filing with the same slug.
+- `backend-orcid-claim-mismatch-post-revocation-audit.md` (P2) — once a forging bad actor is revoked, they drop from `getAccreditedOrcidsByAccount`, blinding subsequent audit-event fires exactly during the post-revocation triage window. Design follow-up (audit-all-claims-on-accredited-targets vs widen-to-all-non-self-claims vs watchlist).
+
+### Findings dismissed at triage (no action)
+
+- Admit-vs-display TOCTOU across chain-walk SQL + 30-min cache (adversarial adv-006 P2/75): accepted as policy. The cumulative reflects current chain metadata; broadcaster-edit-on-chain is attributable and revocable via accreditation. **Architect doc-note for archive:** the ARCHITECTURE.md § 2 rewrite (existing [TODO Architect] item #1) must explicitly state the per-request scope of the "drops forbidden by construction" invariant, so a future reader doesn't infer across-time permanence.
+- Mutation-kill attestation overstated for self-claim-wins canary (adversarial adv-004 P2/60): preemptive hardening per `feedback_dismiss_preemptive_test_hardening`. The "first vs most-recent self-claim ordering" mutation class isn't a plausible regression.
+- Backward `findCanonicalRoot` UX degradation (correctness #1 P2/100): security property (fail-CLOSED) holds; filed as separate task for cumulative-aware redesign (see above).
+- Several P3 testing-quality and api-contract-doc-drift findings: api-contract items fold into architect's archive-time doc edits per existing [TODO Architect] items; testing items recommend dismiss per `feedback_dismiss_preemptive_test_hardening`.
+
+### Re-review signal
+
+When items 1-5 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round.md`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `b22ce5d`. Items can land in any order or in one combined commit; item 3 (slug → ARCHITECTURE.md § 2) should land AFTER the architect's [TODO Architect] item #1 doc rewrite so the section reference is stable.
