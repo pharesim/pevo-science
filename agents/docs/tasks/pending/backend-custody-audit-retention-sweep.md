@@ -116,3 +116,72 @@ Round-1 hold items 1-4 landed in `backend/src/jobs/custody-audit-retention-sweep
 - `npm run lint`: clean (only pre-existing `seed-phrase.ts` warnings, unrelated).
 - `npx tsc --noEmit`: clean.
 - Tests not run in worktree per fan-out protocol; parent serializes after merge.
+
+---
+
+## Architect re-review (2026-05-16, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `d0a8e22` (9 reviewers: correctness/adversarial on Opus; testing, maintainability, project-standards, learnings-researcher, reliability, data-migrations, kieran-typescript on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). All four round-1 hold items land in intent (BootFatalError throws, ROLLBACK nested-finally, split SOT-validate from first-tick DELETE, tightened regex). Seven items held; zero dismissed; zero routed to follow-ups.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 90 — cross-reviewer-promoted: adversarial adv-1 P1 + kieran-typescript KT-1 P2) BootFatalError thrown inside `initAppDb().then(...)` routes to the `'Failed to initialize app database'` `.catch` — convention's own constraint comment warns against this.** `backend/src/index.ts:106` (the `await startRetentionSweep(...)` call) is inside `initAppDb().then(async () => { ... })`. When it throws BootFatalError, the rejection propagates to the sibling `.catch` at `index.ts:166-172`, which unconditionally logs `logger.fatal({err}, 'Failed to initialize app database')` — no `instanceof BootFatalError` discrimination on that path.
+
+  The constraint comment at `index.ts:61-65` explicitly warns: "Introducing await or moving these into a .then chain would route BootFatalError to the wrong handler (e.g. initAppDb().catch logged as Failed to initialize app database), defeating the structured boot-fatal path." The round-2 fix does EXACTLY that — adds the BootFatalError throw inside the .then chain.
+
+  `flushAndExit` does fire before `listen()` (stated round-2 goal met), but the operator-alerting contract is degraded: a retention SOT-parse failure ships an alert labeled "app DB init failed" — wrong subsystem, on-call triage is misdirected, CNPD-readiness signal is muddled.
+
+  Fix shape (architect call between two options):
+  - **Option A — discriminate in the async .catch:** at `index.ts:166`, mirror the synchronous catch's pattern: `if (err instanceof BootFatalError) { logger.fatal({err}, err.message); } else { logger.fatal({err}, 'Failed to initialize app database'); } await flushAndExit();`. One file edited; preserves the .then-chain structure.
+  - **Option B — move readRetentionMonths into the module-evaluation try/catch alongside validateConfig:** the synchronous try/catch at `index.ts:80-84` already discriminates BootFatalError correctly. Move `readRetentionMonths(pool)` validation to a function callable from the sync path (it needs the pool, so this means either deferring pool init to sync, or accepting that this routing is best in the existing async path with Option A).
+  - Architect recommendation: Option A. The async path is the right place for pool-dependent boot checks; the fix is a single-file `instanceof` discriminator that brings the alert labeling into spec.
+
+**2. (P2, conf 75, maintainability M1) Function name `startRetentionSweep` is now a misnomer after the round-1 boot/ticker split.** `backend/src/jobs/custody-audit-retention-sweep.ts:182` — the function now only validates the SOT (reads the COMMENT via `col_description`, parses retention months); the actual sweep is started by `startRetentionSweepTicker`. A reader seeing `await startRetentionSweep(getAppPool())` at `index.ts:106` reasonably expects a DELETE to run. The docblock corrects this, but the name is the first-read interface.
+
+  Fix shape: rename to a name that matches behavior. Options: `validateRetentionSweepConfig`, `assertRetentionSweepReady`, `readAndValidateRetentionSOT`. Architect recommendation: `validateRetentionSweepConfig` (matches the validation-only semantics + boot-fatal-on-failure shape, parallel to `validateConfig`). Update the call site at `index.ts:106` and any exports/test imports.
+
+**3. (P2, conf 100 — cross-reviewer-promoted: maintainability M3 + kieran-typescript KT-2) Comment claims "cause chain via `{cause: err}`-style logging" but `BootFatalError` constructor takes only `message: string`.** `backend/src/jobs/custody-audit-retention-sweep.ts:193-200` — the comment block at lines 193-195 says "The original throw's message is preserved in the cause chain via `{cause: err}`-style err logging at the catch site." The `new BootFatalError(...)` call at lines 196-200 passes only a message string interpolating the original error's message; no `{ cause: err }` second argument exists in BootFatalError's constructor. There is no `.cause` property on the thrown BootFatalError; only the `.message` substring survives. Future readers attempting to access `err.cause` or add structured cause logging will be misled.
+
+  Fix shape (architect call):
+  - **Option A — update BootFatalError to accept an ErrorOptions argument** so the comment becomes accurate. Touches `backend/src/startup-checks.ts` (or wherever BootFatalError is defined). Three callsites today (`validateConfig`, `initBridgePostingKeyCache`, and now this); updating the class is cheap, and the .cause property is the standard ES2022 way to preserve cause chains.
+  - **Option B — rewrite the comment to match the current flat-message implementation.** "The original throw's message is template-interpolated into the BootFatalError message string at the catch site; no `.cause` property is preserved." Honest but admits a hole vs the standard pattern.
+  - Architect recommendation: Option A. Standardize on `{ cause: err }` across the three boot-fatal sites; preserves stack-trace context that's lost today; aligns with ES2022 conventions.
+
+**4. (P2, conf 75, maintainability M2) Docblock has raw line-number anchor `(lines 156-162)` referencing `index.ts`.** Same `backend/src/jobs/custody-audit-retention-sweep.ts:169`. Per convention `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`, raw line numbers rot on any insertion above the cited range. Fix: replace with a behavioral/symbol anchor — e.g., `the .catch of the initAppDb().then(...) chain in index.ts`. (Becomes especially relevant when item 1's discrimination fix lands and the catch range shifts.)
+
+**5. (P2, conf 90, testing T1+T2+T3) No test pins `startRetentionSweep` throwing `BootFatalError` on missing/malformed COMMENT + no test for `startRetentionSweepTicker` at all + test file header is stale.** Three subgaps in `backend/tests/jobs/custody-audit-retention-sweep.test.ts`:
+
+  - (a) `startRetentionSweep`'s catch-and-rethrow-as-BootFatalError branch (round-2 item 1) is untested. The (c) subtests pin `readRetentionMonths` throwing, but no test asserts `startRetentionSweep.rejects.toThrow(BootFatalError)` or instance-checks the thrown error. A mutation replacing `throw new BootFatalError(...)` with a bare `throw` or `return` in the catch block would ship green.
+
+  - (b) `startRetentionSweepTicker` is a new exported function with three branches (null-pool early-return, immediate `runSweep().catch()` fire-and-forget, 24h `setInterval` scheduling). No test imports or calls it. A regression dropping the first-tick `runSweep` call (or accidentally swapping the order with the setInterval registration) would not be caught.
+
+  - (c) Test file header comment (lines 13-22) still describes the OLD `flushAndExit` mechanism as the coverage rationale and points to `flush-and-exit.test.ts`. After round-2 item 1, the mechanism is BootFatalError rethrow caught by `index.ts`'s outer .catch — flush-and-exit.test.ts does NOT cover that rethrow path. Header rationale is now incorrect.
+
+  Fix shape:
+  - Add a `startRetentionSweep` direct-call test (small `pg.Pool` mock returning `{rows: []}` is acceptable under the carve-out — clause (b) doesn't apply since this isn't an auth-focused suite; the documented carve-out justification covers it) and assert `rejects.toThrow(BootFatalError)`.
+  - Add a `startRetentionSweepTicker(null)` smoke test (null-pool early-return; no throw, no setInterval registered).
+  - Update the test file header (lines 13-22) to describe the actual BootFatalError mechanism. Either reference the new test (5a) or note explicitly that the function-level rethrow IS pinned in this file.
+
+**6. (P2, conf 75, reliability R1) First-tick gating design choice is undocumented.** `backend/src/jobs/custody-audit-retention-sweep.ts:220-238` — `startRetentionSweepTicker` fires `runSweep(pool).catch(...)` as a floating promise, then immediately calls `setInterval` without waiting for the first sweep. For 24h cadence on single-instance this is safe (a second tick at +24h won't collide with the first). For shorter cadences or under DB contention the design needs to be a deliberate choice, not an inferred one.
+
+  Fix shape: add a docblock comment above the immediate first-tick / setInterval block: "First tick fires immediately (un-awaited) so the DELETE backfill runs at boot without blocking the ticker's interval registration. The next setInterval tick fires at +24h; for the configured cadence (FRESH_AUTH_TTL... no wait, RETENTION_SWEEP_INTERVAL_MS = 24h), even a slow first sweep cannot collide with the next tick. If the cadence is ever shortened, add an in-flight guard before scheduling subsequent ticks." Documents the design rationale + flags the future-shortening risk in code.
+
+**7. (P3, conf 75, maintainability M4) Task-slug citations in module-header docblocks.** `backend/src/jobs/custody-audit-retention-sweep.ts:6` (module header) and `:76` (`parseRetentionMonthsFromComment` docblock) both cite `BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP`. Per `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, slugs become dead pointers on archive. The module-header slug doubles as an op-grep token; if that's its load-bearing role, a durable replacement is a stable module-identity string (e.g., the module path `custody-audit-retention-sweep.ts` itself as the canonical name) or a citation to the GDPR Art. 5(1)(e) anchor already in the module. The function-docblock slug at line 76 adds nothing the function description doesn't already cover — drop it.
+
+### Items dismissed during architect triage
+
+- None at confidence ≥75. Three adversarial residuals at lower confidence (SIGTERM-during-first-tick race, post-boot COMMENT corruption silent error, setInterval re-entrancy guard absence) all bounded by single-instance topology + the existing `.catch` error logs; below the actionable gate.
+
+### Routed to follow-up tasks (not held here)
+
+- None — all items are within this task's scope and code surface.
+
+### Architect-zone work landing at archive (not held)
+
+- None — sweep r2 is entirely backend-zone code; no architect-doc updates needed at archive.
+
+### Re-review signal
+
+When items 1-7 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+Note for the implementer: items 1, 2, 4, 5 cluster on the same file group (custody-audit-retention-sweep.ts + index.ts + the test file) and can be addressed in a single fix commit. Items 3 (BootFatalError + cause), 6, 7 are minor independent edits. Recommend: one focused commit for items 1+4+5 (BootFatalError routing + line-anchor + test gap), a second commit for item 2 (rename), a third for item 3 if Option A is chosen (BootFatalError class update touches startup-checks.ts), and one final commit folding items 6+7 (docblock cleanup). Or any logical grouping the implementer prefers — the architect re-review will scope `/ce-code-review` to the full commit range from this hold to the next `git mv` to review/.
