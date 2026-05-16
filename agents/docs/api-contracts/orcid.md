@@ -205,7 +205,7 @@ No `custom_json` broadcast on this mode. No min works check.
 {
   "mode": "fresh_auth",
   "fresh_auth_proof": "<single-use token>",
-  "expires_at": "2026-05-06T12:05:00Z",
+  "expires_at": "2026-05-06T12:05:00.000Z",
   "mechanism": "orcid"
 }
 ```
@@ -236,7 +236,7 @@ No `custom_json` broadcast on this mode. No min works check.
 {
   "mode": "session_auth",
   "fresh_auth_proof": "<single-use token>",
-  "expires_at": "2026-05-06T12:05:00Z",
+  "expires_at": "2026-05-06T12:05:00.000Z",
   "mechanism": "orcid"
 }
 ```
