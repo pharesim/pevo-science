@@ -49,3 +49,22 @@ Source: `/ce-code-review` round-4 on `ui-keychain-api-misuse` (commit `0a6b176`)
 - `frontend/public/messages/*.json` — the actual edit target (16 files).
 - Architect `/ce-brainstorm` 2026-05-16 — direction-A selection over B (affordance) and C (hybrid). Rationale: pre-launch, frequency unknown, the seed phrase IS the recovery mechanism by design, and the Hive Keychain extension already supports the import workflow we'd otherwise duplicate.
 - Original source: `/ce-code-review` round-4 on `ui-keychain-api-misuse`, reliability anchor 75 (commit `0a6b176`).
+
+## Architect re-review (2026-05-16) — [BLOCKED by Backend]
+
+`/ce-code-review` of commit `849481d` (the implementer's landing) returned clean against this task's acceptance criteria. All four reviewer personas plus learnings-researcher returned zero findings. The implementer faithfully wrote direction A: locale-files-only, all 16 locales updated to identical new English copy, STUBS.md ledger entry added, two `settings.js` comments updated to reflect the new copy with no code-path change. Conventions all hold (no emdashes in new copy, Co-Authored-By trailer present, in-zone paths, bare `ui(...)` commit prefix, `pending → review` task move, AC-#4 test sweep correctly a no-op since tests assert on message keys not literal strings).
+
+**However, the direction-A premise itself was wrong.** PEvO's current key derivation in `backend/src/seed-phrase.ts:54-62` and `frontend/src/hive-keys.js:46-54` uses a custom HMAC-SHA512 scheme:
+
+```
+hex_seed   = HMAC-SHA512(mnemonicToSeedSync(mnemonic), account+role).slice(0,32)
+priv_wif   = PrivateKey.fromSeed(hex_seed)
+```
+
+This is NOT what Hive Keychain's "Add Account by Master Password" does. Keychain runs `PrivateKey.fromLogin(account, master_password, role) = PrivateKey.fromSeed(sha256(account+role+master_password).hex())`. The two algorithms produce different WIFs from the same input string, so a user pasting the 12-word BIP39 phrase into Keychain's master-password field gets keys that do NOT match their on-chain account, and Keychain rejects the import. The new copy's "Use your seed phrase to import the account from the Keychain extension" promises a flow that does not exist today.
+
+**Blocker.** Filed `agents/docs/tasks/pending/backend-seed-phrase-keychain-compat.md` to switch both backend and frontend derivation to `PrivateKey.fromLogin`. After that lands, the 12-word mnemonic IS a Hive master password (Keychain compatible) and this task's copy becomes accurate as-written.
+
+**Migration footprint: nil.** HAF query against `pevo.onboarding` and `pevotest.admin` returns exactly one account created with the old derivation: `testaccount23652` (created 2026-04-15, later self-custodied via `account_update`). Zero posts, zero votes, zero HP, default reputation 25. User-confirmed disposable; the account will be retired. No backfill, no operator script, no migration tool, no user-facing flow needed.
+
+**Re-review path.** When `backend-seed-phrase-keychain-compat` is archived, move this file back to `review/` (no implementer changes needed on this task — it's the upstream code change that validates the copy retroactively). The architect re-review at that point is just confirming the derivation switch landed and the copy now matches the actual recovery flow.
