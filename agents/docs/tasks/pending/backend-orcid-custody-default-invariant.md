@@ -132,3 +132,46 @@ Conclusion: the only consumer that must change behavior under Option A is `custo
 - `backend/tests/routes/custody-upgrade-null-hash.test.ts` — re-purposed to lock the post-fix gate behavior (custody=NULL → JWT custody=null → 403 FORBIDDEN), preserving the wrong-password baseline as the second test.
 
 [TODO Architect] None. The orcid.ts response body still returns `custody: account.custody` (possibly null) to the frontend — `frontend/src/pages/orcid-callback.js:230` already does `auth.custody = data.custody || 'light'`, which is symmetric to the bug just removed but is in the UI agent's zone (out of backend scope). If the architect prefers the response-body shape to default to `'self'` instead of null, that is a one-line follow-up; flagged here for the architect's awareness but not blocking archive of this task.
+
+---
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES
+
+Multi-persona review of commit `36b3f49` surfaced cross-corroborated findings, but **subsequent architect brainstorm at `agents/docs/ARCHITECTURE.md` § 6 (account state machine + re-auth invariants) dismissed the primary security-class findings as covering a threat model strictly weaker than what the project's stated defense (re-auth at critical actions) accepts.** Specifically:
+
+- The /upgrade null-hash branch timing oracle (F#1) leaks "this account is passwordless," but a JWT-stolen attacker can already escalate via `/settings/set-password` (currently JWT-only — filed as `backend-settings-set-password-fresh-auth.md`), making the timing oracle informationally redundant.
+- The "ORCID-only accounts (custody=NULL, password_hash=NULL)" framing this task was built on is **not a real production state**. Every finalized account has `custody ∈ {'light', 'self'}` set (see ARCHITECTURE.md § 6.1); the actual reachable passwordless shape is `custody='light' + password_hash=NULL` post-recover-orcid-no-password (state C in § 6.1).
+- Per ARCHITECTURE.md § 6.4, `/custody/upgrade`'s correct re-auth is the seed-phrase-derived pubkey (not password); the password-based re-auth in the current code is itself a gap, filed as `backend-custody-upgrade-seed-phrase-reauth.md`. Once that lands, state-C-via-ORCID-fresh-auth becomes moot for /upgrade anyway.
+
+The orcid.ts JWT-honesty changes and SQL-type narrowing are **defensible code-quality work on their own merits** — no security revert needed. The remaining items below are cleanup against the corrected narrative.
+
+### Hold items (light cleanup, no security revert needed)
+
+1. **[P2] Slug-citation cleanup — 9 sites across 3 files.** Per `agents/docs/solutions/conventions/task-slug-citations-in-code-comments-go-stale-on-archive-2026-05-15.md` (filed 4 days before this commit landed), task-slug leads in code/test comments rot once the task archives. Sites to clean up (replace with behavioral descriptions or stable-symbol anchors):
+   - `backend/src/routes/orcid.ts:616, 637` — `BACKEND-ORCID-CUSTODY-DEFAULT-INVARIANT` citations
+   - `backend/src/routes/custody.ts:787-802, 816` — 5 slug citations (`BACKEND-ORCID-CUSTODY-DEFAULT-INVARIANT`, `BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT`)
+   - `backend/tests/routes/custody-upgrade-null-hash.test.ts:2, 12-14, 75, 91` — slug + `ADV-R4-3` finding-id citation
+   The `verifyHiveSignature.ts:84` reference in custody.ts comments IS a stable-symbol anchor (file:line of a stable export) and may stay.
+
+2. **[P3] Operator-log event-name rename to dotted form.** Code emits `event: 'custody_upgrade_null_hash_unreachable'` (underscore). Sibling events use dotted form (e.g., `orcid.callback.token_exchange_failed`). Rename to `custody.upgrade.null_hash_unreachable` at `custody.ts:804-811` for convention consistency. The alert remains `logger.error` severity — per ARCHITECTURE.md § 6.5 #1, a critical-action branch that's truly unreachable through documented paths IS a server-internal-bug tripwire, which is what `error` is for.
+
+3. **[P2] JWT payload type widening at `verifyHiveSignature.ts:82`.** Cast is `payload as { sub: string; custody?: 'light' | 'self'; iat?: number }` — excludes `null`. After this commit, runtime JWTs can decode to `{ custody: null }` for ORCID-only accounts in flight. Runtime `|| 'self'` coerces correctly, but the static type lies (same wrapping-primitive null-typing audit class the SQL row type just fixed; one site short). Widen to `'light' | 'self' | null`.
+
+4. **[P2] Task narrative + comment-block correction.** The "Why this matters" section in the task body and the new code comments at `orcid.ts:638-651` and `custody.ts:787-802` frame the defended state as "ORCID-only accounts (custody=NULL)". That state is not production-reachable — every finalized account has custody set (see ARCHITECTURE.md § 6.1). Rewrite the comments to describe the actual reachable shape: light-custody users (state A or B) who recovered via `/api/auth/recover` with `orcid_token` and `new_password` omitted, leaving `custody='light' + password_hash=NULL` (state C of § 6.1). Reference ARCHITECTURE.md § 6 directly in the comments rather than re-explaining the model inline. Trim verbosity — the comments today are ~16-13 lines each; post-corrected versions can be 4-6 lines each pointing at § 6 for the full model.
+
+5. **[P3] Test docblock mutation-kill claim rewrite (F#17).** `backend/tests/routes/custody-upgrade-null-hash.test.ts:286-290` claims the test fences the mutation "drop the orcid.ts `||` default removal and re-introduce coercion to 'light'." But the test mints the JWT directly via `bearerForOrcidOnly` (`jwt.sign({sub, custody: null})`), bypassing orcid.ts. A regression re-adding `|| 'light'` in orcid.ts would NOT be caught — the test's hand-minted JWT still carries null. Rewrite the docblock to describe what the test actually fences: the custody.ts `'light'` gate's behavior given a custody=null JWT (the consumer's response, not the producer's mint shape). If you want a producer-side fence too, add a tiny unit assertion in `orcid.test.ts` that decodes the login-mode response's token and asserts `payload.custody === null` for an ORCID-only account row — but that's an additive nice-to-have, not a hold item.
+
+### Dismissed (with reasons)
+
+- **F#1 (P1 originally — cross-reviewer corroboration): /upgrade null-hash branch timing oracle reopened by burnSentinel removal.** Dismissed: JWT-stolen attacker escalates via `/settings/set-password` (currently JWT-only — see `backend-settings-set-password-fresh-auth.md`), not via /upgrade timing. Once F#19 is fixed, the /upgrade timing leak reveals only "this account is passwordless," which the attacker already knows from owning the JWT.
+- **F#7 (P2): consumer-audit grep misclassifies auth.ts:1284.** Dismissed: F#1's underlying scenario reshapes how the audit grep is read (the auth.ts:1284 row's "applies to password-verified accounts" disposition is wrong for the recover-no-password sub-branch, but since F#1 is dismissed the misclassification doesn't drive a code change).
+- **F#9 (P3): FE `data.custody || 'light'` coercion symmetric drift.** Dismissed: post-signup-verify every account has custody set, so backend never sends `custody: null` to a logged-in user. FE coercion is harmless against production-reachable data.
+- **F#10, F#11 (P3 each): surviving `|| 'light'` in auth.ts and audit-log absence on gate-403.** Dismissed alongside F#1.
+
+### Files for round-3 cleanup
+
+- `backend/src/routes/orcid.ts` (items 1, 4)
+- `backend/src/routes/custody.ts` (items 1, 2, 4)
+- `backend/src/middleware/verifyHiveSignature.ts` (item 3)
+- `backend/tests/routes/custody-upgrade-null-hash.test.ts` (items 1, 5)
+- This task file's "Why this matters" section (item 4 — task narrative correction)
