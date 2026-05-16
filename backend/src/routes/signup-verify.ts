@@ -188,7 +188,8 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
 
     // Verify password.
     //
-    // Canonical hoist pattern (see BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT):
+    // Canonical hoist pattern for `argon2.verify(account.password_hash, …)`
+    // inside `runWithArgon2Slot`:
     // `accounts.password_hash` is `string | null` in the schema (ORCID-only
     // accounts have no password). After the `if (!account.password_hash)`
     // guard above proves it non-null at this line, TypeScript narrows

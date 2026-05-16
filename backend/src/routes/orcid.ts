@@ -658,11 +658,13 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
     return;
   }
 
-  // `accounts.custody` is nullable (TEXT, no NOT NULL — see
-  // backend/migrations/001_schema.sql); transient signup-pending states
-  // (E, F per ARCHITECTURE.md § 6.1) carry `custody=NULL`. Annotate the
-  // SQL result honestly so the compiler enforces null-handling, per
-  // `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`.
+  // `accounts.custody` is `TEXT` (nullable) in the schema. The
+  // `WHERE username IS NOT NULL` filter excludes states E/F, so this
+  // query only matches finalized rows (A/B/C/D) where `custody` is
+  // set. Annotate the column as `string | null` per the wrapping-
+  // primitive convention; this honest-types the column's nullability
+  // as belt-and-suspenders if the filter ever drops, not a defense
+  // against a currently-reachable null row.
   const result = await pool.query<{ username: string; custody: string | null }>(
     `SELECT username, custody FROM accounts WHERE orcid = $1 AND username IS NOT NULL LIMIT 1`,
     [orcidId],
@@ -683,14 +685,13 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   }
 
   const account = result.rows[0];
-  // Mint the JWT with the actual DB value (possibly null) so the claim
-  // matches the row's persisted state. Finalized accounts have
-  // `custody ∈ {'light', 'self'}` set (states A/B/C/D per ARCHITECTURE.md
-  // § 6.1); the null branch defends transient signup-pending rows that
-  // briefly reach this code path. `verifyHiveSignature` coerces a null
-  // claim to `'self'`, which causes consumer routes (e.g. /custody/upgrade)
-  // to gate per the § 6.4 re-auth contract rather than mis-treating the
-  // caller as light-custody.
+  // Mint the JWT with the actual DB value rather than coercing to
+  // `'light'` — the row matched by this query is finalized, so
+  // `account.custody` is `'light'` or `'self'` (states A/B/C/D per
+  // ARCHITECTURE.md § 6.1). The `null` branch in the column type is
+  // unreachable here; the state-C passwordless shape (password_hash
+  // NULL) is defended at /upgrade per the § 6.4 re-auth contract,
+  // not by this annotation.
   const token = jwt.sign(
     { sub: account.username, custody: account.custody },
     config.sessionSecret,

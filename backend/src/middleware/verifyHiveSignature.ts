@@ -93,33 +93,42 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
     try {
-      const payload = jwt.verify(token, config.sessionSecret) as { sub: string; custody?: 'light' | 'self' | null; iat?: number };
-      req.hiveUsername = payload.sub;
-      req.hiveCustody = payload.custody || 'self';
-      req.hiveAuthMethod = 'jwt';
+      const payload = jwt.verify(token, config.sessionSecret) as { sub?: unknown; custody?: 'light' | 'self' | null; iat?: number };
+      // Runtime guard: the `as` cast does not validate `sub`. A JWT with
+      // `sub` absent or non-string would otherwise set
+      // `req.hiveUsername = undefined` and call `next()`, leaving the
+      // request "authenticated" with no username. Reject the JWT path
+      // and fall through to the Hive-signature branch (which 401s if no
+      // signature headers are present).
+      if (typeof payload.sub === 'string' && payload.sub.length > 0) {
+        req.hiveUsername = payload.sub;
+        req.hiveCustody = payload.custody || 'self';
+        req.hiveAuthMethod = 'jwt';
 
-      // Check session invalidation for light accounts (password reset invalidates all prior JWTs)
-      if (payload.iat) {
-        const pool = getAppPool();
-        if (pool) {
-          try {
-            const { rows } = await pool.query<{ sessions_invalidated_at: Date | null }>(
-              'SELECT sessions_invalidated_at FROM accounts WHERE username = $1',
-              [payload.sub],
-            );
-            if (rows.length > 0 && rows[0].sessions_invalidated_at) {
-              const invalidatedAt = Math.floor(rows[0].sessions_invalidated_at.getTime() / 1000);
-              if (payload.iat < invalidatedAt) {
-                return sendError(res, 401, 'SESSION_INVALIDATED', 'Session has been invalidated. Please log in again.');
+        // Check session invalidation for light accounts (password reset invalidates all prior JWTs)
+        if (payload.iat) {
+          const pool = getAppPool();
+          if (pool) {
+            try {
+              const { rows } = await pool.query<{ sessions_invalidated_at: Date | null }>(
+                'SELECT sessions_invalidated_at FROM accounts WHERE username = $1',
+                [payload.sub],
+              );
+              if (rows.length > 0 && rows[0].sessions_invalidated_at) {
+                const invalidatedAt = Math.floor(rows[0].sessions_invalidated_at.getTime() / 1000);
+                if (payload.iat < invalidatedAt) {
+                  return sendError(res, 401, 'SESSION_INVALIDATED', 'Session has been invalidated. Please log in again.');
+                }
               }
+            } catch (dbErr) {
+              logger.warn({ err: dbErr }, 'Session invalidation check failed — allowing request');
             }
-          } catch (dbErr) {
-            logger.warn({ err: dbErr }, 'Session invalidation check failed — allowing request');
           }
         }
-      }
 
-      return next();
+        return next();
+      }
+      logger.debug('JWT missing or non-string sub claim, falling back to Hive signature check');
     } catch (err) {
       logger.debug({ err }, 'JWT verification failed, falling back to Hive signature check');
     }

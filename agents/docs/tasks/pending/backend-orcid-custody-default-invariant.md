@@ -258,3 +258,43 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 - `backend/src/routes/signup-verify.ts` (item 3)
 
 Per root CLAUDE.md rule #8, this file moves from `tasks/review/` back to `tasks/pending/` so the implementer sees it at startup. After landing the round-4 fixes, `git mv` back to `tasks/review/` for round-4 re-review.
+
+---
+
+## Backend re-review signal (2026-05-16, round-4 fix commit)
+
+Round-4 lands the three items from the architect's round-3 hold (orcid.ts comment-correctness regression, JWT `sub` runtime validation, slug-citation cleanup at out-of-round-3-scope sites). All three items are code-only — no test-file deletion or behavioral change beyond the `sub`-guard's fall-through semantics.
+
+### Items landed
+
+1. **Item 1 [P2] — orcid.ts comment reframe (correctness regression against round-2 hold item #4).** Both comments at `backend/src/routes/orcid.ts` (SQL row-type annotation and JWT mint) rewritten honestly:
+   - **SQL row-type annotation comment (lines ~639-646):** trimmed to 7 lines. Frames the `string | null` annotation as honest-typing the COLUMN's nullability per the wrapping-primitive convention, as belt-and-suspenders against a hypothetical future query dropping the `username IS NOT NULL` filter. Removes the incorrect "transient signup-pending states (E, F)" attribution — those rows have `username=NULL` and are filtered out by the query's WHERE clause, so they never reach this row-type.
+   - **JWT-mint comment (lines ~665-671):** trimmed to 7 lines. Acknowledges that the row matched here is finalized (states A/B/C/D), so `account.custody` is `'light'` or `'self'`; the `null` branch in the column type is unreachable at this site. Notes that state C (`custody='light' + password_hash=NULL`) exists as the real production passwordless shape, but its `password_hash null` defense lives at `/upgrade` per ARCHITECTURE.md § 6.4 — not on this annotation. Points at § 6.1 for the model.
+
+2. **Item 2 [P2] — JWT `sub` runtime validation in `backend/src/middleware/verifyHiveSignature.ts`.** Added a runtime guard immediately after the `jwt.verify` cast: the `as` cast widened payload `sub` to `unknown`, and the JWT-success branch now executes only inside `if (typeof payload.sub === 'string' && payload.sub.length > 0) { … return next(); }`. The guard's `else` (implicit fall-through) emits a debug log and falls through to the Hive-signature branch, which 401s when no signature headers are present. The original behavior — setting `req.hiveUsername = undefined` from a malformed JWT and calling `next()` — is closed.
+
+   Targeted test added at `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts`: `rejects a Bearer JWT with no sub claim instead of setting hiveUsername=undefined`. Mints a JWT with `{ custody: 'self' }` and no `sub`, sends it to `/probe` with no Hive-signature headers, asserts response status 401 and that neither `hiveAuthMethod` nor `hiveUsername` propagated to the probe handler. The fixture file's existing real-path discipline (no MOCK_VERIFY_SIGNATURE, real `jsonwebtoken` library) carries to the new case.
+
+3. **Item 3 [P3] — Slug-citation cleanup at 3 out-of-round-3-scope sites.** Replaced `BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT` references with behavioral descriptions referencing the canonical hoist pattern's parent site (`signup-verify.ts`'s `/signup-verify` handler):
+   - `backend/src/routes/auth.ts:611-616` (in `/resume-signup`) — slug citation replaced with parent-site description and the behavioral rationale (closure-narrowing-loss, replacing the non-null assertion).
+   - `backend/src/routes/auth.ts:779-785` (in `/login`) — same shape; references the parent site instead of the task slug.
+   - `backend/src/routes/signup-verify.ts:191` (the original parent site itself) — self-reference loop removed; comment now describes the pattern directly without slug-citing itself.
+
+### Verification
+
+- `grep -rn 'BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT' backend/src/ backend/tests/` returns zero hits (exit code 1).
+- `grep -rn 'BACKEND-ORCID-CUSTODY-DEFAULT-INVARIANT\|ADV-R4-3' backend/src/ backend/tests/` returns zero hits (still clean from round-3).
+- `npm run typecheck` (i.e. `tsc --noEmit -p tsconfig.json`) — clean (0 errors).
+- `npm run lint` — clean (2 pre-existing warnings in `seed-phrase.ts`, unrelated).
+- Vitest will be serialized by the parent on full-suite run after this fix-commit lands; not run in the worker worktree.
+
+### Files staged this round
+
+- `backend/src/routes/orcid.ts` (item 1: 2 comment blocks reframed for correctness)
+- `backend/src/middleware/verifyHiveSignature.ts` (item 2: runtime `sub` guard added; payload cast widened to `sub?: unknown`)
+- `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts` (item 2: regression-fence test for sub-less JWT)
+- `backend/src/routes/auth.ts` (item 3: 2 slug-citation cleanups)
+- `backend/src/routes/signup-verify.ts` (item 3: 1 slug-citation self-reference removed)
+- `agents/docs/tasks/review/backend-orcid-custody-default-invariant.md` (this signal block)
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

@@ -153,4 +153,27 @@ describe('verifyHiveSignature — req.hiveAuthMethod discriminator', () => {
     expect(res.status).toBe(401);
     expect(res.body).not.toHaveProperty('hiveAuthMethod');
   });
+
+  it('rejects a Bearer JWT with no sub claim instead of setting hiveUsername=undefined', async () => {
+    // Regression fence: the `as` cast on the decoded JWT payload does
+    // not validate `sub` at runtime. A JWT signed without a `sub` claim
+    // would otherwise pass the cast silently, write `undefined` to
+    // `req.hiveUsername`, and call `next()` — leaving the request
+    // "authenticated" with no username. The runtime guard immediately
+    // after the cast skips the JWT-success branch on a missing or non-
+    // string `sub`; the request then falls through to the Hive-
+    // signature path, which 401s when no signature headers are
+    // present (as here).
+    const app = makeApp();
+    const subLessToken = jwt.sign({ custody: 'self' }, config.sessionSecret, { expiresIn: '5m' });
+
+    const res = await request(app)
+      .post('/probe')
+      .set('Authorization', `Bearer ${subLessToken}`)
+      .send({});
+
+    expect(res.status).toBe(401);
+    expect(res.body).not.toHaveProperty('hiveAuthMethod');
+    expect(res.body).not.toHaveProperty('hiveUsername');
+  });
 });
