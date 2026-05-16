@@ -99,3 +99,43 @@ All 5 acceptance items landed in a single commit. Files touched:
 - `backend/tests/routes/search.test.ts` — added 2 route-level specs: `?language=<17-char>` → 400 with length-cap message; `?language=en` → 200 happy-path.
 
 `npm run lint` clean (pre-existing seed-phrase.ts warnings only); `npx tsc --noEmit` clean. Vitest deferred to the parent's serialized run after all in-flight backend tasks land.
+
+## Architect re-review (2026-05-16, round-1 → round-2) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `0a10584` with 8 personas (correctness opus; testing, maintainability, project-standards, security, kieran-typescript, ce-learnings-researcher sonnet; adversarial opus). `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md. Cluster-3 architect triage produced 1 item to address.
+
+### Items to address
+
+1. **(P2 maintainability+kieran-typescript, anchor 100 cross-reviewer)** `INVALID_LANGUAGE_LENGTH_MESSAGE` hardcodes `'16'` independently of `SEARCH_LANGUAGE_MAX_LEN`. At `backend/src/types/search-filters.ts:219`:
+
+   ```ts
+   const INVALID_LANGUAGE_LENGTH_MESSAGE = 'Invalid language. Must be 16 characters or fewer';
+   ```
+
+   The cap value `16` is duplicated as a string literal in the message — `SEARCH_LANGUAGE_MAX_LEN = 16` on `:216` is the policy value but is not interpolated. The test regex `/16 characters/` at `backend/tests/lib/search-filters.test.ts:251` and `backend/tests/routes/search.test.ts` also matches against the hardcoded literal, so changing `SEARCH_LANGUAGE_MAX_LEN` to e.g. 24 would silently produce a wrong-number message AND both tests would still pass — providing false confidence that the message reflects the active cap.
+
+   Fix: template the message via the constant:
+
+   ```ts
+   const INVALID_LANGUAGE_LENGTH_MESSAGE = `Invalid language. Must be ${SEARCH_LANGUAGE_MAX_LEN} characters or fewer`;
+   ```
+
+   The test regexes `/16 characters/` stay valid as long as the cap is in the 10–99 range; no test update is required for this specific fix unless you also want to derive the regex from the constant (`new RegExp(`${SEARCH_LANGUAGE_MAX_LEN} characters`)`) for full single-source-of-truth.
+
+### Items dismissed during architect triage
+
+- (P3 kieran-typescript KT-02, anchor 50) Docblock claims "code points" but `.length` returns UTF-16 code units — dismissed at confidence gate. Pre-existing pattern shared with `SEARCH_QUERY_MAX_LEN` (would be a sweep, not a localized fix); irrelevant for the BCP-47 ASCII domain.
+- (Adversarial residual) `?q=` is the dominant cache-key entropy contributor — out of scope per architect decision; the 16-char cap on `?language=` closes the specific `adv-search-language-cache-exhaustion` vector flagged in round-1 of typeof-narrow-sweep. Broader cache-exhaustion hardening (rate-limit-per-cache-miss, allowlist of canonical language tags) is a separate decision.
+- (Adversarial residual) Empty-string-as-absent semantics shift — verified no client-observable behavior change. Pre-patch `?language=` (empty) flowed to `value: ''`, which was falsy at the `if (language)` SQL gate (`backend/src/routes/search.ts:79`) and coalesced to `l=` in the cache key (`:437`). Post-patch `value: undefined` produces identical SQL and identical cache key. Purely a typing refinement.
+- (Adversarial residual) `.length` vs codepoints/bytes for the 16-char cap — irrelevant for BCP-47 ASCII domain; not exploitable (hashed cache key, parameterized SQL bind). Docblock imprecision noted under KT-02 above.
+- (Correctness residual) Whitespace-only `?language=   ` is accepted by the helper (only literal `''` is treated as absent) — divergence from `?q=` trim-empty behavior, but consistent with the architect's empty-string-only decision baked into the task; not held.
+- (P2 project-standards PS-001) Task file not moved from `pending/` to `review/` in the same commit — dismissed; backend CLAUDE.md option (b) explicitly permits append-and-move-in-N+1, and commit `83e98a9` performed the bulk pending→review triage move.
+
+### Items handed to separate architect actions (not held on this task)
+
+- (Learnings advisory) `backend/src/routes/papers.ts:477,479,517-519` is a known-remaining `req.query.x as string` sweep target per the `req-query-as-string-cast-silent-coerce-2026-05-16` learning. Out of scope for this task; architect should verify a follow-up task exists or file one before archiving the cluster.
+- Vitest deferred per signal block; verify green on the parent serialized run before archive.
+
+### Re-review signal
+
+When item 1 above lands, `git mv` this file back to `tasks/review/`. Round-2 architect re-review scopes `/ce-code-review` to the round-2 commit. Anchor: a single-line template fix at `search-filters.ts:219`; tests stay as-is unless the implementer chooses the optional regex-from-constant tightening.
