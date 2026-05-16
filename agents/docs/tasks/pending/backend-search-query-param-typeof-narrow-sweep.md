@@ -149,3 +149,14 @@ All 4 hold-block items landed in a single commit. Files touched:
 ### Re-review signal
 
 When both items above land, `git mv` this file back to `tasks/review/`. Round-3 architect re-review scopes `/ce-code-review` to the round-3 commit. Anchor: item 1 is a one-line touch at `search.ts`; item 2 is a one-spec addition at `search.test.ts`. Single commit reasonable.
+
+## Backend re-review signal (2026-05-16, round-3, worktree-agent-a450a90fb195aaf76)
+
+Both round-3 hold items landed in a single commit. Parent re-took over after worker subagent was killed (silently, no notification) while the work was complete on disk but uncommitted; parent ran tsc/lint, appended this signal block, and committed.
+
+- **Item 1 [P2]** — `backend/src/routes/search.ts` `searchReviewsFromHaf` signature tightened from `sort: string` to `sort: SearchSort`. The `SearchSort` import was already present in the file. One-line touch.
+- **Item 2 [P3]** — `backend/tests/routes/search.test.ts` gains one new spec: `?sort=relevance` happy-path returns 200. Mirrors the `?source=native` / `?source=bridge` happy-path pattern at lines ~218-237. Closes the "inverted `isSearchSort` predicate would silently 400 every relevance request" coverage gap.
+
+`npx tsc --noEmit` clean. `npm run lint` clean (only the 2 pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`, unrelated). Targeted vitest deferred to the parent's serialized run after all in-flight backend tasks merge back.
+
+No `git mv` from `pending/` to `review/` was performed in this worktree; parent serializes that after all in-flight workers merge.

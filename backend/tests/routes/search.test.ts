@@ -237,6 +237,16 @@ describe('GET /api/search', () => {
     expect(res.body.status).toBe('ok');
   });
 
+  // Happy-path coverage for `?sort=relevance`. `?sort=date` is incidentally
+  // covered by accreditation-gate tests further down; `?sort=relevance` had
+  // zero happy-path coverage before this spec, so an inverted `isSearchSort`
+  // predicate would silently 400 every valid request.
+  it('?sort=relevance returns 200', { timeout: 60_000 }, async () => {
+    const res = await request(app).get('/api/search?q=science&sort=relevance');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+  });
+
   // BE-LANGUAGE-FILTER-LENGTH-CAP: `?language=` enforces a 16-char length
   // cap (BCP-47 tags are well under 16; the cap bounds cache-key
   // enumeration). The empty-string variant is treated as absent (returns

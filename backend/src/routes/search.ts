@@ -159,7 +159,7 @@ async function searchPapersFromHaf(
 async function searchReviewsFromHaf(
   pool: ReturnType<typeof getPool> & object,
   query: string,
-  sort: string,
+  sort: SearchSort,
   limit: number,
   offset: number,
 ): Promise<{ rows: SearchRow[]; total: number } | null> {
