@@ -213,3 +213,158 @@ Round-1 hold items 1-6 landed.
 ### Re-review signal
 
 When items 1-5 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+---
+
+## Backend re-review signal (2026-05-16, round-3 fix commit)
+
+Round-2 → round-3 hold items 1-5 landed. Item 5(a) call-site audit grep output is included verbatim per architect instruction.
+
+### Item-by-item resolution
+
+**Item 1 (P2) + Item 2 (P2) — combined fix: atomic Lua INCR + DECR-on-overflow + unconditional PEXPIRE replaces GET → next() → deferred-INCR.**
+
+Round-2's `skipFailedRequests` Redis path had two coupled bugs:
+
+- **Permanent-lockout TTL bug**: `pexpire` only fired when `count === 1`. Concurrent post-success INCRs after count=1 left the key with no TTL ever; the key never expired; subsequent GETs saw `count > max` and 429'd indefinitely.
+- **TOCTOU overshoot**: GET → next() → deferred-INCR is non-atomic. Two concurrent requests for the same key both see count=0 (separate GET round-trips), both pass `>= max`, both run the handler, both deferred-INCR on finish → final count=2 above max=1.
+
+Both bugs are now structurally impossible. The single-round-trip atomic Lua script (registered as `RATE_LIMIT_CHECK_AND_CONSUME` in `backend/src/lib/redis-scripts.ts:74-104` and dispatched via `evalScript` to inherit EVALSHA + NOSCRIPT-fallback) does:
+
+```
+INCR → count > max ? (DECR + return {0, pttl}) : (PEXPIRE unconditional + return {1, 0})
+```
+
+`backend/src/middleware/rateLimit.ts:76-114` invokes the script up-front; on success, if `skipFailedRequests` is set, a `res.on('finish')` callback issues `DECR` when `res.statusCode >= 400` (slot refund). The DECR refund is a single command, no Lua needed — the limit-check Lua doesn't know the response outcome at entry time and doesn't need to.
+
+The in-memory fallback path (`backend/src/middleware/rateLimit.ts:117-146`) mirrors the same shape: push the timestamp synchronously on entry (matches Redis INCR-up-front); for `skipFailed`, splice the pushed timestamp out of `entry.timestamps` on `res.on('finish')` when status >= 400. This eliminates the in-memory equivalent of the TOCTOU overshoot.
+
+JSDoc on `RateLimitConfig.skipFailedRequests` (`backend/src/middleware/rateLimit.ts:17-49`) updated to document the implementation note and the misuse-direction warning (item 5(b)).
+
+Verification — new tests in `backend/tests/middleware/rateLimit.test.ts`:
+
+- **Concurrent INCRs within max all succeed; key retains TTL** (the round-3 fix-verification test architect requested). 5 concurrent `Promise.all` requests for the same account-key with max=5; all return 200; post-test the Redis key has `pttl > 0`. The round-2 bug would have left `pttl == -1` (no TTL).
+- **skipFailedRequests refunds slot when handler returns 500**. Pins the DECR-on-failure refund path.
+- **Lua DECR-on-overflow keeps count bounded at max, not max+1**. Pins the atomic-check invariant against future "remove DECR-on-overflow" mutations.
+
+The concurrent test uses Redis directly (the Lua path is the one under test); the in-memory fallback has its own coverage via the existing tests + the new refund test's structure (Redis-conditional, no-op when Redis is unavailable).
+
+**Item 3 (P2) — clock-skew Option A: 5s forward-skew tolerance.** `backend/src/routes/custody.ts:931-935` introduces `UPGRADE_PROOF_FUTURE_SKEW_MS = 5_000`. The freshness gate at `backend/src/routes/custody.ts:990-1003` now reads:
+
+```ts
+if (
+  !Number.isFinite(tsMs) ||
+  tsMs > nowMs + UPGRADE_PROOF_FUTURE_SKEW_MS ||
+  nowMs - tsMs > UPGRADE_PROOF_TIMESTAMP_WINDOW_MS
+)
+```
+
+Replay race window stays bounded at 65s (60s past + 5s forward); typical 100ms forward client drift no longer locks the user out. Doc comment at `:914-927` updated with the skew rationale.
+
+Test: `backend/tests/routes/custody-upgrade.test.ts:395-411` — `Future-dated signed_at (> 5s skew tolerance): returns 401 UNAUTHORIZED`. Uses `signed_at = Date.now() + 30_000` (well past the 5s tolerance) and asserts 401.
+
+Architect noted contract doc fix at `agents/docs/api-contracts/custody.md:177,181` lands at archive — out of backend zone, not touched.
+
+**Item 4 (P2) — task-file path citation dropped.** `backend/src/routes/custody.ts:44-50` inline comment block on `upgradeLimiter` now points to `RateLimitConfig.skipFailedRequests` JSDoc instead of the task-file path that would rot on archive. The full rationale (skipFailedRequests design choice + stolen-JWT-DoS protection) is documented in the JSDoc per architect direction; the route-side comment summarizes the local intent and references the JSDoc.
+
+**Item 5 (P2) — wrapping-primitive call-site audit + JSDoc misuse-direction.**
+
+- **(a) Call-site audit.** Grep output below, verbatim. Every call site is enumerated and confirmed against the convention `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`.
+- **(b) JSDoc misuse direction.** Added to `backend/src/middleware/rateLimit.ts:43-47`:
+
+> DO NOT use on credential-probing routes (e.g., /login, /recover) — failed probes would not consume slots, enabling unlimited account enumeration. The option is intended for one-shot ceremonies where failure is benign (transient infrastructure error, malformed body from a hijacked session) and the value at stake is operation success, not attempt-rate-limiting.
+
+### Item 5(a) call-site audit — `grep -rn 'rateLimit(' backend/src/ --include='*.ts'`
+
+```
+backend/src/routes/contact.ts:16:const contactLimiter = rateLimit({ name: 'contact', windowMs: 3_600_000, max: 5, keyFn: byIp });
+backend/src/routes/signup-verify.ts:74:const verifyLimiter = rateLimit({ name: 'signup-verify', windowMs: 3_600_000, max: 10, keyFn: byIp });
+backend/src/routes/signup-verify.ts:75:const resumeLimiter = rateLimit({ name: 'signup-resume', windowMs: 3_600_000, max: 5, keyFn: byIp });
+backend/src/routes/signup-verify.ts:76:const confirmLimiter = rateLimit({ name: 'signup-confirm', windowMs: 3_600_000, max: 10, keyFn: byIp });
+backend/src/routes/signup-verify.ts:77:const linkLimiter = rateLimit({ name: 'signup-link', windowMs: 3_600_000, max: 10, keyFn: byIp });
+backend/src/app.ts:46:const readLimiter = rateLimit({ name: 'read', windowMs: 60_000, max: 120, keyFn: byIp });
+backend/src/app.ts:47:const searchLimiter = rateLimit({ name: 'search', windowMs: 60_000, max: 60, keyFn: byIp });
+backend/src/app.ts:50:const notificationLimiter = rateLimit({ name: 'notif', windowMs: 300_000, max: 30, keyFn: byIp });
+backend/src/routes/auth.ts:262:const sessionLimiter = rateLimit({ name: 'auth-session', windowMs: 3_600_000, max: 10, keyFn: byAccount });
+backend/src/routes/auth.ts:263:const signupLimiter = rateLimit({ name: 'auth-signup', windowMs: 3_600_000, max: 10, keyFn: byIp });
+backend/src/routes/auth.ts:264:const loginLimiter = rateLimit({ name: 'auth-login', windowMs: 3_600_000, max: 10, keyFn: byIp });
+backend/src/routes/auth.ts:265:const resetRequestLimiter = rateLimit({ name: 'auth-reset-request', windowMs: 3_600_000, max: 5, keyFn: byIp });
+backend/src/routes/auth.ts:266:const resetLimiter = rateLimit({ name: 'auth-reset', windowMs: 3_600_000, max: 5, keyFn: byIp });
+backend/src/routes/auth.ts:568:const resendLimiter = rateLimit({ name: 'auth-resend', windowMs: 3_600_000, max: 3, keyFn: byIp });
+backend/src/routes/auth.ts:1072:const recoverLimiter = rateLimit({ name: 'auth-recover', windowMs: 3_600_000, max: 10, keyFn: byIp });
+backend/src/routes/settings.ts:26:const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
+backend/src/routes/settings.ts:27:const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
+backend/src/middleware/rateLimit.ts:36:export function rateLimit(config: RateLimitConfig) {
+backend/src/routes/bridge.ts:148:const lookupLimiter = rateLimit({ name: 'bridge-lookup', windowMs: 60_000, max: 20, keyFn: byIp });
+backend/src/routes/bridge.ts:149:const registerLimiter = rateLimit({ name: 'bridge-register', windowMs: 3_600_000, max: 10, keyFn: byIp });
+backend/src/routes/ipfs.ts:18:const ipfsUploadLimiter = rateLimit({ name: 'ipfs-upload', windowMs: 60 * 60_000, max: 10, keyFn: byAccount });
+backend/src/routes/ipfs.ts:235:const ipfsDownloadLimiter = rateLimit({ name: 'ipfs-download', windowMs: 60_000, max: 60, keyFn: byIp });
+backend/src/routes/anonymousReview.ts:20:const anonReviewLimiter = rateLimit({ name: 'anon-review', windowMs: 60 * 60_000, max: 5, keyFn: byAccount });
+backend/src/routes/custody.ts:43:const broadcastLimiter = rateLimit({ name: 'custody-broadcast', windowMs: 60_000, max: 30, keyFn: byAccount });
+backend/src/routes/custody.ts:51:const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000, max: 1, keyFn: byAccount, skipFailedRequests: true });
+backend/src/routes/custody.ts:57:const freshAuthLimiter = rateLimit({ name: 'custody-fresh-auth', windowMs: 60_000, max: 10, keyFn: byAccount });
+backend/src/routes/custody.ts:62:const sessionAuthLimiter = rateLimit({ name: 'custody-session-auth', windowMs: 60_000, max: 10, keyFn: byAccount });
+backend/src/routes/papers.ts:457:const retractLimiter = rateLimit({ name: 'paper-retract', windowMs: 3_600_000, max: 5, keyFn: byAccount });
+backend/src/routes/papers.ts:2664:const invalidateLimiter = rateLimit({ name: 'cache-invalidate', windowMs: 60_000, max: 10, keyFn: byAccount });
+backend/src/routes/claims.ts:124:const claimLimiter = rateLimit({ name: 'claim-authorship', windowMs: 60_000, max: 5, keyFn: byAccount });
+backend/src/routes/claims.ts:173:const approveLimiter = rateLimit({ name: 'approve-authorship', windowMs: 60_000, max: 10, keyFn: byAccount });
+backend/src/routes/claims.ts:266:const revokeLimiter = rateLimit({ name: 'revoke-authorship', windowMs: 60_000, max: 10, keyFn: byAccount });
+backend/src/routes/accreditation.ts:35:const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount, skipFailedRequests: true });
+backend/src/routes/accreditation.ts:36:const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp });
+backend/src/routes/orcid.ts:204:const startLimiter = rateLimit({ name: 'orcid-start', windowMs: 60_000, max: 10, keyFn: byIp });
+backend/src/routes/orcid.ts:205:const callbackLimiter = rateLimit({ name: 'orcid-callback', windowMs: 60_000, max: 10, keyFn: byIp });
+```
+
+**Per-site audit (one-liner per call site; `skipFailedRequests` adoption intent + credential-probing-route check):**
+
+- `contact:16` — public contact form, IP-keyed; not credential-probing; omits `skipFailedRequests` intentionally (every send attempt counts to bound spam). OK.
+- `signup-verify:74` (verify) — IP-keyed email-verify; not credential-probing in the password sense; omits `skipFailedRequests` intentionally to bound enumeration of verify tokens. OK.
+- `signup-verify:75` (resume) — IP-keyed signup-resume; same OK.
+- `signup-verify:76` (confirm) — IP-keyed confirm; same OK.
+- `signup-verify:77` (link) — IP-keyed link; same OK.
+- `app:46` (readLimiter) — public read API, IP-keyed; not credential-probing; omits `skipFailedRequests` (high `max=120`, every request counts). OK.
+- `app:47` (searchLimiter) — public search API, IP-keyed; same OK.
+- `app:50` (notificationLimiter) — IP-keyed notification poll; same OK.
+- `auth:262` (sessionLimiter) — account-keyed session limiter, NOT a credential probe (gates session-mint, not password); omits `skipFailedRequests` intentionally (every probe counts to bound stolen-JWT abuse). OK.
+- `auth:263` (signupLimiter) — IP-keyed signup; same OK.
+- `auth:264` (loginLimiter) — IP-keyed login; **CREDENTIAL-PROBING route** — MUST NOT use `skipFailedRequests` per JSDoc warning. Confirmed omitted. OK.
+- `auth:265` (resetRequestLimiter) — IP-keyed reset-request; **credential-adjacent** (account-enumeration-via-existence); MUST NOT use `skipFailedRequests`. Confirmed omitted. OK.
+- `auth:266` (resetLimiter) — IP-keyed reset; **credential-probing** (token guess); MUST NOT use `skipFailedRequests`. Confirmed omitted. OK.
+- `auth:568` (resendLimiter) — IP-keyed verification-resend; not credential-probing; bounds email-spam. Confirmed omitted. OK.
+- `auth:1072` (recoverLimiter) — IP-keyed recover; **credential-probing** (recover token guess); MUST NOT use `skipFailedRequests`. Confirmed omitted. OK.
+- `settings:26` (settings-read) — IP-keyed settings GET; not credential-probing. OK.
+- `settings:27` (settings-write) — IP-keyed settings PATCH; not credential-probing in the password sense (settings mutations are fresh-auth-gated downstream). OK.
+- `rateLimit:36` — the export site itself, not a call site. Skip.
+- `bridge:148` (bridge-lookup) — IP-keyed bridge-account lookup; not credential-probing. OK.
+- `bridge:149` (bridge-register) — IP-keyed bridge-register; not credential-probing. OK.
+- `ipfs:18` (ipfs-upload) — account-keyed upload, expensive; not credential-probing; every upload counts (no skip). OK. (A candidate for future `skipFailedRequests` adoption if 503-from-pinner becomes a UX issue, but not now.)
+- `ipfs:235` (ipfs-download) — IP-keyed download; not credential-probing. OK.
+- `anonymousReview:20` — account-keyed review-publish; not credential-probing; every attempt counts (5/hr cap). OK.
+- `custody:43` (broadcast) — account-keyed broadcast; not credential-probing (verifyHiveSignature gates upstream); every broadcast counts. OK.
+- `custody:51` (upgrade) — **this is the round-2/3 adopter site**; `skipFailedRequests: true` set intentionally per the JSDoc-documented rationale (one-shot ceremony, Hive RPC 503 should not burn the slot, stolen-JWT 400 should not lock the user out). NOT credential-probing (the proof is a signature over a derived pubkey, not a password). OK.
+- `custody:57` (fresh-auth) — account-keyed fresh-auth mint; argon2.verify is the password check inside the handler; the 10/min `max` is intentionally restrictive to bound the password-guess oracle. **CREDENTIAL-PROBING** — MUST NOT use `skipFailedRequests`. Confirmed omitted. OK.
+- `custody:62` (session-auth) — account-keyed session-mint; same argon2.verify password check; **CREDENTIAL-PROBING** — MUST NOT use `skipFailedRequests`. Confirmed omitted. OK.
+- `papers:457` (paper-retract) — account-keyed retract; not credential-probing; rare op (5/hr). OK.
+- `papers:2664` (cache-invalidate) — account-keyed cache invalidation; not credential-probing. OK.
+- `claims:124,173,266` — account-keyed authorship claim/approve/revoke; not credential-probing. OK.
+- `accreditation:35` (accred-req) — **already adopts** `skipFailedRequests: true` (existing adopter site from an earlier task). 3/day cap; consume-on-success-only protects users from transient failures burning their daily budget. NOT credential-probing (the gate is fresh-auth signed proof, not a password). OK.
+- `accreditation:36` (accred-verify) — IP-keyed verify-token; not credential-probing in the password sense; omits `skipFailedRequests` (token-guess bound). OK.
+- `orcid:204,205` (orcid-start, orcid-callback) — IP-keyed OAuth flow; not credential-probing in the password sense; omits `skipFailedRequests` (OAuth-state-token guess bound). OK.
+
+Net: two adopters of `skipFailedRequests` (`custody:51` and `accreditation:35`), both NOT credential-probing routes, both one-shot/rare-op ceremonies where transient failure shouldn't burn the slot. No credential-probing-route misuse exists. The convention `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` is satisfied for round-3.
+
+### Verification
+
+- `npm run lint` — clean.
+- `npm run typecheck` — clean (both `typecheck:src` and `typecheck:tests` pass).
+- Vitest NOT run in worktree — parent serializes after merge.
+
+### Files landed
+
+- `backend/src/lib/redis-scripts.ts` — added `RATE_LIMIT_CHECK_AND_CONSUME_LUA` to `SHARED_SCRIPTS` registry.
+- `backend/src/middleware/rateLimit.ts` — atomic Lua dispatch via `evalScript`, in-memory parity for skipFailed mode, JSDoc misuse-direction warning.
+- `backend/src/routes/custody.ts` — `UPGRADE_PROOF_FUTURE_SKEW_MS`, freshness gate Option A, doc comment refresh, dropped task-file citation on `upgradeLimiter` comment.
+- `backend/tests/middleware/rateLimit.test.ts` — three new tests (concurrent-INCRs-retain-TTL, skipFailedRequests-refund, DECR-on-overflow).
+- `backend/tests/routes/custody-upgrade.test.ts` — added future-dated `signed_at` 401 test.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
