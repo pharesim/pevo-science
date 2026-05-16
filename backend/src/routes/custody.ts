@@ -39,7 +39,14 @@ const router = Router();
 const ALLOWED_OPS = new Set(['comment', 'vote', 'custom_json']);
 
 const broadcastLimiter = rateLimit({ name: 'custody-broadcast', windowMs: 60_000, max: 30, keyFn: byAccount });
-const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000, max: 1, keyFn: byAccount });
+// Consume-on-success-only: the 1/hr cap exists to bound a one-shot ceremony,
+// not to penalize transient upstream failures (Hive RPC 503) or stolen-JWT
+// attackers spraying empty bodies (400 VALIDATION_ERROR). Failed responses
+// (status >= 400) don't count, so the legitimate user can always retry after
+// a transient failure within the hour. The full rationale lives in
+// `agents/docs/tasks/pending/backend-custody-upgrade-seed-phrase-reauth.md`
+// round-2 hold items 2 + 5.
+const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000, max: 1, keyFn: byAccount, skipFailedRequests: true });
 // Tighter than broadcast: each issuance pays a full argon2.verify (~50 ms × N
 // in-flight under the JS-level semaphore). 10/min/account is generous for the
 // re-auth-then-broadcast UX (the user sees one prompt → one proof → one
@@ -801,12 +808,14 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
 //     `derived_pubkey` (binding check), and requires that pubkey to appear in
 //     the on-chain account's posting/active/owner key-auths set fetched via
 //     `getAccounts(username)`.
-//   • `signed_at` is an ISO-8601 timestamp; we enforce a 60s window matching
-//     the `verifyHiveSignature` middleware's freshness guarantee. The `signed_at`
-//     is excluded from the request body when hashing for signature reconstruction
-//     because the entire body is what the client signs over; we re-build the
-//     canonical message from the body fields. This avoids the circular-hash
-//     problem of having the signature embedded in the message being signed.
+//   • `signed_at` is an ISO-8601 timestamp; we enforce a past-only 60s window
+//     (future timestamps reject) so the captured-proof replay race window stays
+//     bounded at 60s rather than the 120s a symmetric `|delta| < 60s` form would
+//     permit. The `signed_at` is excluded from the request body when hashing for
+//     signature reconstruction because the entire body is what the client signs
+//     over; we re-build the canonical message from the body fields. This avoids
+//     the circular-hash problem of having the signature embedded in the message
+//     being signed.
 //
 // We require BOTH a `derived_pubkey` declaration AND a `signed_proof` signature
 // to match the rigor of existing fresh-auth primitives (`verifyHiveSignature`
@@ -824,6 +833,13 @@ function buildCustodyUpgradeChallenge(input: {
   return `${input.appTag}-custody-upgrade|v1|${input.username}|${input.signedAt}`;
 }
 
+// Both inputs are expected to be fixed-length STM-prefixed base58check pubkeys
+// (53 ASCII chars), so `Buffer.from(str)` (defaults to utf-8) yields exactly
+// 53 bytes for each and byte-equality is character-equality. The length-guard
+// short-circuit is defense-in-depth, not load-bearing under that invariant.
+// If a future refactor accepts non-STM keys (e.g., uncompressed pubkeys or
+// variable-length representations), revisit: utf-8 byte-equality may differ
+// from character-equality for non-ASCII inputs.
 function timingSafePubkeyEqual(a: string, b: string): boolean {
   const ba = Buffer.from(a);
   const bb = Buffer.from(b);
@@ -858,11 +874,17 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
     return sendError(res, 400, 'VALIDATION_ERROR', 'signed_at is required');
   }
 
-  // Freshness gate: 60s window matches the verifyHiveSignature middleware.
-  // Protects against a stolen-JWT-plus-stolen-proof replay window beyond the
-  // ceremony the user just performed.
+  // Freshness gate: past-only 60s window. The symmetric form (`Math.abs(...)`)
+  // accepted `signed_at = now + 60s`, effectively doubling the captured-proof
+  // replay race window to 120s. One-sided rejects future-dated timestamps
+  // deterministically — clock-skew tolerance is not load-bearing for an
+  // upgrade proof; the user signs in the same second they submit.
   const tsMs = Date.parse(signedAt);
-  if (!Number.isFinite(tsMs) || Math.abs(Date.now() - tsMs) > UPGRADE_PROOF_TIMESTAMP_WINDOW_MS) {
+  if (
+    !Number.isFinite(tsMs) ||
+    tsMs > Date.now() ||
+    Date.now() - tsMs > UPGRADE_PROOF_TIMESTAMP_WINDOW_MS
+  ) {
     return sendError(res, 401, 'UNAUTHORIZED', 'Upgrade proof expired or invalid timestamp');
   }
 

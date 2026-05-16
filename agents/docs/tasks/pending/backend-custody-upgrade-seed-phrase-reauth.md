@@ -139,3 +139,18 @@ Six items surface — four P2, two P3. The P0 frontend-coordination gap (SPA sti
 When items 1-6 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit.
 
 **Frontend-coordination follow-up**: `ui-custody-upgrade-seed-phrase-derive-flow.md` (filed in `tasks/pending/`) implements the SPA side of the wire-shape change. This backend task is INDEPENDENT of the UI task's completion — backend can archive once items 1-6 land regardless of UI progress, though the deploy of the combined contract change requires both.
+
+---
+
+## Backend re-review signal (2026-05-16, round-2 fix commit)
+
+Round-1 hold items 1-6 landed.
+
+- Item 1 (P2) — added 503-path test (`getAccountsMock.mockRejectedValueOnce` → expect 503 SERVICE_UNAVAILABLE) at `backend/tests/routes/custody-upgrade.test.ts:478`.
+- Item 2 (P2) — limiter consume-on-success-only via new `skipFailedRequests` option on the `rateLimit` primitive (`backend/src/middleware/rateLimit.ts`); upgrade limiter opts in at `backend/src/routes/custody.ts:49`. Rationale: option (a) per architect recommendation; cleanest fit for the existing primitive — defers `INCR`/`memStore.push` to `res.on('finish')` and only consumes when `res.statusCode < 400`. Backward-compatible (default `false`); no behavior change for the other 19 callsites.
+- Item 3 (P2) — tightened `signed_at` window to past-only at `backend/src/routes/custody.ts:884-888` (`!Number.isFinite(tsMs) || tsMs > Date.now() || Date.now() - tsMs > UPGRADE_PROOF_TIMESTAMP_WINDOW_MS`). Future timestamps now reject deterministically; replay race window stays bounded at 60s rather than the 120s the symmetric form permitted. Doc comment at `:803-810` updated to match.
+- Item 4 (P2) — documented STM-prefixed fixed-length invariant on `timingSafePubkeyEqual` at `backend/src/routes/custody.ts:836-842`. Pure documentation; no behavior change.
+- Item 5 (P3) — automatically fixed by item 2's consume-on-success-only path: a stolen-JWT attacker's 400 VALIDATION_ERROR responses (status >= 400) no longer consume the limiter slot, so the legitimate user retains their 1/hr allowance. No additional validation-before-limiter move required.
+- Item 6 (P3) — added `rows.length === 0` 401 canary test at `backend/tests/routes/custody-upgrade.test.ts:498`. A mutation dropping the guard would TypeError on `rows[0]` → outer catch → 500; this test pins the 401 path so the silent 401-to-500 shift fails CI.
+
+`npm run lint` and `npx tsc --noEmit` not run in worktree (no local `node_modules` — backend deps live in the parent checkout only); parent will verify after cherry-pick. Vitest not run in worktree (parent serializes).

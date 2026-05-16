@@ -38,12 +38,15 @@
  *
  * Rejection paths:
  *   - Missing derived_pubkey / signed_proof / signed_at — 400 VALIDATION_ERROR.
- *   - Expired signed_at (> 60s window) — 401 UNAUTHORIZED.
+ *   - Expired signed_at (> 60s window, past or future) — 401 UNAUTHORIZED.
  *   - Malformed signed_proof — 401 UNAUTHORIZED.
  *   - Pubkey binding mismatch (signature recovers different key than declared)
  *     — 401 UNAUTHORIZED.
  *   - derived_pubkey not in chain key set (wrong username, key not rotated)
  *     — 401 UNAUTHORIZED.
+ *   - Hive getAccounts throws — 503 SERVICE_UNAVAILABLE (transient retry).
+ *   - JWT subject has no DB row — 401 UNAUTHORIZED (stale-session canary
+ *     pins the `rows.length === 0` guard).
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
@@ -463,6 +466,54 @@ describe.skipIf(!dbReachable)(
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe('FORBIDDEN');
       // Proof never reached the verifier — getAccounts must not have been called.
+      expect(getAccountsMock).not.toHaveBeenCalled();
+    });
+
+    // ─── Hive RPC failure path (503 SERVICE_UNAVAILABLE) ───────────────
+    // Round-2 hold item 1: the existing suite covers `getAccounts` returning
+    // an empty array and returning a mismatched key set, but the throw path
+    // (Hive RPC unreachable) was not exercised. Hive RPC failures are routine
+    // in production; the 503 branch is reachable.
+
+    it('Hive getAccounts throws: returns 503 SERVICE_UNAVAILABLE', async () => {
+      const proof = buildProofBody(STATE_A_USER, wifA);
+      getAccountsMock.mockRejectedValueOnce(new Error('rpc unreachable'));
+
+      const res = await request(app)
+        .post('/api/custody/upgrade')
+        .set('Authorization', bearerForLight(STATE_A_USER))
+        .send(proof);
+
+      expect(res.status).toBe(503);
+      expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    });
+
+    // ─── Stale JWT / missing DB row (401 canary) ───────────────────────
+    // Round-2 hold item 6: after the SELECT shape change to just
+    // `upgraded_at`, `rows[0]` access requires the `rows.length === 0`
+    // guard. A mutation dropping that guard would TypeError on the next-line
+    // property access → outer catch → 500. This test pins the 401 path so
+    // any such silent regression flips a CI assertion.
+
+    it('No DB row for JWT subject: returns 401 UNAUTHORIZED (stale session)', async () => {
+      const pool = getAppPool()!;
+      const stranger = `upgs${SUFFIX}user`;
+      // Cleanup in case a previous run left a row (defensive — beforeEach
+      // does not seed this username and afterAll does not target it).
+      await pool.query(`DELETE FROM accounts WHERE username = $1`, [stranger]).catch(() => {});
+      const proof = buildProofBody(stranger, wifR);
+      // getAccounts is short-circuited by the missing-row check, but ensure
+      // the mock is configured so any leak would be visible.
+      getAccountsMock.mockResolvedValue([fakeChainAccount(proof.derived_pubkey)]);
+
+      const res = await request(app)
+        .post('/api/custody/upgrade')
+        .set('Authorization', bearerForLight(stranger))
+        .send(proof);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+      // Missing-row check fires before the Hive lookup.
       expect(getAccountsMock).not.toHaveBeenCalled();
     });
   },

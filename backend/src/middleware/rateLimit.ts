@@ -13,6 +13,19 @@ interface RateLimitConfig {
   max: number;
   keyFn: (req: Request) => string;
   name: string;
+  /**
+   * When true, consume a slot only on successful responses (status < 400).
+   * 4xx/5xx responses do NOT count against the limit. This protects against
+   * two DoS patterns on expensive-but-rare operations:
+   *   1. Transient upstream failures (e.g. Hive RPC 503) burning the slot,
+   *      locking the legitimate user out of a retry within the window.
+   *   2. A stolen-JWT attacker sending malformed bodies (400 VALIDATION_ERROR)
+   *      to lock out the legitimate user.
+   * Requests are still REJECTED with 429 when the current count is already at
+   * the limit; this option only changes the consume policy on the outcome of
+   * the downstream handler. Defaults to false (consume on every request).
+   */
+  skipFailedRequests?: boolean;
 }
 
 /**
@@ -23,6 +36,7 @@ interface RateLimitConfig {
 export function rateLimit(config: RateLimitConfig) {
   const memStore = new Map<string, RateLimitEntry>();
   const redisPrefix = `${appConfig.appTag}:rl:${config.name}:`;
+  const skipFailed = config.skipFailedRequests === true;
 
   const cleanupInterval = setInterval(() => {
     const now = Date.now();
@@ -41,6 +55,31 @@ export function rateLimit(config: RateLimitConfig) {
     if (redis) {
       try {
         const redisKey = redisPrefix + key;
+        if (skipFailed) {
+          // Inspect-only: check the current count before letting the request
+          // through, but defer the increment to res.on('finish') so only
+          // successful (status < 400) responses consume a slot.
+          const currentStr = await redis.get(redisKey);
+          const current = currentStr ? Number(currentStr) : 0;
+          if (current >= config.max) {
+            const ttl = await redis.pttl(redisKey);
+            const retryAfter = Math.ceil(Math.max(ttl, 0) / 1000);
+            res.set('Retry-After', String(retryAfter));
+            return sendError(res, 429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
+          }
+          res.on('finish', () => {
+            if (res.statusCode >= 400) return;
+            void (async () => {
+              try {
+                const count = await redis.incr(redisKey);
+                if (count === 1) await redis.pexpire(redisKey, config.windowMs);
+              } catch (err) {
+                logger.debug({ err }, 'Redis rate limit post-success increment failed');
+              }
+            })();
+          });
+          return next();
+        }
         const count = await redis.incr(redisKey);
         if (count === 1) {
           await redis.pexpire(redisKey, config.windowMs);
@@ -65,6 +104,19 @@ export function rateLimit(config: RateLimitConfig) {
       const retryAfter = Math.ceil((oldestInWindow + config.windowMs - now) / 1000);
       res.set('Retry-After', String(retryAfter));
       return sendError(res, 429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
+    }
+
+    if (skipFailed) {
+      // Defer the in-memory consume to a successful response (status < 400).
+      memStore.set(key, entry);
+      res.on('finish', () => {
+        if (res.statusCode >= 400) return;
+        const e = memStore.get(key) || { timestamps: [] };
+        e.timestamps = e.timestamps.filter((t) => Date.now() - t < config.windowMs);
+        e.timestamps.push(Date.now());
+        memStore.set(key, e);
+      });
+      return next();
     }
 
     entry.timestamps.push(now);
