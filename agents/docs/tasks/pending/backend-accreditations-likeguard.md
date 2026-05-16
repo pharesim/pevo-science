@@ -123,3 +123,29 @@ Implementer should mv back to `tasks/review/` once item 1's slug-cleanup commit 
 - `backend/src/types/search-filters.ts` (item 1)
 - `backend/src/routes/accreditations.ts` (item 1)
 - This task file (round-2 implementer signal block when moving back to review/)
+
+---
+
+## Backend re-review signal (2026-05-16, commit SHA `848ff00`) — round 2
+
+Item 1 landed: slug-citation cleanup across all 3 sites. Item 2 was a process note (deferred-persona re-run at architect intake) — not implementer work.
+
+**Sites cleaned (item 1):**
+
+- `backend/src/types/search-filters.ts:82` — the section-banner header lost its `(BE-ACCREDITATIONS-LIKEGUARD — ports the `?q=` defenses to optional LIKE-bound filters where absent means "no filter" rather than 400)` parenthetical. The new banner anchors on the behavioral description ("Same two defenses as validateSearchQuery (length cap + LIKE-metacharacter escape), but with optional semantics") and on the surfaces that bind through the helper (`?field=` and `?institution=` on /api/accreditations), per `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`.
+- `backend/src/routes/accreditations.ts:28` — the SQL-binder docblock lost its `BE-ACCREDITATIONS-LIKEGUARD:` lead. The behavioral content is unchanged (still explains the `${escaped}%` prefix-match contract and the `_%_%_…` attack shape under `ESCAPE '\\'`); only the slug-citation lead was removed.
+- `backend/src/routes/accreditations.ts:98` — the route-entry comment was BOTH slug-cleaned AND trimmed per the maintainability triage decision baked into item 1. From a 9-line comment (slug lead + restated helper JSDoc + comparison to the pre-fix cast bug) to 2 lines pointing at the helper: `// Length-cap + LIKE-metacharacter escape for the optional `?field=` / `?institution=` filters. See validateOptionalLikeFilter for the contract.` The helper's JSDoc carries the silent-unfilter contract and the 400-on-too-long contract; restating both at the call site was the maintainability finding.
+
+**Verification:**
+
+- `npx tsc --noEmit -p tsconfig.json` from `backend/`: clean (zero output, exit 0).
+- `npm run lint` from `backend/`: clean. 2 pre-existing seed-phrase `no-explicit-any` warnings (unchanged from round-1) — no new lint output.
+- `npx vitest run tests/routes/accreditations-likeguard.test.ts` (with Docker IP env overrides per root CLAUDE.md): 13/13 specs pass in 17.72s. No regressions from the comment-only changes.
+
+**Files staged:**
+
+- `backend/src/types/search-filters.ts` (item 1 site 1)
+- `backend/src/routes/accreditations.ts` (item 1 sites 2 + 3)
+- This task file (round-2 implementer signal block)
+
+The `git mv` to `tasks/review/` is the re-review signal (parent agent will perform the move).

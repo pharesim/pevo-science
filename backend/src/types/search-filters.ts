@@ -79,16 +79,14 @@ export function validateSearchQuery(raw: unknown): SearchQueryResult | null {
 
 // ──────────────────────────────────────────────
 // Generic optional LIKE-filter validation
-// (BE-ACCREDITATIONS-LIKEGUARD — ports the `?q=` defenses to optional
-// LIKE-bound filters where absent means "no filter" rather than 400).
 // ──────────────────────────────────────────────
 //
-// Same two defenses as validateSearchQuery, but with optional semantics:
-// `?param=` is OPTIONAL — absent / repeated-param / non-string all silently
-// unfilter (return value: undefined) rather than 400ing as "required".
-// Used for the `?field=` and `?institution=` filters on /api/accreditations,
-// which bind to `latest.field ILIKE $N` and `latest.institution ILIKE $N`
-// against the same ranked-CTE materialization.
+// Same two defenses as validateSearchQuery (length cap + LIKE-metacharacter
+// escape), but with optional semantics: `?param=` is OPTIONAL — absent /
+// repeated-param / non-string all silently unfilter (return value: undefined)
+// rather than 400ing as "required". Used for the `?field=` and `?institution=`
+// filters on /api/accreditations, which bind to `latest.field ILIKE $N` and
+// `latest.institution ILIKE $N` against the same ranked-CTE materialization.
 //
 // Caller wires the result like:
 //   const r = validateOptionalLikeFilter(req.query.field, 'field');
