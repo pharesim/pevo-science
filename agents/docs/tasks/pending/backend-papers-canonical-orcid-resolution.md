@@ -136,3 +136,100 @@ The acceptance §7's TypeScript-types item — "extend the existing `PaperSummar
 - Continuation-chain papers' `orcid_discrepancy`: pre-existing `buildCumulativeAuthorsForChain` server-override (replaces `out.orcid` with the attestation) ran BEFORE my discrepancy computation. I refactored to sample the pre-override claim into a local, so the discrepancy signal correctly fires on chain papers when the broadcaster's typed value differs from the eventual attestation — even though `out.orcid` ends up overridden in the response. Both behaviors coexist intentionally: the override is the deliberate server-side spoof-prevention, and the discrepancy signal is the UI's audit hook.
 - `pevoAuthors` (raw chain authors) is still consulted in `fetchPapersFromHaf` for the `accredited_authors` filter (which only needs hive names) and `is_accredited` check. Could be reworked to consume the SQL-projected `authors_with_supersession` instead, but that's a follow-up; current dual-path keeps the changeset focused.
 - The detail endpoint's CTE wrap reordered params from `[author, permlink, appTag, bridgeAccount]` to `[author, permlink, bridgeAccount, appTag, authorities, genesis]`. No production callers care; the test responders read `params[0]` / `params[1]` only so they keep working.
+
+---
+
+## Architect re-review round-1 (2026-05-16) — HELD PENDING FIXES
+
+`/ce-code-review` on commits `469a571` (round-1 main) + `2c40f3a` (follow-up: discriminator widen) dispatched 9 reviewers (correctness opus + adversarial opus + security opus + testing/maintainability/project-standards/performance/api-contract/kieran-typescript sonnet + ce-learnings-researcher sonnet; `ce-agent-native-reviewer` skipped per root CLAUDE.md). 13 findings surfaced and triaged with the user. 4 items held below for this task; 1 finding filed as separate follow-up task (`backend-profile-papers-supersession-parity.md`); 2 architect-side contract-doc updates already landed in `agents/docs/api-contracts/papers.md`; 6 findings dismissed at triage.
+
+### Items to address
+
+**1. (P1 cross-reviewer correctness+adversarial, anchor 100) Hive-key normalization asymmetric across 3 supersession paths**
+
+**Where:**
+- `backend/src/hafsql.ts:784` — SQL JOIN `aa.account = (a.elem ->> 'hive')` does NOT normalize.
+- `backend/src/routes/papers.ts:283-293` — `applyAuthorSupersession` reads `e.hive` raw before `orcidMap.has(hive)`; does NOT normalize.
+- `backend/src/routes/papers.ts:339` — `buildCumulativeAuthorsForChain` DOES normalize via `entry.hive.trim().toLowerCase()`.
+
+**Why:** A paper with `authors[i].hive = "Alice"` (capitalized — possible because Hive consensus normalizes account names only at op level, not in JSON metadata bodies, and co-author input forms may not enforce normalization) produces split-brain across the three paths: list+detail return `orcid_verified=null, orcid_discrepancy=false`; continuation-chain resolves correctly; `?version=N`/`metadata_restored` returns null again. A vouched co-author can suppress the verified-ORCID surface (silencing the discrepancy audit signal) by varying case. Inverse risk: JS-normalized path matches mid-case spoof to real lowercase account.
+
+**Fix:** Normalize at all three paths. Two-pattern options for the implementer's choice:
+- **(a)** Inline lowercasing — SQL: `LOWER(TRIM(a.elem ->> 'hive'))` in the JOIN predicate; JS: `e.hive.trim().toLowerCase()` in `applyAuthorSupersession` before the map lookup.
+- **(b)** Extract a single `canonicalHiveKey(hive: unknown): string | null` helper in `backend/src/lib/` (or in `helpers.ts`) and use it from all three paths.
+
+Whichever pattern, add a **parity test** in `papers-canonical-orcid-resolution.test.ts` that runs the same `authors[]` array (with mixed-case hives) through all three paths and asserts identical `(orcid_verified, orcid_discrepancy)` output. Mutation kill: dropping the normalization at any one path fails the parity test red.
+
+**2. (P2 cross-reviewer correctness+adversarial, anchor 100) SQL/JS parity — empty-string chain orcid produces `discrepancy=true` in SQL, `false` in JS**
+
+**Where:** `backend/src/hafsql.ts:787-788` (SQL CASE: `(a.elem ->> 'orcid') IS NOT NULL` admits empty string `''`) vs `backend/src/routes/papers.ts:268-271` (JS `computeSupersession`: `claimed = typeof chainOrcid === 'string' && chainOrcid.length > 0 ? chainOrcid : null` — empty-string normalized to null).
+
+**Why:** Publishers leave `orcid` blank in the publish form by default (publish.js:625 / 833 emit `orcid: ''`). An accredited author with a real attestation broadcasting `{hive: 'alice', orcid: ''}` produces opposite discrepancy outputs across endpoints+paths. Semantically the publisher's empty string is "no claim" not "I claim empty"; the JS path is correct, SQL is too liberal.
+
+**Fix:** Tighten the SQL CASE expression to wrap chain orcid in `NULLIF(..., '')` so `IS NOT NULL` correctly rejects empty:
+
+```sql
+'orcid_discrepancy', CASE
+                       WHEN aa.orcid IS NOT NULL
+                        AND NULLIF((a.elem ->> 'orcid'), '') IS NOT NULL
+                        AND aa.orcid <> (a.elem ->> 'orcid')
+                       THEN true ELSE false
+                     END
+```
+
+Add a test case in `papers-canonical-orcid-resolution.test.ts`: accredited author with real attestation broadcasts `{hive: 'alice', orcid: ''}` → assert `orcid_verified` populated, `orcid_discrepancy: false`. Mutation kill: reverting the `NULLIF` wrap surfaces the false-positive discrepancy red.
+
+**3. (P2 api-contract, anchor 100) `affiliation` leaks into PaperSummary via shared SQL fragment**
+
+**Where:** `backend/src/hafsql.ts:784` — `'affiliation', a.elem ->> 'affiliation'` in `authorsWithSupersessionSelect`'s `jsonb_build_object` is unconditional; both the list endpoint (PaperSummary) and detail endpoint (PaperDetail) share the helper.
+
+**Why:** Task acceptance criterion #6 and `agents/docs/api-contracts/papers.md` PaperSummary schema explicitly omit `affiliation` from list-response `authors[]`. Implementation ships it on both surfaces — concrete contract violation.
+
+**Fix:** Parameterize the SQL helper with an `includeAffiliation` flag:
+
+```ts
+export function authorsWithSupersessionSelect(
+  commentAlias: string,
+  appTagParam: string,
+  opts: { includeAffiliation: boolean } = { includeAffiliation: false },
+): string {
+  const affiliationField = opts.includeAffiliation
+    ? `'affiliation', a.elem ->> 'affiliation',`
+    : '';
+  // ... use ${affiliationField} inside jsonb_build_object
+}
+```
+
+List endpoint (`fetchPapersFromHaf`) passes `{ includeAffiliation: false }`; detail endpoint (`fetchPaperDetailFromHaf`) passes `{ includeAffiliation: true }`. Add an assertion in the list-endpoint SQL-shape canary that the SELECT does NOT contain `'affiliation'`; add a behavior canary that PaperSummary response `authors[i]` lacks the `affiliation` key.
+
+**4. (P2 testing, anchor 85) Fallback branches (`?version=N`, `metadata_restored`) have no supersession field assertions**
+
+**Where:** `backend/src/routes/papers.ts:2384` (`?version=N`) and `:2421` (`metadata_restored`) — both call `applyAuthorSupersession(detail.authors, orcidMap)` but no test asserts the supersession fields appear on responses from either branch.
+
+**Why:** If `applyAuthorSupersession(...)` were deleted from either branch, all existing tests pass. The JS-side supersession path on the two fallback code paths is uncovered. The 8 new tests in `papers-canonical-orcid-resolution.test.ts` exclusively exercise the SQL-projected path.
+
+**Fix:** Add two canaries to `papers-canonical-orcid-resolution.test.ts` (one per fallback branch). Each canary: stage a request that routes through the fallback (the `?version=N` test should stage `reconstructVersionsFromHaf` to return rows so the SQL-paper-detail row is bypassed; the `metadata_restored` test stages the metadata-restored branch conditions); stage `getAccreditedOrcidsByAccount` to return an orcid map with a mismatch; assert `res.body.data.authors[i].orcid_discrepancy === true` and `orcid_verified` matches the map value. Mutation kill: deleting `applyAuthorSupersession` from either branch fails the corresponding canary red.
+
+### Architect-side contract-doc updates already landed (no implementer action)
+
+- `agents/docs/api-contracts/papers.md` lines 64-65 updated: added 30-min cache-staleness note for `orcid_verified`/`orcid_discrepancy` and the continuation-chain caveat documenting that on server-override papers, `orcid` MAY equal `orcid_verified` while `orcid_discrepancy` is `true` (the discrepancy is the authoritative audit signal regardless of apparent equality). Line 145 (PaperDetail re-statement) updated to reference both notes.
+
+### Filed as separate follow-up task (no action on this hold)
+
+- `backend-profile-papers-supersession-parity.md` (P2): `/api/profile/:username/papers` silently omits `orcid_verified`/`orcid_discrepancy` because `toPaperSummary` in `helpers.ts` is unwrapped and the supersession helpers are private to `routes/papers.ts`. Cross-surface parity gap per `cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md`. The follow-up task captures the helper-extraction to `backend/src/lib/author-supersession.ts` + profile route adoption + canaries.
+
+### Findings dismissed at triage (no action)
+
+- **Spoof-by-attribution / claimed-pending author surfaces verified ORCID (adversarial P1/75):** `orcid_verified` is account-keyed (LEFT JOIN active_accreditations), not paper-keyed. It promises "this hive account is accredited with this ORCID," nothing about paper-level consent. Vouched-set badge (ARCHITECTURE.md § 2.20) is the authorship signal; supersession-fields and vouched-set are orthogonal signals integrators combine. The adversarial framing was a UI-misreading scenario, not a backend defect.
+- **Continuation-chain `orcid_discrepancy`/`verified` emission untested (testing P2/80):** Inline comment block in `buildCumulativeAuthorsForChain` documents the pre-override-capture invariant; future refactor would notice. Per `feedback_dismiss_preemptive_test_hardening`.
+- **Raw `$1`-`$6` bind-index strings in `fetchPaperDetailFromHaf` (maintainability+kieran-typescript P2/75 corroborated):** Comment block at lines 930-936 documents the layout; `2c40f3a`'s regex-widening test discriminator catches future shifts. Per `feedback_dismiss_preemptive_test_hardening`. (Counter-pattern adoption can be a future broader sweep.)
+- **Task-slug references at `papers.ts:444, 664, 851` (maintainability P2/75):** Cosmetic; comments still convey WHY accurately. The slug citations will rot, but the WHY-content is independently valid. Per architect judgment (not worth a re-review round).
+
+### Findings noted-for-awareness (dismiss-as-noted; document here, no code action)
+
+- **`applyAuthorSupersession` spread keeps `affiliation` in fallback paths (api-contract P3/75):** Latent only — currently only used by detail-endpoint fallbacks where affiliation is correct in PaperDetail. Active version is item 3 above. If a future change routes the list endpoint through a JS fallback, this becomes the same contract violation; address then.
+- **Scalar coercion divergence for malformed `authors[{hive: 42, orcid: true}]` (adversarial P3/75):** Reachability requires malformed broadcaster bypassing the publish UI (today only pre-hardening corpus). Adversarial reviewer themselves rated as "not a security finding per se; documented for the parity-contract reading." Per `feedback_dismiss_preemptive_test_hardening`. If a hive-normalization helper is extracted per item 1 option (b), consider extending it to reject non-string hive shapes at the same boundary.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round.md`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `2c40f3a`. Items 1+2 are SQL+JS parity items and should land in a focused commit (with the parity test); items 3+4 can be the same commit or separate at the implementer's discretion.
