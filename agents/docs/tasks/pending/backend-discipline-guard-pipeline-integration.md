@@ -274,3 +274,81 @@ The convention-doc bullet above (Acceptance #5) needs one refinement when the ar
 - `agents/docs/tasks/pending/backend-discipline-guard-pipeline-integration.md` — this signal block.
 
 When ready, this file moves back to `tasks/review/` for the architect's re-review pass (parent serializes the `git mv`).
+
+---
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES (round 4)
+
+`/ce-code-review` on commit `04a5a6b` dispatched 6 reviewers (correctness on Opus; testing, maintainability, project-standards, ce-learnings-researcher, kieran-typescript on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). User-triaged 2026-05-16. Cross-corroboration surfaced a load-bearing test-coverage gap: 4 of the 5 new TS-wrapper invalid cases are vacuous mutation kills because ESLint's `Literal` visitor descends into the wrapper and fires on the inner literal directly — `resolveStringValue` is never called on the wrapper for the bare-form cases. The `TSNonNullExpression` and `TSTypeAssertion` arms in `resolveStringValue` are effectively dead code: removing them passes all 28 tests.
+
+Two items held below; four dismissed at triage (preemptive per memory, or subthreshold residuals). All round-3 architect-zone carry-forwards remain pending for archive (now extended by one new characterization-refinement carry-forward).
+
+### Items to address
+
+#### P1 — high
+
+**1. (P1) TS-wrapper unwrap arms for `TSNonNullExpression` and `TSTypeAssertion` are unreachable from the registered visitors — bare-form invalid cases pass for the wrong reason.**
+
+**Where:** `backend/tests/eslint/no-bridge-paper-literal.test.ts` (TS-wrapper invalid cases in `tsRuleTester`) + `backend/eslint.config.mjs` `resolveStringValue` (the 3 TS-wrapper arms).
+
+**Why:** Cross-corroborated at conf 100 by testing T1 (P1, conf 100) + kieran-typescript KT-1 (P1, conf 75) + correctness residual (conf 75). The rule registers visitors for `Literal`, `TemplateLiteral`, `BinaryExpression`, `CallExpression`. For a standalone `'bridge_paper'!` or `<string>'bridge_paper'`, ESLint's traversal descends INTO the wrapper and fires the `Literal` visitor on the inner literal directly. `resolveStringValue` is called on the inner `Literal`, never on the outer wrapper. The 4 bare-wrapper invalid cases (`'bridge_paper' as const`, `as string`, `!`, `<string>`) fire because of the inner-Literal visitor, not because of the new unwrap branch. Removing the `TSNonNullExpression` or `TSTypeAssertion` arms in `resolveStringValue` leaves all 4 bare-wrapper cases green. The TSAsExpression arm IS exercised — by the compound case `('bridge_' as const) + 'paper'` — because the `BinaryExpression` visitor fires and `resolveStringValue` is called on the left-hand TSAsExpression. The other two arms have no compound-form coverage.
+
+**Fix:** add two compound-form invalid cases to `tsRuleTester` so the TSNonNullExpression and TSTypeAssertion arms genuinely have mutation kill:
+
+```ts
+{
+  filename: abs('src/routes/papers.ts'),
+  code: "const x = 'bridge_'! + 'paper';",
+  errors: [{ messageId: 'forbidden' }],
+},
+{
+  filename: abs('src/routes/papers.ts'),
+  code: "const x = (<string>'bridge_') + 'paper';",
+  errors: [{ messageId: 'forbidden' }],
+},
+```
+
+Both parse as `BinaryExpression` with the respective TS-wrapper on the left — the `BinaryExpression` visitor fires, `resolveStringValue` walks into the TS-wrapper, the unwrap arm executes, recursion reaches the inner `Literal`, the cross-side resolves, the rule fires. Removing either arm now fails its compound case red.
+
+Optional (architect's call at re-review): the existing bare-form invalid cases can stay for documentation value (they pin that the bare form IS reported, even if not via the unwrap path), OR they can be replaced by the compound forms (less test surface, no false coverage signal). Implementer's choice — both shapes are defensible.
+
+#### P2 — moderate
+
+**2. (P2) `.join()` bail-out valid case does NOT kill the early-return mutation — the chosen array shape coerces to `'bridge__paper'`, not `'bridge_paper'`.**
+
+**Where:** `backend/tests/eslint/no-bridge-paper-literal.test.ts` (the valid case `const sep = '_'; const x = ['bridge', sep, 'paper'].join('_');`).
+
+**Why:** Testing T2 (P2, conf 100). The valid case is meant to pin the `if (part === null) return null` early-return in the `.join()` resolution loop. But the chosen array shape `['bridge', sep, 'paper']` with separator `'_'` would, after removing the early-return, produce `parts.join('_')` = `'bridge__paper'` (null → empty string when JS-coerced, joined with the literal underscore separator). That's NOT `'bridge_paper'`, so the rule still doesn't fire — the valid case stays green either way. The mutation survives.
+
+**Fix:** rewrite the valid case to a shape where null-coercion + the chosen separator would produce exactly `'bridge_paper'` if the early-return is removed — then removing the early-return makes the rule fire and the valid case fails red:
+
+```ts
+{
+  filename: abs('src/routes/papers.ts'),
+  code: "const sep = 'whatever'; const x = ['bridge_', sep, 'paper'].join('');",
+},
+```
+
+With empty separator and null-coerce-to-empty-string at the middle element, removing the early-return produces `'bridge_' + '' + 'paper'` = `'bridge_paper'` and the rule fires (the valid case fails red). With the early-return intact, the resolver bails on the Identifier element, returns null, and the rule does NOT fire (the valid case stays green). Mutation kill is now real.
+
+### Findings dismissed at triage (no action)
+
+- **(testing TG1)** TSAsExpression-as-array-element (`['bridge_paper' as const].join('')`) untested — would exercise the unwrap recursion through the CallExpression branch. Preemptive per `feedback_dismiss_preemptive_test_hardening`; item 1's compound-form additions already cover the TSAsExpression arm via BinaryExpression.
+- **(correctness residual)** Bare-wrapper test cases don't exercise the unwrap patch (same observation as T1/KT-1). Subsumed by item 1.
+- **(maintainability MNT-R1, P2 conf 45)** Duplicate `filename: abs('src/routes/papers.ts')` across 21 cases — factory helper would dedupe. Subthreshold per dismissal rule; address opportunistically at next round.
+- **(maintainability MNT-R2, P2 conf 40)** `@ts-expect-error` on the `.mjs` import could be removed with a `.d.ts`. Subthreshold; cost-benefit is negative for a single named export.
+
+### Architect-zone carry-forwards (no implementer action; architect lands at archive)
+
+All round-3 carry-forwards remain pending:
+- Stale `npm run check:bridge-paper-discipline` reference at `agents/docs/api-contracts/papers.md:5`.
+- `src/types/**` glob coverage gap — convention-doc "Known coverage gap" section.
+- `.concat()` omitted from out-of-scope evasion list in convention doc.
+- JSDoc/comment coverage delta vs old bash grep — convention-doc note.
+
+NEW carry-forward this round:
+- **TS-wrapper characterization refinement** for the convention-doc update: in-scope coverage includes TSAsExpression / TSNonNullExpression / TSTypeAssertion, but with the caveat that the unwrap arms only mutation-kill via composition with BinaryExpression (the bare-form cases fire via the inner-Literal visitor, not via the unwrap path). Document this so a future maintainer doesn't strip the bare-wrapper test cases thinking they're redundant — they pin the bare-form coverage even if not via the new code path.
+
+### Re-review signal
+
+When items 1, 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `04a5a6b`. Both items touch the same test file; bundle as a single focused commit.
