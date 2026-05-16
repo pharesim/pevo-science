@@ -22,6 +22,7 @@ import {
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
   issueFreshAuthToken,
+  issueSessionFreshAuthToken,
   type FreshAuthMechanism,
   type FreshAuthTarget,
   type FreshAuthTargetAction,
@@ -53,6 +54,11 @@ const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000,
 // broadcast) and bounds the password-guess oracle even if a session is
 // hijacked.
 const freshAuthLimiter = rateLimit({ name: 'custody-fresh-auth', windowMs: 60_000, max: 10, keyFn: byAccount });
+// Same shape and budget as `freshAuthLimiter` — both routes pay an argon2.verify
+// per call and serve the State A/B mint paths; bucket them under a dedicated
+// name so the metric/observability surface for the session-mint path stays
+// distinct from the per-op consent-mint path.
+const sessionAuthLimiter = rateLimit({ name: 'custody-session-auth', windowMs: 60_000, max: 10, keyFn: byAccount });
 
 /** Stable session-id derived from the bearer JWT for audit-log correlation.
  *  SHA-256 of the raw token, truncated to 16 hex chars — opaque to the
@@ -786,6 +792,91 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
     logger.error(
       { event: 'custody.fresh_auth.failed', route: 'custody.fresh-auth', username, err },
       'Fresh-auth issuance failed',
+    );
+    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to issue fresh-auth proof');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/custody/session-auth — Mint a session-kind fresh-auth proof (password path).
+// BACKEND-CUSTODY-SESSION-AUTH-PASSWORD-MINT: State A users (light + password,
+// no ORCID) previously had no usable mint path for non-consent broadcasts.
+// `/api/custody/fresh-auth` mints `consent_op`-kind proofs that require per-op
+// target binding (action + root_author + root_permlink) — hostile UX for
+// vote/comment flows. `/api/orcid/start { mode: 'session_auth' }` needs ORCID
+// linkage which State A users don't have. This route mints a target-less
+// session-kind proof via the same argon2 password path; consumed by the non-
+// consent surface of `/api/custody/broadcast` (cross-kind accept already wired
+// via `consumeSessionFreshAuthToken`). Kind isolation: the session-kind proof
+// is REJECTED on the consent-op surface with `details.reason: 'kind_mismatch'`.
+// ─────────────────────────────────────────────────────────────
+router.post('/session-auth', verifyHiveSignature, sessionAuthLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
+  const username = req.hiveUsername;
+  const custody = req.hiveCustody;
+
+  if (!username) {
+    return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required');
+  }
+  if (custody !== 'light') {
+    return sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Self-custody users sign consent ops via Hive Keychain.');
+  }
+
+  const body = (req.body ?? {}) as { password?: unknown };
+  const { password } = body;
+  if (typeof password !== 'string' || password.length === 0) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
+  }
+
+  const pool = getAppPool();
+  if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
+
+  try {
+    const { rows } = await pool.query<{
+      password_hash: string | null;
+      upgraded_at: string | null;
+    }>(
+      'SELECT password_hash, upgraded_at FROM accounts WHERE username = $1',
+      [username],
+    );
+
+    if (rows.length === 0) {
+      return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
+    }
+
+    const account = rows[0];
+    if (account.upgraded_at) {
+      return sendError(res, 403, 'FORBIDDEN', 'Account has been upgraded to self-custody. Use Hive Keychain.');
+    }
+
+    if (!account.password_hash) {
+      // Password mechanism unavailable for this account (State C: ORCID-only,
+      // `password_hash IS NULL`). Mirror the wrong-password 401 envelope so
+      // the route does not become a password-existence oracle. State C users
+      // should mint via `/api/orcid/start { mode: 'session_auth' }` instead.
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
+    }
+
+    const passwordHash = account.password_hash;
+    const valid = await runWithArgon2Slot(
+      () => argon2.verify(passwordHash, password),
+      { signal: abortSignal },
+    );
+    if (!valid) {
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
+    }
+
+    const issued = await issueSessionFreshAuthToken(username, 'password');
+    return sendOk(res, {
+      fresh_auth_proof: issued.token,
+      expires_at: issued.expires_at,
+      mechanism: issued.mechanism,
+    });
+  } catch (err) {
+    if (handleArgonError(res, err, { logContext: { username } }) === ARGON_HANDLED) return;
+    logger.error(
+      { event: 'custody.session_auth.failed', route: 'custody.session-auth', username, err },
+      'Session fresh-auth issuance failed',
     );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to issue fresh-auth proof');
   }

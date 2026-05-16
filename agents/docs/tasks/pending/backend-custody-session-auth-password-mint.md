@@ -84,3 +84,27 @@ Add the new endpoint to `agents/docs/api-contracts/custody.md` (architect-zone �
 ## Source
 
 `/ce-code-review` on `backend-custody-broadcast-orcid-fresh-auth` (architect session 2026-05-16): api-contract AC-1 P0 conf 100 — surfaced the State A mint-path gap during the parent task's triage. The implementer signal in the parent task explicitly anticipated this follow-up.
+
+## Backend implementation signal (2026-05-16, worktree)
+
+Acceptance items 1-4 landed.
+
+**Design chosen: Option A** (new dedicated route `POST /api/custody/session-auth`).
+
+- New route handler at `backend/src/routes/custody.ts:813` (route declaration) through `backend/src/routes/custody.ts:880` (handler end). Mirrors the `/fresh-auth` route shape minus the per-op target fields (no `action` / `root_author` / `root_permlink` body discriminators, no `FreshAuthTarget` construction). New rate limiter `sessionAuthLimiter` declared at line 61: 10 req/min/account via `byAccount` keyFn, same shape and budget as `freshAuthLimiter`, distinct `name: 'custody-session-auth'` so the observability surface stays separable.
+- `backend/src/lib/fresh-auth.ts`: NO extension needed. `issueSessionFreshAuthToken(username, mechanism)` already accepts `mechanism: FreshAuthMechanism` ('password' | 'orcid') per the round-1 implementation of `backend-custody-broadcast-orcid-fresh-auth` (kind-neutral `KEY_PREFIX` shared with the consent-op-kind path, kind discriminator inside the JSON value). Imports in `custody.ts` extended to add `issueSessionFreshAuthToken` alongside the existing `issueFreshAuthToken` / `consumeSessionFreshAuthToken` / `consumeFreshAuthToken` set.
+- Password-existence oracle pinned: `null password_hash` branch returns the same 401 + UNAUTHORIZED + 'Invalid password' envelope as the wrong-password branch, matching the convention already proven on `/api/custody/fresh-auth` (round-4 hold #18) and asserted byte-equivalent in `custody-fresh-auth-null-hash.test.ts`.
+- Tests landed in `backend/tests/routes/custody-session-auth.test.ts` (10 canaries across the 6 acceptance branches):
+  - State A happy path: `mint → broadcast vote → 200`, separate `mint → broadcast comment → 200` (each broadcast consumes a single-use proof; documented in the test header).
+  - Wrong password → 401 UNAUTHORIZED.
+  - Null `password_hash` (State C) → 401 with byte-equivalent envelope assertion against the wrong-password baseline (oracle check).
+  - Self-custody JWT → 403 FORBIDDEN.
+  - Upgraded row (light JWT, `upgraded_at` set, State D) → 403 FORBIDDEN.
+  - Kind isolation: session-kind proof on the consent-op surface → 403 FRESH_AUTH_REQUIRED `details.reason: 'kind_mismatch'` (consume path validated; broadcast NOT called).
+  - Body validation: missing password → 400 VALIDATION_ERROR; empty-string password → 400 VALIDATION_ERROR.
+- Cross-kind accept on the non-consent broadcast surface is exercised by the State A happy-path tests (session-kind proof admits a vote/comment broadcast without per-op binding). The reverse direction (consent_op-kind on non-consent surface) is already pinned in `custody-non-consent-fresh-auth.test.ts`.
+- Test mock-target scope is identical to the sibling `custody-non-consent-fresh-auth.test.ts` (dhive client + `decryptKey` mocked under the carve-out's "third-party libraries non-trivial to run for real per-test" allowance); `verifyHiveSignature` runs REAL because the suite's focus IS authentication semantics on the mint path. Clause (c) real-path companion: `custody-non-consent-fresh-auth.test.ts` exercises the same fresh-auth consume path against the real middleware.
+
+[TODO Architect] — `agents/docs/api-contracts/custody.md`: document the new `POST /api/custody/session-auth` route. Body shape `{ "password": "..." }`, response `{ "fresh_auth_proof", "expires_at" (epoch seconds, matches `/fresh-auth` and `/orcid/start mode=session_auth`), "mechanism": "password" }`. Error envelopes mirror `/api/custody/fresh-auth` minus the target-field 400s: `400 VALIDATION_ERROR` (missing/empty password), `401 UNAUTHORIZED` (wrong password OR `password_hash IS NULL`, byte-equivalent envelope — oracle guard), `403 FORBIDDEN` (custody !== 'light', or `upgraded_at` set), `500 INTERNAL_ERROR` (argon2/DB failure). Rate limit `10 req/min/account` keyed by JWT subject, same shape and budget as `/api/custody/fresh-auth` but under the distinct bucket name `custody-session-auth` for separable observability.
+
+`npm run lint`: clean (only the pre-existing `seed-phrase.ts` warnings, unchanged by this commit). `npx tsc --noEmit`: clean (against the symlinked `node_modules` from the main checkout — worktree had no own install). Vitest NOT run in the worktree (parent serializes).
