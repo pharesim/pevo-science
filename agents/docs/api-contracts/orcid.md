@@ -21,7 +21,7 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 ```json
 {
   "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth" | "session_auth",
-  "action": "author_accept" | "author_resign",
+  "action": "author_accept" | "author_resign" | "set_password",
   "root_author": "<hive-account>",
   "root_permlink": "<paper-permlink>"
 }
@@ -46,14 +46,14 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
   "username": "...",
   "timestamp": 1234567890,
   "fresh_auth_target": {
-    "action": "author_accept" | "author_resign",
+    "action": "author_accept" | "author_resign" | "set_password",
     "root_author": "<hive-account>",
     "root_permlink": "<paper-permlink>"
   }
 }
 ```
 
-`username` is present only for authenticated modes (`accredit`, `link`, `fresh_auth`, `session_auth`), read from the JWT. `fresh_auth_target` is present only when `mode === "fresh_auth"` (target-bound issuance); session_auth is target-less by design so the field is absent. The `/callback` handler reads `fresh_auth_target` back from the state map for fresh_auth and passes it to `consumeFreshAuthToken` so the issued proof binds to the same target the user authorized at `/start`. State carries the target across the OAuth round-trip; the SPA does not re-submit it on `/callback`.
+`username` is present only for authenticated modes (`accredit`, `link`, `fresh_auth`, `session_auth`), read from the JWT. `fresh_auth_target` is present only when `mode === "fresh_auth"` (target-bound issuance); session_auth is target-less by design so the field is absent. The `/callback` handler reads `fresh_auth_target` back from the state map for fresh_auth and passes it to `consumeFreshAuthToken` so the issued proof binds to the same target the user authorized at `/start`. State carries the target across the OAuth round-trip; the SPA does not re-submit it on `/callback`. The backend echoes the target triple (`action`, `root_author`, `root_permlink`) in the `fresh_auth` response body so the SPA can cache the issued proof keyed on its actual binding (see Response shape below).
 
 **Response `data`:**
 
@@ -206,11 +206,16 @@ No `custom_json` broadcast on this mode. No min works check.
   "mode": "fresh_auth",
   "fresh_auth_proof": "<single-use token>",
   "expires_at": "2026-05-06T12:05:00.000Z",
-  "mechanism": "orcid"
+  "mechanism": "orcid",
+  "action": "author_accept" | "author_resign" | "set_password",
+  "root_author": "<hive-account>",
+  "root_permlink": "<paper-permlink>"
 }
 ```
 
 `fresh_auth_proof` is a single-use bearer token bound to the JWT subject. TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request that contains a consent op (`author_accept` or `author_resign`). See [custody.md](custody.md) for the broadcast contract.
+
+`action`, `root_author`, and `root_permlink` are the per-op target binding the proof was issued against, echoed from the Redis state's `fresh_auth_target` written at `/start`. The SPA caches the issued proof keyed on this triple so the broadcast-time lookup matches the proof's actual binding. For `set_password`, `root_author` is the authenticated username and `root_permlink` is the empty string (no paper is involved); for consent ops (`author_accept`, `author_resign`) both are derived from the paper the user is authorizing.
 
 **Errors specific to `fresh_auth`:**
 - `BAD_REQUEST` (400) — invalid ORCID iD format returned by the OAuth round-trip, OR the `fresh_auth_target` is missing from the Redis state map at `/callback`. The latter is a defensive closed-default rejection: `/start` enforces target presence on entry, so an absent `fresh_auth_target` at `/callback` indicates a corrupt state entry rather than a normal client flow. Message: `"fresh_auth state is missing the per-op target binding"`.

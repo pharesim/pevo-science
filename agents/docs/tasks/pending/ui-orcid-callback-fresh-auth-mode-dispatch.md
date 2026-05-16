@@ -174,3 +174,11 @@ Per task acceptance §4 "May not be implementable until the SPA caller side exis
 ### Architect signal
 
 [BLOCKED by Backend] This task is moved to `tasks/blocked/` pending `agents/docs/tasks/pending/backend-orcid-fresh-auth-callback-echoes-target-triple.md` landing. When the backend task is archived, the architect will move this file back to `tasks/pending/` (per root CLAUDE.md rule #8 the HELD PENDING FIXES move from review goes to pending, and the BLOCKED move goes to blocked — this task is currently in the latter state). The UI implementer then addresses items 1 (verify) + folded sub-items 3 + 4 in a single commit, then `git mv`s the file back to `tasks/review/` for round-2 architect re-review.
+
+## Architect-review item 5 (2026-05-16) — defensive validation on the echoed triple
+
+Surfaced by `/ce-code-review` of the now-archived `backend-orcid-fresh-auth-callback-echoes-target-triple` (adversarial reviewer, P3 anchor 75). `_handleFreshAuth` reads `data.action` / `data.root_author` / `data.root_permlink` and passes them straight into `cacheConsentOpProof(...)` with no validation. If a future backend regression dropped one of the three fields from the `sendOk` echo, the SPA would silently write a cache entry with `undefined` in that slot; subsequent `getCachedConsentOpProof` strict-equality lookups would always miss and the user would re-OAuth indefinitely with no error surface. The failure mode is silent UX rot, not a thrown error.
+
+Add a `typeof data.action === 'string' && data.root_author && data.root_permlink` guard before calling `cacheConsentOpProof` in `_handleFreshAuth`. On a missing or malformed field, set `this.status = 'error'` and `this.errorMessage = this.$t('orcid.verificationFailed')` (mirror the default-case error surface in the dispatch switch) so the failure becomes loud rather than silent. Land in the same commit as item 1 (mocks now match the real wire shape) + sub-items 3 + 4.
+
+This is a defense-in-depth measure against future backend drift; the backend integration test pin at `orcid.test.ts:3050+` is the primary contract guard. The SPA-side validation catches the case where the backend echo regresses *between* test runs (a release that ships with the echo dropped but the test suite not re-run).
