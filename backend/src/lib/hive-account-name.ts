@@ -22,14 +22,6 @@
  * `HIVE_ACCOUNT_NAME_REGEX` below tightens to the canonical witness shape. Use it
  * when validating deploy-time configuration (env vars resolved into `config.*`
  * fields) so a misconfigured deploy fails boot loudly.
- *
- * Single source of truth — imported by:
- *   - `startup-checks.ts` (validateAccountNameFormat — boot-time deploy validation)
- *   - `routes/anonymousReview.ts` (sanitizing already-on-chain user-supplied authors)
- *
- * NOT imported by `routes/signup-verify.ts:29` — that pattern guards a different
- * surface (username-availability check on sign-up, with a stricter
- * "ends in [a-z0-9]" rule applied to a single segment without dot-separation).
  */
 
 /**

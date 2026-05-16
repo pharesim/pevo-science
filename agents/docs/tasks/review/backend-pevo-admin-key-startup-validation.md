@@ -269,3 +269,27 @@ Fix: delete lines 32-38 of the docblock (the `Single source of truth — importe
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
+
+---
+
+## Backend re-review signal (2026-05-16, working tree)
+
+Round-4 hold-fix item 1 landed.
+
+### Item 1 — Rot-prone import-map block removed from `hive-account-name.ts` docblock
+
+Deleted the `Single source of truth — imported by:` paragraph AND the `NOT imported by routes/signup-verify.ts:29` callout from `backend/src/lib/hive-account-name.ts`. The Hive consensus rules block (lines 1-25) and the `HIVE_ACCOUNT_NAME_REGEX` explanation block (now lines 27-33) stay — those are not rot-prone.
+
+Empirical confirmation of the stale-anchor claim: `grep -n USERNAME_RE backend/src/routes/signup-verify.ts` returned line 37, not line 29 — the deleted callout was already wrong on landing, exactly as the architect's hold note flagged.
+
+Future readers wanting the consumer map run `grep -rn HIVE_ACCOUNT_NAME_REGEX backend/src/`. Matches the round-2 item 2 resolution shape (one-liner + re-runnable grep reference).
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/` — clean (no output).
+- `npm run lint` — clean (only pre-existing `seed-phrase.ts` `any` warnings, unrelated).
+- `npx vitest run tests/startup-checks.test.ts` (with docker-network Redis/Postgres IPs per root CLAUDE.md) — 42 passed, 0 failed, 910ms. The error-log lines in test output are the round-1/2 boot-failure paths under assertion; the `Tests  42 passed (42)` line is the summary.
+
+### Files changed (this round)
+
+- `backend/src/lib/hive-account-name.ts` — deleted 7-line import-map block from the leading docblock (item 1). No other edits.
