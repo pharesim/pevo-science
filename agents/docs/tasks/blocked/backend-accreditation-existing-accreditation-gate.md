@@ -208,3 +208,42 @@ Verified the product flow: there is no `update_accreditation` custom_op (`grep u
 - `agents/docs/tasks/pending/backend-accreditation-existing-accreditation-gate.md` (this signal block, separate commit)
 
 **Architect: please mv to `review/` on intake.**
+
+---
+
+## Architect round-2 re-review (2026-05-16) — [BLOCKED by Architect]
+
+`/ce-code-review` on commit `61ae0da` ran a multi-persona fan-out (correctness, adversarial, testing, maintainability, project-standards, kieran-typescript, performance, reliability, learnings-researcher). All five round-1 hold items addressed cleanly:
+
+- **Item 1 [P1] revoke-handling:** WHERE clause filters `action IN ('accredit', 'revoke')`; SELECT projects `action`; caller returns null on revoke-tail; ORDER BY `(block_num DESC, cj.id DESC)`. Route-level revoke→re-accredit test + helper-level revoke return-null test added. Verified.
+- **Item 2 [P2] integration-task scope:** `backend-idempotency-haf-integration-test.md` now names all three sibling helpers (findCustodyBroadcastByIdempotencyKey, findAccreditationBroadcastByIdempotencyKey, findExistingAccreditation). Verified.
+- **Item 3 [P2] carve-out clause (a) header:** `tests/lib/idempotency.test.ts` header lists all three helpers in the deferred real-path coverage acknowledgment. Verified.
+- **Item 4 [P2] metadata-update one-shot disposition:** product-flow verified (no `update_accreditation` custom_op exists); inline comment at `accreditation.ts:481-495` documents the invariant + future-design hooks. Resolved in-round per the hold's one-shot branch.
+- **Item 5 [P3] sibling ORDER BY tiebreaker:** `findAccreditationBroadcastByIdempotencyKey` ORDER BY now matches new helper. SQL-shape test pin asserts. Verified.
+
+### Blocking design question — revoke semantic (architect-owned)
+
+Round-2's revoke-handling fix introduced a **new risk dimension** the round-1 reviewers didn't anticipate (adversarial round-2 conf 75): under HAF outage, the gate's catch-and-degrade fallthrough now produces an unauthorized **state transition** (revoked → accredited), not just a duplicate accredit. Previously the fallthrough was a bounded duplicate-op class (≤3/user/24h via /request rate limiter, semantically no-op — accepted in round-1). Post-round-2, the same fallthrough can override a chain-recorded revoke if the user holds a pending token and HAF is down at the moment of /verify.
+
+The disposition depends on PEvO's revocation reversibility semantic:
+
+- **If revoke is operator-only-reversible (compliance / fraud / admin-cleanup):** the HAF-outage override class is a structural gap. Fix: replace the catch-and-degrade fallthrough with explicit 503 `SERVICE_UNAVAILABLE` on gate-query failure. Closes the override class at the cost of /verify availability during HAF outage.
+- **If revoke→re-request→re-verify is a legitimate user-driven flow (e.g., user revoked their own accreditation to clean up, now wants to re-establish):** the fallthrough is correct behavior. Document the trade-off in the comment block at `accreditation.ts:520-537` — explicitly acknowledge that revoke state can be flipped during HAF outage and that this is intentional under the chosen semantic.
+
+Today's `wot.ts:347` produces revoke ops via the WoT cleanup path (auto-revoke on threshold-drop). The semantic of THAT revoke (recoverable when threshold restores? operator-finalized?) is itself the load-bearing answer to the design question. If WoT auto-revokes are intended to auto-recover when conditions change, the fallthrough is the right behavior. If they're meant as a one-shot signal that requires explicit re-attestation, the override class is a defect.
+
+**Other adversarial residual risks (NOT blocking, captured for the architect's awareness when resolving):**
+
+- Per-token cache (Redis-cached `lookupAccreditationBroadcastIdempotency`) can carry pre-revoke state across the revoke boundary — bounded by 60s+ TTL and same-token replay, but interacts with the HAF-outage class.
+- Unknown future `action` values (e.g., `suspend`) silently fall through the helper's `!== 'accredit'` check. Today's schema is bounded (WHERE clause restricts to `accredit | revoke`); future schema additions need this code path updated in lock-step.
+
+### Why blocked, not held
+
+This is a design question architect-only can answer (PEvO governance / compliance / WoT-semantics). Per root CLAUDE.md rule #6 and the `feedback_held_task_blocked_on_architect` memory rule, design questions waiting on architect input go to `tasks/blocked/` with `[BLOCKED by Architect]`, not back to the implementer's pending/ queue.
+
+When the architect commits to (α) explicit 503 fallthrough or (β) document-the-trade-off:
+
+- α: `git mv` back to `pending/` with the disposition note; implementer lands the 503 change + a route-level test that asserts gate-query throw → 503 (instead of fallthrough → broadcast).
+- β: `git mv` back to `review/` directly — architect adds the disposition comment to `accreditation.ts:520-537` in the unblock commit, and re-reviews the diff (architect-self-task disposition per backend CLAUDE.md). No implementer cycle needed.
+
+The round-2 hold items themselves are clean — this is a fresh design question surfaced BY the round-2 fix, not a defect in the round-2 fix.
