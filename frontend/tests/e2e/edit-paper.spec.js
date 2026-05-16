@@ -174,14 +174,14 @@ async function waitForEditorsMounted(page) {
 }
 
 // Set abstract+body via Alpine state (what edit.js reads on submit). We
-// gate this on waitForEditorsMounted so the editor instances exist; the
-// editor's onUpdate does not fire on constructor content-init (verified
-// against tiptap source), so the Alpine write is not subsequently
-// clobbered by the editor mount sequence. We deliberately do NOT call
-// editor.setContent() here — invoking it after the editor's own
-// initialMarkdown application produces a tiptap "Applying a mismatched
-// transaction" RangeError (the prior in-progress transaction conflicts
-// with the imperative replace).
+// gate this on waitForEditorsMounted so the editor instances exist.
+// Alpine state write is sufficient. Calling editor.setContent() after
+// the editor's own initialMarkdown application produces a tiptap
+// "Applying a mismatched transaction" RangeError (the in-progress
+// initial transaction conflicts with the imperative replace), so we
+// avoid the imperative path entirely. Verified the editor's onUpdate
+// does not fire on constructor content-init (tiptap dispatchTransaction
+// gates the callback to user transactions, not constructor init).
 async function setEditorContent(page, { abstract, body }) {
   await page.evaluate(
     ({ abstract, body }) => {
@@ -271,6 +271,13 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
   expect(meta[APP_TAG].discipline).toBe('Computer Science');
   // In-place edits do NOT add a `continues` link.
   expect(meta[APP_TAG].continues).toBeUndefined();
+
+  // Diff-broadcast branch: in-place edits broadcast a diff-match-patch
+  // text (which starts with `@@` patch headers), not the full body. This
+  // pins the optimization at edit.js:1033-1057; a regression that drops
+  // the diff branch (always broadcasting full body) would double every
+  // paper-revision chain's Hive footprint.
+  expect(commentBody.body.startsWith('@@')).toBe(true);
 });
 
 test('accredited non-author (not co-author, no claim) cannot reach the edit form; gating panel renders, no broadcast', async ({
@@ -469,13 +476,12 @@ test('accepted-claimer (accredited, not author, not co-author) reaches the edit 
   request,
 }) => {
   // edit.js:isAuthorized returns true for an accredited user with an
-  // accepted authorship_claim against the paper. Test 2's continuation
-  // path exercises the accredited-non-author route via isAccredited, and
-  // test 3 covers the negative gating. This is the positive mirror for
-  // the claim branch — a regression that dropped the
-  // `claims.some(c => c.claimer === username && c.status === 'accepted')`
-  // check from isAuthorized would not be caught by the existing four
-  // tests.
+  // accepted authorship_claim against the paper. This is the only
+  // positive non-author isAuthorized path in the suite (test 2 asserts
+  // the negative gating for accredited non-authors without a claim).
+  // A regression dropping the `claims.some(c => c.claimer === username &&
+  // c.status === 'accepted')` check from isAuthorized would not be caught
+  // by any other test.
   const claimer = await pickAccreditedResearcher(request);
   if (!claimer) throw new Error('expected at least one accredited researcher in HAF');
 
@@ -507,6 +513,11 @@ test('accepted-claimer (accredited, not author, not co-author) reaches the edit 
   // not via authorship — paper.author !== this user).
   await expect(page.locator('input#edit-title')).toBeVisible();
 
+  // Continuation forms freeze the discipline (chain-coherence invariant).
+  const disciplineInput = page.locator('input.select-control[disabled]').first();
+  await expect(disciplineInput).toBeDisabled();
+  await expect(disciplineInput).toHaveValue('Computer Science');
+
   const NEW_TITLE = 'Edit by Accepted Claimer';
   const NEW_ABSTRACT = 'Abstract updated by an accepted-claim user (not the original author).';
   const NEW_BODY = '## Introduction\n\nBody update from accepted claimer.';
@@ -537,6 +548,24 @@ test('accepted-claimer (accredited, not author, not co-author) reaches the edit 
   expect(commentBody.author).toBe(claimer.username);
   expect(commentBody.parent_permlink).toBe(APP_TAG);
   expect(commentBody.permlink).not.toBe(paper.permlink);
+
+  // Continuation-broadcast payload-shape pins (mirror of test 1's
+  // in-place invariants, adapted for the continuation branch):
+  //  - parent_author empty (top-level Hive post invariant).
+  //  - version > 1 (continuation has version > 1 of the chain).
+  //  - continues pointer present and resolves to the previous version.
+  //  - comment_options op present (PEvO no-Hive-rewards principle is
+  //    enforced via comment_options.allow_curation_rewards: false; a
+  //    regression dropping this op would enable curation rewards on
+  //    continuations).
+  expect(commentBody.parent_author).toBe('');
+  const meta = JSON.parse(commentBody.json_metadata);
+  expect(meta[APP_TAG].version).toBeGreaterThan(1);
+  expect(meta[APP_TAG].continues).toBeTruthy();
+  expect(meta[APP_TAG].continues.author).toBe(paper.author);
+  expect(meta[APP_TAG].continues.permlink).toBe(paper.permlink);
+  const optionsOp = broadcast.operations.find((op) => op[0] === 'comment_options');
+  expect(optionsOp).toBeTruthy();
 });
 
 test('no-changes guard blocks the broadcast and surfaces an error step', async ({
