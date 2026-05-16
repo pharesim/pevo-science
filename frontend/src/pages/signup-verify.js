@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { verifyEmail, resumeSignup, confirmAccount, linkExistingAccount } from '../api.js';
-import { generateMnemonic, validateMnemonic, deriveAllKeys } from '../hive-keys.js';
+import { generateMnemonic, validateMnemonic, deriveAllKeys, loadDhive } from '../hive-keys.js';
 import { isKeychainInstalled } from '../keychain.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 
@@ -377,7 +377,7 @@ export function initSignupVerifyPage() {
 
     async _checkUsername(val) {
       try {
-        const { Client } = await import('@hiveio/dhive');
+        const { Client } = await loadDhive();
         if (!this._mounted) return;
         const client = new Client(['https://api.hive.blog', 'https://api.deathwing.me']);
         const accounts = await client.database.getAccounts([val]);
