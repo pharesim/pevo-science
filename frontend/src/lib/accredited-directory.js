@@ -93,9 +93,9 @@ export function applyHiveChangePrefill(row, directory) {
 // See task ITEM 2.
 //
 // Reactivity note: in-place `row.orcid` mutation is safe under Alpine 3's
-// proxy. Alpine's reactivity engine is @vue/reactivity's `reactive()`
-// (alpinejs/src/index.js:40-42), which lazily deep-proxies nested objects
-// on access — including objects pushed into reactive arrays AFTER init.
+// proxy. Alpine's reactivity engine is @vue/reactivity's `reactive()`,
+// which lazily deep-proxies nested objects on access — including
+// objects pushed into reactive arrays AFTER init.
 // The `for...of` below traverses the array through the proxy, so each
 // `row` IS the reactive-wrapped object; setting `row.orcid` triggers any
 // subscribed `:value="ca.orcid"` effects. Verified 2026-05-16 against
