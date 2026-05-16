@@ -112,3 +112,34 @@ The shared chain-resolver helper from `backend-cumulative-union-listing-surfaces
 This task is moved to `review/` for architect ratification. No code changes have been made. Architect ratification preferred to land coherently with `backend-cumulative-union-listing-surfaces-parity` and `backend-canonical-root-walker-cumulative-aware`.
 
 [TODO Architect] Ratify Alternative 2 and clarify items 1-4 above.
+
+---
+
+## Architect ratification (2026-05-16)
+
+**Decision:** Alternative 2 is ratified. Backend may proceed to implementation.
+
+### Decisions on open items
+
+1. **Alt 2 shape ratified.** Alt 1 (audit all non-self claims) rejected for noise-vs-precision: legitimate "co-authoring with a not-yet-registered researcher" cases would all fire audit, drowning the spoof signal. Alt 3 (server-side watchlist) rejected for violating PEvO's chain-is-SSoT principle — a server-side watchlist that's not derived from chain state would be a separate authoritative source alongside the on-chain `accredit`/`revoke` history that already encodes the same information. Alt 2 preserves the audit's precision premise (compare against PEvO's last-attested ORCID for the target) and extends the time window past revocation without adding new authoritative state.
+
+   **Additive concern (not a blocker; backend addresses during implementation):** the LATERAL "most-recent prior `accredit` before current `revoke`" lookup must handle multi-cycle accredit/revoke/re-accredit/revoke history (e.g., alice accredited with ORCID-X → revoked → re-accredited with ORCID-Y → revoked again; the lookup MUST return ORCID-Y, not ORCID-X). Add a SQL test case for this multi-cycle shape — the canary at acceptance §3 (revoke alice; bob broadcasts forged ORCID for alice) only covers the single-cycle path.
+
+2. **Server-override behavior split ratified.** Active accreditation → server overrides (PEvO has authoritative ORCID for the hive). Revoked accreditation → pass-through with audit (PEvO no longer claims authority; broadcaster's claim is what's broadcast). This makes revocation a meaningful state change without auditing away the broadcaster's actual claim shape. The audit captures the discrepancy for operator follow-up (typical next step: investigate the broadcaster, file revocation against THEM).
+
+3. **Audit payload schema ratified.** Single event `orcid_claim_mismatch` with additive `accreditationStatus: 'active' | 'revoked'` field is preferred over splitting into two event names. Backward-compatible (additive field); operators filter by status via the existing event channel without learning a new event name.
+
+4. **Listing-surface audit volume mitigation ratified with explicit fallback.** Dedup by `(rootAuthor, rootPermlink, hive)` is the right initial approach — bounds volume to per-paper-per-hive, which is reasonable. If volume becomes problematic in practice once `backend-cumulative-union-listing-surfaces-parity` extends cumulative-union to listing surfaces, fallback is to gate audit emission to detail-surface only. Don't preemptively gate — let real volume data drive the decision.
+
+### Declined
+
+- The optional `getAccreditedOrcidsByAccount` refactor (derive from the new helper, filter to `status === 'active'`) is **declined for this task** per YAGNI. The duplicate CTE work is real but trivial. If a future task touches both helpers, the refactor can fold in then; doing it now bloats the scope of this task without a concrete pay-off.
+
+### Cross-task synergy carried forward (not addressed here)
+
+- `backend-cumulative-union-listing-surfaces-parity` — when that task lands, item 4's audit-volume question becomes live. Dedup helper should be in place by then.
+- `backend-canonical-root-walker-cumulative-aware` — shares the chain-resolver helper space; coordinate via implementation review at sibling-merge time.
+
+### Move
+
+This file moves from `tasks/review/` back to `tasks/pending/` so the backend implementer sees it at startup per root CLAUDE.md rule #8. After landing, `git mv` to `tasks/review/` for architect re-review.
