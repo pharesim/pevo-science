@@ -233,3 +233,39 @@ New file `backend/src/lib/hive-account-name.ts` defines the canonical regex with
 - `backend/src/startup-checks.ts` — `validatePostingKeyFormat` `.trim()` guard (item 4); `validateAccountNameFormat` regex tighten via shared constant (item 1); coverage-map comments collapsed (item 2); `BLOG_AUTHOR` added to `accountChecks` (item 3).
 - `backend/src/routes/anonymousReview.ts` — replaced inline regex literal with `HIVE_ACCOUNT_NAME_REGEX` import (item 5).
 - `backend/tests/startup-checks.test.ts` — round-3 anon-key dhive-class hint + whitespace WIF + boundary acceptance + canonical-shape rejections (items 6a, 6b, 4, 1).
+
+---
+
+## Architect re-review (2026-05-16, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `3dc56ba` with 9 reviewers (correctness, testing, maintainability, project-standards, learnings-researcher, security, reliability, adversarial, kieran-typescript; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Round-3 hold items 1-6 landed correctly: regex is canonical, `.trim()` guard ordering is right, BLOG_AUTHOR wiring uses resolved config, tests cover the new boundaries, signup-verify.ts left as-is matches the docblock claim. Verification grep confirmed no lingering inline copies of the legacy `[a-z][a-z0-9.-]{2,15}` pattern outside the documented signup-verify.ts non-import (which uses a different shape with BAD_SEGMENT_RE companion). One item surfaces from the round-3 commit review.
+
+### Items to address
+
+**1. (P2) Docblock import map in the new shared lib reintroduces the same frozen-snapshot rot that round-2 item 2 was filed to remove.** Cross-reviewer convergence (maintainability M1 + learnings-researcher L5 — `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`). `backend/src/lib/hive-account-name.ts` lines 32-38 contain two rot-prone blocks:
+
+```
+ * Single source of truth — imported by:
+ *   - `startup-checks.ts` (validateAccountNameFormat — boot-time deploy validation)
+ *   - `routes/anonymousReview.ts` (sanitizing already-on-chain user-supplied authors)
+ *
+ * NOT imported by `routes/signup-verify.ts:29` — that pattern guards a different
+ * surface (username-availability check on sign-up, with a stricter
+ * "ends in [a-z0-9]" rule applied to a single segment without dot-separation).
+```
+
+Two problems:
+- A third consumer in the future leaves the list incomplete with no signal — exactly the rot class round-2 item 2 already closed for `validateConfig`'s coverage-map comment, just on a different file.
+- Empirical: the `:29` line-number anchor is **already wrong on landing**. Verified by `grep -n USERNAME_RE backend/src/routes/signup-verify.ts` → `USERNAME_RE` is at line 37, not line 29. The docblock baked in a stale line number from the architect's round-2 hold note that referenced an older revision. This is the textbook rot signature the learnings doc above is filed against.
+
+Fix: delete lines 32-38 of the docblock (the `Single source of truth — imported by:` block AND the `NOT imported by routes/signup-verify.ts:29` callout). The module name and export name already communicate purpose. The Hive consensus rules block (lines 1-25) and the regex explanation (lines 35-41 — currently the second `/** ... */` block above the `export const`) stay; those are genuinely useful and not rot-prone. Anyone wanting the consumer map runs `grep -rn HIVE_ACCOUNT_NAME_REGEX backend/src/`. This matches the round-2 item 2 resolution shape exactly (one-liner + re-runnable grep reference). Comment-only change; no test updates needed.
+
+### Dismissed at architect triage (no implementer action)
+
+- **testing T1 (P2) — no route-level test for the regex tightening at `routes/anonymousReview.ts:149`.** Dismissed per `feedback_dismiss_preemptive_test_hardening.md`: the cited failure mode ("a future revert of the import would not break any existing test") is preemptive hardening against a hypothetical regression. The shared `HIVE_ACCOUNT_NAME_REGEX` constant is pinned by `tests/startup-checks.test.ts`; the route wiring is verifiable from the import line. The behavior change at the route is real but defensive route-level coverage against a hypothetical revert does not clear the project's preemptive-hardening bar.
+- **kieran-typescript KT-1 (P2, anchor 50) — `string | null` not narrowed after `expect(...).not.toBeNull()` in test file.** Suppressed by confidence gate. No runtime impact; only a refactor-risk type hole that vitest's `expect(unknown)` absorbs silently.
+- **adversarial (P3 advisory, anchor 50) — stricter regex on POST /anonymous is a strict contract narrowing.** Routed to residual_risks per advisory class: real Hive on-chain authors cannot produce the newly-rejected shapes (Hive consensus enforces canonical account-name rules at chain level), so practical impact is nil.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
