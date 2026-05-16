@@ -291,10 +291,15 @@ export function initSearchPage() {
         // Abort errors are expected when a newer doSearch supersedes this
         // one (or destroy() runs). Do NOT clobber `error`/`results`/page
         // state in that case — the superseding request owns the UI now.
+        // Any abort path (supersession or destroy) flows through
+        // `this._searchController.abort()` which synchronously sets
+        // `controller.signal.aborted = true` AND reassigns
+        // `this._searchController`, so the two checks below cover every
+        // abort case; an explicit `err.name === 'AbortError'` clause
+        // would be unreachable.
         if (
           controller.signal.aborted ||
-          this._searchController !== controller ||
-          (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR'))
+          this._searchController !== controller
         ) {
           return;
         }

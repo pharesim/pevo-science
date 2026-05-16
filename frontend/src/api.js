@@ -43,9 +43,18 @@ function getToken() {
 
 async function request(path, init) {
   const url = `${BASE_URL}${path}`;
+  // Compose the caller's signal (if any) with a 30s timeout via
+  // AbortSignal.any() so EVERY request gets the timeout safeguard. The
+  // previous form set `signal:` before `...init` spread, which meant
+  // any caller passing `{signal}` lost the fallback timeout entirely.
+  // The composed signal MUST live after the `...init` spread so it
+  // wins over any `signal` re-introduced by the spread.
+  const composedSignal = init?.signal
+    ? AbortSignal.any([init.signal, AbortSignal.timeout(DEFAULT_TIMEOUT_MS)])
+    : AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
   const res = await fetch(url, {
-    signal: init?.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     ...init,
+    signal: composedSignal,
   });
 
   if (!res.ok) {
