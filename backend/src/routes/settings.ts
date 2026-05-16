@@ -120,11 +120,11 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 // The Add-flow no-row branch (Keychain user with no `accounts` row yet) is
 // only reachable on the Hive-signature path (no JWT can exist before a row
 // exists), so the no-row INSERT path remains gated by the Hive-signature
-// freshness alone. The discriminator below is the same `authHeader
-// startsWith('Bearer ')` check used inside `verifyHiveSignature.ts:79`; a
-// follow-up task (backend-verifyhive-authmethod-discriminator.md) extracts
-// this into an explicit `req.hiveAuthMethod` field on the middleware to
-// avoid the header re-parse at each call site.
+// freshness alone. The discriminator below reads `req.hiveAuthMethod` set by
+// the unified `verifyHiveSignature` middleware (BACKEND-VERIFYHIVE-AUTHMETHOD-
+// DISCRIMINATOR): the JWT-success branch sets it to `'jwt'`, the signature-
+// success branch sets it to `'signature'`. Route handlers no longer re-parse
+// `req.headers['authorization']` to make this distinction.
 router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
@@ -138,9 +138,9 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
 
   // JWT-vs-Keychain discriminator. The Hive-signature path runs after JWT in
   // `verifyHiveSignature` and is fresh per-request; we only require a body
-  // proof on the JWT path.
-  const authHeader = req.headers['authorization'];
-  const isJwtPath = typeof authHeader === 'string' && authHeader.startsWith('Bearer ');
+  // proof on the JWT path. `req.hiveAuthMethod` is populated by the
+  // middleware (BACKEND-VERIFYHIVE-AUTHMETHOD-DISCRIMINATOR).
+  const isJwtPath = req.hiveAuthMethod === 'jwt';
 
   try {
     // Check email not already used by another account

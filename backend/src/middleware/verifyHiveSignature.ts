@@ -69,6 +69,20 @@ declare global {
     interface Request {
       hiveUsername?: string;
       hiveCustody?: 'light' | 'self';
+      /**
+       * Which auth path successfully authenticated this request:
+       *   - `'jwt'`       : Bearer JWT verified by `jsonwebtoken`.
+       *   - `'signature'` : per-request Hive signature recovered + key-matched.
+       *
+       * Set only on the success branches of `verifyHiveSignature`. Route
+       * handlers that need to discriminate "replayable bearer token" from
+       * "fresh per-request signed message" (e.g., to require a body-level
+       * `fresh_auth_proof` only on the JWT path) read this field instead of
+       * re-parsing `req.headers['authorization']` themselves. Per-request
+       * Hive signatures are timestamp + replay-bounded inside this
+       * middleware and are themselves fresh proof; JWTs are not.
+       */
+      hiveAuthMethod?: 'jwt' | 'signature';
     }
   }
 }
@@ -82,6 +96,7 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
       const payload = jwt.verify(token, config.sessionSecret) as { sub: string; custody?: 'light' | 'self' | null; iat?: number };
       req.hiveUsername = payload.sub;
       req.hiveCustody = payload.custody || 'self';
+      req.hiveAuthMethod = 'jwt';
 
       // Check session invalidation for light accounts (password reset invalidates all prior JWTs)
       if (payload.iat) {
@@ -180,6 +195,7 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
 
     req.hiveUsername = username;
     req.hiveCustody = 'self';
+    req.hiveAuthMethod = 'signature';
     next();
   } catch (err) {
     logger.error({ err: (err as Error).message }, 'Signature verification failed');

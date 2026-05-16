@@ -449,9 +449,11 @@ describe.skipIf(!dbReachable)('POST /api/settings/email — Keychain path skips 
 
   it('Keychain path (no Authorization header) change-email → 200 without body proof', async () => {
     // MOCK_VERIFY_SIGNATURE extracts username from X-Hive-Username and
-    // proceeds. The route's isJwtPath discriminator sees no Bearer token,
-    // so the body-proof gate is skipped. Acceptance criterion #5: Keychain-
-    // signature-authenticated requests do NOT require a body proof.
+    // proceeds. With no Bearer header it sets req.hiveAuthMethod = 'signature'
+    // (mirroring the real middleware), and the route's isJwtPath discriminator
+    // sees 'signature', so the body-proof gate is skipped. Acceptance
+    // criterion #5: Keychain-signature-authenticated requests do NOT require
+    // a body proof.
     const res = await request(app)
       .post('/api/settings/email')
       .set('X-Hive-Username', STATE_A_USER)
@@ -485,3 +487,72 @@ describe.skipIf(!dbReachable)('POST /api/settings/email — Keychain path skips 
     expect(rows[0].verify_token).not.toBeNull();
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// BACKEND-VERIFYHIVE-AUTHMETHOD-DISCRIMINATOR — downstream-consumption pin
+//
+// Acceptance criterion #6 (second half): assert the route consumes
+// req.hiveAuthMethod (set by the middleware) rather than re-parsing the
+// Authorization header. The discriminator's wire behavior is already
+// asserted by the JWT-path / Keychain-path describes above; this block
+// pins that the field-driven discrimination matches the header-presence
+// gate that drives MOCK_VERIFY_SIGNATURE's hiveAuthMethod assignment, so
+// a future drift where the route reverts to header re-parsing while the
+// middleware stops setting the field would surface as a test failure.
+//
+// (The real-path companion lives in
+// `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts`,
+// which runs the production verifyHiveSignature and pins both branches.)
+// ────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)(
+  'POST /api/settings/email — req.hiveAuthMethod drives discrimination (not header re-parse)',
+  () => {
+    beforeAll(async () => {
+      await cleanupAll();
+      await seedStates();
+      await clearRateLimitKeys(['settings-write', 'settings-read']);
+    });
+
+    beforeEach(async () => {
+      _resetFreshAuthMemStoreForTests();
+      await clearRateLimitKeys(['settings-write', 'settings-read']);
+      if (!dbReachable) return;
+      const pool = getAppPool()!;
+      await pool.query(
+        `UPDATE accounts SET pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL
+         WHERE username IN ($1, $2, $3, $4)`,
+        [STATE_A_USER, STATE_B_USER, STATE_C_USER, OTHER_USER],
+      ).catch(() => {});
+    });
+
+    afterAll(async () => {
+      await cleanupAll();
+    });
+
+    it('Bearer present → hiveAuthMethod = "jwt" → fresh-auth gate fires (missing proof = 401)', async () => {
+      // The mock fixture sets req.hiveAuthMethod = 'jwt' when an
+      // Authorization: Bearer header is present. The route reads this
+      // field as isJwtPath and engages the body-proof gate.
+      const res = await request(app)
+        .post('/api/settings/email')
+        .set('Authorization', bearerFor(STATE_A_USER))
+        .set('X-Hive-Username', STATE_A_USER)
+        .send({ email: NEW_EMAIL_A });
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(res.body.error.details?.reason).toBe('missing');
+    });
+
+    it('Bearer absent → hiveAuthMethod = "signature" → gate skipped (200 without proof)', async () => {
+      // Same mock fixture: with no Bearer header, req.hiveAuthMethod is
+      // 'signature' and isJwtPath is false. The body-proof gate is
+      // skipped and the change-email succeeds.
+      const res = await request(app)
+        .post('/api/settings/email')
+        .set('X-Hive-Username', STATE_A_USER)
+        .send({ email: NEW_EMAIL_A });
+      expect(res.status).toBe(200);
+    });
+  },
+);
