@@ -510,6 +510,17 @@ export function initSettingsPage() {
     },
 
     destroy() {
+      // Explicit unmount cleanup signal for in-flight upgrade work. The
+      // upgrade flow can be mid-Keychain-loop when the user navigates
+      // away; the loop's per-iteration _mounted check will short-circuit,
+      // but the mnemonic + WIFs in this.* are reactive state that would
+      // otherwise live until GC reclaims the orphaned component. Wiping
+      // here closes the navigate-away XSS-surface window deterministically.
+      // Order: clear first so the writes land while _mounted is still
+      // true (purely cosmetic — the writes succeed either way because
+      // this is plain object mutation, but reads sequencing matches the
+      // happy-path order).
+      this._clearSensitiveUpgradeState();
       this._teardownTimers();
     },
 
@@ -800,6 +811,14 @@ export function initSettingsPage() {
           expires_at: result.data?.expires_at,
           custody: 'self',
         });
+        // Re-check post-loginFromResponse: the helper resolves synchronously
+        // today but is contractually allowed to suspend (it calls into the
+        // accreditation poller). The _completeUpgradeAfterBackend tail runs
+        // a ~180s-worst-case Keychain loop, so any unmount up to here must
+        // skip it — otherwise the orphaned component opens Keychain popups
+        // on a navigated-away page. destroy() wipes sensitive state, so an
+        // early return here leaks nothing.
+        if (!this._mounted) return;
       } catch (err) {
         // The (b)→(c) pair lives inside this try. A failure here means
         // either (b) reverted (Keychain-signing of account_update denied,
@@ -944,6 +963,11 @@ export function initSettingsPage() {
           expires_at: result.data?.expires_at,
           custody: 'self',
         });
+        // Re-check post-loginFromResponse for the same reason as executeUpgrade:
+        // a 503 retry is exactly when users navigate away, and the
+        // _completeUpgradeAfterBackend tail must not start its Keychain loop
+        // on an orphaned component.
+        if (!this._mounted) return;
       } catch (err) {
         const status = err && typeof err.status === 'number' ? err.status : null;
         if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
@@ -1007,16 +1031,27 @@ export function initSettingsPage() {
         await this._performKeychainImport(newSeedPhrase);
       } catch (err) {
         console.warn('[custody upgrade] keychain helper threw', err);
-        this.upgradeWarnings.push(this.$t('upgrade.keychainImportFailed'));
+        // Skip the user-visible warning on unmount: the warnings array is
+        // bound to a component that no longer renders, and destroy() will
+        // wipe sensitive state. The warning would be a write to an
+        // orphaned object with no observer.
+        if (this._mounted) {
+          this.upgradeWarnings.push(this.$t('upgrade.keychainImportFailed'));
+        }
       } finally {
         // FE-UPGRADE-CREDENTIAL-WIPE: zero all sensitive reactive state on
         // the happy path (success or partial-keychain-import) before
         // flipping to 'done'. Without this, the old and new 12-word
         // mnemonics sit in Alpine's reactive data indefinitely; any XSS
         // on /settings can read them via `window.Alpine.$data(el).oldSeedPhrase`
-        // etc.
-        this._clearSensitiveUpgradeState();
-        this.upgradePhase = 'done';
+        // etc. Guarded on _mounted: destroy() already wipes sensitive state
+        // on unmount via the explicit cleanup signal (see destroy() below);
+        // writing upgradePhase='done' on an orphaned component is silent
+        // mutation with no observer.
+        if (this._mounted) {
+          this._clearSensitiveUpgradeState();
+          this.upgradePhase = 'done';
+        }
       }
     },
 
@@ -1168,8 +1203,22 @@ export function initSettingsPage() {
         return;
       }
       const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
+      // Unmount check before the loop: deriveHiveKeys is async (calls
+      // PrivateKey.fromLogin per role), so the user may have navigated
+      // away during derivation. Returning here means no Keychain popups
+      // fire on a navigated-away component.
+      if (!this._mounted) return;
       const importRoles = ['posting', 'active', 'memo'];
       for (const role of importRoles) {
+        // Per-iteration unmount check. The previous iteration's
+        // requestImportKey awaited 0-45s (popup display + user click or
+        // timeout); if the user navigated away during that window,
+        // skipping the remaining roles prevents fresh popups from
+        // appearing on the navigated-away page. The popup for the
+        // already-in-flight iteration cannot be aborted — there is no
+        // cancel API in window.hive_keychain. The user will see one
+        // residual popup at most per navigate-away.
+        if (!this._mounted) return;
         const wif = newKeys[role];
         try {
           // Promise.race against a 45s timeout: the Hive Keychain extension
@@ -1220,8 +1269,15 @@ export function initSettingsPage() {
           // paths rather than introducing a separate
           // keychainImportTimeout family.
           console.warn(`[custody upgrade] keychain import ${role}`, err);
-          const key = `upgrade.keychainImportWarning.${role}`;
-          this.upgradeWarnings.push(this.$t(key));
+          // Skip the user-visible warning on unmount: the catch may fire
+          // on an orphaned `this` if the user navigated away during the
+          // 45s race. The next iteration's _mounted check will exit the
+          // loop, but the warning write would still land on the dead
+          // component.
+          if (this._mounted) {
+            const key = `upgrade.keychainImportWarning.${role}`;
+            this.upgradeWarnings.push(this.$t(key));
+          }
         }
       }
     },
