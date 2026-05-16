@@ -128,3 +128,21 @@ No `git mv` from `pending/` to `review/` was performed in this worktree; parent 
 - Backend validates BIP39 mnemonic inline; frontend pushes validation to callers — dismissed. Intentional architecture asymmetry. All frontend user-input paths validate before deriving; self-generated paths don't need it. Backend has no current importers anyway.
 
 **Re-review trigger:** when all 3 items above are landed, `git mv` this file back to `tasks/review/` and the architect's next review pass picks it up. Do NOT edit the hold block itself or annotate fixes inside it — the commit diff is the evidence; the architect updates the hold block during re-review.
+
+## Backend re-review signal (2026-05-16, working tree)
+
+Round-2 fixes for the 3 hold-block items landed in `backend/`. Architect re-review intake.
+
+- **Item 1 (dhive version pin asymmetry):** `backend/package.json` changed `"@hiveio/dhive": "^1.3.6"` to exact `"@hiveio/dhive": "1.3.6"`, matching the frontend's exact pin. Both halves now pin the same patch version. Lockfile resolves the same as before (1.3.6 was already the resolved version under the caret range), so no install side-effects.
+
+- **Item 2 (`_bip39: any` cache + `Function` cast):** `backend/src/seed-phrase.ts` replaced `let _bip39: any = null` with a type-only static import `import type * as Bip39 from '@scure/bip39' with { 'resolution-mode': 'import' }` plus `let _bip39: typeof Bip39 | null = null`. The `with { 'resolution-mode': 'import' }` attribute is required by TS 6 under Node16 module resolution for type-only imports of ESM-only packages from a CJS host file (without it: `TS1541: Type-only import of an ECMAScript module from a CommonJS module must have a 'resolution-mode' attribute`). The `loadBip39` return shape drops the `as { generateMnemonic: Function; validateMnemonic: Function }` cast — `_bip39` is now strongly typed as the full module namespace, so `bip39.generateMnemonic(wordlist, 128)` and `bip39.validateMnemonic(mnemonic, wordlist)` at lines 43, 52, and 85 are checked against the package's real `.d.ts` signatures. The `eslint-disable-next-line @typescript-eslint/no-explicit-any` line is dropped. `npm run lint` clean (zero warnings, down from the 2 pre-existing).
+
+- **Item 3 (inline `derivePrivateKey`):** `backend/src/seed-phrase.ts` deleted the `derivePrivateKey` function (single-line, single-callsite passthrough to `PrivateKey.fromLogin`). The loop body in `deriveKeysFromMnemonic` now calls `PrivateKey.fromLogin(account, mnemonic, role)` directly. The load-bearing JSDoc rationale (algorithm + frontend-mirror + drift-consequence) moved onto `deriveKeysFromMnemonic` itself, consolidated with the existing UX-guardrail validation paragraph. The unused `HiveRole` type alias dropped (its only use was the deleted function's signature; the loop infers `role`'s type from `ROLES` directly).
+
+**Verification gates:**
+
+- `npm run typecheck` clean (both `typecheck:src` and `typecheck:tests`).
+- `npm run lint` clean (zero warnings; the 2 pre-existing `@typescript-eslint/no-explicit-any` warnings flagged in round-1 are gone with item 2's fix).
+- `npx vitest run tests/seed-phrase.test.ts`: **7 passed**. Same parity vectors as round-1; the algorithm is unchanged, only the type-fidelity and call-shape changed. Redis-connection-refused log lines are unrelated infrastructure noise from `tests/setup.ts` (the parity test queries no infrastructure).
+
+`[TODO ARCHITECT]` from round-1's signal block stands unchanged: the `ARCHITECTURE.md` "Account Creation" / "Light Accounts" / "Key Derivation" sections still need the algorithm-description update from HMAC-SHA512 → `PrivateKey.fromLogin`. No new doc work was introduced by round-2.

@@ -1,7 +1,7 @@
 import { PrivateKey } from '@hiveio/dhive';
+import type * as Bip39 from '@scure/bip39' with { 'resolution-mode': 'import' };
 
 const ROLES = ['owner', 'active', 'posting', 'memo'] as const;
-type HiveRole = (typeof ROLES)[number];
 
 export interface HiveKeyPair {
   private: string; // WIF-encoded private key
@@ -17,8 +17,7 @@ export interface DerivedKeys {
 
 // Lazy-load ESM-only @scure/bip39 (only used for mnemonic generation/validation
 // as a UX guardrail; PrivateKey.fromLogin itself accepts any string).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _bip39: any = null;
+let _bip39: typeof Bip39 | null = null;
 let _wordlist: string[] | null = null;
 
 async function loadBip39() {
@@ -33,7 +32,7 @@ async function loadBip39() {
     const wl = await import('@scure/bip39/wordlists/english.js');
     _wordlist = wl.wordlist;
   }
-  return { bip39: _bip39 as { generateMnemonic: Function; validateMnemonic: Function }, wordlist: _wordlist! };
+  return { bip39: _bip39, wordlist: _wordlist! };
 }
 
 /**
@@ -54,20 +53,6 @@ export async function isValidSeedPhrase(mnemonic: string): Promise<boolean> {
 }
 
 /**
- * Derive a Hive private key from a mnemonic + account name + role using
- * `PrivateKey.fromLogin(account, master_password, role)` — the same
- * derivation Hive Keychain's "Add Account by Master Password" flow uses.
- * The mnemonic functions as the master-password input.
- *
- * Mirrors frontend/src/hive-keys.js. If the two derivations drift, every
- * new light-account signup splits across two algorithms (frontend broadcasts
- * pubkeys derived one way, backend recovery expects the other).
- */
-function derivePrivateKey(mnemonic: string, account: string, role: HiveRole): PrivateKey {
-  return PrivateKey.fromLogin(account, mnemonic, role);
-}
-
-/**
  * Generate a 12-word BIP39 mnemonic and derive all 4 Hive key pairs
  * for the given account name.
  */
@@ -79,6 +64,16 @@ export async function generateKeysFromNewSeed(account: string): Promise<{ mnemon
 
 /**
  * Derive all 4 Hive key pairs from an existing mnemonic + account name.
+ *
+ * Each per-role private key is derived via
+ * `PrivateKey.fromLogin(account, mnemonic, role)` — the same derivation
+ * Hive Keychain's "Add Account by Master Password" flow uses. The
+ * mnemonic functions as the master-password input.
+ *
+ * Mirrors frontend/src/hive-keys.js. If the two derivations drift, every
+ * new light-account signup splits across two algorithms (frontend
+ * broadcasts pubkeys derived one way, backend recovery expects the
+ * other).
  *
  * The mnemonic is validated against the BIP39 wordlist as a UX guardrail
  * to catch user typos. The validation is no longer cryptographically
@@ -92,7 +87,7 @@ export async function deriveKeysFromMnemonic(mnemonic: string, account: string):
   }
   const result = {} as DerivedKeys;
   for (const role of ROLES) {
-    const priv = derivePrivateKey(mnemonic, account, role);
+    const priv = PrivateKey.fromLogin(account, mnemonic, role);
     result[role] = {
       private: priv.toString(),
       public: priv.createPublic().toString(),
