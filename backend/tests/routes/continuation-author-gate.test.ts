@@ -598,9 +598,13 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   function isAccreditedOrcidsSql(sql: string): boolean {
     return /SELECT\s+account,\s*orcid\s+FROM\s+active_accreditations\b/i.test(sql);
   }
-  /** Mock paper-detail SELECT row for a multi-link chain seed. */
+  /** Mock paper-detail SELECT row for a multi-link chain seed.
+   *  BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION wrapped the paper SELECT
+   *  with `activeAccreditationsCteBody(4)` so `parent_permlink` shifted
+   *  from `$3` to `$4`. The discriminator accepts both forms so this
+   *  test file stays robust across future param re-layouts. */
   function paperDetailSelectSql(sql: string): boolean {
-    return sql.includes('SELECT c.author, c.permlink, c.title') && sql.includes('parent_permlink = $3');
+    return sql.includes('SELECT c.author, c.permlink, c.title') && /parent_permlink = \$\d+/.test(sql);
   }
   /** Mock the head-authors lookup probe. */
   function headAuthorsLookupSql(sql: string): boolean {
