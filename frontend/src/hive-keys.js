@@ -91,6 +91,11 @@ export async function deriveAllKeys(mnemonic, username) {
   const dhive = await loadDhive();
   const result = {};
   for (const role of ROLES) {
+    // Re-parse the WIF deliberately. The fromLogin→toString→fromString cycle
+    // is the cost of keeping PrivateKey.fromLogin at a single module site;
+    // inlining fromLogin here would re-introduce the algorithm-split risk
+    // the delegation above (and the hive-keys.test.js parity test) exists to
+    // prevent. Do not "optimize" by skipping the round-trip.
     const priv = dhive.PrivateKey.fromString(wifs[role]);
     result[role] = {
       private: priv.toString(),

@@ -1136,7 +1136,7 @@ export function initSettingsPage() {
     // before being passed in, so no observer reference leaks through).
     async _performUpgradeKeyRotation(oldWords, newSeedPhrase) {
       // Derive keys from old and new seed phrases
-      const dhive = await import('@hiveio/dhive');
+      const dhive = await loadDhive();
       const oldKeys = await deriveHiveKeys(oldWords, this.username);
       const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
       const newPubKeys = await deriveHivePublicKeys(newKeys);

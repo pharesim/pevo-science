@@ -144,3 +144,23 @@ Mechanics:
 - The `loadDhive` JSDoc reference to "matches the `_performKeychainImport` pattern" being imprecise (the actual sibling is `_signUpgradeProof`) — dismissed as a comment-precision nit below the actionable floor.
 
 **Re-review trigger:** when both items above are landed, `git mv` this file back to `tasks/review/` and the architect's next review pass picks it up. Do NOT edit the hold block itself or annotate fixes inside it — the commit diff is the evidence; the architect updates the hold block during re-review.
+
+## UI re-review signal (2026-05-16, round 5)
+
+**Landed on top of:** `5a8f265` (working tree at signal-block authoring time; the actual fix commit will be this commit).
+
+**Files changed (2):**
+- `frontend/src/pages/settings.js` — `_performUpgradeKeyRotation` (line 1139) switched from `await import('@hiveio/dhive')` to `await loadDhive()`. `loadDhive` was already imported from `../hive-keys.js` via the round-4 change to `_signUpgradeProof`; this commit reuses the same cached loader. Direct `await import('@hiveio/dhive')` no longer appears anywhere in `settings.js` (`grep -n "await import" frontend/src/pages/settings.js` returns nothing).
+- `frontend/src/hive-keys.js` — `deriveAllKeys` (above the `dhive.PrivateKey.fromString(wifs[role])` call) carries a 5-line inline comment anchoring why the `fromLogin → toString → fromString` round-trip is the deliberate cost of single-source-of-truth, and naming the parity test as the regression backstop. The existing JSDoc explains the *delegation* rationale; the new inline comment explains the *round-trip* rationale so a future reader inspecting the loop body alone sees the intent.
+
+**Hold-item mapping:**
+- Round-5 item 1 (`_performUpgradeKeyRotation` direct `await import`): ✓ swapped to `loadDhive()` at `settings.js:1139`.
+- Round-5 item 2 (`deriveAllKeys` re-parse comment): ✓ inline comment added at `hive-keys.js:94` (above the `fromString` call).
+
+**Test status:**
+- `frontend/tests/unit/hive-keys.test.js`: 11/11 passing.
+- `frontend/tests/unit/pages-settings.test.js`: 63/63 passing. (Round-4's signal block reported 57/61 with 4 pre-existing failures; round-4's item 1 fix moved 1 of those to passing, and the remaining 3 were addressed during the round-4 landing cycle. Current state is fully green.)
+- Combined: 74/74 across both target test files. Other unit-test files in `frontend/tests/unit/` not re-run this round (no edits to their subjects).
+
+**Coordination with backend half:**
+- Backend half (`backend-seed-phrase-keychain-compat`) is currently in `tasks/pending/` for its own hold cycle (see `git status` at signal time — its `review/`→`pending/` rename is staged in the architect's index). Per the task header's Coordination section, archive of both halves still hangs together once backend's mirror also reaches `review/` and passes its own re-review.
