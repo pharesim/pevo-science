@@ -123,6 +123,45 @@ All four fields are REQUIRED. The `(action, root_author, root_permlink)` triple 
 
 ---
 
+### POST /api/custody/session-auth
+
+Mint a target-less session-kind fresh-auth proof via password re-verification. Light-account-only. Used by State A accounts (light + password, no ORCID) to authorize non-consent `POST /api/custody/broadcast` bundles (vote, comment, non-consent `custom_json`). The ORCID-mechanism sibling lives at `POST /api/orcid/start { mode: "session_auth" }` (see [orcid.md](orcid.md)).
+
+**Headers:** `Authorization: Bearer <jwt>` or `X-Hive-Username`, `X-Hive-Signature` (account must have `custody: "light"`)
+
+**Body:**
+
+```json
+{
+  "password": "SecurePass123"
+}
+```
+
+`password` is REQUIRED. No per-op target binding: session-kind proofs do NOT carry an `(action, root_author, root_permlink)` triple and are issued for the JWT subject only. They are admitted only on the non-consent broadcast surface; submitting one to a consent-op bundle returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "kind_mismatch"`.
+
+**Response `data`:**
+
+```json
+{
+  "fresh_auth_proof": "<single-use token>",
+  "expires_at": "2026-05-06T12:05:00.000Z",
+  "mechanism": "password"
+}
+```
+
+`fresh_auth_proof` is a single-use bearer token bound to the JWT subject (no target binding). TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request whose bundle does NOT contain a consent op.
+
+**Rate limit:** 10 requests per account per minute.
+
+**Errors:**
+- `UNAUTHORIZED` (401) — missing JWT, account not found, no password mechanism on the account (`password_hash IS NULL`, e.g. State C ORCID-only accounts; these users mint via `POST /api/orcid/start { mode: "session_auth" }` instead), or password mismatch. The "no password set" case returns the same shape as wrong-password to avoid becoming a password-existence oracle.
+- `FORBIDDEN` (403) — account has been upgraded to self-custody. Self-custody users sign non-consent ops directly via Hive Keychain and do not use this endpoint.
+- `VALIDATION_ERROR` (400) — missing or empty `password`.
+- `INTERNAL_ERROR` (500) — argon2 verification failure or unexpected error.
+- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
+
+---
+
 ### POST /api/custody/upgrade
 
 Notify the backend that the user has completed a client-side key upgrade to self-custody. The backend verifies a seed-phrase-derived-pubkey proof, deletes stored encrypted keys, and issues a new JWT. Per ARCHITECTURE.md § 6.4 the upgrade action's required re-auth is the seed-phrase-derived pubkey (not password); per § 6.5 invariant #6 the seed phrase is the upgrade proof, not a session-auth factor.
