@@ -17,9 +17,14 @@
  *       verification behavior, so the carve-out's clause-(b) refinement
  *       permits the fixture: the 401-on-missing-header gate and the
  *       username-extraction behavior are preserved; only the cryptographic
- *       signature check is bypassed. The real `verifyHiveSignature`
- *       middleware is exercised against signed requests in
- *       notifications.test.ts (the clause-(c) real-path companion).
+ *       signature check is bypassed. No real-`verifyHiveSignature`
+ *       integration test currently exists in the notifications domain —
+ *       `notifications.test.ts` also hoists `MOCK_VERIFY_SIGNATURE` and
+ *       its signed requests use the literal `'mock-sig'` header. The
+ *       SQL-shape focus alone satisfies the clause-(b) refinement here;
+ *       a real-signature companion for `/api/notifications` is a
+ *       follow-up (no separate task filed yet) and not required for the
+ *       gates this file pins.
  *   (c) Real-path companion: the envelope shape + sort-order + limit
  *       behavior is exercised against real HAF in notifications.test.ts;
  *       this file covers the SQL-shape predicates those tests cannot pin

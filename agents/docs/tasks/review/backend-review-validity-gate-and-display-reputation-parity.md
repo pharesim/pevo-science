@@ -612,3 +612,24 @@ Architect preference: (a). Filing a real-signature companion task for the notifi
 ### Re-review signal
 
 When item 1 lands, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `6bc1056`. Single-item hold; can land as one focused commit touching only `notifications-arm-sql-shape.test.ts`.
+
+---
+
+## Backend re-review signal (2026-05-16, round-6, working tree pre-commit)
+
+Round-5's sole hold item (item 1, P3) addressed in a single focused commit touching only `backend/tests/routes/notifications-arm-sql-shape.test.ts`. No behavioral change — header docstring rewrite.
+
+**Item 1 [P3]** — clause-(b) header at `notifications-arm-sql-shape.test.ts:13-22` rewritten per architect's preferred path (a). The overstated claim ("The real `verifyHiveSignature` middleware is exercised against signed requests in `notifications.test.ts` (the clause-(c) real-path companion).") is replaced with an honest acknowledgment that no real-`verifyHiveSignature` companion exists in the notifications domain — `notifications.test.ts` itself also hoists `MOCK_VERIFY_SIGNATURE` (lines 7-10) and uses literal `'mock-sig'` in every signed request (lines 33, 43, 52, 65, 74). The new wording explains that the clause-(b) refinement is satisfied here by the SQL-shape focus alone (the 401-on-missing-header gate and username-extraction behavior are preserved by the fixture; only the cryptographic signature check is bypassed). The real-signature companion for `/api/notifications` is flagged as a follow-up (no separate task filed yet per the architect's "optionally file a new task" wording and the single-line scope of this round).
+
+### Verification
+
+- `cd backend && npx tsc --noEmit`: clean (0 errors).
+- `cd backend && npx vitest run tests/routes/notifications-arm-sql-shape.test.ts` against real Postgres + Redis: 1 file passed, 3/3 tests passed. The captured-SQL canaries (INNER JOIN to `${T.comments} p`, `validPevoPaperWhere` paper-class predicate, per-arm `co.author != $1` counted occurrences) all still fire — confirming the docstring rewrite did not perturb the gate behavior the file pins.
+
+### Items NOT touched
+
+- Architect-zone carry-forwards still pending at archive:
+  - `agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407 (pre-task descriptions of unprefixed keys, numeric-string values, `active_accounts` CTE name).
+  - `agents/docs/ARCHITECTURE.md` lines 466-468 (pre-task SSoT state).
+  - NEW carry-forward from round-5: `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` clause-(b) wording refresh.
+- Real-signature integration companion for `/api/notifications` flagged in the rewritten header but not filed as a task in this commit — architect can decide at archive whether the gap warrants a standalone task or whether the clause-(b) refinement's "focus IS authentication" wording in CLAUDE.md is sufficient policy for the notifications domain (the focus here is SQL shape, not auth).
