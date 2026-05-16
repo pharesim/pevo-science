@@ -129,3 +129,44 @@ All 5 hold-block items landed in a single commit. Files touched:
 - `backend/tests/routes/search-partial-degradation.test.ts` — **item 2 (P2) test-side:** `isReviewsBranchSql` now matches the new sentinel via `sql.includes('/* search.reviews.branch */')`; the discriminator constant is named `REVIEWS_BRANCH_SENTINEL` and its production cross-reference is documented in the helper comment. **Item 3 (P3):** canary 4's queryParams shape assertions extended to include `source` and `includeRetracted` (both with their request-time default values: `undefined` and `false`). **Item 4 (P3):** file header prose at line 27-34 rewritten to accurately describe the implicit real-path companion (no-type-param requests default to `type=all`, so existing happy-path specs cover the integrated path without an explicit `?type=all` literal). **Item 5 (P3):** `mockPapersBranchThrows` and `mockReviewsBranchThrows` now return one synthetic surviving-branch row each (`SYNTHETIC_PAPER_ROW` and `SYNTHETIC_REVIEW_ROW`, declared at module scope with shapes matching the helper dataResult mappers); canaries 1 and 2 assert `res.body.data.length === 1`, `data[0].type` matches the surviving branch, and `data[0].author` matches the synthetic row. The pre-existing data-flow regression that would have replaced `paperResult?.rows ?? []` with an unconditional `[]` is now caught.
 
 `npm run lint` clean (pre-existing seed-phrase.ts warnings only); `npx tsc --noEmit` clean. Vitest deferred to the parent's serialized run after all in-flight backend tasks land.
+
+## Architect re-review (2026-05-16, round-2 → round-3) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `882f6ed` with 8 personas (correctness opus; testing, maintainability, project-standards, security, reliability, kieran-typescript, ce-learnings-researcher sonnet). `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md. `ce-adversarial-reviewer` skipped (production change 17 lines, error-handling/logging only; below the 50-line threshold). Cluster-3 architect triage produced 1 item to address.
+
+### Items to address
+
+1. **(P3 testing+correctness, anchor 100 cross-reviewer)** Canary 4 queryParams shape canary comment overstates coverage. At `backend/tests/routes/search-partial-degradation.test.ts:245-247`, the header comment claims the canary asserts "every field of the route's `queryParams` object." The production `queryParams` object at `backend/src/routes/search.ts:309` has 8 fields: `{ type, discipline, language, source, includeRetracted, sort, limit, offset }`. The canary asserts 6 (added `source` + `includeRetracted` in round-2 alongside the pre-existing `type` + `discipline` + `language` + `sort`); `limit` and `offset` are NOT asserted. A future refactor that strips `limit` or `offset` from the warn payload would not be caught — and more importantly, the "every field" claim sets up a false-confidence trap for the next reviewer.
+
+   Architect-decision baked into the fix: the named regression class is "new user-filter added but not threaded into the warn payload." `limit` and `offset` are pagination internals (computed by `parsePageLimit`, not user filter knobs), so extending assertions to cover them would be preemptive hardening for the wrong axis. The right fix is to tighten the comment to accurately scope what the canary covers, NOT to extend the assertions.
+
+   Fix: rewrite the header comment at `backend/tests/routes/search-partial-degradation.test.ts:242-247` (or wherever the canary 4 lead-in comment lives) to scope the canary precisely:
+
+   ```ts
+   // Pin: every user-filter field of the route's `queryParams` warn payload
+   // (type, discipline, language, source, includeRetracted, sort). Pagination
+   // fields (limit, offset) are present in the production payload but out of
+   // scope for this canary — they are pagination internals, not user filters,
+   // and a future refactor splitting them out is not the "new filter not
+   // threaded" regression class this canary is meant to catch.
+   ```
+
+   No assertion changes needed.
+
+### Items dismissed during architect triage
+
+- (P3 testing+maintainability+kieran-typescript T-02/MAINT-01/KT-R2-01, multi-reviewer) Sentinel string duplicated between production `branchSentinel` (function-local const in `searchReviewsFromHaf`) and test `REVIEWS_BRANCH_SENTINEL` (module-scope const) — dismissed. Drift is self-detecting (a rename to one side without the other breaks the mock discriminator visibly via test failure, not silent pass). Exporting the constant would tighten coupling but the current failure mode is already loud. N=2 sites with self-detecting drift does not earn an exported-constant abstraction.
+- (P3 project-standards PS-01, anchor 90) Re-review signal heading format `(2026-05-16, round-2)` vs backend-CLAUDE.md spec `(<date>, working tree or commit SHA):` — dismissed as cosmetic (same dismissal as typeof-narrow-sweep round-3 hold; systemic pattern across backend's session, worth a backend-protocol nudge but not held on any individual task).
+- (Reliability residual RR-1) `instanceof Error` returns `'Unknown'` for cross-realm errors or non-Error throws — theoretical only; both `pool.query` calls are in the main V8 realm, and pg/HAF only throw Error subclasses. Behaviorally identical to the prior cast for practical paths; the `err` field still flows through pino's redactor regardless.
+- (Reliability residual RR-2) Log-storm risk on sustained HAF outage — already addressed in round-1 (15s cache TTL bounds the storm window per unique queryParams combination); not re-raised. Consistent with `feedback_pevo_logging_minimal`: the 2 warn events ARE the explicit acceptance criterion, not log-volume bloat.
+- (Testing TG-01) `errClass: 'Unknown'` branch untested — preemptive per `feedback_dismiss_preemptive_test_hardening`. Production HAF/pg callers always throw Error subclasses; the fallback branch is unreachable in practice.
+- (Security residuals) No exploitable vulnerabilities; sentinel comment is not an injection vector (hardcoded prefix, not user-input concatenated, never echoed in error responses); queryParams payload contains no raw `?q=` user text, only validated enums/integers — no GDPR/CNPD concern at Portugal jurisdiction.
+- (Correctness residual) Synthetic-row canaries don't assert `is_accredited`, `paper_author`, `paper_permlink`, `snippet`, `created` flow — acceptable per clause (c) orthogonality (the real-HAF happy-path in `search.test.ts` covers the SearchRow mapper path independently).
+
+### Items handed to separate architect actions (not held on this task)
+
+- Vitest deferred per signal block; verify green on the parent serialized run before archive.
+
+### Re-review signal
+
+When the comment fix above lands, `git mv` this file back to `tasks/review/`. Round-3 architect re-review scopes `/ce-code-review` to the round-3 commit. Anchor: comment-only change at one test-file location; trivial single commit.
