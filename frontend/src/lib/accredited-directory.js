@@ -91,6 +91,17 @@ export function applyHiveChangePrefill(row, directory) {
 // user typed BEFORE the fetch returned. We only write when row.orcid is
 // blank — a non-blank value is treated as user intent and left alone.
 // See task ITEM 2.
+//
+// Reactivity note: in-place `row.orcid` mutation is safe under Alpine 3's
+// proxy. Alpine's reactivity engine is @vue/reactivity's `reactive()`
+// (alpinejs/src/index.js:40-42), which lazily deep-proxies nested objects
+// on access — including objects pushed into reactive arrays AFTER init.
+// The `for...of` below traverses the array through the proxy, so each
+// `row` IS the reactive-wrapped object; setting `row.orcid` triggers any
+// subscribed `:value="ca.orcid"` effects. Verified 2026-05-16 against
+// @vue/reactivity directly with the push-after-init then in-place-mutate
+// pattern. No `.slice()` workaround needed at the publish.js / edit.js
+// call sites.
 export function applyAccreditedPrefill(rows, directory) {
   if (!Array.isArray(rows)) return;
   for (const row of rows) {

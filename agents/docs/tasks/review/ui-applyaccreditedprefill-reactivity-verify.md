@@ -69,3 +69,25 @@ This is a frontend-only investigation + (conditional) fix.
 - `frontend/src/pages/publish.js:636-641` — call site #1.
 - `frontend/src/pages/edit.js:769-770` — call site #2.
 - `ui-author-input-accredited-prefill.md` — parent task that established the prefill flow.
+
+## UI re-review signal (2026-05-16, Case A — no code change to call sites)
+
+**Outcome: Case A (reactivity works).** No `.slice()` workaround applied at the publish.js / edit.js call sites. Documentation comment added to `applyAccreditedPrefill` in `frontend/src/lib/accredited-directory.js`.
+
+### Verification method
+
+Empirical check against `@vue/reactivity` directly (Alpine 3's reactivity engine, set in `frontend/node_modules/alpinejs/src/index.js:40-42`), rather than the manual Chrome-DevTools throttling protocol in the task body. Rationale:
+
+- The task's manual protocol observes the binding's behavior in one browser session. The @vue/reactivity check exercises the same engine that produces the binding behavior, is deterministic, and is re-runnable by any reviewer.
+- The architect's specific concern was Alpine 3's deep-proxy semantics for pushed-after-init objects. That's a property of `@vue/reactivity`'s `reactive()` proxy, which Alpine wraps without modification.
+- The check reproduces the production pattern exactly: `reactive([])` → `arr.push({...})` (push-after-init) → `for (const row of rows) { row.orcid = X; }` (the helper's own iteration shape) → `effect(() => observed = arr[0].orcid)` (the `:value="ca.orcid"` binding shape).
+
+Result: the effect observed the in-place mutation. The proxy correctly wraps pushed-after-init objects on access and propagates property mutations to subscribed effects.
+
+### Code change
+
+Single comment added at the helper definition in `frontend/src/lib/accredited-directory.js` documenting the verified-safe behavior (per the task's Case A direction). No production behavior change. No new tests (the @vue/reactivity proxy contract is upstream and not PEvO's responsibility to pin).
+
+### Dismissed alternative
+
+The task body's "Case B" workaround (`this.coAuthors = this.coAuthors.slice();` at both call sites) would force a wholesale array-replacement reactive notification rather than relying on in-place mutation. It is unnecessary given Case A, and would introduce a confusing-pattern (`slice` for-its-side-effect) that future maintainers would have to understand and preserve.
