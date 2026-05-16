@@ -76,3 +76,31 @@ Mechanics:
 - `frontend/src/pages/settings.js` — secondary audit site for `mnemonicToSeedSync` consumers.
 - `dhive.PrivateKey.fromLogin` — the canonical Hive master-password → WIF derivation, used by every Hive ecosystem app including Hive Keychain (verified 2026-05-16: `typeof PrivateKey.fromLogin === 'function'` in `@hiveio/dhive`).
 - Architect re-review of `ui-keychain-warning-copy-or-retry-action` 2026-05-16 — discovered the algorithm mismatch and scoped the migration via HAF query of `pevo.onboarding` + `pevotest.admin`.
+
+## UI signal block (2026-05-16, commit `6660694`)
+
+**Landed at:** `6660694 ui(seed-phrase-keychain-compat): swap derivation to PrivateKey.fromLogin`
+
+**Files changed (4):**
+- `frontend/src/hive-keys.js` — `deriveHiveKeys` now async, returns per-role WIFs via `PrivateKey.fromLogin(account, mnemonic, role)`. `deriveHivePublicKeys` takes WIFs (not hex seeds). `deriveAllKeys` rebuilt on the same primitive. Dropped `mnemonicToSeedSync` re-export and the `@noble/hashes` HMAC imports.
+- `frontend/src/pages/settings.js` — three callsites (`_signUpgradeProof`, `_performUpgradeKeyRotation`, `_performKeychainImport`) switched to the new API. `PrivateKey.fromSeed(hex)` → `PrivateKey.fromString(wif)` for signing; raw WIF used directly in the Keychain-import loop. `mnemonicToSeedSync` import removed.
+- `frontend/tests/unit/hive-keys.test.js` — tests rewritten for WIF-returning API. Inline snapshots regenerated via `vitest -u` (these now pin the post-migration `fromLogin` values). Added parity test asserting `deriveAllKeys[role].private === PrivateKey.fromLogin(account, mnemonic, role).toString()` for every role.
+- `frontend/tests/unit/pages-settings.test.js` — `hive-keys.js` mock returns WIFs (shared `STUB_WIFS` constant). `@hiveio/dhive` mock now supports `fromString`, `createPublic`, `sign`, `cryptoUtils.sha256` (these were missing pre-refactor too, but the new code path made them load-bearing). Two tests that spied on `mnemonicToSeedSync` (frame-pop ordering + 3rd-call throw) refactored to spy on `deriveHiveKeys` with equivalent semantics.
+
+**AC mapping:**
+- AC #1 (`hive-keys.js` rewrite): ✓ `deriveHiveKeys` now uses `PrivateKey.fromLogin`; `validateMnemonic` UX guardrail preserved.
+- AC #2 (`settings.js` audit): ✓ All 5 `mnemonicToSeedSync` usages in `settings.js` were feeding `deriveHiveKeys` only — no other consumer of the raw BIP39 seed bytes exists in `frontend/src/`. Import and re-export dropped.
+- AC #3 (parity test): ✓ Added at `frontend/tests/unit/hive-keys.test.js` (last `it()` in the `deriveAllKeys` describe block).
+- AC #4 (re-generate pinned key strings): ✓ Only pinned values were the two inline snapshots in `hive-keys.test.js`; regenerated. Docblock now references `PrivateKey.fromLogin` as the algorithm. No other pinned WIFs/STM pubkeys exist in `frontend/tests/`.
+- AC #5 (no migration): ✓ Per task scope.
+
+**Test status:**
+- `frontend/tests/unit/hive-keys.test.js`: 11/11 passing (incl. parity test).
+- `frontend/tests/unit/pages-settings.test.js`: 57/61 passing. The 4 remaining failures are **pre-existing** test/code mismatches unrelated to this refactor — `_clearSensitiveUpgradeState` doesn't wipe `upgradePassword` while the test expects it to (2 failures); the `409 ALREADY_UPGRADED` catch-routing test expects `partialApplyFailed` but the code emits `alreadyUpgraded` (1 failure); the `deriveHiveKeys rejects pre-loop` test expects `done` but the 3rd `deriveHiveKeys` call is inside `_signUpgradeProof`, so the throw routes to the catch handler before `_performKeychainImport` runs (1 failure — this test's structure was wrong about which call would throw pre-refactor too). Pre-refactor baseline was **19/61 failing** in this file; this refactor improves to 4/61.
+- `frontend/tests/unit/`: 1117/1129 passing overall; the 8 non-pages-settings failures are in `components-comment-composer.test.js`, `components-vote-buttons.test.js`, `components-vouch-section.test.js` — "Not logged in" auth-mock issues unrelated to seed-phrase derivation.
+- `npm run build`: ✓ clean.
+
+**Coordination with backend half:**
+- Backend half (`backend-seed-phrase-keychain-compat`) is still in `tasks/pending/` at this writing — backend agent has not landed its mirror yet. Per the task's "Coordination" section, architect should hold archive of both halves until the backend mirror also reaches `review/` and passes its own review.
+- Until backend lands, the on-chain pubkeys broadcast by this frontend (now `fromLogin`-derived) will not match the recovery WIFs the unchanged backend would derive from the same mnemonic. Any new light-account signup against `main` after this commit but before the backend mirror lands will have a split-algorithm account. Suggest gating new signups (or holding the merge) until backend lands.
+- `ARCHITECTURE.md` update describing the new derivation: deferred to architect at dual-archive time per task header.
