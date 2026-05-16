@@ -114,3 +114,50 @@ Round-1 hold items 1-6 landed.
 - Item 6 (P3) — dropped the dead `freshAuthMechanism === null` arms in `backend/src/routes/custody.ts:623-628` (`auditExtras` constructor) and `:632-637` (`logBroadcastAttempt('success', ...)` call). Both consent (line 372) and non-consent (line 399) paths now universally set `freshAuthMechanism = result.mechanism` upstream; both consume helpers early-return 401/403 on missing/invalid proof. Inlined the populated branch, retyped `auditExtras` from `CustodyAuditExtras | undefined` to `CustodyAuditExtras`, and added an inline note pointing forward to the universal-population invariant for the sibling `backend-custody-audit-pii-annotation` migration-006 rewrite. Coordinates with that sibling task (dead-arm cleanup lands first, then the COMMENT rewrite there documents the new semantics).
 
 `npm run lint` clean (only the two pre-existing `seed-phrase.ts:26-27` `no-explicit-any` warnings, unrelated); `npx tsc --noEmit` clean. Vitest not run in worktree (parent serializes).
+
+---
+
+## Architect re-review (2026-05-16, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `1437e41` (10 reviewers: correctness/security/adversarial on Opus; rest on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). All 6 round-1 hold items land cleanly (verified). Four items held; one item routed to a new task; one item accepted as residual.
+
+### Items held (must fix before archive)
+
+**1. (P2, conf 100 — cross-reviewer-promoted: maintainability M1 + learnings-researcher) Task-slug citations and bare line-number anchors in production code comments.** Three sites in this round's diff + sibling code: `backend/src/lib/fresh-auth.ts:156` (`FreshAuthKind` docstring "See BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH for the State C / non-consent broadcast path"); `backend/src/routes/custody.ts:628` (the hold #6 banner block, plus bare line-number citations `(line 372)` and `(line 399)` in the same paragraph); `backend/src/routes/orcid.ts:550` (the `session_auth` case body's `BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: target-less session proof…` comment).
+
+  Two distinct conventions violated:
+  - `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` — slug becomes a dead pointer on archive (task moves into `tasks-archive.md` which is trimmed to 250 lines).
+  - `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` — line-number anchors rot on any insertion above the cited range.
+
+  Fix shape: replace each citation with a behavioral-invariant anchor.
+  - `fresh-auth.ts:156`: drop the slug suffix; the durable invariant ("State C ORCID-only accounts have no per-op target to bind a consent-op-kind proof to; session-kind closes the JWT-only takeover gap per ARCH.md § 6.5 invariant #1") is the right wording.
+  - `custody.ts:628`: rewrite the comment block to anchor on the consume-helper invariant ("`freshAuthMechanism` is non-null on the success path: `consumeFreshAuthToken` and `consumeSessionFreshAuthToken` early-return 401/403 on missing/invalid proof, so whichever upstream branch ran has assigned `result.mechanism` before reaching this constructor"). Drop both bare line-number citations; reference the consume helpers by name.
+  - `orcid.ts:550`: rewrite to describe what the `session_auth` case does ("target-less session-kind proof issuance — used by the non-consent broadcast surface where per-op target binding is not required"). Drop the slug prefix.
+
+**2. (P2, conf 75, maintainability M2) `KEY_PREFIX` comment history paragraph is migration-era narrative.** `backend/src/lib/fresh-auth.ts:143-151` — four of six sentences describe the rename history ("historical name was…", "operator inspections saw…"). Once the 5-minute Redis TTL clears all old-prefix keys (within minutes of deploy), this history has zero operational value and misleads future maintainers into thinking the rename is an ongoing concern. The durable invariant fits in two sentences: kind-neutral prefix; discrimination is by the `kind` JSON field inside the stored value, not by key namespace. Git history already records the rename rationale permanently.
+
+  Fix shape: trim to the two-sentence invariant. Drop the historical-name paragraph.
+
+**3. (P2, conf 75, kieran-typescript KT-1) `VALID_MODES` typed as `ReadonlySet<string>` rather than `Set<OrcidMode>` — `as OrcidMode` cast is load-bearing, not redundant.** `backend/src/routes/orcid.ts:89`. The round-1 implementer signal framed `parsed.mode as OrcidMode` (line 446) as "redundant after the `VALID_MODES.has()` guard"; that's only true if TypeScript can narrow `parsed.mode` from `string` to `OrcidMode` via the set's element type, which requires `Set<OrcidMode>` (not `Set<string>`). With the current typing, a future `OrcidMode` literal added to the union but missed in the `VALID_MODES` array would silently reject valid new modes with a 400 and TypeScript would emit no diagnostic.
+
+  Fix shape: `const VALID_MODES = new Set<OrcidMode>(['signup', 'login', 'accredit', 'link', 'fresh_auth', 'session_auth']) satisfies ReadonlySet<OrcidMode>`. This (a) makes a future OrcidMode-without-VALID_MODES-update a compile error, (b) lets TypeScript narrow `parsed.mode` post-guard so the `as OrcidMode` cast can be removed, and (c) keeps `satisfies` so the inferred type stays as the literal-element-typed set.
+
+**4. (P2, conf 75, testing T1) No test pins the new `orcid.session_auth.db_failed` event slug or the 500 response from `handleSessionAuth`'s inner try/catch.** `backend/tests/routes/orcid.test.ts` `session_auth` describe block (around lines 3158-3265) covers four sibling branches (happy path, orcid-mismatch 403, null-orcid 403, missing-row 401), but no test drives `appQueryMock` to reject for the `SELECT orcid FROM accounts WHERE username = $1` query. A mutation removing the inner try/catch reverts to the pre-r2 bare `await pool.query`; the outer `/callback` catch still returns 500 INTERNAL_ERROR, so the status assertion passes — only the discriminated slug regresses, invisibly. The slug discriminator is exactly what item 4 was added for; without a canary it can silently regress.
+
+  Fix shape: add a test in the `session_auth` describe block that stubs `appQueryMock` to reject for the orcid SELECT and asserts (a) status 500, (b) error code INTERNAL_ERROR, (c) logger.error called with `event: 'orcid.session_auth.db_failed'`. Pattern matches the `orcid.callback.failed` slug assertion already at `orcid.test.ts:3462`.
+
+### Items dismissed during architect triage
+
+- **(P3, conf 100, adversarial + security residual) `KEY_PREFIX` rename deploy-boundary orphan window** — tokens issued pre-deploy under `:fresh_auth:consent_op:` become unreadable post-deploy. Up to 5-min UX disruption (spurious 401 mid-ceremony) per deploy. Accepted residual for single-instance beta; bounded by FRESH_AUTH_TTL_SECONDS; no security weakening (orphaned tokens are unconsumable → no replay vector). Memory `project_single_instance_only` makes deploy-window-orphan UX an acceptable cost.
+
+### Routed to follow-up tasks (not held here)
+
+- **(P1, conf 75, adversarial adv-1) Concurrent dual-consume race on fresh-auth tokens.** `backend/src/lib/fresh-auth.ts:478-507` (`consumeFreshAuthToken`) and `:660-689` (`consumeSessionFreshAuthToken`). Redis `GETDEL` is atomic per Redis, but the local `memStore.delete(token)` fires only AFTER `await redis.getdel` resolves. Two concurrent consumes can both find the still-populated memStore backup → both return valid → both broadcasts proceed. Pre-existing of round-2 (round-2 only copies the dual-write comment); newly visible from this review. Filed as `backend-fresh-auth-consume-redis-memstore-race.md` in `tasks/pending/` for separate review against the consume helpers' invariant claims. NOT held on this task — the round-2 diff doesn't touch the consume code.
+
+### Architect-zone work landing at archive (not held)
+
+- `agents/docs/api-contracts/orcid.md` — `session_auth` mode error table currently lists only 400, 401, 403, 503. Item 4's `handleSessionAuth` inner try/catch now emits 500 INTERNAL_ERROR `'Session authentication failed'` on DB failure. Add the 500 row to the per-mode error table. Will land in the same commit that archives this task.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
