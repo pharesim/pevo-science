@@ -77,3 +77,39 @@ Mocking `import('../editor.js')` may require esm-stub or vitest-mock-import patt
 ## Priority rationale
 
 P2 because the construct is verified (julik confidence 75), the fix is trivial (1 line per call site), and the failure mode is silent (leaked editor instances bloat memory across a session and may produce confusing dev-console errors). Not P1 because the trigger (fast navigation during page mount) is uncommon in steady-state usage.
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES — scope broadening (round-1 fix landed in `12c610e` not yet architect-reviewed for round-1, AND a sibling task surfaced an adjacent failure mode that must land in the same patch):
+
+Sibling task `ui-edit-loadpaperdata-concurrent-retry-guard` (archived 2026-05-16) was reviewed and surfaced finding `julik-frontend-races JFR-R4-001` (P2, confidence 100): the destroyed-guard from round-1 closes the `destroy()`-during-`_mountEditors()` race, but a **different shape** of the same `_mountEditors()` lifecycle is still open. Round-1 round was scoped to the unmount-during-mount race; this round broadens scope to also cover the **mount-during-mount** race:
+
+**The newly-surfaced failure mode:** in `frontend/src/pages/edit.js`, `loadPaperData()` clears its `_loadInFlight` mutex in `finally` BEFORE `_mountEditors()` actually starts executing (it's deferred via `$nextTick`, then `await import('../editor.js')`). A Retry click that lands AFTER the `finally` runs but BEFORE the editor.js import resolves passes the `_loadInFlight` guard, fires a fresh fetch, and schedules a second `_mountEditors()`. Both `_mountEditors()` invocations eventually call `createEditor()` on the same `$refs.abstractEditor` / `$refs.bodyEditor`. Each call overwrites `this._abstractEditor` / `this._bodyEditor`. The prior instances are orphaned (never `.destroy()`-ed). Same leak class as the destroyed-during-mount failure but a different trigger: concurrent mount-during-mount.
+
+**Fix direction (in addition to the `_mounted` guard already landed):** Add an idempotency guard at the top of `_mountEditors()`:
+
+```js
+async _mountEditors() {
+  if (this._editorsInitialized) return;          // ← add this (and a sibling reset in destroy)
+  this._editorsInitialized = true;
+  const { createEditor } = await import('../editor.js');
+  if (!this._mounted) {                          // already landed
+    this._editorsInitialized = false;            // ← reset on the early-return path so a later remount can re-init
+    return;
+  }
+  this._abstractEditor = createEditor(this.$refs.abstractEditor, ...);
+  this._bodyEditor = createEditor(this.$refs.bodyEditor, ...);
+}
+```
+
+Apply to both `frontend/src/pages/edit.js:_mountEditors` and `frontend/src/pages/publish.js:_mountEditors`. Reset `_editorsInitialized = false` in `destroy()` (or wherever `_teardownTimers()` flips `_mounted`) so a legitimate later remount (e.g., live-reload, navigation back) can re-mount editors fresh.
+
+**Test addition (alongside the round-1 destroyed-during-mount tests):** in `frontend/tests/unit/pages-edit.test.js` and `frontend/tests/unit/pages-publish.test.js`, add a spec to the existing `_mountEditors teardown-during-init guard` describe block (or a sibling block):
+
+- **Concurrent `_mountEditors` calls are idempotent:** call `_mountEditors()` twice in quick succession (synchronously, before the first dynamic import resolves). Flush the import queue. Assert `createEditor` was called exactly once per editor ref (`vi.mocked(createEditor).mock.calls.length === 2`, not 4 — one for abstract, one for body, NOT doubled). Assert `_abstractEditor` and `_bodyEditor` are the editor instances from the FIRST call, not orphaned-and-replaced.
+
+Mutation-kill: removing `if (this._editorsInitialized) return;` makes `createEditor` get called 4 times and the second pair of instances overwrites `_abstractEditor` / `_bodyEditor`.
+
+**Why fold this into the existing task vs file separately:** the two guards stack and co-locate. A future maintainer touching `_mountEditors`'s control flow benefits from seeing both guards in one diff. The user's triage on the retry-guard review chose this routing (option: "Fold into existing `ui-mount-editors-destroyed-guard`") over filing a separate task.
+
+When all items above land, `git mv` this file back to `tasks/review/`. The next architect re-review will cover BOTH the round-1 destroyed-during-mount guard (commit `12c610e`) and the newly-added idempotency guard in one pass.
+
+Cross-references: archived task `ui-edit-loadpaperdata-concurrent-retry-guard` (source of the broadening); finding julik `JFR-R4-001` in this session's archive notes; implementer commit `12c610e` (round-1 destroyed-guard).
