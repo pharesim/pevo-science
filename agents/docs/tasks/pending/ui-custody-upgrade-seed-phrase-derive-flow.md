@@ -164,3 +164,41 @@ Round-2 hold-block fixes landed. Backend B1 (`backend-custody-upgrade-limiter-sk
 **Tests:** `pages-settings.test.js` 63/63, new `pages-settings-custody-upgrade-round2.test.js` 22/22, full unit suite 1153/1153.
 
 **i18n:** new key `upgrade.proofRejected`, updated `upgrade.backendTimeout` copy; 15 non-English stubs added; STUBS.md sweep entry `### Added 2026-05-17 (UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW)`.
+
+## Architect re-review (2026-05-17) — HELD PENDING FIXES (round-3):
+
+Reviewed via `/ce-code-review` against commits `0f23539..5644e8a` with 10 personas (correctness/security/adversarial Opus; testing/maintainability/project-standards/julik-frontend-races/reliability/previous-comments/learnings-researcher Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 8 round-2 hold items landed, with the implementer claims accurate against the source. Backend B1 (`backend-custody-upgrade-limiter-skip-failed`) verified archived (`skipFailedRequests: true` at `backend/src/routes/custody.ts:52`). Correctness, security, testing, api-contract, and project-standards clean on the round-2 changes. Five residual items surfaced from the re-review.
+
+### Items to address
+
+**1. P1 — Strip task/round/finding-number references from production code comments.** maintainability MAINT-01 (conf 90). `settings.js` has at least 9 such comments. Line 117 `<!-- See round-7 hold item #2. -->` is either a typo for round-2 or references a nonexistent review round (actively misleading). Other sites: lines 71, 644, 857, 945, 957, 974, 1027, 1071, 1379. Per root CLAUDE.md "Don't reference the current task, fix, or callers" — these belong in commit messages, not code. Bulk-strip the references; if the rationale survives without them (durable invariant), keep that. The 644 migration comment overlaps with the non-consent task's sister hold-block (item #6 there); fix once across both passes. Fix or remove line 117's "round-7" reference specifically — the surrounding paragraph already explains the 503/backendUnavailable retry logic.
+
+**2. P1 — `beforeunload` double-registration on Alpine re-init.** julik JFR-1 (conf 75). `init()` assigns a new arrow function to `this._beforeUnloadHandler` and registers it every time it is called. `destroy()` only removes whichever reference `_beforeUnloadHandler` currently points to. Alpine sometimes re-instantiates components (x-data scope changes, route re-mount); a second `init()` without an intervening `destroy()` orphans the first handler in `window`'s listener list — it carries a closure over the dead component scope and fires for the tab's lifetime. Fix: deregister-before-reassign at the top of `init()`. Three lines.
+
+**3. P2 — `_handlePostBroadcastError` missing `_mounted` guard.** julik JFR-2 (conf 75). Both `executeUpgrade` and `retryUpgradeBackend` reach the helper's catch after at least one `await`. If the component is unmounted during that suspension, the helper unconditionally writes `upgradeError`, `upgradeErrorKey`, `upgradePhase`, and sometimes calls `_clearSensitiveUpgradeState()` on the dead object. No singleton store is mutated so this cannot brick the account, but it is an inconsistency with the established guard pattern at lines 915/939/999/1009. Add `if (!this._mounted) return;` at the top of `_handlePostBroadcastError`.
+
+**4. P2 — `retryUpgradeBackend` gate placement + comment.** julik JFR-3 (conf 50) + previous-comments PC-2 (conf 75) → cross-reviewer promoted to anchor 100. The comment overstates the gate as "first synchronous statement," but the phase flip is actually the 6th statement: a const `newSeedPhrase` snapshot + a defensive null-guard early-return run before the flip. Single-threaded JS makes the gap unreachable today, but the divergence from "mirror `executeUpgrade`" prescribed in round-2 #4 becomes a real race when a future refactor inserts an `await`. Fix: restructure to mirror `executeUpgrade` (phase flip immediately after the two getter-style guards). The defensive null-guard can stay after the flip — if `newSeedPhrase` is empty the flip lands and the subsequent early-return moves the phase to a terminal state via the existing path.
+
+**5. P2 — `backendTimeout` copy doesn't tell user which seed to use.** adversarial adv-r2-5 (conf 80). Round-2 #6's preserve-mnemonic decision is correct, but the "sign out and back in to check your account state" copy doesn't disambiguate between the OLD seed (for the original light account) and the NEW seed (post-rotation). A user re-trying with the wrong seed corrupts further. Tighten the copy to name the new seed phrase explicitly. en.json key `upgrade.backendTimeout`; 15 non-English stubs to re-touch (the same `upgrade.backendTimeout` stub set the round-2 STUBS.md entry already documents — add a fresh sweep entry under `### Updated 2026-05-17` if updating in place).
+
+### Items NOT addressed in this round-3 hold (filed as separate follow-up tasks)
+
+- **adversarial adv-r2-3 (P1, conf 85)** — `beforeunload` doesn't fire on SPA-internal navigation; mid-broadcast route swap bricks silently. Filed as `tasks/pending/ui-mid-broadcast-spa-navigation-guard.md`. Router-level guard is architecturally separate from `beforeunload`.
+- **adv-9 byte-equality test (P2, conf 90)** — `backend/src/routes/custody.ts:984` `buildCustodyUpgradeChallenge` confirmed non-exported. Filed as `tasks/pending/backend-build-custody-upgrade-challenge-export.md`; the UI byte-equality test follows once the export lands.
+
+### Dismissed at architect triage (no further action)
+
+- **adversarial adv-r2-1 (P0, conf 75)** — clock-skew warn-only doesn't prevent dead-RTC bricking. Round-1 architect hold explicitly authorized warn-only as the fallback when no `GET /api/time` endpoint exists; backend follow-up remains the right path. Already-accepted trade-off.
+- **adversarial adv-r2-2 (P1, conf 90)** — composition failure budget=2 + warn-only #1. Same root cause as adv-r2-1; backend `GET /api/time` resolves both.
+- **maintainability MAINT-02 (P2, conf 80)** — retryability string literals at 3 call sites without extracted constants. Low-impact, no rot incident yet; sync burden is small.
+- **reliability R1 (P2, conf 75)** — `retryUpgradeBackend` phase flip after null-guard. Subsumed by item #4 (the structural fix closes both).
+- **previous-comments PC-3 (P2, conf 85)** — helper signature `(err, {broadcastLanded, logTag})` diverges from prescribed `(err, {wipe})`. Every reviewer agreed the implemented signature is semantically superior — `broadcastLanded` is the correct discriminator since wipe varies per sub-case. Architect's round-2 "suspicious if signatures diverge" flag clears on inspection.
+- **adversarial adv-r2-6/7/8 (P2)** — test gaps for retry-budget exhaustion-reset, destroy-during-upgrade, concurrency-gate parameterized over proofRejected. Preemptive test hardening per `feedback_dismiss_preemptive_test_hardening`.
+- **P3 batch** — correctness-1/2/3 (spec-vs-impl deviations, no functional impact), reliability R2/R3 (catch-all wipe documentation, 503 retry bound — carry-forward exists), adv-r2-4 (bfcache restore), adv-r2-9 (counter-increment edge case).
+
+### Path to archive
+
+1. Items #1–#5 land.
+2. Re-review scoped to the round-3 diff against round-2 HEAD.
+
+Cross-task: `/ce-compound` candidate flagged by implementer in the non-consent task (Storage.prototype.removeItem jsdom mocking pattern) confirmed by learnings-researcher as having no existing entry; architect will authorize after the sister task's round-3 lands.
