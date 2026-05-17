@@ -609,22 +609,20 @@ export function initSettingsPage() {
       // chain account. Mirrors the beforeunload deregister-before-reassign
       // pattern above so Alpine re-instantiation doesn't double-register.
       const router = Alpine.store('router');
-      if (router && typeof router.registerNavigationGuard === 'function') {
-        if (this._navigationGuard) {
-          router.unregisterNavigationGuard(this._navigationGuard);
-          this._navigationGuard = null;
-        }
-        this._navigationGuard = () => {
-          if (this.upgradePhase !== 'upgrading') return true;
-          if (typeof window === 'undefined' || typeof window.confirm !== 'function') {
-            // No confirm prompt available; fall back to block (safer than
-            // silently allowing nav and bricking the account).
-            return false;
-          }
-          return window.confirm(this.$t('upgrade.navigationGuardConfirm'));
-        };
-        router.registerNavigationGuard(this._navigationGuard);
+      if (this._navigationGuard) {
+        router.unregisterNavigationGuard(this._navigationGuard);
+        this._navigationGuard = null;
       }
+      this._navigationGuard = () => {
+        if (this.upgradePhase !== 'upgrading') return true;
+        if (typeof window === 'undefined' || typeof window.confirm !== 'function') {
+          // No confirm prompt available; fall back to block (safer than
+          // silently allowing nav and bricking the account).
+          return false;
+        }
+        return window.confirm(this.$t('upgrade.navigationGuardConfirm'));
+      };
+      router.registerNavigationGuard(this._navigationGuard);
 
       // Check if returning from ORCID link callback
       const orcidLinked = localStorage.getItem('pevo_orcid_link_complete');
@@ -663,10 +661,7 @@ export function initSettingsPage() {
       // this, an unmounted component's closure stays registered on the
       // router store and continues to block navigation forever.
       if (this._navigationGuard) {
-        const router = Alpine.store('router');
-        if (router && typeof router.unregisterNavigationGuard === 'function') {
-          router.unregisterNavigationGuard(this._navigationGuard);
-        }
+        Alpine.store('router').unregisterNavigationGuard(this._navigationGuard);
         this._navigationGuard = null;
       }
       this._teardownTimers();

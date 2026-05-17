@@ -98,7 +98,11 @@ const mockAuthStore = {
   _startAccreditationPolling: vi.fn(),
   loginFromResponse: vi.fn(mockLoginFromResponse),
 };
-const mockRouterStore = { navigate: vi.fn() };
+const mockRouterStore = {
+  navigate: vi.fn(),
+  registerNavigationGuard: vi.fn(),
+  unregisterNavigationGuard: vi.fn(),
+};
 const mockToastStore = { show: vi.fn() };
 
 vi.mock('alpinejs', () => ({
