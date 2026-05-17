@@ -248,5 +248,93 @@ describe('accreditationVerifyPage', () => {
       expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
       warnSpy.mockRestore();
     });
+
+    // UI-ACCREDITATION-VERIFY-RETRIABLE-HANDLING round-2 hold item 1:
+    // Concurrent _verify() flights race on shared state. The generation
+    // counter bumped synchronously at the top of _verify() captures into the
+    // .then/.catch closures so a stale loser's resolution bails before
+    // overwriting the winner's state. The user-facing failure shape this
+    // closes: first verify resolves with success AFTER the second verify
+    // overwrites with retriable_error — the success state must survive.
+    it('concurrent _verify() flights: stale resolver does not overwrite newer flight state', async () => {
+      // First call (flight A) returns a promise we resolve manually after
+      // flight B has already landed its retriable_error rejection. Without
+      // the generation guard, flight A's late success would overwrite
+      // flight B's state. With the guard, flight A's .then bails on
+      // generation mismatch and flight B's state stands.
+      let resolveA;
+      mockVerifyAccreditation
+        .mockReturnValueOnce(new Promise((resolve) => { resolveA = resolve; }))
+        .mockRejectedValueOnce(
+          makeApiError('ACCREDITATION_GATE_UNAVAILABLE', { details: { retriable: true } })
+        );
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init(); // dispatches flight A, _verifyGeneration === 1
+      expect(comp.state).toBe('loading');
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+
+      // Synthetic second flight: invoke _verify() directly to bypass the
+      // retryVerification loading-guard (item 2). This is the entry-point
+      // the generation counter must defend against in case any future
+      // caller bypasses retryVerification.
+      comp._verify(); // flight B, _verifyGeneration === 2
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
+
+      // Flight B's rejection lands; state goes to retriable_error.
+      await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+
+      // Flight A resolves AFTER flight B already overwrote state. Without
+      // the generation guard this .then would set state='success' and
+      // resultUsername, clobbering flight B's retriable_error.
+      resolveA({ data: { username: 'alice' } });
+      // Drain microtasks so flight A's .then runs.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Generation guard held: flight A's late success bailed; flight B's
+      // state survives.
+      expect(comp.state).toBe('retriable_error');
+      expect(comp.resultUsername).toBe('');
+      warnSpy.mockRestore();
+    });
+
+    // UI-ACCREDITATION-VERIFY-RETRIABLE-HANDLING round-2 hold item 2:
+    // retryVerification() must drop a double-tap that lands while a verify
+    // flight is already in-flight (state === 'loading'). Without the guard,
+    // a rapid second click between state='loading' and Alpine's x-if
+    // teardown of the Retry button would fire a second verifyAccreditation
+    // call — the user-driven entry point into the item-1 race.
+    it('rapid double-tap on Retry while state=loading fires verifyAccreditation exactly once', async () => {
+      mockVerifyAccreditation
+        .mockRejectedValueOnce(
+          makeApiError('ACCREDITATION_GATE_UNAVAILABLE', { details: { retriable: true } })
+        )
+        .mockReturnValueOnce(new Promise(() => {})); // never resolves; keeps state='loading'
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+      expect(comp.retryCooldownRemaining).toBe(0);
+
+      // First click: passes the loading-guard (state is 'retriable_error'),
+      // sets state='loading', dispatches flight 2.
+      comp.retryVerification();
+      expect(comp.state).toBe('loading');
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
+
+      // Second click while flight 2 is still in-flight: loading-guard must
+      // drop it; verifyAccreditation must NOT be called a third time.
+      comp.retryVerification();
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
+
+      // Third synthetic rapid-fire to pin the no-op even harder.
+      comp.retryVerification();
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
+
+      warnSpy.mockRestore();
+    });
   });
 });

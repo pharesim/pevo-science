@@ -75,6 +75,13 @@ export function initAccreditationVerifyPage() {
     // setTimeout callbacks only re-arm while their captured id still matches,
     // so a fresh countdown supersedes an in-flight one without racing.
     _cooldownId: 0,
+    // Per-verify-flight opaque id. Bumped synchronously at the top of
+    // `_verify()` and captured into the `.then`/`.catch` closures; the
+    // resolution branches bail before writing state if a newer flight has
+    // since superseded them. Mirrors the `_cooldownId` supersession pattern
+    // above. See `agents/docs/solutions/conventions/
+    // synchronous-flag-before-await-idempotency-guard-2026-05-16.md`.
+    _verifyGeneration: 0,
 
     navigate(path) { Alpine.store('router').navigate(path); },
 
@@ -94,6 +101,12 @@ export function initAccreditationVerifyPage() {
     },
 
     retryVerification() {
+      // Double-submit guard: if a verify flight is already in flight (state
+      // flipped to 'loading' on entry), drop the click. Belt+suspenders with
+      // the `_verifyGeneration` supersession below — this stops the second
+      // flight from ever dispatching; the generation counter is the
+      // defensive backstop if a future caller bypasses retryVerification().
+      if (this.state === 'loading') return;
       if (this.retryCooldownRemaining > 0) return;
       this.state = 'loading';
       this.errorMessage = '';
@@ -101,14 +114,22 @@ export function initAccreditationVerifyPage() {
     },
 
     _verify() {
+      // Bump synchronously so concurrent in-flight `.then`/`.catch`
+      // closures captured a now-stale generation and bail before writing
+      // state. The bump precedes the `verifyAccreditation()` dispatch so
+      // even a same-tick second `_verify()` invocation captures a higher
+      // generation than the first flight's closures.
+      const generation = ++this._verifyGeneration;
       verifyAccreditation(this._token)
         .then((res) => {
           if (!this._mounted) return;
+          if (generation !== this._verifyGeneration) return;
           this.state = 'success';
           this.resultUsername = res.data.username;
         })
         .catch((err) => {
           if (!this._mounted) return;
+          if (generation !== this._verifyGeneration) return;
           // Sanitization pattern (see executeUpgrade() in settings.js).
           console.warn('[accreditation verify]', err);
           if (this._isRetriable(err)) {
