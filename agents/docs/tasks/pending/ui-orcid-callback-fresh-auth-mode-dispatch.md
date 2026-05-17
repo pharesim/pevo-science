@@ -210,3 +210,42 @@ All 54 tests in the file pass (50 prior + 4 new).
 - `frontend/tests/unit/pages-orcid-callback.test.js` — carve-out file header + 4 new tests
 
 **Out of scope (unchanged from round-1):** no backend changes, no consent-op broadcast helper, no consent-op UI. The E2E test deferred per acceptance §4 still waits for `ui-multi-author-consent-affordances` to land the consumer side.
+
+## Architect re-review (2026-05-17, round-2) — HELD PENDING FIXES:
+
+`/ce-code-review` of commit `f92de11` ran with 9 personas (correctness Opus; testing/maintainability/project-standards/security/reliability/julik-frontend-races/learnings-researcher Sonnet; adversarial Opus; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Round-1 items 1 + folded-3 + folded-4 + architect-prescribed item 5 all verified landed correctly. NaN-finite TTL guards work; defensive triple validation is correctly placed; carve-out header satisfies clauses (a)/(b)/(c). However, the adversarial reviewer surfaced a P1 latent defect in the architect's prescribed guard shape itself.
+
+### Item to address
+
+**1. (P1 latent — guard shape rejects a contract-valid backend echo)** The triple-validation guard at `frontend/src/pages/orcid-callback.js:306-310` uses truthy checks for `root_author` and `root_permlink` (`!data.root_author`, `!data.root_permlink`). The backend `set_password` action deliberately echoes `root_permlink: ''` — verified at `backend/src/routes/orcid.ts:333-340` ("forced empty so the resulting hash cannot collide with any consent-op proof") and `backend/src/routes/orcid.ts:1154-1162` (sendOk echoes `target.root_permlink` verbatim). The architect's round-1 hold-block prescribed shape `data.root_author && data.root_permlink` therefore hard-blocks the `set_password` fresh_auth flow: every callback would route to the default error page and the user would re-OAuth indefinitely — the exact silent-UX-rot pattern item 5 was meant to prevent, manufactured against a contract-valid response.
+
+   **Latent today, not live:** `grep -rn "fresh_auth" frontend/src/` shows no SPA caller that sets `{action:'set_password', mode:'fresh_auth'}` on `POST /api/orcid/start`. The defect activates the moment the C→B-transition consumer (per ARCH § 6.3) lands; whoever ships that consumer would otherwise burn time debugging an indefinite re-OAuth loop.
+
+   **The fix is one line plus a regression test.** Refine the guard to type-check rather than truthy-check on `root_permlink`, and add empty-string rejection on `action` (closing the symmetric typeof/truthy asymmetry surfaced by correctness as folded sub-item):
+
+   ```js
+   if (
+     typeof data.action !== 'string' || !data.action ||
+     typeof data.root_author !== 'string' || !data.root_author ||
+     typeof data.root_permlink !== 'string'
+   ) {
+     this.status = 'error';
+     this.errorMessage = this.$t('orcid.verificationFailed');
+     return;
+   }
+   ```
+
+   Rationale: `action` and `root_author` are required non-empty strings for every supported fresh_auth target; `root_permlink` MUST be a string (so `undefined` is rejected) but MAY be empty (the documented set_password binding shape). This mirrors the backend's own validation pattern at `orcid.ts:333-345`.
+
+   **Add a positive-case regression test** to `frontend/tests/unit/pages-orcid-callback.test.js` under the existing fresh_auth describe block: construct the realistic `set_password` response shape `{mode:'fresh_auth', fresh_auth_proof:'tok', expires_at:'2099-...', action:'set_password', root_author:'alice', root_permlink:''}` and assert cache-write succeeds (the consent-op proof slot is populated with all three target fields including the empty string), return-path navigation fires, and the toast appears. Without this test the same defect can return via future refactor: it is the inverse of the existing missing-field tests and pins the contract empty-string-on-set_password is valid.
+
+   **The folded sub-items collapse into item 1's fix:** the typeof/truthy asymmetry on `action` surfaced by correctness (anchor 50) and the test gap surfaced by adversarial-2 (anchor 75) both resolve as part of this one fix. No separate items.
+
+### Items dismissed at architect triage
+
+- (P3, julik-frontend-races JFR-1) Catch arms in `executeUpgrade`/`retryUpgradeBackend` write to component state without `_mounted` guard — wrong file, this was a finding against `ui-upgrade-flow-mounted-guards` not against this task. Not in this task's diff.
+- No other findings surfaced; reviewers returned clean otherwise.
+
+### Architect signal
+
+Move this file from `review/` back to `pending/` per rule #8. Implementer addresses item 1 (one-line guard refinement + one positive-case test) in a single commit, then `git mv`s the file back to `review/` for round-3 architect re-review. Round-3's `/ce-code-review` scope will be the implementer's new commit only (per rule #8: re-review covers commits since the hold block was written).
