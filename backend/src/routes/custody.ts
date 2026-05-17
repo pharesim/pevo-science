@@ -53,17 +53,21 @@ const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000,
 // Tighter than broadcast: each issuance pays a full argon2.verify (~50 ms × N
 // in-flight under the JS-level semaphore). 10/min/account is generous for the
 // re-auth-then-broadcast UX (the user sees one prompt → one proof → one
-// broadcast) and bounds the password-guess oracle even if a session is
-// hijacked. `skipFailedRequests: true` so a stolen JWT cannot DoS the
-// legitimate user by burning 10 wrong-password attempts in 60s (slot-burn
-// lockout). Per `RateLimitConfig.skipFailedRequests` JSDoc, this opt-in is
-// safe here because the route already requires a valid JWT — wrong-password
-// probing is account-state guessing under an authenticated channel, NOT
-// unauthenticated credential enumeration; the password-oracle bound still
-// holds via the JS-level argon2 semaphore + the per-account JWT issuance
-// gate upstream. The mint path's burnSentinel call on the null-hash branch
-// (timing-oracle equalization) runs BEFORE the deferred-consume hook, so
-// the null-hash 401 also benefits from the slot-non-consume semantic.
+// broadcast). `skipFailedRequests: true` is a deliberate tradeoff: closing
+// the legitimate-user-lockout DoS surface (stolen JWT + 10 wrong-password
+// attempts = legit-user locked out of the mint path for 60s) over rate-
+// bounding per-account password brute-force. JWT theft is PEvO's accepted
+// upstream prerequisite; a stolen JWT already grants broadcast access via
+// the JWT alone. The argon2 server-wide semaphore at
+// `backend/src/lib/argon2-semaphore.ts` caps aggregate verifies/sec across
+// ALL routes but does NOT bound per-account attempts; `loginLimiter` is
+// IP-keyed (not account-keyed) so it also does NOT bound per-account
+// brute-force from a JWT-holding attacker rotating IPs. The unbounded per-
+// account password brute-force surface is the accepted residual risk; the
+// DoS protection on legitimate users is the deciding factor. The mint
+// path's `burnSentinel` call on the null-hash branch (timing-oracle
+// equalization) runs BEFORE the deferred-consume hook, so the null-hash
+// 401 also benefits from the slot-non-consume semantic.
 const freshAuthLimiter = rateLimit({
   name: 'custody-fresh-auth',
   windowMs: 60_000,
@@ -75,9 +79,12 @@ const freshAuthLimiter = rateLimit({
 // per call and serve the State A/B mint paths; bucket them under a dedicated
 // name so the metric/observability surface for the session-mint path stays
 // distinct from the per-op consent-mint path. `skipFailedRequests: true` for
-// the same stolen-JWT slot-burn DoS reason documented on `freshAuthLimiter`
-// above; the JWT-gate + argon2 semaphore enforce the password-oracle bound
-// independently of slot-consume semantics.
+// the same deliberate-tradeoff reason documented on `freshAuthLimiter` above:
+// closing the legitimate-user-lockout DoS over rate-bounding per-account
+// password brute-force, with the brute-force surface accepted as residual
+// risk (the JWT-gate is per-account but JWT theft is the accepted upstream
+// prerequisite; the server-wide argon2 semaphore and IP-keyed `loginLimiter`
+// do not bound per-account attempts).
 const sessionAuthLimiter = rateLimit({
   name: 'custody-session-auth',
   windowMs: 60_000,

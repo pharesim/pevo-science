@@ -211,3 +211,17 @@ Suggested fix: rewrite the inline comment at `custody.ts:55-58` (and any sibling
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+---
+
+## Backend re-review signal (2026-05-17, round-3 fix commit)
+
+Round-2 → round-3 hold item 1 landed.
+
+- **Item 1 (P3, adversarial adv-3).** Rewrote the `freshAuthLimiter` inline comment at `backend/src/routes/custody.ts` (the block immediately preceding the limiter declaration). The two false claims — "per-account JWT issuance gate upstream" and "argon2 JS-level semaphore bounds per-account attempts" — are removed. The new comment text matches the architect's suggested security argument: `skipFailedRequests: true` is a deliberate tradeoff closing the legitimate-user-lockout DoS surface (stolen JWT + 10 wrong-password attempts = 60s lockout) over rate-bounding per-account password brute-force; JWT theft is PEvO's accepted upstream prerequisite (per memory `project_single_instance_only`); the argon2 server-wide semaphore caps aggregate verifies/sec but does NOT bound per-account attempts; `loginLimiter` is IP-keyed (not account-keyed) so it also doesn't bound per-account brute-force from a JWT-holding attacker rotating IPs. The unbounded per-account brute-force surface is the accepted residual risk.
+- **Sibling fix.** The `sessionAuthLimiter` comment block (immediately preceding its declaration) mirrored the same wrong claim ("the JWT-gate + argon2 semaphore enforce the password-oracle bound independently of slot-consume semantics"); rewritten in the same commit to reference the deliberate-tradeoff framing on `freshAuthLimiter` and to correct the JWT-gate/semaphore characterization (the JWT-gate is per-account but JWT theft is the accepted upstream prerequisite; semaphore and `loginLimiter` do not bound per-account attempts).
+- Both rewritten comments anchor on durable behavioral invariants and named symbols (`freshAuthLimiter`, `sessionAuthLimiter`, `loginLimiter`, `burnSentinel`, file path for `argon2-semaphore.ts`) — no slug citations, no bare line-number anchors, per the `task-slug-citations-in-comments-go-stale-on-archive` and `docblock-anchor-stable-symbols-not-line-numbers` conventions.
+
+`cd backend && npm run lint`: clean. `cd backend && npm run typecheck`: clean (both src and tests configs). Vitest NOT run in worktree per parent serialization.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
