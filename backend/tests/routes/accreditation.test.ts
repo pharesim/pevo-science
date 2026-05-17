@@ -1575,7 +1575,7 @@ describe('BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions
 //       verification.
 //   (c) Real-path companion: the rate-limit primitive's slot-refund
 //       semantics have real-Redis coverage at
-//       `backend/tests/routes/custody-upgrade.test.ts:498` against the
+//       `backend/tests/routes/custody-upgrade.test.ts:518` against the
 //       upgradeLimiter; that sibling canary exercises the same
 //       skipFailedRequests path through the rateLimit middleware against a
 //       different transient-failure source (Hive RPC throw → 503).
@@ -1627,11 +1627,15 @@ describe('BE-ACCRED-REQ-LIMITER — accred-req limiter refunds slot on transient
         expect(failRes.status).toBe(500);
       }
 
-      // res.on('finish') runs the deferred consume on the next tick; the
-      // 5xx responses above each take the `if (res.statusCode >= 400) return`
-      // early-out and never INCR. Supertest awaits the response body, which
-      // resolves after res.end → the `finish` event has already fired by the
-      // time await returns. No explicit wait needed.
+      // Slot-refund timing: the rateLimit middleware INCRs atomically up-front
+      // via the RATE_LIMIT_CHECK_AND_CONSUME Lua script BEFORE next() runs.
+      // On `res.on('finish')`, if `res.statusCode >= 400` it fires an
+      // unconditional DECR to refund the slot (this is the REFUND branch, not
+      // a no-op early-out). Supertest awaits the response body, which resolves
+      // after res.end → the `finish` event has already fired and the DECR has
+      // been scheduled (microtask) by the time the await returns; in practice
+      // the DECR completes well before the next supertest call, so no explicit
+      // wait is needed.
 
       const successRes = await request(app)
         .post('/api/accreditation/request')
@@ -1651,6 +1655,70 @@ describe('BE-ACCRED-REQ-LIMITER — accred-req limiter refunds slot on transient
       transportSpy.mockRestore();
       errorSpy.mockRestore();
       config.smtpHost = prevHost;
+      if (redis) await redis.del(limiterKey);
+    }
+  });
+
+  // Round-2 hold item 2: pin the symmetric 4xx-refund contract. The rateLimit
+  // primitive at backend/src/middleware/rateLimit.ts:100-101 refunds on ANY
+  // res.statusCode >= 400 (not just 5xx). The /api/accreditation/request
+  // 4xx paths (422 non-institutional email, 400 zod validation) short-
+  // circuit before storeToken/sendMail so refund-on-4xx is acceptable today,
+  // but a mutation flipping the middleware's threshold to `>= 500` would
+  // silently break the upstream user-experience contract documented at the
+  // limiter declaration. This canary drives three 422 non-institutional-
+  // email responses, then asserts the fourth request is NOT 429 — pins the
+  // symmetric refund. If a future change adds an expensive pre-handler op
+  // before the institutional-email gate, that route MUST get its own
+  // throttle (the limiter's symmetric refund will not rate-limit pre-
+  // handler probes); see the comment block at accreditation.ts:25.
+  it('three 422 non-institutional-email responses do NOT exhaust the 3/24h budget; fourth request not 429', async () => {
+    const username = `aclim4xxrefnd${Date.now() % 1000}${Math.floor(Math.random() * 1000)}`;
+    const redis = getRedis();
+    const limiterKey = `${config.appTag}:rl:accred-req:${username}`;
+    if (redis) await redis.del(limiterKey);
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        const failRes = await request(app)
+          .post('/api/accreditation/request')
+          .set('X-Hive-Username', username)
+          .set('X-Hive-Signature', 'mock')
+          .send({
+            full_name: 'Limiter 4xx Refund Tester',
+            institution: 'MIT',
+            field: 'physics',
+            // Non-institutional domain → 422 VALIDATION_ERROR. The gate
+            // short-circuits BEFORE storeToken/sendMail, so no side
+            // effects accumulate across the three attempts.
+            email: `${username}@gmail.com`,
+          });
+        expect(failRes.status).toBe(422);
+      }
+
+      // Fourth request with an institutional domain. If the limiter is NOT
+      // refunding 4xx slots, the bucket is exhausted and this returns 429.
+      // If the limiter IS refunding 4xx symmetrically (current behaviour
+      // per the rateLimit primitive's >= 400 refund branch), the bucket is
+      // empty and the request proceeds — status is whatever the route would
+      // return for a valid request (200 in the SMTP-configured-and-working
+      // path; tests share the default mock transport that resolves OK).
+      const followUpRes = await request(app)
+        .post('/api/accreditation/request')
+        .set('X-Hive-Username', username)
+        .set('X-Hive-Signature', 'mock')
+        .send({
+          full_name: 'Limiter 4xx Refund Tester',
+          institution: 'MIT',
+          field: 'physics',
+          email: `${username}@harvard.edu`,
+        });
+      // Load-bearing assertion: NOT 429. The exact non-429 status (200 vs
+      // some other 4xx/5xx from downstream) is not the contract this canary
+      // pins — only that the 4xx-refund is symmetric so the bucket isn't
+      // exhausted.
+      expect(followUpRes.status).not.toBe(429);
+    } finally {
       if (redis) await redis.del(limiterKey);
     }
   });

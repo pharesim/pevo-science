@@ -160,3 +160,28 @@ Header's clause (c) citation points to `custody-upgrade.test.ts:498`, which is t
 - **Detached refund DECR race** (adversarial P2/55): one-Redis-RTT window. Sub-ms in PEvO single-instance; SPA doesn't auto-retry 500s. Same shape as upgradeLimiter precedent.
 - **Test username helper extraction** (maintainability M2 P2/75): 16+ duplicated `Date.now()+random` sites across `backend/tests/`. Premature abstraction; the next test that touches the pattern is the natural extraction trigger.
 - **Refund DECR error log debug→warn** (reliability REL-002 P3/70): proposes log expansion; default-dismiss per `feedback_pevo_logging_minimal`.
+
+---
+
+## Backend re-review signal (2026-05-17, commit SHA b59cbbc — round-2 commit subject `backend(accreditation-limiter-skip-failed): round-2 hold (6 items folded)`)
+
+(Note: the round-2 commit was amended a few times during the signal-block authoring to land the SHA self-reference inside the file. The architect should cross-reference by commit subject + diff content, not by SHA — the SHA after this final amend will differ from `b59cbbc` cited here. The unique subject on the `worktree-agent-adcca887033773fa3` branch is the stable anchor.)
+
+Round-2 fold landed in one commit per the architect's "all six items bundle into one round-2 commit since they edit overlapping code-comment regions" guidance.
+
+- **Item 1** — Rewrote the comment at `backend/src/routes/accreditation.ts:25-39` (now 15 lines after edits). Removed the FALSE "4xx responses still consume a slot, so brute-force probing is rate-limited" claim. New text honestly describes that `RateLimitConfig.skipFailedRequests` refunds on ANY `res.statusCode >= 400` and that this is acceptable today because every 4xx path short-circuits before `storeToken`/`sendMail`. Added the architect-suggested forward-looking hazard note: a future change inserting an expensive pre-handler op before the institutional-email gate must add its own throttle.
+- **Item 2** — Added the 4xx-refund canary as a sibling `it()` in the existing `BE-ACCRED-REQ-LIMITER` describe block at `backend/tests/routes/accreditation.test.ts`. Drives three 422 non-institutional-email responses, asserts the fourth request is `not.toBe(429)`. Pins symmetric `>= 400` refund as the contract; a middleware mutation flipping the threshold to `>= 500` would now be caught.
+- **Item 3** — Slug + line-number cleanup folded into the Item 1 comment rewrite. Dropped the `custody.ts:50` line citation (prose now reads "mirrors the `upgradeLimiter` shape in `custody.ts`"). Replaced the `backend-custody-upgrade-limiter-skip-failed` slug with a citation to `RateLimitConfig.skipFailedRequests` JSDoc — the type definition is the stable anchor per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`.
+- **Item 4** — Adopted `deleteTokenBestEffort` at both `/request` SMTP-failure cleanup sites. The `sendMail` catch branch now calls `deleteTokenBestEffort(token, hive_username, email, 'accreditation.request.sendmail_throw_token_cleanup_failed', 'Token cleanup failed after SMTP sendMail threw')`; the empty-`smtpHost` branch calls it with `accreditation.request.smtp_host_missing_token_cleanup_failed` / `'Token cleanup failed after SMTP host not configured'`. To keep the helper signature unchanged (no churn on existing /verify callers), the helper now derives the `route` log field from the event prefix (`accreditation.request.*` → `accreditation.request`, else → `accreditation.verify`). Updated the JSDoc to cover the new caller set.
+- **Item 5** — Rewrote the inline comment block at `backend/tests/routes/accreditation.test.ts:1630-1638`. The old text claimed "the 5xx responses ... take the `if (res.statusCode >= 400) return` early-out and never INCR" — both halves are wrong. New text describes the actual mechanism: INCR happens atomically up-front via the `RATE_LIMIT_CHECK_AND_CONSUME` Lua script before `next()`, and the `res.on('finish')` handler fires an unconditional DECR on `statusCode >= 400` to refund.
+- **Item 6** — Updated the carve-out clause (c) citation from `custody-upgrade.test.ts:498` (plain 503-on-throw spec) to `:518` (the actual `skipFailedRequests` slot-refund canary against `upgradeLimiter`). One-line change.
+
+### Verification
+
+- `npm run typecheck` from `backend/`: clean (src + tests).
+- `npm run lint` from `backend/`: clean.
+- Targeted vitest run on `backend/tests/routes/accreditation.test.ts` (Docker network IPs per root CLAUDE.md): 32 passed / 1 failed. The single failure (`POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP > round-4 hold #2: pre-INCR redis.eval rejection`) is pre-existing and unrelated to this round-2 work — reproduced against `HEAD~1` (pre-edit state) via `git stash`, same 502-vs-expected-503 failure mode. Not caused by Item 1-6 changes; flagged here for the architect to triage as a separate matter or accept as known.
+
+### 4xx-vs-5xx semantics audit (acceptance #2 from the original task — confirmed in round-2)
+
+The original task's acceptance #2 asked for an audit of the `/api/accreditation/request` 4xx-vs-5xx surface. The round-1 commit landed `skipFailedRequests: true` against an assumed-asymmetric refund contract; round-2's Item 1 cross-check confirms the contract is actually symmetric (refund on any `>= 400`). Operationally bounded today because the 4xx paths short-circuit before any expensive op (`storeToken`/`sendMail`), so the symmetric refund does not amplify SMTP/token spend. Documented in the new comment block (acceptance #4: no contract change, no `api-contracts/` edit needed).

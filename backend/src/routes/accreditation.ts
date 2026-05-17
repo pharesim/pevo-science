@@ -27,11 +27,15 @@ const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 // slot), not to penalize transient SMTP/mail-provider failures. Without this
 // flag, a `sendMail` throw or an empty-smtpHost 500 burns one of the user's
 // three daily slots; three transient outages in 24h lock them out of
-// accreditation requests entirely. 4xx responses (400 validation, 422
-// non-institutional email) still consume a slot, so the limiter still
-// rate-limits brute-force schema probing. Mirrors the upgradeLimiter shape
-// at backend/src/routes/custody.ts:50 and the rationale recorded for
-// backend-custody-upgrade-limiter-skip-failed.
+// accreditation requests entirely. Per `RateLimitConfig.skipFailedRequests`
+// JSDoc, the refund branch keys on ANY `res.statusCode >= 400` — 4xx
+// responses (400 validation, 422 non-institutional email) ALSO refund the
+// slot. That is acceptable here because every 4xx path short-circuits before
+// `storeToken` and `sendMail`, so probing only costs Redis-rate-limit ops
+// with no SMTP/token side effects. A future change that inserts an expensive
+// operation BEFORE the institutional-email check must add its own throttle —
+// the limiter's symmetric refund will not rate-limit pre-handler probes.
+// Mirrors the `upgradeLimiter` shape in `custody.ts`.
 const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount, skipFailedRequests: true });
 const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp });
 
@@ -277,15 +281,19 @@ async function deleteToken(token: string): Promise<void> {
 }
 
 /**
- * Best-effort wrapper around `deleteToken` used by the success path and the
- * idempotency-hit path (round-2 F8). Both branches have already written or
- * are about to write a 200 envelope; a Redis hiccup on cleanup must NOT
- * propagate to Express's async-error handler (`ERR_HTTP_HEADERS_SENT` would
- * be the visible symptom — the existing `helper-extraction-express5-
- * response-ordering-2026-04-28.md` learning captures the prior fire).
+ * Best-effort wrapper around `deleteToken` used by branches that have already
+ * written or are about to write a final response envelope (200 success and
+ * idempotency-hit paths on /verify per round-2 F8; 500 SMTP-failure cleanup
+ * on /request). A Redis hiccup on cleanup must NOT propagate to Express's
+ * async-error handler (`ERR_HTTP_HEADERS_SENT` would be the visible symptom
+ * on the success branches; envelope-shape regression to the express-default
+ * HTML 500 would be the symptom on the /request 500 branches — both
+ * captured by `helper-extraction-express5-response-ordering-2026-04-28.md`).
  * Caller passes `event` + `msg` discriminators so operators can correlate
  * the orphan back to the specific branch that observed the failure; the
- * 24h token TTL is the backstop.
+ * 24h token TTL is the backstop. The discriminator string convention is to
+ * prefix the event with the calling route (`accreditation.request.*` vs
+ * `accreditation.verify.*`) — log search keys on that.
  */
 async function deleteTokenBestEffort(
   token: string,
@@ -300,7 +308,7 @@ async function deleteTokenBestEffort(
     logger.warn(
       {
         event,
-        route: 'accreditation.verify',
+        route: event.startsWith('accreditation.request.') ? 'accreditation.request' : 'accreditation.verify',
         username,
         email_hash: hashEmailForLogs(email),
         token_hash: hashTokenForLogs(token),
@@ -371,7 +379,17 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
         },
         'Failed to send verification email',
       );
-      await deleteToken(token);
+      // Wrap deleteToken in best-effort cleanup so a Redis hiccup on cleanup
+      // does not propagate to Express 5's default async-error handler and
+      // bypass the {error:{code,message}} envelope. See `deleteTokenBestEffort`
+      // JSDoc + `helper-extraction-express5-response-ordering-2026-04-28.md`.
+      await deleteTokenBestEffort(
+        token,
+        hive_username,
+        email,
+        'accreditation.request.sendmail_throw_token_cleanup_failed',
+        'Token cleanup failed after SMTP sendMail threw',
+      );
       return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
     }
   } else {
@@ -384,7 +402,13 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
       },
       'SMTP not configured — cannot send verification email',
     );
-    await deleteToken(token);
+    await deleteTokenBestEffort(
+      token,
+      hive_username,
+      email,
+      'accreditation.request.smtp_host_missing_token_cleanup_failed',
+      'Token cleanup failed after SMTP host not configured',
+    );
     return sendError(res, 500, 'INTERNAL_ERROR', 'Email service not configured');
   }
 
