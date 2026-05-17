@@ -171,3 +171,43 @@ All six round-2 hold items landed in this commit. Per-item resolution:
 - **Item 6 (task-slug prefix on handler banner comment).** Slug prefix dropped from `backend/src/routes/custody.ts` (handler header near line 813); the durable behavioral prose is preserved.
 
 `cd backend && npm run lint`: clean. `cd backend && npm run typecheck`: clean (both `src` and `tests` configs). Vitest NOT run in worktree per parent serialization.
+
+---
+
+## Architect re-review (2026-05-17, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `6dad488` (9 reviewers: correctness/security/adversarial on Opus; testing, maintainability, project-standards, reliability, kieran-typescript, learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). All six round-1 hold items verified clean (burnSentinel awaited at both null-hash sites with spy assertion mutation-kill; skipFailedRequests adopted on both limiters with Lua atomic primitive in place; argon-error canaries cover all three subclasses + sendOperationsMock-not-called assertion; definite-assignment landed; slug prefix dropped).
+
+One item held — a documentation accuracy fix on the security-relevant inline comment. The P1 adversarial finding (skipFailedRequests on credential-verifying routes) was explicitly triaged as dismiss because the round-1 hold #3 was the architect's deliberate tradeoff choice; the comment must accurately describe that reasoning.
+
+### Item held (must fix before archive)
+
+**1. (P3, conf 100, adversarial adv-3) Inline comment at `backend/src/routes/custody.ts:55-58` mischaracterizes the security argument behind `skipFailedRequests` adoption.** The current comment claims the routes are safe to adopt `skipFailedRequests` because "the password-oracle bound is held by the argon2 JS-level semaphore + the per-account JWT issuance gate independently of slot-consume semantics." Two factual problems:
+
+- **`loginLimiter` is per-IP, not per-account.** The "per-account JWT issuance gate upstream" claim is false. JWT issuance is rate-limited per source IP at `backend/src/routes/auth.ts:264` (`loginLimiter = rateLimit({ ..., keyFn: byIp })`); a determined attacker rotating IPs is not rate-limited by `loginLimiter` at all.
+- **argon2 semaphore is server-wide, not per-account.** The semaphore at `backend/src/lib/argon2-semaphore.ts:63` caps aggregate argon2 concurrency (~80 verifies/sec across all routes), not per-account attempts. It bounds server CPU usage and overall throughput, not per-account brute-force rate.
+
+The comment as written would mislead a future reader (or future architect at the next review of this surface) into believing the adoption is safer than it actually is. The honest argument is:
+
+> Adopting `skipFailedRequests: true` on these credential-verifying routes is a deliberate tradeoff. The round-1 hold #3 prioritized closing the legitimate-user-lockout DoS surface (stolen JWT + 10 wrong-passwords = 60s lockout on the mint path) over rate-bounding per-account password brute-force. JWT theft is PEvO's accepted upstream prerequisite (memory `project_single_instance_only`'s threat model); a stolen JWT already grants broadcast access via the JWT alone. The argon2 server-wide semaphore (~80 verifies/sec across all routes at `backend/src/lib/argon2-semaphore.ts`) caps aggregate attack rate but does NOT bound per-account attempts. The unbounded per-account password brute-force surface is an accepted residual risk; the DoS protection on legitimate users is the deciding factor.
+
+Suggested fix: rewrite the inline comment at `custody.ts:55-58` (and any sibling comment on `sessionAuthLimiter` if it mirrors the same claim) to match the actual security argument. Keep the JSDoc on `RateLimitConfig.skipFailedRequests` (the misuse warning still stands for routes that don't have the JWT-theft tradeoff baked in).
+
+### Item dismissed during architect triage (adversarial adv-1, P1 conf 90)
+
+**`skipFailedRequests: true` enables unbounded per-account password brute-force given a stolen JWT.** The adversarial reviewer correctly identifies the tradeoff: pre-fix the limit was ~14,400 attempts/day; post-fix is bounded only by the argon2 server-wide semaphore (~80/sec ≈ 6.9M/day theoretical max). The architect's round-1 hold #3 explicitly requested this adoption to close the legitimate-user-lockout DoS, knowing the brute-force tradeoff. Stolen JWT is PEvO's accepted upstream prerequisite per the project threat model; the JWT alone already grants broadcast access. Closing the DoS surface for legitimate users is the higher priority. Recorded as an accepted residual risk; if PEvO's threat model later changes to treat JWT theft as in-scope, this decision should be revisited (likely via a layered IP-keyed brute-force limiter that does NOT use `skipFailedRequests`).
+
+### Items dismissed at triage (below actionable bar)
+
+- **adv-2 P3 conf 50**: Future ARGON2_OPTIONS-change hash-version oracle. Theoretical, no exploit path today.
+- **adv-4 P3 conf 75**: 5s forward-skew tolerance UX. Out of scope for this task (that's `backend-custody-upgrade-seed-phrase-reauth` territory).
+- **adv-5 P3 conf 50**: In-memory rate-limit refund collision when `Date.now()` returns same ms for concurrent requests. Sub-ms edge case, dev-mode-only fallback path.
+- **REL-1 P3 conf 75**: `redis.decr()` slot-refund failure logged at `debug` instead of `warn`. Self-healing within 60s TTL; per memory `feedback_pevo_logging_minimal` (PEvO is over-logged), promoting to warn would be net negative without a concrete operator failure mode this catches.
+- **M-1 P3 conf 75**: `burnSentinel` import comment from `./auth.js` not explained at the import site. Style polish; the function's own docblock at `auth.ts:233` carries the cross-route-reuse rationale.
+- **M-2 P3 conf 50**: `custody-session-auth-argon-errors.test.ts` filename deviates from sibling `*-argon-error-translation.test.ts` naming. Grep-discoverability nit; below the actionable bar.
+- **testing T-1 P3**: No route-level 401-then-200 sequential test pinning skipFailedRequests refund behavior. Mechanical Redis-count inspection covers the same risk class. Per `feedback_dismiss_preemptive_test_hardening`.
+- **Multiple residual notes** (security, learnings): JSDoc-staleness warning on the rateLimit primitive since adopters now violate it (architect's call to update the JSDoc to reference the threat-model-driven adoption pattern rather than the blanket prohibition); symmetric DB-failure slug canary on `handleFreshAuth` parallel to task 3's. Not held; advisory.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
