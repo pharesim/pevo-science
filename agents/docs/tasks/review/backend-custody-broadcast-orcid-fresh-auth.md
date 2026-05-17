@@ -223,3 +223,22 @@ Or, if stronger guarantees are wanted later, file a follow-up to convert to a `R
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
+
+---
+
+## Backend re-review signal (2026-05-17, round-4 fix commit)
+
+Round-3 → round-4 hold items 1-3 landed.
+
+- **Item 1 (P1, slug-citation convention sweep across the task's production-code footprint).** Three remaining slug citations rewritten in this commit, matching the round-3 prescription shape:
+  - `backend/src/routes/orcid.ts` (module-level docblock above the `OrcidMode` type) — slug prefix dropped; rewrite anchors on the feature name (`session_auth`/`fresh_auth`) and points forward to `handleSessionAuth` + ARCH.md § 6.5 invariant #1 for the JWT-alone-as-takeover-vector closure rationale. Slug-free; symbol-anchored.
+  - `backend/src/routes/orcid.ts` (section banner above the `handleSessionAuth` function) — replaced the bare slug banner with a one-line behavioral description of the handler: "handleSessionAuth — mints a target-less ORCID-mechanism session-kind fresh-auth proof for the non-consent broadcast surface."
+  - `backend/src/routes/custody.ts` (non-consent branch section label inside the broadcast handler, in the fresh-auth-verification block) — slug prefix dropped; the descriptive paragraph that follows carries the behavioral invariant (the non-consent branch requires `fresh_auth_proof` via the session-kind path; this closes ARCH.md § 6.5 invariant #1 on the non-consent surface; State A/B mint via `/api/custody/fresh-auth`, State B/C via `/api/orcid/callback mode='session_auth'`).
+- **Items 2+3 (P2 + P3, `VALID_MODES` docstring + slug-citation prefix).** The `VALID_MODES` inline comment at `backend/src/routes/orcid.ts` rewritten end-to-end:
+  - Slug-citation prefix `Round-3 hold KT-1:` stripped (item 3).
+  - The overclaim about compile-time enforcement is corrected (item 2): the new text explicitly states that the `Set<OrcidMode>` + `satisfies ReadonlySet<OrcidMode>` pattern verifies "each initializer element must be a valid OrcidMode — prevents typos in the array literal" but does NOT enforce union-completeness; a future `OrcidMode` literal added without updating this array compiles silently and fails at runtime at the `/start` dispatch with 400 BAD_REQUEST. The comment then names the compile-time exhaustiveness backstop on the dispatch side: "the `assertNever` arm in the `/callback` dispatch switch over `storedMode`". Symbol-anchored, not line-numbered — per the `docblock-anchor-stable-symbols-not-line-numbers` convention.
+  - Note: the architect's suggested wording referenced "the assertNever arm in the callback switch at line ~574"; I replaced the line-number with the symbol path (`/callback` dispatch switch over `storedMode`) so the anchor survives line-shifts.
+
+`cd backend && npm run lint`: clean. `cd backend && npm run typecheck`: clean (both src and tests configs). Vitest NOT run in worktree per parent serialization.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

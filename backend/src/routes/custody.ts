@@ -354,15 +354,14 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // and the substitution-attack closure (target-hash binding from round-5)
   // is more important than retry ergonomics on consent ops specifically.
   //
-  // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: the non-consent branch now
-  // requires `fresh_auth_proof` too (consumed via the session-kind path,
-  // no per-op binding check). This closes ARCH.md § 6.5 invariant #1 on
-  // the non-consent surface — pre-fix, only the JWT was required, making
-  // a stolen JWT a one-step takeover vector for vote/comment broadcasts.
-  // State A/B users mint via `/api/custody/fresh-auth` (password, per-op
-  // proof — accepted via the cross-kind-accept on session consume); State
-  // B/C users mint via `/api/orcid/callback mode='session_auth'` (ORCID,
-  // session-kind proof).
+  // The non-consent branch requires `fresh_auth_proof` too (consumed via
+  // the session-kind path, no per-op binding check). This closes ARCH.md
+  // § 6.5 invariant #1 on the non-consent surface — without it, only the
+  // JWT would be required, making a stolen JWT a one-step takeover vector
+  // for vote/comment broadcasts. State A/B users mint via
+  // `/api/custody/fresh-auth` (password, per-op proof — accepted via the
+  // cross-kind-accept on session consume); State B/C users mint via
+  // `/api/orcid/callback mode='session_auth'` (ORCID, session-kind proof).
   const consentAction = consentScan.kind === 'single' ? consentScan.action : null;
   let freshAuthMechanism: FreshAuthMechanism | null = null;
   const proofRaw = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;

@@ -81,17 +81,21 @@ const ORCID_RE = /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;
 // consumed by the custody-broadcast handler when broadcasting `author_accept`
 // or `author_resign` ops. Sibling endpoint to POST /api/custody/fresh-auth
 // (the password-mechanism issuance path).
-// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: `session_auth` is a sibling
-// of `fresh_auth` that mints a target-less session-kind proof for the
-// non-consent `/api/custody/broadcast` surface. Consent ops use
+// `session_auth` is a sibling of `fresh_auth` for the non-consent broadcast
+// surface; mints a target-less session-kind proof. Consent ops use
 // `fresh_auth` (per-op binding); non-consent ops use `session_auth` (no
 // target). Both require an authenticated session and complete a fresh
-// OAuth round-trip.
+// OAuth round-trip. See `handleSessionAuth` below and ARCH.md § 6.5
+// invariant #1 for the JWT-alone-as-takeover-vector closure this enables.
 type OrcidMode = 'signup' | 'login' | 'accredit' | 'link' | 'fresh_auth' | 'session_auth';
-// Round-3 hold KT-1: typed as `Set<OrcidMode>` (not `Set<string>`) so a
-// future `OrcidMode` literal added to the union but missed in this array
-// becomes a compile error. The `satisfies ReadonlySet<OrcidMode>` keeps
-// the inferred type as the literal-element-typed set.
+// Allowed `mode` values on /start. Typed as `Set<OrcidMode>` (not
+// `Set<string>`) so each initializer element must be a valid OrcidMode —
+// prevents typos in the array literal. Note: this does NOT enforce union-
+// completeness; a future `OrcidMode` literal added without updating this
+// array compiles silently and fails at runtime at the /start dispatch with
+// 400 BAD_REQUEST. The `assertNever` arm in the `/callback` dispatch
+// switch over `storedMode` is the compile-time exhaustiveness backstop
+// for the callback side.
 const VALID_MODES = new Set<OrcidMode>(['signup', 'login', 'accredit', 'link', 'fresh_auth', 'session_auth']) satisfies ReadonlySet<OrcidMode>;
 
 /** Type predicate that narrows `string` to `OrcidMode` via `VALID_MODES`
@@ -1196,7 +1200,8 @@ async function handleFreshAuth(
 }
 
 // ─────────────────────────────────────────────────────────────
-// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — session-auth via ORCID
+// handleSessionAuth — mints a target-less ORCID-mechanism session-kind
+// fresh-auth proof for the non-consent broadcast surface.
 // ─────────────────────────────────────────────────────────────
 //
 // Sibling of handleFreshAuth that mints a target-less session-kind proof.
