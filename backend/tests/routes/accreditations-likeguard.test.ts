@@ -101,25 +101,38 @@ describe('GET /api/accreditations — ?field= / ?institution= LIKE-guard', () =>
   });
 
   describe('repeated-param silent-unfilter (`?field=a&field=b`)', () => {
-    it('?field=a&field=b is silently unfiltered (Express yields string[] → undefined)', async () => {
-      // Pre-fix, the `as string | undefined` cast coerced the string[] to
-      // `"a,b"` and passed it through to the ILIKE binder unchanged. Post-fix,
-      // validateOptionalLikeFilter treats non-string raw values as absent
-      // (returns value: undefined), so the filter is silently dropped and the
-      // route returns the unfiltered list. Mirrors the round-4 `?discipline=`
-      // contract; differs from `?q=` (which is required and 400s on the same
-      // shape with "Search query \"q\" is required").
-      const res = await request(app).get('/api/accreditations?field=a&field=b');
+    // The "silent-unfilter" contract — that the filter was DROPPED, not bound
+    // as `'a,b'` — is asserted via the `meta.total` result-set proxy:
+    // capture the unfiltered baseline total (no filter param), then issue
+    // the repeated-param request and assert the same total. If a regression
+    // re-introduced the `as string` cast (coercing `['a','b']` to `'a,b'`),
+    // the bound ILIKE pattern would be `'a,b%'` against `latest.field` /
+    // `latest.institution` and the result-set total would drop (likely to
+    // zero on real HAF). Same-total proves the filter was unapplied.
+
+    it('?field=a&field=b returns the unfiltered baseline meta.total (filter dropped, not bound as "a,b")', async () => {
+      const unfilteredRes = await request(app).get('/api/accreditations?page=1&limit=50');
+      expect(unfilteredRes.status).toBe(200);
+      const baseline = unfilteredRes.body.meta.total;
+
+      const res = await request(app).get('/api/accreditations?field=a&field=b&page=1&limit=50');
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('ok');
       expect(Array.isArray(res.body.data)).toBe(true);
+      // Same total as the unfiltered baseline → filter was dropped.
+      expect(res.body.meta.total).toBe(baseline);
     });
 
-    it('?institution=a&institution=b is silently unfiltered', async () => {
-      const res = await request(app).get('/api/accreditations?institution=a&institution=b');
+    it('?institution=a&institution=b returns the unfiltered baseline meta.total (filter dropped, not bound as "a,b")', async () => {
+      const unfilteredRes = await request(app).get('/api/accreditations?page=1&limit=50');
+      expect(unfilteredRes.status).toBe(200);
+      const baseline = unfilteredRes.body.meta.total;
+
+      const res = await request(app).get('/api/accreditations?institution=a&institution=b&page=1&limit=50');
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('ok');
       expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.meta.total).toBe(baseline);
     });
   });
 

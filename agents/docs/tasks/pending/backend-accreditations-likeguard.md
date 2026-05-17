@@ -209,3 +209,44 @@ With this proxy in place, a regression that drops the `typeof` narrow in `valida
 
 - **Helper-direct unit tests for `validateOptionalLikeFilter`** (testing T3 P3/50): preemptive hardening; the route-level tests cover behavior. Per `feedback_dismiss_preemptive_test_hardening`.
 - **Repeated-param semantic flip + ILIKE metacharacter literal-treatment + 400 message wire format** (api-contract findings, P2/70 and P3/60): all fold into the architect-side `accreditation.md` contract update at archive time.
+
+---
+
+## Backend re-review signal (2026-05-17, commit SHA `0843641`) — round 3
+
+Both round-2 hold items landed in a single commit. Test additions only — no production-code changes.
+
+**Item 1 (P2, correctness × testing T1) — Mocked-pool SQL-contract spec.**
+
+Landed as a new sibling file `backend/tests/routes/accreditations-likeguard-mocked.test.ts`. Chose the sibling-file path (not folding into `accreditations-likeguard.test.ts`) so the route-level `vi.mock('../../src/db.js', …)` hoist doesn't bleed into the existing real-path specs in the same describe-tree. The file header documents the carve-out clauses (a)/(b)/(c) per root `CLAUDE.md` "Running Tests" — clause (a) names the impracticality (HAF returns rows without echoing the bound params or SQL; real-path specs pass vacuously on a regression that drops escapeLikePattern or ESCAPE `\\`), clause (b) is N/A (unauthenticated route, no verifyHiveSignature on the call path; MOCK_VERIFY_SIGNATURE fixture not used), clause (c) names the risk class ("ILIKE bind drops escape contract" + "bound parameter is not LIKE-escaped") and identifies the real-path companion in `accreditations-likeguard.test.ts` as covering a different mutation class (integrated-path 400/200/array-shape).
+
+Five specs across the describe block, mirroring the `disciplines-canon-mocked.test.ts:817-903` shape:
+1. `?field=` bound parameter is LIKE-escaped (`%` → `\%`, `_` → `\_`, `\` → `\\`) — crafted payload `%25_%5C` (URL-encoded `%_\`) captures `params` array, finds the ILIKE pattern bind, strips the trailing `%` suffix added by the route at accreditations.ts:42, asserts the body is the escaped form `\%\_\\`.
+2. `?institution=` bound parameter is LIKE-escaped — same shape for the institution branch.
+3. `?field=` site emits SQL containing `ESCAPE '\\'` on the ILIKE clause — pins the single-ILIKE case (field only) with exactly 1 occurrence.
+4. `?institution=` site emits SQL containing `ESCAPE '\\'` on the ILIKE clause — pins the single-ILIKE case (institution only) with exactly 1 occurrence.
+5. Both ILIKE call sites carry `ESCAPE '\\'` when ?field= AND ?institution= are supplied — pins the exact occurrence count to 2 so a regression dropping the clause from ONE site (the "count branch + data branch" framing from the round-2 hold) surfaces as `toBe(1)`.
+
+The capture uniqueness key is `sql.includes('ROW_NUMBER() OVER (PARTITION BY')` — the accreditations data query is the only call carrying that fragment.
+
+**Item 2 (P2, testing T2) — Repeated-param specs strengthened with result-set proxy.**
+
+Edited `backend/tests/routes/accreditations-likeguard.test.ts:104-123` in place. Both specs (`?field=a&field=b` and `?institution=a&institution=b`) now:
+1. Issue an unfiltered request `GET /api/accreditations?page=1&limit=50` and capture `meta.total` as the baseline.
+2. Issue the repeated-param request `GET /api/accreditations?field=a&field=b&page=1&limit=50` and assert `res.body.meta.total === baseline`.
+
+A regression re-introducing the `as string` cast (coercing `['a','b']` → `'a,b'` and binding `'a,b%'` as the ILIKE pattern) would return zero or fewer rows than the unfiltered baseline on real HAF — count mismatch fails the spec. The describe-block header comment explains the proxy logic. The original status-200 + array-shape assertions are retained alongside the new `meta.total` assertion.
+
+**Verification:**
+
+- `npm run typecheck` from `backend/`: clean (both `typecheck:src` and `typecheck:tests` pass with zero output).
+- `npm run lint` from `backend/`: clean (zero output).
+- `npx vitest run tests/routes/accreditations-likeguard.test.ts tests/routes/accreditations-likeguard-mocked.test.ts` (with Docker IP env overrides per root CLAUDE.md): 18/18 specs pass in ~3.7s (13 real-path + 5 mocked-pool). No regressions in the existing length-cap, LIKE-metacharacter-escape, and absent/empty-filter specs.
+
+**Files staged:**
+
+- `backend/tests/routes/accreditations-likeguard.test.ts` (item 2 in-place edit)
+- `backend/tests/routes/accreditations-likeguard-mocked.test.ts` (new file, item 1)
+- This task file (round-3 implementer signal block)
+
+The `git mv` to `tasks/review/` is the re-review signal (parent agent performs the move per the task instructions).
