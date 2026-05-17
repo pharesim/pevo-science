@@ -136,6 +136,22 @@ function createComponent() {
   return comp;
 }
 
+// Shared Keychain happy-path stub used across describe blocks. Centralized
+// per UI-RETRY-UPGRADE-BACKEND-TEST-COVERAGE round-1 hold M1 so a future
+// change to the Keychain callback contract (e.g. a second argument) only
+// requires editing one place. The stub is intentionally minimal — every
+// `requestImportKey` call resolves `{success: true}` via queueMicrotask.
+function stubKeychainImportKeySuccess() {
+  vi.stubGlobal('window', {
+    ...globalThis.window,
+    hive_keychain: {
+      requestImportKey: (account, wifKey, cb) => {
+        queueMicrotask(() => cb({ success: true }));
+      },
+    },
+  });
+}
+
 describe('settingsPage', () => {
   let localStorageData;
 
@@ -428,21 +444,10 @@ describe('settingsPage', () => {
       })));
     }
 
-    function stubKeychainImportKey() {
-      vi.stubGlobal('window', {
-        ...globalThis.window,
-        hive_keychain: {
-          requestImportKey: (account, wifKey, cb) => {
-            queueMicrotask(() => cb({ success: true }));
-          },
-        },
-      });
-    }
-
     it('zeroes mnemonic, confirm inputs, and password on the happy path before phase=done', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       stubFetchSuccess();
-      stubKeychainImportKey();
+      stubKeychainImportKeySuccess();
 
       const comp = createComponent();
       seedUpgradeState(comp);
@@ -459,7 +464,7 @@ describe('settingsPage', () => {
 
     it('zeroes sensitive state on the error path too', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
-      stubKeychainImportKey();
+      stubKeychainImportKeySuccess();
       // Make the backend call fail so executeUpgrade lands in the catch.
       vi.stubGlobal('fetch', vi.fn(async () => ({
         ok: false,
@@ -490,7 +495,7 @@ describe('settingsPage', () => {
     // never reaches `upgradeError`.
     it('does not leak key-material from err.message into upgradeError', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
-      stubKeychainImportKey();
+      stubKeychainImportKeySuccess();
       const leakHex = 'deadbeef' + 'c'.repeat(56); // 64-char hex
       const leakSeedWords = 'apple banana cherry donkey eagle frog giraffe hill ink jellyfish kiwi lemon';
       const leakMessage = `derive failed: hex=${leakHex} seed="${leakSeedWords}"`;
@@ -550,7 +555,7 @@ describe('settingsPage', () => {
     // tracks the actual key the catch consults on this path.
     it('does not leak key-material when $t returns empty for upgrade.partialApplyFailed', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
-      stubKeychainImportKey();
+      stubKeychainImportKeySuccess();
       const leakHex = 'deadbeef' + 'c'.repeat(56);
       const leakSeedWords = 'apple banana cherry donkey eagle frog giraffe hill ink jellyfish kiwi lemon';
       const leakMessage = `derive failed: hex=${leakHex} seed="${leakSeedWords}"`;
@@ -616,15 +621,6 @@ describe('settingsPage', () => {
       })));
     }
 
-    function stubKeychainImportKey() {
-      vi.stubGlobal('window', {
-        ...globalThis.window,
-        hive_keychain: {
-          requestImportKey: (_a, _k, cb) => queueMicrotask(() => cb({ success: true })),
-        },
-      });
-    }
-
     it('extracts key derivation + broadcast + keychain import into _performUpgradeKeyRotation helper', () => {
       const comp = createComponent();
       // Regression guard: if a future refactor inlines this helper back
@@ -636,7 +632,7 @@ describe('settingsPage', () => {
     it('helper frame exits before _clearSensitiveUpgradeState runs (happy path)', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       stubFetchSuccess();
-      stubKeychainImportKey();
+      stubKeychainImportKeySuccess();
 
       const comp = createComponent();
       seedUpgradeState(comp);
@@ -707,7 +703,7 @@ describe('settingsPage', () => {
 
     it('helper frame exits before _clearSensitiveUpgradeState runs (error path: post-helper fetch failure)', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
-      stubKeychainImportKey();
+      stubKeychainImportKeySuccess();
       // Fetch fails → executeUpgrade lands in the catch block, which still
       // calls _clearSensitiveUpgradeState. The helper has already returned
       // by the time the catch runs (broadcast + keychain import happened
@@ -760,7 +756,7 @@ describe('settingsPage', () => {
     // `ownerKey`) become unreachable even on the rejection path.
     it('helper-internal broadcast rejection: catch wipes and frame pops before wipe', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
-      stubKeychainImportKey();
+      stubKeychainImportKeySuccess();
       // Override the next dhive.Client instance's broadcast.sendOperations
       // to reject. This puts the failure INSIDE the helper, not after it.
       vi.mocked(Client).mockImplementationOnce(() => ({
@@ -846,7 +842,7 @@ describe('settingsPage', () => {
 
     it('_performUpgradeKeyRotation returns undefined (no derived key object escapes to caller)', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
-      stubKeychainImportKey();
+      stubKeychainImportKeySuccess();
 
       const comp = createComponent();
       const result = await comp._performUpgradeKeyRotation(
@@ -2299,17 +2295,6 @@ describe('settingsPage', () => {
       return comp;
     }
 
-    function stubKeychainImportKeySuccess() {
-      vi.stubGlobal('window', {
-        ...globalThis.window,
-        hive_keychain: {
-          requestImportKey: (account, wifKey, cb) => {
-            queueMicrotask(() => cb({ success: true }));
-          },
-        },
-      });
-    }
-
     // _signUpgradeProof calls getAppTag() which reads `window.__PEVO_CONFIG__`.
     // Vitest's default env doesn't define `window`, so non-keychain catch-branch
     // tests must still stub a bare window or _signUpgradeProof throws a
@@ -2434,6 +2419,21 @@ describe('settingsPage', () => {
 
       expect(comp.upgradeErrorKey).toBe('upgrade.partialApplyFailed');
       expect(comp.upgradeError).toBe('upgrade.partialApplyFailed');
+      // Entry invariant: phase stays 'error' (production R3 doesn't write
+      // upgradePhase; it routes through the partialApplyFailed terminal
+      // branch which leaves phase as set on entry). Matches the sibling
+      // terminal-sub-case tests (R7, R9, R10, R11). Mutation-killing:
+      // a regression that added an upgradePhase write before the
+      // !newSeedPhrase check would fail this.
+      expect(comp.upgradePhase).toBe('error');
+      // partialApplyFailed is on NON_RETRYABLE_UPGRADE_ERROR_KEYS, so the
+      // derived `canRetryUpgrade` getter must be false. Mutation-killing:
+      // a regression that omitted the partialApplyFailed routing (e.g.,
+      // left upgradeErrorKey at backendUnavailable) would still hit the
+      // partialApplyFailed assertion above iff both writes were swapped,
+      // but the canRetryUpgrade=false assertion pins the non-retryable
+      // routing independently.
+      expect(comp.canRetryUpgrade).toBe(false);
       // Sensitive state wiped on the defensive path.
       expect(comp.newSeedPhrase).toBe('');
       // No backend call — there was nothing to retry against.

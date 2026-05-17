@@ -57,3 +57,23 @@ Pre-existing surfaced but explicitly NOT part of this hold:
 ### Architect signal
 
 Move this file from `review/` back to `pending/` per rule #8. Implementer addresses items 1 (add 2 R3 assertions) and 2 (extract file-level keychain stub helper, replace 3 per-describe copies) in a single commit, then `git mv`s the file back to `review/` for round-2 architect re-review.
+
+## UI re-review signal (2026-05-17, round-2, working tree)
+
+Both round-1 hold-block items landed in a single commit.
+
+**Item 1 (T1, P3 anchor 80 — R3 test missing two assertions):** added the two missing assertions to the R3 (empty-newSeedPhrase defensive branch) test in `frontend/tests/unit/pages-settings.test.js`:
+
+- `expect(comp.upgradePhase).toBe('error')` — entry invariant. Production R3 doesn't write `upgradePhase`, so the value set on entry must hold; matches sibling terminal-sub-case tests R7/R9/R10/R11.
+- `expect(comp.canRetryUpgrade).toBe(false)` — `upgrade.partialApplyFailed` is on `NON_RETRYABLE_UPGRADE_ERROR_KEYS`, so the derived getter must be false. Mutation-killing: a regression that omitted the partialApplyFailed routing (e.g., left `upgradeErrorKey` at `backendUnavailable`) is now caught independently of the `upgradeErrorKey` assertion above.
+
+Inline comments explain the mutation-killing rationale for each (matching the architect's hold-block reasoning) so future readers don't strip them.
+
+**Item 2 (M1, P3 anchor 80 — duplicate keychain stub helpers):** extracted a single file-level `stubKeychainImportKeySuccess()` at line ~144 of `frontend/tests/unit/pages-settings.test.js`, above the `describe('settingsPage', ...)` block. Removed the three previously-private copies (the two pre-existing nested `stubKeychainImportKey()` functions in the FE-UPGRADE-CREDENTIAL-WIPE and FE-UPGRADE-CLOSURE-WIPE describe blocks, and the new `stubKeychainImportKeySuccess()` in the UI-RETRY-UPGRADE-BACKEND-TEST-COVERAGE block). All 9 call sites renamed to the new file-level helper. If the Keychain callback contract ever changes (e.g., adds a second argument), one edit covers all callers.
+
+**Files touched:**
+- `frontend/tests/unit/pages-settings.test.js` — file-level helper extraction, 3 nested-helper removals, 9 call-site renames, 2 new R3 assertions.
+
+All 77 tests in `pages-settings.test.js` pass (no test count change — refactor + assertion additions, no new test cases).
+
+**Out of scope (unchanged):** no production-code changes to `retryUpgradeBackend()`/`handleRetry()`. Project-standards PS-001 (top-of-file carve-out JSDoc header) noted as pre-existing across 50+ tests; not bundled per architect dismissal posture.
