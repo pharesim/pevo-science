@@ -500,3 +500,72 @@ The accreditation test `round-4 hold #2: pre-INCR redis.eval rejection surfaces 
 `cd backend && npm run lint`: clean. `cd backend && npm run typecheck`: clean (both src and tests configs). Vitest run on the touched surfaces above; full suite not run per parent serialization.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-17, round-4 → round-5) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `62066cb` (9 reviewers — correctness/security/adversarial on opus; reliability/kieran-typescript/testing/maintainability/project-standards/previous-comments on sonnet; learnings-researcher unstructured; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Round-3 hold items 1-6 all land per the implementer's signal — verified by previous-comments and reliability/correctness reviewers. Test mocking carve-out, redis-key prefix, commit-subject form, zone audit, and Edit→git add→git mv staging discipline are all clean.
+
+Two items held — new findings introduced by the round-4 commit itself.
+
+### Items held
+
+**1. (P0, cross-reviewer corroboration: correctness × security × adversarial) Round-4 P0 fix is partial — `res.statusCode < 400` gate misses pre-status TCP-abort.** `backend/src/middleware/rateLimit.ts` Redis-path refund (~line 143) and in-memory-path refund (~line 189).
+
+Cascade: the dual-handler registration (`finish` + `close` with once-guard) closes the architect's named scenario (handler-completed-with-4xx-then-`close`), but the refund still gates on `if (refunded || res.statusCode < 400) return;`. `res.statusCode` defaults to 200 in Node.js and only updates when the handler calls `res.status()` / `sendError()`. The `/upgrade` handler awaits at `custody.ts:1086` (`pool.query`) and `custody.ts:1151` (`hiveClient.database.getAccounts`) BEFORE any status is set. A client TCP-abort during one of these awaits fires `'close'` with `statusCode=200`, the gate returns early, refund is skipped, and the slot stays consumed for the full 1h windowMs. This IS the abort-during-await scenario the round-3 hold framed ("a single dropped connection locks the user out for the full hour — exactly the anti-recovery-attack scenario `skipFailedRequests` was supposed to prevent"); the round-4 fix covers only the post-status-set sub-case.
+
+Cross-reviewer convergence: correctness `correctness-1` (P-med/50 → anchor 75 after corroboration), security P0/65 (→ 75 after corroboration), adversarial `adv-1` high/80 (stays 80). All three personas arrive at the same trigger and the same gating analysis.
+
+Suggested fix shape (from adversarial + security):
+
+```ts
+if (refunded) return;
+refunded = true;
+// Refund if handler errored OR connection aborted before response completed
+if (res.statusCode < 400 && res.writableEnded) return;
+// ... DECR / splice
+```
+
+`res.writableEnded` is true after `res.end()` completes; an abort during a pending `await` leaves `writableEnded=false`, so the gate now refunds. A successful 2xx still has `writableEnded=true && statusCode<400` and skips refund as before. Verify by reading the Node.js docs on `writableEnded` (set on `'finish'`-equivalent path; not set on abrupt `'close'`).
+
+Add a regression test pinning abort-before-statusCode. Note that the existing `rateLimit-in-memory.test.ts` test #3 ("refunds once on finish+close (no double-splice via once-guard)") does NOT actually exercise the once-guard for the in-memory path — the `indexOf >= 0` check inside the in-memory splice already provides idempotent dedup, so removing the once-guard leaves test #3 still passing. The Redis-path once-guard is the load-bearing one (`r.decr()` has no equivalent dedup) and is unexercisable through `vi.mock`-forced-null `getRedis()`. The round-5 abort-before-status test could naturally cover both surfaces if it exercises the Redis path against real Redis (existing `rateLimit.test.ts` fixture pattern).
+
+If the architect's prior intent was actually "default-200 abort consumes slot — accepted residual", document that explicitly in the JSDoc and dismiss this item. The round-3 framing matched the abort-during-await case, so the natural reading is that the round-4 fix is incomplete.
+
+**2. (P1, conf 85, kieran-typescript KT-1) `ScriptReturn` and `SharedScriptName` can diverge silently — JSDoc claim of compile-time enforcement is false.** `backend/src/lib/redis-scripts.ts:158-162`.
+
+`ScriptReturn` is a plain object type with three keys. `SharedScriptName` is `keyof typeof SHARED_SCRIPTS`. Adding a script to `SHARED_SCRIPTS` extends `SharedScriptName` automatically (via `keyof`) but NOT `ScriptReturn`. `evalScript<N extends SharedScriptName>` constrains `N` to the script-name union, not to `keyof ScriptReturn`. `ScriptReturn[N]` for a missing key resolves silently — no compile error fires.
+
+One-line fix (TypeScript 4.9+):
+
+```ts
+export type ScriptReturn = {
+  RATE_LIMIT_CHECK_AND_CONSUME: [number, number];
+  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: number;
+  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
+} satisfies Record<SharedScriptName, unknown>;
+```
+
+This collapses both divergence directions (`SHARED_SCRIPTS` key missing from `ScriptReturn`, and vice versa) to a compile error at the definition site, honoring the JSDoc's promise. Maintainability reviewer confirmed `tsc` is currently clean (no actual divergence today) — this is a future-regression guard.
+
+### Items dismissed at architect triage
+
+- **kieran-typescript KT-2 (P2/75) — three independent `as ScriptReturn[N]` casts at the ioredis boundary in `evalScript`.** Acceptable. Three call sites in one function is below the "extract or audit" threshold; a future fourth dispatch path can prompt the extraction. Defensive runtime narrowing at the highest-risk caller (`rateLimit.ts:117`) catches wrong-shape at runtime.
+- **security P2/40 + reliability R4 low/70 + adversarial adv-2 low/55 — malformed-Lua-return fall-through leaves Redis bucket at +1 while in-memory starts at 0.** Per-user double-consumption is real but requires a wrong-shape ioredis return (no concrete reproducer; ioredis 5.x is the pinned version in `backend/package.json`). PEvO single-instance per `project_single_instance_only.md`. Self-heals at windowMs. The defensive narrowing's purpose is to prevent silent-429-of-all-traffic, which it accomplishes. A `DECR`-on-fall-through guard would be neat but is preemptive against a path with no observed trigger.
+- **correctness `correctness-2` + adversarial `adv-4` — test #3 once-guard claim is unverifiable for in-memory path (indexOf gate already dedups).** Documentation-vs-code gap; test passes either way for the in-memory path. The Redis-path once-guard IS load-bearing but cannot be exercised through `vi.mock`-forced-null `getRedis()`. Rewording the test description to acknowledge "in-memory dedup is via indexOf; once-guard is observable only on the Redis path" would clarify, but is not a held item — the test correctly exercises the no-double-splice property even if its description overpromises about the once-guard. Will naturally improve when item 1's round-5 fix adds a Redis-path abort-before-status test that exercises the once-guard for real.
+- **reliability R2 medium/80 — architect's prior "60s TTL self-healing" residual shorthand is inaccurate for the 1h `/upgrade` limiter.** Code is correct; the new JSDoc accurately documents the rolling-window semantic. Only the round-3 hold's review notes shorthand was imprecise. No code change.
+- **testing T2 low/95 / kieran TG-1 — malformed-Lua-return fall-through has no test.** Bundled with the malformed-return dismissal above; the failure mode is too speculative for preemptive coverage per `feedback_dismiss_preemptive_test_hardening.md`.
+- **adversarial adv-3 low/55 — Redis reconnect between handler entry and refund silently drops refund via `if (!r) return`.** Bounded by `feedback_pevo_logging_minimal` (logging additions default-recommend dismiss); the auto-heal bound is windowMs. Slot-availability transient blip; not a security boundary violation.
+
+### Suppressed below anchor 75 (surfaced for transparency)
+
+- kieran-typescript KT-3 (P2/70): runtime narrowing pattern documented as canonical but only used at one of three call sites. Documentation-vs-code only; current call-site shapes (`Number()`-coerce in `accreditation.ts`, discarded `0|1` in `reputation-batch.ts`) are not at risk today.
+
+### Files for round-5
+
+- `backend/src/middleware/rateLimit.ts` (item 1: widen refund gate to `res.writableEnded` semantics)
+- `backend/tests/middleware/rateLimit.test.ts` or a new sibling (item 1: regression-kill test for abort-before-status; ideally real-Redis-path to also exercise the once-guard)
+- `backend/src/lib/redis-scripts.ts` (item 2: add `satisfies Record<SharedScriptName, unknown>` to `ScriptReturn` definition)
+
+Per root CLAUDE.md rule #8, this file moves from `tasks/review/` back to `tasks/pending/` so the implementer sees it at startup. After landing the round-5 fixes, `git mv` back to `tasks/review/` for round-5 re-review.
