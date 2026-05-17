@@ -2338,7 +2338,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
       }, 30 * 60_000, true);
 
       if (walkerAbort.signal.aborted) {
-        return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+        return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry', { retriable: true });
       }
       if (cached) return sendOk(res, cached);
       return sendError(res, 404, 'NOT_FOUND', 'Version not found');
@@ -2378,7 +2378,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
     }, 30 * 60_000, true);
 
     if (walkerAbort.signal.aborted) {
-      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry', { retriable: true });
     }
     if (cached) return sendOk(res, cached);
     sendError(res, 404, 'NOT_FOUND', 'Paper not found');
@@ -2673,7 +2673,7 @@ router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) 
     5 * 60_000, true);
 
     if (walkerAbort.signal.aborted) {
-      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry', { retriable: true });
     }
     if (!cached) return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
     sendOk(res, cached);
@@ -2760,7 +2760,7 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
     clearTimeout(walkerBudget);
   }
   if (walkerAbort.signal.aborted) {
-    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry', { retriable: true });
   }
   if (!detail) {
     return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
@@ -2924,7 +2924,7 @@ router.get('/:author/:permlink/cite', async (req: Request, res: Response) => {
     clearTimeout(walkerBudget);
   }
   if (walkerAbort.signal.aborted) {
-    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry', { retriable: true });
   }
   if (!detail) {
     return sendError(res, 404, 'NOT_FOUND', 'Paper not found');

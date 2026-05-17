@@ -462,3 +462,23 @@ This is UI-zone work. A parallel UI architect was reviewing UI tasks at the time
 ### Re-review signal
 
 When items 1-3 land in a single round-3 commit, `git mv` this file back to `tasks/review/`. Architect's round-3 review scopes `/ce-code-review` to the round-3 commit only. Item 1 is mechanical (5 sendError additions); item 2 adds a small unit-test file; item 3 reshapes the env parse + comment. Total diff ~30-50 LOC.
+
+---
+
+## Backend re-review signal (2026-05-17, round-3 hold-fixes)
+
+All three round-3 items landed.
+
+### Item 1 — `{ retriable: true }` on the 5 walker-abort 503 sites
+
+`backend/src/routes/papers.ts:2341`, `:2381`, `:2676`, `:2763`, `:2927` — `sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry', { retriable: true })`. Matches the established `bridge.ts:443` / `accreditation.ts:716` shape; SPA can branch on `err.details?.retriable` per `common.md` to surface a retry affordance.
+
+### Item 2 — `parseHafWalkerBudget` helper + unit-test coverage
+
+Factored a `parseHafWalkerBudget(env: string | undefined): number` helper out of `backend/src/config.ts` (exported for testability). New file `backend/tests/lib/haf-walker-budget-env-parse.test.ts` pins the 7-case coverage matrix: unset, empty, `'disabled'`, `'0'`, `'-1'`, `'5000'`, `'3000ms'`. Integration tests in `tests/routes/canonical-root-walker.test.ts` still override `config.hafWalkerWallClockMs` directly via the established cast pattern, bypassing this parse path — that's why the unit pin is necessary (the invariant was previously zero-covered).
+
+### Item 3 — Env-parse refinement (a) + comment fix (b)
+
+(a) Helper uses `Number(env)` + `Number.isFinite(parsed) && parsed > 0` → fallback 3000. Fixes the `'1e3' → 1` and `'1.5' → 1` truncation cases the architect called out under item 3(a). (b) Rewrote the comment block at `backend/src/config.ts:133-143`: the prior wording claimed `Math.max(1, …)` rescued literal `0`, but `0 || 3000 = 3000` so the `||` fallback was actually what caught zero — `Math.max` only floored negative values. The new comment notes both `setTimeout(fn, 0)` and `setTimeout(fn, NaN)` coerce to immediate-fire, so the `> 0` floor is load-bearing for zero/negative/non-finite inputs alike.
+
+Scoped vitest (`tests/lib/haf-walker-budget-env-parse.test.ts` + `tests/routes/canonical-root-walker.test.ts` + `tests/routes/continuation-author-gate.test.ts` + `tests/routes/retract.test.ts`): 88 specs green. `npx tsc --noEmit` + `npm run lint` clean.

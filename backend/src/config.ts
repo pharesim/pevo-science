@@ -28,6 +28,34 @@ function resolveBridgePostingKey(): string {
   );
 }
 
+/**
+ * Parse the HAF_WALKER_WALL_CLOCK_MS env var into a positive millisecond
+ * budget, falling back to 3000ms on any non-positive/non-finite input.
+ *
+ * Uses `Number(...)` rather than `parseInt(..., 10)` so that `'1e3'`
+ * resolves to 1000 (not 1) and `'1.5'` resolves to 1.5 (not 1). The
+ * fallback is triggered by:
+ *
+ *   - undefined env (unset): `Number(undefined) → NaN` → not finite
+ *   - empty string: `Number('') → 0` → not > 0
+ *   - non-numeric string (`'disabled'`, `'3000ms'`): `Number(...) → NaN` → not finite
+ *   - literal `'0'`: `Number('0') → 0` → not > 0 (would produce
+ *     `setTimeout(fn, 0)` immediate-fire, every request emits
+ *     wall-clock-exceeded)
+ *   - negative (`'-1'`): rejected by the `> 0` check (a negative budget
+ *     coerces to `setTimeout(fn, 0)` immediate-fire per ECMAScript spec
+ *     identical to the literal-0 hazard)
+ *
+ * Exported for unit-test coverage in tests/lib/haf-walker-budget-env-parse.test.ts;
+ * the integration tests in tests/routes/canonical-root-walker.test.ts override
+ * `config.hafWalkerWallClockMs` directly, bypassing this parse path.
+ */
+export function parseHafWalkerBudget(env: string | undefined): number {
+  const parsed = Number(env);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 3000;
+  return parsed;
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '3001', 10),
   hiveApiNodes: (process.env.HIVE_API_NODES || 'https://api.hive.blog,https://api.deathwing.me,https://anyx.io')
@@ -104,14 +132,15 @@ export const config = {
   // Operators can tune via env. See BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET
   // and `verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`.
   //
-  // NaN guard: `parseInt` ordering matters — putting the `||` AFTER the parse
-  // means a non-numeric env (`disabled`, `3000ms`) → NaN → falls through to
-  // 3000. The pre-fix form `parseInt(env || '3000', 10)` swallowed the env
-  // value first; `parseInt('disabled', 10) = NaN` then `setTimeout(fn, NaN)`
-  // coerces to `setTimeout(fn, 0)` per ECMAScript spec — fires immediately,
-  // every request emits wall-clock-exceeded. `Math.max(1, …)` also floors at
-  // 1ms to prevent a literal `0` env from producing the same immediate-fire.
-  hafWalkerWallClockMs: Math.max(1, parseInt(process.env.HAF_WALKER_WALL_CLOCK_MS || '', 10) || 3000),
+  // Parse is delegated to `parseHafWalkerBudget` (above). The helper uses
+  // `Number(...)` + `Number.isFinite(...)` + `> 0` rather than `parseInt`
+  // so that `'1e3'` resolves to 1000 (not 1) and `'1.5'` resolves to 1.5
+  // (not 1). Every non-positive or non-finite input (undefined, empty,
+  // `'disabled'`, `'0'`, `'-1'`) falls back to 3000. The `> 0` floor is
+  // load-bearing: `setTimeout(fn, 0)` and `setTimeout(fn, NaN)` both
+  // coerce to immediate-fire per ECMAScript spec — every paper-detail
+  // request would emit wall-clock-exceeded and surface a retriable 503.
+  hafWalkerWallClockMs: parseHafWalkerBudget(process.env.HAF_WALKER_WALL_CLOCK_MS),
   orcidBaseUrl: process.env.ORCID_BASE_URL || 'https://orcid.org',
   accreditationAuthorities: (() => {
     const extra = (process.env.ACCREDITATION_AUTHORITIES || '').split(',').map(s => s.trim()).filter(Boolean);
