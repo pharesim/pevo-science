@@ -608,7 +608,7 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     // running either the real verify OR a sentinel burn.
     let passwordValid = false;
     if (account.password_hash) {
-      // Canonical hoist pattern (mirrored from the `/signup-verify`
+      // Canonical hoist pattern (mirrored from the `/resume-signup`
       // handler in `signup-verify.ts`): `account.password_hash` is
       // `string | null`; the `if (account.password_hash)` check above
       // narrows it to `string` here, but the narrowing does not carry
@@ -779,7 +779,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // via the sentinel hash, so status-code is the only signal distinguishing
     // null-hash accounts from unknown accounts — not response wall-time).
     //
-    // Canonical hoist pattern (mirrored from the `/signup-verify` handler in
+    // Canonical hoist pattern (mirrored from the `/resume-signup` handler in
     // `signup-verify.ts`): `account.password_hash` is `string | null`; the
     // `if (!account.password_hash)` early-return above proves it non-null
     // at runtime, but the narrowing does not carry across the

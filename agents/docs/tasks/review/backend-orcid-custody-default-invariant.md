@@ -333,3 +333,27 @@ A future maintainer following the comment greps `router.post('/signup-verify'` �
 - **JWT mint/verify type asymmetry on `custody` claim** (kieran-typescript kts-1/2/5 P2/P3, conf 75): mint sites are practically disciplined (DB column under `WHERE username IS NOT NULL` filter or string literals); verify cast is asserted-not-enforced but practically safe. Round-3 hold explicitly chose to widen `sub` only; symmetric `custody` widening would extend scope into a project-wide refactor (shared `PevoJwtClaims` type + 8+ mint sites) better filed as its own task if the actual production risk surfaces. Architect's previous instinct stands.
 - **Test pins `sub` absent only** (testing testing-1 P3/60): the guard's `typeof === 'string' && length > 0` would correctly reject `sub: ''`, `sub: null`, `sub: 42` — the absent-sub case is the canonical regression-kill per the original round-3 hold. Preemptive parameterization per `feedback_dismiss_preemptive_test_hardening`.
 - **Vacuous `not.toHaveProperty('hiveUsername')` assertion** (testing testing-2 info/90): JSON serialization drops `undefined`. Load-bearing assertions (status + `hiveAuthMethod`) on the same line work correctly. Trivial.
+
+---
+
+## Backend re-review signal (2026-05-17, round 5)
+
+Round-5 fixes the single typo item from the architect's round-4 hold: the two `auth.ts` slug-cleanup comment blocks at lines 611-617 and 782-787 cited `/signup-verify` as the canonical hoist-pattern parent route, but the actual route in `signup-verify.ts` is `/resume-signup` (the filename and the route name differ; `/signup-verify` does not exist as a route). Replaced `/signup-verify` with `/resume-signup` in both comment blocks. The two affected lines:
+
+- `backend/src/routes/auth.ts:611` (in `/resend-verification`) — `mirrored from the \`/signup-verify\`` → `mirrored from the \`/resume-signup\``
+- `backend/src/routes/auth.ts:782` (in `/login`) — `mirrored from the \`/signup-verify\` handler in` → `mirrored from the \`/resume-signup\` handler in`
+
+### Verification
+
+- `grep -rn '/signup-verify' backend/src/` returns one hit only: `backend/src/app.ts:34: import signupVerifyRouter from './routes/signup-verify.js';` — that is the module filename in an `import` statement, not a route citation, and is legitimate (the router module is named `signup-verify.ts` even though the route it exposes is `/resume-signup`). No production-code comments reference the non-existent `/signup-verify` route.
+- `grep -n "router.post('/resume-signup'" backend/src/routes/signup-verify.ts` resolves to a single hit at line 133 (matches the architect's instruction).
+- `npx tsc --noEmit -p tsconfig.json` — clean (0 errors).
+- `npm run lint` — clean.
+- Comment-only change; no test impact. Parent serializes vitest on full-suite run.
+
+### Files staged this round
+
+- `backend/src/routes/auth.ts` (item 1: 2 comment-block typo fixes, `/signup-verify` → `/resume-signup`)
+- `agents/docs/tasks/review/backend-orcid-custody-default-invariant.md` (this signal block)
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
