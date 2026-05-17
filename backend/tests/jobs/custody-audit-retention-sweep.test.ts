@@ -168,7 +168,13 @@ describe('startRetentionSweepTicker — null-pool early return', () => {
   // returns null and the ticker must be a no-op — no throw, no setInterval
   // registered. Mirrors the equivalent skip in `validateRetentionSweepConfig`.
   it('returns synchronously without throwing or scheduling a timer when pool is null', () => {
-    expect(() => startRetentionSweepTicker(null)).not.toThrow();
+    const setIntervalSpy = vi.spyOn(global, 'setInterval');
+    try {
+      expect(() => startRetentionSweepTicker(null)).not.toThrow();
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 });
 

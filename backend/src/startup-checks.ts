@@ -274,14 +274,13 @@ function initBridgePostingKeyCache(): void {
  * (the boot-fatal sites already logged the user-actionable detail before
  * throwing — re-logging would be noise).
  *
- * BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP round-3 item 3: accepts
- * `ErrorOptions` so re-throw sites can pass `{cause: err}` to preserve the
- * underlying error chain. Existing call sites that pass only a message
+ * Accepts `ErrorOptions` so re-throw sites can pass `{cause: err}` to
+ * preserve the underlying error chain (ES2022 native; pino's err serializer
+ * walks `.cause` recursively). Existing call sites that pass only a message
  * continue to work unchanged (`options` is optional and forwarded directly
  * to `super`). Other existing boot-fatal sites (`validateConfig`,
  * `initBridgePostingKeyCache`) currently throw without a cause; adopting
- * the `{cause: err}` form there is a separate refactor and not part of
- * this change.
+ * the `{cause: err}` form there is a separate refactor.
  */
 export class BootFatalError extends Error {
   constructor(message: string, options?: ErrorOptions) {

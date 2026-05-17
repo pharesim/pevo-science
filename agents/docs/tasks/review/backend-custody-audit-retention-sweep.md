@@ -244,3 +244,22 @@ None below the actionable bar.
 ### Re-review signal
 
 When items 1-4 land, `git mv` this file back to `tasks/review/`. All four items can land in a single focused commit; fix shape is byte-trivial at each site.
+
+---
+
+## Backend re-review signal (2026-05-17, round-4 fix commit)
+
+Round-3 hold items 1-4 landed in a single focused commit across `backend/src/startup-checks.ts`, `backend/src/index.ts`, and `backend/tests/jobs/custody-audit-retention-sweep.test.ts`.
+
+- **Item 1 (P2 task-slug citations introduced by round-3)** — Two sites cleaned:
+  - `backend/src/startup-checks.ts` BootFatalError docblock: replaced the opening "BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP round-3 item 3:" with behavioral prose explaining the `ErrorOptions` rationale (ES2022 `.cause`, pino's err serializer walks it recursively). The closing note about other boot-fatal sites being a separate refactor is retained without the slug reference.
+  - `backend/src/index.ts` `.catch` block comment: replaced the opening "BootFatalError discrimination (BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP round-3 item 1):" with the bare "BootFatalError discrimination:" label.
+- **Item 2 (P3 line-number anchor `(lines 80-85)`)** — Replaced with "The synchronous top-level try/catch wrapping `validateConfig()` / `createApp()`" per convention `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`. Same edit chunk as item 3 (adjacent prose).
+- **Item 3 (P3 "mirror that pattern" misleading parity claim)** — Replaced "mirror that pattern here" with "discriminate on `instanceof BootFatalError` here too so the async path's fatal log carries the BootFatalError's own message rather than the generic 'Failed to initialize app database' label". Names the actual behavior rather than implying byte-equivalent symmetry with the sync catch (which the architect's hold note flagged as misleading because sync pre-logs validateConfig context).
+- **Item 4 (P3 null-pool smoke test under-asserts)** — `backend/tests/jobs/custody-audit-retention-sweep.test.ts` null-pool subtest now wraps the call in a `vi.spyOn(global, 'setInterval')` + `try { ... expect(setInterval).not.toHaveBeenCalled(); } finally { setIntervalSpy.mockRestore(); }`. A mutation moving the `if (!pool) return` early-return past `setInterval` registration would now fail the assertion. `mockRestore()` lives in `finally` so the global spy is cleaned up even if the inner expectations throw.
+
+**Verification gates run.**
+- `npm run lint`: clean.
+- `npm run typecheck`: clean (both `typecheck:src` and `typecheck:tests` exit 0).
+- `npx vitest run tests/jobs/custody-audit-retention-sweep.test.ts` against real Postgres + Redis: 14/14 pass (1.03s).
+

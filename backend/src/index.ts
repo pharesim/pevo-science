@@ -168,15 +168,15 @@ if (app) {
       // route through `flushAndExit()` so the fatal line drains under the 2s
       // watchdog (a hung-flush callback no longer hangs the boot indefinitely).
       //
-      // BootFatalError discrimination (BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP
-      // round-3 item 1): boot-fatal throws (e.g. SOT-parse failure in
-      // `validateRetentionSweepConfig`) propagate out of the awaited call
-      // inside `initAppDb().then(...)` and land here. The sync top-level
-      // catch in `index.ts` (lines 80-85) already discriminates this class
-      // to suppress the re-log of the user-actionable detail emitted at
-      // the throw site; mirror that pattern here so the async path's fatal
-      // log carries the BootFatalError's own message rather than the
-      // mislabelled "Failed to initialize app database".
+      // BootFatalError discrimination: boot-fatal throws (e.g. SOT-parse
+      // failure in `validateRetentionSweepConfig`) propagate out of the
+      // awaited call inside `initAppDb().then(...)` and land here. The
+      // synchronous top-level try/catch wrapping `validateConfig()` /
+      // `createApp()` already discriminates this class to suppress the
+      // re-log of the user-actionable detail emitted at the throw site;
+      // discriminate on `instanceof BootFatalError` here too so the async
+      // path's fatal log carries the BootFatalError's own message rather
+      // than the generic "Failed to initialize app database" label.
       if (err instanceof BootFatalError) {
         logger.fatal({ err }, err.message);
       } else {
