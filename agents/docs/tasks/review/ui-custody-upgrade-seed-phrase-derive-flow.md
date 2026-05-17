@@ -202,3 +202,20 @@ Reviewed via `/ce-code-review` against commits `0f23539..5644e8a` with 10 person
 2. Re-review scoped to the round-3 diff against round-2 HEAD.
 
 Cross-task: `/ce-compound` candidate flagged by implementer in the non-consent task (Storage.prototype.removeItem jsdom mocking pattern) confirmed by learnings-researcher as having no existing entry; architect will authorize after the sister task's round-3 lands.
+
+## UI re-review signal (2026-05-17, commit 7fdeae7)
+
+Round-3 hold-block items all landed in a single commit (settings.js + i18n + STUBS.md).
+
+**Items #1–#5 landed:**
+1. Stripped task/round/finding-number refs from settings.js comments — only durable invariant markers (`FE-UPGRADE-CLOSURE-WIPE`, `FE-UPGRADE-CREDENTIAL-WIPE`, `ORDERING`) remain. Verified by grep: no `round-N`, `task-N`, `finding-N`, `adv-rN`, `JFR-N`, or `hold item` references left in `settings.js`. The bogus `round-7` reference at the prior line 117 is gone.
+2. `beforeunload` deregister-before-reassign now at the top of `init()` (settings.js:583-586). `init()` removes the prior handler via `_beforeUnloadHandler` before reassigning, mirroring `destroy()`'s pattern.
+3. `_handlePostBroadcastError` gates on `if (!this._mounted) return;` as first statement (settings.js:1037).
+4. `retryUpgradeBackend` phase flip (`this.upgradePhase = 'upgrading'`) is now the third statement after the two getter-style guards (settings.js:974), mirroring `executeUpgrade`. The defensive empty-mnemonic branch now flips phase back to `'error'` explicitly so a terminal state is always reached.
+5. `upgrade.backendTimeout` copy tightened in en.json (line 995) to "the new recovery phrase shown earlier in this flow, not your original one"; 15 non-English locales re-stubbed in place; STUBS.md sweep entry added under `### Updated 2026-05-17 (UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW)` at line 1143.
+
+**Tests:** `tests/unit/pages-settings*` 104/104 pass.
+
+**Carry-forward (already filed):**
+- `tasks/pending/ui-mid-broadcast-spa-navigation-guard.md` (adv-r2-3 SPA-internal nav).
+- `tasks/pending/backend-build-custody-upgrade-challenge-export.md` (adv-9 byte-equality test prerequisite).
