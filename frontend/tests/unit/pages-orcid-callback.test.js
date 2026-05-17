@@ -892,6 +892,50 @@ describe('orcidCallbackPage', () => {
       expect(mockToastStore.show).toHaveBeenCalledWith('orcid.reauthSuccess', 'success');
     });
 
+    // Regression: `set_password` action ships an empty-string `root_permlink`
+    // by design — it's an account-level (non-paper) target, so the permlink
+    // slot is intentionally vacant in the wire contract. A truthy check on
+    // `root_permlink` would reject this contract-valid response and surface
+    // the generic error page; type-check on string is required so the empty
+    // string passes and propagates into the cache. The cache write must
+    // include the empty string verbatim so the consumer-side strict-equality
+    // lookup (which also keys on `root_permlink === ''` for `set_password`)
+    // matches. See backend-settings-set-password-fresh-auth for the issuer
+    // side of this contract.
+    it('handles fresh_auth set_password action with empty root_permlink: caches target-bound proof including empty permlink, navigates return path, fires success toast', async () => {
+      sessionStorageData['pevo_fresh_auth_return_to'] = '/settings';
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'set_password',
+          root_author: 'alice',
+          root_permlink: '',
+          mechanism: 'orcid',
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      // (a) Cache write succeeds with all three target fields, including the
+      // empty-string root_permlink stored verbatim.
+      const cached = JSON.parse(sessionStorageData['pevo_fresh_auth_consent_op_proof']);
+      expect(cached.token).toBe('tok');
+      expect(cached.expiresAt).toBe('2099-01-01T00:00:00.000Z');
+      expect(cached.action).toBe('set_password');
+      expect(cached.rootAuthor).toBe('alice');
+      expect(cached.rootPermlink).toBe('');
+      // (b) Return-path navigation fires.
+      expect(sessionStorageData['pevo_fresh_auth_return_to']).toBeUndefined();
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/settings');
+      // (c) Success toast appears.
+      expect(mockToastStore.show).toHaveBeenCalledWith('orcid.reauthSuccess', 'success');
+      // Status not flipped to error (the guard let the empty permlink through).
+      expect(comp.status).not.toBe('error');
+    });
+
     it('fresh_auth without a stored return path falls back to /', async () => {
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({

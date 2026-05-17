@@ -303,10 +303,18 @@ export function initOrcidCallbackPage() {
       // SPA would silently write `undefined` into a target field and every
       // subsequent strict-equality lookup would miss, leaving the user
       // re-OAuthing indefinitely with no error surface.
+      //
+      // Type-check `root_permlink` rather than truthy-check it: the backend's
+      // `set_password` fresh_auth echo deliberately ships `root_permlink: ''`
+      // (a contract-valid empty string indicating an account-level, non-paper
+      // target). A truthy check would reject that valid response. The other
+      // two fields (`action`, `root_author`) are always non-empty per the
+      // wire contract; their guards combine the typeof and truthy checks so
+      // a `null` / `undefined` / wrong-type / empty value all surface error.
       if (
-        typeof data.action !== 'string' ||
-        !data.root_author ||
-        !data.root_permlink
+        typeof data.action !== 'string' || !data.action ||
+        typeof data.root_author !== 'string' || !data.root_author ||
+        typeof data.root_permlink !== 'string'
       ) {
         this.status = 'error';
         this.errorMessage = this.$t('orcid.verificationFailed');
