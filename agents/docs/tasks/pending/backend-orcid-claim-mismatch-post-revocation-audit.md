@@ -217,3 +217,101 @@ The mock uses `headAuthorsLookupSql` (matcher at line 128) for the walker's star
 Fix is test-only: the worker should either (a) add a separate `canonicalRootWalkerStartSql` matcher that returns a row with `cont_author='alice'`, `cont_permlink='p1'` plus the head-row identity, or (b) extend the existing matcher to handle both cases. The audit-emission assertions are correct; only the chain-reachability needs the mock fix.
 
 Architect: hold for round-2 with the test-mock fix as the single item, or accept the production code and route the test fix to a follow-up if archive timing matters.
+
+---
+
+## Architect round-2 re-review (2026-05-17) — HELD PENDING FIXES
+
+`/ce-code-review` on commits `0e648b6` (Alt 2 implementation) + `5a8f265` (tsconfig fixes) + `5572c49` (parent test-failure note) ran 10 personas (correctness + security + adversarial on opus; testing + maintainability + project-standards + performance + data-integrity + api-contract + reliability on sonnet; ce-agent-native-reviewer skipped per project CLAUDE.md).
+
+**Production code is verified correct** by correctness + data-integrity:
+- Multi-cycle LATERAL ORDER BY (ORCID-Y vs ORCID-X) traced correctly.
+- JSONB extraction inherits from `accred_ranked` cleanly.
+- All sibling reads (profile.ts:37, orcid.ts:1878/1904, accreditations.ts:69/133, hafsql.ts:79, wot.ts via getAccreditedSet) use the same `action IN ('accredit','revoke')` + authority filter pattern; no drift.
+- Branch mutual exclusivity (active arm + revoked arm + never-accredited silent) is correct.
+
+Five items hold; one cross-task follow-up filed separately.
+
+### Item 1 [P2] — Test-mock infrastructure: 3 of 4 canaries vacuously fail
+
+**Cross-corroborated:** testing × project-standards × parent's own note (5572c49)
+**File:** `backend/tests/routes/papers-cumulative-orcid-audit.test.ts:164-200`
+
+Per parent's note in `5572c49` and the testing reviewer's verification: `seedTwoLinkChain`'s `rootRow` mock omits `cont_author` / `cont_permlink` columns. The canonical-root walker SQL at `papers.ts:1746-1815` selects those columns and bails at `cont_columns_invalid` when they aren't strings. The walker SQL matches the test's `headAuthorsLookupSql` matcher first (both select `c.author, c.json_metadata` AND `parent_permlink = $3`), so walker gets the `rootRow` shape, bails, and `buildCumulativeAuthorsForChain` runs with truncated chain → audit code never reached.
+
+Result: 3 of 4 canaries (single-cycle, multi-cycle, active spoof) fail because `findAuditEvent(warnSpy)` returns undefined. The 4th canary (post-revocation match, non-firing) passes vacuously — walker bail satisfies `expect(event).toBeUndefined()` regardless of whether the active/revoked-arm branching is correct.
+
+The architect's acceptance §3 ("Canary: revoke alice; bob broadcasts a continuation claiming an ORCID for alice; assert audit fires") is structurally unmet. Production code is correct, but the test file currently provides only false-positive coverage.
+
+**Fix shape** (per the parent's note and the testing reviewer's analysis): either add a separate `canonicalRootWalkerStartSql` matcher discriminating on `cont_author` presence in the SELECT clause, OR extend the existing `headAuthorsLookupSql` matcher to fork. The matcher should return a row with `cont_author='alice'`, `cont_permlink='p1'`, head-row identity, and `json_metadata` as the expected object (per parseMeta acceptance). Once the chain reaches `buildCumulativeAuthorsForChain`, the audit-emission assertions should fire as written.
+
+### Item 2 [P2] — Branch (d) audit payload missing `accreditationStatus` + bypasses dedup
+
+**Cross-corroborated:** adversarial × maintainability × api-contract (conf 80)
+**File:** `backend/src/routes/papers.ts:417-434` (pre-existing branch from parent cumulative-union task)
+
+The active-arm's third audit emission path — "accredited target with no on-chain ORCID + broadcaster claim present: suppress claim" (case d from parent task's rule #3) — emits `orcid_claim_mismatch` WITHOUT:
+- the new `accreditationStatus: 'active'` field (architect ratification at this task line 130: "Single event `orcid_claim_mismatch` with additive `accreditationStatus: active | revoked` field is preferred over splitting into two event names. Backward-compatible (additive field)").
+- the new `auditedKeys` dedup Set.
+
+**Operator-impact:** dashboards filtering `event === 'orcid_claim_mismatch' AND accreditationStatus === 'active'` silently miss case-d events. The active-arm spoof gets dropped from operator visibility despite being categorically an active-arm spoof.
+
+**Fix shape:** add `accreditationStatus: 'active' as const` to the case-d payload and consult `auditedKeys.has(auditKey)` before emit + `auditedKeys.add(auditKey)` after. Genuinely additive (backward-compatible). Pairs naturally with Item 4 (extract `emitOrcidClaimMismatchAudit` helper) — case d becomes a third call site of the same helper.
+
+**Add a new canary** to `papers-cumulative-orcid-audit.test.ts` pinning case d's `accreditationStatus: 'active'` payload (accredited hive, on-chain ORCID is null, broadcaster supplies a claim) so a regression that drops the field surfaces.
+
+### Item 3 [P2] — Extract `emitOrcidClaimMismatchAudit` helper
+
+**Source:** maintainability M3 (conf 75)
+**File:** `backend/src/routes/papers.ts:387-410, 417-434, 437-462`
+
+Three audit emissions in `buildCumulativeAuthorsForChain` share the same payload skeleton (event, rootAuthor, rootPermlink, hive, claimedOrcid, accreditedOrcid, claimSource, message) and the same `auditedKeys` dedup-key construction. After Item 2's fix to branch (d), all three share identical dedup discipline. The arms differ only in:
+- `accreditationStatus` literal (`'active'` for case b + case d, `'revoked'` for revoked arm).
+- `accreditedOrcid` source.
+- log message string.
+- Active-arm case b also mutates `out.orcid`; revoked arm and case d do not (so the helper consolidates emission only; the override remains inline at the call site for case b).
+
+**Fix shape:** extract `emitOrcidClaimMismatchAudit({status, accreditedOrcid, claimedOrcid, hive, rootAuthor, rootPermlink, claimSource, message}, auditedKeys)`. Call from all three sites. Surrounding decision-tree branching stays as-is.
+
+### Item 4 [P2] — Rename `getAccreditationOrcidsWithStatus` to a more distinct name
+
+**Source:** maintainability M2 (conf 75)
+**File:** `backend/src/accreditation.ts:206` + import in `papers.ts`
+
+`getAccreditedOrcidsByAccount` (active-only) vs `getAccreditationOrcidsWithStatus` (active + revoked, with `status` flag) — both `Map<string, …>`, colocated, imported side-by-side in `papers.ts`:
+
+```ts
+import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAccreditationOrcidsWithStatus }
+```
+
+Four similarly-prefixed exports whose semantic boundaries aren't obvious from name alone. Autocompleting maintainer typing `getAccredit…` gets four plausible options; picking the wrong one is a silent semantic widening or narrowing (no type error — both `Map<string, …>` shapes).
+
+**Fix shape:** rename the new helper to `getAllEverAccreditedOrcidsWithStatus` (or another name that signals "includes revoked" in the name itself). Touches 3 sites: the helper definition + the `papers.ts` import + the `papers.ts` callsite. The CTE name (`accreditation_status` in hafsql.ts) and the cache key (`accreditation_orcid_status`) can stay; this is purely a JS-side rename.
+
+### Item 5 [P2] — Relocate the new helper's docstring/body to remove ambiguous ownership
+
+**Source:** maintainability M4 (conf 75)
+**File:** `backend/src/accreditation.ts:141-203` (current ordering)
+
+The docstring at lines 142-164 documents `getAllAccreditedAccounts`. The new docstring at lines 166-203 (intended for `getAccreditationOrcidsWithStatus` / its post-rename name) was inserted BETWEEN that docstring and the `getAllAccreditedAccounts` function declaration at line 251, with the `export type AccreditationStatus = 'active' | 'revoked'` and the new helper body at lines 204-249 between them.
+
+Reader-side effect: `getAllAccreditedAccounts`'s docstring is followed by ANOTHER docstring before any function declaration appears — ambiguous ownership on first read.
+
+**Fix shape:** move the new function's docstring + type export + body BEFORE `getAllAccreditedAccounts`'s docstring, OR after `getAllAccreditedAccounts`'s implementation. The current sandwich layout is the maintainability bug.
+
+### Files for round-3
+
+- `backend/src/routes/papers.ts` (items 2, 3 — emit-helper extraction + case-d payload fix)
+- `backend/src/accreditation.ts` (items 4, 5 — rename + relocate)
+- `backend/tests/routes/papers-cumulative-orcid-audit.test.ts` (item 1 + new case-d canary from item 2)
+- This task file (round-3 implementer signal block when moving back to review/)
+
+### New follow-up task filed by architect (separate from this hold)
+
+- `backend-fetch-paper-detail-haf-error-vs-not-found.md` (P1) — `fetchPaperDetailFromHaf` (and sibling enrichment/retract/cite handlers) swallow HAF-class errors into `null → 404`, structurally defeating the loud-fail intent on `getAccreditationOrcidsWithStatus`. Closed at the route layer in a separate task; this task's audit code is correct given the helper throws on outage. Filed in `tasks/pending/`.
+
+### Dismissed at architect triage (recorded for transparency)
+
+- **Per-paper audit amplification on revoked-author dossiers** (adversarial P3/70): architect already ratified "no preemptive gating; future volume data drives gating" (item 4, this task file line 132). Settled.
+- **Pool-null cache-poisoning divergence from sibling helper** (adversarial × maintainability P3/55): exploit requires runtime config toggle which doesn't happen in production (pool=null is dev-only). Production-irrelevant.
+- **6-positional-parameter `buildCumulativeAuthorsForChain` signature** (maintainability P2/75): defer until `backend-cumulative-union-listing-surfaces-parity` adds the second caller; that's the natural extraction moment. Premature now.
