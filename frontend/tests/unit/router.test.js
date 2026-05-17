@@ -341,4 +341,79 @@ describe('router', () => {
       expect(mockI18nStore.setLocale).not.toHaveBeenCalled();
     });
   });
+
+  describe('navigation guards', () => {
+    it('runs each registered guard with the target path and proceeds when all return true', () => {
+      const store = initAt('/');
+      const guardA = vi.fn(() => true);
+      const guardB = vi.fn(() => true);
+      store.registerNavigationGuard(guardA);
+      store.registerNavigationGuard(guardB);
+
+      store.navigate('/papers');
+
+      expect(guardA).toHaveBeenCalledWith('/papers');
+      expect(guardB).toHaveBeenCalledWith('/papers');
+      expect(store.route).toBe('papers');
+    });
+
+    it('blocks navigation when any guard returns false', () => {
+      const store = initAt('/');
+      const guard = vi.fn(() => false);
+      store.registerNavigationGuard(guard);
+
+      store.navigate('/papers');
+
+      expect(guard).toHaveBeenCalledWith('/papers');
+      expect(store.route).toBe('home');
+      // pushState not called when navigation is blocked.
+      expect(pushStateSpy).not.toHaveBeenCalled();
+    });
+
+    it('short-circuits subsequent guards when an earlier guard blocks', () => {
+      const store = initAt('/');
+      const guardA = vi.fn(() => false);
+      const guardB = vi.fn(() => true);
+      store.registerNavigationGuard(guardA);
+      store.registerNavigationGuard(guardB);
+
+      store.navigate('/papers');
+
+      expect(guardA).toHaveBeenCalledTimes(1);
+      expect(guardB).not.toHaveBeenCalled();
+    });
+
+    it('unregisterNavigationGuard removes the guard', () => {
+      const store = initAt('/');
+      const guard = vi.fn(() => false);
+      store.registerNavigationGuard(guard);
+      store.unregisterNavigationGuard(guard);
+
+      store.navigate('/papers');
+
+      expect(guard).not.toHaveBeenCalled();
+      expect(store.route).toBe('papers');
+    });
+
+    it('registerNavigationGuard returns an unregister function', () => {
+      const store = initAt('/');
+      const guard = vi.fn(() => false);
+      const unregister = store.registerNavigationGuard(guard);
+      unregister();
+
+      store.navigate('/papers');
+
+      expect(guard).not.toHaveBeenCalled();
+    });
+
+    it('treats undefined / truthy return values as allow (only strict false blocks)', () => {
+      const store = initAt('/');
+      const guard = vi.fn(() => undefined);
+      store.registerNavigationGuard(guard);
+
+      store.navigate('/papers');
+
+      expect(store.route).toBe('papers');
+    });
+  });
 });

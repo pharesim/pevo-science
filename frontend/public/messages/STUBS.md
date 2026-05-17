@@ -1162,3 +1162,21 @@ pt: upgrade.backendTimeout
 sv: upgrade.backendTimeout
 tr: upgrade.backendTimeout
 zh: upgrade.backendTimeout
+
+### Added 2026-05-17 (UI-MID-BROADCAST-SPA-NAVIGATION-GUARD)
+
+ar: upgrade.navigationGuardConfirm
+cs: upgrade.navigationGuardConfirm
+da: upgrade.navigationGuardConfirm
+de: upgrade.navigationGuardConfirm
+es: upgrade.navigationGuardConfirm
+fa: upgrade.navigationGuardConfirm
+fr: upgrade.navigationGuardConfirm
+he: upgrade.navigationGuardConfirm
+it: upgrade.navigationGuardConfirm
+nl: upgrade.navigationGuardConfirm
+pl: upgrade.navigationGuardConfirm
+pt: upgrade.navigationGuardConfirm
+sv: upgrade.navigationGuardConfirm
+tr: upgrade.navigationGuardConfirm
+zh: upgrade.navigationGuardConfirm

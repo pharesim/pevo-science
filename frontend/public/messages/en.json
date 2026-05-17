@@ -1002,6 +1002,7 @@
     "doneTitle": "Upgrade Complete",
     "doneDescription": "Your account is now fully self-custodied via Hive Keychain. Keep your old recovery phrase for 30 days as a backup.",
     "failed": "Account upgrade failed. Please try again. If the problem persists, contact support.",
+    "navigationGuardConfirm": "Your account upgrade is in progress. Leaving now could leave your account in a broken state. Are you sure you want to navigate away?",
     "keychainImportWarning": {
       "posting": "Your posting key was not imported into Hive Keychain. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help.",
       "active": "Your active key was not imported into Hive Keychain. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help.",

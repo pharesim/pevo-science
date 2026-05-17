@@ -118,8 +118,36 @@ export function initRouter() {
     params: initial.params,
     query: initial.query,
     locale: initial.locale || DEFAULT_LOCALE,
+    _navigationGuards: [],
+
+    // Register a function that runs synchronously before each `navigate(path)`
+    // call. The guard receives `(targetPath)` and returns `true` to allow the
+    // navigation, `false` to block it. All guards must return true for the
+    // navigation to proceed. Guards typically surface a confirm prompt and
+    // gate on the user's response. Returns an unregister function for
+    // convenience; callers may also pass the same function reference back to
+    // `unregisterNavigationGuard`. Does NOT intercept popstate (browser
+    // back/forward) — that path goes around `navigate()`. In-page navigation
+    // in PEvO uses `@click="navigate(...)"` exclusively, so guard coverage
+    // matches the realistic interruption surface for an in-flight broadcast.
+    registerNavigationGuard(fn) {
+      this._navigationGuards.push(fn);
+      return () => this.unregisterNavigationGuard(fn);
+    },
+
+    unregisterNavigationGuard(fn) {
+      const i = this._navigationGuards.indexOf(fn);
+      if (i >= 0) this._navigationGuards.splice(i, 1);
+    },
 
     navigate(path) {
+      // Run navigation guards before any side effects. Guards see the path
+      // exactly as passed in (pre-locale-prefix) so they can match against
+      // logical destinations without locale-prefix noise.
+      for (const guard of this._navigationGuards) {
+        if (guard(path) === false) return;
+      }
+
       // Separate hash fragment before processing
       let hash = '';
       const hashIdx = path.indexOf('#');

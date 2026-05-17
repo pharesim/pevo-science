@@ -94,7 +94,11 @@ const mockAuthStore = {
   _startAccreditationPolling: vi.fn(),
   loginFromResponse: vi.fn(mockLoginFromResponse),
 };
-const mockRouterStore = { navigate: vi.fn() };
+const mockRouterStore = {
+  navigate: vi.fn(),
+  registerNavigationGuard: vi.fn(),
+  unregisterNavigationGuard: vi.fn(),
+};
 const mockToastStore = { show: vi.fn() };
 
 vi.mock('alpinejs', () => ({
@@ -461,6 +465,93 @@ describe('settingsPage round-2 hold-block findings', () => {
         expect(handler(event)).toBeUndefined();
         expect(event.preventDefault).not.toHaveBeenCalled();
       }
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // UI-MID-BROADCAST-SPA-NAVIGATION-GUARD: SPA-internal navigation guard.
+  // beforeunload covers tab close; this covers router.navigate() in-page
+  // navigation that would otherwise silently abandon a mid-broadcast upgrade.
+  // ─────────────────────────────────────────────────────────────────────────
+  describe('SPA navigation guard', () => {
+    it('init registers a navigation guard; destroy unregisters the same function reference', () => {
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: false } });
+      const comp = createComponent();
+      comp.init();
+
+      expect(mockRouterStore.registerNavigationGuard).toHaveBeenCalledTimes(1);
+      const guard = mockRouterStore.registerNavigationGuard.mock.calls[0][0];
+      expect(typeof guard).toBe('function');
+      expect(comp._navigationGuard).toBe(guard);
+
+      comp.destroy();
+      expect(mockRouterStore.unregisterNavigationGuard).toHaveBeenCalledWith(guard);
+      expect(comp._navigationGuard).toBeNull();
+    });
+
+    it('guard allows navigation (returns true) when upgradePhase is not "upgrading"', () => {
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: false } });
+      const comp = createComponent();
+      comp.init();
+      const guard = mockRouterStore.registerNavigationGuard.mock.calls[0][0];
+
+      for (const phase of ['idle', 'new-seed', 'confirm-new', 'enter-old', 'done', 'error']) {
+        comp.upgradePhase = phase;
+        expect(guard('/papers')).toBe(true);
+      }
+    });
+
+    it('guard calls window.confirm and returns its result when upgradePhase==="upgrading"', () => {
+      const confirmSpy = vi.fn(() => true);
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        confirm: confirmSpy,
+      });
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: false } });
+      const comp = createComponent();
+      comp.init();
+      const guard = mockRouterStore.registerNavigationGuard.mock.calls[0][0];
+
+      comp.upgradePhase = 'upgrading';
+      expect(guard('/papers')).toBe(true);
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+
+      confirmSpy.mockReturnValueOnce(false);
+      expect(guard('/papers')).toBe(false);
+    });
+
+    it('guard blocks navigation when window.confirm is unavailable and phase is "upgrading" (safer than allowing silent abandon)', () => {
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        // confirm intentionally omitted
+      });
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: false } });
+      const comp = createComponent();
+      comp.init();
+      const guard = mockRouterStore.registerNavigationGuard.mock.calls[0][0];
+
+      comp.upgradePhase = 'upgrading';
+      expect(guard('/papers')).toBe(false);
+    });
+
+    it('re-init deregisters the prior guard before registering a new one (Alpine remount safety)', () => {
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: false } });
+      const comp = createComponent();
+      comp.init();
+      const firstGuard = mockRouterStore.registerNavigationGuard.mock.calls[0][0];
+
+      mockRouterStore.registerNavigationGuard.mockClear();
+      mockRouterStore.unregisterNavigationGuard.mockClear();
+      comp.init();
+
+      expect(mockRouterStore.unregisterNavigationGuard).toHaveBeenCalledWith(firstGuard);
+      expect(mockRouterStore.registerNavigationGuard).toHaveBeenCalledTimes(1);
+      const secondGuard = mockRouterStore.registerNavigationGuard.mock.calls[0][0];
+      expect(secondGuard).not.toBe(firstGuard);
     });
   });
 

@@ -986,7 +986,8 @@
       "memo": "Your memo key was not imported into Hive Keychain. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help."
     },
     "keychainImportFailed": "Hive Keychain import did not complete. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help.",
-    "proofRejected": "Could not verify upgrade proof. If your clock is off, correct it and try again."
+    "proofRejected": "Could not verify upgrade proof. If your clock is off, correct it and try again.",
+    "navigationGuardConfirm": "Your account upgrade is in progress. Leaving now could leave your account in a broken state. Are you sure you want to navigate away?"
   },
   "resetPassword": {
     "requestTitle": "Réinitialiser votre mot de passe",

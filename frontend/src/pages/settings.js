@@ -600,6 +600,32 @@ export function initSettingsPage() {
         window.addEventListener('beforeunload', this._beforeUnloadHandler);
       }
 
+      // SPA-internal navigation guard. `beforeunload` only fires on tab/window
+      // close, not on router `navigate(...)` calls (in-page link clicks,
+      // programmatic navigation). Without this guard, a user mid-broadcast
+      // who clicks the PEvO logo or another nav link silently leaves the
+      // upgrade flow: the component unmounts, the in-flight POST is orphaned,
+      // and the user lands with a light JWT pointing at an already-rotated
+      // chain account. Mirrors the beforeunload deregister-before-reassign
+      // pattern above so Alpine re-instantiation doesn't double-register.
+      const router = Alpine.store('router');
+      if (router && typeof router.registerNavigationGuard === 'function') {
+        if (this._navigationGuard) {
+          router.unregisterNavigationGuard(this._navigationGuard);
+          this._navigationGuard = null;
+        }
+        this._navigationGuard = () => {
+          if (this.upgradePhase !== 'upgrading') return true;
+          if (typeof window === 'undefined' || typeof window.confirm !== 'function') {
+            // No confirm prompt available; fall back to block (safer than
+            // silently allowing nav and bricking the account).
+            return false;
+          }
+          return window.confirm(this.$t('upgrade.navigationGuardConfirm'));
+        };
+        router.registerNavigationGuard(this._navigationGuard);
+      }
+
       // Check if returning from ORCID link callback
       const orcidLinked = localStorage.getItem('pevo_orcid_link_complete');
       if (orcidLinked) {
@@ -632,6 +658,16 @@ export function initSettingsPage() {
       if (this._beforeUnloadHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
         window.removeEventListener('beforeunload', this._beforeUnloadHandler);
         this._beforeUnloadHandler = null;
+      }
+      // Symmetric cleanup for the SPA-internal navigation guard. Without
+      // this, an unmounted component's closure stays registered on the
+      // router store and continues to block navigation forever.
+      if (this._navigationGuard) {
+        const router = Alpine.store('router');
+        if (router && typeof router.unregisterNavigationGuard === 'function') {
+          router.unregisterNavigationGuard(this._navigationGuard);
+        }
+        this._navigationGuard = null;
       }
       this._teardownTimers();
     },
