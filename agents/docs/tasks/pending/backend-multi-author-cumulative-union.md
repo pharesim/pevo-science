@@ -346,3 +346,69 @@ Round-1 hold items 1-5 landed.
 - Item 5 (P2) — stale `// satisfies no-shrink` comment removed at continuation-author-gate.test.ts:1011 (now line shifted by item-4 retitling).
 
 Tools note: this worktree has no `node_modules` (worktrees share `.git` but not installed deps). Could not run `npm run lint` or `npx tsc --noEmit` from inside the worktree; both fail with "Cannot find package 'typescript-eslint'" / "Cannot find module 'express'" respectively because the resolver cannot reach the parent's `node_modules`. Edits are syntactic-comment-only (items 3, 4, 5), a new `else if` branch inside an existing typed scope (item 1), an early-return statement (item 2), and two new test files using established mock patterns (item 1 canary, item 2 canary). No new types, no new imports, no signature changes — lint/tsc deltas should be invariant against the pre-existing seed-phrase.ts warnings baseline. Vitest not run per parent serialization rule.
+
+## Architect re-review round-3 (2026-05-17) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commits `3b6d781..b248761` (round-2 hold-fix surface, 212 LOC across 6 files) with 11 reviewers (correctness, security, adversarial at opus; testing, maintainability, project-standards, performance, api-contract, reliability, kieran-typescript at sonnet; ce-learnings-researcher unstructured; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md project policy; `previous-comments` skipped — not a GitHub PR, the architect-context hold-block IS the prior feedback verified directly). All 5 round-2 hold items landed structurally correct. Surfaced findings: 4 held below, 1 architect-doc edit pulled forward (handled at archive of A1 below), 1 dismissed at triage. A1 also spawned a new UI verification task filed at `agents/docs/tasks/pending/ui-papers-orcid-null-fallback-verification.md`.
+
+### Items to address
+
+**1. (P2, anchor 100, cross-reviewer correctness + adversarial) — `orcid_claim_mismatch` audit branch (d) omits `accreditationStatus: 'active'` discriminator.**
+
+**Where:** `backend/src/routes/papers.ts:417-433` (the new `else if (claimedOrcid)` branch added in round-2 item 1).
+
+**Why:** Branches (b) (active mismatch) and the revoked branch both emit `accreditationStatus: 'active' as const` / `'revoked' as const` in their audit payload. The new branch (d) omits the field. Operator log queries filtering on `accreditationStatus` (e.g., `accreditationStatus = 'active'` to scope a triage dashboard to current spoof attempts) silently drop every (d) event. Cross-reviewer corroboration (correctness + adversarial → anchor 100). The audit-event schema asymmetry is operator-visible (logs only, not HTTP wire) but the [TODO Architect] item 1 (ARCHITECTURE.md § 2 rewrite) at this task's archive will enumerate audit-event schemas — converge now so the documented schema isn't a holes-by-default record.
+
+**Fix:** Add `accreditationStatus: 'active' as const,` to the audit payload at `papers.ts:421-432`. Add a canary assertion in `backend/tests/routes/continuation-author-gate.test.ts:915-963` (the spoof-case canary) asserting `expect(event.accreditationStatus).toBe('active')`. Mutation-kill: removing the field from the production emit fails the canary.
+
+**2. (P2, anchor 100, maintainability M-1) — Surviving slug citation at `accreditation.ts:173`.**
+
+**Where:** `backend/src/accreditation.ts:173` — JSDoc for `getHistoricalAccreditationOrcids` contains `(per backend-multi-author-cumulative-union.md rule #3)`.
+
+**Why:** Introduced by sibling commit `0e648b6` (`backend(orcid-claim-mismatch-post-revocation-audit): implement Alt 2 per architect ratification`) AFTER the round-2 hold-fix commit landed. The implementer's "grep returns zero" claim at the round-2 signal block was honest at commit `3b6d781`/`b248761` but is false at HEAD. The slug becomes a dangling pointer at archive. Per `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`.
+
+**Fix:** Replace the parenthetical with `(per agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model")`. Wait for the [TODO Architect] § 2 rewrite to land at archive so the anchor is stable; if landing this fix before the doc rewrite, point at the section heading as-it-will-be (the heading text is stable across the rewrite).
+
+**3. (P2, anchor 100, maintainability M-2) — Pre-existing file header `// supersedes the round-3 no-shrink check` not swept by item 4.**
+
+**Where:** `backend/tests/routes/continuation-author-gate.test.ts:29`.
+
+**Why:** Pre-existing at round-2 baseline `b22ce5d`, not in item 4's 6-site list, not swept. Same rot class — when this task archives, `round-3` becomes a dangling pointer. Convention same as item 2 above.
+
+**Fix:** Rewrite the header line as a behavioral statement, e.g., `// Canaries for cumulative-union construction (drops forbidden by construction; ORCID server-override for accredited hives).` Per `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` "anchor on behavioral invariants instead."
+
+**4. (P2, anchor 100, maintainability M-3) — Round-2 fix commits INTRODUCED new round-N citations.**
+
+**Where:**
+- `backend/tests/lib/accreditation-orcid-cache.test.ts:4` — `Background (round-2 hold item 2):` in the test file header.
+- `backend/tests/routes/continuation-author-gate.test.ts:916` — `// Item 1 (round-2 hold):` inline above the spoof canary.
+
+**Why:** Self-violation of the convention the round-2 fix was enforcing. Item 4 explicitly purged similar markers from production code AND test code (including `continuation-author-gate.test.ts:977/:982`). The fix should be self-consistent.
+
+**Fix:** Replace each with a behavioral statement that pins the test's load-bearing assertion:
+- Test file header → `Verifies the pool-null early-return invariant for the accreditation ORCID cache helper (skip cache write when getPool() is null so a recovered HAF connection sees the next request's real result, not a degraded empty Map cached for the TTL).`
+- Inline comment → `Pins the suppress-branch for accredited targets without on-chain ORCID: broadcaster's claim is overridden to null and orcid_claim_mismatch fires with accreditedOrcid: null.`
+
+### Items dismissed during architect triage
+
+- **A1 (P1/75, api-contract)** — `authors[].orcid` widened to `string | null` without contract update. **Architect handled inline (this round): doc edit landed at `agents/docs/api-contracts/papers.md` documenting `orcid: string | null` + the suppression-to-null path + the SPA null-guard requirement.** Companion UI verification task filed at `agents/docs/tasks/pending/ui-papers-orcid-null-fallback-verification.md` (P1) to audit all SPA orcid-render sites for null-safety. Doc edit pulled forward from [TODO Architect] item 2 at archive (no behavioral change to the backend round-2 fix; the doc just catches up to the wire shape the backend already emits).
+- **A6 (P3/75, maintainability)** — 5-branch enum comment at `papers.ts:382`. Dismissed: the enum scaffolds branch (d)'s self-claim WHY rationale; trimming individual branch labels loses the structural frame. Per architect judgment; the architecturally durable home for the four-branch table is the [TODO Architect] § 2 rewrite at archive, at which point this comment can shrink to a pointer.
+- **Pre-existing: sibling cache poisoning at `accreditation.ts:251` (getAllAccreditedAccounts) and `:209` (getAccreditationOrcidsWithStatus)** — same pool-null cache-poisoning class as round-2 item 2. Acknowledged in round-2 hold body as out-of-scope (pending separate sibling audit). Surfaced again here but not promoted; remains out-of-scope for this task.
+- **adv-r3-003 (P3/60, item-2 canary mutation-kill weakness)** — preemptive test hardening per `feedback_dismiss_preemptive_test_hardening`.
+- **adv-r3-004 (P3/50, accredited-user-with-unlinked-self-claim)** — UX edge case (accredited user with their own legitimate but unlinked ORCID self-claim gets it suppressed + flagged as self-spoof). Below confidence gate; design surface for future consideration but not actionable now.
+- **rel-001 (P3/40, narrow TOCTOU on pool flap)** — single-instance deployment makes the window unreachable in practice.
+- **kt-001 (P3/50, `fired![0]` non-null assertion)** — pre-existing pattern; preemptive hardening.
+
+### Learnings cross-references (architect to link in ARCHITECTURE.md § 2 rewrite at archive)
+
+Five `/ce-learnings-researcher` Known Pattern matches surfaced; relevant for the eventual § 2 rewrite anchoring:
+- `agents/docs/solutions/conventions/accredited-orcid-is-optional-not-edge-case-2026-05-16.md` — the four-branch verification lattice this fix implements.
+- `agents/docs/solutions/conventions/caching-wrapper-discriminated-union-poisoning-2026-05-11.md` — governs round-2 item 2's fix shape and the pre-existing sibling cache surface.
+- `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` — governs items 2, 3, 4 of this hold.
+- `agents/docs/solutions/conventions/defense-gated-walker-early-exit-return-discipline-2026-05-16.md` — companion check for cumulative-union helpers' early-exit paths (already audited round-1; flagged here as a permanent reference for the § 2 rewrite).
+- `agents/docs/solutions/test-failures/assertion-vacuity-from-upstream-bail-in-mocked-tests-2026-05-17.md` — fresh-same-day learning; relevant to all chain-walker mocked tests including the round-2 canaries (assertion-vacuity gate passes for this round's canaries per architect-context verification, but the doc is the canonical reference for any future mocked-walker canary).
+
+### Re-review signal
+
+When items 1-4 land in a single round-3 commit (or split arbitrarily), `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round.md`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `b248761`. Item 2's slug-citation replacement should land AFTER (or alongside) the architect's [TODO Architect] § 2 rewrite so the section reference is stable; items 1, 3, 4 are independent and can land any time.
+
