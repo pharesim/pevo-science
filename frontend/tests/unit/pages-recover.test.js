@@ -49,15 +49,22 @@ function createComponent() {
 
 describe('recoverPage', () => {
   let localStorageData;
+  let sessionStorageData;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     localStorageData = {};
+    sessionStorageData = {};
     vi.stubGlobal('localStorage', {
       getItem: vi.fn((key) => localStorageData[key] ?? null),
       setItem: vi.fn((key, val) => { localStorageData[key] = val; }),
       removeItem: vi.fn((key) => { delete localStorageData[key]; }),
+    });
+    vi.stubGlobal('sessionStorage', {
+      getItem: vi.fn((key) => sessionStorageData[key] ?? null),
+      setItem: vi.fn((key, val) => { sessionStorageData[key] = val; }),
+      removeItem: vi.fn((key) => { delete sessionStorageData[key]; }),
     });
   });
 
@@ -368,7 +375,7 @@ describe('recoverPage', () => {
       expect(comp.error).not.toContain('deadbeef');
       expect(comp.orcidLoading).toBe(false);
       expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_return_to');
-      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       warnSpy.mockRestore();

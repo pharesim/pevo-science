@@ -137,7 +137,7 @@ describe('orcidCallbackPage', () => {
 
   describe('init - backPath routing from localStorage mode', () => {
     it('sets backPath to /signup for signup mode', () => {
-      localStorageData['pevo_orcid_mode'] = 'signup';
+      sessionStorageData['pevo_orcid_mode'] = 'signup';
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({ data: { mode: 'signup', orcid_token: 't', orcid_id: 'id' } });
       comp.init();
@@ -145,7 +145,7 @@ describe('orcidCallbackPage', () => {
     });
 
     it('sets backPath to /login for login mode', () => {
-      localStorageData['pevo_orcid_mode'] = 'login';
+      sessionStorageData['pevo_orcid_mode'] = 'login';
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({ data: { mode: 'login', token: 't', username: 'u', expires_at: 'e' } });
       comp.init();
@@ -153,7 +153,7 @@ describe('orcidCallbackPage', () => {
     });
 
     it('sets backPath to /accreditation for accredit mode', () => {
-      localStorageData['pevo_orcid_mode'] = 'accredit';
+      sessionStorageData['pevo_orcid_mode'] = 'accredit';
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({ data: { mode: 'accredit', username: 'u' } });
       comp.init();
@@ -161,7 +161,7 @@ describe('orcidCallbackPage', () => {
     });
 
     it('sets backPath to /settings for link mode', () => {
-      localStorageData['pevo_orcid_mode'] = 'link';
+      sessionStorageData['pevo_orcid_mode'] = 'link';
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({ data: { mode: 'link' } });
       comp.init();
@@ -169,15 +169,15 @@ describe('orcidCallbackPage', () => {
     });
 
     it('defaults backPath to / for unknown mode', () => {
-      localStorageData['pevo_orcid_mode'] = 'unknown';
+      sessionStorageData['pevo_orcid_mode'] = 'unknown';
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({ data: { mode: 'accredit', username: 'u' } });
       comp.init();
       expect(comp.backPath).toBe('/');
     });
 
-    it('removes pevo_orcid_mode from localStorage after successful completeOrcid', async () => {
-      localStorageData['pevo_orcid_mode'] = 'accredit';
+    it('removes pevo_orcid_mode from sessionStorage after successful completeOrcid', async () => {
+      sessionStorageData['pevo_orcid_mode'] = 'accredit';
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({ data: { mode: 'accredit', username: 'u' } });
       // init() kicks off _verify(); awaiting completeOrcid's resolved promise
@@ -185,17 +185,17 @@ describe('orcidCallbackPage', () => {
       comp.init();
       await Promise.resolve();
       await Promise.resolve();
-      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
     });
 
     it('does NOT remove pevo_orcid_mode before completeOrcid resolves (so a refresh after failure can retry)', async () => {
-      localStorageData['pevo_orcid_mode'] = 'link';
+      sessionStorageData['pevo_orcid_mode'] = 'link';
       const comp = createComponent();
       // Never-resolving promise simulates an in-flight / crashed completeOrcid.
       mockCompleteOrcid.mockReturnValue(new Promise(() => {}));
       comp.init();
-      expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_mode');
-      expect(localStorageData['pevo_orcid_mode']).toBe('link');
+      expect(sessionStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(sessionStorageData['pevo_orcid_mode']).toBe('link');
     });
   });
 
@@ -482,7 +482,7 @@ describe('orcidCallbackPage', () => {
       expect(mockToastStore.show).not.toHaveBeenCalled();
       // 503-refresh-retry invariant: mid-await teardown must not clear the
       // stored mode, so a refresh can retry against the right endpoint.
-      expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(sessionStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_mode');
     });
 
     it('post-teardown _verify rejection is a no-op (does not set error state)', async () => {
@@ -1062,15 +1062,15 @@ describe('orcidCallbackPage', () => {
 
     it('init sets backPath from getReturnPath for fresh_auth mode', () => {
       sessionStorageData['pevo_fresh_auth_return_to'] = '/papers/alice/some-paper';
-      localStorageData['pevo_orcid_mode'] = 'fresh_auth';
+      sessionStorageData['pevo_orcid_mode'] = 'fresh_auth';
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({ data: { mode: 'fresh_auth' } });
       comp.init();
       expect(comp.backPath).toBe('/papers/alice/some-paper');
     });
 
-    it('503 from completeOrcid leaves pevo_orcid_mode in localStorage so a refresh-retry can re-enter the correct flow', async () => {
-      localStorageData['pevo_orcid_mode'] = 'link';
+    it('503 from completeOrcid leaves pevo_orcid_mode in sessionStorage so a refresh-retry can re-enter the correct flow', async () => {
+      sessionStorageData['pevo_orcid_mode'] = 'link';
       const firstComp = createComponent();
       const err503 = new Error('Service unavailable');
       err503.status = 503;
@@ -1085,7 +1085,7 @@ describe('orcidCallbackPage', () => {
       // CRITICAL: mode must still be there so a user-triggered refresh has the
       // context needed for the retry to carry the correct auth (Bearer token
       // for link/accredit) and route to the right endpoint.
-      expect(localStorageData['pevo_orcid_mode']).toBe('link');
+      expect(sessionStorageData['pevo_orcid_mode']).toBe('link');
 
       // Simulate the user refreshing the page: a NEW component init() runs.
       // The mode is still present, so the retry knows we're in link flow.
@@ -1098,7 +1098,7 @@ describe('orcidCallbackPage', () => {
       // Retry sees the mode and routes correctly.
       expect(secondComp.backPath).toBe('/settings');
       // Only after the successful retry is the mode cleared.
-      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
     });
   });
 });

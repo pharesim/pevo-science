@@ -154,6 +154,7 @@ function stubKeychainImportKeySuccess() {
 
 describe('settingsPage', () => {
   let localStorageData;
+  let sessionStorageData;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -164,10 +165,16 @@ describe('settingsPage', () => {
     mockAuthStore.token = 'jwt';
     mockAuthStore.expiresAt = '2099-01-01T00:00:00.000Z';
     localStorageData = {};
+    sessionStorageData = {};
     vi.stubGlobal('localStorage', {
       getItem: vi.fn((key) => localStorageData[key] ?? null),
       setItem: vi.fn((key, val) => { localStorageData[key] = val; }),
       removeItem: vi.fn((key) => { delete localStorageData[key]; }),
+    });
+    vi.stubGlobal('sessionStorage', {
+      getItem: vi.fn((key) => sessionStorageData[key] ?? null),
+      setItem: vi.fn((key, val) => { sessionStorageData[key] = val; }),
+      removeItem: vi.fn((key) => { delete sessionStorageData[key]; }),
     });
   });
 
@@ -321,7 +328,7 @@ describe('settingsPage', () => {
 
       await comp.handleOrcidLink();
 
-      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_orcid_mode', 'link');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith('pevo_orcid_mode', 'link');
       expect(mockStartOrcid).toHaveBeenCalledWith('link');
     });
 

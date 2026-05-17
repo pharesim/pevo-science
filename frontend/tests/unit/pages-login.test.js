@@ -56,6 +56,11 @@ describe('loginPage', () => {
       setItem: vi.fn(),
       removeItem: vi.fn(),
     });
+    vi.stubGlobal('sessionStorage', {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    });
   });
 
   afterEach(() => {
@@ -318,7 +323,7 @@ describe('loginPage', () => {
 
       await comp.handleOrcidLogin();
 
-      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_orcid_mode', 'login');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith('pevo_orcid_mode', 'login');
       expect(mockStartOrcid).toHaveBeenCalledWith('login');
     });
 
@@ -342,7 +347,7 @@ describe('loginPage', () => {
       expect(comp.error).toBe('login.orcidStartFailed');
       expect(comp.error).not.toContain('deadbeef');
       expect(comp.orcidLoading).toBe(false);
-      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       warnSpy.mockRestore();
