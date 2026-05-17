@@ -109,3 +109,75 @@ The Redis-stubbed variant is where the test is most informative per the task bod
 **Worktree note:** this worktree (`agent-a30f543f5bdba25e8`) is several commits behind `main`'s `fresh-auth.ts`. The task file was filed on `main` and copied into the worktree at task start. The implementation here applies to the pre-`expires_at` ISO-string-conversion shape (`expires_at: number`) and the pre-kind-neutral key-prefix shape (`:fresh_auth:consent_op:`). On parent merge, the lock code (the new `inFlightConsumes` set, the outer/inner split, and the `try/finally` cleanup) should rebase cleanly onto main's `fresh-auth.ts` — none of the diverged areas (the key prefix string, the `expires_at` wire format) overlap with the Option B mechanism.
 
 **Verification:** `cd backend && npm run typecheck` clean. `npm run lint` returns the two pre-existing `no-explicit-any` warnings in `seed-phrase.ts` (outside this task's zone) and 0 errors. Vitest NOT run in worktree per parent instructions — parent serializes.
+
+---
+
+## Architect re-review (2026-05-17, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `394a52e` (9 reviewers: correctness/security/adversarial on Opus; testing, maintainability, project-standards, reliability, kieran-typescript, learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). Core security property is sound: the `has → add` synchronous critical section is uninterruptible under the JS event loop; `return await` + `try/finally` discipline covers all throw paths; cross-kind shared lock domain is structurally correct (tokens unique per issuance, bound to one kind at mint); single-instance scope explicitly acknowledged per `project_single_instance_only`. Security reviewer returned zero findings.
+
+Three items held; multiple items dismissed at triage.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 100 — cross-reviewer-promoted: maintainability M1 + learnings-researcher) Task-slug citations in production code comments will rot on archive.** Three occurrences in `backend/src/lib/fresh-auth.ts`:
+- The `inFlightConsumes` docblock opening line cites `BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE`.
+- The `consumeFreshAuthToken` lock-check inline comment opens with `BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE (Option B):`.
+- The `consumeSessionFreshAuthToken` lock-check inline comment opens with the same slug prefix.
+
+Per `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, task slugs become dead pointers on archive (`tasks-archive.md` is trimmed to 250 lines; older entries fall off entirely). The substantive prose in each docblock is already self-contained — the mechanism, the symbol name, the race scenario are all described — so dropping the slug prefix loses no information. Suggested rewrite shape for the `inFlightConsumes` docblock opening: "In-process lock set for the consume helpers. Closes the concurrent-dual-consume race on the memStore fallback path..." For each inline comment: drop the slug prefix; the "Option B in-process lock check" wording can stand alone.
+
+Test-file slug citations (the `BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE` paragraph in the carve-out header and the `describe('BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE — ...')` label) are lower operational risk (test output is transient, not read by operators) but should be updated for consistency.
+
+**2. (P2, conf 100 — cross-reviewer-promoted: correctness + adversarial + testing + maintainability + kieran-typescript + learnings-researcher) Lock-cleanup test passes whether or not the `finally` block exists.** `backend/tests/lib/fresh-auth.test.ts:706-746` (the `'lock cleanup: a thrown consume releases the in-flight set entry'` test). The test issues a token, consumes it (returns `valid: true`), re-consumes it, and asserts `valid: false` with `reason: 'expired'`. Both the lock-held path AND the consumed-token path return `expired` with byte-identical wire shape. The test's own commentary explicitly admits this:
+
+> "both wire codes are `expired`, so functional equivalence makes the test pass either way at the wire layer. The actual cleanup discipline is enforced by the `finally` block; this test documents the expectation."
+
+A mutation that removes `finally { inFlightConsumes.delete(token) }` entirely would not cause this test to fail. The `finally`-block correctness IS structurally guaranteed by JS semantics, but the test labeled `'lock cleanup: a thrown consume releases the in-flight set entry'` should pin that contract structurally, not via a wire-code-collapsed assertion.
+
+Suggested fix (architect call): add a test-only export `_getInFlightConsumesSizeForTests(): number` (sibling to the existing `_resetFreshAuthMemStoreForTests`) and rewrite the test to:
+1. Force a throw inside the locked critical section (e.g., issue a token, then call `consumeFreshAuthToken` with a mocked `redis.getdel` that throws synchronously; or use a token whose memStore entry has been tampered with to force a JSON.parse throw post-await).
+2. Assert `_getInFlightConsumesSizeForTests() === 0` after the throw propagates.
+
+Mutation kill: removing `finally { inFlightConsumes.delete(token) }` would now leave the set non-empty after the throw, failing the assertion.
+
+**3. (P2, conf 90 — cross-reviewer-promoted: testing T-2 + adversarial) Shared-lock-domain design claim untested.** All 7 new tests use same-helper pairs. The central design invariant — that `inFlightConsumes` is a single set shared across both consume helpers, so a `Promise.all([consumeFreshAuthToken(token, ...), consumeSessionFreshAuthToken(token, ...)])` for the same token produces exactly one winner — has zero coverage. A mutation that splits `inFlightConsumes` into two per-helper sets (`inFlightConsumesByConsentOpHelper`, `inFlightConsumesBySessionHelper`) would pass all 7 new tests and the shared-lock-domain guarantee silently regresses.
+
+This is realizable in production because `consumeSessionFreshAuthToken` accepts both kinds (the cross-kind acceptance design). A consent-op-kind token can be consumed concurrently via both helpers from a misbehaving SPA.
+
+Suggested fix: add one cross-helper test in the same `describe` block:
+
+```typescript
+it.skipIf(!redisAvailable)('cross-helper Promise.all on the same token → exactly one winner (shared-lock-domain invariant)', async () => {
+  const issued = await issueFreshAuthToken('race-cross', 'password', T);
+  const [a, b] = await Promise.all([
+    consumeFreshAuthToken(issued.token, 'race-cross', TH),
+    consumeSessionFreshAuthToken(issued.token, 'race-cross'),
+  ]);
+  const winners = [a, b].filter((r) => r.valid);
+  expect(winners).toHaveLength(1);
+});
+```
+
+(Note: the session-helper consume on a consent_op-kind token would consume the token but then return `kind_mismatch` at the kind-check inside the inner body if it wins, or `expired` if it loses the lock. Either outcome with `exactly one winner` pins the shared lock-domain — adjust assertion if the session-helper's winner path returns `kind_mismatch` instead of `valid: true`.) Architect's call on the exact assertion shape; the load-bearing claim is that the lock collapses both helpers.
+
+### Items dismissed during architect triage
+
+- **kieran-typescript KT-1 (conf 50):** Inner `*Locked` helpers lack JSDoc. Below anchor 75 gate; the surrounding `inFlightConsumes` docblock and the outer-helper bodies carry the lock contract. A brief comment would be polish, not load-bearing.
+- **adversarial P3 (conf low):** Speculative claim that the stubbed-throw race test may not exercise the pre-fix race (microtask-level argument). The pre-fix code path IS exposed in the no-Redis variant; the speculation is on whether the JS event loop's microtask scheduling permits the interleaving at all. Either way, the lock CORRECTLY closes the door — speculative concern, dismissed.
+- **testing T-3 (P3):** No-Redis companion tests redundant under Redis-available CI. Learnings-researcher confirms clause-(c) satisfied at risk-class equivalence level (transform-axis Redis-stubbed + wiring-axis no-Redis). Per `feedback_dismiss_preemptive_test_hardening`, this is theoretical-only.
+- **testing T-4 (P3 conf 75):** Compensating `redis.del` stubbed in race tests. Documented-as-best-effort in pre-existing code; the compensating del is covered elsewhere in the suite.
+- **adversarial: unbounded set growth on Redis hang.** Overlaps with REL-1 (pre-existing). Same root cause: no `commandTimeout` on the ioredis client.
+
+### Pre-existing (separate, does not block archive)
+
+- **REL-1 (P2 conf 75):** `backend/src/redis.ts:12` ioredis client has no `commandTimeout`. The diff makes this newly material — a hung GETDEL holds the in-flight set entry indefinitely; legitimate concurrent retries observe `expired`. Pre-existing per reliability reviewer's note. File separately if pursued (would be a backend follow-up task scoped to `backend/src/redis.ts`, not this task).
+
+### Residual notes (acknowledged, no action)
+
+- Multi-instance topology re-opens the race — explicitly acknowledged in the `inFlightConsumes` docblock per `project_single_instance_only` memory. Documented as future-leak; not in scope today.
+- Pre-existing line-number anchor `routes/orcid.ts:151` in the adjacent `memStore` docblock — not introduced by this diff. Separate cleanup if anyone touches the file (per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` convention).
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
