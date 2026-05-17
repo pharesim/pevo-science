@@ -388,7 +388,9 @@ describe('settings.email_post.smtp_send_failed log shape', () => {
         .spyOn(nodemailer, 'createTransport')
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValue({ sendMail: sendMailSpy } as any);
-      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(
+      // Round-2 item 4: SMTP-fail emits at `warn` (not `error`) per Option A
+      // of timing-equalization-smtp-failure-mode-oracle-2026-04-22.md.
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(
         () => undefined as unknown as void,
       );
 
@@ -400,10 +402,13 @@ describe('settings.email_post.smtp_send_failed log shape', () => {
           .post('/api/settings/email')
           .set('X-Hive-Username', username)
           .send({ email });
-        // sendVerificationEmail throw → handler logs + returns 500.
-        expect(res.status).toBe(500);
+        // Round-2 item 4: SMTP-fail returns uniform 200 (not 500) so a
+        // JWT-only attacker cannot read identity registration state from
+        // the 500-vs-200 differential. The DB row is rolled back so the
+        // user has no pending state without a verify link.
+        expect(res.status).toBe(200);
 
-        const fields = findEvent(errorSpy as never, 'settings.email_post.smtp_send_failed');
+        const fields = findEvent(warnSpy as never, 'settings.email_post.smtp_send_failed');
         expect(fields).toBeDefined();
         expect(fields).toMatchObject({
           event: 'settings.email_post.smtp_send_failed',
@@ -422,7 +427,7 @@ describe('settings.email_post.smtp_send_failed log shape', () => {
         const pool = getAppPool()!;
         await pool.query('DELETE FROM accounts WHERE username = $1', [username]).catch(() => {});
       } finally {
-        errorSpy.mockRestore();
+        warnSpy.mockRestore();
         transportSpy.mockRestore();
         config.smtpHost = prevHost;
       }

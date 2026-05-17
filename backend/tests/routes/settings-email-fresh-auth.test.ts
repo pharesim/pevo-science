@@ -70,9 +70,17 @@ vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
   return MOCK_VERIFY_SIGNATURE;
 });
 
+// Shared sendMail spy so individual tests can queue a one-shot rejection via
+// `smtpMock.sendMail.mockRejectedValueOnce(...)`. Default behavior is success.
+// vi.hoisted is required because vi.mock factories cannot capture outer
+// references; the hoisted block runs before the vi.mock factory.
+const smtpMock = vi.hoisted(() => ({
+  sendMail: vi.fn().mockResolvedValue({ messageId: 'mock-message' }),
+}));
+
 vi.mock('../../src/lib/smtp.js', () => ({
   createSmtpTransporter: () => ({
-    sendMail: vi.fn().mockResolvedValue({ messageId: 'mock-message' }),
+    sendMail: smtpMock.sendMail,
   }),
 }));
 
@@ -777,6 +785,116 @@ describe.skipIf(!dbReachable)(
       } finally {
         vi.unstubAllGlobals();
       }
+    });
+  },
+);
+
+// ────────────────────────────────────────────────────────────────────
+// BACKEND-CHANGE-EMAIL-MINT-PATH-AND-FOLLOWUPS — round-2 item 3:
+// Change-flow SMTP-fail snapshot-restore coverage.
+//
+// Pins the round-1 item 7 behavior (restore prior pending_email triple
+// instead of nulling) AND the round-2 item 4 status-code change (200 on
+// SMTP fail, not 500). Without this test, reverting either change passes
+// every existing assertion silently — the prior smtp-fail coverage at
+// settings.test.ts:376 exercises the Add-flow branch (no existing row),
+// not the Change-flow snapshot-restore branch.
+//
+// The round-2 item 2 token-scoping (`AND pending_email_token = <just-written>`)
+// is asserted indirectly: this single-request scenario must restore the
+// prior values, which only happens when the WHERE-scoping matches THIS
+// request's just-written row state.
+// ────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)(
+  'POST /api/settings/email — Change-flow SMTP fail restores prior pending_email',
+  () => {
+    beforeAll(async () => {
+      await cleanupAll();
+      await seedStates();
+      await clearRateLimitKeys(['settings-write', 'settings-read']);
+    });
+
+    beforeEach(async () => {
+      _resetFreshAuthMemStoreForTests();
+      await clearRateLimitKeys(['settings-write', 'settings-read']);
+      if (!dbReachable) return;
+      const pool = getAppPool()!;
+      await pool.query(
+        `UPDATE accounts SET pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL
+         WHERE username IN ($1, $2, $3, $4)`,
+        [STATE_A_USER, STATE_B_USER, STATE_C_USER, OTHER_USER],
+      ).catch(() => {});
+    });
+
+    afterAll(async () => {
+      await cleanupAll();
+    });
+
+    it('seeded prior pending_email + second change SMTP fails → 200, prior values restored (not nulled, not the new email)', async () => {
+      // Seed: a prior successful change-email leaves the row with a
+      // non-NULL (pending_email, pending_email_token, pending_email_expires_at)
+      // triple representing a still-valid 24h verify link in the user's inbox.
+      const firstProof = await issueFreshAuthToken(
+        STATE_A_USER,
+        'password',
+        changeEmailFreshAuthTarget(STATE_A_USER),
+      );
+      const firstRes = await request(app)
+        .post('/api/settings/email')
+        .set('Authorization', bearerFor(STATE_A_USER))
+        .set('X-Hive-Username', STATE_A_USER)
+        .send({ email: NEW_EMAIL_A, fresh_auth_proof: firstProof.token });
+      expect(firstRes.status).toBe(200);
+
+      const pool = getAppPool()!;
+      const { rows: priorRows } = await pool.query<{
+        pending_email: string | null;
+        pending_email_token: string | null;
+        pending_email_expires_at: Date | null;
+      }>(
+        'SELECT pending_email, pending_email_token, pending_email_expires_at FROM accounts WHERE username = $1',
+        [STATE_A_USER],
+      );
+      const priorPendingEmail = priorRows[0].pending_email;
+      const priorPendingToken = priorRows[0].pending_email_token;
+      expect(priorPendingEmail).toBe(NEW_EMAIL_A);
+      expect(priorPendingToken).not.toBeNull();
+
+      // Second change-request: queue a one-shot SMTP rejection on the
+      // shared sendMail mock so this request's send fails.
+      const secondProof = await issueFreshAuthToken(
+        STATE_A_USER,
+        'password',
+        changeEmailFreshAuthTarget(STATE_A_USER),
+      );
+      smtpMock.sendMail.mockRejectedValueOnce(new Error('SMTP connection refused'));
+
+      const secondRes = await request(app)
+        .post('/api/settings/email')
+        .set('Authorization', bearerFor(STATE_A_USER))
+        .set('X-Hive-Username', STATE_A_USER)
+        .send({ email: NEW_EMAIL_B, fresh_auth_proof: secondProof.token });
+
+      // Round-2 item 4: SMTP-fail returns uniform 200 per Option A. The
+      // body is the same as a successful send so a JWT-only attacker can't
+      // read identity-registration state from the status-code differential.
+      expect(secondRes.status).toBe(200);
+
+      // Round-1 item 7 + round-2 item 2: pending_email/token/expires_at
+      // restored to the prior values. NOT the new email (no working verify
+      // link was sent for it) and NOT NULL (which would destroy the prior
+      // valid 24h verify link still in the user's inbox).
+      const { rows: afterRows } = await pool.query<{
+        pending_email: string | null;
+        pending_email_token: string | null;
+      }>(
+        'SELECT pending_email, pending_email_token FROM accounts WHERE username = $1',
+        [STATE_A_USER],
+      );
+      expect(afterRows[0].pending_email).toBe(priorPendingEmail);
+      expect(afterRows[0].pending_email_token).toBe(priorPendingToken);
+      expect(afterRows[0].pending_email).not.toBe(NEW_EMAIL_B);
     });
   },
 );

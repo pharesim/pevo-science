@@ -122,10 +122,29 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 // only reachable on the Hive-signature path (no JWT can exist before a row
 // exists), so the no-row INSERT path remains gated by the Hive-signature
 // freshness alone. The discriminator below reads `req.hiveAuthMethod` set by
-// the unified `verifyHiveSignature` middleware (BACKEND-VERIFYHIVE-AUTHMETHOD-
-// DISCRIMINATOR): the JWT-success branch sets it to `'jwt'`, the signature-
-// success branch sets it to `'signature'`. Route handlers no longer re-parse
-// `req.headers['authorization']` to make this distinction.
+// the unified `verifyHiveSignature` middleware: the JWT-success branch sets
+// it to `'jwt'`, the signature-success branch sets it to `'signature'`.
+//
+// Handler order (load-bearing — closes the 401-vs-409 enumeration oracle):
+//   (1) Body validation (400 on shape error; no state disclosure).
+//   (2) SELECT existing row by username (drives Add vs Change discrimination
+//       and supplies the snapshot used by the SMTP-fail restore path).
+//   (3) On Change branch + JWT path: consume fresh-auth proof + mechanism
+//       check. MUST fire BEFORE the duplicate-email SELECT below; without
+//       this ordering, a JWT-only attacker (no proof) could probe candidate
+//       emails and read registration state from the 409-vs-401 differential.
+//   (4) On Add branch: reject JWT auth (the no-row-before-JWT invariant).
+//   (5) Duplicate-email SELECTs (409 on hit) — only reached on valid proof
+//       or via the Keychain path.
+//   (6) INSERT (Add) or UPDATE (Change) the pending_email triple.
+//   (7) Send verification email. SMTP failure follows Option A of the
+//       status-code-oracle convention (`agents/docs/solutions/conventions/
+//       timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`): catch,
+//       log warn, return uniform 200. DB write rolls back: DELETE on Add;
+//       snapshot-restore scoped by the just-written token on Change (the
+//       scope guards against a concurrent request having already overwritten
+//       the row — restore no-ops in that case rather than clobbering its
+//       in-flight state).
 router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
@@ -139,37 +158,16 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
 
   // JWT-vs-Keychain discriminator. The Hive-signature path runs after JWT in
   // `verifyHiveSignature` and is fresh per-request; we only require a body
-  // proof on the JWT path. `req.hiveAuthMethod` is populated by the
-  // middleware (BACKEND-VERIFYHIVE-AUTHMETHOD-DISCRIMINATOR).
+  // proof on the JWT path.
   const isJwtPath = req.hiveAuthMethod === 'jwt';
 
   try {
-    // Check email not already used by another account
-    const { rows: dupeRows } = await pool.query<{ id: number }>(
-      'SELECT id FROM accounts WHERE email = $1 AND username != $2',
-      [email, username],
-    );
-    if (dupeRows.length > 0) {
-      return sendError(res, 409, 'DUPLICATE', 'This email is already associated with another account');
-    }
-
-    // Also check pending_email on other accounts
-    const { rows: pendingDupeRows } = await pool.query<{ id: number }>(
-      'SELECT id FROM accounts WHERE pending_email = $1 AND username != $2',
-      [email, username],
-    );
-    if (pendingDupeRows.length > 0) {
-      return sendError(res, 409, 'DUPLICATE', 'This email is already associated with another account');
-    }
-
-    const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + EMAIL_TOKEN_EXPIRY_MS);
-
-    // Check if account row exists for this username. Read enough columns to
-    // (a) discriminate the registered auth-factor set for the fresh-auth gate
-    // and (b) snapshot the existing pending_email triple so an SMTP failure
-    // on the change branch can restore the prior state instead of nulling
-    // a still-valid 24h verify link from a previous successful request.
+    // Read existing row first: drives Add vs Change discrimination, supplies
+    // the mechanism check in the fresh-auth gate, and snapshots the prior
+    // pending_email triple for the SMTP-fail restore path. Reading before
+    // the duplicate-email SELECTs below is required so the fresh-auth gate
+    // can fire before the dupe check on the JWT path (item (3) in the
+    // handler-order block above).
     const { rows: existing } = await pool.query<{
       id: number;
       password_hash: string | null;
@@ -183,105 +181,124 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
     );
 
     if (existing.length === 0) {
-      // Add flow: INSERT new row (Keychain user, no password). Only reachable
-      // from the Hive-signature path of verifyHiveSignature (no JWT exists
-      // before a row exists); the fresh-auth gate below is skipped because
-      // there's no JWT replay vector to defend against on this branch.
-      //
-      // Defense-in-depth: explicit JWT-rejection here makes the invariant
-      // load-bearing at the consume site. Today no jwt.sign call mints a
-      // JWT before the accounts row is INSERTed, so this branch is dead
-      // code on every reachable path. A future feature that mints a
-      // transient JWT before INSERT would otherwise silently bypass the
-      // fresh-auth gate on this branch.
+      // Add-flow JWT-rejection guard (defense-in-depth). The no-row branch
+      // is only reachable on the Hive-signature path under the JWT-mint
+      // invariant (no jwt.sign call mints before INSERT). The local guard
+      // makes the invariant load-bearing here so a future feature minting
+      // a transient JWT before INSERT cannot silently bypass the gate.
       if (req.hiveAuthMethod === 'jwt') {
         return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
       }
+    } else if (isJwtPath) {
+      // Change-flow JWT-path fresh-auth gate — MUST run before the
+      // duplicate-email SELECT below (see handler-order item (3)).
+      const proof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
+      const proofToken = typeof proof === 'string' ? proof : undefined;
+      const expectedTargetHash = computeFreshAuthTargetHash(
+        changeEmailFreshAuthTarget(username),
+      );
+      const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
+      if (!result.valid) {
+        logger.warn(
+          {
+            event: 'settings.email_post.fresh_auth_rejected',
+            route: 'settings.email-post',
+            username,
+            reason: result.reason,
+          },
+          'settings.email change-email rejected — fresh-auth proof invalid',
+        );
+        // Mirror the sibling mapping at custody.ts:372-377: binding
+        // violations (token issued for a different user / target / kind)
+        // → 403; "no valid proof present" outcomes → 401. The SPA error-
+        // router branches on status code (401 → re-login, 403 → wrong-
+        // account/wrong-proof), so all three routes that consume the
+        // fresh-auth primitive must emit the same signal for the same
+        // class of failure.
+        const status =
+          result.reason === 'username_mismatch' ||
+          result.reason === 'target_mismatch' ||
+          result.reason === 'kind_mismatch'
+            ? 403
+            : 401;
+        return sendError(
+          res,
+          status,
+          'FRESH_AUTH_REQUIRED',
+          'Re-authentication required to change your email. Please complete the fresh-auth challenge and retry.',
+          { reason: result.reason },
+        );
+      }
+
+      // Mechanism must match a factor the account has registered (§ 6.5
+      // invariant #2). Closed-default: a mechanism that isn't registered
+      // on this account is treated as a wrong-mechanism failure even if
+      // the proof itself verified cryptographically — a password proof
+      // on a passwordless account is structurally invalid.
+      const { password_hash, orcid } = existing[0];
+      const mechanism: FreshAuthMechanism = result.mechanism;
+      const hasPassword = password_hash !== null;
+      const hasOrcid = orcid !== null;
+      const mechanismAccepted =
+        (mechanism === 'password' && hasPassword) ||
+        (mechanism === 'orcid' && hasOrcid);
+      if (!mechanismAccepted) {
+        logger.warn(
+          {
+            event: 'settings.email_post.fresh_auth_wrong_mechanism',
+            route: 'settings.email-post',
+            username,
+            mechanism,
+            has_password: hasPassword,
+            has_orcid: hasOrcid,
+          },
+          'settings.email change-email rejected — fresh-auth proof mechanism not registered on account',
+        );
+        // Synthesized reason — see the FreshAuthVerifyFailureReason
+        // doc-comment in fresh-auth.ts. The typed const forces a compile
+        // error if a future narrowing of the union drops the value.
+        const reason: FreshAuthVerifyFailureReason = 'wrong_mechanism';
+        return sendError(
+          res,
+          401,
+          'FRESH_AUTH_REQUIRED',
+          'Re-authentication required to change your email. Please complete the fresh-auth challenge and retry.',
+          { reason },
+        );
+      }
+    }
+
+    // Duplicate-email checks run AFTER the fresh-auth gate above so a
+    // JWT-only attacker without a proof cannot enumerate registered emails
+    // via the 409-vs-401 status-code differential.
+    const { rows: dupeRows } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE email = $1 AND username != $2',
+      [email, username],
+    );
+    if (dupeRows.length > 0) {
+      return sendError(res, 409, 'DUPLICATE', 'This email is already associated with another account');
+    }
+
+    const { rows: pendingDupeRows } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE pending_email = $1 AND username != $2',
+      [email, username],
+    );
+    if (pendingDupeRows.length > 0) {
+      return sendError(res, 409, 'DUPLICATE', 'This email is already associated with another account');
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + EMAIL_TOKEN_EXPIRY_MS);
+
+    if (existing.length === 0) {
+      // Add flow: INSERT new row (Keychain user, no password).
       await pool.query(
         `INSERT INTO accounts (email, username, verify_token, expires_at)
          VALUES ($1, $2, $3, $4)`,
         [email, username, token, expiresAt],
       );
     } else {
-      // Change flow: critical action gated by fresh-auth proof on JWT path.
-      if (isJwtPath) {
-        const proof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
-        const proofToken = typeof proof === 'string' ? proof : undefined;
-        const expectedTargetHash = computeFreshAuthTargetHash(
-          changeEmailFreshAuthTarget(username),
-        );
-        const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
-        if (!result.valid) {
-          logger.warn(
-            {
-              event: 'settings.email_post.fresh_auth_rejected',
-              route: 'settings.email-post',
-              username,
-              reason: result.reason,
-            },
-            'settings.email change-email rejected — fresh-auth proof invalid',
-          );
-          // Mirror the sibling mapping at custody.ts:372-377: binding
-          // violations (token issued for a different user / target / kind)
-          // → 403; "no valid proof present" outcomes → 401. The SPA error-
-          // router branches on status code (401 → re-login, 403 → wrong-
-          // account/wrong-proof), so all three routes that consume the
-          // fresh-auth primitive must emit the same signal for the same
-          // class of failure.
-          const status =
-            result.reason === 'username_mismatch' ||
-            result.reason === 'target_mismatch' ||
-            result.reason === 'kind_mismatch'
-              ? 403
-              : 401;
-          return sendError(
-            res,
-            status,
-            'FRESH_AUTH_REQUIRED',
-            'Re-authentication required to change your email. Please complete the fresh-auth challenge and retry.',
-            { reason: result.reason },
-          );
-        }
-
-        // Mechanism must match a factor the account has registered (§ 6.5
-        // invariant #2). Closed-default: a mechanism that isn't registered
-        // on this account is treated as a wrong-mechanism failure even if
-        // the proof itself verified cryptographically — a password proof
-        // on a passwordless account is structurally invalid.
-        const { password_hash, orcid } = existing[0];
-        const mechanism: FreshAuthMechanism = result.mechanism;
-        const hasPassword = password_hash !== null;
-        const hasOrcid = orcid !== null;
-        const mechanismAccepted =
-          (mechanism === 'password' && hasPassword) ||
-          (mechanism === 'orcid' && hasOrcid);
-        if (!mechanismAccepted) {
-          logger.warn(
-            {
-              event: 'settings.email_post.fresh_auth_wrong_mechanism',
-              route: 'settings.email-post',
-              username,
-              mechanism,
-              has_password: hasPassword,
-              has_orcid: hasOrcid,
-            },
-            'settings.email change-email rejected — fresh-auth proof mechanism not registered on account',
-          );
-          // Synthesized reason — see the FreshAuthVerifyFailureReason
-          // doc-comment in fresh-auth.ts. The typed const forces a compile
-          // error if a future narrowing of the union drops the value.
-          const reason: FreshAuthVerifyFailureReason = 'wrong_mechanism';
-          return sendError(
-            res,
-            401,
-            'FRESH_AUTH_REQUIRED',
-            'Re-authentication required to change your email. Please complete the fresh-auth challenge and retry.',
-            { reason },
-          );
-        }
-      }
-
-      // Change flow: set pending_email fields
+      // Change flow: set pending_email fields.
       await pool.query(
         `UPDATE accounts
          SET pending_email = $1,
@@ -292,11 +309,17 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
       );
     }
 
-    // Send verification email
+    // Send verification email. SMTP failure follows Option A of the
+    // status-code-oracle convention: catch, log warn, fall through to a
+    // uniform 200. Emitting 500 only on the known-identity path would be a
+    // status-code oracle; the fresh-auth gate above does not change the
+    // convention's logic (once DB state is written + secondary effect
+    // fails, the user-facing semantic is "we have your change queued; the
+    // mail will retry; visit settings to see status" rather than 500).
     try {
       await sendVerificationEmail(email, token);
     } catch (mailErr) {
-      logger.error(
+      logger.warn(
         {
           event: 'settings.email_post.smtp_send_failed',
           route: 'settings.email-post',
@@ -304,13 +327,16 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
           username,
           err: mailErr,
         },
-        'Failed to send verification email',
+        'SMTP send failed',
       );
-      // Roll back the write this request made. On the Add branch the row
-      // didn't exist before, so DELETE is correct. On the Change branch we
-      // restore the snapshotted pending_email triple — nulling would
-      // destroy a still-valid 24h verify link from a previous successful
-      // change request, locking the user out of completing it.
+      // Roll back the DB write this request made so the row doesn't carry
+      // pending-email state that the user has no verify link for. On Add,
+      // DELETE the just-INSERTed row. On Change, restore the snapshotted
+      // pending_email triple — but only if THIS request's UPDATE is still
+      // the row's current state (scoped by the just-written token). A
+      // concurrent change-email request that already overwrote the row
+      // sees the restore no-op here, intended: don't clobber its in-flight
+      // state.
       if (existing.length === 0) {
         await pool.query('DELETE FROM accounts WHERE username = $1 AND verify_token = $2', [username, token]);
       } else {
@@ -320,11 +346,11 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
              SET pending_email = $1,
                  pending_email_token = $2,
                  pending_email_expires_at = $3
-             WHERE username = $4`,
-          [prior.pending_email, prior.pending_email_token, prior.pending_email_expires_at, username],
+             WHERE username = $4 AND pending_email_token = $5`,
+          [prior.pending_email, prior.pending_email_token, prior.pending_email_expires_at, username, token],
         );
       }
-      return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
+      // Fall through to the uniform 200 below — do NOT return 500.
     }
 
     sendOk(res, { message: 'Verification email sent' });
