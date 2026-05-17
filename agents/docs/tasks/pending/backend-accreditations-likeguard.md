@@ -212,7 +212,7 @@ With this proxy in place, a regression that drops the `typeof` narrow in `valida
 
 ---
 
-## Backend re-review signal (2026-05-17, commit SHA `0843641`) — round 3
+## Backend re-review signal (2026-05-17, commit SHA `152e164`) — round 3
 
 Both round-2 hold items landed in a single commit. Test additions only — no production-code changes.
 
