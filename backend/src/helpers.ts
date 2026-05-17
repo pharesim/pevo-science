@@ -26,6 +26,7 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { paperDisciplineField } from './types/disciplines.js';
 import { validatedCid } from './lib/ipfs-validation.js';
+import { applyAuthorSupersession } from './lib/author-supersession.js';
 
 export function parseMeta(raw: unknown): Record<string, unknown> {
   if (typeof raw === 'string') {
@@ -306,8 +307,28 @@ export function toPaperSummary(post: {
   body: string;
   created: string;
   net_votes: number;
-}, meta: Record<string, unknown>): PaperSummary {
+}, meta: Record<string, unknown>, orcidMap?: Map<string, string | null>): PaperSummary {
   const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
+  // ORCID supersession (per `agents/docs/hive-schemas.md` § 1.1). When the
+  // caller supplies `orcidMap` (from `getAccreditedOrcidsByAccount()`), every
+  // `authors[i]` gets `orcid_verified` and `orcid_discrepancy` populated per
+  // the canonical four-case rule. Without the map, the raw chain authors
+  // pass through — backwards-compatible for any caller that hasn't been
+  // wired yet. PaperSummary's contract omits `affiliation` per
+  // `agents/docs/api-contracts/papers.md`, so the post-supersession entries
+  // are stripped of that field before being projected onto the response.
+  const rawAuthors = Array.isArray(pevo.authors) ? (pevo.authors as Array<Record<string, unknown>>) : [];
+  const supersededAuthors = orcidMap
+    ? applyAuthorSupersession(rawAuthors, orcidMap)
+    : rawAuthors;
+  const summaryAuthors = supersededAuthors.map((entry) => {
+    // Strip affiliation to honor the PaperSummary shape. The helper
+    // preserves all chain fields by design (so PaperDetail callers can
+    // reuse it); per-surface contract enforcement happens at the
+    // emit site.
+    const { affiliation: _affiliation, ...rest } = entry as Record<string, unknown> & { affiliation?: unknown };
+    return rest;
+  }) as unknown as PaperSummary['authors'];
   return {
     author: post.author,
     permlink: post.permlink,
@@ -319,7 +340,7 @@ export function toPaperSummary(post: {
     // (helper returns string | null; '' is the historical absent shape).
     discipline: paperDisciplineField(pevo.discipline) ?? '',
     keywords: pevoStringArray(pevo, 'keywords'),
-    authors: (pevo.authors as PaperSummary['authors']) || [],
+    authors: summaryAuthors,
     // Output-side CID shape validation. Closes the fourth emit path missed
     // by BACKEND-PAPER-DETAIL-CID-VALIDATE-ON-EMIT round-1 (the three sites
     // in `routes/papers.ts` were wrapped; this site, which feeds

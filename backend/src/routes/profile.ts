@@ -5,7 +5,7 @@ import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
-import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
+import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount } from '../accreditation.js';
 import { getReputationScore, getReputationScores } from '../reputation.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -239,7 +239,14 @@ router.get('/:username', async (req: Request, res: Response) => {
 // GET /api/profile/:username/papers
 // ──────────────────────────────────────────────
 
-async function fetchUserPapersFromHaf(username: string, limit: number, offset: number, sortCol: string, order: string) {
+async function fetchUserPapersFromHaf(
+  username: string,
+  limit: number,
+  offset: number,
+  sortCol: string,
+  order: string,
+  orcidMap?: Map<string, string | null>,
+) {
   const pool = getPool();
   if (!pool) return null;
 
@@ -291,6 +298,7 @@ async function fetchUserPapersFromHaf(username: string, limit: number, offset: n
       return toPaperSummary(
         { author: r.author as string, permlink: r.permlink as string, title: r.title as string, body: r.body as string, created: r.created as string, net_votes: 0 },
         meta,
+        orcidMap,
       );
     });
 
@@ -309,7 +317,16 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
 
   const cacheKey = `profile-papers:${username}:${JSON.stringify({ sort, order, page, limit })}`;
   const result = await hafCache.getOrSet(cacheKey, async () => {
-    const hafResult = await fetchUserPapersFromHaf(username, limit, offset, sort, order);
+    // Fetch the accreditation orcid map inside the cache miss path so the
+    // cached PaperSummary rows carry the supersession projection. The
+    // 30-min cache staleness applies to `orcid_verified`/`orcid_discrepancy`
+    // here for the same reason it applies on `/api/papers` (see
+    // `agents/docs/api-contracts/papers.md` cache-staleness note);
+    // `getAccreditedOrcidsByAccount` is itself 10-min cached, so cold-cache
+    // requests pay one cheap accreditation fetch and cache the projected
+    // result for 30 min.
+    const orcidMap = await getAccreditedOrcidsByAccount();
+    const hafResult = await fetchUserPapersFromHaf(username, limit, offset, sort, order, orcidMap);
     if (hafResult) return hafResult;
     return { rows: [], total: 0 };
   });

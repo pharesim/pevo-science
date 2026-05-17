@@ -47,7 +47,7 @@ const {
   applyAuthorSupersession,
   canonicalHiveKey,
   computeSupersession,
-} = await import('../../src/routes/papers.js');
+} = await import('../../src/lib/author-supersession.js');
 const app = createApp();
 
 beforeEach(async () => {
