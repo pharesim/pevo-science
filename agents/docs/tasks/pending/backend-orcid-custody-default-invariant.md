@@ -298,3 +298,38 @@ Round-4 lands the three items from the architect's round-3 hold (orcid.ts commen
 - `agents/docs/tasks/review/backend-orcid-custody-default-invariant.md` (this signal block)
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect round-4 re-review (2026-05-17) — HELD PENDING FIXES
+
+`/ce-code-review` on round-4 commit `ea54f91` ran 7 personas (correctness + security + adversarial on opus; testing + maintainability + project-standards + kieran-typescript on sonnet; ce-agent-native-reviewer skipped per project CLAUDE.md). All three round-3 hold items landed cleanly:
+- Item 1 (orcid.ts comment reframe): honest reframing per the round-3 ask. Verified.
+- Item 2 (JWT `sub` runtime validation): runtime guard correctly placed, narrowing sound, regression test pins behavior. Verified.
+- Item 3 (slug-citation cleanup at 3 out-of-round-3-scope sites): `grep -rn 'BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT' backend/src/ backend/tests/` returns zero hits. Verified.
+
+One item holds — surfaced by adversarial during the round-4 review: round-4's own slug cleanup introduced a stale route-name reference (citation-rot avoided, route-name-rot introduced).
+
+### Item 1 [P3] — `auth.ts` slug-cleanup comments cite nonexistent `/signup-verify` route
+
+**Source:** adversarial ADV-R4-1 (conf 60)
+**Files:** `backend/src/routes/auth.ts:611-617, 782-787`
+
+Round-4's slug cleanup replaced `BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT` task-slug citations with behavioral descriptions. Both new comment blocks (in `/resend-verification` at :611-617 and in `/login` at :782-787) cite *"the `/signup-verify` handler in `signup-verify.ts`"*. But the actual routes registered in `signup-verify.ts` are `/verify`, `/resume-signup`, `/confirm`, and `/link` — **there is no `/signup-verify` route**. The canonical hoist pattern's parent site is the `/resume-signup` handler (line 133 router declaration; canonical comment block at line 191).
+
+Round-4's signal block at line 277 of this task file repeats the same error in prose: *"referenc[es] the canonical hoist pattern's parent site (`signup-verify.ts`'s `/signup-verify` handler)"*. Same incorrect route name in code and signal text.
+
+A future maintainer following the comment greps `router.post('/signup-verify'` → zero hits → loses the wayfinding trail the slug-cleanup was meant to preserve. Same citation-rot class round-3 item 3 was filed to prevent.
+
+**Fix shape:** replace `/signup-verify` with `/resume-signup` in both comment blocks. One-line typo fix per site. Confirm via `grep -n "router.post('/resume-signup'" backend/src/routes/signup-verify.ts` resolves to a single hit.
+
+### Files for round-5
+
+- `backend/src/routes/auth.ts` (item 1)
+- This task file (round-5 implementer signal block when moving back to review/)
+
+### Dismissed at architect triage (recorded for transparency)
+
+- **JWT mint/verify type asymmetry on `custody` claim** (kieran-typescript kts-1/2/5 P2/P3, conf 75): mint sites are practically disciplined (DB column under `WHERE username IS NOT NULL` filter or string literals); verify cast is asserted-not-enforced but practically safe. Round-3 hold explicitly chose to widen `sub` only; symmetric `custody` widening would extend scope into a project-wide refactor (shared `PevoJwtClaims` type + 8+ mint sites) better filed as its own task if the actual production risk surfaces. Architect's previous instinct stands.
+- **Test pins `sub` absent only** (testing testing-1 P3/60): the guard's `typeof === 'string' && length > 0` would correctly reject `sub: ''`, `sub: null`, `sub: 42` — the absent-sub case is the canonical regression-kill per the original round-3 hold. Preemptive parameterization per `feedback_dismiss_preemptive_test_hardening`.
+- **Vacuous `not.toHaveProperty('hiveUsername')` assertion** (testing testing-2 info/90): JSON serialization drops `undefined`. Load-bearing assertions (status + `hiveAuthMethod`) on the same line work correctly. Trivial.
