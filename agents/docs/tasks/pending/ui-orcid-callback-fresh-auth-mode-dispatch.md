@@ -249,3 +249,37 @@ All 54 tests in the file pass (50 prior + 4 new).
 ### Architect signal
 
 Move this file from `review/` back to `pending/` per rule #8. Implementer addresses item 1 (one-line guard refinement + one positive-case test) in a single commit, then `git mv`s the file back to `review/` for round-3 architect re-review. Round-3's `/ce-code-review` scope will be the implementer's new commit only (per rule #8: re-review covers commits since the hold block was written).
+
+## UI re-review signal (2026-05-17, round-3, working tree)
+
+Round-2 hold-block item-1 landed.
+
+**Item 1 (P1 guard refinement for `set_password` empty `root_permlink`):** the round-2 guard used truthy checks `!data.root_author` / `!data.root_permlink`, which rejected the backend's contract-valid `set_password` fresh_auth echo where `root_permlink: ''` is deliberate (account-level, non-paper target). Refined the guard to the architect's prescribed shape in `frontend/src/pages/orcid-callback.js`:
+
+```js
+if (
+  typeof data.action !== 'string' || !data.action ||
+  typeof data.root_author !== 'string' || !data.root_author ||
+  typeof data.root_permlink !== 'string'
+) {
+  this.status = 'error';
+  this.errorMessage = this.$t('orcid.verificationFailed');
+  return;
+}
+```
+
+The `root_permlink` check is now typeof-only (empty string passes); `action` and `root_author` retain truthy semantics but close the typeof/truthy asymmetry so each field fails consistently on null/undefined/wrong-type/empty.
+
+**Regression test added** to `frontend/tests/unit/pages-orcid-callback.test.js` under the existing `fresh_auth` describe block:
+
+- `handles fresh_auth set_password action with empty root_permlink: caches target-bound proof including empty permlink, navigates return path, fires success toast` — exercises the realistic `set_password` response shape `{mode:'fresh_auth', fresh_auth_proof:'tok', expires_at:'2099-...', action:'set_password', root_author:'alice', root_permlink:''}` and asserts (a) cache write succeeds with all three target fields including the empty string stored verbatim, (b) return-path navigation fires (`/settings`), (c) reauth success toast appears, plus a negative assertion that `status` did not flip to `error`.
+
+All 55 tests in the file pass (54 prior + 1 new). The other round-2 tests (missing-action, missing-root_author, missing-root_permlink, non-string-action) continue to pass — the refined guard's behavior on those negative cases is unchanged because the typeof check fires first on `undefined`.
+
+**Files touched in this round:**
+- `frontend/src/pages/orcid-callback.js` — guard refinement at the top of `_handleFreshAuth`
+- `frontend/tests/unit/pages-orcid-callback.test.js` — new positive-case regression test
+
+Landed at commit `611b86c` (parent's cherry-pick of worktree-subagent commit `b5a4536`).
+
+**Out of scope (unchanged):** no backend changes, no consent-op broadcast helper, no consent-op UI. The E2E test deferred per acceptance §4 still waits for `ui-multi-author-consent-affordances` to land the consumer side.
