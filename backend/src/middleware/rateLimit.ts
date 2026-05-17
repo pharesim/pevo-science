@@ -32,21 +32,27 @@ interface RateLimitConfig {
    * Implementation note: the Redis path uses an atomic Lua EVAL script
    * (INCR → check ≤ max → on overflow DECR + return 429, on success
    * PEXPIRE + return 200-pass). On `res.on('finish')` AND `res.on('close')`,
-   * if status >= 400 the slot is refunded by an unconditional DECR. The
-   * dual-listener pattern is required because TCP-abort / client-disconnect
-   * does NOT fire `'finish'`; without `'close'` coverage a single dropped
-   * connection mid-handler permanently consumes the slot for the full
-   * window. A once-guard prevents double-refund when both events fire on
-   * normal completion. The Redis handle is re-resolved (`getRedis()`)
-   * inside the callback so a reconnect cycle between handler entry and
-   * deferred fire doesn't capture a stale binding. The Lua script makes
-   * the limit check + slot-consume atomic so concurrent requests for the
-   * same key cannot both pass the `>= max` check and overshoot the limit
-   * (the pre-Lua GET → next() → deferred-INCR pattern had a TOCTOU race
-   * plus a permanent-lockout TTL bug where concurrent post-success INCRs
-   * after count=1 never refreshed PEXPIRE). The in-memory fallback path
-   * mirrors the same shape: push the timestamp synchronously on entry,
-   * splice it back out on finish/close when status >= 400.
+   * the slot is refunded by an unconditional DECR unless the response
+   * completed successfully (`statusCode < 400 && writableEnded`). The
+   * `writableEnded` half of the gate is load-bearing: a client TCP-abort
+   * during a pending `await` (e.g. a slow Hive RPC) fires `'close'` with
+   * `statusCode` still at its Node.js default of 200 and `writableEnded`
+   * false — a `statusCode < 400`-only check would skip the refund and
+   * permanently consume the slot for the full window. The dual-listener
+   * pattern is required because TCP-abort / client-disconnect does NOT
+   * fire `'finish'`; without `'close'` coverage a single dropped
+   * connection mid-handler permanently consumes the slot. A once-guard
+   * prevents double-refund when both events fire on normal completion.
+   * The Redis handle is re-resolved (`getRedis()`) inside the callback so
+   * a reconnect cycle between handler entry and deferred fire doesn't
+   * capture a stale binding. The Lua script makes the limit check +
+   * slot-consume atomic so concurrent requests for the same key cannot
+   * both pass the `>= max` check and overshoot the limit (the pre-Lua
+   * GET → next() → deferred-INCR pattern had a TOCTOU race plus a
+   * permanent-lockout TTL bug where concurrent post-success INCRs after
+   * count=1 never refreshed PEXPIRE). The in-memory fallback path mirrors
+   * the same shape: push the timestamp synchronously on entry, splice it
+   * back out on finish/close unless the response succeeded cleanly.
    *
    * Window semantic: the unconditional PEXPIRE inside the Lua makes EVERY
    * limiter (skipFailed or not) a rolling window — the TTL is refreshed on
@@ -129,19 +135,25 @@ export function rateLimit(config: RateLimitConfig) {
           return sendError(res, 429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
         }
         if (skipFailed) {
-          // Refund the slot on failure (status >= 400). Register both
+          // Refund the slot on any non-successful outcome. Register both
           // 'finish' and 'close' with a once-guard so TCP-abort / client-
           // disconnect (which fires 'close' but NOT 'finish') is covered.
           // Without 'close' coverage, an aborted upgrade (max=1/hr) would
           // permanently consume the legitimate user's slot for the full
           // hour — exactly the DoS this option is meant to prevent.
+          // The gate `statusCode < 400 && writableEnded` skips the refund
+          // only when the response completed cleanly. A pre-status TCP-
+          // abort (mid-`await` disconnect) leaves `statusCode` at the
+          // Node.js default of 200 and `writableEnded` false; the
+          // `writableEnded` half of the gate is what catches that case.
           // `getRedis()` is re-resolved inside the callback because a
           // reconnect cycle between handler entry and deferred-fire would
           // otherwise capture a stale binding.
           let refunded = false;
           const refund = () => {
-            if (refunded || res.statusCode < 400) return;
+            if (refunded) return;
             refunded = true;
+            if (res.statusCode < 400 && res.writableEnded) return;
             const r = getRedis();
             if (!r) return;
             void (async () => {
@@ -183,13 +195,17 @@ export function rateLimit(config: RateLimitConfig) {
     if (skipFailed) {
       // Same dual-listener once-guard pattern as the Redis path: 'close'
       // covers TCP-abort / client-disconnect; 'finish' covers normal
-      // completion. Either-or fires on a given request, but defensive
-      // double-registration with `refunded` flag prevents double-splice
-      // when both fire on a clean finish-then-close sequence.
+      // completion. Defensive double-registration with `refunded` flag
+      // prevents double-splice when both fire on a clean finish-then-close
+      // sequence. The `statusCode < 400 && writableEnded` gate skips the
+      // refund only when the response completed cleanly; pre-status
+      // TCP-abort (default `statusCode=200`, `writableEnded=false`) flows
+      // to the splice so the slot is returned.
       let refunded = false;
       const refund = () => {
-        if (refunded || res.statusCode < 400) return;
+        if (refunded) return;
         refunded = true;
+        if (res.statusCode < 400 && res.writableEnded) return;
         const e = memStore.get(key);
         if (!e) return;
         const idx = e.timestamps.indexOf(pushedTs);

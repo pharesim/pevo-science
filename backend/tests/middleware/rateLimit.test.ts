@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import express from 'express';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { rateLimit, byIp, byAccount } from '../../src/middleware/rateLimit.js';
 import { createApp } from '../../src/app.js';
 import { getRedis } from '../../src/redis.js';
@@ -252,6 +254,102 @@ describe('rateLimit middleware', () => {
     }
     expect(count).toBe(0);
 
+    await redis.del(redisKey).catch(() => {});
+  });
+
+  // Round-4 → round-5 regression: the original refund gate `res.statusCode < 400`
+  // missed pre-status TCP-abort. A client disconnecting during a pending `await`
+  // (e.g. a slow Hive RPC) fires `'close'` with `res.statusCode` still at the
+  // Node.js default of 200 and `res.writableEnded` false. The old gate skipped
+  // the refund and permanently consumed the slot for the full window — exactly
+  // the DoS scenario `skipFailedRequests` exists to prevent. The round-5 fix
+  // widens the gate to `statusCode < 400 && writableEnded`; this test pins it
+  // against any future revert to a status-only check. It also exercises the
+  // Redis-path once-guard (vs. the in-memory `indexOf` dedup) — abort during a
+  // pending await is the only realistic trigger for both `'close'` and `'finish'`
+  // firing in non-clean order, which the once-guard exists to handle.
+  it('skipFailedRequests refunds slot on pre-status TCP-abort during pending await', async () => {
+    const ready = await waitForRedisReady();
+    if (!ready) return;
+    const redis = getRedis()!;
+    const limiterName = `test-abort-${Date.now()}`;
+    const username = `dave-${Date.now()}`;
+    const redisKey = `${config.appTag}:rl:${limiterName}:${username}`;
+    await redis.del(redisKey).catch(() => {});
+
+    // Handler awaits long enough that the client can disconnect before any
+    // response status is set. `res.statusCode` stays at its Node default
+    // (200) and `res.writableEnded` stays false — the round-4-only gate
+    // (statusCode < 400) would skip the refund; the round-5 gate (also
+    // requires writableEnded) refunds.
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      const u = req.headers['x-hive-username'] as string | undefined;
+      if (u) req.hiveUsername = u;
+      next();
+    });
+    app.use(
+      rateLimit({
+        windowMs: 60_000,
+        max: 1,
+        keyFn: byAccount,
+        name: limiterName,
+        skipFailedRequests: true,
+      }),
+    );
+    app.get('/test', async (_req, res) => {
+      await new Promise((r) => setTimeout(r, 300));
+      if (!res.writableEnded) {
+        try {
+          res.json({ ok: true });
+        } catch {
+          // socket already destroyed by client abort
+        }
+      }
+    });
+
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const { port } = server.address() as AddressInfo;
+
+    // Open the request, then destroy the socket before the handler's
+    // 300ms timeout fires. The middleware's INCR has already landed
+    // (registration of the refund listeners happened in the middleware
+    // before `next()` ran).
+    await new Promise<void>((resolve) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: '/test',
+          method: 'GET',
+          headers: { 'x-hive-username': username },
+        },
+        () => {},
+      );
+      req.on('error', () => {});
+      req.end();
+      setTimeout(() => {
+        req.destroy();
+        resolve();
+      }, 50);
+    });
+
+    // Wait for `res.on('close')` → refund DECR to land.
+    let count = 1;
+    for (let i = 0; i < 40; i++) {
+      const s = await redis.get(redisKey);
+      count = s ? Number(s) : 0;
+      if (count === 0) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(count).toBe(0);
+
+    // Wait for handler's 300ms timer to fire so it doesn't keep the
+    // process alive after the test returns, then close the server.
+    await new Promise((r) => setTimeout(r, 350));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     await redis.del(redisKey).catch(() => {});
   });
 

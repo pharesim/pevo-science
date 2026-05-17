@@ -141,9 +141,10 @@ export type SharedScriptName = keyof typeof SHARED_SCRIPTS;
 /**
  * Static contract for each script's return type. Used by `evalScript<N>`
  * so callers receive `ScriptReturn[N]` instead of `unknown` and don't need
- * a load-bearing `as` cast at the call site. The mapping must be kept in
- * sync with the Lua return statements above; a future script added to
- * `SHARED_SCRIPTS` without an entry here is a compile error.
+ * a load-bearing `as` cast at the call site. The exhaustiveness guard
+ * below makes `SHARED_SCRIPTS` ↔ `ScriptReturn` divergence a compile error
+ * at the definition site (a script name present in one mapping but not
+ * the other no longer resolves silently to `unknown` via `ScriptReturn[N]`).
  *
  * The mapped-type also makes future script additions automatically type-
  * safe (a `Promise<unknown>` return forced every caller to invent their
@@ -160,6 +161,18 @@ export type ScriptReturn = {
   RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
   RATE_LIMIT_CHECK_AND_CONSUME: [number, number];
 };
+
+// Compile-time exhaustiveness guard. `_NoMissingReturn` catches a script
+// added to SHARED_SCRIPTS without a corresponding `ScriptReturn` entry;
+// `_NoExtraReturn` catches a stale `ScriptReturn` entry whose script was
+// removed from SHARED_SCRIPTS. Drift collapses one side to `false` and the
+// `_scriptReturnExhaustive: true` assignment fails to compile, surfacing
+// the divergence at the definition site rather than via a silent
+// `Promise<unknown>` at a call site.
+type _NoMissingReturn = Exclude<SharedScriptName, keyof ScriptReturn> extends never ? true : false;
+type _NoExtraReturn = Exclude<keyof ScriptReturn, SharedScriptName> extends never ? true : false;
+const _scriptReturnExhaustive: _NoMissingReturn & _NoExtraReturn = true;
+void _scriptReturnExhaustive;
 
 const scriptShaCache = new Map<SharedScriptName, string>();
 

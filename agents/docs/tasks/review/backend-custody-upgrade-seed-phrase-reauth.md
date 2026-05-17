@@ -569,3 +569,72 @@ This collapses both divergence directions (`SHARED_SCRIPTS` key missing from `Sc
 - `backend/src/lib/redis-scripts.ts` (item 2: add `satisfies Record<SharedScriptName, unknown>` to `ScriptReturn` definition)
 
 Per root CLAUDE.md rule #8, this file moves from `tasks/review/` back to `tasks/pending/` so the implementer sees it at startup. After landing the round-5 fixes, `git mv` back to `tasks/review/` for round-5 re-review.
+
+---
+
+## Backend re-review signal (2026-05-17, round-5 fix commit)
+
+Round-4 → round-5 hold items 1 and 2 both landed in one commit.
+
+### Item-by-item resolution
+
+**Item 1 (P0) — widen refund gate from `statusCode < 400` to `statusCode < 400 && writableEnded`.** `backend/src/middleware/rateLimit.ts` — both the Redis-path refund (line ~155) and the in-memory-path refund (line ~199) now use the wider gate. The once-guard ordering also flipped to match the architect's suggested shape: `if (refunded) return; refunded = true;` runs BEFORE the eligibility check, so the guard is consumed on the first eligible event regardless of whether refund actually runs.
+
+The round-4 form's failure mode was that `res.statusCode` defaults to 200 in Node.js and stays 200 until the handler explicitly sets it. The `/upgrade` handler awaits `pool.query` and `hiveClient.database.getAccounts` BEFORE any `res.status()` call; a client TCP-abort during one of these awaits fires `'close'` with `statusCode=200, writableEnded=false`, and the old gate skipped the refund. The new gate's `writableEnded` half is what distinguishes "clean 2xx response that completed" (`writableEnded=true`) from "default 200 + connection died mid-await" (`writableEnded=false`).
+
+Truth table for the new gate `statusCode < 400 && writableEnded`:
+
+| Scenario | statusCode | writableEnded | Skip refund? |
+|---|---|---|---|
+| Clean 2xx finish (handler succeeded) | 2xx | true | YES — slot stays consumed |
+| Clean 4xx/5xx finish (handler errored) | 4xx/5xx | true | NO — refund |
+| Pre-status TCP-abort during await | 200 (default) | false | NO — refund |
+| Mid-response abort (after status set) | already set | false | NO — refund |
+
+Regression test at `backend/tests/middleware/rateLimit.test.ts:294-372` (`skipFailedRequests refunds slot on pre-status TCP-abort during pending await`). Real-Redis path per architect direction. Spins up `http.createServer(app)` on an ephemeral port, sends `http.request`, calls `req.destroy()` 50ms in. Handler awaits 300ms so the abort lands before any `res.status()` call. Polls Redis for the DECR-refund landing, expects `count=0` (slot returned). The test simultaneously exercises the Redis-path once-guard (`'close'` fires the refund; if the handler's 300ms timer were to later try `res.json()`, `'finish'` does not fire on a destroyed socket — the once-guard's actual second-event guard is harder to trigger here than the architect implied, but `refunded=true` ordering is still pinned by the test's success-on-first-fire structure).
+
+JSDoc on `RateLimitConfig.skipFailedRequests` updated to document the gate change and explain why `writableEnded` is load-bearing — without it, a single dropped connection mid-handler permanently consumes the slot for the full window.
+
+**Item 2 (P1) — `ScriptReturn` ↔ `SharedScriptName` exhaustiveness guard.** `backend/src/lib/redis-scripts.ts`. **Deviation from the architect's suggested snippet, in the form not the intent:** TypeScript's `satisfies` operator is value-level, not type-level. The literal snippet from the round-4 hold (`} satisfies Record<SharedScriptName, unknown>` directly on a type alias) is a syntax error (`error TS1005: ';' expected`). Verified locally — `tsc --noEmit` rejects it under TS 6.0.2 (the pinned version in `backend/package.json`). The architect's intent — make `SHARED_SCRIPTS` ↔ `ScriptReturn` key-set divergence a compile error at the definition site — is preserved using the canonical type-level pattern:
+
+```ts
+export type ScriptReturn = {
+  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: number;
+  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
+  RATE_LIMIT_CHECK_AND_CONSUME: [number, number];
+};
+
+type _NoMissingReturn = Exclude<SharedScriptName, keyof ScriptReturn> extends never ? true : false;
+type _NoExtraReturn = Exclude<keyof ScriptReturn, SharedScriptName> extends never ? true : false;
+const _scriptReturnExhaustive: _NoMissingReturn & _NoExtraReturn = true;
+void _scriptReturnExhaustive;
+```
+
+Both directions are guarded:
+- Adding a script to `SHARED_SCRIPTS` without an entry here: `Exclude<SharedScriptName, keyof ScriptReturn>` ≠ `never` → `_NoMissingReturn` resolves to `false` → `const ...: false & true = true` fails type-check.
+- Removing a script from `SHARED_SCRIPTS` but leaving a stale `ScriptReturn` entry: `Exclude<keyof ScriptReturn, SharedScriptName>` ≠ `never` → `_NoExtraReturn` resolves to `false` → same failure mode.
+
+Confirmed by smoke-test: temporarily added a `FOO` key to `SHARED_SCRIPTS` without updating `ScriptReturn` → `tsc --noEmit` errored on the `_scriptReturnExhaustive` line as expected; reverted.
+
+JSDoc updated to describe the new guard mechanism (replacing the old "the mapping must be kept in sync ... is a compile error" prose which described an aspiration rather than the actually-enforced shape).
+
+`void _scriptReturnExhaustive;` is the convention here to keep ESLint quiet on the otherwise-unused const; pure boilerplate, zero runtime overhead.
+
+### Verification
+
+- `cd backend && npm run lint`: clean.
+- `cd backend && npm run typecheck`: clean (both `typecheck:src` and `typecheck:tests`).
+- `npx vitest run tests/middleware/rateLimit.test.ts tests/middleware/rateLimit-in-memory.test.ts tests/lib/redis-scripts.test.ts`: 21/21 green (12 in rateLimit.test.ts including the new abort-before-status test, 3 in rateLimit-in-memory.test.ts, 6 in redis-scripts.test.ts).
+- `npx vitest run tests/routes/custody-upgrade.test.ts tests/routes/custody.test.ts`: 30/30 green (the `/upgrade` route's behavior is unchanged; the rate-limiter gate widening doesn't affect the route's happy paths or status-bearing rejection paths because those all complete cleanly with `writableEnded=true`).
+
+### Cross-task observation
+
+The pre-existing accreditation test failure `round-4 hold #2: pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE` (502 instead of 503) is still present and still pre-existing — verified by `git stash` + re-run against the pre-this-commit baseline (also failed with the same 502-vs-503 mismatch). Unrelated to this task's changes; carries forward from the round-4 implementer's signal block.
+
+### Files landed
+
+- `backend/src/middleware/rateLimit.ts` — refund gate widened to `statusCode < 400 && writableEnded` on both Redis and in-memory paths; once-guard ordering aligned with architect's snippet; JSDoc updated.
+- `backend/src/lib/redis-scripts.ts` — exhaustiveness guard via `_NoMissingReturn`/`_NoExtraReturn` + const assignment; JSDoc on `ScriptReturn` updated to describe the new mechanism. NOTE: `satisfies` on a type alias is invalid syntax under TS 6.0.2; deviation is in form not intent.
+- `backend/tests/middleware/rateLimit.test.ts` — added `skipFailedRequests refunds slot on pre-status TCP-abort during pending await` test (real-Redis path, raw `http.request` + `req.destroy()` to drive socket abort before any status set).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
