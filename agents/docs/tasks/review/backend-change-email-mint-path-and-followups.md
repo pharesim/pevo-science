@@ -133,3 +133,29 @@ Architect lean: Option (a). The fresh-auth gate doesn't change the convention's 
 When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
 
 Recommendation: items 1+2 cluster on `settings.ts` (hoist + scope-WHERE) and can land in one commit. Item 3 is a test addition. Item 4 is a verify-then-fix that may not require a code change depending on what HEAD shows.
+
+---
+
+## Backend re-review signal (2026-05-17, commit 30ce45a)
+
+All four round-2 hold items landed at commit `30ce45a` (note: the commit prefix says `architect(compound)` because a sibling architect commit ran concurrently with my staged work and swept up my three backend files alongside its two solution-doc additions — root-CLAUDE shared-index race; my round-2 backend diff is mechanically in that SHA but under the architect's commit subject). The diff for the round-2 backend work is the `backend/src/routes/settings.ts`, `backend/tests/routes/settings-email-fresh-auth.test.ts`, and `backend/tests/routes/settings.test.ts` hunks within `30ce45a`. Scope `/ce-code-review` to those three files within that SHA.
+
+**Item 1 (hoist):** `backend/src/routes/settings.ts:129-258`. Handler order is now `(1) body validate → (2) SELECT existing → (3) Change-branch+JWT fresh-auth + mechanism check → (4) Add-branch JWT-rejection guard → (5) duplicate-email SELECTs → (6) INSERT/UPDATE → (7) sendMail`. A JWT-only attacker without a proof now gets 401 regardless of whether the candidate email is registered to another account. The body-validation 400 still runs before consume per architect call ("they don't disclose registration state"). Updated block comment at `:101-148` documents the load-bearing ordering.
+
+**Item 2 (snapshot-restore scoping):** `backend/src/routes/settings.ts:295-302`. Restore UPDATE now carries `AND pending_email_token = $5` where `$5` is the just-written token. If a concurrent change-email request already overwrote the row, the restore no-ops rather than clobbering its in-flight state. No transaction overhead.
+
+**Item 4 (SMTP-fail → 200 + warn):** `backend/src/routes/settings.ts:267-307`. Catch sendMail error, log `warn` with `{event, route, email_hash, username, err}`, rollback DB state (DELETE on Add; restore-with-token-scope on Change), fall through to uniform 200. Matches Option A from `timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` and the canonical shape in `auth.ts:667-678`. The level moved from `error` to `warn` per the convention ("delivery-gap metric, not availability incident").
+
+**Item 3 (test):** `backend/tests/routes/settings-email-fresh-auth.test.ts:790-901`. New describe block "Change-flow SMTP fail restores prior pending_email" seeds a prior pending change to NEW_EMAIL_A, queues `smtpMock.sendMail.mockRejectedValueOnce(...)`, submits a second change to NEW_EMAIL_B, asserts status 200 + DB row's `pending_email` and `pending_email_token` still equal the prior values (not NEW_EMAIL_B, not NULL). Requires the SMTP mock refactor to vi.hoisted (lines 73-83) so per-test rejection can be queued; default behavior still resolves successfully so the other 17 tests in the file are unaffected.
+
+**Companion test update:** `backend/tests/routes/settings.test.ts:376-432` (Add-flow smtp_send_failed log shape) updated to assert status 200 + `logger.warn` instead of status 500 + `logger.error`, matching item 4's behavior change.
+
+### Verification
+
+- `npm run typecheck` (src + tests): clean.
+- `npx vitest run` against `settings.test.ts` (24) + `settings-email-fresh-auth.test.ts` (17) + `settings-set-password.test.ts` (8) + `auth-log-shape.test.ts` (9) = 58 tests, all pass. The new SMTP-fail Change-flow test triggers the `settings.email_post.smtp_send_failed` warn emission and asserts the restored prior values.
+
+### Items left untouched
+
+- The architect's P2/P3 dismissals during round-1 triage (JWT-guard message distinguishability, test-slug citation, `existing[0]` re-aliasing, route-level kind_mismatch separate pin, cross-kind acceptance) — all dismissed by architect, no action.
+- The `auth-gate-revives-pre-existing-read-side-oracle-2026-05-17.md` learning (one of the two architect solution-docs that landed in the same SHA) captures the round-2 item-1 pattern for future reuse — referenced for context, not part of this task's deliverable.
