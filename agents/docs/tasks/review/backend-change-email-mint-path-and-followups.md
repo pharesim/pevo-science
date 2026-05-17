@@ -136,9 +136,9 @@ Recommendation: items 1+2 cluster on `settings.ts` (hoist + scope-WHERE) and can
 
 ---
 
-## Backend re-review signal (2026-05-17, commit 30ce45a)
+## Backend re-review signal (2026-05-17, commit 9ceb65e)
 
-All four round-2 hold items landed at commit `30ce45a` (note: the commit prefix says `architect(compound)` because a sibling architect commit ran concurrently with my staged work and swept up my three backend files alongside its two solution-doc additions — root-CLAUDE shared-index race; my round-2 backend diff is mechanically in that SHA but under the architect's commit subject). The diff for the round-2 backend work is the `backend/src/routes/settings.ts`, `backend/tests/routes/settings-email-fresh-auth.test.ts`, and `backend/tests/routes/settings.test.ts` hunks within `30ce45a`. Scope `/ce-code-review` to those three files within that SHA.
+All four round-2 hold items landed at commit `9ceb65e` (clean `backend(change-email-mint-path-and-followups)` prefix). The originally-staged version of this work briefly landed inside the architect's concurrent compound-learnings commit at `30ce45a` due to a shared-index race; the architect then rebased that SHA to `db2d289` (solution docs only) and my backend code was re-staged + re-committed as `9ceb65e`. Scope `/ce-code-review` to `backend/src/routes/settings.ts`, `backend/tests/routes/settings-email-fresh-auth.test.ts`, and `backend/tests/routes/settings.test.ts` at `9ceb65e`.
 
 **Item 1 (hoist):** `backend/src/routes/settings.ts:129-258`. Handler order is now `(1) body validate → (2) SELECT existing → (3) Change-branch+JWT fresh-auth + mechanism check → (4) Add-branch JWT-rejection guard → (5) duplicate-email SELECTs → (6) INSERT/UPDATE → (7) sendMail`. A JWT-only attacker without a proof now gets 401 regardless of whether the candidate email is registered to another account. The body-validation 400 still runs before consume per architect call ("they don't disclose registration state"). Updated block comment at `:101-148` documents the load-bearing ordering.
 
