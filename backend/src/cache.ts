@@ -1,6 +1,17 @@
 /**
  * TTL cache with optional Redis backend.
  * Falls back to in-memory Map when Redis is not available.
+ *
+ * Single-flight coalescing: `getOrSet` deduplicates concurrent same-key
+ * fetcher invocations via an in-process `Map<prefixedKey, Promise<T|null>>`.
+ * On cache miss, the first caller's fetcher runs once; concurrent callers
+ * for the same key await that same promise. Null resolutions are NOT
+ * cached (honoring the existing skip-on-null rule) AND the in-flight slot
+ * is cleared so the next wave gets a fresh chance. The in-flight slot is
+ * also cleared on fetcher rejection so a transient failure does not poison
+ * subsequent retries. Independent of Redis: the coalescing layer is an
+ * in-process coordination primitive and works whether the cache backend is
+ * Redis or the in-memory fallback.
  */
 import { getRedis } from './redis.js';
 import { config } from './config.js';
@@ -15,6 +26,9 @@ interface MemoryCacheEntry<T> {
 export class QueryCache {
   private memStore = new Map<string, MemoryCacheEntry<unknown>>();
   private stableKeys = new Set<string>();
+  // Single-flight: in-flight fetcher promises keyed by the prefixed cache
+  // key (`${config.appTag}:cache:<routeKey>`). See class-level docblock.
+  private inflight = new Map<string, Promise<unknown>>();
   private defaultTtlMs: number;
   private prefix: string;
 
@@ -63,17 +77,51 @@ export class QueryCache {
 
   /**
    * Get or compute a cached value.
+   *
+   * Single-flight: concurrent callers for the same `key` that miss the
+   * cache share ONE fetcher invocation. The first miss creates a promise,
+   * stores it in `this.inflight`, awaits it, writes the result to the
+   * cache (if non-null), and clears the in-flight slot. Subsequent
+   * concurrent callers find the existing promise and await it directly.
+   * Null resolutions are not cached AND clear the in-flight slot so the
+   * next wave retries fresh. Rejections also clear the slot to avoid
+   * poisoning subsequent attempts.
+   *
    * @param stable - If true, this entry survives block-change cache clears (use for slow-changing data like reputation, WoT threshold, stats).
    */
   async getOrSet<T>(key: string, fn: () => Promise<T>, ttlMs?: number, stable = false): Promise<T> {
     const cached = await this.get<T>(key);
     if (cached !== undefined) return cached;
 
-    const data = await fn();
-    if (data !== null && data !== undefined) {
-      await this.set(key, data, ttlMs, stable);
+    // Single-flight: if another caller is already fetching this key,
+    // await their promise instead of starting a duplicate fetch.
+    const inflightKey = this.prefix + key;
+    const existing = this.inflight.get(inflightKey) as Promise<T> | undefined;
+    if (existing !== undefined) {
+      return existing;
     }
-    return data;
+
+    const promise = (async (): Promise<T> => {
+      try {
+        const data = await fn();
+        if (data !== null && data !== undefined) {
+          await this.set(key, data, ttlMs, stable);
+        }
+        return data;
+      } finally {
+        // Clear the slot in ALL terminal states (success, null-resolution,
+        // rejection) so the next wave is not stuck on a stale promise:
+        //   - null-resolution: matches the skip-cache-on-null rule above,
+        //     so a recovery wave can retry the fetcher.
+        //   - rejection: a transient failure must not poison subsequent
+        //     callers.
+        //   - success (non-null): future callers will hit the cache and
+        //     never look at this map, so cleanup is for memory hygiene.
+        this.inflight.delete(inflightKey);
+      }
+    })();
+    this.inflight.set(inflightKey, promise);
+    return promise;
   }
 
   /**

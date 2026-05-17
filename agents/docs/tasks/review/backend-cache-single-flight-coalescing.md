@@ -77,3 +77,43 @@ No new config knob. The single-flight layer is an unconditional optimization —
 - `backend/src/db.ts:25` — `pool max=3` constant (context for the pool-saturation amplifier).
 - `agents/docs/tasks/pending/backend-haf-walker-wall-clock-budget.md` — the walker task whose round-2 review surfaced this performance concern; this task is filed as PERF-02's dismissal target (dismissed-from-bundle → new-task).
 - `feedback_pevo_logging_minimal` — does NOT require new logging on the single-flight path; coalescing is internal and operator-invisible by design.
+
+---
+
+## Backend re-review signal (2026-05-17, round-1)
+
+All five acceptance items landed.
+
+### Item 1 — Single-flight map in `QueryCache`
+
+`backend/src/cache.ts`:
+- Added `private inflight = new Map<string, Promise<unknown>>()` to `QueryCache`.
+- Rewrote `getOrSet`: after the existing cache-miss check, probe `inflight.get(prefixedKey)` and await the existing promise if present. Otherwise create a self-cleaning promise that runs the fetcher, writes to cache on non-null (preserving the existing skip-on-null at `cache.ts:73`), and `delete`s the in-flight slot in `finally` across ALL terminal states (success, null-resolution, rejection — so transient nulls and throws never poison subsequent waves).
+- In-flight slot key uses the full prefixed key (`${config.appTag}:cache:<routeKey>`) per spec.
+- Class docblock + `getOrSet` JSDoc updated to document the coalescing semantics and the rationale for clearing the slot on null/rejection.
+
+### Item 2 — Bypass on cache disabled (no change required)
+
+The single-flight map is in-process state on the `QueryCache` instance itself; it works identically whether the Redis backend is reachable or the in-memory fallback is in use. Documented in the class docblock.
+
+### Item 3 — Unit tests
+
+`backend/tests/lib/cache.test.ts` (new file, 4 specs):
+- 5 concurrent same-key misses → fetcher invoked exactly once, all 5 awaiters get the same value.
+- Null first wave → no cache write AND second wave invokes a fresh fetcher (in-flight slot cleared on null).
+- Different keys do not share an in-flight slot.
+- Fetcher throw clears the slot so the next call retries fresh (no poisoned entries).
+
+### Item 4 — Integration canary
+
+`backend/tests/routes/papers-enrichment-parity-gate.test.ts`: new describe block `'GET /api/papers/:author/:permlink/enrichment — single-flight coalescing canary'`. Pattern: baseline 1 request → record SQL call count → clear cache → 3 concurrent requests under slow HAF responder → assert total SQL count equals baseline (NOT 3× baseline). Mutation-kill verified by the implementer: removing the `inflight` map produces 21 SQL calls (3× baseline of 7); restoring it produces 7. The enrichment route shares the `hafCache.getOrSet` primitive with `/api/papers/:author/:permlink`; either route's canary covers the same primitive. Enrichment was chosen because the file already had the mock-pool scaffolding.
+
+### Item 5 — Operator surface
+
+No new config knob. Class docblock + `getOrSet` JSDoc carry the coalescing semantics for future maintainers.
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/`: clean.
+- `npm run lint` from `backend/`: clean.
+- Scoped vitest (`tests/lib/cache.test.ts` + `tests/cache.test.ts` + `tests/routes/papers-enrichment-parity-gate.test.ts`): 16/16 pass (10 existing root-level cache, 4 new single-flight unit specs, 2 enrichment-parity-gate including the new canary).

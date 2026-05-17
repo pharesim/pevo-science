@@ -19,13 +19,21 @@
  *       clause-(c). Literal-route real-HAF coverage for `/enrichment` parent
  *       JOIN remains a follow-up.
  *
- * Canary pinned in this file:
+ * Canaries pinned in this file:
  *   1. The reviews sub-query within `fetchEnrichmentFromHaf` carries the
  *      parent-paper `validPevoPaperWhere(source:'all')` gate — pinned via
  *      the `'paper'` and `'bridge_paper'` substrings emitted by the helper.
+ *   2. Single-flight coalescing in `hafCache.getOrSet` collapses N
+ *      concurrent same-key cache misses to ONE fetcher invocation. Pinned
+ *      by issuing a baseline single request (recording total SQL calls),
+ *      clearing cache, then issuing 3 concurrent requests under a slow
+ *      HAF responder and asserting total SQL calls match the baseline.
+ *      Mutation kill: removing the single-flight `inflight` map from
+ *      `QueryCache.getOrSet` → 3 walker invocations → ~3x the SQL call
+ *      count → canary fires red.
  *
- * Mutation kill: dropping the validPevoPaperWhere substrings from the
- * enrichment reviews SQL fires the canary red.
+ * Mutation kill (canary 1): dropping the validPevoPaperWhere substrings
+ * from the enrichment reviews SQL fires canary 1 red.
  *
  * Note: `fetchEnrichmentFromHaf` may return null in the mocked environment
  * because adjacent sub-queries (`resolveVersionsFromHaf`, accreditation
@@ -89,5 +97,58 @@ describe('GET /api/papers/:author/:permlink/enrichment — review JOIN parent-pa
       expect(sql, 'enrichment reviews SQL missing native-paper arm').toContain(nativePaperSubstring);
       expect(sql, 'enrichment reviews SQL missing bridge_paper arm — validPevoPaperWhere source:"all" requires both').toContain(bridgePaperSubstring);
     }
+  });
+});
+
+describe('GET /api/papers/:author/:permlink/enrichment — single-flight coalescing canary', () => {
+  it('3 concurrent requests for the same (author, permlink) issue HAF queries only ONCE (mutation-kill: remove single-flight → 3x SQL volume)', async () => {
+    // Slow HAF responder so all 3 concurrent requests cache-miss in the
+    // same event-loop window and pile up on the in-flight promise. Without
+    // the slowdown, the first request can complete and warm the cache
+    // before the second arrives — which would defeat the canary by
+    // shifting the test from "single-flight coalesces" to "first request
+    // warms cache before others arrive."
+    const slowQuery = async () => {
+      await new Promise((r) => setTimeout(r, 40));
+      return { rows: [] };
+    };
+
+    // Baseline: ONE request — record the SQL call count produced by a
+    // single fetcher invocation through fetchEnrichmentFromHaf. This is
+    // the per-walker query budget we expect 3 coalesced requests to
+    // collapse to.
+    hafQueryMock.mockReset().mockImplementation(slowQuery);
+    await hafCache.clear();
+    await request(app).get('/api/papers/coalesce-author/coalesce-paper/enrichment');
+    const baselineCallCount = hafQueryMock.mock.calls.length;
+    expect(baselineCallCount, 'baseline single-request walker should issue at least one SQL').toBeGreaterThan(0);
+
+    // Canary: clear cache, fire 3 concurrent requests. With single-flight
+    // in `QueryCache.getOrSet`, all 3 share one fetcher invocation and
+    // total SQL calls equal `baselineCallCount`. Without single-flight,
+    // each request runs its own fetcher and total SQL calls would be
+    // approximately `3 * baselineCallCount`.
+    hafQueryMock.mockReset().mockImplementation(slowQuery);
+    await hafCache.clear();
+    const responses = await Promise.all([
+      request(app).get('/api/papers/coalesce-author/coalesce-paper/enrichment'),
+      request(app).get('/api/papers/coalesce-author/coalesce-paper/enrichment'),
+      request(app).get('/api/papers/coalesce-author/coalesce-paper/enrichment'),
+    ]);
+    const coalescedCallCount = hafQueryMock.mock.calls.length;
+
+    // All 3 responses landed (status irrelevant — 404 from empty-row
+    // walker is fine; the SUT is the SQL call count, not the response).
+    expect(responses).toHaveLength(3);
+
+    // Mutation kill: must equal baseline (1× walker), NOT 3× baseline.
+    // Strict equality is the tightest assertion. If the underlying walker
+    // ever introduces nondeterministic SQL fan-out (e.g., a retry layer),
+    // relax to `expect(coalescedCallCount).toBeLessThan(2 * baselineCallCount)`
+    // — that still kills the mutation (removing single-flight produces ~3x).
+    expect(
+      coalescedCallCount,
+      `single-flight broken: ${coalescedCallCount} SQL calls for 3 concurrent requests (expected ${baselineCallCount} for coalesced fetch)`,
+    ).toBe(baselineCallCount);
   });
 });
