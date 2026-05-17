@@ -49,3 +49,27 @@ Add `_mounted` gating to the post-`loginFromResponse` path so the Keychain loop 
 - `frontend/src/pages/settings.js:786, 904, 941, 989` — the four `_mounted` reference points; lines 786 and 941 are the guarded `loginFromResponse` callsites, 904 and 989 are the unguarded follow-ons.
 - `frontend/src/pages/settings.js:_completeUpgradeAfterBackend` (line ~960+ at HEAD) — the helper that needs internal gating.
 - `/ce-code-review` of UI commit `6660694` (architect re-review 2026-05-16) — finding #4 in the triage, cross-reviewer corroboration between UI-adversarial (window-widening framing) and UI-julik-frontend-races (pre-existing-gap framing).
+
+## Architect re-review (2026-05-17, round-1) — HELD PENDING FIXES:
+
+`/ce-code-review` of commit `89c1dab` ran with 9 personas (correctness Opus; testing/maintainability/project-standards/julik-frontend-races/reliability/learnings-researcher Sonnet; security Opus; adversarial Opus; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Core implementation verified correct: destroy() wipe-then-teardown ordering is sound (`_clearSensitiveUpgradeState` then `_teardownTimers` flips `_mounted`); per-iteration `_mounted` guard correctly exits the Keychain loop on unmount; finally-block gating correctly skips orphan state writes; reliability confirmed new-instance-mounting-after-navigate-away derives `isLight=false` from auth store so no UX wedge.
+
+### Item to address
+
+**1. (P2 — test fidelity, cross-reviewer 3-way corroboration: correctness + testing + adversarial)** The navigate-away test at `frontend/tests/unit/pages-settings.test.js:2005-2056` simulates unmount by directly setting `compRef._mounted = false` inside the `requestImportKey` stub. Production reaches `_mounted=false` ONLY via `_teardownTimers()`, called ONLY by `destroy()` — and the same `destroy()` synchronously runs `_clearSensitiveUpgradeState()` first. The test bypasses the wipe half of that chain entirely; the wipe-once-on-unmount invariant the production comments cite as the security guarantee has no end-to-end test against the integrated production path. The companion `destroy() wipes sensitive upgrade state` test exercises wipe on an idle component, never one mid-Keychain-loop. A regression reordering the two destroy() calls (or removing the wipe entirely) would pass both existing tests.
+
+   **Fix:** change the navigate-away test's stub from `compRef._mounted = false` to `compRef.destroy()`. The post-`executeUpgrade()` assertions can then verify all three task-AC-#4 invariants in one test: (a) loop short-circuited (importKeyCalls.length === 1), (b) sensitive state wiped exactly once (`comp.oldSeedPhrase === ''`, `comp.newSeedPhrase === ''`, `comp.newSeedWords === []`, `comp.confirmInputs === {}`, `comp.upgradePassword === ''`), and (c) no `upgradePhase = 'done'` write fired on the unmounted component (`comp.upgradePhase !== 'done'`). The companion standalone `destroy()` test stays as it is — it pins the destroy() wipe on the idle path, complementing but no longer substituting for the integrated assertion.
+
+### Items dismissed at architect triage
+
+- (P3, adversarial-4) `comp.upgradePassword = 'light-password'` claimed to write a phantom field. **OBSOLETED**: adversarial reviewed against task 4's standalone diff (89c1dab) where `upgradePassword` was not yet a real reactive field; the intervening commit `f94144b` ("ui(tests): clean up 11 pre-existing unit-test failures") added `upgradePassword` to `_clearSensitiveUpgradeState`'s wipe set (settings.js:1303-1309 at current HEAD). The test write is valid at HEAD.
+- (P3, julik-frontend-races JFR-1) Catch arms in `executeUpgrade`/`retryUpgradeBackend` write `upgradePhase='error'`/`upgradeError`/`upgradeErrorKey` without `_mounted` guard, asymmetric with the diff's other gates. Dismissed: orphan mutations have no Alpine observer (component is destroying), the existing _mounted-gate philosophy targets visible-state writes and Keychain-popup side-effects, not invisible orphan writes. Adding catch-arm guards would be defensive parity for no observable behavior change.
+- (P3, maintainability MAINT-R1) `destroy()` comment and `_completeUpgradeAfterBackend.finally` comment carry near-identical prose without cross-reference. Dismissed: minor doc-hygiene; the two comments document the same contract from two angles (cleanup signal vs. defensive backstop) — both readable in isolation, drift risk low.
+
+Two pre-existing items surfaced but explicitly NOT part of this hold (filed-separately if user prioritizes later):
+- adversarial-1 (P2 latent): the existing `_mounted` guard at `settings.js:797` runs BEFORE `loginFromResponse` and can strand the auth singleton with a stale `custody='light'` JWT on navigate-away mid-_postUpgradeBackend. The guard's comment explicitly trades this risk for disconnect-protection. Pre-existing; not introduced by this diff.
+- adversarial-3 (P3, pre-existing): the 45s Promise.race timeout in `_performKeychainImport` uses raw `setTimeout` not registered with `_pendingTimers`, so destroy() can't clear it; orphan timer extends WIF closure-capture lifetime past unmount by up to 45s. Pre-existing.
+
+### Architect signal
+
+Move this file from `review/` back to `pending/` per rule #8. Implementer addresses item 1 (single test refactor — swap `_mounted = false` for `destroy()` and add the wipe + done assertions) in a single commit, then `git mv`s the file back to `review/` for round-2 architect re-review.
