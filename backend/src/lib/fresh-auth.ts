@@ -242,10 +242,8 @@ export function changeEmailFreshAuthTarget(username: string): FreshAuthTarget {
  *  unavailable (matches the convention in `routes/orcid.ts:151`). */
 const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
 
-/** BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE: in-process lock set for
- *  the consume helpers. Closes the concurrent-dual-consume race surfaced by
- *  the architect's adversarial review of `backend-custody-broadcast-orcid-
- *  fresh-auth` round-2.
+/** In-process lock set for the consume helpers. Closes the concurrent
+ *  dual-consume race on the memStore fallback path.
  *
  *  The race: `consumeFreshAuthToken` / `consumeSessionFreshAuthToken` do a
  *  Redis GETDEL (atomic) followed by a memStore fallback `get` + `delete`
@@ -269,8 +267,8 @@ const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
  *  Single-instance scope: PEvO is single-instance per memory
  *  `project_single_instance_only`; cross-process coordination isn't needed.
  *  A future multi-instance topology would re-open the race and require a
- *  Redis-side SETNX sentinel (task Option A) — the in-process lock is
- *  not a substitute for that under multi-instance. */
+ *  Redis-side SETNX sentinel — the in-process lock is not a substitute for
+ *  that under multi-instance. */
 const inFlightConsumes = new Set<string>();
 
 /** Periodic cleanup so the map doesn't grow unbounded under no-Redis ops.
@@ -525,11 +523,10 @@ export async function consumeFreshAuthToken(
     return { valid: false, reason: 'missing' };
   }
 
-  // BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE (Option B): in-process
-  // lock check. Synchronous `has` → `add` is atomic under the JS event loop;
-  // a concurrent dual-consume for the same token has exactly one caller
-  // reach the body, the loser returns `expired` immediately. The lock is
-  // released in a `finally` below so a throwing consume cleans up. The
+  // In-process lock check. Synchronous `has` → `add` is atomic under the JS
+  // event loop; a concurrent dual-consume for the same token has exactly one
+  // caller reach the body, the loser returns `expired` immediately. The lock
+  // is released in a `finally` below so a throwing consume cleans up. The
   // loser's `expired` is indistinguishable from a stale replay, preserving
   // the single-use contract as the user perceives it.
   if (inFlightConsumes.has(token)) {
@@ -734,16 +731,15 @@ export async function consumeSessionFreshAuthToken(
     return { valid: false, reason: 'missing' };
   }
 
-  // BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE (Option B): mirrors the
-  // in-process lock from `consumeFreshAuthToken`. The race + mitigation are
-  // identical; only the kind-acceptance contract differs (session consume
-  // accepts both kinds — see docstring). The same `inFlightConsumes` set is
-  // shared across both consume helpers because a single token is uniquely
-  // bound to ONE kind at issuance (either `issueFreshAuthToken` =>
-  // consent_op or `issueSessionFreshAuthToken` => session). Two concurrent
-  // consumes targeting the same token from different helpers is the same
-  // race surface as two consumes through the same helper, so the lock
-  // domain is "token", not "(token, helper)".
+  // In-process lock check — mirrors the lock from `consumeFreshAuthToken`.
+  // The race + mitigation are identical; only the kind-acceptance contract
+  // differs (session consume accepts both kinds — see docstring). The same
+  // `inFlightConsumes` set is shared across both consume helpers because a
+  // single token is uniquely bound to ONE kind at issuance (either
+  // `issueFreshAuthToken` => consent_op or `issueSessionFreshAuthToken` =>
+  // session). Two concurrent consumes targeting the same token from
+  // different helpers is the same race surface as two consumes through the
+  // same helper, so the lock domain is "token", not "(token, helper)".
   if (inFlightConsumes.has(token)) {
     return { valid: false, reason: 'expired' };
   }
@@ -857,6 +853,29 @@ async function consumeSessionFreshAuthTokenLocked(
  *  route handlers. */
 export function _resetFreshAuthMemStoreForTests(): void {
   memStore.clear();
+}
+
+/** Test-only hook: returns the current size of the in-flight consume lock
+ *  set. Used by the lock-cleanup test to pin the `try/finally` discipline
+ *  structurally: after a throwing consume, the set MUST be empty. Without
+ *  this hook, the test can only assert wire-shape outcomes, which collapse
+ *  the lock-held branch into the consumed-token branch (both return
+ *  `expired`) and admit a `finally`-removal mutation. */
+export function _getInFlightConsumesSizeForTests(): number {
+  return inFlightConsumes.size;
+}
+
+/** Test-only hook: plants a memStore entry directly so tests can exercise
+ *  the memStore-fallback path with controlled entry contents. Used by the
+ *  lock-cleanup test to plant a circular-reference entry that throws on
+ *  `JSON.stringify` inside the locked critical section, forcing the
+ *  consume helper through its `finally` block. */
+export function _setMemStoreEntryForTests(
+  token: string,
+  entry: unknown,
+  expiresAt: number,
+): void {
+  memStore.set(token, { entry: entry as StoredEntry, expiresAt });
 }
 
 /** Round-4 hold #15: test-only hooks to pause / restart the module-level

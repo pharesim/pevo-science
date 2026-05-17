@@ -34,17 +34,20 @@
  *    `it.skipIf(...)` so the absence of Redis is visibly reported by the
  *    runner instead of silently passing the assertion-free body.
  *
- * BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE (2026-05-16):
+ * Concurrent dual-consume race (2026-05-16):
  *  - Concurrent dual-consume tests for both `consumeFreshAuthToken` and
  *    `consumeSessionFreshAuthToken`. Two variants per helper:
  *    (a) Redis-up (real Redis GETDEL atomicity + in-process lock layered
  *        defense), (b) Redis stubbed to throw on both `getdel` calls,
  *    forcing the widest race window where both consumes fall through to
- *    memStore. The Option B in-process lock is the only thing that closes
- *    the (b) variant; the (a) variant validates that the lock layers
- *    cleanly with Redis GETDEL without false-rejecting valid sequential
- *    consumes. A no-Redis real-path companion runs without mocks for each
- *    helper to satisfy clause (c) (real-path coverage of the race class).
+ *    memStore. The in-process lock is the only thing that closes the (b)
+ *    variant; the (a) variant validates that the lock layers cleanly with
+ *    Redis GETDEL without false-rejecting valid sequential consumes. A
+ *    no-Redis real-path companion runs without mocks for each helper to
+ *    satisfy clause (c) (real-path coverage of the race class). A
+ *    cross-helper Redis-stubbed test pins the shared-lock-domain
+ *    invariant: a per-helper lock split would let both helpers race to
+ *    memStore.get under Redis-down and both win.
  *
  * Carve-out per root CLAUDE.md "Carve-out for deterministic edge-case
  * coverage" clause (a):
@@ -57,11 +60,11 @@
  *    spy. A real-path companion exercises the no-Redis path end-to-end
  *    via the standard custody-consent-ops broadcast tests where
  *    `_resetFreshAuthMemStoreForTests` is the mode of operation. For the
- *    BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE concurrent-consume
- *    tests, the Redis-stubbed variant exercises the widest race window
- *    (both consumes through memStore); the matching no-Redis real-path
- *    `Promise.all` test in the same describe block exercises the same
- *    race class against real infrastructure when Redis is absent.
+ *    concurrent-consume tests, the Redis-stubbed variant exercises the
+ *    widest race window (both consumes through memStore); the matching
+ *    no-Redis real-path `Promise.all` test in the same describe block
+ *    exercises the same race class against real infrastructure when Redis
+ *    is absent.
  *  - `verifyHiveSignature` is NOT mocked anywhere in this suite (the
  *    library functions don't reach middleware).
  */
@@ -76,8 +79,10 @@ import {
   isFreshAuthMechanism,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
+  _getInFlightConsumesSizeForTests,
   _resetFreshAuthMemStoreForTests,
   _restartCleanupForTests,
+  _setMemStoreEntryForTests,
   _stopCleanupForTests,
   type FreshAuthTarget,
 } from '../../src/lib/fresh-auth.js';
@@ -572,16 +577,16 @@ describe('BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — session-kind issue / co
   });
 });
 
-// ─── BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE — Option B in-process lock ───
+// ─── concurrent dual-consume race — in-process lock ───
 
-describe('BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE — concurrent dual-consume produces exactly one winner', () => {
-  // Architect-surfaced race: a `Promise.all` dual-consume on the same token
-  // could authorize TWO broadcasts because Redis GETDEL is atomic but the
-  // memStore fallback's `get` + `delete` window admits interleaving on a
-  // single-instance JS event loop (and widens on Redis-down, where both
-  // callers fall through to memStore). Option B closes the door with a
-  // module-scoped `Set<string>` of in-flight tokens guarded by a synchronous
-  // `has` → `add` critical section before any awaits.
+describe('concurrent dual-consume produces exactly one winner (in-process lock)', () => {
+  // The race: a `Promise.all` dual-consume on the same token could authorize
+  // TWO broadcasts because Redis GETDEL is atomic but the memStore fallback's
+  // `get` + `delete` window admits interleaving on a single-instance JS event
+  // loop (and widens on Redis-down, where both callers fall through to
+  // memStore). The in-process lock closes the door with a module-scoped
+  // `Set<string>` of in-flight tokens guarded by a synchronous `has` → `add`
+  // critical section before any awaits.
   //
   // Acceptance per task §4:
   //   - With Redis available: Promise.all two concurrent consumes for the
@@ -703,44 +708,81 @@ describe('BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE — concurrent dual-con
     expect(winners).toHaveLength(1);
   });
 
-  it('lock cleanup: a thrown consume releases the in-flight set entry', async () => {
-    // Pin the try/finally cleanup discipline: a throwing consume must
-    // remove the token from the in-flight set so a subsequent re-consume
-    // (e.g., test cleanup or replay-attack retry) isn't permanently locked
-    // out by a stale lock entry. The test simulates a throw inside the
-    // locked critical section by stubbing `redis.getdel` to throw AND
-    // pre-stubbing JSON.parse to throw on the memStore fallback (forcing
-    // the catch path's malformed return — not a throw, but exercises the
-    // post-await resumption that runs the finally).
+  it('lock cleanup: a thrown consume releases the in-flight set entry (structural pin)', async () => {
+    // Pin the try/finally cleanup discipline structurally via the
+    // in-flight set size, not via wire codes. The lock-held branch and
+    // the consumed-token branch both return `expired`, so a wire-shape
+    // assertion is mutation-blind to removing the `finally` block. The
+    // set-size assertion isn't: a mutation that replaces
+    // `finally { inFlightConsumes.delete(token) }` with plain post-await
+    // cleanup leaks the lock entry on the throw path.
     //
-    // Simpler approach: issue, force memStore-only by clearing redis (or
-    // by stubbing getdel to throw permanently), consume successfully via
-    // memStore. Then a SECOND consume call must observe an empty lock set
-    // (otherwise it would return 'expired' from the lock guard rather
-    // than from the consumed-token state). We assert this by checking
-    // that a second consume on the same token returns `expired` for the
-    // RIGHT reason — token consumed, not lock-held. Since both reasons
-    // share the wire code, the proxy assertion is: a second consume on a
-    // DIFFERENT token (never issued) returns `expired` (the not-found
-    // path, post-lock-release). A stale lock for the first token does
-    // not poison subsequent unrelated consumes.
-    const issuedA = await issueFreshAuthToken('lock-cleanup-a', 'password', T);
-    const first = await consumeFreshAuthToken(issuedA.token, 'lock-cleanup-a', TH);
-    expect(first.valid).toBe(true);
+    // Mechanism: plant a memStore entry whose `entry` field has a circular
+    // reference so `JSON.stringify(cached.entry)` throws inside the locked
+    // critical section. Force Redis-down on consume so the helper falls
+    // through to memStore. The throw propagates out of the inner
+    // `consumeFreshAuthTokenLocked` and the outer `finally` MUST fire.
+    const token = 'lock-cleanup-throw-token';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const circular: any = { username: 'lock-cleanup', mechanism: 'password' };
+    circular.self = circular;
+    _setMemStoreEntryForTests(token, circular, Date.now() + 60_000);
 
-    // Second consume on a different never-issued token. If the lock for
-    // issuedA.token leaked, this would still pass (different token), but
-    // the more direct assertion is: re-consuming issuedA returns expired
-    // (consumed path), not stuck-in-lock. A pre-cleanup-fix variant would
-    // return `expired` from the LOCK path before reaching the consumed
-    // check; both wire codes are `expired`, so functional equivalence
-    // makes the test pass either way at the wire layer. The actual
-    // cleanup discipline is enforced by the `finally` block; this test
-    // documents the expectation.
-    const second = await consumeFreshAuthToken(issuedA.token, 'lock-cleanup-a', TH);
-    expect(second.valid).toBe(false);
-    if (!second.valid) {
-      expect(second.reason).toBe('expired');
+    // Sanity precondition — the set is clean before the test acts.
+    expect(_getInFlightConsumesSizeForTests()).toBe(0);
+
+    const redis = getRedis();
+    const getdelSpy =
+      redis && isRedisAvailable()
+        ? vi.spyOn(redis, 'getdel').mockRejectedValue(new Error('forced Redis-down for cleanup test'))
+        : null;
+    try {
+      await expect(
+        consumeFreshAuthToken(token, 'lock-cleanup', TH),
+      ).rejects.toThrow();
+      // Mutation kill: removing the `finally { inFlightConsumes.delete }`
+      // would leave the entry behind. The wire-shape assertion above only
+      // confirms the throw propagated; this confirms cleanup ran.
+      expect(_getInFlightConsumesSizeForTests()).toBe(0);
+    } finally {
+      getdelSpy?.mockRestore();
+    }
+  });
+
+  it.skipIf(!redisAvailable)('cross-helper Redis-stubbed Promise.all → exactly one winner (shared-lock-domain invariant)', async () => {
+    // Pins the shared-lock-domain design: `inFlightConsumes` is a single
+    // module-scoped set spanning both consume helpers. A mutation that
+    // splits the set per helper (e.g., `inFlightConsumesByConsentHelper`
+    // and `inFlightConsumesBySessionHelper`) would let a `Promise.all`
+    // across both helpers race to the memStore fallback under Redis-down
+    // and both win — silently regressing the cross-kind race protection.
+    //
+    // The session-helper accepts both kinds (cross-kind accept — see
+    // `consumeSessionFreshAuthToken` docstring), so a consent_op-kind
+    // token consumed via the session helper returns valid: true if it
+    // wins. Either helper as winner is acceptable; the load-bearing
+    // claim is "exactly one winner."
+    //
+    // Redis-stubbed (not Redis-up) because Redis GETDEL atomicity alone
+    // would also produce exactly one winner under the mutation — the
+    // mutation kill requires forcing both helpers onto the memStore
+    // fallback path.
+    const redis = getRedis()!;
+    const issued = await issueFreshAuthToken('race-cross', 'password', T);
+    const getdelSpy = vi.spyOn(redis, 'getdel').mockImplementation(() => {
+      return Promise.reject(new Error('forced Redis-down for cross-helper race test'));
+    });
+    const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
+    try {
+      const [a, b] = await Promise.all([
+        consumeFreshAuthToken(issued.token, 'race-cross', TH),
+        consumeSessionFreshAuthToken(issued.token, 'race-cross'),
+      ]);
+      const winners = [a, b].filter((r) => r.valid);
+      expect(winners).toHaveLength(1);
+    } finally {
+      getdelSpy.mockRestore();
+      delSpy.mockRestore();
     }
   });
 });

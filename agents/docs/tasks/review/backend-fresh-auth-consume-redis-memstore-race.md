@@ -181,3 +181,59 @@ it.skipIf(!redisAvailable)('cross-helper Promise.all on the same token → exact
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+---
+
+## Backend re-review signal (2026-05-17, round-2, working tree)
+
+All three held items landed. Changes are contained to:
+- `backend/src/lib/fresh-auth.ts` — slug-citation stripping (item 1) + two new test-only exports (item 2 support).
+- `backend/tests/lib/fresh-auth.test.ts` — slug-citation stripping (item 1) + lock-cleanup test rewrite (item 2) + cross-helper test added (item 3).
+
+### Item 1 (P1) — task-slug citations dropped from production comments
+
+- `inFlightConsumes` docblock opening line: rewritten to "In-process lock set for the consume helpers. Closes the concurrent dual-consume race on the memStore fallback path." Architect-recommended wording adopted verbatim. The deeper paragraphs (race mechanism, lock mechanism, single-instance scope) preserved their substantive content; only the slug prefix was removed. The closing paragraph's reference to "task Option A" became "a Redis-side SETNX sentinel" so the symbolic pointer doesn't outlive the task.
+- `consumeFreshAuthToken` lock-check inline comment: slug prefix and `(Option B)` qualifier dropped; opens with "In-process lock check." The "Synchronous `has` → `add` is atomic..." mechanism description preserved.
+- `consumeSessionFreshAuthToken` lock-check inline comment: slug prefix and `(Option B)` qualifier dropped; opens with "In-process lock check — mirrors the lock from `consumeFreshAuthToken`." Shared-lock-domain reasoning preserved.
+- Test-file header carve-out paragraph: section heading renamed "BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE (2026-05-16):" → "Concurrent dual-consume race (2026-05-16):". Inline body reference to the slug also dropped. The added cross-helper-test bullet was folded into the same paragraph.
+- Test-file `describe` label: `'BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE — concurrent dual-consume produces exactly one winner'` → `'concurrent dual-consume produces exactly one winner (in-process lock)'`. The section comment band above the describe was renamed in kind. Inline body reference to "Option B" inside the describe's leading comment dropped.
+
+### Item 2 (P2) — lock-cleanup test pins finally-block discipline structurally
+
+- Added two test-only exports to `backend/src/lib/fresh-auth.ts`:
+  - `_getInFlightConsumesSizeForTests(): number` — read-only view of the lock set's size. Sibling to `_resetFreshAuthMemStoreForTests` per architect's suggestion.
+  - `_setMemStoreEntryForTests(token, entry, expiresAt): void` — narrow write hook so tests can plant memStore entries with controlled contents. Needed to inject the circular-reference entry that throws on `JSON.stringify` inside the locked critical section.
+- Rewrote the lock-cleanup test (`backend/tests/lib/fresh-auth.test.ts`) to:
+  1. Plant a memStore entry whose `entry` field has a circular self-reference.
+  2. Force Redis-down on consume so the helper falls through to the memStore branch.
+  3. Assert `consumeFreshAuthToken` rejects (the throw propagates out of the inner locked body).
+  4. Assert `_getInFlightConsumesSizeForTests() === 0` after the throw — the load-bearing structural assertion that pins the `finally` block.
+- Sanity precondition added: `expect(_getInFlightConsumesSizeForTests()).toBe(0)` before the act, to catch a stale-state regression in the beforeEach reset.
+- Mutation kill verified: removing `finally { inFlightConsumes.delete(token) }` from `consumeFreshAuthToken` would leave the set non-empty after the throw, failing the post-throw size assertion. The wire-shape assertion alone (the pre-fix test) was mutation-blind because lock-held and consumed-token both return `expired`.
+
+### Item 3 (P2) — shared-lock-domain pinned by cross-helper test
+
+- Added one test in the same describe: `'cross-helper Redis-stubbed Promise.all → exactly one winner (shared-lock-domain invariant)'`.
+- Mints a consent-op-kind token via `issueFreshAuthToken`, then runs `Promise.all([consumeFreshAuthToken(...), consumeSessionFreshAuthToken(...)])` for the same token. The session helper accepts both kinds (cross-kind accept per its docstring), so either helper as winner is acceptable; the load-bearing claim is "exactly one winner."
+- **Picked the Redis-stubbed variant, not the Redis-up one architect sketched.** Reasoning: under Redis-up, GETDEL atomicity ALONE produces exactly one winner even under the per-helper-lock-split mutation, so a Redis-up assertion is mutation-blind. The mutation kill requires forcing both helpers onto the memStore fallback path, which is what the Redis-stubbed variant does. Test comment documents this trade-off.
+- Mutation kill verified: splitting `inFlightConsumes` into per-helper sets (`inFlightConsumesByConsentHelper` + `inFlightConsumesBySessionHelper`) would let both helpers race to `memStore.get` after the stubbed GETDEL throws, and both would win — failing `winners.length === 1`.
+
+### Items dismissed at triage — no action
+
+All three architect-listed dismissals (kieran-typescript KT-1, adversarial P3, testing T-3/T-4) confirmed not in scope per the architect's reasoning.
+
+### Pre-existing not addressed
+
+- **REL-1:** Reliability finding on missing `commandTimeout` in `backend/src/redis.ts:12`. Pre-existing per architect; not filed as a follow-up here. Architect's call whether to file separately.
+
+### Verification
+
+- `npm run typecheck` clean (both `typecheck:src` and `typecheck:tests`).
+- `npm run lint` clean (zero warnings on `src/lib/fresh-auth.ts`; the test file passes lint with the existing project rules — one `eslint-disable-next-line @typescript-eslint/no-explicit-any` annotation added on the circular-ref test entry construction, narrow scope).
+- `npx vitest run tests/lib/fresh-auth.test.ts` → 38/38 passed.
+- Broader suite over fresh-auth's consumers (custody-consent-ops, custody-session-auth, custody-non-consent-fresh-auth, custody-fresh-auth-null-hash, settings-set-password-fresh-auth, settings-email-fresh-auth) → 105/105 passed. The added test-only exports and the docstring-only edits caused no consumer-side breakage.
+- Full backend suite NOT run in this session because a sibling backend agent has unstaged work in the tree (`backend/src/accreditation.ts` plus two test files). Running the full suite would cross-contaminate verification. The fresh-auth-touching subset is fully covered above.
+
+### Architect-zone notes
+
+- None. The 1-3 fixes are fully contained to `backend/src/lib/fresh-auth.ts` and `backend/tests/lib/fresh-auth.test.ts`. No contract updates needed; no schema changes; no sibling-helper edits.
