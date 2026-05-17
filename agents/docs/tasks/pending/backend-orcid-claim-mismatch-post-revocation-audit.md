@@ -315,3 +315,41 @@ Reader-side effect: `getAllAccreditedAccounts`'s docstring is followed by ANOTHE
 - **Per-paper audit amplification on revoked-author dossiers** (adversarial P3/70): architect already ratified "no preemptive gating; future volume data drives gating" (item 4, this task file line 132). Settled.
 - **Pool-null cache-poisoning divergence from sibling helper** (adversarial × maintainability P3/55): exploit requires runtime config toggle which doesn't happen in production (pool=null is dev-only). Production-irrelevant.
 - **6-positional-parameter `buildCumulativeAuthorsForChain` signature** (maintainability P2/75): defer until `backend-cumulative-union-listing-surfaces-parity` adds the second caller; that's the natural extraction moment. Premature now.
+
+---
+
+## Backend re-review signal (2026-05-17, commit SHA b2e9ef5) — round 3
+
+All 5 round-2 hold items landed in commit `b2e9ef5`. Targeted vitest run on `tests/routes/papers-cumulative-orcid-audit.test.ts` is green (5/5, includes the new case-d canary from item 2). Typecheck + lint clean for the touched files. Full-suite run is the parent's step.
+
+### Item 1 (test-mock walker fix) — landed
+
+`backend/tests/routes/papers-cumulative-orcid-audit.test.ts`. Added a new `canonicalRootWalkerStartSql` matcher discriminating on the walker SQL's `AS cont_author` + `AS cont_permlink` column projections. The matcher is ordered BEFORE `headAuthorsLookupSql` in the mock chain so the walker's start probe is no longer swallowed by the head-authors matcher. Returns 0 rows for the walker probe (alice/p1 is the canonical root in every canary here, so the real SQL's `'continues' IS NOT NULL` predicate would return empty too) — walker bails via the SQL-empty-row path (debug log) instead of the data-shape `cont_columns_invalid` warn path.
+
+Additional restructure that surfaced during canary execution: the previous `rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }]` made alice self-claim in the root, which won the cumulative-union per the helper's "most-recent self-claim wins" rule and suppressed bob's later forged claim from reaching the audit branches. Switched all four canaries to `rootAuthors: [{ hive: 'bob' }]` — bob's continuation introduces alice, no self-claim, fallback rule applies, audit fires as designed.
+
+### Item 2 (case-d audit payload + dedup) — landed
+
+`backend/src/routes/papers.ts`. The active-arm case-d emission (accredited target with `null` on-chain ORCID + broadcaster claim present) now carries `accreditationStatus: 'active' as const` and consults/updates the same `auditedKeys` Set as cases (b) and the revoked-arm. Pairs naturally with item 3: case-d became a third call site of the new helper.
+
+New canary added to the test file: `active spoof, case d (accredited target has no on-chain ORCID): audit fires with accreditationStatus=active, claim suppressed`. Pins `event.accreditationStatus === 'active'`, `event.accreditedOrcid === null`, `event.claimedOrcid === 'forged-orcid-by-bob'`, and `aliceEntry.orcid === null` (suppression behavior).
+
+### Item 3 (`emitOrcidClaimMismatchAudit` helper extraction) — landed
+
+`backend/src/routes/papers.ts`. Extracted module-level helper `emitOrcidClaimMismatchAudit({status, accreditedOrcid, claimedOrcid, hive, rootAuthor, rootPermlink, claimSource, message}, auditedKeys)`. Three call sites inside `buildCumulativeAuthorsForChain` now route through it (active-arm case-b override+audit, active-arm case-d suppress+audit, revoked-arm pass-through+audit). The helper consolidates payload skeleton + dedup-key construction + dedup-Set update + `logger.warn` emission; the surrounding decision-tree (override vs suppress vs pass-through) stays inline so the audit primitive does not couple to display-mutation policy.
+
+### Item 4 (rename) — landed
+
+`backend/src/accreditation.ts:234` + `backend/src/routes/papers.ts:22, 292, 967`. Renamed `getAccreditationOrcidsWithStatus` → `getAllEverAccreditedOrcidsWithStatus`. The "AllEver" prefix carries the active+revoked-union semantic at the import-site autocomplete (where `getAccreditedSet`, `getAllAccreditedAccounts`, `getAccreditedOrcidsByAccount`, and this helper line up side-by-side). Test file docstrings updated to match. CTE name (`accreditation_status` in `hafsql.ts`) and cache key (`accreditation_orcid_status`) unchanged per the hold block's "JS-side rename only" guidance.
+
+### Item 5 (relocate helper) — landed
+
+`backend/src/accreditation.ts`. The new helper's docstring + `AccreditationStatus` type export + function body now live AFTER `getAllAccreditedAccounts`'s implementation, eliminating the doubled-docstring ambiguity flagged in the hold block. `getAllAccreditedAccounts` once again sits directly under its own docstring.
+
+### Acceptance check (re-verified)
+
+- Single-cycle post-revocation canary fires `orcid_claim_mismatch` with `accreditationStatus: 'revoked'`, `accreditedOrcid: '0000-0000-0000-1234'`, `claimedOrcid: 'forged-orcid-by-bob'`. Display ORCID = forged claim (no override). [PASS]
+- Multi-cycle post-revocation canary's `accreditedOrcid` is ORCID-Y (most-recent prior accredit), NOT ORCID-X. [PASS]
+- Active spoof regression canary fires `orcid_claim_mismatch` with `accreditationStatus: 'active'`, server overrides to accredited ORCID. [PASS]
+- Case-d active spoof canary (new in this round) fires with `accreditationStatus: 'active'`, `accreditedOrcid: null`, display suppressed to null. [PASS]
+- Post-revocation match canary (no mismatch, no audit) still passes (non-vacuously now). [PASS]
