@@ -73,3 +73,24 @@ Two pre-existing items surfaced but explicitly NOT part of this hold (filed-sepa
 ### Architect signal
 
 Move this file from `review/` back to `pending/` per rule #8. Implementer addresses item 1 (single test refactor — swap `_mounted = false` for `destroy()` and add the wipe + done assertions) in a single commit, then `git mv`s the file back to `review/` for round-2 architect re-review.
+
+## UI re-review signal (2026-05-17, round-2, working tree)
+
+Round-1 hold-block item-1 landed.
+
+**Item 1 (P2 test fidelity — navigate-away test exercises integrated destroy() path):** swapped the in-stub `compRef._mounted = false` for `compRef.destroy()` so the test exercises the production unmount chain (destroy() → `_clearSensitiveUpgradeState()` → `_teardownTimers()` flips `_mounted`) rather than bypassing the wipe half. Then folded all three AC-#4 invariants into the single test:
+
+- (a) loop short-circuited — `importKeyCalls.length === 1` (existing).
+- (b) sensitive state wiped exactly once via the integrated destroy() path — new assertions on `oldSeedPhrase === ''`, `newSeedPhrase === ''`, `newSeedWords === []`, `confirmInputs === {}`, `upgradePassword === ''`, `_mounted === false`.
+- (c) no `upgradePhase='done'` write on the unmounted component — `comp.upgradePhase !== 'done'` (existing).
+
+A regression that reordered `_teardownTimers` before `_clearSensitiveUpgradeState`, or dropped the wipe call from `destroy()` entirely, now fails this test (where previously the existing companion `destroy() wipes sensitive upgrade state` test on an idle component would have masked the mid-flow regression).
+
+**Companion test (`destroy() wipes sensitive upgrade state in addition to flipping _mounted`)** retained — it pins the destroy() wipe on the idle path, complementing but no longer substituting for the integrated mid-flow assertion.
+
+**Files touched:**
+- `frontend/tests/unit/pages-settings.test.js` — navigate-away test refactor (stub change + new assertions + updated comment block reflecting the integrated path).
+
+All 77 tests in `pages-settings.test.js` pass.
+
+**Out of scope (unchanged):** no production-code changes; the four destroy() / _mounted production gates verified by round-1 stay intact. Pre-existing adversarial-1 (auth singleton strand) and adversarial-3 (orphan Keychain 45s timeout) remain explicitly out-of-hold per round-1 architect triage.

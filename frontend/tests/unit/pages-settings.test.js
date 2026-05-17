@@ -2002,21 +2002,28 @@ describe('settingsPage', () => {
     it('navigate-away mid-keychain-loop: short-circuits, wipes state once, no done write', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       const importKeyCalls = [];
-      // Capture the component for the keychain stub so it can flip
-      // _mounted=false from inside the first callback. Hoisted here so
-      // the closure binding is in scope when the stub fires.
+      // Capture the component for the keychain stub so it can invoke
+      // destroy() from inside the first callback. Hoisted here so the
+      // closure binding is in scope when the stub fires. Calling
+      // destroy() (rather than directly flipping _mounted) exercises
+      // the integrated production unmount path: destroy() synchronously
+      // runs _clearSensitiveUpgradeState() then _teardownTimers()
+      // (which flips _mounted). Round-2 architect hold-block item 1
+      // required this swap so the wipe-once-on-unmount invariant is
+      // pinned end-to-end (a regression reordering or removing the
+      // wipe inside destroy() would now fail this test).
       let compRef = null;
       vi.stubGlobal('window', {
         ...globalThis.window,
         hive_keychain: {
           requestImportKey: (account, wifKey, cb) => {
             importKeyCalls.push({ account, wifKey });
-            // Flip _mounted=false on the first iteration (posting). The
+            // Run destroy() on the first iteration (posting). The
             // per-iteration guard at the top of the for-loop body should
-            // see this on the next iteration and exit; active + memo
-            // must NOT be attempted.
+            // see _mounted=false on the next iteration and exit; active
+            // + memo must NOT be attempted.
             if (importKeyCalls.length === 1 && compRef) {
-              compRef._mounted = false;
+              compRef.destroy();
             }
             queueMicrotask(() => cb({ success: true }));
           },
@@ -2050,13 +2057,19 @@ describe('settingsPage', () => {
       // it had when the helper exited ('upgrading', not 'done').
       expect(comp.upgradePhase).not.toBe('done');
 
-      // (b) Sensitive state has been wiped. The wipe happens either via
-      // the finally block (skipped on unmount) or via the explicit
-      // destroy() cleanup signal. In this test no destroy() fires, so
-      // the wipe must come from a different deterministic path — for
-      // now we assert the unmount-short-circuit shape and leave the
-      // explicit-wipe-on-destroy assertion to a separate test that
-      // calls comp.destroy() directly.
+      // (b) Sensitive state wiped exactly once via the integrated
+      // destroy() path (destroy() → _clearSensitiveUpgradeState() →
+      // _teardownTimers() → _mounted=false). Asserting the full wipe
+      // here pins the destroy() ordering invariant against the
+      // mid-flow path. A regression that reordered _teardownTimers
+      // before _clearSensitiveUpgradeState (or dropped the wipe call
+      // from destroy()) would leave these fields populated and fail.
+      expect(comp.oldSeedPhrase).toBe('');
+      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.newSeedWords).toEqual([]);
+      expect(comp.confirmInputs).toEqual({});
+      expect(comp.upgradePassword).toBe('');
+      expect(comp._mounted).toBe(false);
     });
 
     // Companion to the above: calling destroy() on a mid-flow component
