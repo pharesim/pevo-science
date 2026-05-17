@@ -353,3 +353,58 @@ New canary added to the test file: `active spoof, case d (accredited target has 
 - Active spoof regression canary fires `orcid_claim_mismatch` with `accreditationStatus: 'active'`, server overrides to accredited ORCID. [PASS]
 - Case-d active spoof canary (new in this round) fires with `accreditationStatus: 'active'`, `accreditedOrcid: null`, display suppressed to null. [PASS]
 - Post-revocation match canary (no mismatch, no audit) still passes (non-vacuously now). [PASS]
+
+---
+
+## Architect re-review (2026-05-17, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `b2e9ef5` ran 9 personas (correctness + security + adversarial on opus; testing + maintainability + project-standards + data-integrity + api-contract + previous-comments + learnings-researcher on sonnet; reliability + kieran-typescript + performance skipped — round-3 is mechanical hold-fix on a read-only paper-detail rendering surface; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 5 round-2 hold items verified clean by previous-comments + correctness + data-integrity + adversarial + testing — helper extraction is cohesive (no display-mutation leak), rename grep-clean (zero hits on old name), case-d emission carries the additive field and dedup, test-mock walker matcher discriminates correctly, doubled-docstring resolved. CTE + cache-key unchanged per spec. Security found no PII/JWT exposure; audit payload is public-on-chain only.
+
+Two items hold on the round-3 commit's own newly-added code — both maintainability findings against the convention `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` (written the same day, from this exact class of incident).
+
+### Items held
+
+**1. (P1, conf 85, maintainability M1) `AccreditationStatus` type declaration stranded between the new helper's docstring and its function body.** `backend/src/accreditation.ts:237` (approximate line; verify on read).
+
+Item-5 of the round-2 hold relocated the new helper's body to AFTER `getAllAccreditedAccounts`'s implementation, eliminating the doubled-docstring ambiguity. That fix landed correctly. But the `export type AccreditationStatus = 'active' | 'revoked'` declaration sits between the closing `*/` of `getAllEverAccreditedOrcidsWithStatus`'s 47-line docstring and the `export async function` line itself, with no blank-line separator. A reader scanning the file for the exported type finds it buried inside what visually reads as the new function's docstring block.
+
+Fix shape (architect's pick — either is acceptable):
+- (a) Move `export type AccreditationStatus = 'active' | 'revoked'` to the module's type-export zone (early in the file alongside other exports), OR
+- (b) Add a blank-line separator before the type declaration so it visually disambiguates from the docstring block, OR
+- (c) Move the type to immediately AFTER the function body (the type is only consumed by callers of the function, so placing it right after the implementation is also defensible).
+
+Architect recommendation: (a) — module-level type-export zone is the cleanest. The type is part of the module's public API; treating it as a co-located implementation detail visually obscures that.
+
+**2. (P2, conf 70, maintainability M3) Round-N hold-item markers in production code and tests.** Direct violation of `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` AND `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` (the latter was written from this exact class of incident). Affected sites:
+
+- `backend/src/routes/papers.ts:476` (approximate) — `// round-2 hold item 2: ...` style marker in production code. Highest-risk site (production grep target).
+- `backend/tests/routes/papers-cumulative-orcid-audit.test.ts:135, 196, 400` (approximate) — `// Round-2 hold item 1:` style markers in test code. Lower-risk but still rotting once this task archives.
+
+Fix shape: replace the round-N framings with behavioral-invariant descriptions. The matcher-ordering comment in the test file is the highest-value rewrite: replace "Round-2 hold item 1: this matcher must come BEFORE …" with "The canonical-root walker SQL shares a SELECT shape with `headAuthorsLookupSql`; the walker matcher MUST be listed first or the walker probe gets swallowed and `buildCumulativeAuthorsForChain` runs against an incomplete chain. Production code is at `papers.ts:1760`." The production-code instance at `papers.ts:476` similarly anchors on the case-d behavior, not the hold framing.
+
+Although M3's anchor (70) is below the strict 75 confidence gate, it surfaces this round because the directly-applicable convention exists (written from prior incidents of exactly this shape) and the violation is in production code, not just tests. Both maintainability findings are post-fix issues on the commit's own newly-added code — the canonical convention-enforcing-fix self-audit gap.
+
+### Items dismissed at architect triage
+
+- **adversarial-cache-ttl-divergence (P3/60)** — independent 10-min cache TTLs on `accreditedAccountSet` vs `accreditationOrcidStatus` can produce a wrong audit-arm during the post-revocation window. PEvO single-instance per `project_single_instance_only.md`; bounded by 10-min self-heal; pre-existing two-cache architecture (not a round-3 regression). Filing as residual.
+- **adversarial-accreditedorcids-divergence (P3/55)** — `accreditedAccountSet.has(X)=true` + `accreditedOrcidsByAccount.get(X)=undefined` (LRU evicted) forces case-d false suppression. Cache eviction is operationally rare; both caches use the same 10-min TTL so divergence requires LRU pressure that PEvO single-instance won't see. Filing as residual.
+- **adversarial-helper-dedup-mutation-not-pinned-by-test (P3/70) + testing TG-1** — the helper's `auditedKeys.add(auditKey)` line is structurally unreachable from current callers (per-hive iteration via `orderedHives.map`, mutually exclusive if/else cascade). A regression dropping the add-line passes all tests. Preemptive test hardening for a refactor scenario with no current trigger — dismissed per `feedback_dismiss_preemptive_test_hardening.md`.
+- **adversarial self-claim precedence not canaried (P3/75)** — the `rootAuthors` restructure from `[alice, bob]` to `[bob]` documents the self-claim-suppresses-audit precedence rule in comments but adds no positive assertion. Same dismissal rationale (preemptive); the comments + the existing 4 self-claim-relevant canaries in sibling test files cover the wayfinding.
+- **maintainability M2 (P2/75) — matcher ordering self-enforcement.** The "MUST be listed BEFORE" constraint is comment-prose, not structural. But: at least 3 of 5 canaries assert `expect(event).toBeDefined()`, so a chain reorder fails those canaries loudly. Documentation guard adequate; structural guard would be premature.
+- **correctness residual — `auditedKeys` docstring says "request-scoped" but is "call-scoped".** Cosmetic doc drift; below actionable bar.
+- **project-standards residual — logging event name `orcid_claim_mismatch` uses underscore (sibling routes use dotted).** Pre-existing in `papers.ts` (`continuation_chain_*`, `canonical_root_walker_*`, `paper_authors_metadata_edit` all underscore); no documented PEvO convention requiring dotted form. Not a regression; cross-file consistency sweep would be its own task.
+- **testing residual — case-d canary doesn't assert dedup behavior across two requests.** Preemptive per `feedback_dismiss_preemptive_test_hardening.md`.
+
+### Suppressed below anchor 75 (surfaced for transparency)
+
+- adversarial findings 1-4 (all P3/55-75 single-persona, dismissed as above).
+- maintainability M3 (conf 70) — suppressed by anchor gate but HELD as item 2 above because the convention violation is documented and the fix shape is mechanical.
+- correctness's "auditedKeys docstring" residual (conf 30).
+
+### Files for round-4
+
+- `backend/src/accreditation.ts` (item 1: `AccreditationStatus` type placement)
+- `backend/src/routes/papers.ts` (item 2: round-N marker cleanup at the case-d emission site)
+- `backend/tests/routes/papers-cumulative-orcid-audit.test.ts` (item 2: round-N marker cleanup at 3 sites)
+
+Per root CLAUDE.md rule #8, this file moves from `tasks/review/` back to `tasks/pending/`. After landing the round-4 fixes, `git mv` back to `tasks/review/` for round-4 re-review.
