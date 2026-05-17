@@ -149,3 +149,63 @@ Item 1 landed: slug-citation cleanup across all 3 sites. Item 2 was a process no
 - This task file (round-2 implementer signal block)
 
 The `git mv` to `tasks/review/` is the re-review signal (parent agent will perform the move).
+
+---
+
+## Architect round-2 re-review (2026-05-17) — HELD PENDING FIXES
+
+`/ce-code-review` re-run on commits `fc0aa29` (round-1 implementation) + `848ff00` (round-2 slug cleanup), dispatching the 5 deferred personas from round-1's rate-limit-truncated pass (security + adversarial + testing + kieran-typescript + api-contract) alongside the always-on set + maintainability + performance + project-standards.
+
+Round-2's slug cleanup landed cleanly: all three sites (`search-filters.ts:82` section banner, `accreditations.ts:28` SQL-binder docblock, `accreditations.ts:98` route-entry comment trim) successfully replaced slug citations with behavioral anchors; `grep -rn 'BE-ACCREDITATIONS-LIKEGUARD' backend/src/` returns zero hits in production code.
+
+The deferred-persona re-run surfaced two cross-corroborated assertion-strength gaps that the round-1 review couldn't catch. Both items hold the task.
+
+### Item 1 [P2] — Mocked-pool SQL-contract spec called for by task acceptance §4 did not land
+
+**Cross-corroborated:** correctness × testing (T1, conf 75)
+**File:** `backend/tests/routes/accreditations-likeguard.test.ts` (new spec needed; or in a sibling `disciplines-canon-mocked.test.ts`-shape file)
+
+Task acceptance §4 explicitly called for: *"Mocked-pool spec (carve-out, in `disciplines-canon-mocked.test.ts` or a sibling) asserting both ILIKE sites carry `ESCAPE '\\'` and that the bound parameter is LIKE-escaped (`%` → `\%`, `_` → `\_`, `\` → `\\`)."* This was not delivered.
+
+The current real-path specs at `accreditations-likeguard.test.ts:82-100` (the "LIKE-metacharacter escape" describe block) assert only `res.status === 200` and `Array.isArray(res.body.data)`. Neither asserts that the bound parameter was escaped or that the SQL contains `ESCAPE '\\'` at both ILIKE call sites. A regression dropping `escapeLikePattern()` (search-filters.ts:53-55) or dropping `ESCAPE '\\'` from accreditations.ts:41 or :45 still produces 200+array — test passes vacuously.
+
+The sibling clause-(c) at `disciplines-canon-mocked.test.ts:817-903` pins this contract for `/api/search` but no equivalent exists for `/api/accreditations` — different file, different conditions array, different `ESCAPE` clause placement.
+
+**Fix shape:** add a mocked-pool spec mirroring the `disciplines-canon-mocked.test.ts:825-903` shape. Use the `hafQueryMock` infrastructure to assert:
+- `pool.query` was called with a SQL string containing `ESCAPE '\\'` at both the count branch (accreditations.ts:41) and the data branch (accreditations.ts:45).
+- The params array contains the LIKE-escaped form for an input like `'%_\\'` (showing `\%`, `\_`, `\\`).
+
+Document the carve-out justification inline per the project clause (a)/(b)/(c) requirements (same shape as the BE-SEARCH-Q-LIKEGUARD mocked test).
+
+### Item 2 [P2] — Repeated-param silent-unfilter specs need result-set proxy assertion
+
+**Source:** testing T2 (conf 75)
+**File:** `backend/tests/routes/accreditations-likeguard.test.ts:104-123`
+
+The two repeated-param specs at lines 112, 119 (`?field=a&field=b`, `?institution=a&institution=b`) assert only `res.status === 200` and `Array.isArray(res.body.data)`. The "silent-unfilter" contract — that the filter was DROPPED and the result set matches the unfiltered list — is not asserted. A regression re-introducing the `as string` cast (which coerced `['a','b']` → `'a,b'` and bound it as a literal) returns 200 with a (likely empty) array → test passes vacuously.
+
+**Fix shape:** strengthen the two specs to capture the unfiltered baseline `res.body.meta.total` (already exercised at the existing absent/empty fall-through spec at line 128) and assert the repeated-param call returns the same total:
+
+```ts
+const unfilteredRes = await request(app).get('/api/accreditations?page=1&limit=50');
+const baseline = unfilteredRes.body.meta.total;
+
+const res = await request(app).get('/api/accreditations?field=a&field=b&page=1&limit=50');
+expect(res.body.meta.total).toBe(baseline); // filter must be dropped, not bound as 'a,b'
+```
+
+With this proxy in place, a regression that drops the `typeof` narrow in `validateOptionalLikeFilter` surfaces as a count mismatch rather than passing silently.
+
+### Files for round-3
+
+- `backend/tests/routes/accreditations-likeguard.test.ts` (items 1, 2) — OR new mocked-pool sibling file for item 1 if cleaner separation is preferred.
+- This task file (round-3 implementer signal block when moving back to review/).
+
+### Architect archive-time follow-ups (recorded for the eventual archive)
+
+- `agents/docs/api-contracts/accreditation.md` GET /api/accreditations section update (round-1 [TODO Architect]): document 200-char cap, per-param "too long" 400 messages, repeated-param silent-unfilter, LIKE-metacharacter literal-treatment, prefix-match semantics. Mirror the `papers.md:487` `?discipline=` precedent shape. Architect lands at archive.
+
+### Dismissed at architect triage (recorded for transparency)
+
+- **Helper-direct unit tests for `validateOptionalLikeFilter`** (testing T3 P3/50): preemptive hardening; the route-level tests cover behavior. Per `feedback_dismiss_preemptive_test_hardening`.
+- **Repeated-param semantic flip + ILIKE metacharacter literal-treatment + 400 message wire format** (api-contract findings, P2/70 and P3/60): all fold into the architect-side `accreditation.md` contract update at archive time.
