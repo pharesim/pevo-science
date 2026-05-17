@@ -306,6 +306,99 @@ describe('accreditationVerifyPage', () => {
     // a rapid second click between state='loading' and Alpine's x-if
     // teardown of the Retry button would fire a second verifyAccreditation
     // call — the user-driven entry point into the item-1 race.
+    // UI-ACCREDITATION-VERIFY-NETWORK-ERROR-RETRIABLE: network-layer errors
+    // (`TypeError` from fetch failure, `AbortError` from the 30s fetch
+    // timeout in `api.js`) never reach `ApiRequestError` — `api.js`
+    // constructs `ApiRequestError` from the response body, so a fetch that
+    // never produces a response throws raw. Both carry no `.code`/`.details`,
+    // so without an explicit branch they would fall through to the generic
+    // `'error'` state with the Request New CTA and burn a 3/24h
+    // `/api/accreditation/request` slot against a still-valid token. The
+    // network-error branch routes them to the Retry CTA instead, sharing
+    // the existing `_startCooldown`/`_cooldownId`/`_tickCooldown` machinery
+    // — no new timer scaffolding.
+    describe('network-layer error handling', () => {
+      function makeTypeError() {
+        // Real fetch failures construct a plain `TypeError`. Synthesize the
+        // same shape so the test exercises the actual `err?.name` path.
+        const e = new TypeError('Failed to fetch');
+        return e;
+      }
+      function makeAbortError() {
+        // `AbortSignal.timeout()` rejects with a `DOMException` whose
+        // `name === 'AbortError'`. jsdom has DOMException; if a future
+        // runtime omits it the discriminator still matches a plain
+        // `Error` with `name = 'AbortError'`, so synthesize the simplest
+        // shape the discriminator must accept.
+        const e = new Error('The operation was aborted');
+        e.name = 'AbortError';
+        return e;
+      }
+
+      it('TypeError routes to retriable_error with networkUnavailable copy and 0s cooldown', async () => {
+        mockVerifyAccreditation.mockRejectedValue(makeTypeError());
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const comp = createComponent();
+        comp.init();
+
+        await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+        expect(comp.errorMessage).toBe('verify.networkUnavailable');
+        // TypeError = offline / DNS / conn refused: immediate retry permitted.
+        expect(comp.retryCooldownRemaining).toBe(0);
+        warnSpy.mockRestore();
+      });
+
+      it('AbortError routes to retriable_error with networkUnavailable copy and 5s cooldown', async () => {
+        vi.useFakeTimers();
+        try {
+          mockVerifyAccreditation.mockRejectedValue(makeAbortError());
+          const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+          const comp = createComponent();
+          comp.init();
+
+          await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+          expect(comp.errorMessage).toBe('verify.networkUnavailable');
+          // AbortError = fetch timed out: 5s fixed cooldown so the backend
+          // has time to recover before the next attempt re-arms the 30s
+          // timeout. Pin the cooldown initial value and one decrement to
+          // confirm it shares the existing _tickCooldown machinery.
+          expect(comp.retryCooldownRemaining).toBe(5);
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(comp.retryCooldownRemaining).toBe(4);
+          warnSpy.mockRestore();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('Retry click after network error re-invokes verifyAccreditation with the same token', async () => {
+        mockVerifyAccreditation
+          .mockRejectedValueOnce(makeTypeError())
+          .mockResolvedValueOnce({ data: { username: 'alice' } });
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const comp = createComponent();
+        comp.init();
+
+        await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+        expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+        expect(mockVerifyAccreditation).toHaveBeenNthCalledWith(1, 'tok123');
+        // TypeError path: cooldown is 0 so Retry is immediately available.
+        expect(comp.retryCooldownRemaining).toBe(0);
+
+        comp.retryVerification();
+        expect(comp.state).toBe('loading');
+
+        await vi.waitFor(() => expect(comp.state).toBe('success'));
+        expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
+        // Same token, satisfies AC #2 (token preserved across retry —
+        // backend was never reached on a network error, so the token is
+        // still valid server-side).
+        expect(mockVerifyAccreditation).toHaveBeenNthCalledWith(2, 'tok123');
+        expect(comp.resultUsername).toBe('alice');
+        warnSpy.mockRestore();
+      });
+    });
+
     it('rapid double-tap on Retry while state=loading fires verifyAccreditation exactly once', async () => {
       mockVerifyAccreditation
         .mockRejectedValueOnce(

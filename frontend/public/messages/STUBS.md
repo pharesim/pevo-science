@@ -1180,3 +1180,21 @@ pt: upgrade.navigationGuardConfirm
 sv: upgrade.navigationGuardConfirm
 tr: upgrade.navigationGuardConfirm
 zh: upgrade.navigationGuardConfirm
+
+### Added 2026-05-17 (UI-ACCREDITATION-VERIFY-NETWORK-ERROR-RETRIABLE)
+
+ar: verify.networkUnavailable
+cs: verify.networkUnavailable
+da: verify.networkUnavailable
+de: verify.networkUnavailable
+es: verify.networkUnavailable
+fa: verify.networkUnavailable
+fr: verify.networkUnavailable
+he: verify.networkUnavailable
+it: verify.networkUnavailable
+nl: verify.networkUnavailable
+pl: verify.networkUnavailable
+pt: verify.networkUnavailable
+sv: verify.networkUnavailable
+tr: verify.networkUnavailable
+zh: verify.networkUnavailable

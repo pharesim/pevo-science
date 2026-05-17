@@ -425,6 +425,7 @@
     "noToken": "Doğrulama jetonu sağlanmadı.",
     "requestNew": "Yeni Akreditasyon Talebi",
     "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "networkUnavailable": "Network connection lost. Your link is still valid, please check your connection and try again.",
     "retry": "Retry",
     "retryAvailableIn": "Retry available in {seconds}s"
   },

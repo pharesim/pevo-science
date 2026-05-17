@@ -132,7 +132,18 @@ export function initAccreditationVerifyPage() {
           if (generation !== this._verifyGeneration) return;
           // Sanitization pattern (see executeUpgrade() in settings.js).
           console.warn('[accreditation verify]', err);
-          if (this._isRetriable(err)) {
+          if (this._isNetworkError(err)) {
+            this.state = 'retriable_error';
+            this.errorMessage = this.$t('verify.networkUnavailable');
+            // AbortError = fetch timed out (default 30s in api.js): backend
+            // may be slow but reachable; a fixed 5s cooldown gives it time
+            // to recover before the next attempt re-arms the timeout.
+            // TypeError = network unreachable (offline, DNS fail, conn
+            // refused): no benefit to waiting; the user retries when they
+            // see connectivity restored, so allow immediate click.
+            const cooldown = err?.name === 'AbortError' ? 5 : 0;
+            this._startCooldown(cooldown);
+          } else if (this._isRetriable(err)) {
             this.state = 'retriable_error';
             this.errorMessage = this.$t('verify.serviceTemporarilyUnavailable');
             this._startCooldown(err.retryAfterSeconds);
@@ -146,6 +157,19 @@ export function initAccreditationVerifyPage() {
     _isRetriable(err) {
       return err?.code === 'ACCREDITATION_GATE_UNAVAILABLE'
         || err?.details?.retriable === true;
+    },
+
+    // Network-layer errors never reach `ApiRequestError` — `api.js`
+    // constructs `ApiRequestError` from the response body, so a fetch
+    // that never produces a response throws raw `TypeError` (offline /
+    // DNS / connection refused / CORS) or raw `AbortError` (fetch
+    // timeout). Both carry no `.code`/`.details`, so `_isRetriable` is
+    // blind to them. Without this branch the user would burn one of
+    // their 3/24h `/api/accreditation/request` slots clicking "Request
+    // New" against a still-valid token — the backend was never reached,
+    // so the token was never consumed.
+    _isNetworkError(err) {
+      return err?.name === 'TypeError' || err?.name === 'AbortError';
     },
 
     _startCooldown(seconds) {
