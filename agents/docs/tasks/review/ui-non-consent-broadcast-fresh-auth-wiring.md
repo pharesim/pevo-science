@@ -135,3 +135,30 @@ Cross-references:
 - `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` — the audit-by-grep convention; 7 call sites were correctly migrated per architect verification, but the convention prescribes embedding the grep output in the signal block for future audits.
 - `agents/docs/solutions/conventions/helper-contract-flip-untouched-adopter-audit-2026-05-16.md` — relevant if `broadcastWithFreshAuth`'s contract is later modified (it'll silently re-grade all 7 call sites).
 - `agents/docs/solutions/conventions/hive-signature-request-binding-shape-2026-04-21.md` — the canonical-challenge convention that the fresh-auth wire format also broadly follows.
+
+## UI re-review signal (2026-05-17, commits acf0663..989d0e3)
+
+Round-2 hold-block fixes landed. Backend B1 (`backend-expires-at-iso-conformance`) archived 2026-05-16 (verified: `toISOString()` at `backend/src/lib/fresh-auth.ts:347,420`); blocker cleared.
+
+**All findings landed (#1-#11 P0/P1/P2):**
+1. T1 401 retry-path coverage — `frontend/tests/unit/fresh-auth-401-retry.test.js` (7 tests; expired + missing + malformed).
+2. T2 403 username_mismatch disconnect+toast — tested in `fresh-auth-401-retry.test.js`.
+3. i18n `auth.sessionInconsistency` key extracted; 15 non-English stubs; STUBS.md entry; `fresh-auth.js` reads from i18n store with raw-English fallback.
+4. `broadcast-confirm.js` `_resolve` race: prior `_resolve(false)` is now resolved before overwriting.
+5. `handleVote` entry guard `if (this.isVoting) return;` added as first check.
+6. Unused exports removed from `fresh-auth.js` (`getCachedSessionProof`, `clearCachedSessionProof`, `mintNonConsentProof`); grep-verified internal-only.
+7. `pevo_orcid_mode` migrated atomically from `localStorage` to `sessionStorage` across all 6 writers/readers.
+8. `publish.js` + `vouch-section.js` (2 sites) reset `step='idle'` on `FRESH_AUTH_REDIRECT_PENDING`; `comment-composer.js` already self-resets via finally (no change).
+9. `getCachedSessionProof` expiry-eviction unit test (B1 regression coverage).
+10. `signer.js` string-`opts` back-compat branch removed; JSDoc updated.
+11. Error-shape contract comment added at fresh-auth.js catch block.
+
+**P3 advisories also landed:**
+- adv-task6-6: `router.path` dead-branch removed in `mintNonConsentProof`.
+
+**P3 advisories carried (out of round-2 scope):**
+- adv-task6-3 (old SPA bundle recovery), R2 (sessionStorage unavailable graceful degradation), adv-task6-5 (comment/review body loss on ORCID redirect).
+
+**Tests:** 342/342 across 12 affected files (7 new fresh-auth tests + 5 migrated page tests + i18n / publish / accreditation regressions).
+
+**`/ce-compound` candidate flagged:** `vi.spyOn(sessionStorage, 'removeItem')` does NOT intercept in jsdom — Storage methods live on the prototype; direct property assignment is silently ignored. Patch `Storage.prototype.removeItem` instead. New test file documents inline; worth capturing as a convention if architect agrees.

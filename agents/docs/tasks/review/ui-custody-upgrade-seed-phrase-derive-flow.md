@@ -141,3 +141,26 @@ Cross-references:
 - `agents/docs/solutions/conventions/hive-signature-request-binding-shape-2026-04-21.md` — convention for the byte-equality test (P2 adv-9).
 - `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — the retriable-discriminator architecture pattern this flow's `handleRetry` follows.
 - `agents/docs/tasks/pending/backend-custody-session-auth-password-mint.md` — State A's eventual landing point (not blocking this task, but the upgrade flow's "current State A unreachable" assumption depends on it staying true until that lands).
+
+## UI re-review signal (2026-05-17, commit 0f23539)
+
+Round-2 hold-block fixes landed. Backend B1 (`backend-custody-upgrade-limiter-skip-failed`) archived 2026-05-16 (verified: `skipFailedRequests: true` at `backend/src/routes/custody.ts:52`); blocker cleared.
+
+**P0/P1 items landed (all 8):**
+1. Clock-skew advisory — `console.warn` fallback in `_signUpgradeProof` per architect guidance. **Backend follow-up:** `GET /api/time` endpoint not present in `backend/src/routes/`. Inline comment in `_signUpgradeProof` flags the swap-to-hard-abort plan when an endpoint lands. Architect: please decide whether to file a backend task.
+2. `beforeunload` guard registered in `init()`, deregistered in `destroy()` and on terminal phases.
+3. `_mounted` guard after `await this._postUpgradeBackend(proof)` in `retryUpgradeBackend`.
+4. Concurrency gate: `this.upgradePhase = 'upgrading'` is now the first synchronous statement of `retryUpgradeBackend`.
+5. First-401 keeps mnemonic, second-401 wipes. `UPGRADE_PROOF_RETRY_BUDGET = 2`. Counter resets in `startUpgrade` / `resetUpgrade`.
+6. `backendTimeout` copy reframed to "sign out and back in" + no-wipe; mnemonic preserved.
+7. `UPGRADE_ERROR_KEYS` + `RETRYABILITY` map hoisted; `canRetryUpgrade` and `handleRetry` consume the annotation.
+8. `_handlePostBroadcastError(err, { wipe })` extracted; both `executeUpgrade` and `retryUpgradeBackend` reduce to a single call.
+
+**P2 items carried (file as separate follow-up tasks):**
+- adv-9 byte-equality test: needs backend to export `buildCustodyUpgradeChallenge` for cross-source guarantee (vendoring the template gives weaker drift coverage than `sec-001-equivalence.test.js`).
+- adv-8 real-path integration test: requires backend test-instance wiring.
+- T1, R2, R3: lower priority post-B1; architect can re-triage.
+
+**Tests:** `pages-settings.test.js` 63/63, new `pages-settings-custody-upgrade-round2.test.js` 22/22, full unit suite 1153/1153.
+
+**i18n:** new key `upgrade.proofRejected`, updated `upgrade.backendTimeout` copy; 15 non-English stubs added; STUBS.md sweep entry `### Added 2026-05-17 (UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW)`.
