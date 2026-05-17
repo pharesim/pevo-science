@@ -153,6 +153,7 @@ export function initAuth() {
       clearReturnPath();
       try {
         sessionStorage.removeItem('pevo_orcid_mode');
+        sessionStorage.removeItem('pevo_orcid_return_to');
       } catch {
         /* sessionStorage unavailable (private mode); noop */
       }

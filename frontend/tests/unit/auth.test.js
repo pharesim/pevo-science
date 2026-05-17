@@ -266,6 +266,39 @@ describe('auth store', () => {
     });
   });
 
+  describe('disconnect scrubs sessionStorage ORCID flow keys', () => {
+    // Disconnect must clear BOTH pevo_orcid_mode and pevo_orcid_return_to so a
+    // concurrent-tab logout StorageEvent in the middle of a /recover ORCID
+    // flow cannot leak a stale return-path pointer ('recover') into a later
+    // orcid-callback resolution on the same tab, which would route the user
+    // to /recover instead of /signup. See task
+    // ui-auth-disconnect-clear-orcid-return-to (architect, 2026-05-17).
+    let sessionStorageData;
+
+    beforeEach(() => {
+      sessionStorageData = {};
+      vi.stubGlobal('sessionStorage', {
+        getItem: vi.fn((key) => sessionStorageData[key] ?? null),
+        setItem: vi.fn((key, val) => { sessionStorageData[key] = val; }),
+        removeItem: vi.fn((key) => { delete sessionStorageData[key]; }),
+      });
+    });
+
+    it('removes pevo_orcid_mode on disconnect', () => {
+      sessionStorageData['pevo_orcid_mode'] = 'session_auth';
+      store.disconnect();
+      expect(sessionStorageData['pevo_orcid_mode']).toBeUndefined();
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+    });
+
+    it('removes pevo_orcid_return_to on disconnect', () => {
+      sessionStorageData['pevo_orcid_return_to'] = 'recover';
+      store.disconnect();
+      expect(sessionStorageData['pevo_orcid_return_to']).toBeUndefined();
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_return_to');
+    });
+  });
+
   describe('token expiry', () => {
     it('expired token means session is not restored', () => {
       const past = new Date(Date.now() - 1).toISOString();
