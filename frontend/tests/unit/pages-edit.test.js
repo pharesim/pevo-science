@@ -1029,9 +1029,10 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
 // untouched so the Alpine template binding at `edit.js:183`
 // (`:value="ca.orcid || ''"`) is responsible for the falsy coalesce at
 // render time. The template-side `|| ''` is grep-pinned at
-// `frontend/src/pages/edit.js:183` (audit notes / round-1 audit
-// conclusion, commit `6bf50d0`); pinning that binding end-to-end would
-// require mounting Alpine via jsdom and is out of scope here.
+// `frontend/src/pages/edit.js:183` (see task
+// ui-papers-orcid-null-fallback-verification); pinning that binding
+// end-to-end would require mounting Alpine via jsdom and is out of
+// scope here.
 describe('editPage _prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

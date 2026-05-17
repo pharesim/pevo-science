@@ -124,3 +124,16 @@ Findings triaged dismissed this pass:
 - Task-1 cross-cutting maintainability (string-literal duplication): N/A (this is task 2, but in cluster review the orcid-callback string-literal finding was logged separately for the orcid task and dismissed there per `feedback_dismiss_preemptive_test_hardening`).
 - Testing residual: template-binding `|| ''` at `edit.js:183` has no mechanical test, only a grep-pin. **Dismissed** — explicitly out of scope per fix shape (a); comment documents the scope decision; jsdom-mount cost not justified for this narrow binding.
 - Maintainability R1/R2 (comment volume — 12-line block + 4-line inline): **Dismissed** — every sentence in the comment is load-bearing (originating backend branch, scope split, cross-file pointer); not premature trim.
+
+---
+
+UI re-review signal (2026-05-17, working tree, commit pending):
+
+Round-3 hold item resolved.
+
+Change in `frontend/tests/unit/pages-edit.test.js`:
+- Block comment above the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe (lines ~1031-1034): dropped the `, commit `6bf50d0`` substring from the parenthetical. Replaced with a task-slug citation `(see task ui-papers-orcid-null-fallback-verification)` for a durable cross-reference that survives rebase / fork re-clones. The `frontend/src/pages/edit.js:183` path two lines earlier remains the navigable code-pointer.
+- Inline comment above the two `.toBeNull()` assertions (lines ~1089-1092) carries no SHA reference, so no edit needed there (confirmed by reading the round-2 diff at commit `26aff60`).
+
+Verification:
+- `source ~/.nvm/nvm.sh && nvm use 20 && cd frontend && npx vitest run tests/unit/pages-edit.test.js` → 45/45 passed, including all 3 specs in the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe block. (3 unrelated unhandled rejections from `_mountEditors` async path are pre-existing and not introduced by this change, same as round-2.)
