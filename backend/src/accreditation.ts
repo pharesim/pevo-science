@@ -194,12 +194,12 @@ export async function getAllAccreditedAccounts(): Promise<Set<string>> {
  *
  * **Why this exists.** `getAccreditedOrcidsByAccount` is active-only — it
  * drops revoked accounts. The `orcid_claim_mismatch` audit primitive
- * (per `backend-multi-author-cumulative-union.md` rule #3) is gated by
- * the active-only lookup, so once a bad actor is revoked the audit goes
- * silent on subsequent forged-ORCID broadcasts targeting them. Operators
- * want visibility *during* the post-revocation triage window — exactly
- * when the current code goes silent
- * (`backend-orcid-claim-mismatch-post-revocation-audit.md`).
+ * (per `agents/docs/ARCHITECTURE.md` § 2 "Multi-Author Trust Model") is
+ * gated by the active-only lookup, so once a bad actor is revoked the
+ * audit goes silent on subsequent forged-ORCID broadcasts targeting them.
+ * Operators want visibility *during* the post-revocation triage window —
+ * exactly when the active-only lookup goes silent. This helper supplies
+ * the revoked-arm anchor so the audit can fire across both arms.
  *
  * This helper preserves audit visibility by carrying revoked accounts
  * (with their last-attested ORCID) alongside active ones. Callers in

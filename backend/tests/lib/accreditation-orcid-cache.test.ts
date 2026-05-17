@@ -1,14 +1,14 @@
 /**
  * Unit canary for `getAccreditedOrcidsByAccount`'s pool-null early-return.
  *
- * **Background (round-2 hold item 2):** when `getPool()` returns null (HAF
- * not yet connected at startup, transient pool drop), the helper used to
- * return an empty result from inside `hafCache.getOrSet(...)`. The cache
- * layer treats empty arrays as cacheable; the degraded result would persist
- * for the full 10-min TTL. If HAF recovered mid-window, the ORCID
- * server-overrides per `agents/docs/ARCHITECTURE.md § 2 "Multi-Author
- * Trust Model"` would be silently suppressed until cache expiry — exactly
- * the moment when spoof detection should re-engage.
+ * **Why this matters.** When `getPool()` returns null (HAF not yet connected
+ * at startup, transient pool drop), the helper must NOT cache the degraded
+ * empty result through `hafCache.getOrSet(...)`. The cache layer treats
+ * empty arrays as cacheable; a cached empty Map would persist for the full
+ * 10-min TTL, and if HAF recovered mid-window the ORCID server-overrides
+ * per `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"` would
+ * be silently suppressed until cache expiry — exactly the moment when
+ * spoof detection should re-engage.
  *
  * **Fix invariant pinned here:** when `getPool() === null`, the helper
  * returns an empty Map WITHOUT entering `hafCache.getOrSet`. The next

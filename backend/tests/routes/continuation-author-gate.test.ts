@@ -25,9 +25,9 @@
  *     `pevo.ipfs_filename` (round-5 atomic-triple sentinel-aware
  *     fallback to root, unchanged).
  *   - Drops are forbidden by construction — the union only grows; no
- *     chain post can remove a hive that another chain post added. This
- *     supersedes the round-3 no-shrink check
- *     (`continuation_authors_shrink_violation` event removed).
+ *     chain post can remove a hive that another chain post added. A
+ *     structural invariant replaces what was previously a
+ *     check-and-reject mechanism.
  *
  * Threat model: any Hive account (or even a vouched co-author) can
  * broadcast a comment with `pevo.continues = {author, permlink}` pointing
@@ -913,14 +913,14 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('suppresses broadcaster ORCID claim when accredited target has no on-chain ORCID (spoof case)', async () => {
-    // Item 1 (round-2 hold): ORCID is optional on accreditation. An
-    // accredited user may choose not to share an ORCID — that is the
-    // normal state, and "no on-chain ORCID" is the authoritative
-    // statement, not an absence of authority. A vouched co-author who
-    // broadcasts a claimed ORCID for that accredited target must NOT
-    // surface as authoritative on the displayed entry. Expected
-    // behavior: out.orcid = null AND orcid_claim_mismatch audit event
-    // fires with accreditedOrcid: null so operators see the spoof.
+    // Pins the suppress-branch for accredited targets without on-chain
+    // ORCID: ORCID is optional on accreditation; an accredited user may
+    // choose not to share one — that silence IS the authoritative
+    // statement. A vouched co-author who broadcasts a claimed ORCID for
+    // that accredited target must NOT surface as authoritative on the
+    // displayed entry. Expected behavior: out.orcid = null AND
+    // orcid_claim_mismatch fires with accreditedOrcid: null so operators
+    // see the spoof.
     //
     // Chain shape: carol is added by bob in his continuation and never
     // broadcasts herself, so the cumulative-union has no self-claim for
@@ -959,6 +959,12 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(event.hive).toBe('carol');
     expect(event.claimedOrcid).toBe('spoofed-orcid');
     expect(event.accreditedOrcid).toBeNull();
+    // The suppress branch is an active-arm spoof; the payload must carry
+    // accreditationStatus='active' so operator dashboards filtering by that
+    // discriminator (to scope triage to current spoofs) don't silently
+    // drop case-d events. Mutation-kill: removing the field (or routing
+    // case-d outside emitOrcidClaimMismatchAudit) fails this assertion.
+    expect(event.accreditationStatus).toBe('active');
     warnSpy.mockRestore();
   });
 
