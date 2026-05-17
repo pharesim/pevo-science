@@ -113,3 +113,43 @@ Recommend the architect ratifies the sibling task's Option 4 first (or rejects i
 This task is moved to `review/` for architect ratification. No code changes have been made. Architect ratification is preferred to land jointly with `backend-cumulative-union-listing-surfaces-parity`.
 
 [TODO Architect] Ratify Alternative 3 and clarify items 1-3 above.
+
+---
+
+## Architect ratification (2026-05-17)
+
+Reviewed during the round-3 cluster review pass alongside `backend-multi-author-cumulative-union` and `backend-canonical-walker-cycle-detection`. Backend's design proposal is sound; ratified with two pins on the security analysis and one adjustment on the cache TTL.
+
+### Ratified: Alternative 3 — forward-walker delegation
+
+The forward-walker delegation shape is the right choice. Reasoning:
+
+1. **No algorithm fork.** Alternative 1 (build cumulative on backward walk) reproduces the exact drift-bug class the cumulative-union rewrite at `b22ce5d` closed for the no-shrink rule — any future tweak to the cumulative admit-set rule would have to land twice or the two walkers diverge. Alternative 2 (recursive CTE) forks into a third implementation language.
+2. **Cost is bounded.** Typical case (~95% single-link papers) is +1 SQL query; worst case is +60 SQL queries (10 backward + 50 forward) but amortized by the per-leaf canonical-root cache.
+3. **Sibling-task synergy.** Step 2's forward verification consumes `resolveChainCumulativeAuthors` from `backend-cumulative-union-listing-surfaces-parity`'s Option 4 (which is itself ratified for the listing/profile parity surface). The shared helper is the load-bearing substrate.
+
+### Adjusted: Cache TTL = 30 min (not 24h)
+
+Backend's "lifetime of the chain" claim for the canonical-root mapping is almost true (continuations only extend; canonical-root cannot move BEHIND a leaf), but native Hive edits to a post's `pevo.continues` pointer within the 7-day edit window CAN change the cumulative-aware forward walker's resolution. A 24h cache would serve stale data for up to 24h after such an edit.
+
+Use **30-minute TTL** to match the sibling task's `resolveChainCumulativeAuthors` cache. Benefits:
+- Drift-window matches the rest of the chain-cumulative caching surface (no operator surprise across adjacent caches).
+- Closes the edit-staleness gap at 30min vs 24h.
+- Amortization difference is small: 95% single-link papers don't hit the cache either way; multi-link chains hit the cache repeatedly within a browse session.
+
+If cache-driven staleness becomes a real complaint later, hook the canonical-root cache key into the existing `/invalidate` flow (currently invalidates paper-detail keys only) as a follow-up — don't pre-emptively land that integration.
+
+### Confirmed: Fail-CLOSED security analysis (with 2 pins)
+
+Backend's security argument is correct: the forward walker's per-hop cumulative gate is the authoritative admit-set; the backward walker's unconstrained traversal in step 1 doesn't admit anything; step 3's membership check enforces fail-CLOSED to the leaf when out-of-cumulative.
+
+**Pin 1 — Lowercased-trimmed key shape on step-3 membership check.** The chain-membership check at step 3 must use the same key shape as the forward walker's admit-set: lowercased + trimmed `(author, permlink)`. A case-sensitive mismatch would inadvertently fail-OPEN against an authorized leaf with a mixed-case URL. Add a canary that pins this: leaf URL with uppercase chars (e.g., `Carol/V3`) resolves correctly when the underlying chain has lowercase entries.
+
+**Pin 2 — Step-1 backward walker reuses the visited-Set cycle-detect primitive from `backend-canonical-walker-cycle-detection`.** The new step-1 unconstrained backward walk has the same cycle-attack surface as the existing constrained walker; reuse the same per-call `Set<string>` primitive (keyed on `${author}/${permlink}`) and emit `canonical_root_walker_cycle_detected` on cycle hit (consistent event vocabulary). The visited-Set check must be applied to both the new step-1 backward walk AND retained on the existing forward walker call in step 2 (it's already there per the cycle-detection task; just verify it isn't removed during the rewrite).
+
+### Action
+
+Backend may proceed with implementation per Alternative 3 + the adjustments above. The dependency on sibling task `backend-cumulative-union-listing-surfaces-parity`'s Option 4 stands; ratify and implement that sibling first (or coherently), since this task's step 2 needs the shared helper.
+
+File `git mv`'d from `tasks/review/` to `tasks/pending/` so the backend agent picks it up at startup.
+
