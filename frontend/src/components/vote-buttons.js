@@ -142,10 +142,10 @@ export function initVoteButtons() {
         return;
       }
 
-      // Entry guard: the template's `:disabled="isVoting"` is stale between a
-      // double-click and the first await that sets `isVoting = true` (currently
-      // set only after `broadcastConfirm.request()` resolves). Without this
-      // guard, two rapid clicks both reach the body and race the broadcast.
+      // Entry guard: a re-entry between two synchronous clicks must
+      // short-circuit before any await. The flag below (`this.isVoting = true`)
+      // is the synchronous lock; without this guard the template's
+      // `:disabled="isVoting"` is stale across the click → handler transition.
       if (this.isVoting) return;
 
       // Already voted at this weight — ignore
@@ -156,15 +156,21 @@ export function initVoteButtons() {
 
       // Retract vote (weight=0)
       if (weight === 0) {
+        // Set the in-flight flag synchronously, before any await, so the
+        // entry guard above catches a re-entry while the confirm modal is
+        // open. Cleared in the finally block.
+        this.isVoting = true;
         const retractConfirmed = await Alpine.store('broadcastConfirm').request({
           title: this.$t('confirm.voteTitle'),
           message: this.$t('confirm.retractMessage'),
           confirmLabel: this.$t('confirm.retract'),
         });
         if (!this._mounted) return;
-        if (!retractConfirmed) return;
+        if (!retractConfirmed) {
+          this.isVoting = false;
+          return;
+        }
 
-        this.isVoting = true;
         try {
           const broadcastResult = await this._broadcastVote(0);
           if (!this._mounted) return;
@@ -188,6 +194,10 @@ export function initVoteButtons() {
         return;
       }
 
+      // Set the in-flight flag synchronously, before any await, so the entry
+      // guard catches a re-entry while the confirm modal is open. Cleared in
+      // the finally block.
+      this.isVoting = true;
       const level = VOTE_LEVELS.find((l) => l.weight === weight);
       const confirmed = await Alpine.store('broadcastConfirm').request({
         title: this.$t('confirm.voteTitle'),
@@ -195,9 +205,11 @@ export function initVoteButtons() {
         confirmLabel: this.$t('confirm.vote'),
       });
       if (!this._mounted) return;
-      if (!confirmed) return;
+      if (!confirmed) {
+        this.isVoting = false;
+        return;
+      }
 
-      this.isVoting = true;
       try {
         const broadcastResult = await this._broadcastVote(weight);
         if (!this._mounted) return;

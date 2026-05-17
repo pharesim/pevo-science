@@ -66,4 +66,33 @@ describe('broadcastConfirm', () => {
     store.request({ title: 'T', message: 'M' });
     expect(store.confirmLabel).toBe('Confirm');
   });
+
+  // Regression for the refuse-while-open race-protection: a second synchronous
+  // request() while a first is still awaiting must not silently overwrite the
+  // modal's title/message/confirmLabel. Without this defense, a user who
+  // clicks confirm shortly after a title-swap confirms the second request's
+  // action (e.g. "mild concerns") while reading the first action's copy
+  // (e.g. "strong endorsement"). The contract: the FIRST waiter keeps the
+  // modal; the SECOND request resolves to false immediately and the caller
+  // retries after the dialog closes.
+  it('refuses overwrite while modal is open: second request resolves false, first stays pending', async () => {
+    const store = getStore();
+    const first = store.request({ title: 'First', message: 'First message', confirmLabel: 'First' });
+    expect(store.open).toBe(true);
+    expect(store.title).toBe('First');
+
+    const second = store.request({ title: 'Second', message: 'Second message', confirmLabel: 'Second' });
+    // Second resolves to false synchronously.
+    expect(await second).toBe(false);
+    // Modal still shows the first request's content; first promise remains
+    // pending until user interaction.
+    expect(store.title).toBe('First');
+    expect(store.message).toBe('First message');
+    expect(store.confirmLabel).toBe('First');
+    expect(store.open).toBe(true);
+
+    // First waiter resolves on confirm.
+    store.confirm();
+    expect(await first).toBe(true);
+  });
 });

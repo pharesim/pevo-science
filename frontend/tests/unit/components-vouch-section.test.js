@@ -151,6 +151,27 @@ describe('vouchSection', () => {
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       warnSpy.mockRestore();
     });
+
+    // Regression for the entry-guard race-protection: two synchronous
+    // handleVouch calls must result in exactly one broadcast. Without the
+    // `if (this.step === 'signing') return;` first-statement guard, both
+    // clicks pass through and the broadcast fires twice.
+    it('two synchronous handleVouch calls broadcast once', async () => {
+      let resolveBroadcast;
+      mockBroadcastWithFreshAuth.mockImplementationOnce(
+        () => new Promise((resolve) => { resolveBroadcast = resolve; }),
+      );
+      mockNotifyVouch.mockResolvedValue({ data: { accredited: false } });
+      const comp = createComponent({ targetUsername: 'bob' });
+      comp.vouchStatus = { vouches: [] };
+      const first = comp.handleVouch();
+      const second = comp.handleVouch();
+      // Second short-circuits synchronously before awaiting anything.
+      await second;
+      resolveBroadcast(undefined);
+      await first;
+      expect(mockBroadcastWithFreshAuth).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('handleRetract', () => {
@@ -188,6 +209,25 @@ describe('vouchSection', () => {
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       warnSpy.mockRestore();
+    });
+
+    // Regression for the entry-guard race-protection mirroring the
+    // handleVouch case. Without the guard, two rapid clicks fire two
+    // identical retract_vouch broadcasts.
+    it('two synchronous handleRetract calls broadcast once', async () => {
+      let resolveBroadcast;
+      mockBroadcastWithFreshAuth.mockImplementationOnce(
+        () => new Promise((resolve) => { resolveBroadcast = resolve; }),
+      );
+      mockNotifyRetractVouch.mockResolvedValue({ data: { revocations: [] } });
+      const comp = createComponent({ targetUsername: 'bob' });
+      comp.vouchStatus = { vouches: [{ voucher: 'alice' }] };
+      const first = comp.handleRetract();
+      const second = comp.handleRetract();
+      await second;
+      resolveBroadcast(undefined);
+      await first;
+      expect(mockBroadcastWithFreshAuth).toHaveBeenCalledTimes(1);
     });
   });
 

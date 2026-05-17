@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { waitForKeychain } from './keychain.js';
 import { fetchAccreditationStatus } from './api.js';
 import { signRequest } from './sign-request.js';
+import { clearCachedSessionProof, clearCachedConsentOpProof, clearReturnPath } from './lib/fresh-auth.js';
 
 const SESSION_KEY = 'pevo_session';
 
@@ -142,6 +143,19 @@ export function initAuth() {
       this.custody = null;
       this._stopAccreditationPolling();
       localStorage.removeItem(SESSION_KEY);
+      // Scrub sessionStorage state bound to the JWT subject so cross-user
+      // re-login on a shared browser cannot pick up a stale fresh-auth proof
+      // or ORCID return-path mode. The session-kind proof is consumed by the
+      // backend GETDEL on broadcast, but consent-op proofs and the return-path
+      // pointer outlive the JWT subject without this scrub.
+      clearCachedSessionProof();
+      clearCachedConsentOpProof();
+      clearReturnPath();
+      try {
+        sessionStorage.removeItem('pevo_orcid_mode');
+      } catch {
+        /* sessionStorage unavailable (private mode); noop */
+      }
     },
 
     getSessionToken() {

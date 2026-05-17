@@ -1007,7 +1007,14 @@ export function initEditPage() {
           ];
           const continuationResult = await broadcastWithFreshAuth(username, continuationOps);
           if (!this._mounted) return;
-          if (continuationResult === FRESH_AUTH_REDIRECT_PENDING) return;
+          if (continuationResult === FRESH_AUTH_REDIRECT_PENDING) {
+            // FRESH_AUTH_REDIRECT_PENDING covers the ORCID redirect-in-flight
+            // case (the page navigates away) and the 403 username_mismatch
+            // disconnect+toast case (no navigation). Reset the step so the UI
+            // does not hang at 'broadcasting' in the latter.
+            this.step = 'idle';
+            return;
+          }
 
           // Invalidate cache for the canonical paper
           const canonicalAuthor = this.paper.canonical_author || this.paper.author;
@@ -1101,7 +1108,12 @@ export function initEditPage() {
           ];
           const editResult = await broadcastWithFreshAuth(username, editOps);
           if (!this._mounted) return;
-          if (editResult === FRESH_AUTH_REDIRECT_PENDING) return;
+          if (editResult === FRESH_AUTH_REDIRECT_PENDING) {
+            // See continuationResult branch above for rationale; same
+            // semantics on the in-place edit path.
+            this.step = 'idle';
+            return;
+          }
 
           // Cache invalidation keys off the canonical root, not the
           // edit target — the paper-detail endpoint resolves any chain

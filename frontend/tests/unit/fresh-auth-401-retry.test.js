@@ -29,7 +29,15 @@ const mockBroadcastOps = vi.fn();
 const mockStartOrcid = vi.fn();
 const mockAuthStore = { custody: 'light', token: 'jwt-abc', disconnect: vi.fn() };
 const mockToastStore = { show: vi.fn() };
-const mockI18nStore = { messages: { auth: { sessionInconsistency: 'Session inconsistency detected. Please sign in again.' } } };
+// Distinct sentinel so the localized-vs-fallback discrimination is real: if a
+// future regression breaks the i18n lookup chain (typo in
+// `messages?.auth?.sessionInconsistency`, key snake-case drift, etc.) the
+// fallback English string fires instead of the sentinel and this test fails.
+// Using the same English string in both the mock and the fallback would make
+// such a regression invisible.
+const LOCALIZED_SENTINEL = 'LOCALIZED-i18n-bundle-source-sentinel';
+const FALLBACK_ENGLISH = 'Session inconsistency detected. Please sign in again.';
+const mockI18nStore = { messages: { auth: { sessionInconsistency: LOCALIZED_SENTINEL } } };
 const mockRouterStore = {};
 
 vi.mock('../../src/signer.js', () => ({
@@ -181,10 +189,11 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
     expect(mockAuthStore.disconnect).toHaveBeenCalledTimes(1);
     expect(mockToastStore.show).toHaveBeenCalledTimes(1);
-    expect(mockToastStore.show).toHaveBeenCalledWith(
-      'Session inconsistency detected. Please sign in again.',
-      'error',
-    );
+    // Asserts the toast came from the i18n bundle (the LOCALIZED_SENTINEL),
+    // not from the English fallback at fresh-auth.js's `||` branch. A
+    // regression that breaks the i18n lookup would collapse to the fallback
+    // and this assertion would fail.
+    expect(mockToastStore.show).toHaveBeenCalledWith(LOCALIZED_SENTINEL, 'error');
     // No retry on this branch — broadcastOps called exactly once.
     expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
   });
@@ -200,10 +209,10 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     delete mockI18nStore.messages.auth.sessionInconsistency;
     try {
       await broadcastWithFreshAuth('alice', [['vote', {}]]);
-      expect(mockToastStore.show).toHaveBeenCalledWith(
-        'Session inconsistency detected. Please sign in again.',
-        'error',
-      );
+      // With the bundle absent the fallback English string fires; this
+      // pairs with the LOCALIZED_SENTINEL assertion above to prove the
+      // branch discriminates correctly.
+      expect(mockToastStore.show).toHaveBeenCalledWith(FALLBACK_ENGLISH, 'error');
     } finally {
       mockI18nStore.messages.auth.sessionInconsistency = saved;
     }

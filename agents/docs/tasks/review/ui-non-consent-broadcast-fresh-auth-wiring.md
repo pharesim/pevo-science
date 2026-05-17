@@ -207,3 +207,29 @@ Reviewed via `/ce-code-review` against commits `acf0663..989d0e3` with 11 person
 2. Re-review scoped to the round-3 diff against round-2 HEAD.
 
 Storage.prototype.removeItem jsdom-mocking `/ce-compound` candidate confirmed by learnings-researcher as having no existing solutions-store entry; architect will authorize after this round-3 lands.
+
+## UI re-review signal (2026-05-17, working tree)
+
+Round-3 hold-block items #1–#11 all landed. 1190/1190 frontend unit tests pass (62 test files). Pre-existing 3 `_mountEditors` unhandled-rejection noise in pages-edit.test.js is unrelated to this diff (existed in round-2 HEAD).
+
+**Items landed:**
+1. **vouch-section entry guards** (`components/vouch-section.js`). `if (this.step === 'signing') return;` as first statement after the username null-check in both `handleVouch` and `handleRetract`. Mirrors `vote-buttons.js`'s F2-style guard.
+2. **vote-buttons isVoting placement** (`components/vote-buttons.js`). `this.isVoting = true` now flips synchronously BEFORE `broadcastConfirm.request()` in both the `weight===0` and non-zero paths. Cancel-on-cancel resets the flag. Removed the obsolete narrative in the entry-guard comment (the round-2 description of "set only after request() resolves" no longer matches).
+3. **auth.disconnect scrub** (`auth.js`). Extended to call `clearCachedSessionProof()`, `clearCachedConsentOpProof()`, `clearReturnPath()`, and `sessionStorage.removeItem('pevo_orcid_mode')`. `clearCachedSessionProof` re-exported from `lib/fresh-auth.js` (round-2 #6 removed the export; this round restores it for the legitimate external consumer).
+4. **401-retry mint failure normalization** (`lib/fresh-auth.js`). Re-mint + retry sequence wrapped in `try/catch` that synthesizes a `{ status: 0, code: 'FRESH_AUTH_RETRY_FAILED', details: { cause } }` shape when the underlying error doesn't already carry one. Errors that already conform (FRESH_AUTH_REQUIRED, signer.js-shaped) pass through unchanged.
+5. **step-machine reset extension** (`pages/edit.js`, `pages/review.js`). `step = 'idle'` reset added at the three missed `FRESH_AUTH_REDIRECT_PENDING` sites (edit.js:1010, edit.js:1104, review.js:321). Sibling-file completeness for round-2 #8.
+6. **Task-ref comment strip** across 7 files: `signer.js:17`, `lib/fresh-auth.js` (×2 — adv-task6-6 ref + Round-1 scope header), `pages/orcid-callback.js:97`, `pages/login.js:227`, `pages/signup.js:252,276`, `pages/recover.js:244`, `pages/accreditation.js:308`. `settings.js:644` was already done by the custody-upgrade sister task; verified no overlap on commit boundary. Recover.js comment narrowed to flag that `pevo_orcid_return_to` is still on localStorage pending its own migration (task 4).
+7. **disconnect synchronous contract comment** (`lib/fresh-auth.js`). Added one-line comment naming `auth.disconnect()`'s synchronous contract (no awaited I/O, only in-memory + storage removals), so the toast-after-disconnect ordering is race-free.
+8. **broadcast-confirm refuse-while-open** (`components/broadcast-confirm.js`). Architect's option (b): when the modal is open (`_resolve != null`), the new `request()` resolves to `false` immediately. The original waiter keeps the modal until confirm/cancel. The previous round-2 cancel-prior design silently rewrote title/message during open and let the user confirm against stale copy.
+9. **mintNonConsentProof in-flight coalescer** (`lib/fresh-auth.js`). Module-level `let _mintInFlight = null` serializes concurrent callers — second caller awaits the first's promise instead of issuing parallel `startOrcid` + parallel `RETURN_PATH_KEY` writes. Cleared in `finally`.
+10. **Regression tests for race-protection:**
+    - `components-broadcast-confirm.test.js`: refuse-while-open contract — first waiter stays pending, second resolves false synchronously, first resolves on confirm.
+    - `components-vote-buttons.test.js`: two synchronous `handleVote` → exactly one `broadcastWithFreshAuth` call.
+    - `components-vouch-section.test.js`: same pattern for both `handleVouch` and `handleRetract`.
+11. **i18n sentinel** (`tests/unit/fresh-auth-401-retry.test.js`). Replaced identical mock string with `LOCALIZED_SENTINEL = 'LOCALIZED-i18n-bundle-source-sentinel'`; the i18n-present test asserts on the sentinel, the absent-bundle test asserts on the fallback English. A regression that breaks the i18n lookup chain now fails the first test instead of being invisible.
+
+**Tests:** full frontend suite 1190/1190 across 62 files (3 new regression tests + 1 broadcast-confirm test).
+
+**Carry-forward (filed as separate tasks):**
+- `tasks/pending/ui-pevo-orcid-return-to-session-storage-migration.md` — migrate the sibling `pevo_orcid_return_to` localStorage key. Recover.js comment narrowed in this round to flag the gap.
+- `tasks/pending/ui-mid-broadcast-spa-navigation-guard.md` — adv-r2-3 SPA-internal navigation guard.

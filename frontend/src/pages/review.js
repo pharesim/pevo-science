@@ -318,7 +318,14 @@ export function initReviewPage() {
           ];
           const broadcastResult = await broadcastWithFreshAuth(username, reviewOps);
           if (!this._mounted) return;
-          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
+          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) {
+            // FRESH_AUTH_REDIRECT_PENDING covers both the ORCID redirect-in-
+            // flight case (page navigates away) and the 403 username_mismatch
+            // disconnect+toast case. Reset the step so the spinner doesn't
+            // hang at 'submitting' in the latter.
+            this.step = 'idle';
+            return;
+          }
         }
 
         this.step = 'success';

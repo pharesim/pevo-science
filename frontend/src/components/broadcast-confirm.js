@@ -18,14 +18,14 @@ export function initBroadcastConfirm() {
       const auth = Alpine.store('auth');
       if (auth.custody !== 'light') return Promise.resolve(true);
 
-      // Single-slot _resolve: if a previous request() is still awaiting,
-      // cancel it before overwriting. Without this, two components (e.g.
-      // two voteButtons on the same paper-detail page) calling request()
-      // back-to-back orphan the first Promise forever, leaving the first
-      // caller's `isVoting` flag stuck.
+      // Refuse-while-open: a previous request() is still awaiting a user
+      // decision. Silently overwriting the title/message/confirmLabel here
+      // (or evicting the first waiter) lets the user confirm one action
+      // while the modal displays a different one. Resolve the new caller to
+      // `false` immediately; the original modal continues serving the first
+      // caller, and the new caller can retry after that dialog closes.
       if (this._resolve) {
-        try { this._resolve(false); } catch { /* noop */ }
-        this._resolve = null;
+        return Promise.resolve(false);
       }
 
       this.title = title;

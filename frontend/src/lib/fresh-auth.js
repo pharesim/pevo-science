@@ -67,7 +67,7 @@ export function cacheSessionProof(token, expiresAt) {
   }
 }
 
-function clearCachedSessionProof() {
+export function clearCachedSessionProof() {
   try {
     sessionStorage.removeItem(PROOF_KEY);
   } catch {
@@ -153,60 +153,76 @@ export function clearReturnPath() {
 // to ORCID was initiated (proof will land in cache when the user returns
 // via /orcid/callback). Throws on transport / config errors.
 //
-// Round-1 scope: ORCID session_auth only. Any user reaching a broadcast call
+// Scope: ORCID session_auth only. Any user reaching a broadcast call
 // site is accredited (publish/review/comment/vote are gated on accreditation,
 // which requires ORCID), so State A (password, no ORCID) is unreachable. The
-// State A password mint path lands in a follow-up after the backend ships
-// `POST /api/custody/session-auth` (see
-// `backend-custody-session-auth-password-mint.md`).
+// State A password mint path will adopt `POST /api/custody/session-auth` once
+// that endpoint ships on the backend.
+//
+// Concurrent callers (e.g., publish + a vote button race firing in the same
+// tick) are coalesced via the module-level `_mintInFlight` promise: the second
+// caller awaits the first caller's resolution rather than issuing a parallel
+// `startOrcid` + parallel `sessionStorage` writes. Without the coalescer the
+// two RETURN_PATH_KEY writes are de-facto idempotent (same value), but a
+// future divergence (per-caller return path) would silently corrupt one
+// caller's post-callback navigation.
+let _mintInFlight = null;
 async function mintNonConsentProof() {
   const cached = getCachedSessionProof();
   if (cached) return cached;
+  if (_mintInFlight) return _mintInFlight;
 
-  // `router.path` is not set on the router store today; fall back directly
-  // to window.location.pathname. The dead `router && router.path` branch
-  // was removed per round-2 hold finding adv-task6-6.
-  const returnPath = window.location.pathname || '/';
+  _mintInFlight = (async () => {
+    // `router.path` is not set on the router store today; use
+    // window.location.pathname directly.
+    const returnPath = window.location.pathname || '/';
+    try {
+      sessionStorage.setItem(RETURN_PATH_KEY, returnPath);
+    } catch {
+      /* return-path fallback handled in callback */
+    }
+    // `pevo_orcid_mode` lives in sessionStorage to avoid cross-tab interference
+    // between concurrent ORCID flows. localStorage is shared across tabs, so a
+    // second tab in a different mode (e.g. 'link') would silently overwrite
+    // tab 1's 'session_auth' marker and route the callback to the wrong
+    // handler. sessionStorage is per-tab and survives the ORCID OAuth
+    // round-trip (orcid.org → /orcid/callback) within the originating tab.
+    sessionStorage.setItem('pevo_orcid_mode', 'session_auth');
+
+    let data;
+    try {
+      data = await startOrcid('session_auth');
+    } catch (err) {
+      sessionStorage.removeItem('pevo_orcid_mode');
+      clearReturnPath();
+      throw err;
+    }
+
+    // Defense pattern reused from settings.js handleOrcidLink: validate the
+    // redirect host before navigating.
+    let target;
+    try {
+      target = new URL(data.redirect_url);
+    } catch {
+      sessionStorage.removeItem('pevo_orcid_mode');
+      clearReturnPath();
+      throw new Error('Invalid ORCID redirect URL');
+    }
+    if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
+      sessionStorage.removeItem('pevo_orcid_mode');
+      clearReturnPath();
+      throw new Error('Invalid ORCID redirect URL');
+    }
+
+    window.location.href = data.redirect_url;
+    return FRESH_AUTH_REDIRECT_PENDING;
+  })();
+
   try {
-    sessionStorage.setItem(RETURN_PATH_KEY, returnPath);
-  } catch {
-    /* return-path fallback handled in callback */
+    return await _mintInFlight;
+  } finally {
+    _mintInFlight = null;
   }
-  // `pevo_orcid_mode` lives in sessionStorage to avoid cross-tab interference
-  // between concurrent ORCID flows. localStorage is shared across tabs, so a
-  // second tab in a different mode (e.g. 'link') would silently overwrite
-  // tab 1's 'session_auth' marker and route the callback to the wrong
-  // handler. sessionStorage is per-tab and survives the ORCID OAuth
-  // round-trip (orcid.org → /orcid/callback) within the originating tab.
-  sessionStorage.setItem('pevo_orcid_mode', 'session_auth');
-
-  let data;
-  try {
-    data = await startOrcid('session_auth');
-  } catch (err) {
-    sessionStorage.removeItem('pevo_orcid_mode');
-    clearReturnPath();
-    throw err;
-  }
-
-  // Defense pattern reused from settings.js handleOrcidLink: validate the
-  // redirect host before navigating.
-  let target;
-  try {
-    target = new URL(data.redirect_url);
-  } catch {
-    sessionStorage.removeItem('pevo_orcid_mode');
-    clearReturnPath();
-    throw new Error('Invalid ORCID redirect URL');
-  }
-  if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
-    sessionStorage.removeItem('pevo_orcid_mode');
-    clearReturnPath();
-    throw new Error('Invalid ORCID redirect URL');
-  }
-
-  window.location.href = data.redirect_url;
-  return FRESH_AUTH_REDIRECT_PENDING;
 }
 
 // High-level wrapper around `broadcastOps`: mints a session-kind proof if
@@ -252,13 +268,39 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
         err.status === 401 &&
         ['missing', 'expired', 'malformed'].includes(err.details?.reason)
       ) {
-        const freshProof = await mintNonConsentProof();
-        if (freshProof === FRESH_AUTH_REDIRECT_PENDING) return FRESH_AUTH_REDIRECT_PENDING;
-        return broadcastOps(username, operations, { ...opts, freshAuthProof: freshProof });
+        // Normalize any error thrown by mintNonConsentProof or the retry
+        // broadcastOps to the `{ status, code, details }` shape callers
+        // expect. Without this wrap, a mint-time network failure surfaces
+        // with `TypeError: Failed to fetch` (or a startOrcid error envelope)
+        // instead of the original FRESH_AUTH_REQUIRED context, so call-site
+        // discriminators (publish.js, vote-buttons.js, vouch-section.js)
+        // misclassify the failure and surface the wrong toast.
+        try {
+          const freshProof = await mintNonConsentProof();
+          if (freshProof === FRESH_AUTH_REDIRECT_PENDING) return FRESH_AUTH_REDIRECT_PENDING;
+          return await broadcastOps(username, operations, { ...opts, freshAuthProof: freshProof });
+        } catch (retryErr) {
+          // Preserve the shape if the retry's own error already follows the
+          // contract (i.e., another FRESH_AUTH_REQUIRED or any signer.js-shaped
+          // error). Otherwise wrap into a synthesized 0/UNKNOWN shape that
+          // callers can still inspect without crashing on `.details`.
+          if (retryErr && typeof retryErr.status === 'number' && retryErr.code) {
+            throw retryErr;
+          }
+          const wrapped = new Error(retryErr?.message || 'fresh-auth retry failed');
+          wrapped.status = 0;
+          wrapped.code = 'FRESH_AUTH_RETRY_FAILED';
+          wrapped.details = { cause: retryErr?.message || String(retryErr) };
+          throw wrapped;
+        }
       }
 
       // 403 username_mismatch → JWT subject and proof subject diverge.
       // Critical session inconsistency; force re-login.
+      // `auth.disconnect()` is synchronous (see auth.js — no awaited I/O,
+      // only in-memory mutation + localStorage/sessionStorage removals), so
+      // teardown completes before the toast fires and there is no race
+      // between the toast and any pending session-clear work.
       if (err.status === 403 && err.details?.reason === 'username_mismatch') {
         auth.disconnect();
         // fresh-auth.js is a lib, not an Alpine component, so it cannot use

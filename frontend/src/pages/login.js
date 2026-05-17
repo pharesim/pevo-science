@@ -223,8 +223,7 @@ export function initLoginPage() {
       this.error = null;
 
       // sessionStorage (not localStorage) — see fresh-auth.js mintNonConsentProof
-      // for the cross-tab-interference rationale; all `pevo_orcid_mode` writers
-      // migrated together in round-2.
+      // for the cross-tab-interference rationale.
       sessionStorage.setItem('pevo_orcid_mode', 'login');
 
       try {

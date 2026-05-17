@@ -13,9 +13,7 @@ import Alpine from 'alpinejs';
  *
  * @param {string} username
  * @param {Array} operations - Array of [opType, opBody] tuples
- * @param {object} [opts] - Options object. All callers pass an object;
- *   the legacy bare-keyType-string form was removed in round-2 of the
- *   non-consent-broadcast fresh-auth task (no remaining callers).
+ * @param {object} [opts] - Options object. All callers pass an object.
  * @param {string} [opts.freshAuthProof] - Single-use proof token (light-account only)
  * @param {string} [opts.keyType='posting'] - Keychain key type (self-custody only)
  * @returns {Promise<{tx_id?: string, block_num?: number, outcome?: string}>}

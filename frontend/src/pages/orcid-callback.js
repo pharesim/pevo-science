@@ -94,10 +94,8 @@ export function initOrcidCallbackPage() {
       // refreshes, we need the mode to still be present so the retry can
       // reach the correct endpoint with the correct auth. It's cleared after
       // completeOrcid resolves successfully inside _verify.
-      // Migrated from localStorage in round-2 of the non-consent-broadcast
-      // fresh-auth task to fix cross-tab interference (two tabs in different
-      // modes silently overwriting each other). Per-tab sessionStorage
-      // survives the ORCID OAuth round-trip in the originating tab.
+      // sessionStorage (not localStorage) so concurrent tabs in different
+      // ORCID modes don't overwrite each other's callback dispatch.
       const mode = sessionStorage.getItem('pevo_orcid_mode') || '';
 
       if (mode === 'signup' || mode === 'login') {

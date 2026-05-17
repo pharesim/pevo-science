@@ -78,6 +78,7 @@ export function initVouchSection() {
 
     async handleVouch() {
       if (!this.username) return;
+      if (this.step === 'signing') return;
       this.step = 'signing';
       this.message = '';
       try {
@@ -128,6 +129,7 @@ export function initVouchSection() {
 
     async handleRetract() {
       if (!this.username) return;
+      if (this.step === 'signing') return;
       this.step = 'signing';
       this.message = '';
       try {

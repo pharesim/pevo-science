@@ -270,6 +270,30 @@ describe('voteButtons', () => {
       expect(mockToastStore.show.mock.calls[0][0]).not.toContain('sentinel');
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
     });
+
+    // Regression for the entry-guard race-protection: two synchronous
+    // handleVote calls must result in exactly one broadcast. Without the
+    // `if (this.isVoting) return;` guard (and the pre-await `isVoting = true`
+    // flip), both clicks pass the template's `:disabled` check (stale until
+    // the first re-render), both reach the body, and both broadcast.
+    it('two synchronous handleVote calls broadcast once', async () => {
+      // Hold broadcastConfirm in a pending state so the first handleVote is
+      // suspended at the modal-confirm await when the second click arrives.
+      let resolveConfirm;
+      mockBroadcastConfirmStore.request.mockImplementationOnce(
+        () => new Promise((resolve) => { resolveConfirm = resolve; }),
+      );
+      const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
+      const first = comp.handleVote(10000);
+      // Synchronous second click: the entry guard short-circuits because
+      // `isVoting` was flipped before the broadcastConfirm await.
+      const second = comp.handleVote(10000);
+      await second;
+      // Resolve the first click's confirm so the broadcast proceeds.
+      resolveConfirm(true);
+      await first;
+      expect(mockBroadcastWithFreshAuth).toHaveBeenCalledTimes(1);
+    });
   });
 
   // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: Hive broadcasts can take multiple
