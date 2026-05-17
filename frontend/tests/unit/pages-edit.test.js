@@ -1021,12 +1021,17 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
 // consumes paper authors[].orcid in a non-template context (primary
 // author -> authorOrcid string; existing co-authors retained as raw
 // objects whose orcid is read by `:value="ca.orcid || ''"` in the
-// template). The disabled existing-co-author input already guards with
-// `|| ''`, and _prefillForm uses `primary.orcid || ''`. These tests pin
-// the null-safety so a future refactor that drops the `|| ''` (e.g.
-// switching to `primary.orcid ?? null` for "preserve null" semantics)
-// is caught at unit-test time before the form throws on the next
-// continuation-chain edit.
+// template).
+//
+// These tests pin the data-side null-preservation contract:
+// _prefillForm normalizes `primary.orcid: null` to `authorOrcid: ''`
+// via its `|| ''` coalesce, and existing co-authors retain `orcid: null`
+// untouched so the Alpine template binding at `edit.js:183`
+// (`:value="ca.orcid || ''"`) is responsible for the falsy coalesce at
+// render time. The template-side `|| ''` is grep-pinned at
+// `frontend/src/pages/edit.js:183` (audit notes / round-1 audit
+// conclusion, commit `6bf50d0`); pinning that binding end-to-end would
+// require mounting Alpine via jsdom and is out of scope here.
 describe('editPage _prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1081,15 +1086,12 @@ describe('editPage _prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALL
 
     expect(() => comp._prefillForm()).not.toThrow();
     expect(comp.existingCoAuthors).toHaveLength(2);
+    // Pin the data-side pass-through: _prefillForm preserves `orcid: null`
+    // on existing co-author rows untouched. The template-side `|| ''`
+    // coalesce at `edit.js:183` is grep-pinned in the audit notes and
+    // not asserted here (would require mounting Alpine via jsdom).
     expect(comp.existingCoAuthors[0].orcid).toBeNull();
     expect(comp.existingCoAuthors[1].orcid).toBeNull();
-    // The disabled existing-row template at edit.js:183 binds
-    // `:value="ca.orcid || ''"`. Validate the falsy-coalesce
-    // contract at the data-binding level: `ca.orcid || ''` MUST
-    // produce '' for null, undefined, and ''.
-    for (const ca of comp.existingCoAuthors) {
-      expect(ca.orcid || '').toBe('');
-    }
   });
 
   it('primary author with orcid: null AND no other fields set still prefills cleanly', () => {

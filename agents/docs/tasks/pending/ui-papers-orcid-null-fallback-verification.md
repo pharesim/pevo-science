@@ -90,3 +90,18 @@ Findings triaged dismissed this pass:
 - testing G2: the `pevo.authors || p.authors` fallback branch is not exercised with null-orcid. **Dismissed** — both branches share the same downstream `|| ''` coalesce; the chosen path covers the data-side contract.
 - correctness residual: future `x-text="a.orcid"` site would render `null` as the literal string `"null"` (UI defect, not crash). **Dismissed** — no current site does this; theoretical-future risk.
 - correctness residual: `existingCoAuthors[].orcid: null` spread into broadcast `json_metadata`. **Dismissed** — backend re-derives authoritative ORCID at next read via accreditation, so chain reconstruction is unaffected. On-chain raw metadata asymmetry is SPA-correct.
+
+---
+
+UI re-review signal (2026-05-17, working tree, commit pending):
+
+Round-2 hold item resolved via **fix shape (a)** (architect's nudge / cheaper-and-consistent-with-audit-posture choice).
+
+Changes in `frontend/tests/unit/pages-edit.test.js`:
+- Dropped the tautological `for (const ca of comp.existingCoAuthors) { expect(ca.orcid || '').toBe(''); }` loop. `null || ''` is `''` by JS spec unconditionally; the loop could not fail regardless of what the template binding did, so it did not pin the contract the commit message claimed.
+- The two `.toBeNull()` assertions directly above (`comp.existingCoAuthors[0].orcid` / `[1].orcid`) are retained. They pin the data-side pass-through: `_prefillForm` preserves `orcid: null` on existing co-author rows untouched.
+- Updated the surrounding block comment above the `describe`: dropped the "tests pin the template binding" framing. The comment now states the tests pin the data-side null-preservation contract, and that the template-side `|| ''` at `edit.js:183` is grep-pinned in the audit notes (round-1 audit conclusion, commit `6bf50d0`), with end-to-end binding verification explicitly out of scope (would require mounting Alpine via jsdom).
+- Trimmed the inline comment above the two `.toBeNull()` assertions to match the new framing.
+
+Verification:
+- `source ~/.nvm/nvm.sh && nvm use 20 && cd frontend && npx vitest run tests/unit/pages-edit.test.js` → 45/45 passed, including all 3 specs in the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe block. (3 unrelated unhandled rejections from `_mountEditors` async path are pre-existing and not introduced by this change.)
