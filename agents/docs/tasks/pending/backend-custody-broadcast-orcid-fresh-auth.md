@@ -177,3 +177,49 @@ Round-2 hold items 1-4 landed.
 `npm run lint` clean; `npm run typecheck` clean. Vitest not run in worktree (parent serializes).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-17, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `a1834ce` (7 reviewers: correctness/security on Opus; testing, maintainability, project-standards, kieran-typescript, learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md; adversarial and reliability skipped — round-3 is a hold-cleanup commit with no new failure modes). Round-2 items 1-4 land cleanly at the architect-named sites; item 3 has a docstring accuracy issue. Two new items surface from the convention-sweep lens.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 100 — cross-reviewer-promoted: maintainability M1 + correctness + learnings-researcher) Three slug citations remain in production code at sites NOT named in the round-2 hold.** Round-3 correctly fixed the three sites the architect listed by name (`fresh-auth.ts:156`, `custody.ts:628`, `orcid.ts:550`) using the prescribed behavioral-invariant anchors. However, the same convention `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` applies to ALL production-code slug citations, and three remain at HEAD:
+
+- `backend/src/routes/orcid.ts:84` — file-level module docblock opens with `// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: \`session_auth\` is a sibling…`. Rewrite: anchor on the shipped feature name. E.g., "`session_auth` is a sibling of `fresh_auth` for the non-consent broadcast surface; mints a target-less session-kind proof. See `handleSessionAuth` below and ARCH.md § 6.5 invariant #1."
+- `backend/src/routes/orcid.ts:1181` — section banner above `handleSessionAuth`: `// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — session-auth via ORCID`. Rewrite: behavioral description of the handler. E.g., `// handleSessionAuth — mints a target-less ORCID-mechanism session-kind fresh-auth proof for the non-consent broadcast surface.`
+- `backend/src/routes/custody.ts:350` — non-consent branch section label: `// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: the non-consent branch now…`. Rewrite: drop the slug prefix; the descriptive sentence that follows it already carries the behavior.
+
+The round-3 commit demonstrated the right rewrite shape at the named sites; applying the same shape to these three closes the convention sweep across the task's production-code footprint.
+
+**2. (P2, conf 100 — cross-reviewer: correctness + kieran-typescript) `VALID_MODES` docstring overclaims compile-time exhaustiveness.** `backend/src/routes/orcid.ts:91-94` (VALID_MODES inline comment). The current text states that a future `OrcidMode` literal missing from the array "becomes a compile error". This is false. The `Set<OrcidMode> satisfies ReadonlySet<OrcidMode>` pattern only verifies that EACH initializer element is a valid `OrcidMode` (preventing typos in the array literal); it does NOT verify that EVERY union member appears in the array. A future `OrcidMode` literal added to the type union without a corresponding entry in the array compiles cleanly. The mode would then fail at runtime at the `/start` mode check with 400 BAD_REQUEST (fail-loud-deterministic, but not compile-time).
+
+Suggested fix: rewrite the comment to accurately describe what's protected. E.g.:
+
+```ts
+// Allowed `mode` values on /start. Typed as `Set<OrcidMode>` (not `Set<string>`)
+// so each initializer element must be a valid OrcidMode — prevents typos in the
+// array literal. Note: this does NOT enforce union-completeness; a future
+// OrcidMode literal added without updating this array compiles silently and
+// fails at runtime at the /start dispatch with 400 BAD_REQUEST. The
+// `assertNever` arm in the callback switch at line ~574 is the compile-time
+// exhaustiveness backstop for the dispatch side.
+```
+
+Or, if stronger guarantees are wanted later, file a follow-up to convert to a `Record<OrcidMode, true> satisfies Record<OrcidMode, true>` pattern with `Object.keys` derivation (the architect's preferred shape per triage; not held in this round). Round-4 only needs the comment rewrite.
+
+**3. (P3, conf 75, maintainability M2) `Round-3 hold KT-1:` prefix on the VALID_MODES comment.** `backend/src/routes/orcid.ts:91`. Same rotting-annotation class as task-slug citations. Strip the prefix; the behavioral content (typed as `Set<OrcidMode>`, etc.) stands alone. Bundle with item 1's same-pass cleanup.
+
+### Items dismissed during architect triage
+
+- **Pre-existing P3 (correctness):** Stale error string `'mode must be one of: signup, login, accredit, link'` at `backend/src/routes/orcid.ts:323` omits `fresh_auth, session_auth`. Pre-existing of the entire task; not introduced by round-3. Dismissed — file separately if pursued.
+- **Pre-existing (learnings-researcher advisory):** Line citations to `api-contracts/custody.md:108` and `api-contracts/orcid.md:208,239` in the `IssuedFreshAuth` docblock. Borderline per docblock-anchor convention (line citations to docs, not source code). Lower risk; advisory only.
+- **Advisory (learnings-researcher):** `AUTHENTICATED_MODES` could also use `Set<OrcidMode>` for typing consistency. Out of round-3 scope.
+- **Residual (testing):** `appQueryMock.mockImplementation` (not `mockImplementationOnce`) in the db_failed test — the global `beforeEach` reset makes this safe. Per `feedback_dismiss_preemptive_test_hardening`.
+- **Note (security):** No security findings. The runtime guard at `orcid.ts:466` correctly rejects unrecognized modes with 400 BAD_REQUEST. The `isOrcidMode` predicate correctly encapsulates the one unavoidable `as OrcidMode` cast (required by `Set<OrcidMode>.has`'s nominal signature). The `db_failed` test pins the wire-level outcome with strong mutation kill.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
