@@ -16,9 +16,10 @@ interface RateLimitConfig {
   name: string;
   /**
    * When true, consume a slot only on successful responses (status < 400).
-   * 4xx/5xx responses are refunded after `res.on('finish')` so the limit
-   * counts SUCCESSFUL operations, not all requests. This protects against
-   * two DoS patterns on expensive-but-rare operations:
+   * 4xx/5xx responses are refunded after `res.on('finish')` /
+   * `res.on('close')` so the limit counts SUCCESSFUL operations, not all
+   * requests. This protects against two DoS patterns on expensive-but-rare
+   * operations:
    *   1. Transient upstream failures (e.g. Hive RPC 503) burning the slot,
    *      locking the legitimate user out of a retry within the window.
    *   2. A stolen-JWT attacker sending malformed bodies (400 VALIDATION_ERROR)
@@ -30,15 +31,38 @@ interface RateLimitConfig {
    *
    * Implementation note: the Redis path uses an atomic Lua EVAL script
    * (INCR → check ≤ max → on overflow DECR + return 429, on success
-   * PEXPIRE + return 200-pass). On `res.on('finish')`, if status >= 400 the
-   * slot is refunded by an unconditional DECR. The Lua script makes the
-   * limit check + slot-consume atomic so concurrent requests for the same
-   * key cannot both pass the `>= max` check and overshoot the limit (the
-   * pre-Lua GET → next() → deferred-INCR pattern had a TOCTOU race plus a
-   * permanent-lockout TTL bug where concurrent post-success INCRs after
-   * count=1 never refreshed PEXPIRE). The in-memory fallback path mirrors
-   * the same shape: push the timestamp synchronously on entry, splice it
-   * back out on finish when status >= 400.
+   * PEXPIRE + return 200-pass). On `res.on('finish')` AND `res.on('close')`,
+   * if status >= 400 the slot is refunded by an unconditional DECR. The
+   * dual-listener pattern is required because TCP-abort / client-disconnect
+   * does NOT fire `'finish'`; without `'close'` coverage a single dropped
+   * connection mid-handler permanently consumes the slot for the full
+   * window. A once-guard prevents double-refund when both events fire on
+   * normal completion. The Redis handle is re-resolved (`getRedis()`)
+   * inside the callback so a reconnect cycle between handler entry and
+   * deferred fire doesn't capture a stale binding. The Lua script makes
+   * the limit check + slot-consume atomic so concurrent requests for the
+   * same key cannot both pass the `>= max` check and overshoot the limit
+   * (the pre-Lua GET → next() → deferred-INCR pattern had a TOCTOU race
+   * plus a permanent-lockout TTL bug where concurrent post-success INCRs
+   * after count=1 never refreshed PEXPIRE). The in-memory fallback path
+   * mirrors the same shape: push the timestamp synchronously on entry,
+   * splice it back out on finish/close when status >= 400.
+   *
+   * Window semantic: the unconditional PEXPIRE inside the Lua makes EVERY
+   * limiter (skipFailed or not) a rolling window — the TTL is refreshed on
+   * every successful in-bound INCR. A bucket pinned just under `max` by a
+   * steady stream of requests keeps its TTL refreshed indefinitely; the
+   * window follows the most recent successful pass. For IP-keyed limiters
+   * on routes shared via NAT, an attacker storming a NAT'd IP can keep
+   * that bucket non-expiring; legitimate users sharing the IP see
+   * sustained 429s instead of fixed-window recovery. The bound remains
+   * `max` requests within any rolling 60s; the difference is when the
+   * count resets. Counter-rejects (DECR-on-overflow) do NOT refresh
+   * PEXPIRE, so under sustained over-`max` storms the bucket still
+   * expires on the original windowMs from the last successful in-bound
+   * INCR. See `RATE_LIMIT_CHECK_AND_CONSUME_LUA` for the underlying
+   * mechanics. This is the intended trade-off vs. the permanent-lockout
+   * bug that fixed-PEXPIRE-on-count==1 produced under concurrent INCRs.
    *
    * DO NOT use on credential-probing routes (e.g., /login, /recover) — failed
    * probes would not consume slots, enabling unlimited account enumeration.
@@ -79,12 +103,24 @@ export function rateLimit(config: RateLimitConfig) {
         // Atomic INCR → check → DECR-or-EXPIRE in one round-trip via the
         // shared `RATE_LIMIT_CHECK_AND_CONSUME` Lua script (EVALSHA via
         // the SCRIPT-LOAD registry; falls back to EVAL on NOSCRIPT).
-        const result = (await evalScript(
+        // `evalScript<N>` returns `ScriptReturn[N]` (here [number, number]),
+        // so no `as` cast is required. The runtime narrowing below is
+        // defense-in-depth against ioredis returning a wrong-shape value
+        // (older Redis, edge cases) — a non-tuple return falls through to
+        // the in-memory path rather than silently 429ing all traffic.
+        const result = await evalScript(
           redis,
           'RATE_LIMIT_CHECK_AND_CONSUME',
           [redisKey],
           [String(config.max), String(config.windowMs)],
-        )) as [number, number];
+        );
+        if (!Array.isArray(result) || typeof result[0] !== 'number' || typeof result[1] !== 'number') {
+          logger.warn(
+            { event: 'rate_limit.malformed_lua_return', name: config.name, result },
+            'rate_limit malformed Lua return — falling through to in-memory',
+          );
+          throw new Error('rate_limit malformed Lua return');
+        }
         const passed = result[0] === 1;
         const pttl = result[1];
         if (!passed) {
@@ -93,20 +129,31 @@ export function rateLimit(config: RateLimitConfig) {
           return sendError(res, 429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
         }
         if (skipFailed) {
-          // Refund the slot on failure (status >= 400). The DECR is
-          // unconditional within the >=400 branch; the previous
-          // GET → next() → deferred-INCR pattern is replaced by
-          // INCR-up-front (atomic check) and DECR-on-failure (refund).
-          res.on('finish', () => {
-            if (res.statusCode < 400) return;
+          // Refund the slot on failure (status >= 400). Register both
+          // 'finish' and 'close' with a once-guard so TCP-abort / client-
+          // disconnect (which fires 'close' but NOT 'finish') is covered.
+          // Without 'close' coverage, an aborted upgrade (max=1/hr) would
+          // permanently consume the legitimate user's slot for the full
+          // hour — exactly the DoS this option is meant to prevent.
+          // `getRedis()` is re-resolved inside the callback because a
+          // reconnect cycle between handler entry and deferred-fire would
+          // otherwise capture a stale binding.
+          let refunded = false;
+          const refund = () => {
+            if (refunded || res.statusCode < 400) return;
+            refunded = true;
+            const r = getRedis();
+            if (!r) return;
             void (async () => {
               try {
-                await redis.decr(redisKey);
+                await r.decr(redisKey);
               } catch (err) {
                 logger.debug({ err }, 'Redis rate limit slot refund failed');
               }
             })();
-          });
+          };
+          res.on('finish', refund);
+          res.on('close', refund);
         }
         return next();
       } catch (err) {
@@ -134,13 +181,22 @@ export function rateLimit(config: RateLimitConfig) {
     memStore.set(key, entry);
 
     if (skipFailed) {
-      res.on('finish', () => {
-        if (res.statusCode < 400) return;
+      // Same dual-listener once-guard pattern as the Redis path: 'close'
+      // covers TCP-abort / client-disconnect; 'finish' covers normal
+      // completion. Either-or fires on a given request, but defensive
+      // double-registration with `refunded` flag prevents double-splice
+      // when both fire on a clean finish-then-close sequence.
+      let refunded = false;
+      const refund = () => {
+        if (refunded || res.statusCode < 400) return;
+        refunded = true;
         const e = memStore.get(key);
         if (!e) return;
         const idx = e.timestamps.indexOf(pushedTs);
         if (idx >= 0) e.timestamps.splice(idx, 1);
-      });
+      };
+      res.on('finish', refund);
+      res.on('close', refund);
     }
 
     next();

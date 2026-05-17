@@ -91,9 +91,24 @@ end
  * eliminates the failure mode entirely.
  *
  * Refund of failed responses (status >= 400 under skipFailedRequests) is
- * a separate one-command DECR fired in the `res.on('finish')` callback;
- * the atomic limit-check Lua doesn't know the response outcome at entry
- * time and doesn't need to — the refund path is a single round-trip.
+ * a separate one-command DECR fired in the `res.on('finish')` /
+ * `res.on('close')` callbacks; the atomic limit-check Lua doesn't know
+ * the response outcome at entry time and doesn't need to — the refund
+ * path is a single round-trip.
+ *
+ * Window semantic: the unconditional PEXPIRE makes this a ROLLING window
+ * (TTL refreshed on every successful entry), not a fixed window. A bucket
+ * pinned just under `max` by a steady stream of in-bound INCRs keeps its
+ * TTL refreshed indefinitely; the window effectively follows the most
+ * recent successful pass. This is the intended trade-off vs. the
+ * permanent-lockout bug it replaces. For IP-keyed limiters on routes
+ * shared via NAT or carrier proxies, this means an attacker storming a
+ * NAT'd IP can keep that bucket non-expiring; legitimate users sharing
+ * the IP see sustained 429s instead of fixed-window recovery. The bound
+ * remains `max` requests within any rolling 60s; the difference is when
+ * the count resets. Counter-rejects (DECR-on-overflow) do NOT refresh
+ * PEXPIRE, so under sustained over-`max` storms the bucket still expires
+ * on the original windowMs from the last successful in-bound INCR.
  */
 export const RATE_LIMIT_CHECK_AND_CONSUME_LUA = `
 local count = redis.call('INCR', KEYS[1])
@@ -122,6 +137,29 @@ export const SHARED_SCRIPTS = {
 } as const;
 
 export type SharedScriptName = keyof typeof SHARED_SCRIPTS;
+
+/**
+ * Static contract for each script's return type. Used by `evalScript<N>`
+ * so callers receive `ScriptReturn[N]` instead of `unknown` and don't need
+ * a load-bearing `as` cast at the call site. The mapping must be kept in
+ * sync with the Lua return statements above; a future script added to
+ * `SHARED_SCRIPTS` without an entry here is a compile error.
+ *
+ * The mapped-type also makes future script additions automatically type-
+ * safe (a `Promise<unknown>` return forced every caller to invent their
+ * own ad-hoc cast, where a typo silently bypassed runtime checks).
+ *
+ * Note: this is a STATIC contract, not a runtime guarantee. ioredis returns
+ * `unknown` from `eval`/`evalsha` and the cast lives at the boundary inside
+ * `evalScript`. Callers that depend on the array/numeric shape should add
+ * runtime narrowing — see the defensive check in `rateLimit.ts` for the
+ * pattern.
+ */
+export type ScriptReturn = {
+  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: number;
+  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
+  RATE_LIMIT_CHECK_AND_CONSUME: [number, number];
+};
 
 const scriptShaCache = new Map<SharedScriptName, string>();
 
@@ -161,24 +199,24 @@ function isNoScriptError(err: unknown): boolean {
  * Errors other than NOSCRIPT propagate unchanged so callers can keep their
  * existing catch semantics.
  */
-export async function evalScript(
+export async function evalScript<N extends SharedScriptName>(
   redis: Redis,
-  name: SharedScriptName,
+  name: N,
   keys: string[],
   args: string[],
-): Promise<unknown> {
+): Promise<ScriptReturn[N]> {
   const body = SHARED_SCRIPTS[name];
   const sha = scriptShaCache.get(name);
   if (!sha) {
-    return redis.eval(body, keys.length, ...keys, ...args);
+    return (await redis.eval(body, keys.length, ...keys, ...args)) as ScriptReturn[N];
   }
   try {
-    return await redis.evalsha(sha, keys.length, ...keys, ...args);
+    return (await redis.evalsha(sha, keys.length, ...keys, ...args)) as ScriptReturn[N];
   } catch (err) {
     if (isNoScriptError(err)) {
       const reloadedSha = (await redis.script('LOAD', body)) as string;
       scriptShaCache.set(name, reloadedSha);
-      return redis.evalsha(reloadedSha, keys.length, ...keys, ...args);
+      return (await redis.evalsha(reloadedSha, keys.length, ...keys, ...args)) as ScriptReturn[N];
     }
     throw err;
   }

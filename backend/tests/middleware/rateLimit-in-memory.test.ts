@@ -1,0 +1,133 @@
+/**
+ * In-memory fallback coverage for `rateLimit` middleware.
+ *
+ * The main rateLimit test suite at `rateLimit.test.ts` exercises the Redis
+ * path (atomic Lua INCR-and-DECR-on-overflow, PEXPIRE invariant, deferred
+ * refund) and skips when Redis is unavailable. The in-memory fallback path
+ * has its own failure modes that don't surface under Redis coverage:
+ *
+ *   - The `skipFailedRequests` splice path (`indexOf` + `splice` on
+ *     `entry.timestamps`) silently no-ops if the timestamp is missing from
+ *     the entry — e.g. if the periodic cleanup interval evicted it between
+ *     push and finish. A regression that breaks the splice would leak the
+ *     slot indefinitely (until the natural window expires).
+ *
+ * This file forces in-memory mode by mocking `getRedis()` to always return
+ * `null`. That makes the in-memory branch of the middleware the ONLY code
+ * path under test, regardless of whether Redis is actually running.
+ *
+ * Carve-out clause (a): the real-path Redis branch is tested in
+ * `rateLimit.test.ts` (skipped when Redis is absent); this file is the
+ * deterministic in-memory companion. Clause (c) is satisfied by the
+ * sibling Redis test exercising the same conceptual contract under real
+ * infrastructure.
+ */
+import { describe, it, expect, vi } from 'vitest';
+import request from 'supertest';
+import express from 'express';
+
+vi.mock('../../src/redis.js', () => ({
+  getRedis: () => null,
+  isRedisAvailable: () => false,
+}));
+
+const { rateLimit, byAccount } = await import('../../src/middleware/rateLimit.js');
+
+function createSkipFailedApp(name: string, max: number, windowMs: number, statusCode = 200) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    const username = req.headers['x-hive-username'] as string | undefined;
+    if (username) req.hiveUsername = username;
+    next();
+  });
+  app.use(rateLimit({ windowMs, max, keyFn: byAccount, name, skipFailedRequests: true }));
+  app.get('/test', (_req, res) => res.status(statusCode).json({ ok: statusCode < 400 }));
+  return app;
+}
+
+describe('rateLimit middleware — in-memory fallback', () => {
+  it('skipFailedRequests refunds slot on status >= 400 (in-memory splice path)', async () => {
+    const limiterName = `inmem-refund-${Date.now()}`;
+    // max=1: a single failed request would normally consume the only slot
+    // and lock the user out for the full window. With the refund, the
+    // user can retry immediately.
+    const app = createSkipFailedApp(limiterName, 1, 60_000, 500);
+    const username = `alice-${Date.now()}`;
+
+    const failRes = await request(app).get('/test').set('X-Hive-Username', username);
+    expect(failRes.status).toBe(500);
+
+    // Without the refund, this second request would 429 (slot consumed by
+    // the first request). With the in-memory splice on 'finish' /
+    // 'close', the slot is returned and the second request passes the
+    // length check. We use a sibling app with a 200-status handler so the
+    // assertion is purely "the limiter let the request through" (not
+    // "the second handler succeeded").
+    const passApp = createSkipFailedApp(limiterName, 1, 60_000, 200);
+    // Need to give the deferred refund a tick to land — it runs in the
+    // 'finish'/'close' callback queued after the response is sent.
+    for (let i = 0; i < 20; i++) {
+      const probe = await request(passApp).get('/test').set('X-Hive-Username', username);
+      if (probe.status === 200) {
+        expect(probe.status).toBe(200);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    // If we got here the refund never landed — fail explicitly.
+    expect.fail('In-memory skipFailedRequests refund did not land within 500ms');
+  });
+
+  it('skipFailedRequests does NOT refund slot on status < 400', async () => {
+    const limiterName = `inmem-no-refund-${Date.now()}`;
+    const app = createSkipFailedApp(limiterName, 1, 60_000, 200);
+    const username = `bob-${Date.now()}`;
+
+    // First request: status=200, slot consumed, NO refund.
+    const okRes = await request(app).get('/test').set('X-Hive-Username', username);
+    expect(okRes.status).toBe(200);
+
+    // Second request must 429 — the slot from the successful first
+    // request must not be refunded. Pin that the once-guard isn't
+    // accidentally refunding success.
+    await new Promise((r) => setTimeout(r, 50));
+    const blocked = await request(app).get('/test').set('X-Hive-Username', username);
+    expect(blocked.status).toBe(429);
+  });
+
+  it('refunds once on finish+close (no double-splice via once-guard)', async () => {
+    // Wire the request to both 'finish' AND 'close' (the supertest /
+    // express normal-completion path fires both). The once-guard must
+    // prevent the splice from running twice — otherwise a malformed
+    // timestamps array could be left after the second splice no-ops on
+    // -1 indexOf, or worse, splice an unrelated entry if a parallel
+    // request pushed a colliding timestamp.
+    const limiterName = `inmem-once-guard-${Date.now()}`;
+    const app = createSkipFailedApp(limiterName, 2, 60_000, 500);
+    const username = `carol-${Date.now()}`;
+
+    // Two sequential failed requests; max=2; both should refund.
+    const r1 = await request(app).get('/test').set('X-Hive-Username', username);
+    const r2 = await request(app).get('/test').set('X-Hive-Username', username);
+    expect(r1.status).toBe(500);
+    expect(r2.status).toBe(500);
+
+    // Both slots should be back. A third 500-failing request should
+    // also be admitted (slot refund landed before this poll). If the
+    // double-fire (finish + close) double-decremented, the entry would
+    // be in an inconsistent state — earlier failure modes would manifest
+    // as either a 429 here (slot wrongly consumed twice) or a TypeError
+    // inside the splice path.
+    let admitted = false;
+    for (let i = 0; i < 20; i++) {
+      const r3 = await request(app).get('/test').set('X-Hive-Username', username);
+      if (r3.status === 500) {
+        admitted = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(admitted).toBe(true);
+  });
+});

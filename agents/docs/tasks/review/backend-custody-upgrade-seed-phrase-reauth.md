@@ -466,3 +466,37 @@ Task 4 r2 (commit 6dad488, landed AFTER task 5 r3 c9c7c5f on main) added `skipFa
 When items 1-6 land, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
 
 Recommendation: items 1+2+4 cluster on `rateLimit.ts` and can land in one focused commit. Items 3+5 are separate (Lua script JSDoc + in-memory test). Item 6 is a `custody.ts` skew-log addition.
+
+---
+
+## Backend re-review signal (2026-05-17, round-4 fix commit)
+
+Round-3 → round-4 hold items 1-6 all landed in one commit (the architect's recommended item-1+2+4 cluster was the dominant lift; 3+5+6 are small enough that bundling avoids unnecessary churn between dependent re-review surfaces). Per-item resolution:
+
+- **Item 1 (P0, `res.on('close')` not handled).** `backend/src/middleware/rateLimit.ts` — the Redis-path `skipFailed` branch and the in-memory-fallback `skipFailed` branch both now register a single `refund` closure with a once-guard (`refunded` boolean) on BOTH `res.on('finish')` AND `res.on('close')`. TCP-abort / client-disconnect (which fires `'close'` but NOT `'finish'`) is now covered; without this fix, a single dropped connection mid-handler on `/api/custody/upgrade` (max=1/hr) would permanently consume the legitimate user's slot — exactly the anti-recovery-attack scenario the option exists to prevent. The once-guard prevents double-refund on the normal `finish-then-close` sequence. `res.statusCode < 400` check stays — preserving the policy that aborts with status=200 (default, no response written) do NOT refund (the architect's pseudocode shape).
+- **Item 2 (P1, unsafe `as [number, number]` cast + structural `evalScript` typing).** `backend/src/lib/redis-scripts.ts` — added `export type ScriptReturn` mapped over `SharedScriptName`, with per-script return shapes:
+  - `INCR_AND_EXPIRE_ON_ZERO_TO_ONE: number`
+  - `RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1`
+  - `RATE_LIMIT_CHECK_AND_CONSUME: [number, number]`
+  `evalScript` is now `<N extends SharedScriptName>(...): Promise<ScriptReturn[N]>` with the unknown→ScriptReturn[N] cast at the ioredis boundary (untyped `eval`/`evalsha` returns). All three call sites (`rateLimit.ts`, `routes/accreditation.ts`, `reputation-batch.ts`) inherit type safety; the `as [number, number]` cast at `rateLimit.ts:82` is dropped. Added defensive runtime narrowing at the rateLimit call site (the only caller that depends on the array/numeric tuple shape) — a malformed Lua return now logs a structured warn (`event: 'rate_limit.malformed_lua_return'`) and falls through to the in-memory path instead of silently 429ing all traffic. Type/lint clean.
+- **Item 3 (P2, rolling-window JSDoc).** Both the `RATE_LIMIT_CHECK_AND_CONSUME_LUA` docblock (in `redis-scripts.ts`) and the `RateLimitConfig.skipFailedRequests` JSDoc (in `rateLimit.ts`) now explicitly document the rolling-window semantic: unconditional PEXPIRE refreshes TTL on every successful in-bound INCR; a bucket pinned just under `max` keeps its TTL indefinitely; for IP-keyed limiters on NAT-shared routes, a sustained attacker storm pins legitimate users at 429. Counter-rejects (DECR-on-overflow) do NOT refresh PEXPIRE, so sustained over-`max` storms still let the bucket expire at the original windowMs from the last successful in-bound INCR. The shift from fixed-window is the intended trade-off vs. the permanent-lockout bug that fixed-PEXPIRE-on-count==1 produced. Option B chosen per architect recommendation; no Lua branching on skipFailedRequests.
+- **Item 4 (P2, stale `redis` binding in `res.on('finish')` closure).** The Redis-path refund callback now calls `getRedis()` inside the closure (after the `refunded` and `res.statusCode < 400` guards) so a reconnect cycle between handler entry and deferred-fire doesn't capture a stale binding. If `getRedis()` returns null at refund time, the refund silently no-ops (rather than throwing) — the slot remains consumed for the natural windowMs, which is the safe fallback.
+- **Item 5 (P2, in-memory `skipFailedRequests` test).** New file `backend/tests/middleware/rateLimit-in-memory.test.ts` mocks `getRedis()` to return `null` at module scope (via `vi.mock`), forcing in-memory mode for all tests in the file regardless of Redis availability in the test env. Three canaries:
+  1. `skipFailedRequests refunds slot on status >= 400 (in-memory splice path)` — pins that a failed 500 returns the slot so a follow-up request passes the length check. The original-bug failure mode (failed splice → leaked slot) would surface as the follow-up returning 429 forever.
+  2. `skipFailedRequests does NOT refund slot on status < 400` — pins that the once-guard doesn't accidentally refund success; the second request must 429.
+  3. `refunds once on finish+close (no double-splice via once-guard)` — pins the once-guard behavior for the normal finish→close sequence so the splice doesn't run twice.
+  All three pass; existing 11 Redis-path tests in the sibling `rateLimit.test.ts` continue to pass (14/14 across both files).
+- **Item 6 (P2, skew-reject diagnostic warn log).** `backend/src/routes/custody.ts` — the upgrade-proof `signed_at` gate now sets a `const isFutureSkew = Number.isFinite(tsMs) && tsMs > nowMs + UPGRADE_PROOF_FUTURE_SKEW_MS` flag, and on rejection fires a `logger.warn` with `event: 'custody.upgrade.proof_future_skew'` + `username`, `tsMs`, `nowMs`, `skewMs`, `toleranceMs` fields IFF the future-skew branch fires. The 401 envelope stays unified (no client-side discriminator → no oracle); past-stale and invalid-format rejections do NOT fire the warn (operator has nothing to do — user retries by re-signing). An operator seeing repeated `proof_future_skew` logs can diagnose server-NTP drift ahead of client clocks. No env-tunable per architect scope direction (single-instance per `project_single_instance_only`).
+
+### Cross-task observation
+
+The accreditation test `round-4 hold #2: pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE` is failing in this worktree, but it ALSO fails on the pre-this-commit baseline (verified by `git stash` + re-run). The flake is pre-existing and unrelated to this task's changes; not held here. Other test surfaces touched by this commit are green:
+- `tests/middleware/rateLimit.test.ts`: 11/11
+- `tests/middleware/rateLimit-in-memory.test.ts`: 3/3 (new)
+- `tests/lib/redis-scripts.test.ts`: 6/6
+- `tests/routes/custody-upgrade.test.ts`: green
+- `tests/routes/custody.test.ts` + sibling custody suites: 54/54 across 6 files
+
+`cd backend && npm run lint`: clean. `cd backend && npm run typecheck`: clean (both src and tests configs). Vitest run on the touched surfaces above; full suite not run per parent serialization.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

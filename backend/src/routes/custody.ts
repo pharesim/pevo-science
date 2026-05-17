@@ -1049,11 +1049,33 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
   // adversarial-observation thresholds).
   const tsMs = Date.parse(signedAt);
   const nowMs = Date.now();
+  const isFutureSkew = Number.isFinite(tsMs) && tsMs > nowMs + UPGRADE_PROOF_FUTURE_SKEW_MS;
   if (
     !Number.isFinite(tsMs) ||
-    tsMs > nowMs + UPGRADE_PROOF_FUTURE_SKEW_MS ||
+    isFutureSkew ||
     nowMs - tsMs > UPGRADE_PROOF_TIMESTAMP_WINDOW_MS
   ) {
+    // Operator diagnostic: future-skew rejects are the failure mode an
+    // operator most often misdiagnoses as "users can't upgrade" without
+    // realizing server NTP has drifted ahead of typical client clocks. A
+    // single uniform 401 envelope still protects against client-side
+    // disclosure; the log gives operators a discriminator that doesn't
+    // leak to the wire. Past-stale and invalid-format rejects share the
+    // same 401 but don't warrant the warn (the user-side fix is to re-
+    // sign; the operator-side has nothing to do).
+    if (isFutureSkew) {
+      logger.warn(
+        {
+          event: 'custody.upgrade.proof_future_skew',
+          username,
+          tsMs,
+          nowMs,
+          skewMs: tsMs - nowMs,
+          toleranceMs: UPGRADE_PROOF_FUTURE_SKEW_MS,
+        },
+        'Upgrade proof rejected: signed_at past forward-skew tolerance (NTP drift?)',
+      );
+    }
     return sendError(res, 401, 'UNAUTHORIZED', 'Upgrade proof expired or invalid timestamp');
   }
 
