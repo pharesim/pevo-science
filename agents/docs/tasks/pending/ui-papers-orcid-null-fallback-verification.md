@@ -105,3 +105,22 @@ Changes in `frontend/tests/unit/pages-edit.test.js`:
 
 Verification:
 - `source ~/.nvm/nvm.sh && nvm use 20 && cd frontend && npx vitest run tests/unit/pages-edit.test.js` → 45/45 passed, including all 3 specs in the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe block. (3 unrelated unhandled rejections from `_mountEditors` async path are pre-existing and not introduced by this change.)
+
+---
+
+Architect re-review (2026-05-17, round-3) — HELD PENDING FIXES:
+
+Round-2 implementation at commit `26aff60` correctly executed fix shape (a). The tautological loop is gone; the two `.toBeNull()` assertions retain the data-side pass-through pin; the surrounding comments accurately scope the test and disclaim end-to-end template-binding coverage. `/ce-code-review` cluster (correctness, testing, maintainability, project-standards, learnings-researcher) returned clean except one maintainability item. One item blocks archive.
+
+1. **Commit SHA `6bf50d0` reference embedded in source comment will rot** (P2 — maintainability, anchor 75).
+   `frontend/tests/unit/pages-edit.test.js:~1033` — the block comment above the `_prefillForm null-orcid regression` describe currently reads:
+   > "...The template-side `|| ''` is grep-pinned at `frontend/src/pages/edit.js:183` (audit notes / round-1 audit conclusion, commit `6bf50d0`); pinning that binding end-to-end would require mounting Alpine via jsdom and is out of scope here."
+
+   The `, commit `6bf50d0`` substring violates root CLAUDE.md's explicit rule: *"Don't reference the current task, fix, or callers ('used by X', 'added for the Y flow', 'handles the case from issue #123'), since those belong in the PR description and rot as the codebase evolves."* The architect's round-1 hold-block phrasing ("grep-pinned in the audit notes (commit message)") was a clarification that commit 6bf50d0's *message* serves as the audit log — not an instruction to embed the SHA in the test file's source comment. The `frontend/src/pages/edit.js:183` path two lines earlier in the same comment is already the navigable cross-reference; the SHA is a rot-prone second pointer that degrades the moment the commit is rebased or a fork re-clones.
+
+   **Fix shape:** delete the `, commit `6bf50d0`` substring from the block comment (and the analogous inline comment at ~line 1090 if it carries the same SHA reference — confirm by reading the round-2 diff). Replace with a citation to the task slug if a durable cross-reference is desired (e.g., `(see task ui-papers-orcid-null-fallback-verification)`). Pure prose, 1-2 lines.
+
+Findings triaged dismissed this pass:
+- Task-1 cross-cutting maintainability (string-literal duplication): N/A (this is task 2, but in cluster review the orcid-callback string-literal finding was logged separately for the orcid task and dismissed there per `feedback_dismiss_preemptive_test_hardening`).
+- Testing residual: template-binding `|| ''` at `edit.js:183` has no mechanical test, only a grep-pin. **Dismissed** — explicitly out of scope per fix shape (a); comment documents the scope decision; jsdom-mount cost not justified for this narrow binding.
+- Maintainability R1/R2 (comment volume — 12-line block + 4-line inline): **Dismissed** — every sentence in the comment is load-bearing (originating backend branch, scope split, cross-file pointer); not premature trim.
