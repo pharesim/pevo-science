@@ -19,7 +19,7 @@ import {
   pevoStringArray,
   type SortField,
 } from '../helpers.js';
-import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAccreditationOrcidsWithStatus } from '../accreditation.js';
+import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAllEverAccreditedOrcidsWithStatus } from '../accreditation.js';
 import type { AccreditationStatus } from '../accreditation.js';
 import { getReputationScore, getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
@@ -198,6 +198,59 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * Emit an `orcid_claim_mismatch` audit warn event with the shared payload
+ * skeleton + per-(rootAuthor, rootPermlink, hive) dedup discipline.
+ *
+ * Three call sites inside `buildCumulativeAuthorsForChain` previously
+ * inlined this skeleton (active-arm case b override + audit, active-arm
+ * case d suppress + audit, revoked-arm pass-through + audit). They share:
+ *   - same event name (`orcid_claim_mismatch`)
+ *   - same payload shape (rootAuthor / rootPermlink / hive / claimedOrcid /
+ *     accreditedOrcid / accreditationStatus / claimSource)
+ *   - same dedup-key construction (`${rootAuthor}/${rootPermlink}/${hive}`)
+ *
+ * The arms differ only in `accreditationStatus` literal, `accreditedOrcid`
+ * source, and the human-readable log message. The helper consolidates
+ * emission + dedup only; the surrounding decision-tree branching (override
+ * vs suppress vs pass-through) stays inline at each call site so the audit
+ * primitive does not couple to display-mutation policy.
+ *
+ * @param args - the audit payload fields.
+ * @param auditedKeys - request-scoped dedup set; the helper consults it
+ *   before emitting and updates it after.
+ */
+function emitOrcidClaimMismatchAudit(
+  args: {
+    status: AccreditationStatus;
+    accreditedOrcid: string | null;
+    claimedOrcid: string | null;
+    hive: string;
+    rootAuthor: string;
+    rootPermlink: string;
+    claimSource: string;
+    message: string;
+  },
+  auditedKeys: Set<string>,
+): void {
+  const auditKey = `${args.rootAuthor}/${args.rootPermlink}/${args.hive}`;
+  if (auditedKeys.has(auditKey)) return;
+  auditedKeys.add(auditKey);
+  logger.warn(
+    {
+      event: 'orcid_claim_mismatch',
+      rootAuthor: args.rootAuthor,
+      rootPermlink: args.rootPermlink,
+      hive: args.hive,
+      claimedOrcid: args.claimedOrcid,
+      accreditedOrcid: args.accreditedOrcid,
+      accreditationStatus: args.status,
+      claimSource: args.claimSource,
+    },
+    args.message,
+  );
+}
+
+/**
  * Build the cumulative-union authors[] for a multi-link continuation chain
  * per `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`. The
  * displayed `authors[]`
@@ -236,7 +289,7 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
  *   carry an ORCID — pass-through is the policy in that case.
  * @param accreditationOrcidStatus - per-ever-accredited-account
  *   `{orcid, status}` map (loaded once per request via
- *   `getAccreditationOrcidsWithStatus`); union of active + revoked.
+ *   `getAllEverAccreditedOrcidsWithStatus`); union of active + revoked.
  *   Drives the `accreditationStatus` field on the audit-event payload and
  *   the revoked-arm pass-through behavior. See the in-function comment
  *   under "ORCID server-override + audit emission" for the active vs
@@ -391,23 +444,22 @@ function buildCumulativeAuthorsForChain(
       //   (e) accreditedOrcid null, no claim        → no-op
       if (accreditedOrcid) {
         if (claimedOrcid && claimedOrcid !== accreditedOrcid) {
-          const auditKey = `${rootAuthor}/${rootPermlink}/${hive}`;
-          if (!auditedKeys.has(auditKey)) {
-            auditedKeys.add(auditKey);
-            logger.warn(
-              {
-                event: 'orcid_claim_mismatch',
-                rootAuthor,
-                rootPermlink,
-                hive,
-                claimedOrcid,
-                accreditedOrcid,
-                accreditationStatus: 'active' as const,
-                claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
-              },
-              'broadcaster-claimed ORCID for accredited hive differs from accredited ORCID; server-overriding',
-            );
-          }
+          // Case (b): broadcaster's claim disagrees with the on-chain
+          // accredited ORCID. Audit emission consolidated via
+          // `emitOrcidClaimMismatchAudit`; server-override stays inline.
+          emitOrcidClaimMismatchAudit(
+            {
+              status: 'active',
+              accreditedOrcid,
+              claimedOrcid,
+              hive,
+              rootAuthor,
+              rootPermlink,
+              claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
+              message: 'broadcaster-claimed ORCID for accredited hive differs from accredited ORCID; server-overriding',
+            },
+            auditedKeys,
+          );
           out.orcid = accreditedOrcid;
         } else if (!claimedOrcid) {
           // Prefill: accredited carries an ORCID, the chain-claim doesn't.
@@ -415,20 +467,25 @@ function buildCumulativeAuthorsForChain(
         }
         // else: claimedOrcid === accreditedOrcid — pass through unchanged.
       } else if (claimedOrcid) {
-        // Accredited target with no on-chain ORCID + broadcaster claim
-        // present: suppress the claim (set to null) and emit audit event
-        // with accreditedOrcid: null so operators see the spoof attempt.
-        logger.warn(
+        // Case (d): accredited target with no on-chain ORCID + broadcaster
+        // claim present. Suppress the claim (set to null) and emit audit
+        // event so operators see the spoof attempt. Categorically an
+        // active-arm spoof — payload carries `accreditationStatus: 'active'`
+        // and consults the same dedup set as case (b) so dashboards
+        // filtering by `accreditationStatus === 'active'` don't silently
+        // miss it (round-2 hold item 2).
+        emitOrcidClaimMismatchAudit(
           {
-            event: 'orcid_claim_mismatch',
+            status: 'active',
+            accreditedOrcid: null,
+            claimedOrcid,
+            hive,
             rootAuthor,
             rootPermlink,
-            hive,
-            claimedOrcid,
-            accreditedOrcid: null,
             claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
+            message: 'broadcaster-claimed ORCID for accredited hive that has no on-chain ORCID; suppressing claim',
           },
-          'broadcaster-claimed ORCID for accredited hive that has no on-chain ORCID; suppressing claim',
+          auditedKeys,
         );
         out.orcid = null;
       }
@@ -442,23 +499,19 @@ function buildCumulativeAuthorsForChain(
       // fires on mismatch for triage visibility.
       const lastAttestedOrcid = statusEntry.orcid;
       if (lastAttestedOrcid && claimedOrcid && claimedOrcid !== lastAttestedOrcid) {
-        const auditKey = `${rootAuthor}/${rootPermlink}/${hive}`;
-        if (!auditedKeys.has(auditKey)) {
-          auditedKeys.add(auditKey);
-          logger.warn(
-            {
-              event: 'orcid_claim_mismatch',
-              rootAuthor,
-              rootPermlink,
-              hive,
-              claimedOrcid,
-              accreditedOrcid: lastAttestedOrcid,
-              accreditationStatus: 'revoked' as const,
-              claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
-            },
-            'broadcaster-claimed ORCID for revoked-but-previously-accredited hive differs from last-attested ORCID; passing through (no override)',
-          );
-        }
+        emitOrcidClaimMismatchAudit(
+          {
+            status: 'revoked',
+            accreditedOrcid: lastAttestedOrcid,
+            claimedOrcid,
+            hive,
+            rootAuthor,
+            rootPermlink,
+            claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
+            message: 'broadcaster-claimed ORCID for revoked-but-previously-accredited hive differs from last-attested ORCID; passing through (no override)',
+          },
+          auditedKeys,
+        );
       }
       // No override: broadcaster's claim passes through unchanged. Other
       // missing/match cases are silent (no audit signal worth firing).
@@ -911,7 +964,7 @@ async function fetchPaperDetailFromHaf(
       getRetractionInfo(author, permlink),
       getAllAccreditedAccounts(),
       getAccreditedOrcidsByAccount(),
-      getAccreditationOrcidsWithStatus(),
+      getAllEverAccreditedOrcidsWithStatus(),
       // List-view (and profile-view) parity per BACKEND-REPUTATION-SSOT
       // AC #1: every reputation value displayed in the UI must derive
       // from the same `${appTag}:reputation:batch:${user}` value. Paper

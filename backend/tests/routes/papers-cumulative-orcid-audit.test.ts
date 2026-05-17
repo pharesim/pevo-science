@@ -45,7 +45,7 @@
  * broadcasts spread across blocks, plus the 10-min `hafCache` window
  * means the second-cycle re-accredit wouldn't materialize for the test
  * run anyway). The mocked-pool variant pins:
- *   (a) the SQL response shape from `getAccreditationOrcidsWithStatus`
+ *   (a) the SQL response shape from `getAllEverAccreditedOrcidsWithStatus`
  *       (which returns the merged active+revoked map), and
  *   (b) the JS-side audit-emission branching in
  *       `buildCumulativeAuthorsForChain` (active vs revoked arms).
@@ -53,7 +53,7 @@
  * Per CLAUDE.md clauses (a)/(b)/(c):
  *   (a) justification: deterministic multi-cycle revocation seeding is
  *       impractical against the public HAF DB and the
- *       `getAccreditationOrcidsWithStatus` SQL lookup is fronted by
+ *       `getAllEverAccreditedOrcidsWithStatus` SQL lookup is fronted by
  *       `hafCache` with a 10-min window. Mocking the pool lets us pin
  *       the JS audit-emission semantics without sequenced HAF broadcasts.
  *   (b) `verifyHiveSignature` and other auth middleware are NOT mocked
@@ -64,7 +64,7 @@
  *       exercised by integration paths that touch `accreditation.ts` ->
  *       `hafsql.ts` against real HAF (the existing `papers.test.ts`
  *       smoke tests hit live HAF and validate the
- *       `getAccreditationOrcidsWithStatus` cache shape under realistic
+ *       `getAllEverAccreditedOrcidsWithStatus` cache shape under realistic
  *       data). Any future regression in the CTE's LATERAL-lookup
  *       multi-cycle behavior would surface there as a runtime SQL error
  *       on the public HAF DB.
@@ -128,6 +128,22 @@ function paperDetailSelectSql(sql: string): boolean {
 function headAuthorsLookupSql(sql: string): boolean {
   return sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3');
 }
+// Canonical-root walker's START row probe (`findCanonicalRoot` at
+// `papers.ts:1692`). The walker's SQL projects `cont_author` /
+// `cont_permlink` columns (`json_metadata -> $3 -> 'continues' ->> 'author'`)
+// which `headAuthorsLookupSql` does NOT — the head-authors lookup is a
+// simpler 3-param probe with no continues projection. Round-2 hold item 1:
+// the previous mock had `headAuthorsLookupSql` swallowing the walker query
+// (both match on `parent_permlink = $3` + `SELECT c.author, c.json_metadata`),
+// returning the head-row without cont_author/cont_permlink columns, which
+// drove the walker into `cont_columns_invalid` bail at every test request
+// and prevented the audit code from executing. This matcher discriminates
+// on the walker-specific `AS cont_author` projection so the two queries
+// route to separate mock handlers. The walker matcher MUST be listed BEFORE
+// the head-authors matcher in the `if/else` chain below.
+function canonicalRootWalkerStartSql(sql: string): boolean {
+  return sql.includes('AS cont_author') && sql.includes('AS cont_permlink');
+}
 function reconstructVersionsSql(sql: string): boolean {
   return sql.includes('ROW_NUMBER') && sql.includes('co.block_num');
 }
@@ -139,7 +155,7 @@ function isForwardChainWalkSql(sql: string): boolean {
 /**
  * Seed a 2-link chain (alice/p1 → bob/v2) with configurable
  * accreditation history. `accreditationStatus` is the merged map
- * (active + revoked) returned by `getAccreditationOrcidsWithStatus`;
+ * (active + revoked) returned by `getAllEverAccreditedOrcidsWithStatus`;
  * `accredited` is the active-only membership set.
  */
 function seedTwoLinkChain(opts: {
@@ -176,6 +192,19 @@ function seedTwoLinkChain(opts: {
     }
     if (isAccreditationStatusSql(sql)) {
       return { rows: opts.accreditationStatus ?? [] };
+    }
+    // Canonical-root walker's START + per-hop parent probes (round-2 hold
+    // item 1). MUST be checked BEFORE `headAuthorsLookupSql` because the
+    // walker SQL's `SELECT c.author, c.json_metadata, ... AS cont_author,
+    // ... AS cont_permlink` superstring-matches the head-authors lookup
+    // discriminator. alice/p1 is the canonical root in every canary here
+    // (no `continues` pointer), so the walker SQL's
+    // `'continues' IS NOT NULL` predicate would return 0 rows against real
+    // HAF — returning the empty rowset here mirrors that and lets the
+    // walker bail via the SQL-empty-row path (debug log) rather than the
+    // `cont_columns_invalid` warn-log path the prior coercion produced.
+    if (canonicalRootWalkerStartSql(sql)) {
+      return { rows: [] };
     }
     if (headAuthorsLookupSql(sql)) {
       return { rows: [rootRow] };
@@ -217,7 +246,14 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
     // ORCID standing).
     const warnSpy = vi.spyOn(logger, 'warn');
     seedTwoLinkChain({
-      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      // alice authored the root but did NOT self-claim in `pevo.authors`
+      // (only bob is named); bob's continuation introduces alice with a
+      // forged ORCID. Without an alice self-claim in the root, bob's
+      // claim about alice wins the cumulative-union (most-recent fallback
+      // claim wins when no self-claim seen). Self-claiming scenarios are
+      // outside the spoof-detection model — a co-author who self-claims
+      // an ORCID is the SSoT for their own ORCID by chain construction.
+      rootAuthors: [{ hive: 'bob' }],
       headAuthors: [
         { hive: 'alice', orcid: 'forged-orcid-by-bob' },
         { hive: 'bob' },
@@ -266,7 +302,8 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
     // against real HAF via the integration smoke tests.
     const warnSpy = vi.spyOn(logger, 'warn');
     seedTwoLinkChain({
-      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      // Same self-claim avoidance shape as the single-cycle canary above.
+      rootAuthors: [{ hive: 'bob' }],
       headAuthors: [
         { hive: 'alice', orcid: 'forged-orcid-by-bob' },
         { hive: 'bob' },
@@ -301,7 +338,10 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
     // ON TOP of this — must not regress.
     const warnSpy = vi.spyOn(logger, 'warn');
     seedTwoLinkChain({
-      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      // Same self-claim avoidance shape — bob's forged claim about alice
+      // must win the cumulative-union so the active-arm rule #3 audit
+      // primitive engages.
+      rootAuthors: [{ hive: 'bob' }],
       headAuthors: [
         { hive: 'alice', orcid: 'forged-orcid-by-bob' },
         { hive: 'bob' },
@@ -335,7 +375,9 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
     // ORCID from a prior version). No mismatch, no audit.
     const warnSpy = vi.spyOn(logger, 'warn');
     seedTwoLinkChain({
-      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      // Same self-claim avoidance shape so bob's claim about alice wins
+      // (matching the spoof scenarios' chain construction).
+      rootAuthors: [{ hive: 'bob' }],
       headAuthors: [
         { hive: 'alice', orcid: '0000-0000-0000-1234' },
         { hive: 'bob' },
@@ -351,6 +393,59 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
     expect(res.status).toBe(200);
     const event = findAuditEvent(warnSpy);
     expect(event).toBeUndefined();
+    warnSpy.mockRestore();
+  });
+
+  it('active spoof, case d (accredited target has no on-chain ORCID): audit fires with accreditationStatus=active, claim suppressed', async () => {
+    // Round-2 hold item 2: branch (d) of the active arm — alice is
+    // accredited but her on-chain attestation carries no ORCID. bob's
+    // continuation supplies a forged ORCID claim for alice. The audit
+    // primitive MUST fire with `accreditationStatus: 'active' as const`
+    // (alice is in the active set) and `accreditedOrcid: null` (her
+    // attestation has no ORCID), and the display ORCID gets suppressed
+    // to null (the accredited user's silence is the authority). Pre-fix
+    // the emission omitted `accreditationStatus` and bypassed dedup;
+    // dashboards filtering by `accreditationStatus === 'active'` silently
+    // missed case-d spoofs.
+    const warnSpy = vi.spyOn(logger, 'warn');
+    seedTwoLinkChain({
+      // Same self-claim avoidance shape as the other spoof canaries —
+      // bob's forged claim about alice wins the cumulative-union, alice
+      // never self-claims, so case (d) of the active arm engages.
+      rootAuthors: [{ hive: 'bob' }],
+      headAuthors: [
+        { hive: 'alice', orcid: 'forged-orcid-by-bob' },
+        { hive: 'bob' },
+      ],
+      accredited: ['alice', 'bob'], // alice currently active
+      accreditedOrcids: [
+        // alice is accredited but her on-chain attestation carries no ORCID.
+        { account: 'alice', orcid: null },
+        { account: 'bob', orcid: '0000-0000-0000-5678' },
+      ],
+      accreditationStatus: [
+        { account: 'alice', orcid: null, status: 'active' },
+        { account: 'bob', orcid: '0000-0000-0000-5678', status: 'active' },
+      ],
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const aliceEntry = ((res.body?.data.authors || []) as Array<{ hive?: string; orcid?: string | null }>).find((a) => a.hive === 'alice');
+    // Display: claim suppressed (set to null) — the accredited user opted
+    // not to publish an ORCID, broadcaster's forged claim must not surface.
+    expect(aliceEntry?.orcid).toBeNull();
+    const event = findAuditEvent(warnSpy);
+    expect(event).toBeDefined();
+    // The new additive field (round-2 hold item 2) MUST be present on
+    // case-d emissions so operators filtering by accreditationStatus
+    // don't silently miss them.
+    expect(event!.accreditationStatus).toBe('active');
+    expect(event!.claimedOrcid).toBe('forged-orcid-by-bob');
+    expect(event!.accreditedOrcid).toBeNull();
+    expect(event!.hive).toBe('alice');
+    expect(event!.rootAuthor).toBe('alice');
+    expect(event!.rootPermlink).toBe('p1');
+    expect(event!.claimSource).toBe('bob/v2');
     warnSpy.mockRestore();
   });
 });

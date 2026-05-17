@@ -163,6 +163,27 @@ export async function getAccreditedOrcidsByAccount(): Promise<Map<string, string
  * `pool === null` (dev environment without HAF connected) still returns the
  * empty set — that is a startup condition, not a transient outage.
  */
+export async function getAllAccreditedAccounts(): Promise<Set<string>> {
+  const arr = await hafCache.getOrSet<string[]>('accredited_accounts_all', async () => {
+    const pool = getPool();
+    if (!pool) return [];
+
+    try {
+      const cte = activeAccreditationsCteBody();
+      const result = await pool.query(
+        `WITH ${cte.sql}
+         SELECT account FROM active_accreditations`,
+        cte.params,
+      );
+      return result.rows.map((r: { account: string }) => r.account);
+    } catch (err) {
+      logger.error({ err }, 'HAF full accreditation set query failed');
+      throw err;
+    }
+  }, 10 * 60_000, true);
+  return new Set(arr);
+}
+
 /**
  * Map of every account that has ever been accredited to its current
  * accreditation status (`active` or `revoked`) plus the ORCID from the
@@ -200,10 +221,17 @@ export async function getAccreditedOrcidsByAccount(): Promise<Map<string, string
  *
  * `pool === null` (dev environment without HAF connected) returns an empty
  * map — that is a startup condition, not a transient outage.
+ *
+ * **Name discipline.** The "AllEverAccredited" prefix signals that this
+ * map carries both `active` and `revoked` rows (unlike
+ * `getAccreditedOrcidsByAccount`, which is active-only). Side-by-side
+ * imports in `papers.ts` previously made it easy to grab the wrong helper
+ * during autocomplete — the explicit `AllEver` keeps the semantic
+ * distinction visible at the call site.
  */
 export type AccreditationStatus = 'active' | 'revoked';
 
-export async function getAccreditationOrcidsWithStatus(): Promise<
+export async function getAllEverAccreditedOrcidsWithStatus(): Promise<
   Map<string, { orcid: string | null; status: AccreditationStatus }>
 > {
   const arr = await hafCache.getOrSet<
@@ -246,26 +274,5 @@ export async function getAccreditationOrcidsWithStatus(): Promise<
     map.set(account, { orcid, status });
   }
   return map;
-}
-
-export async function getAllAccreditedAccounts(): Promise<Set<string>> {
-  const arr = await hafCache.getOrSet<string[]>('accredited_accounts_all', async () => {
-    const pool = getPool();
-    if (!pool) return [];
-
-    try {
-      const cte = activeAccreditationsCteBody();
-      const result = await pool.query(
-        `WITH ${cte.sql}
-         SELECT account FROM active_accreditations`,
-        cte.params,
-      );
-      return result.rows.map((r: { account: string }) => r.account);
-    } catch (err) {
-      logger.error({ err }, 'HAF full accreditation set query failed');
-      throw err;
-    }
-  }, 10 * 60_000, true);
-  return new Set(arr);
 }
 
