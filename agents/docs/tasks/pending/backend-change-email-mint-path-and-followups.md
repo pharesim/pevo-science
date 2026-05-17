@@ -82,3 +82,54 @@ Single commit, in order:
 - Companion task: `backend-settings-set-password-fresh-auth.md` (held back to pending/ with HELD-PENDING-FIXES — sibling cleanup on the same fresh-auth primitive)
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-17, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` on commit ac7fd31 (6 reviewers: correctness/security/adversarial on Opus; testing, maintainability, learnings-researcher on Sonnet; project-standards skipped — convention sweep established across cluster; reliability/kieran-typescript skipped — no new error-handling or type definitions in this round-1).
+
+All 9 task-scoped items land per the task spec (mint widening, kind_mismatch in 403, snapshot-restore on SMTP fail, no-row JWT guard, helper adoption, slug strip, test additions). Four P1 findings surface in the implementation details + a pre-existing composition issue the gate-completing work failed to address.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 75 — cross-reviewer-promoted: security + adversarial) Pre-existing duplicate-email enumeration oracle at `backend/src/routes/settings.ts:147-162`.** The `SELECT WHERE primary_email = $1 OR pending_email = $1` runs BEFORE the fresh-auth gate at line ~205-243. A JWT-only attacker (no fresh-auth proof) probes any email and gets 409 DUPLICATE (registered) vs 401 FRESH_AUTH_REQUIRED (not registered). Pre-existing from b27bcdf (the original email-reauth landing), but newly enumerable because the fresh-auth gate now provides the contrasting 401. Task 6's gate-completing work was the natural place to fix the composition; round-1 did not.
+
+Suggested fix: hoist the fresh-auth consume above the duplicate-email SELECTs on the Change branch. Order: (1) parse body, (2) consume fresh-auth proof, (3) only on valid proof, run the duplicate-email SELECT + UPDATE + SMTP. This closes the 401-vs-409 oracle. Architect call: keep the body-validation 400 BAD_REQUEST gates before consume (they don't disclose registration state).
+
+**2. (P1, conf 75 — cross-reviewer-promoted: correctness + adversarial + security) Snapshot-restore concurrency race at `backend/src/routes/settings.ts:172-321`.** The SELECT-snapshot-UPDATE-SMTP-restore sequence is non-transactional. Concurrent change-email requests can interleave such that request 2 snapshots request 1's intermediate values, and an SMTP-fail on request 2 restores those values clobbering request 1's successful change.
+
+Suggested fix (one-line scoping): scope the restore UPDATE with `WHERE username = $4 AND pending_email_token = <just-written-token>`. The just-written token is unique per request; the restore only fires if THIS request's UPDATE is still the current row state. If a concurrent request already overwrote, the restore no-ops (intended). Closes the race without adding transaction overhead.
+
+Alternative: wrap snapshot+UPDATE+SMTP+restore in a single DB transaction with SELECT FOR UPDATE. Heavier; the WHERE-scoping is the minimal fix.
+
+**3. (P1, conf 100, testing T1) SMTP-fail Change-flow snapshot-restore has NO test.** Production behavior change (round-1 item 7: restore `prior.pending_email` instead of NULL on SMTP fail). The only SMTP-fail test in the codebase (`settings.test.ts:376`) exercises the Add-flow branch (no existing row), not the Change-flow snapshot-restore branch. Reverting `settings.ts:315` from `prior.pending_email` to `NULL` passes all tests silently. Real regression escape, not theoretical.
+
+Suggested fix: add a Change-flow test in `settings-email-fresh-auth.test.ts`:
+1. Seed STATE_A_USER with pending_email = NEW_EMAIL_A via a prior successful change request
+2. Mint a fresh proof for a second change to NEW_EMAIL_B
+3. Stub `sendMail` via `vi.mocked(sendMail).mockRejectedValueOnce(...)` to fail
+4. POST /api/settings/email with the new proof
+5. Assert: status reflects the chosen SMTP-fail status (per finding #4 below — 500 or 200), AND DB query shows `pending_email === NEW_EMAIL_A` (restored, not nulled)
+
+**4. (P1?, conf 75, learnings-researcher) Verify SMTP-fail status-code matches the established convention.** Per `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`, the team's established shape for SMTP failure on routes that have already written DB state is Option A (catch `sendMail`, log warn, return 200 anyway) to avoid the status-code oracle ("email known vs unknown"). If round-1's snapshot-restore branch returns 500 on SMTP fail, that creates the enumeration oracle the convention guards against.
+
+Action: read `backend/src/routes/settings.ts` SMTP-fail branch at HEAD and verify the status code returned. If 500, either:
+- (a) Move to catch+warn+200 per Option A (the documented preferred shape)
+- (b) Document why this route diverges from the convention (a route that's already pre-gated by fresh-auth has different threat exposure than `/signup`'s pre-gate enumeration concern)
+
+Architect lean: Option (a). The fresh-auth gate doesn't change the convention's logic — once DB state is written + secondary effect fails, the user-facing semantic should be "the change was queued; we'll retry mail; visit settings to see status" rather than a 500.
+
+### Items dismissed during architect triage
+
+- **P2 (adversarial)**: JWT-guard message distinguishability at settings.ts:196. Defense-in-depth; the JWT-mint-invariant is the load-bearing protection. Conf 50; below actionable bar.
+- **P3 (adversarial)**: New task-slug citation in test file `settings-email-fresh-auth.test.ts:594` (describe-block header). Test-file slug citations are lower operational risk; consistent with the test-file-slug acceptance pattern in earlier cluster reviews.
+- **P3 (correctness residual)**: `existing[0]` re-aliased as `prior = existing[0]` for the rollback block. Style consideration; below gate.
+- **P3 (testing RR1)**: kind_mismatch 403 branch at /api/settings/email route-level not separately pinned. Lib-level coverage at `fresh-auth.test.ts:543` exists; cross-target test exercises the same ternary branch.
+- **Cross-surface concern (adversarial)**: `consumeSessionFreshAuthToken` cross-kind accept is a documented design choice (task 3's cross-kind acceptance). Out of scope for this task.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+Recommendation: items 1+2 cluster on `settings.ts` (hoist + scope-WHERE) and can land in one commit. Item 3 is a test addition. Item 4 is a verify-then-fix that may not require a code change depending on what HEAD shows.
