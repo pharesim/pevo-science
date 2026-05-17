@@ -208,3 +208,39 @@ Round-2 hold items 1-7 landed across `backend/src/index.ts`, `backend/src/startu
 - `npm run typecheck`: clean (zero errors on `src/`).
 - `npm run typecheck:tests`: 242 errors, identical to baseline pre-edit (verified via `git stash + typecheck:tests` reflecting 242). All 242 are pre-existing CommonJS-top-level-await flags across unrelated test files; the new test additions in `backend/tests/jobs/custody-audit-retention-sweep.test.ts` introduce zero new errors.
 - Tests not run in worktree per fan-out protocol; parent serializes after merge.
+
+---
+
+## Architect re-review (2026-05-17, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` on commit 0cafb3a (5 reviewers). All 7 round-2 hold items land in INTENT. However, round-3 ITSELF introduced new violations of the conventions items 4 and 7 were addressing — the "convention-enforcing fix must audit its own new code" pattern (commit 717f990). Four items held.
+
+### Items held (must fix before archive)
+
+**1. (P2, conf 100, maintainability M1) Item 7 incomplete — round-3 introduced 2 NEW task-slug citations.** Round-3 dropped slugs from the module-header and parseRetentionMonthsFromComment throw, but its own new comments re-introduced the pattern:
+- `backend/src/startup-checks.ts:277` — new BootFatalError docblock opens with `BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP round-3 item 3:`.
+- `backend/src/index.ts:171` — new `.catch` block comment opens with `BootFatalError discrimination (BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP round-3 item 1):`.
+
+Suggested fix:
+- `startup-checks.ts:277-284`: replace with behavioral prose. E.g., "Accepts `ErrorOptions` so re-throw sites can pass `{cause: err}` to preserve the underlying error chain (ES2022 native; pino's err serializer walks `.cause` recursively)."
+- `index.ts:171-172`: replace with `BootFatalError discrimination:`.
+
+**2. (P3, conf 85, maintainability M2 + correctness corr-1 cross) Item 4 incomplete — NEW line-number anchor at `backend/src/index.ts:175`.** The `.catch` comment says "The sync top-level catch in `index.ts` (lines 80-85) already discriminates this class". Same convention `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` item 4 was fixing.
+
+Suggested fix: replace `(lines 80-85)` with "The synchronous top-level try/catch wrapping `validateConfig()` / `createApp()`".
+
+**3. (P3, conf 70, correctness corr-2) The "mirror that pattern" claim at `index.ts:175` misleads** — sync and async catch paths diverge on logging behavior. Sync pre-logs validateConfig context; async logs the BootFatalError message.
+
+Suggested fix: replace "mirror that pattern" with "discriminate on `instanceof BootFatalError` to log the error's own message rather than the generic 'Failed to initialize app database' label".
+
+**4. (P3, conf 90, testing T1 + correctness corr-3) Item 5(b) null-pool smoke test under-asserts.** `backend/tests/jobs/custody-audit-retention-sweep.test.ts:170` asserts only `not.toThrow()`. Advertised contract is "no setInterval registered". A mutation moving `if (!pool) return` past setInterval would survive (setInterval doesn't throw).
+
+Suggested fix: add `vi.spyOn(global, 'setInterval')` before the call, assert `expect(setInterval).not.toHaveBeenCalled()`, then restore.
+
+### Items dismissed during architect triage
+
+None below the actionable bar.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. All four items can land in a single focused commit; fix shape is byte-trivial at each site.
