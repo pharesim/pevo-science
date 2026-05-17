@@ -79,7 +79,7 @@ Extend the round-3 503 spec in `backend/tests/routes/accreditation-idempotency.t
 
 ## Implementer signal (Backend, 2026-05-17)
 
-Round 1 landed at commit `dcf400c`. All 6 acceptance items addressed in a single commit.
+Round 1 landed at commit `15856a5`. All 6 acceptance items addressed in a single commit.
 
 **Files touched:**
 - `backend/src/routes/accreditation.ts` — added `skipFailedRequests: true` to `accreditationVerifyLimiter` (now at line 55 after the preamble comment, was at line 36); added `res.set('Retry-After', '30')` at line 578, immediately before the 503 `ACCREDITATION_GATE_UNAVAILABLE` `sendError`. Preamble comment on the limiter explicitly enumerates the route's full 4xx-vs-5xx surface (acceptance #3 below) and the rationale for the symmetric refund.
