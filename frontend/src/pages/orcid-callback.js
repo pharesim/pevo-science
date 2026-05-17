@@ -113,6 +113,13 @@ export function initOrcidCallbackPage() {
 
     destroy() {
       this._teardownTimers();
+      // Mid-callback teardown clears the return-path pointer so a later
+      // ORCID flow that does not write `pevo_orcid_return_to` (e.g. signup)
+      // cannot read a stale 'recover' value and route the user to the
+      // wrong destination. Parity with `pevo_orcid_mode`'s scrub-on-logout
+      // in `auth.js`. Happy-path resolution already removes the key inside
+      // `_handleSignup`; this covers the abandoned-mid-flight path.
+      sessionStorage.removeItem('pevo_orcid_return_to');
     },
 
     async _verify(code, state, mode) {

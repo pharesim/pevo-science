@@ -541,10 +541,20 @@ describe('orcidCallbackPage', () => {
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_id', 'id');
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_name', 'Jane');
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
-      // The pevo_orcid_return_to key (consumed inside _handleSignup) must
-      // stay intact so a later retry still knows whether to route to
-      // /signup vs /recover.
-      expect(sessionStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to');
+    });
+
+    it('destroy() clears pevo_orcid_return_to so a later non-recover flow does not inherit stale "recover"', () => {
+      sessionStorageData['pevo_orcid_return_to'] = 'recover';
+      const comp = createComponent();
+
+      // Kick off _verify with a never-resolving completeOrcid so the callback
+      // is in-flight when destroy() fires (the abandoned-mid-callback path).
+      mockCompleteOrcid.mockReturnValue(new Promise(() => {}));
+      comp._verify('code', 'state', 'signup');
+      comp.destroy();
+
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_return_to');
+      expect(sessionStorageData['pevo_orcid_return_to']).toBeUndefined();
     });
 
     it('_handleLink: post-teardown resolution does not set link flag or navigate', async () => {
@@ -582,7 +592,6 @@ describe('orcidCallbackPage', () => {
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_token', 'tok');
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_id', 'id');
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_name', 'Jane');
-      expect(sessionStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to');
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
       expect(mockToastStore.show).not.toHaveBeenCalled();
     });
