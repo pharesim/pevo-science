@@ -368,3 +368,101 @@ Net: two adopters of `skipFailedRequests` (`custody:51` and `accreditation:35`),
 - `backend/tests/routes/custody-upgrade.test.ts` — added future-dated `signed_at` 401 test.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-17, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` on commits 16c6ac7..c9c7c5f (9 reviewers). All 5 round-2 hold items land cleanly: atomic Lua INCR/DECR/PEXPIRE closes both bugs; clock-skew Option A bounded correctly; verbatim call-site audit satisfies convention; JSDoc misuse warning; task-file citation dropped.
+
+Six items held — new findings introduced by the rate-limit primitive overhaul.
+
+### Items held (must fix before archive)
+
+**1. (P0, conf 75, security + reliability cross) `res.on('close')` not handled — refund only fires on `'finish'`.** `backend/src/middleware/rateLimit.ts:100-109`. TCP-abort/client-disconnect doesn't fire `'finish'`; the deferred DECR never runs; the slot stays consumed for the window. For `/api/custody/upgrade` (max=1/hour, account-keyed), a single dropped connection locks the user out for the full hour — exactly the anti-recovery-attack scenario `skipFailedRequests` was supposed to prevent. A stolen-JWT attacker can exploit this by aborting requests mid-stream to burn the legitimate user's slot.
+
+Suggested fix: register on both `'finish'` and `'close'` with a once-guard:
+```ts
+let refunded = false;
+const refund = () => {
+  if (refunded || res.statusCode < 400) return;
+  refunded = true;
+  void redis.decr(redisKey).catch((err) => logger.debug({err}, 'rate_limit.refund_failed'));
+};
+res.on('finish', refund);
+res.on('close', refund);
+```
+The `close`-arm should still check `res.statusCode < 400` (or `res.writableFinished` as a proxy) to distinguish clean-finish-then-close from abrupt disconnect. Note: this differs from the architect's round-2 dismissed item (which was scoped at P3 acceptable residual for `/upgrade`'s narrow exposure); the round-3 promotion of this option to the shared primitive raises the blast radius — now every adopter inherits the gap.
+
+**2. (P1, conf 90, kieran-typescript KT-1) Unsafe `as [number, number]` cast on `evalScript` return at `rateLimit.ts:82` + structural fix at `redis-scripts.ts:164`.** Combine with item from round-3 review of KT-3 (evalScript Promise<unknown> structural typing).
+
+`evalScript` is typed `Promise<unknown>`. The call site casts the result directly to `[number, number]`. ioredis can return null elements in Lua array returns (older Redis, type mismatch, edge cases). `result[0] === 1` evaluates false on null → 429s ALL traffic silently. No narrowing guard.
+
+Suggested fix (ScriptReturn[N] mapped-type approach — addresses both the immediate hole AND the recurrence-prevention concern KT-3 raised):
+
+```ts
+// backend/src/lib/redis-scripts.ts
+type ScriptReturn = {
+  RATE_LIMIT_CHECK_AND_CONSUME: [number, number];
+  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: number;
+  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
+};
+export async function evalScript<N extends SharedScriptName>(
+  redis: Redis,
+  name: N,
+  keys: string[],
+  args: (string | number)[],
+): Promise<ScriptReturn[N]> { /* ... */ }
+```
+
+Plus runtime narrowing at the call site (defense-in-depth against ioredis returning wrong-shape):
+```ts
+const result = await evalScript(redis, 'RATE_LIMIT_CHECK_AND_CONSUME', [redisKey], [config.max, config.windowMs]);
+if (!Array.isArray(result) || typeof result[0] !== 'number' || typeof result[1] !== 'number') {
+  logger.warn({event: 'rate_limit.malformed_lua_return', name: config.name}, 'rate_limit malformed Lua return — falling through to in-memory');
+  // fall through to in-memory path
+}
+```
+
+The mapped type + narrowing makes future script additions automatically type-safe (KT-3 closure) AND closes the immediate null-element hole (KT-1).
+
+**3. (P2, conf 75, security) Unconditional PEXPIRE makes rolling window, not fixed.** `redis-scripts.ts:108`. The Lua script PEXPIREs unconditionally on every successful INCR. For account-keyed credential-verifying routes with skipFailedRequests this is the intended fix (closes the permanent-lockout bug). For IP-keyed limiters WITHOUT skipFailedRequests (loginLimiter, recoverLimiter, signupLimiter, resetLimiter, etc.) this changes the semantic from fixed-window to rolling-window: an attacker storming a NAT-shared IP can keep the bucket pinned at `max` indefinitely, denying legitimate users from the same IP indefinitely.
+
+Suggested fix (architect's call between two options):
+- **Option A — gate the unconditional PEXPIRE behind `skipFailedRequests=true`**: keep fixed-window semantics for non-skipFailed limiters (most of the existing call sites); only adopt rolling-window for the two skipFailed adopters. This requires passing skipFailedRequests as an ARGV to the Lua script and branching on it.
+- **Option B — document the rolling-window semantic in the JSDoc**: accept that all limiters are now rolling-window. Update the JSDoc to make this explicit so future adopters understand. Smaller code change; semantic shift is operator-visible but bounded.
+
+Architect recommendation: Option B. The rolling-window shift is mild relative to the credential-probing-route-vs-skipFailed concern (which is separately tracked). Operator-visible behavior change should be documented; surgical Lua branching adds complexity without commensurate benefit. Update the JSDoc on `RateLimitConfig` and the `RATE_LIMIT_CHECK_AND_CONSUME_LUA` comment to make the rolling-window semantic explicit.
+
+**4. (P2, conf 75, kieran-typescript KT-2) Stale `redis` binding captured in `res.on('finish')` closure.** `rateLimit.ts:100`. The `redis` reference is obtained from `getRedis()` at handler entry and captured by the deferred callback. By finish-time, the binding may be in a different state (reconnect cycle, etc.). TS sees it non-null via the outer guard; runtime may differ. blast contained by try/catch.
+
+Suggested fix: call `getRedis()` inside the finish/close callback (after item 1's combined-handler fix) and null-check before calling DECR.
+
+**5. (P2, conf 75, testing TG-1) In-memory `skipFailedRequests` splice path has no dedicated test.** All 3 new rateLimit tests guard with `if (!ready) return` and exercise only the Redis DECR path. The in-memory splice at `rateLimit.ts:139-143` (`indexOf` + `splice`) is a distinct failure mode: if `indexOf` returns -1 (e.g., entry evicted by cleanup interval between push and finish), the splice silently no-ops and the slot leaks permanently.
+
+Suggested fix: add a test that forces in-memory mode (stub `getRedis()` to return null, or run with `REDIS_URL` unset), exercises skipFailedRequests with a 500-status handler, and asserts the splice refund occurs. Doesn't need to be elaborate — one targeted test against the in-memory branch.
+
+**6. (P2, conf 75, adversarial) `UPGRADE_PROOF_FUTURE_SKEW_MS = 5_000` hardcoded; no env-tunable, no diagnostic log on skew rejection.** `custody.ts:940`. If server NTP drifts >5s ahead of client, ALL legitimate upgrades silently reject with 401. No operational signal that clock skew is the cause.
+
+Suggested fix (smaller scope): add a structured warn log at the skew-reject branch with `event: 'custody.upgrade.proof_future_skew'` + `tsMs`, `nowMs`, `skewMs` fields. An operator seeing repeated logs can diagnose NTP. Env-tunable is overkill at PEvO scale (single-instance per memory); skip.
+
+### Items dismissed during architect triage
+
+- **adversarial (P2 conf 60): Stale refund-DECR cascade** — when handler exceeds windowMs, refund-DECR creates key at -1 with no TTL → effectively doubles capacity. Requires handler exceeding 1h (Hive RPC hang). Documented residual.
+- **adversarial: skipFailedRequests enables state-probing more broadly** — overlaps with task 4 finding #1 (architect's accepted tradeoff documented at 41e4d60).
+- **adversarial: in-memory `pushedTs = now` collision** — sub-ms edge case, dev-mode-only path.
+- **testing TG-2: +5s acceptance boundary test missing** — implicit in happy-path tests using `Date.now()`. Per `feedback_dismiss_preemptive_test_hardening`.
+- **kieran-typescript KT-4: `createSkipFailedApp` hardcodes `skipFailedRequests: true`** — test structure nit, conf 50.
+- **3 P3 correctness findings**: accreditation.ts:30 stale comment, accreditation.ts:33 stale line citation, sliding-window-on-success undoc. Pre-existing or doc-drift.
+- **security: DECR refund failures logged at debug instead of warn** — bounded by 60s TTL self-healing per `feedback_pevo_logging_minimal`.
+- **NTP drift hardening tier** — overlaps with item 6's chosen scope.
+
+### Cross-task coordination note
+
+Task 4 r2 (commit 6dad488, landed AFTER task 5 r3 c9c7c5f on main) added `skipFailedRequests: true` to `freshAuthLimiter` AND `sessionAuthLimiter`. Task 5 r3's verbatim audit grep listed both as "NOT using skipFailedRequests, OK" — accurate at c9c7c5f time but stale at main HEAD. The audit is a verbatim snapshot; no update needed. Task 4 r2 hold block (commit 41e4d60) documents this as architect's accepted tradeoff.
+
+### Re-review signal
+
+When items 1-6 land, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
+
+Recommendation: items 1+2+4 cluster on `rateLimit.ts` and can land in one focused commit. Items 3+5 are separate (Lua script JSDoc + in-memory test). Item 6 is a `custody.ts` skew-log addition.
