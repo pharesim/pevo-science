@@ -981,7 +981,10 @@ const UPGRADE_PROOF_TIMESTAMP_WINDOW_MS = 60_000;
 // `signed_at` discussion in the doc comment above for rationale.
 const UPGRADE_PROOF_FUTURE_SKEW_MS = 5_000;
 
-function buildCustodyUpgradeChallenge(input: {
+// Exported for test-support only (frontend byte-equality canary asserts the
+// SPA's challenge construction matches the server's). Not a stable contract;
+// remains an internal route helper.
+export function buildCustodyUpgradeChallenge(input: {
   appTag: string;
   username: string;
   signedAt: string;
