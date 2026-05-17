@@ -501,7 +501,11 @@ async function driveWizardToBackendPost(page) {
   await page.getByRole('button', { name: 'Begin Upgrade' }).click();
   await page.getByRole('button', { name: "I’ve written it down" }).waitFor();
 
-  // Fill confirm-new via Alpine proxy and advance.
+  // proceedToConfirmNew() (triggered by "I've written it down") is what
+  // populates confirmIndices and resets confirmInputs to {}, so the
+  // Alpine-proxy fill MUST come after the click.
+  await page.getByRole('button', { name: "I’ve written it down" }).click();
+  await page.getByRole('button', { name: 'Next' }).waitFor();
   await page.evaluate(() => {
     const el = document.querySelector('[x-data="settingsPage"]');
     const data = window.Alpine.$data(el);
@@ -509,7 +513,6 @@ async function driveWizardToBackendPost(page) {
       data.confirmInputs[i] = data.newSeedWords[i];
     }
   });
-  await page.getByRole('button', { name: "I’ve written it down" }).click();
   await page.getByRole('button', { name: 'Next' }).click();
 
   // Type a real (independent) old mnemonic so validateMnemonic passes

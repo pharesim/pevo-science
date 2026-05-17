@@ -73,12 +73,12 @@ test('orcid-callback session_auth caches the issued proof in sessionStorage', as
   });
 
   // Pre-seed the in-flight context the way `mintNonConsentProof` would:
-  // localStorage holds the orcid_mode so the callback routes to the
-  // session_auth handler, sessionStorage holds the return path the handler
-  // should bounce the user back to after success.
+  // sessionStorage holds both the orcid_mode (migrated from localStorage
+  // 2026-05-17 to avoid cross-tab interference) and the return path the
+  // handler should bounce the user back to after success.
   await page.addInitScript(
     ({ modeKey, returnKey, returnPath }) => {
-      window.localStorage.setItem(modeKey, 'session_auth');
+      window.sessionStorage.setItem(modeKey, 'session_auth');
       window.sessionStorage.setItem(returnKey, returnPath);
     },
     {
@@ -101,10 +101,11 @@ test('orcid-callback session_auth caches the issued proof in sessionStorage', as
   expect(parsed.token).toBe(issuedProof);
   expect(parsed.expiresAt).toBe(expiresAt);
 
-  // Mode + return path are cleared after the handler runs.
+  // Mode + return path are cleared after the handler runs (both now in
+  // sessionStorage after the 2026-05-17 cross-tab-interference migration).
   const cleared = await page.evaluate(
     ({ modeKey, returnKey }) => ({
-      mode: window.localStorage.getItem(modeKey),
+      mode: window.sessionStorage.getItem(modeKey),
       returnPath: window.sessionStorage.getItem(returnKey),
     }),
     { modeKey: 'pevo_orcid_mode', returnKey: RETURN_PATH_KEY },

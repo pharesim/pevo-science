@@ -45,10 +45,11 @@ async function captureCallbackRequest(page, { fulfillBody }) {
 test('link mode sends Authorization: Bearer on callback', async ({ page }) => {
   const { token } = await seedUnaccreditedSession(page);
 
-  // The orcid-callback page reads `pevo_orcid_mode` from localStorage
-  // (set before the ORCID redirect). Seed it so the page routes `link`.
+  // The orcid-callback page reads `pevo_orcid_mode` from sessionStorage
+  // (migrated from localStorage 2026-05-17 to avoid cross-tab interference).
+  // Seed it so the page routes `link`.
   await page.addInitScript(() => {
-    window.localStorage.setItem('pevo_orcid_mode', 'link');
+    window.sessionStorage.setItem('pevo_orcid_mode', 'link');
   });
 
   const captured = await captureCallbackRequest(page, {
@@ -80,7 +81,7 @@ test('signup mode omits Authorization header on callback', async ({ page }) => {
   // login. completeOrcid('signup') must go through the unauthenticated
   // `request()` helper so this flow never throws UNAUTHORIZED locally.
   await page.addInitScript(() => {
-    window.localStorage.setItem('pevo_orcid_mode', 'signup');
+    window.sessionStorage.setItem('pevo_orcid_mode', 'signup');
   });
 
   const captured = await captureCallbackRequest(page, {
