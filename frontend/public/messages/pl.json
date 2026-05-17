@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Zgłoszenie autorstwa odrzucone.",
     "rejectFailed": "Nie udało się odrzucić zgłoszenia autorstwa."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Opublikuj pracę",
     "browsePapers": "Przeglądaj publikacje",

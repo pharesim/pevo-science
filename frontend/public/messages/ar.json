@@ -1162,6 +1162,9 @@
     "rejectSuccess": "تم رفض مطالبة التأليف.",
     "rejectFailed": "فشل رفض مطالبة التأليف."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "نشر بحث",
     "browsePapers": "تصفّح الأبحاث",

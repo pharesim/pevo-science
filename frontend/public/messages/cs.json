@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Nárok na autorství odmítnut.",
     "rejectFailed": "Odmítnutí nároku na autorství se nezdařilo."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Publikovat článek",
     "browsePapers": "Procházet články",

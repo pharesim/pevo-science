@@ -142,6 +142,12 @@ export function initVoteButtons() {
         return;
       }
 
+      // Entry guard: the template's `:disabled="isVoting"` is stale between a
+      // double-click and the first await that sets `isVoting = true` (currently
+      // set only after `broadcastConfirm.request()` resolves). Without this
+      // guard, two rapid clicks both reach the body and race the broadcast.
+      if (this.isVoting) return;
+
       // Already voted at this weight — ignore
       if (this.currentWeight === weight) {
         this.selectorOpen = false;

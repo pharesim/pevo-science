@@ -18,6 +18,16 @@ export function initBroadcastConfirm() {
       const auth = Alpine.store('auth');
       if (auth.custody !== 'light') return Promise.resolve(true);
 
+      // Single-slot _resolve: if a previous request() is still awaiting,
+      // cancel it before overwriting. Without this, two components (e.g.
+      // two voteButtons on the same paper-detail page) calling request()
+      // back-to-back orphan the first Promise forever, leaving the first
+      // caller's `isVoting` flag stuck.
+      if (this._resolve) {
+        try { this._resolve(false); } catch { /* noop */ }
+        this._resolve = null;
+      }
+
       this.title = title;
       this.message = message;
       this.confirmLabel = confirmLabel || Alpine.store('i18n').messages?.common?.confirm || 'Confirm';

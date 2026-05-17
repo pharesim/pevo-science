@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Krav på forfatterskab afvist.",
     "rejectFailed": "Kunne ikke afvise krav på forfatterskab."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Publicer en artikel",
     "browsePapers": "Gennemse artikler",

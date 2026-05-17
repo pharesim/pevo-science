@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Autorschaftsanspruch abgelehnt.",
     "rejectFailed": "Autorschaftsanspruch konnte nicht abgelehnt werden."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Publikation veröffentlichen",
     "browsePapers": "Publikationen durchsuchen",

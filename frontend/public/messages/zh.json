@@ -1162,6 +1162,9 @@
     "rejectSuccess": "作者身份认领已拒绝。",
     "rejectFailed": "拒绝作者身份认领失败。"
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "发表论文",
     "browsePapers": "浏览论文",

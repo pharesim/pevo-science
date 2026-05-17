@@ -1073,3 +1073,21 @@ pt: upgrade.backendTimeout
 sv: upgrade.backendTimeout
 tr: upgrade.backendTimeout
 zh: upgrade.backendTimeout
+
+### Added 2026-05-17 (UI-NON-CONSENT-BROADCAST-FRESH-AUTH-WIRING)
+
+ar: auth.sessionInconsistency
+cs: auth.sessionInconsistency
+da: auth.sessionInconsistency
+de: auth.sessionInconsistency
+es: auth.sessionInconsistency
+fa: auth.sessionInconsistency
+fr: auth.sessionInconsistency
+he: auth.sessionInconsistency
+it: auth.sessionInconsistency
+nl: auth.sessionInconsistency
+pl: auth.sessionInconsistency
+pt: auth.sessionInconsistency
+sv: auth.sessionInconsistency
+tr: auth.sessionInconsistency
+zh: auth.sessionInconsistency

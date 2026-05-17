@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Reivindicação de autoria rejeitada.",
     "rejectFailed": "Falha ao rejeitar reivindicação de autoria."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Publicar um Artigo",
     "browsePapers": "Explorar Artigos",

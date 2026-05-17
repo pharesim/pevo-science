@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Rivendicazione di paternità rifiutata.",
     "rejectFailed": "Rifiuto della rivendicazione non riuscito."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Pubblica un Articolo",
     "browsePapers": "Esplora Articoli",

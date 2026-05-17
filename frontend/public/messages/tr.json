@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Yazarlık talebi reddedildi.",
     "rejectFailed": "Yazarlık talebi reddedilemedi."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Makale Yayınla",
     "browsePapers": "Makalelere Göz At",

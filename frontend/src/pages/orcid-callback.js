@@ -89,12 +89,16 @@ export function initOrcidCallbackPage() {
         return;
       }
 
-      // Read mode from localStorage (set before redirect) for error routing.
+      // Read mode from sessionStorage (set before redirect) for error routing.
       // Do NOT remove it here. If completeOrcid fails (e.g. 503) and the user
       // refreshes, we need the mode to still be present so the retry can
       // reach the correct endpoint with the correct auth. It's cleared after
       // completeOrcid resolves successfully inside _verify.
-      const mode = localStorage.getItem('pevo_orcid_mode') || '';
+      // Migrated from localStorage in round-2 of the non-consent-broadcast
+      // fresh-auth task to fix cross-tab interference (two tabs in different
+      // modes silently overwriting each other). Per-tab sessionStorage
+      // survives the ORCID OAuth round-trip in the originating tab.
+      const mode = sessionStorage.getItem('pevo_orcid_mode') || '';
 
       if (mode === 'signup' || mode === 'login') {
         this.backPath = mode === 'signup' ? '/signup' : '/login';
@@ -201,7 +205,7 @@ export function initOrcidCallbackPage() {
       // inside the handler after the mutation resolves. Otherwise a mid-await
       // destroy() could clear the mode without routing the flow, breaking
       // the 503-refresh-retry invariant.
-      localStorage.removeItem('pevo_orcid_mode');
+      sessionStorage.removeItem('pevo_orcid_mode');
 
       // Handlers self-guard on _mounted. The dispatch-level check above is
       // belt-and-suspenders — either guard alone would suffice; both together

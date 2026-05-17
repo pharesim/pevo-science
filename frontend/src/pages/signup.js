@@ -247,7 +247,10 @@ export function initSignupPage() {
         field: this.field,
       }));
 
-      localStorage.setItem('pevo_orcid_mode', 'signup');
+      // sessionStorage (not localStorage) — see fresh-auth.js mintNonConsentProof
+      // for the cross-tab-interference rationale; all `pevo_orcid_mode` writers
+      // migrated together in round-2.
+      sessionStorage.setItem('pevo_orcid_mode', 'signup');
 
       try {
         const data = await startOrcid('signup');
@@ -256,7 +259,7 @@ export function initSignupPage() {
       } catch (err) {
         if (!this._mounted) return;
         this.orcidLoading = false;
-        localStorage.removeItem('pevo_orcid_mode');
+        sessionStorage.removeItem('pevo_orcid_mode');
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[signup orcid verify]', err);
         this.error = this.$t('signup.orcidStartFailed');
@@ -268,7 +271,10 @@ export function initSignupPage() {
       this.orcidLoading = true;
       this.error = null;
 
-      localStorage.setItem('pevo_orcid_mode', 'signup');
+      // sessionStorage (not localStorage) — see fresh-auth.js mintNonConsentProof
+      // for the cross-tab-interference rationale; all `pevo_orcid_mode` writers
+      // migrated together in round-2.
+      sessionStorage.setItem('pevo_orcid_mode', 'signup');
 
       try {
         const data = await startOrcid('signup');
@@ -277,7 +283,7 @@ export function initSignupPage() {
       } catch (err) {
         if (!this._mounted) return;
         this.orcidLoading = false;
-        localStorage.removeItem('pevo_orcid_mode');
+        sessionStorage.removeItem('pevo_orcid_mode');
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[signup orcid start]', err);
         this.error = this.$t('signup.orcidStartFailed');

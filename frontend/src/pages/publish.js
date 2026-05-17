@@ -896,7 +896,16 @@ export function initPublishPage() {
         ];
         const broadcastResult = await broadcastWithFreshAuth(username, operations);
         if (!this._mounted) return;
-        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
+        // FRESH_AUTH_REDIRECT_PENDING covers both the in-flight ORCID redirect
+        // (broadcast will resume post-callback) AND the 403 username_mismatch
+        // case where broadcastWithFreshAuth has already disconnected + toasted.
+        // In the latter case the page won't navigate away, so the step
+        // machine must be reset out of 'broadcasting' or the UI hangs
+        // forever showing the in-progress spinner.
+        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) {
+          this.step = 'idle';
+          return;
+        }
 
         this.step = 'success';
         localStorage.removeItem(DRAFT_KEY);

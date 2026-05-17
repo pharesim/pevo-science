@@ -303,7 +303,10 @@ export function initAccreditationPage() {
       this.orcidLoading = true;
       this.errorMessage = '';
 
-      localStorage.setItem('pevo_orcid_mode', 'accredit');
+      // sessionStorage (not localStorage) — see fresh-auth.js mintNonConsentProof
+      // for the cross-tab-interference rationale; all `pevo_orcid_mode` writers
+      // migrated together in round-2.
+      sessionStorage.setItem('pevo_orcid_mode', 'accredit');
 
       try {
         const data = await startOrcid('accredit');
@@ -318,7 +321,7 @@ export function initAccreditationPage() {
         console.warn('[accreditation orcid verify]', err);
         Alpine.store('toast').show(this.$t('accreditation.orcidVerifyFailed'), 'error');
         this.orcidLoading = false;
-        localStorage.removeItem('pevo_orcid_mode');
+        sessionStorage.removeItem('pevo_orcid_mode');
       }
     },
   }));

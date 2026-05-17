@@ -1162,6 +1162,9 @@
     "rejectSuccess": "תביעת מחברות נדחתה.",
     "rejectFailed": "דחיית תביעת המחברות נכשלה."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "פרסום מאמר",
     "browsePapers": "עיון במאמרים",

@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Claim op auteurschap afgewezen.",
     "rejectFailed": "Claim op auteurschap kon niet worden afgewezen."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Publiceer een artikel",
     "browsePapers": "Bekijk publicaties",

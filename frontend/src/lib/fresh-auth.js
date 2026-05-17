@@ -33,7 +33,7 @@ const RETURN_PATH_KEY = 'pevo_fresh_auth_return_to';
 // and unwinds cleanly without a generic error toast firing during navigation.
 export const FRESH_AUTH_REDIRECT_PENDING = null;
 
-export function getCachedSessionProof() {
+function getCachedSessionProof() {
   try {
     const raw = sessionStorage.getItem(PROOF_KEY);
     if (!raw) return null;
@@ -67,7 +67,7 @@ export function cacheSessionProof(token, expiresAt) {
   }
 }
 
-export function clearCachedSessionProof() {
+function clearCachedSessionProof() {
   try {
     sessionStorage.removeItem(PROOF_KEY);
   } catch {
@@ -159,24 +159,32 @@ export function clearReturnPath() {
 // State A password mint path lands in a follow-up after the backend ships
 // `POST /api/custody/session-auth` (see
 // `backend-custody-session-auth-password-mint.md`).
-export async function mintNonConsentProof() {
+async function mintNonConsentProof() {
   const cached = getCachedSessionProof();
   if (cached) return cached;
 
-  const router = Alpine.store('router');
-  const returnPath = (router && router.path) || window.location.pathname || '/';
+  // `router.path` is not set on the router store today; fall back directly
+  // to window.location.pathname. The dead `router && router.path` branch
+  // was removed per round-2 hold finding adv-task6-6.
+  const returnPath = window.location.pathname || '/';
   try {
     sessionStorage.setItem(RETURN_PATH_KEY, returnPath);
   } catch {
     /* return-path fallback handled in callback */
   }
-  localStorage.setItem('pevo_orcid_mode', 'session_auth');
+  // `pevo_orcid_mode` lives in sessionStorage to avoid cross-tab interference
+  // between concurrent ORCID flows. localStorage is shared across tabs, so a
+  // second tab in a different mode (e.g. 'link') would silently overwrite
+  // tab 1's 'session_auth' marker and route the callback to the wrong
+  // handler. sessionStorage is per-tab and survives the ORCID OAuth
+  // round-trip (orcid.org → /orcid/callback) within the originating tab.
+  sessionStorage.setItem('pevo_orcid_mode', 'session_auth');
 
   let data;
   try {
     data = await startOrcid('session_auth');
   } catch (err) {
-    localStorage.removeItem('pevo_orcid_mode');
+    sessionStorage.removeItem('pevo_orcid_mode');
     clearReturnPath();
     throw err;
   }
@@ -187,12 +195,12 @@ export async function mintNonConsentProof() {
   try {
     target = new URL(data.redirect_url);
   } catch {
-    localStorage.removeItem('pevo_orcid_mode');
+    sessionStorage.removeItem('pevo_orcid_mode');
     clearReturnPath();
     throw new Error('Invalid ORCID redirect URL');
   }
   if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
-    localStorage.removeItem('pevo_orcid_mode');
+    sessionStorage.removeItem('pevo_orcid_mode');
     clearReturnPath();
     throw new Error('Invalid ORCID redirect URL');
   }
@@ -226,6 +234,11 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
   try {
     return await broadcastOps(username, operations, { ...opts, freshAuthProof: proof });
   } catch (err) {
+    // Error shape `{ status, code, details }` is produced by signer.js#broadcastOps
+    // (see frontend/src/signer.js — the non-2xx branch parses the JSON envelope
+    // and rethrows). Keep this catch's branching aligned with the codes that
+    // helper attaches; any new error code introduced upstream must be reflected
+    // here.
     // Proof is single-use, consumed atomically before the broadcast attempt.
     // Whether the broadcast succeeded or failed, the proof is now gone — drop
     // the cache so any retry mints a fresh one.
@@ -248,10 +261,13 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
       // Critical session inconsistency; force re-login.
       if (err.status === 403 && err.details?.reason === 'username_mismatch') {
         auth.disconnect();
-        Alpine.store('toast')?.show(
-          'Session inconsistency detected. Please sign in again.',
-          'error',
-        );
+        // fresh-auth.js is a lib, not an Alpine component, so it cannot use
+        // the `$t` magic helper. Reach into the i18n store directly; fall
+        // back to the English value if the locale bundle hasn't loaded.
+        const msg =
+          Alpine.store('i18n')?.messages?.auth?.sessionInconsistency ||
+          'Session inconsistency detected. Please sign in again.';
+        Alpine.store('toast')?.show(msg, 'error');
         return FRESH_AUTH_REDIRECT_PENDING;
       }
 

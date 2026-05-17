@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Anspråk på författarskap avvisat.",
     "rejectFailed": "Kunde inte avvisa anspråk på författarskap."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Publicera en artikel",
     "browsePapers": "Bläddra bland artiklar",

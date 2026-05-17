@@ -639,7 +639,10 @@ export function initSettingsPage() {
       this.orcidLinking = true;
       this.orcidError = null;
 
-      localStorage.setItem('pevo_orcid_mode', 'link');
+      // sessionStorage (not localStorage) — see fresh-auth.js mintNonConsentProof
+      // for the cross-tab-interference rationale; all `pevo_orcid_mode` writers
+      // migrated together in round-2.
+      sessionStorage.setItem('pevo_orcid_mode', 'link');
 
       try {
         const data = await startOrcid('link');
@@ -658,7 +661,7 @@ export function initSettingsPage() {
         console.warn('[orcid link]', err);
         this.orcidError = this.$t('settings.orcidLinkFailed');
         this.orcidLinking = false;
-        localStorage.removeItem('pevo_orcid_mode');
+        sessionStorage.removeItem('pevo_orcid_mode');
       }
     },
 

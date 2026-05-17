@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Authorship claim rejected.",
     "rejectFailed": "Failed to reject authorship claim."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Publish a Paper",
     "browsePapers": "Browse Papers",

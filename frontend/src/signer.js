@@ -13,15 +13,15 @@ import Alpine from 'alpinejs';
  *
  * @param {string} username
  * @param {Array} operations - Array of [opType, opBody] tuples
- * @param {object|string} [opts] - Options object, or legacy keyType string ('posting'|'active')
+ * @param {object} [opts] - Options object. All callers pass an object;
+ *   the legacy bare-keyType-string form was removed in round-2 of the
+ *   non-consent-broadcast fresh-auth task (no remaining callers).
  * @param {string} [opts.freshAuthProof] - Single-use proof token (light-account only)
  * @param {string} [opts.keyType='posting'] - Keychain key type (self-custody only)
  * @returns {Promise<{tx_id?: string, block_num?: number, outcome?: string}>}
  */
 export async function broadcastOps(username, operations, opts = {}) {
-  // Back-compat: third arg used to be a bare keyType string.
-  const { freshAuthProof, keyType = 'posting' } =
-    typeof opts === 'string' ? { keyType: opts } : opts;
+  const { freshAuthProof, keyType = 'posting' } = opts;
   const auth = Alpine.store('auth');
 
   if (auth.custody === 'light') {

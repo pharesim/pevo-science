@@ -222,7 +222,10 @@ export function initLoginPage() {
       this.orcidLoading = true;
       this.error = null;
 
-      localStorage.setItem('pevo_orcid_mode', 'login');
+      // sessionStorage (not localStorage) — see fresh-auth.js mintNonConsentProof
+      // for the cross-tab-interference rationale; all `pevo_orcid_mode` writers
+      // migrated together in round-2.
+      sessionStorage.setItem('pevo_orcid_mode', 'login');
 
       try {
         const data = await startOrcid('login');
@@ -231,7 +234,7 @@ export function initLoginPage() {
       } catch (err) {
         if (!this._mounted) return;
         this.orcidLoading = false;
-        localStorage.removeItem('pevo_orcid_mode');
+        sessionStorage.removeItem('pevo_orcid_mode');
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[login orcid start]', err);
         this.error = this.$t('login.orcidStartFailed');

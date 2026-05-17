@@ -1162,6 +1162,9 @@
     "rejectSuccess": "Reclamo de autoría rechazado.",
     "rejectFailed": "No se pudo rechazar el reclamo de autoría."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "Publicar un artículo",
     "browsePapers": "Explorar artículos",

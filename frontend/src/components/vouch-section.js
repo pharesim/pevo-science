@@ -95,7 +95,14 @@ export function initVouchSection() {
           }),
         }]]);
         if (!this._mounted) return;
-        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
+        // FRESH_AUTH_REDIRECT_PENDING covers both the ORCID redirect-in-flight
+        // case and the 403 username_mismatch disconnect+toast case. Reset
+        // the step machine so the UI doesn't hang at 'signing' indefinitely
+        // when the page doesn't navigate away (the 403 path).
+        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) {
+          this.step = 'idle';
+          return;
+        }
         try {
           const res = await notifyVouch(this.targetUsername);
           if (!this._mounted) return;
@@ -138,7 +145,13 @@ export function initVouchSection() {
           }),
         }]]);
         if (!this._mounted) return;
-        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
+        // See handleVouch above for the rationale on the explicit step
+        // reset; both paths share the same FRESH_AUTH_REDIRECT_PENDING
+        // semantics from broadcastWithFreshAuth.
+        if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) {
+          this.step = 'idle';
+          return;
+        }
         try {
           const res = await notifyRetractVouch(this.targetUsername);
           if (!this._mounted) return;

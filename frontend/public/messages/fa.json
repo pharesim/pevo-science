@@ -1162,6 +1162,9 @@
     "rejectSuccess": "ادعای نویسندگی رد شد.",
     "rejectFailed": "رد ادعای نویسندگی ناموفق بود."
   },
+  "auth": {
+    "sessionInconsistency": "Session inconsistency detected. Please sign in again."
+  },
   "landing": {
     "publishPaper": "انتشار مقاله",
     "browsePapers": "مرور مقالات",
