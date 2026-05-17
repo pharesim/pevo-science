@@ -76,3 +76,35 @@ The backend already emits the discriminator. SPA-side change is consumer-only. N
 - `frontend/src/api.js:28-33,63-71` — `ApiRequestError.retryAfterSeconds` parser.
 - `backend/src/routes/accreditation.ts:530-558` — backend emit site (gate catch branch).
 - Sibling backend task: `backend-accreditation-verify-limiter-skip-failed` (limiter `skipFailedRequests` + `Retry-After: 30` emission).
+
+---
+
+Architect re-review (2026-05-17) — HELD PENDING FIXES:
+
+Round-1 implementation at commit `b66a370` meets all seven acceptance criteria (state branch, same-token retry, Retry-After honoring, non-retriable Request New, en.json + 15 stubs, six required specs, no api-contract edit). Token-preservation invariant holds (`_token` captured once in `init()`, never mutated). `_cooldownId` supersession is sound. Two race-related fixes are required before archive; three findings were triaged dismissed or filed as separate tasks.
+
+1. **Concurrent `_verify()` calls share state; last-write-wins race** (P2 — julik-frontend-races).
+   The current implementation has no guard against a second `_verify()` flight starting while the first is still in-flight. Both promises write to the same `state` / `errorMessage` / `resultUsername` fields when they settle. `_mounted` protects against teardown only, not against two concurrent in-flight verifications racing each other.
+
+   **Failure shape:** user clicks Retry on slow network → first verify in-flight → user double-taps (see item 2 for the entry-point window) → second verify fires → first verify resolves with `state = 'success'` → second verify resolves with `state = 'retriable_error'` and overwrites the successful verification. The token is now gone server-side (first attempt consumed it) AND the user sees "service unavailable". This is exactly the regression the task was filed to prevent, one error class up.
+
+   **Fix shape:** add a `_verifyGeneration` counter mirroring the existing `_cooldownId` supersession pattern already in the same file. Bump it at the top of `_verify()`, capture into the `.then` / `.catch` closure, bail before writing state if the captured generation no longer matches `this._verifyGeneration`. ~5 lines, single file, no new dependency. This is the canonical PEvO shape — see `agents/docs/solutions/conventions/synchronous-flag-before-await-idempotency-guard-2026-05-16.md`.
+
+2. **`retryVerification` double-submit window: no `state === 'loading'` guard** (P3 — julik-frontend-races).
+   The current guard checks `retryCooldownRemaining > 0` only. Between `state = 'loading'` and Alpine's x-if teardown of the Retry button, a second click can pass the cooldown guard and fire a second `_verify()`. This is the user-driven entry point to item 1's race.
+
+   **Fix shape:** add `if (this.state === 'loading') return;` as the first line of `retryVerification()`. Fold into item 1's round — same file, one line.
+
+   Belt + suspenders with item 1's generation counter: the loading-guard prevents the concurrent flight entirely; the generation counter is a defensive backstop if a future caller bypasses `retryVerification`.
+
+3. **Test coverage for the new guards.**
+   Add specs:
+   - Two concurrent `_verify()` flights where the first resolves with success **after** the second has overwritten state with retriable_error — assert the final state is the success state (the loser's `.then`/`.catch` bails on generation mismatch).
+   - Rapid synthetic double-tap on Retry while `state === 'loading'` — assert `mockVerifyAccreditation` is called exactly once.
+
+   Existing seven specs continue to pass unchanged.
+
+Findings triaged dismissed or filed elsewhere this pass:
+- `_isRetriable` discriminator scope (reliability R1 + maintainability M1, cross-corroborated anchor 100): **dismissed** — the task explicitly authored the `code || details.retriable` disjunct as the SPA-side contract for any 5xx retriable; implementation matches spec.
+- `retriable_error` state name reads as sub-type but is a peer (maintainability M2): **dismissed** — preemptive rename for hypothetical future variants; normalize if/when a third variant lands.
+- `TypeError` / `AbortError` not classified retriable (reliability R5): **filed as new task** `ui-accreditation-verify-network-error-retriable.md` in `pending/`.
