@@ -537,6 +537,13 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
         code: 'ACCREDITATION_GATE_UNAVAILABLE',
         details: { retriable: true },
       });
+      // BACKEND-ACCREDITATION-VERIFY-LIMITER-SKIP-FAILED acceptance #5:
+      // server-driven backoff cadence. The SPA's ApiRequestError
+      // infrastructure (frontend/src/api.js:28-33,63-71) already parses
+      // Retry-After into `err.retryAfterSeconds`. 30s is the
+      // operator-tunable HAF-outage recovery default. supertest
+      // lowercases header names per the Node http convention.
+      expect(res.headers['retry-after']).toBe('30');
       // Broadcast must NOT fire under HAF outage — the override class is
       // closed by short-circuiting before the broadcast path.
       expect(broadcastJsonMock).not.toHaveBeenCalled();
@@ -568,6 +575,52 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  // BACKEND-ACCREDITATION-VERIFY-LIMITER-SKIP-FAILED acceptance #4: the
+  // /verify limiter at accreditation.ts:36 declares `skipFailedRequests:
+  // true` so a 503 ACCREDITATION_GATE_UNAVAILABLE response refunds the
+  // per-IP slot. Without it, a HAF outage burns the IP's 5 slots/60s in
+  // 5 retries and the legitimate user trips 429 RATE_LIMITED for the
+  // next ~60s — locked out even after HAF recovers. Mirrors
+  // backend/tests/routes/custody-upgrade.test.ts:518 (sibling pin for
+  // the upgrade limiter). The limiter is keyed `byIp`; supertest pins
+  // remoteAddress to 127.0.0.1 so every request in this file shares the
+  // same bucket. The afterEach hook clears `rl:accred-verify:*` keys so
+  // this spec starts at an empty bucket.
+  it('503 ACCREDITATION_GATE_UNAVAILABLE refunds the per-IP limiter slot (skipFailedRequests canary)', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    // Drive the limiter's max (5/60s) consecutive 503s. With
+    // `skipFailedRequests: true`, every 503 refunds; without it, the
+    // 6th request 429s before the handler runs.
+    for (let i = 0; i < 5; i++) {
+      const token = `accred-idem-refund-${i}-${crypto.randomBytes(8).toString('hex')}`;
+      const username = `slotrefund${i}user`;
+      await seedPendingAccreditation(token, username);
+      hafQueryMock.mockRejectedValueOnce(new Error('haf outage'));
+      const res = await request(app).post('/api/accreditation/verify').send({ token });
+      expect(res.status).toBe(503);
+      expect(res.body.error?.code).toBe('ACCREDITATION_GATE_UNAVAILABLE');
+    }
+    // 6th request from the same IP: if the slot-refund worked, this
+    // reaches the route handler and returns 503 again. If it had NOT
+    // refunded, the limiter would short-circuit with 429 RATE_LIMITED.
+    // The discriminating assertion is `not.toBe(429)` — the exact
+    // status of the 6th call depends on the next hafQueryMock setup
+    // (here another 503) but the load-bearing claim is "the limiter
+    // did not lock the user out."
+    const finalToken = `accred-idem-refund-final-${crypto.randomBytes(8).toString('hex')}`;
+    const finalUsername = 'slotrefundfinaluser';
+    await seedPendingAccreditation(finalToken, finalUsername);
+    hafQueryMock.mockRejectedValueOnce(new Error('haf still down'));
+    const finalRes = await request(app)
+      .post('/api/accreditation/verify')
+      .send({ token: finalToken });
+    expect(finalRes.status).not.toBe(429);
+    // Confirm we reached the route handler (gate-throw path → 503).
+    expect(finalRes.status).toBe(503);
+    expect(finalRes.body.error?.code).toBe('ACCREDITATION_GATE_UNAVAILABLE');
   });
 
   it('gate-hit token cleanup failure — 200 envelope unaffected + existing_accreditation_hit_token_cleanup_failed warn', async () => {

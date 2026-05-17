@@ -37,7 +37,26 @@ const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 // the limiter's symmetric refund will not rate-limit pre-handler probes.
 // Mirrors the `upgradeLimiter` shape in `custody.ts`.
 const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount, skipFailedRequests: true });
-const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp });
+// The /verify limiter caps per-IP requests but must refund the slot on
+// failure responses. During a HAF outage the existing-accreditation gate
+// (`accreditation.ts:552-558`) returns 503 ACCREDITATION_GATE_UNAVAILABLE
+// with `details.retriable: true`; the user's expected behaviour is to
+// refresh-and-retry once HAF recovers. Without `skipFailedRequests`,
+// each 503 burns one of the 5 slots per 60s and the legitimate user
+// trips 429 RATE_LIMITED before HAF comes back. Per
+// `RateLimitConfig.skipFailedRequests` JSDoc (rateLimit.ts:100-101) the
+// refund branch keys on ANY `res.statusCode >= 400`, including 4xx:
+// 400 BAD_REQUEST (invalid/expired token at accreditation.ts:436),
+// 500 INTERNAL_ERROR (missing admin key at accreditation.ts:442),
+// 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED / POST_BROADCAST_OPERATOR_REQUIRED,
+// 503 ACCREDITATION_GATE_UNAVAILABLE / SERVICE_UNAVAILABLE (pre-INCR
+// counter failed), 504 BROADCAST_TIMEOUT. The 4xx refund is acceptable
+// here because BAD_REQUEST is the only client-error path on /verify and
+// it short-circuits BEFORE any expensive work (HAF probes, broadcast),
+// so probing only costs Redis-rate-limit ops with no chain side
+// effects. Mirrors the `accreditationRequestLimiter` shape above and
+// `upgradeLimiter` in custody.ts.
+const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp, skipFailedRequests: true });
 
 const router = Router();
 
@@ -573,6 +592,14 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         },
         'accreditation.verify existing-accreditation gate HAF query failed — returning 503 SERVICE_UNAVAILABLE; token preserved for retry',
       );
+      // Server-driven backoff cadence (30s default). The SPA's
+      // ApiRequestError infrastructure (frontend/src/api.js:28-33,63-71)
+      // parses Retry-After into `err.retryAfterSeconds`; emitting it
+      // here lets layered consumers (SPA + nginx + any future
+      // auto-retry middleware) share a coherent floor instead of each
+      // picking its own cadence. 30s is a reasonable HAF-outage
+      // recovery default — operator-tunable if needed.
+      res.set('Retry-After', '30');
       return sendError(
         res,
         503,
