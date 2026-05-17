@@ -1139,3 +1139,26 @@ pt: verify.retryAvailableIn
 sv: verify.retryAvailableIn
 tr: verify.retryAvailableIn
 zh: verify.retryAvailableIn
+
+### Updated 2026-05-17 (UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW)
+
+English value of `upgrade.backendTimeout` was tightened in place to name the
+new (post-rotation) recovery phrase explicitly; the prior copy left users at
+risk of retrying with their original phrase. Translators who already started
+on the round-2 `Added` entry should retranslate.
+
+ar: upgrade.backendTimeout
+cs: upgrade.backendTimeout
+da: upgrade.backendTimeout
+de: upgrade.backendTimeout
+es: upgrade.backendTimeout
+fa: upgrade.backendTimeout
+fr: upgrade.backendTimeout
+he: upgrade.backendTimeout
+it: upgrade.backendTimeout
+nl: upgrade.backendTimeout
+pl: upgrade.backendTimeout
+pt: upgrade.backendTimeout
+sv: upgrade.backendTimeout
+tr: upgrade.backendTimeout
+zh: upgrade.backendTimeout

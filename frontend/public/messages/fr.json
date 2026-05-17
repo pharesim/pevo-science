@@ -971,7 +971,7 @@
     "oldSeedPlaceholder": "Saisissez les 12 mots séparés par des espaces",
     "execute": "Migrer le compte",
     "invalidOldSeed": "Phrase de récupération invalide. Vérifiez et réessayez.",
-    "backendTimeout": "Your upgrade may have succeeded but we could not confirm it. Sign out and sign back in to check your account state. Keep your new recovery phrase safe in case it is needed for recovery.",
+    "backendTimeout": "Your upgrade may have succeeded but we could not confirm it. Sign out and sign back in using the new recovery phrase shown earlier in this flow, not your original one. Your keys may have already rotated, so keep the new phrase safe.",
     "partialApplyFailed": "Account upgrade could not be completed. Your on-chain keys have already rotated, but the backend did not finish cleanup. Please contact support with your account name. Do not share your recovery phrase.",
     "backendUnavailable": "Could not reach the Hive network to verify your upgrade. Please retry.",
     "alreadyUpgraded": "This account has already been upgraded to self-custody. Please sign in again.",
