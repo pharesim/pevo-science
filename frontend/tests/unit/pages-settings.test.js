@@ -1736,7 +1736,8 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('done');
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-5 hold #3 (P2) + round-6 hold #1 (P1):
+    // FE-KEYCHAIN-API-MISUSE round-5 hold #3 (P2) + round-6 hold #1 (P1)
+    // + UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW round-2 hold #6 (P1):
     // Backend-cleanup fetch had no timeout. If the backend hangs after
     // account_update lands on-chain, the flow blocks on `await fetch(...)`
     // until OS-level TCP teardown — minutes for a half-open socket,
@@ -1744,11 +1745,13 @@ describe('settingsPage', () => {
     // upgradePhase is stuck at 'upgrading' and the mnemonic stays in
     // reactive state. AbortSignal.timeout(20_000) bounds the budget; the
     // resulting TimeoutError DOMException routes to upgrade.backendTimeout
-    // AND wipes the mnemonic (round-6: the round-5 no-wipe decision was
-    // reverted; the user already saw + confirmed the mnemonic in the
-    // new-seed/confirm-new phases, so keeping it in reactive state past
-    // the error screen is pure XSS surface with no recovery value).
-    it('backend cleanup fetch timeout → upgradeError + phase=error, mnemonic IS wiped', async () => {
+    // and does NOT wipe the mnemonic (round-2 reverted round-6's wipe
+    // decision: the backend may have committed `upgraded_at` before the
+    // abort fired, so the user must sign out and back in to discover
+    // whether the upgrade actually landed — and they may need the phrase
+    // for recovery if it didn't. The error copy directs them to that
+    // recovery path and tells them to keep the phrase safe).
+    it('backend cleanup fetch timeout → upgradeError + phase=error, mnemonic preserved (round-2 hold #6)', async () => {
       vi.useFakeTimers();
       try {
         mockIsKeychainInstalled.mockReturnValue(true);
@@ -1792,14 +1795,17 @@ describe('settingsPage', () => {
         expect(comp.upgradePhase).toBe('error');
         // Specific timeout message, not the generic backendFailed/failed.
         expect(comp.upgradeError).toBe('upgrade.backendTimeout');
-        // Mnemonic IS wiped (round-6 hold #1): the user already confirmed
-        // the new mnemonic in earlier phases and the error-screen copy
-        // (round-7 hold #1) directs them to contact support with their
-        // account name, not to recover from the in-DOM mnemonic. The
-        // Keychain-verification path was removed because `_performKeychainImport`
-        // never runs on the timeout branch — Keychain has no entry to verify.
-        expect(comp.newSeedPhrase).toBe('');
-        expect(comp.oldSeedPhrase).toBe('');
+        // Round-2 hold #6: mnemonic is preserved on the timeout branch.
+        // The backend may have committed `upgraded_at` before the abort
+        // fired; the user must sign out and back in to discover whether
+        // the upgrade landed, and they may need the phrase for recovery
+        // if it didn't. Wiping closes the only recovery surface.
+        expect(comp.newSeedPhrase).toBe(newMnemonic);
+        // oldSeedPhrase is also preserved on this branch — the wipe is
+        // gated on the same _clearSensitiveUpgradeState() that handles
+        // newSeedPhrase. Both stay until the user navigates away (destroy
+        // wipes them via the explicit teardown signal).
+        expect(comp.oldSeedPhrase).toBe(oldMnemonic);
 
         warnSpy.mockRestore();
       } finally {

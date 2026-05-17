@@ -1040,3 +1040,36 @@ pt: upgrade.keychainImportFailed
 sv: upgrade.keychainImportFailed
 tr: upgrade.keychainImportFailed
 zh: upgrade.keychainImportFailed
+
+### Added 2026-05-17 (UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW)
+
+ar: upgrade.proofRejected
+cs: upgrade.proofRejected
+da: upgrade.proofRejected
+de: upgrade.proofRejected
+es: upgrade.proofRejected
+fa: upgrade.proofRejected
+fr: upgrade.proofRejected
+he: upgrade.proofRejected
+it: upgrade.proofRejected
+nl: upgrade.proofRejected
+pl: upgrade.proofRejected
+pt: upgrade.proofRejected
+sv: upgrade.proofRejected
+tr: upgrade.proofRejected
+zh: upgrade.proofRejected
+ar: upgrade.backendTimeout
+cs: upgrade.backendTimeout
+da: upgrade.backendTimeout
+de: upgrade.backendTimeout
+es: upgrade.backendTimeout
+fa: upgrade.backendTimeout
+fr: upgrade.backendTimeout
+he: upgrade.backendTimeout
+it: upgrade.backendTimeout
+nl: upgrade.backendTimeout
+pl: upgrade.backendTimeout
+pt: upgrade.backendTimeout
+sv: upgrade.backendTimeout
+tr: upgrade.backendTimeout
+zh: upgrade.backendTimeout

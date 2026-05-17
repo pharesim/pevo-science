@@ -968,7 +968,7 @@
     "oldSeedPlaceholder": "Zadejte všech 12 slov oddělených mezerami",
     "execute": "Upgradovat účet",
     "invalidOldSeed": "Neplatná obnovovací fráze. Zkontrolujte ji a zkuste to znovu.",
-    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated, but Hive Keychain has not been updated yet. Please contact support with your account name. Do not share your recovery phrase.",
+    "backendTimeout": "Your upgrade may have succeeded but we could not confirm it. Sign out and sign back in to check your account state. Keep your new recovery phrase safe in case it is needed for recovery.",
     "partialApplyFailed": "Account upgrade could not be completed. Your on-chain keys have already rotated, but the backend did not finish cleanup. Please contact support with your account name. Do not share your recovery phrase.",
     "backendUnavailable": "Could not reach the Hive network to verify your upgrade. Please retry.",
     "alreadyUpgraded": "This account has already been upgraded to self-custody. Please sign in again.",
@@ -982,7 +982,8 @@
       "active": "Your active key was not imported into Hive Keychain. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help.",
       "memo": "Your memo key was not imported into Hive Keychain. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help."
     },
-    "keychainImportFailed": "Hive Keychain import did not complete. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help."
+    "keychainImportFailed": "Hive Keychain import did not complete. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help.",
+    "proofRejected": "Could not verify upgrade proof. If your clock is off, correct it and try again."
   },
   "resetPassword": {
     "requestTitle": "Obnovení hesla",

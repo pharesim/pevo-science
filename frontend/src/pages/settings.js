@@ -9,17 +9,69 @@ import { createTimerGuard } from '../lib/timer-guard.js';
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
 
-// Discriminator keys whose `upgradeErrorKey` value disables the Try Again
-// button (terminal post-broadcast sub-cases — chain rotation has landed
-// and a fresh attempt would sign account_update with stale old-seed keys).
-// To add a new non-retryable sub-case: append the key here AND assign it
-// at the catch-block sub-case below. See `canRetryUpgrade` getter.
-const NON_RETRYABLE_UPGRADE_ERROR_KEYS = [
-  'upgrade.backendTimeout',
-  'upgrade.partialApplyFailed',
-  'upgrade.alreadyUpgraded',
-  'upgrade.rateLimited',
-];
+// Round-2 hold #7: hoist every `upgradeErrorKey` discriminator into a single
+// const map paired with a `RETRYABILITY` annotation. Catch-block sub-cases
+// reference UPGRADE_ERROR_KEYS by symbolic name; `canRetryUpgrade` consumes
+// RETRYABILITY; `handleRetry` consumes RETRYABILITY to dispatch. Adding a
+// new sub-case is now a one-shot edit at this map (the catch-block site
+// and the dispatch site are both keyed off the same source); the previous
+// three-site synchronization burden (catch site, NON_RETRYABLE_UPGRADE_ERROR_KEYS
+// list, handleRetry switch) silently classified mis-typed keys as retryable
+// until someone happened to test the path.
+//
+// Retryability values:
+//   'retryable-backend-only' — chain rotation landed; only re-run the backend
+//                              cleanup POST via `retryUpgradeBackend()`. Keeps
+//                              `newSeedPhrase` in state so the re-derive
+//                              succeeds. (`upgrade.backendUnavailable` post-503
+//                              and `upgrade.proofRejected` first-401.)
+//   'retryable-reset'       — pre-broadcast failure; safe to reset the wizard
+//                              to 'idle' and re-broadcast. `handleRetry`
+//                              dispatches to `resetUpgrade()`.
+//   'terminal'              — chain rotation landed AND no further retry is
+//                              meaningful (alreadyUpgraded, rateLimited, second
+//                              401, post-broadcast backendTimeout, generic
+//                              partialApplyFailed). Try Again is hidden.
+const UPGRADE_ERROR_KEYS = {
+  keychainRequired: 'upgrade.keychainRequired',
+  generationFailed: 'upgrade.generationFailed',
+  failed: 'upgrade.failed',
+  proofRejected: 'upgrade.proofRejected',
+  backendUnavailable: 'upgrade.backendUnavailable',
+  backendTimeout: 'upgrade.backendTimeout',
+  partialApplyFailed: 'upgrade.partialApplyFailed',
+  alreadyUpgraded: 'upgrade.alreadyUpgraded',
+  rateLimited: 'upgrade.rateLimited',
+};
+
+const RETRYABILITY = {
+  [UPGRADE_ERROR_KEYS.keychainRequired]: 'retryable-reset',
+  [UPGRADE_ERROR_KEYS.generationFailed]: 'retryable-reset',
+  [UPGRADE_ERROR_KEYS.failed]: 'retryable-reset',
+  [UPGRADE_ERROR_KEYS.proofRejected]: 'retryable-backend-only',
+  [UPGRADE_ERROR_KEYS.backendUnavailable]: 'retryable-backend-only',
+  [UPGRADE_ERROR_KEYS.backendTimeout]: 'terminal',
+  [UPGRADE_ERROR_KEYS.partialApplyFailed]: 'terminal',
+  [UPGRADE_ERROR_KEYS.alreadyUpgraded]: 'terminal',
+  [UPGRADE_ERROR_KEYS.rateLimited]: 'terminal',
+};
+
+// Clock-skew tolerance before warning advisory fires. Backend's freshness
+// window is 60s; warn at 30s so the user has slack to correct before a
+// proof-rejected 401. Round-2 hold #1 fallback (advisory): the backend has
+// no `GET /api/time` endpoint as of 2026-05-17, so we cannot abort on skew;
+// we log a console.warn with the `signed_at` generation time as advisory
+// instead. When the backend endpoint lands, swap this to a hard pre-broadcast
+// abort with `upgrade.clockSkewBlocked` (architect to file the backend task).
+const UPGRADE_CLOCK_SKEW_WARN_MS = 30_000;
+
+// Round-2 hold #5: retry budget for proof-rejected (post-broadcast 401).
+// First 401 keeps `newSeedPhrase` and routes to a retryable sub-case so the
+// user can correct their system clock (the most-likely 401 cause under the
+// finding #1 scenario before a backend time endpoint exists). Second 401
+// wipes — at that point the proof is genuinely broken and a retry budget
+// past 2 would just delay an inevitable terminal route.
+const UPGRADE_PROOF_RETRY_BUDGET = 2;
 
 const template = `
       <div x-data="settingsPage" class="container-narrow py-8">
@@ -435,6 +487,19 @@ export function initSettingsPage() {
     // Old seed phrase entry
     oldSeedPhrase: '',
 
+    // Round-2 hold #5: post-broadcast 401-proof retry counter. Increments on
+    // every post-broadcast 401 (first in executeUpgrade, subsequent ones in
+    // retryUpgradeBackend). Below UPGRADE_PROOF_RETRY_BUDGET the catch keeps
+    // `newSeedPhrase` and routes to retryable `proofRejected`; at or above
+    // the budget the catch wipes and routes to terminal `partialApplyFailed`.
+    // Reset on `resetUpgrade` (a fresh wizard run is a new budget).
+    _proofRetryAttempts: 0,
+
+    // Round-2 hold #2: pageshow/beforeunload listener installed in init() and
+    // torn down in destroy() + on terminal phases. Held as a bound reference
+    // so addEventListener and removeEventListener target the same function.
+    _beforeUnloadHandler: null,
+
     get confirmCorrect() {
       return this.confirmIndices.every(
         (i) => this.confirmInputs[i]?.trim().toLowerCase() === this.newSeedWords[i]
@@ -457,17 +522,26 @@ export function initSettingsPage() {
     // Compares discriminator keys, not translated strings, so the result
     // is invariant to mid-error-screen locale switches.
     get canRetryUpgrade() {
-      return !NON_RETRYABLE_UPGRADE_ERROR_KEYS.includes(this.upgradeErrorKey);
+      // Round-2 hold #7: consume the RETRYABILITY annotation rather than a
+      // hand-curated NON_RETRYABLE list. Unknown keys (including null on the
+      // initial-load path) fall through to `true` to match the prior default,
+      // but every assigned key now appears in RETRYABILITY at module top so
+      // a typo lands as "undefined RETRYABILITY entry" rather than a silent
+      // classification flip.
+      return RETRYABILITY[this.upgradeErrorKey] !== 'terminal';
     },
 
     // Dispatch retry to the right action based on the error sub-case. The
-    // 503 post-broadcast sub-case (`upgrade.backendUnavailable`) preserves
-    // the chain-rotated state and retries only the backend cleanup call;
-    // every other retryable sub-case is a pre-broadcast failure that
-    // resets the wizard to idle so a fresh attempt regenerates the new
-    // mnemonic and re-broadcasts cleanly.
+    // `retryable-backend-only` sub-cases (post-broadcast 503 + first-401 proof
+    // rejection) preserve the chain-rotated state and retry only the backend
+    // cleanup call; the `retryable-reset` sub-cases are pre-broadcast failures
+    // that reset the wizard to idle so a fresh attempt regenerates the new
+    // mnemonic and re-broadcasts cleanly. Round-2 hold #7: dispatch reads
+    // RETRYABILITY (the single source of truth), not a hand-curated key
+    // comparison.
     handleRetry() {
-      if (this.upgradeErrorKey === 'upgrade.backendUnavailable') {
+      const r = RETRYABILITY[this.upgradeErrorKey];
+      if (r === 'retryable-backend-only') {
         this.retryUpgradeBackend();
       } else {
         this.resetUpgrade();
@@ -496,6 +570,34 @@ export function initSettingsPage() {
         if (connected) this.loadEmailStatus();
       });
 
+      // Round-2 hold #2: warn on tab close / navigation while
+      // `upgradePhase==='upgrading'`. Mid-broadcast unload bricks the account
+      // (server keeps stale keys, chain has new keys, next sign-in lands in
+      // a broken state with no auto-recovery — see executeUpgrade ordering
+      // comment). Browsers honour a non-empty `returnValue` as "you have
+      // unsaved changes". This is a UX affordance, not a hard block; modern
+      // browsers may suppress repeated dialogs and ignore the string content,
+      // but they still show the generic confirmation. Listener is bound to a
+      // method-reference field so destroy() can removeEventListener against
+      // the exact same handler — anonymous lambdas would silently leak across
+      // remount/unmount.
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        this._beforeUnloadHandler = (event) => {
+          if (this.upgradePhase === 'upgrading') {
+            // The string itself is largely ignored by modern browsers (Chrome
+            // and Firefox display their generic "Leave site?" dialog) but the
+            // non-empty `returnValue` is the signal that triggers the prompt
+            // at all. setting returnValue + returning the same string keeps
+            // legacy browsers happy too.
+            event.preventDefault();
+            event.returnValue = 'Upgrade in progress';
+            return 'Upgrade in progress';
+          }
+          return undefined;
+        };
+        window.addEventListener('beforeunload', this._beforeUnloadHandler);
+      }
+
       // Check if returning from ORCID link callback
       const orcidLinked = localStorage.getItem('pevo_orcid_link_complete');
       if (orcidLinked) {
@@ -521,6 +623,14 @@ export function initSettingsPage() {
       // this is plain object mutation, but reads sequencing matches the
       // happy-path order).
       this._clearSensitiveUpgradeState();
+      // Round-2 hold #2: remove the beforeunload listener so it does not
+      // remain bound to a torn-down component (would leak handler closures
+      // and would flash a confirm dialog on subsequent navigations even after
+      // the upgrade flow is gone).
+      if (this._beforeUnloadHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('beforeunload', this._beforeUnloadHandler);
+        this._beforeUnloadHandler = null;
+      }
       this._teardownTimers();
     },
 
@@ -653,9 +763,14 @@ export function initSettingsPage() {
     },
 
     startUpgrade() {
+      // Round-2 hold #5: ensure a fresh wizard run resets the proof-retry
+      // budget. resetUpgrade() does this for the Try Again path; startUpgrade()
+      // can be reached directly from idle without resetUpgrade firing first,
+      // so the reset has to happen here too.
+      this._proofRetryAttempts = 0;
       if (!isKeychainInstalled()) {
-        this.upgradeError = this.$t('upgrade.keychainRequired');
-        this.upgradeErrorKey = 'upgrade.keychainRequired';
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.keychainRequired);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.keychainRequired;
         this.upgradePhase = 'error';
         return;
       }
@@ -674,8 +789,8 @@ export function initSettingsPage() {
         // future library revision. Generic message to DOM, raw to
         // console.warn for diagnostics.
         console.warn('[custody upgrade start]', err);
-        this.upgradeError = this.$t('upgrade.generationFailed');
-        this.upgradeErrorKey = 'upgrade.generationFailed';
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.generationFailed);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.generationFailed;
         this.upgradePhase = 'error';
       }
     },
@@ -820,123 +935,42 @@ export function initSettingsPage() {
         // early return here leaks nothing.
         if (!this._mounted) return;
       } catch (err) {
-        // The (b)→(c) pair lives inside this try. A failure here means
-        // either (b) reverted (Keychain-signing of account_update denied,
-        // chain rejection) or (c) failed (backend refused). Both are real
-        // failures from the user's perspective. Sanitization pattern:
-        // generic localized message to DOM, raw err to console.warn for
-        // diagnostics — never x-text `err.message` directly in case a
-        // future library revision embeds key material in error strings.
-        const status = err && typeof err.status === 'number' ? err.status : null;
-
-        // Backend-cleanup timeout. AbortSignal.timeout() in
-        // `_postUpgradeBackend` produces a TimeoutError DOMException when
-        // the 20s budget elapses. On-chain rotation succeeded (b), only
-        // the backend cleanup hung. Surface a timeout-specific message
-        // and wipe — leaving the mnemonic in reactive state past the
-        // error screen is pure XSS surface with no recovery value (the
-        // user wrote down the mnemonic at the new-seed phase).
-        //
-        // Gated on `broadcastLanded`: the shortcut routes to a
-        // non-retryable sub-case (Try Again hidden, copy directs to
-        // support) only AFTER the chain rotation has landed. A pre-
-        // broadcast TimeoutError/AbortError (e.g. dhive surfacing a hung
-        // connection as AbortError on the `account_update` sign, or a
-        // future timeout added to the broadcast) is genuinely retriable
-        // because the chain has NOT rotated; falls through to the
-        // pre-broadcast `upgrade.failed` catch-all.
-        if (err && (err.name === 'TimeoutError' || err.name === 'AbortError') && broadcastLanded) {
-          console.warn('[custody upgrade] backend cleanup timeout', err);
-          this._clearSensitiveUpgradeState();
-          this.upgradeError = this.$t('upgrade.backendTimeout');
-          this.upgradeErrorKey = 'upgrade.backendTimeout';
-          this.upgradePhase = 'error';
-          return;
-        }
-
-        // Post-broadcast 503: Hive RPC unavailable during the backend's
-        // chain-state lookup. The chain rotation already landed, so
-        // re-running the wizard from idle would generate a new mnemonic
-        // and re-broadcast account_update with stale old-seed keys (auth
-        // mismatch, chain reject). The retry path keeps `newSeedPhrase`,
-        // re-signs a fresh proof with a new `signed_at`, and re-POSTs —
-        // `retryUpgradeBackend()` handles this. State is NOT wiped here
-        // because the retry needs `newSeedPhrase` to re-derive.
-        if (broadcastLanded && status === 503) {
-          console.warn('[custody upgrade] backend 503', err);
-          this.upgradeError = this.$t('upgrade.backendUnavailable');
-          this.upgradeErrorKey = 'upgrade.backendUnavailable';
-          this.upgradePhase = 'error';
-          return;
-        }
-
-        // Post-broadcast 409 ALREADY_UPGRADED: backend cleanup already
-        // ran in an earlier attempt (timed-out request that actually
-        // committed, retried). On-chain rotation already landed too.
-        // Wipe state and surface a terminal sub-case — there's nothing
-        // for the user to retry, but the local session token may still
-        // be a `light` JWT, so the user should re-login to pick up the
-        // self-custody session.
-        if (broadcastLanded && status === 409) {
-          console.warn('[custody upgrade] already upgraded', err);
-          this._clearSensitiveUpgradeState();
-          this.upgradeError = this.$t('upgrade.alreadyUpgraded');
-          this.upgradeErrorKey = 'upgrade.alreadyUpgraded';
-          this.upgradePhase = 'error';
-          return;
-        }
-
-        // Post-broadcast 429: rate-limit budget (1/hour/account) exhausted.
-        // Nothing the user can do in-app; wipe and surface terminal copy.
-        if (broadcastLanded && status === 429) {
-          console.warn('[custody upgrade] rate limited', err);
-          this._clearSensitiveUpgradeState();
-          this.upgradeError = this.$t('upgrade.rateLimited');
-          this.upgradeErrorKey = 'upgrade.rateLimited';
-          this.upgradePhase = 'error';
-          return;
-        }
-
-        // Defense in depth: zero sensitive state on the catch-all path.
-        this._clearSensitiveUpgradeState();
-        console.warn('[custody upgrade]', err);
-        // Catch-all post-broadcast failures (401/403 proof rejection,
-        // 500 internal error, network drop) are NOT retriable: the chain
-        // has already rotated to the new keys, so a fresh attempt would
-        // sign account_update with old seed-derived keys and the chain
-        // would reject with auth mismatch. Route to a non-retryable
-        // sub-case so `canRetryUpgrade` hides Try Again and the
-        // user-facing copy directs to support. Pre-broadcast failures
-        // (Keychain denial of account_update, chain rejection of the
-        // broadcast itself, invalid old seed) are genuinely retriable.
-        if (broadcastLanded) {
-          this.upgradeError = this.$t('upgrade.partialApplyFailed');
-          this.upgradeErrorKey = 'upgrade.partialApplyFailed';
-        } else {
-          this.upgradeError = this.$t('upgrade.failed');
-          this.upgradeErrorKey = 'upgrade.failed';
-        }
-        this.upgradePhase = 'error';
+        // Round-2 hold #8: the post-broadcast catch ladder previously
+        // duplicated 4-5 cases verbatim across executeUpgrade and
+        // retryUpgradeBackend. Drift between the two ladders silently
+        // mis-classified failures. The shared helper consumes the
+        // UPGRADE_ERROR_KEYS const map from round-2 hold #7 so every
+        // sub-case has exactly one source-of-truth assignment site.
+        this._handlePostBroadcastError(err, { broadcastLanded, logTag: '[custody upgrade]' });
         return;
       }
 
       await this._completeUpgradeAfterBackend(newSeedPhrase);
     },
 
-    // Backend-cleanup retry. Reachable only from the 'error' phase with
-    // `upgradeErrorKey === 'upgrade.backendUnavailable'` (post-broadcast
-    // 503). Keeps `newSeedPhrase` from the failed attempt, re-derives a
-    // fresh proof (new `signed_at` + new signature), and re-POSTs only
-    // the backend cleanup call. The chain rotation already landed in
-    // `executeUpgrade` and is NOT re-attempted — re-broadcasting
-    // account_update with stale old-seed keys would auth-fail at the
-    // chain. On success, runs the keychain-import tail and transitions
-    // to 'done' just like the happy path. On 503 again, stays in the
-    // retryable error state. On any other failure, terminal post-
-    // broadcast sub-case (wipe + partialApplyFailed).
+    // Backend-cleanup retry. Reachable from the 'error' phase whenever
+    // `RETRYABILITY[upgradeErrorKey] === 'retryable-backend-only'` — that's
+    // post-broadcast 503 (`upgrade.backendUnavailable`) and the first-401
+    // proof rejection (`upgrade.proofRejected`, round-2 hold #5). Keeps
+    // `newSeedPhrase` from the failed attempt, re-derives a fresh proof
+    // (new `signed_at` + new signature), and re-POSTs only the backend
+    // cleanup call. The chain rotation already landed in `executeUpgrade`
+    // and is NOT re-attempted — re-broadcasting account_update with stale
+    // old-seed keys would auth-fail at the chain. On success, runs the
+    // keychain-import tail and transitions to 'done' just like the happy
+    // path. On 503 again, stays in the retryable error state. On a second
+    // 401 (proof retry budget exhausted), terminal partialApplyFailed.
     async retryUpgradeBackend() {
+      // Round-2 hold #4: concurrency gate. Flip phase to 'upgrading' as the
+      // first synchronous statement after the guard checks, mirroring
+      // executeUpgrade's pattern. Without this, two parallel invocations
+      // (rapid double-click on the Try Again button, $watch re-entry from
+      // the phase write itself) both pass the guard before either writes
+      // 'upgrading' and we issue two parallel /api/custody/upgrade POSTs
+      // with two fresh signed proofs — same hazard the executeUpgrade
+      // round-5 hold pin addressed at the chain-broadcast site.
       if (this.upgradePhase !== 'error') return;
-      if (this.upgradeErrorKey !== 'upgrade.backendUnavailable') return;
+      if (RETRYABILITY[this.upgradeErrorKey] !== 'retryable-backend-only') return;
       const newSeedPhrase = this.newSeedPhrase;
       if (!newSeedPhrase) {
         // Defensive: `newSeedPhrase` is cleared on every terminal
@@ -944,8 +978,8 @@ export function initSettingsPage() {
         // Route to partialApplyFailed (terminal) rather than offering
         // another retry that would re-derive from an empty string.
         this._clearSensitiveUpgradeState();
-        this.upgradeError = this.$t('upgrade.partialApplyFailed');
-        this.upgradeErrorKey = 'upgrade.partialApplyFailed';
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.partialApplyFailed);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.partialApplyFailed;
         return;
       }
       this.upgradePhase = 'upgrading';
@@ -954,9 +988,11 @@ export function initSettingsPage() {
       try {
         const proof = await this._signUpgradeProof(newSeedPhrase);
         const result = await this._postUpgradeBackend(proof);
-        // Post-await unmount guard mirrors executeUpgrade: the backend
-        // cleanup can take up to 20s and post-503 retry is exactly when
-        // the user is most likely to navigate away.
+        // Round-2 hold #3: post-await unmount guard before
+        // loginFromResponse. The backend cleanup can take up to 20s and
+        // post-503 retry is exactly when the user is most likely to
+        // navigate away. Without the guard, the singleton auth store
+        // mutates for a user whose component has unmounted.
         if (!this._mounted) return;
         Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
@@ -969,48 +1005,133 @@ export function initSettingsPage() {
         // on an orphaned component.
         if (!this._mounted) return;
       } catch (err) {
-        const status = err && typeof err.status === 'number' ? err.status : null;
-        if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-          console.warn('[custody upgrade retry] timeout', err);
-          this._clearSensitiveUpgradeState();
-          this.upgradeError = this.$t('upgrade.backendTimeout');
-          this.upgradeErrorKey = 'upgrade.backendTimeout';
-          this.upgradePhase = 'error';
-          return;
-        }
-        if (status === 503) {
-          // Stays retryable. State is preserved so the user can click
-          // Try Again again. No wipe.
-          console.warn('[custody upgrade retry] 503', err);
-          this.upgradeError = this.$t('upgrade.backendUnavailable');
-          this.upgradeErrorKey = 'upgrade.backendUnavailable';
-          this.upgradePhase = 'error';
-          return;
-        }
-        if (status === 409) {
-          console.warn('[custody upgrade retry] already upgraded', err);
-          this._clearSensitiveUpgradeState();
-          this.upgradeError = this.$t('upgrade.alreadyUpgraded');
-          this.upgradeErrorKey = 'upgrade.alreadyUpgraded';
-          this.upgradePhase = 'error';
-          return;
-        }
-        if (status === 429) {
-          console.warn('[custody upgrade retry] rate limited', err);
-          this._clearSensitiveUpgradeState();
-          this.upgradeError = this.$t('upgrade.rateLimited');
-          this.upgradeErrorKey = 'upgrade.rateLimited';
-          this.upgradePhase = 'error';
-          return;
-        }
-        this._clearSensitiveUpgradeState();
-        console.warn('[custody upgrade retry]', err);
-        this.upgradeError = this.$t('upgrade.partialApplyFailed');
-        this.upgradeErrorKey = 'upgrade.partialApplyFailed';
-        this.upgradePhase = 'error';
+        // Round-2 hold #8: shared helper (see executeUpgrade's catch).
+        // `broadcastLanded: true` is the contract here — retryUpgradeBackend
+        // is only ever reached after executeUpgrade's broadcast already
+        // landed, so every failure is post-broadcast by construction.
+        this._handlePostBroadcastError(err, { broadcastLanded: true, logTag: '[custody upgrade retry]' });
         return;
       }
       await this._completeUpgradeAfterBackend(newSeedPhrase);
+    },
+
+    // Shared post-broadcast error router. Consumes UPGRADE_ERROR_KEYS so the
+    // sub-case assignments here are the single source-of-truth — drift
+    // between this helper and the const map becomes a `undefined` reference
+    // at runtime, which is louder than the pre-refactor silent
+    // mis-classification. The `wipe` choice is encoded per sub-case here, not
+    // taken from the caller: timeout always wipes, 409/429 always wipe,
+    // proof-rejected wipes only on the SECOND consecutive 401 (round-2 hold
+    // #5 retry-budget), 503 never wipes (retry needs the seed). The
+    // pre-broadcast catch-all and the post-broadcast generic catch-all
+    // diverge only in upgradeErrorKey ('failed' vs 'partialApplyFailed') and
+    // wipe (no-op on pre vs wipe on post).
+    _handlePostBroadcastError(err, { broadcastLanded, logTag }) {
+      const status = err && typeof err.status === 'number' ? err.status : null;
+
+      // Timeout. AbortSignal.timeout() in `_postUpgradeBackend` produces a
+      // TimeoutError DOMException at 20s. Round-2 hold #6: do NOT wipe
+      // newSeedPhrase. The backend may have committed `upgraded_at` before
+      // the abort fired; the user must sign out and back in to discover
+      // whether the upgrade landed, and they may need their phrase if it
+      // didn't. Copy directs them to that recovery path. Gate on
+      // `broadcastLanded`: a pre-broadcast TimeoutError/AbortError (dhive
+      // surfacing a hung connection on account_update sign) is genuinely
+      // retriable because the chain has NOT rotated; it falls through to the
+      // pre-broadcast `failed` catch-all below.
+      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError') && broadcastLanded) {
+        console.warn(`${logTag} backend cleanup timeout`, err);
+        // Round-2 hold #6: no _clearSensitiveUpgradeState() — keep the
+        // mnemonic in state so the user can copy it if needed before
+        // signing out. The copy explicitly tells them to keep it safe.
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.backendTimeout);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.backendTimeout;
+        this.upgradePhase = 'error';
+        return;
+      }
+
+      // Post-broadcast 503: Hive RPC unavailable during backend's chain-state
+      // lookup. Chain rotation landed; retry just the backend POST. State
+      // preserved so `retryUpgradeBackend` can re-derive.
+      if (broadcastLanded && status === 503) {
+        console.warn(`${logTag} backend 503`, err);
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.backendUnavailable);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.backendUnavailable;
+        this.upgradePhase = 'error';
+        return;
+      }
+
+      // Post-broadcast 401: proof rejected (signature recovery fail,
+      // derived_pubkey mismatch, OR signed_at outside backend's 60s
+      // freshness window — the backend deliberately returns 401 uniformly
+      // for these to avoid disclosure). Round-2 hold #5: distinguish first
+      // 401 (likely clock skew under finding #1's scenario) from second 401
+      // (proof is genuinely broken). On first 401, KEEP newSeedPhrase, route
+      // to retryable `proofRejected`; on second, wipe and route to terminal
+      // `partialApplyFailed`. The counter resets in `resetUpgrade` so a
+      // fresh wizard run gets a fresh budget. Without this split, a single
+      // clock-skew-induced 401 wipes the only retry surface for the most
+      // recoverable post-broadcast failure mode.
+      if (broadcastLanded && status === 401) {
+        this._proofRetryAttempts += 1;
+        console.warn(`${logTag} proof rejected (attempt ${this._proofRetryAttempts}/${UPGRADE_PROOF_RETRY_BUDGET})`, err);
+        if (this._proofRetryAttempts >= UPGRADE_PROOF_RETRY_BUDGET) {
+          // Budget exhausted — proof is genuinely broken. Wipe + terminal.
+          this._clearSensitiveUpgradeState();
+          this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.partialApplyFailed);
+          this.upgradeErrorKey = UPGRADE_ERROR_KEYS.partialApplyFailed;
+          this.upgradePhase = 'error';
+          return;
+        }
+        // First 401: keep the seed, retryable. The user can correct their
+        // system clock and click Try Again, which dispatches to
+        // retryUpgradeBackend (per RETRYABILITY map).
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.proofRejected);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.proofRejected;
+        this.upgradePhase = 'error';
+        return;
+      }
+
+      // Post-broadcast 409 ALREADY_UPGRADED: backend cleanup already ran in
+      // an earlier attempt (timed-out request that actually committed,
+      // retried). Wipe and surface terminal sub-case.
+      if (broadcastLanded && status === 409) {
+        console.warn(`${logTag} already upgraded`, err);
+        this._clearSensitiveUpgradeState();
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.alreadyUpgraded);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.alreadyUpgraded;
+        this.upgradePhase = 'error';
+        return;
+      }
+
+      // Post-broadcast 429: rate-limit budget exhausted. The backend's
+      // `skipFailedRequests: true` limiter no longer burns the slot on
+      // transient failures (backend task `backend-custody-upgrade-limiter-skip-failed`
+      // archived 2026-05-16), but a sequence of 200-status replies can still
+      // hit the budget. Wipe and surface terminal copy — the user has to
+      // wait the hour out.
+      if (broadcastLanded && status === 429) {
+        console.warn(`${logTag} rate limited`, err);
+        this._clearSensitiveUpgradeState();
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.rateLimited);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.rateLimited;
+        this.upgradePhase = 'error';
+        return;
+      }
+
+      // Catch-all. Post-broadcast: terminal partialApplyFailed (chain
+      // rotated, can't safely retry). Pre-broadcast: retryable
+      // upgrade.failed. Defense in depth: zero sensitive state either way.
+      this._clearSensitiveUpgradeState();
+      console.warn(logTag, err);
+      if (broadcastLanded) {
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.partialApplyFailed);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.partialApplyFailed;
+      } else {
+        this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.failed);
+        this.upgradeErrorKey = UPGRADE_ERROR_KEYS.failed;
+      }
+      this.upgradePhase = 'error';
     },
 
     // Best-effort Keychain import + wipe + transition to 'done'. Reached
@@ -1074,6 +1195,15 @@ export function initSettingsPage() {
       const privateKey = dhive.PrivateKey.fromString(newKeys.active);
       const derivedPubkey = privateKey.createPublic().toString();
       const signedAt = new Date().toISOString();
+      // Round-2 hold #1 (advisory fallback): the backend has no `GET /api/time`
+      // endpoint as of 2026-05-17, so we cannot fetch a server-time reference
+      // to abort on clock skew before signing. The full fix (pre-broadcast
+      // abort on |client - server| > 30s) requires a backend endpoint and is
+      // tracked as a backend follow-up in the architect hold block. Until it
+      // lands, log the generation timestamp as advisory: ops can correlate
+      // this with backend's signed_at-rejected 401 to confirm clock skew is
+      // the cause when a user reports a failed upgrade.
+      console.warn(`[custody upgrade] signing proof at signed_at=${signedAt} (client clock; no server-time reference available to validate skew, threshold ${UPGRADE_CLOCK_SKEW_WARN_MS}ms when backend GET /api/time lands)`);
       const challenge = `${getAppTag()}-custody-upgrade|v1|${this.username}|${signedAt}`;
       const msgHash = dhive.cryptoUtils.sha256(challenge);
       const signedProof = privateKey.sign(msgHash).toString();
@@ -1315,6 +1445,12 @@ export function initSettingsPage() {
       this.upgradeError = null;
       this.upgradeErrorKey = null;
       this.upgradeWarnings = [];
+      // Round-2 hold #5: fresh wizard run starts a fresh proof-retry budget.
+      // Without this reset, a user who hit the 401-budget on a prior attempt,
+      // resolved their clock, and re-started the wizard would land back in
+      // the post-broadcast catch with `_proofRetryAttempts === 2` already
+      // and wipe on the FIRST 401 of the new attempt.
+      this._proofRetryAttempts = 0;
     },
 
     navigate(path) {
