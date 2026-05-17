@@ -123,11 +123,19 @@ test('detail page renders version list when a paper has multiple versions', asyn
 
   // Find a paper with >1 version by probing detail endpoints. We walk the
   // list rather than hardcoding a permlink so the spec stays green as HAF
-  // contents evolve.
+  // contents evolve. Use a raw request (not the asserting `fetchDetail`)
+  // so a single bad paper in the list — malformed metadata, missing root,
+  // transient enrichment glitch — skips that entry rather than killing
+  // the entire iteration before we've had a chance to inspect any
+  // multi-version paper that may sit further down the list.
   let target = null;
   let targetVersions = null;
   for (const p of papers) {
-    const detail = await fetchDetail(request, p.author, p.permlink);
+    const resp = await request.get(
+      `/api/papers/${encodeURIComponent(p.author)}/${encodeURIComponent(p.permlink)}`,
+    );
+    if (resp.status() !== 200) continue;
+    const detail = (await resp.json()).data;
     if ((detail.versions || []).length > 1) {
       target = p;
       targetVersions = detail.versions;

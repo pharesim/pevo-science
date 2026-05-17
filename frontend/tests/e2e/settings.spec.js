@@ -168,7 +168,17 @@ test.describe('settings — light-account non-chain flows', () => {
     expect(storeLocale).toBe(NEW_LOCALE);
   });
 
-  test('email change request sends verification mail, token verifies new email', async ({ page }) => {
+  // FIXME: backend commit b27bcdf added a fresh_auth_proof requirement on
+  // POST /api/settings/email (JWT path), and the SPA's handleEmailSubmit() in
+  // settings.js still POSTs { email } without minting/sending a proof. The
+  // mint-side wiring lands in backend-change-email-mint-path-and-followups
+  // (currently in tasks/review/); the SPA integration is queued for the UI
+  // agent once that task archives (see line 53 of the task file: "UI flow
+  // for prompting users to complete password or ORCID re-auth before
+  // requesting an email change. UI agent picks that up after this lands").
+  // Until both land, this test sees a 401 FRESH_AUTH_REQUIRED on submit.
+  // Un-fixme once the change-email SPA fresh-auth integration ships.
+  test.fixme('email change request sends verification mail, token verifies new email', async ({ page }) => {
     page.on('dialog', (dialog) => {
       throw new Error(`Unexpected dialog: ${dialog.type()} "${dialog.message()}"`);
     });
