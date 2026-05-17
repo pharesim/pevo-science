@@ -423,7 +423,10 @@
     "failedTitle": "验证失败",
     "verificationFailed": "验证失败",
     "noToken": "未提供验证令牌。",
-    "requestNew": "重新申请认证"
+    "requestNew": "重新申请认证",
+    "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "retry": "Retry",
+    "retryAvailableIn": "Retry available in {seconds}s"
   },
   "about": {
     "title": "关于 PEvO",

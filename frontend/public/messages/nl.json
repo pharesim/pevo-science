@@ -423,7 +423,10 @@
     "failedTitle": "Verificatie mislukt",
     "verificationFailed": "Verificatie mislukt",
     "noToken": "Geen verificatietoken opgegeven.",
-    "requestNew": "Nieuwe accreditatie aanvragen"
+    "requestNew": "Nieuwe accreditatie aanvragen",
+    "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "retry": "Retry",
+    "retryAvailableIn": "Retry available in {seconds}s"
   },
   "about": {
     "title": "Over PEvO",

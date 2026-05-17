@@ -423,7 +423,10 @@
     "failedTitle": "La vérification a échoué",
     "verificationFailed": "La vérification a échoué",
     "noToken": "Aucun jeton de vérification fourni.",
-    "requestNew": "Demander une nouvelle accréditation"
+    "requestNew": "Demander une nouvelle accréditation",
+    "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "retry": "Retry",
+    "retryAvailableIn": "Retry available in {seconds}s"
   },
   "about": {
     "title": "À propos de PEvO",

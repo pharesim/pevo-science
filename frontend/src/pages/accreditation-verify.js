@@ -33,6 +33,22 @@ const template = `
             <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary no-underline" x-text="$t('verify.requestNew')"></a>
           </div>
         </template>
+        <template x-if="state === 'retriable_error'">
+          <div>
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-pevo-teal-light mb-6">
+              <svg class="h-8 w-8 text-pevo-teal" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>
+            </div>
+            <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('verify.failedTitle')"></h1>
+            <p class="text-ink-muted mb-6" x-text="errorMessage"></p>
+            <button
+              type="button"
+              @click="retryVerification()"
+              :disabled="retryCooldownRemaining > 0"
+              class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+              x-text="retryCooldownRemaining > 0 ? $t('verify.retryAvailableIn', { seconds: retryCooldownRemaining }) : $t('verify.retry')"
+            ></button>
+          </div>
+        </template>
       </div>
 `;
 
@@ -46,9 +62,19 @@ export function initAccreditationVerifyPage() {
     // write to torn-down reactive state.
     ...createTimerGuard(),
 
-    state: 'loading', // loading | success | error
+    state: 'loading', // loading | success | error | retriable_error
     resultUsername: '',
     errorMessage: '',
+    retryCooldownRemaining: 0,
+    // Token captured at init so Retry uses the same token the user received
+    // in their accreditation email — the backend explicitly preserves the
+    // token on `ACCREDITATION_GATE_UNAVAILABLE` (see backend route
+    // accreditation.ts gate-catch branch).
+    _token: null,
+    // Per-countdown opaque id. Each new countdown bumps this; chained
+    // setTimeout callbacks only re-arm while their captured id still matches,
+    // so a fresh countdown supersedes an in-flight one without racing.
+    _cooldownId: 0,
 
     navigate(path) { Alpine.store('router').navigate(path); },
 
@@ -63,8 +89,19 @@ export function initAccreditationVerifyPage() {
         this.errorMessage = this.$t('verify.noToken');
         return;
       }
+      this._token = token;
+      this._verify();
+    },
 
-      verifyAccreditation(token)
+    retryVerification() {
+      if (this.retryCooldownRemaining > 0) return;
+      this.state = 'loading';
+      this.errorMessage = '';
+      this._verify();
+    },
+
+    _verify() {
+      verifyAccreditation(this._token)
         .then((res) => {
           if (!this._mounted) return;
           this.state = 'success';
@@ -72,11 +109,38 @@ export function initAccreditationVerifyPage() {
         })
         .catch((err) => {
           if (!this._mounted) return;
-          this.state = 'error';
           // Sanitization pattern (see executeUpgrade() in settings.js).
           console.warn('[accreditation verify]', err);
-          this.errorMessage = this.$t('verify.verificationFailed');
+          if (this._isRetriable(err)) {
+            this.state = 'retriable_error';
+            this.errorMessage = this.$t('verify.serviceTemporarilyUnavailable');
+            this._startCooldown(err.retryAfterSeconds);
+          } else {
+            this.state = 'error';
+            this.errorMessage = this.$t('verify.verificationFailed');
+          }
         });
+    },
+
+    _isRetriable(err) {
+      return err?.code === 'ACCREDITATION_GATE_UNAVAILABLE'
+        || err?.details?.retriable === true;
+    },
+
+    _startCooldown(seconds) {
+      const initial = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+      this.retryCooldownRemaining = initial;
+      const id = ++this._cooldownId;
+      if (initial > 0) this._tickCooldown(id);
+    },
+
+    _tickCooldown(id) {
+      this._setTimer(() => {
+        if (id !== this._cooldownId) return;
+        if (this.retryCooldownRemaining <= 0) return;
+        this.retryCooldownRemaining -= 1;
+        if (this.retryCooldownRemaining > 0) this._tickCooldown(id);
+      }, 1000);
     },
   }));
 }

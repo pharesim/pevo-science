@@ -423,7 +423,10 @@
     "failedTitle": "Verification Failed",
     "verificationFailed": "Verification failed",
     "noToken": "No verification token provided.",
-    "requestNew": "Request New Accreditation"
+    "requestNew": "Request New Accreditation",
+    "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "retry": "Retry",
+    "retryAvailableIn": "Retry available in {seconds}s"
   },
   "about": {
     "title": "About PEvO",

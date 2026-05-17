@@ -94,4 +94,159 @@ describe('accreditationVerifyPage', () => {
     expect(comp.errorMessage).toBe('');
     warnSpy.mockRestore();
   });
+
+  // UI-ACCREDITATION-VERIFY-RETRIABLE-HANDLING: the backend emits
+  // `ACCREDITATION_GATE_UNAVAILABLE` with `details.retriable: true` when the
+  // HAF gate query throws and preserves the verification token. The SPA must
+  // route this distinctly from non-retriable 4xx errors so the user is shown
+  // a Retry affordance instead of a Request New CTA that would burn one of
+  // their 3/24h `/api/accreditation/request` slots.
+  describe('retriable error handling', () => {
+    function makeApiError(code, { details, retryAfterSeconds = null } = {}) {
+      const e = new Error('mock');
+      e.code = code;
+      e.details = details;
+      e.retryAfterSeconds = retryAfterSeconds;
+      return e;
+    }
+
+    it('ACCREDITATION_GATE_UNAVAILABLE with retriable=true routes to retriable_error state', async () => {
+      mockVerifyAccreditation.mockRejectedValue(
+        makeApiError('ACCREDITATION_GATE_UNAVAILABLE', { details: { retriable: true } })
+      );
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+      expect(comp.errorMessage).toBe('verify.serviceTemporarilyUnavailable');
+      warnSpy.mockRestore();
+    });
+
+    it('clicking Retry re-invokes verifyAccreditation with the same token', async () => {
+      mockVerifyAccreditation
+        .mockRejectedValueOnce(
+          makeApiError('ACCREDITATION_GATE_UNAVAILABLE', { details: { retriable: true } })
+        )
+        .mockResolvedValueOnce({ data: { username: 'alice' } });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+      expect(mockVerifyAccreditation).toHaveBeenNthCalledWith(1, 'tok123');
+
+      comp.retryVerification();
+      // Transitions back to loading before the new call resolves.
+      expect(comp.state).toBe('loading');
+
+      await vi.waitFor(() => expect(comp.state).toBe('success'));
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
+      expect(mockVerifyAccreditation).toHaveBeenNthCalledWith(2, 'tok123');
+      expect(comp.resultUsername).toBe('alice');
+      warnSpy.mockRestore();
+    });
+
+    it('non-retriable error code routes to the generic error state (Request New CTA)', async () => {
+      mockVerifyAccreditation.mockRejectedValue(makeApiError('BAD_REQUEST'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('error'));
+      expect(comp.errorMessage).toBe('verify.verificationFailed');
+      warnSpy.mockRestore();
+    });
+
+    it('details.retriable=true without ACCREDITATION_GATE_UNAVAILABLE still routes retriable', async () => {
+      mockVerifyAccreditation.mockRejectedValue(
+        makeApiError('INTERNAL_ERROR', { details: { retriable: true } })
+      );
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+      warnSpy.mockRestore();
+    });
+
+    it('Retry-After seconds initializes cooldown and decrements per second', async () => {
+      vi.useFakeTimers();
+      try {
+        mockVerifyAccreditation.mockRejectedValue(
+          makeApiError('ACCREDITATION_GATE_UNAVAILABLE', {
+            details: { retriable: true },
+            retryAfterSeconds: 3,
+          })
+        );
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const comp = createComponent();
+        comp.init();
+
+        await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+        expect(comp.retryCooldownRemaining).toBe(3);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(comp.retryCooldownRemaining).toBe(2);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(comp.retryCooldownRemaining).toBe(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(comp.retryCooldownRemaining).toBe(0);
+
+        // Tick again to confirm the chain stops re-arming at 0.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(comp.retryCooldownRemaining).toBe(0);
+        warnSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('Retry click is a no-op while cooldown > 0', async () => {
+      vi.useFakeTimers();
+      try {
+        mockVerifyAccreditation.mockRejectedValue(
+          makeApiError('ACCREDITATION_GATE_UNAVAILABLE', {
+            details: { retriable: true },
+            retryAfterSeconds: 5,
+          })
+        );
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const comp = createComponent();
+        comp.init();
+
+        await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+        expect(comp.retryCooldownRemaining).toBe(5);
+        expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+
+        comp.retryVerification();
+        // Still retriable_error; no new call.
+        expect(comp.state).toBe('retriable_error');
+        expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+        warnSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('absent retryAfterSeconds permits immediate retry', async () => {
+      mockVerifyAccreditation
+        .mockRejectedValueOnce(
+          makeApiError('ACCREDITATION_GATE_UNAVAILABLE', { details: { retriable: true } })
+        )
+        .mockResolvedValueOnce({ data: { username: 'alice' } });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+      expect(comp.retryCooldownRemaining).toBe(0);
+
+      comp.retryVerification();
+      await vi.waitFor(() => expect(comp.state).toBe('success'));
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
+      warnSpy.mockRestore();
+    });
+  });
 });

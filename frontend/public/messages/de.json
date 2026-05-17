@@ -423,7 +423,10 @@
     "failedTitle": "Verifizierung fehlgeschlagen",
     "verificationFailed": "Verifizierung fehlgeschlagen",
     "noToken": "Kein Verifizierungstoken angegeben.",
-    "requestNew": "Neue Akkreditierung beantragen"
+    "requestNew": "Neue Akkreditierung beantragen",
+    "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "retry": "Retry",
+    "retryAvailableIn": "Retry available in {seconds}s"
   },
   "about": {
     "title": "Über PEvO",

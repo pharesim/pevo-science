@@ -423,7 +423,10 @@
     "failedTitle": "Verifikation mislykkedes",
     "verificationFailed": "Verifikation mislykkedes",
     "noToken": "Ingen verifikationstoken angivet.",
-    "requestNew": "Anmod om ny akkreditering"
+    "requestNew": "Anmod om ny akkreditering",
+    "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "retry": "Retry",
+    "retryAvailableIn": "Retry available in {seconds}s"
   },
   "about": {
     "title": "Om PEvO",

@@ -423,7 +423,10 @@
     "failedTitle": "האימות נכשל",
     "verificationFailed": "האימות נכשל",
     "noToken": "לא סופק אסימון אימות.",
-    "requestNew": "בקשת הסמכה חדשה"
+    "requestNew": "בקשת הסמכה חדשה",
+    "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "retry": "Retry",
+    "retryAvailableIn": "Retry available in {seconds}s"
   },
   "about": {
     "title": "אודות PEvO",

@@ -423,7 +423,10 @@
     "failedTitle": "Ověření selhalo",
     "verificationFailed": "Ověření selhalo",
     "noToken": "Nebyl poskytnut ověřovací token.",
-    "requestNew": "Požádat o novou akreditaci"
+    "requestNew": "Požádat o novou akreditaci",
+    "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "retry": "Retry",
+    "retryAvailableIn": "Retry available in {seconds}s"
   },
   "about": {
     "title": "O PEvO",

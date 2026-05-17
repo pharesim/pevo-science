@@ -423,7 +423,10 @@
     "failedTitle": "Weryfikacja nie powiodła się",
     "verificationFailed": "Weryfikacja nie powiodła się",
     "noToken": "Nie podano tokenu weryfikacyjnego.",
-    "requestNew": "Złóż nowy wniosek o akredytację"
+    "requestNew": "Złóż nowy wniosek o akredytację",
+    "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
+    "retry": "Retry",
+    "retryAvailableIn": "Retry available in {seconds}s"
   },
   "about": {
     "title": "O PEvO",
