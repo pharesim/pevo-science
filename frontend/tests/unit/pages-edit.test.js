@@ -1011,3 +1011,99 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
     expect(comp.isCoAuthorAccredited).toBeUndefined();
   });
 });
+
+// UI-PAPERS-ORCID-NULL-FALLBACK-VERIFICATION: backend's vouch-coauthor
+// spoof-suppression branch in buildCumulativeAuthorsForChain (papers.ts:
+// 417-434) now emits `authors[].orcid = null` for accredited authors on
+// continuation chains. The API contract at
+// `agents/docs/api-contracts/papers.md` widened the field to
+// `string | null`. Edit-page _prefillForm is the only SPA site that
+// consumes paper authors[].orcid in a non-template context (primary
+// author -> authorOrcid string; existing co-authors retained as raw
+// objects whose orcid is read by `:value="ca.orcid || ''"` in the
+// template). The disabled existing-co-author input already guards with
+// `|| ''`, and _prefillForm uses `primary.orcid || ''`. These tests pin
+// the null-safety so a future refactor that drops the `|| ''` (e.g.
+// switching to `primary.orcid ?? null` for "preserve null" semantics)
+// is caught at unit-test time before the form throws on the next
+// continuation-chain edit.
+describe('editPage _prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStores.auth.isConnected = true;
+    mockStores.auth.isAccredited = true;
+    mockStores.auth.username = 'alice';
+  });
+
+  it('primary author with orcid: null normalizes to authorOrcid = ""', () => {
+    const comp = createComponent();
+    comp.paper = {
+      title: 'A Paper',
+      body: 'Abstract\n\n---\n\nBody',
+      json_metadata: {
+        pevotest: {
+          authors: [
+            { name: 'Alice', hive: 'alice', orcid: null, affiliation: 'MIT' },
+          ],
+        },
+      },
+      authors: [
+        { name: 'Alice', hive: 'alice', orcid: null, affiliation: 'MIT' },
+      ],
+    };
+
+    expect(() => comp._prefillForm()).not.toThrow();
+    expect(comp.authorOrcid).toBe('');
+    expect(comp.authorName).toBe('Alice');
+    expect(comp.authorAffiliation).toBe('MIT');
+  });
+
+  it('existing co-authors with orcid: null pass through to existingCoAuthors without throwing', () => {
+    const comp = createComponent();
+    comp.paper = {
+      title: 'A Paper',
+      body: 'Abstract\n\n---\n\nBody',
+      json_metadata: {
+        pevotest: {
+          authors: [
+            { name: 'Alice', hive: 'alice', orcid: '0000-0001-2345-6789', affiliation: 'MIT' },
+            { name: 'Bob', hive: 'bob', orcid: null, affiliation: 'Harvard' },
+            { name: 'Carol', hive: 'carol', orcid: null, affiliation: '' },
+          ],
+        },
+      },
+      authors: [
+        { name: 'Alice', hive: 'alice', orcid: '0000-0001-2345-6789', affiliation: 'MIT' },
+        { name: 'Bob', hive: 'bob', orcid: null, affiliation: 'Harvard' },
+        { name: 'Carol', hive: 'carol', orcid: null, affiliation: '' },
+      ],
+    };
+
+    expect(() => comp._prefillForm()).not.toThrow();
+    expect(comp.existingCoAuthors).toHaveLength(2);
+    expect(comp.existingCoAuthors[0].orcid).toBeNull();
+    expect(comp.existingCoAuthors[1].orcid).toBeNull();
+    // The disabled existing-row template at edit.js:183 binds
+    // `:value="ca.orcid || ''"`. Validate the falsy-coalesce
+    // contract at the data-binding level: `ca.orcid || ''` MUST
+    // produce '' for null, undefined, and ''.
+    for (const ca of comp.existingCoAuthors) {
+      expect(ca.orcid || '').toBe('');
+    }
+  });
+
+  it('primary author with orcid: null AND no other fields set still prefills cleanly', () => {
+    const comp = createComponent();
+    comp.paper = {
+      title: '',
+      body: '',
+      json_metadata: { pevotest: { authors: [{ name: '', hive: 'alice', orcid: null }] } },
+      authors: [{ name: '', hive: 'alice', orcid: null }],
+    };
+
+    expect(() => comp._prefillForm()).not.toThrow();
+    expect(comp.authorOrcid).toBe('');
+    expect(comp.authorName).toBe('');
+    expect(comp.authorAffiliation).toBe('');
+  });
+});
