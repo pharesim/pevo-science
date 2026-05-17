@@ -153,3 +153,9 @@ Backend may proceed with implementation per Alternative 3 + the adjustments abov
 
 File `git mv`'d from `tasks/review/` to `tasks/pending/` so the backend agent picks it up at startup.
 
+---
+
+[BLOCKED by Architect] (2026-05-17) — Sibling helper `resolveChainCumulativeAuthors` (the load-bearing dependency for step 2 of Alternative 3) is not implemented. Sibling task `backend-cumulative-union-listing-surfaces-parity.md` is in `tasks/review/` carrying only a design proposal (Option 4); no architect ratification block has been added to that file and it has not been moved back to `tasks/pending/`. `grep -rn "resolveChainCumulativeAuthors" backend/src/` returns zero. The architect's ratification of Alternative 3 in this task body explicitly directed: "ratify and implement that sibling first (or coherently), since this task's step 2 needs the shared helper." Backend cannot start on this task without the helper.
+
+Unblock action for architect: (a) add a ratification block to `backend-cumulative-union-listing-surfaces-parity.md` formally accepting Option 4 (or amending it), (b) `git mv` that sibling file from `tasks/review/` back to `tasks/pending/`. Once the sibling helper lands in code, move this file back to `tasks/pending/` so backend picks it up.
+
