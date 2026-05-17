@@ -2534,11 +2534,14 @@ describe('settingsPage', () => {
 
     // R7: TimeoutError. AbortSignal.timeout(20_000) in
     // _postUpgradeBackend produces a TimeoutError DOMException when the
-    // 20s budget elapses. Route to the terminal backendTimeout sub-case
-    // (canRetryUpgrade=false): the retry already consumed the user's
-    // patience window once; offering another retry on the same hung
-    // backend is dead-end UX.
-    it('retryUpgradeBackend: TimeoutError → backendTimeout terminal sub-case, state wiped', async () => {
+    // 20s budget elapses. Routes to the terminal backendTimeout
+    // sub-case (canRetryUpgrade=false): the retry already consumed the
+    // user's patience window once; offering another retry on the same
+    // hung backend is dead-end UX. Round-2 #6: state is NOT wiped —
+    // the backend may have committed the upgrade before the abort
+    // fired, so the user must keep newSeedPhrase to recover after
+    // signing out and back in.
+    it('retryUpgradeBackend: TimeoutError → backendTimeout terminal sub-case, mnemonic preserved', async () => {
       stubBareWindow();
       const timeoutErr = new Error('signal timed out');
       timeoutErr.name = 'TimeoutError';
@@ -2546,24 +2549,26 @@ describe('settingsPage', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const comp = createComponent();
+      const preservedSeed = Array(12).fill('new').join(' ');
       seedBackendUnavailableErrorState(comp);
+      comp.newSeedPhrase = preservedSeed;
 
       await comp.retryUpgradeBackend();
 
       expect(comp.upgradePhase).toBe('error');
       expect(comp.upgradeErrorKey).toBe('upgrade.backendTimeout');
       expect(comp.upgradeError).toBe('upgrade.backendTimeout');
-      // Terminal sub-case wipes sensitive state — no point holding the
-      // mnemonic past a non-retryable error screen.
-      expect(comp.newSeedPhrase).toBe('');
-      expect(comp.upgradePassword).toBe('');
+      // Round-2 #6 contract: ambiguous-outcome timeout preserves the
+      // mnemonic so the user can complete recovery after sign-out.
+      expect(comp.newSeedPhrase).toBe(preservedSeed);
       warnSpy.mockRestore();
     });
 
     // R7 sibling: AbortError (older runtimes / dhive-side abort surface
     // the same condition under a different DOMException name). Same
-    // routing as TimeoutError.
-    it('retryUpgradeBackend: AbortError → backendTimeout terminal sub-case', async () => {
+    // routing as TimeoutError; same round-2 #6 preserve-mnemonic
+    // contract.
+    it('retryUpgradeBackend: AbortError → backendTimeout terminal sub-case, mnemonic preserved', async () => {
       stubBareWindow();
       const abortErr = new Error('aborted');
       abortErr.name = 'AbortError';
@@ -2571,13 +2576,15 @@ describe('settingsPage', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const comp = createComponent();
+      const preservedSeed = Array(12).fill('new').join(' ');
       seedBackendUnavailableErrorState(comp);
+      comp.newSeedPhrase = preservedSeed;
 
       await comp.retryUpgradeBackend();
 
       expect(comp.upgradePhase).toBe('error');
       expect(comp.upgradeErrorKey).toBe('upgrade.backendTimeout');
-      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.newSeedPhrase).toBe(preservedSeed);
       warnSpy.mockRestore();
     });
 
