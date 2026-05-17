@@ -245,9 +245,11 @@ export function initOrcidCallbackPage() {
       // but the signup form never reads it and the feature was abandoned.
       // The user fills Full Name themselves; ORCID surfaces the ID only.
 
-      // Return to the originating page (signup or recover)
-      const returnTo = localStorage.getItem('pevo_orcid_return_to');
-      localStorage.removeItem('pevo_orcid_return_to');
+      // Return to the originating page (signup or recover).
+      // sessionStorage (not localStorage) — per-tab so concurrent flows in
+      // different tabs cannot corrupt each other's return-path dispatch.
+      const returnTo = sessionStorage.getItem('pevo_orcid_return_to');
+      sessionStorage.removeItem('pevo_orcid_return_to');
       this.navigate(returnTo === 'recover' ? '/recover' : '/signup');
     },
 

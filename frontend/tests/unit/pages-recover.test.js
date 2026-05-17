@@ -320,7 +320,7 @@ describe('recoverPage', () => {
       await comp.handleOrcidVerify();
 
       expect(localStorage.setItem).toHaveBeenCalledWith('pevo_recover_draft', expect.any(String));
-      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_orcid_return_to', 'recover');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith('pevo_orcid_return_to', 'recover');
       expect(mockStartOrcid).toHaveBeenCalledWith('signup');
     });
 
@@ -374,7 +374,7 @@ describe('recoverPage', () => {
       expect(comp.error).toBe('recover.orcidStartFailed');
       expect(comp.error).not.toContain('deadbeef');
       expect(comp.orcidLoading).toBe(false);
-      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_return_to');
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_return_to');
       expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);

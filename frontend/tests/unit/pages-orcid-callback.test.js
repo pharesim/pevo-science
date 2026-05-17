@@ -217,7 +217,7 @@ describe('orcidCallbackPage', () => {
     });
 
     it('handles signup mode with recover return path', async () => {
-      localStorageData['pevo_orcid_return_to'] = 'recover';
+      sessionStorageData['pevo_orcid_return_to'] = 'recover';
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({
         data: { mode: 'signup', orcid_token: 't', orcid_id: 'id' },
@@ -544,7 +544,7 @@ describe('orcidCallbackPage', () => {
       // The pevo_orcid_return_to key (consumed inside _handleSignup) must
       // stay intact so a later retry still knows whether to route to
       // /signup vs /recover.
-      expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to');
+      expect(sessionStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to');
     });
 
     it('_handleLink: post-teardown resolution does not set link flag or navigate', async () => {
@@ -582,7 +582,7 @@ describe('orcidCallbackPage', () => {
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_token', 'tok');
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_id', 'id');
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_name', 'Jane');
-      expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to');
+      expect(sessionStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to');
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
       expect(mockToastStore.show).not.toHaveBeenCalled();
     });

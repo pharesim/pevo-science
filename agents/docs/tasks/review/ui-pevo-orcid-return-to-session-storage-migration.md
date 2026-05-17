@@ -33,3 +33,17 @@ Migrate `pevo_orcid_return_to` from localStorage to sessionStorage across all wr
 
 - `agents/docs/tasks/review/ui-non-consent-broadcast-fresh-auth-wiring.md` — round-2 hold item #7 (the `pevo_orcid_mode` migration); round-3 hold carry-forward note.
 - `frontend/src/pages/recover.js`, `frontend/src/pages/orcid-callback.js` — current writers/readers.
+
+## UI implementation signal (2026-05-17, working tree)
+
+Migration landed. Grep `pevo_orcid_return_to` shows zero localStorage usages remain in `frontend/src/`. Atomic migration — no dual-write transition.
+
+**Changes:**
+- `frontend/src/pages/recover.js:245,253` — write + error-path cleanup moved from localStorage to sessionStorage. Comment narrowed to cover the union of `pevo_orcid_mode` + `pevo_orcid_return_to`.
+- `frontend/src/pages/orcid-callback.js:249-251` — read + removal moved to sessionStorage. Comment added stating the per-tab rationale.
+
+**Test updates:**
+- `frontend/tests/unit/pages-recover.test.js:323,377` — assertions switched from `localStorage.setItem`/`removeItem` to `sessionStorage.*`.
+- `frontend/tests/unit/pages-orcid-callback.test.js:220,547,585` — seed key + post-teardown assertions switched to sessionStorage.
+
+**Tests:** `pages-recover` + `pages-orcid-callback` 76/76 pass. Full frontend suite verified in the sister non-consent-broadcast commit immediately preceding this one (1190/1190).

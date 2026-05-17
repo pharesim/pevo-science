@@ -238,11 +238,10 @@ export function initRecoverPage() {
         newEmail: this.newEmail,
       }));
 
-      // Signal to orcid-callback to return here. `pevo_orcid_mode` lives in
-      // sessionStorage to avoid cross-tab interference; see fresh-auth.js
-      // mintNonConsentProof for the rationale. `pevo_orcid_return_to` below
-      // is still on localStorage pending its own migration.
-      localStorage.setItem('pevo_orcid_return_to', 'recover');
+      // Signal to orcid-callback to return here. Both `pevo_orcid_mode` and
+      // `pevo_orcid_return_to` live in sessionStorage to avoid cross-tab
+      // interference; see fresh-auth.js mintNonConsentProof for the rationale.
+      sessionStorage.setItem('pevo_orcid_return_to', 'recover');
       sessionStorage.setItem('pevo_orcid_mode', 'signup');
 
       try {
@@ -250,7 +249,7 @@ export function initRecoverPage() {
         window.location.href = data.redirect_url;
       } catch (err) {
         this.orcidLoading = false;
-        localStorage.removeItem('pevo_orcid_return_to');
+        sessionStorage.removeItem('pevo_orcid_return_to');
         sessionStorage.removeItem('pevo_orcid_mode');
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[recover orcid start]', err);
