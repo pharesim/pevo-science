@@ -278,7 +278,7 @@ async function checkExistingBridge(
       // → 503) AND /check (fail-open → 200) so the human-readable message
       // stays disposition-neutral. Operator dashboards key on structured
       // fields, not message text.
-      'Bridge HAF query failed; route field carries fail-open vs. fail-closed disposition',
+      'Bridge HAF query failed',
     );
     return { status: 'haf_unavailable' };
   }

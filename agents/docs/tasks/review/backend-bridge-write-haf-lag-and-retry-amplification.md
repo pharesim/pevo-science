@@ -342,3 +342,11 @@ Carried forward unchanged from round-3 hold-block:
 ### Re-review signal
 
 When item 1 lands in a single round-4 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only. Diff is ~1 LOC; round-4 should converge clean.
+
+---
+
+## Backend re-review signal (2026-05-17, round-4 hold-fix)
+
+Round-4 item 1 landed. `backend/src/routes/bridge.ts:281` (inside `checkExistingBridge`'s HAF-failure `logger.warn`) — message string trimmed from `'Bridge HAF query failed; route field carries fail-open vs. fail-closed disposition'` to `'Bridge HAF query failed'`. The structured-field meta-explanation now lives only in the inline comment block at `bridge.ts:276-280`; structured `event` and `route` fields continue to carry the fail-open vs. fail-closed disposition for operator dashboards.
+
+Scoped vitest (`bridge-haf-lag-locks.test.ts` + `bridge.test.ts` + `bridge-paper-author-gate.test.ts`): 33 specs green. `npx tsc --noEmit` + `npm run lint` clean.
