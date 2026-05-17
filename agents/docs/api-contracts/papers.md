@@ -39,7 +39,7 @@ List PEvO papers with filtering and sorting.
     {
       "name": "Dr. Jane Smith",
       "hive": "scientist1",
-      "orcid": "0000-0001-2345-6789",
+      "orcid": "0000-0001-2345-6789" | null,
       "orcid_verified": "0000-0001-2345-6789" | null,
       "orcid_discrepancy": false
     }
@@ -60,7 +60,7 @@ List PEvO papers with filtering and sorting.
 
 **Field notes:**
 - `discipline` — canon_name form (lowercased), matches `/api/disciplines.canon_name` and the `?discipline=` filter contract; round-trippable through the URL filter without re-canonicalization. Display form via `/api/disciplines.display_name` lookup or CSS `text-transform: capitalize`. May be `null` (paper not tagged with a discipline).
-- `authors[].orcid` — the chain-stored ORCID exactly as broadcast by the publisher (typed or accredited-prefilled at publish time). This is the publisher's stated claim, frozen on the immutable post. Not authoritative when a more trustworthy attestation exists; use `orcid_verified` as the canonical display value when present.
+- `authors[].orcid` — the chain-stored ORCID exactly as broadcast by the publisher (typed or accredited-prefilled at publish time), or `null` when the value has been server-suppressed. This is the publisher's stated claim, frozen on the immutable post. Not authoritative when a more trustworthy attestation exists; use `orcid_verified` as the canonical display value when present. **Suppression-to-null path:** on continuation-chain papers, when an accredited author has no on-chain ORCID but a co-author's chain post claims an ORCID for them, the server suppresses the claim and emits `null` (the accredited user's silence about an ORCID is treated as the authoritative claim of "no ORCID"). The `orcid_claim_mismatch` audit event records the suppressed claim with `accreditedOrcid: null`. Clients SHOULD null-guard any string-context use of `orcid` (template interpolation, casts, `.toLowerCase()`) and fall through to either `orcid_verified` (also nullable) or "no ORCID on file" display.
 - `authors[].orcid_verified` — the accreditation-attested ORCID for the author's hive account, looked up at read time against `active_accreditations`. Present and non-null when `authors[].hive` is set, that account is currently accredited (latest `accredit` / `revoke` action wins per `accreditation-state-read-latest-action-wins-2026-05-15.md`), and the accreditation record carries a non-empty `orcid`. Null when the hive is empty, the account is not currently accredited, or the accreditation carries no ORCID. The canonical display rule is "use `orcid_verified` if non-null, else fall back to `orcid`". **Cache staleness:** `orcid_verified` and `orcid_discrepancy` MAY be up to 30 minutes stale relative to current `active_accreditations` state (the paper-detail cache TTL); accreditation grant / revoke / ORCID-rotate events propagate on the next cache miss. This is the chain-is-SSoT / cache-is-perf-layer posture. The vouched-set badge (`ARCHITECTURE.md` § 2.20) has tighter freshness guarantees and is an independent signal: supersession-fields are account-keyed attestations, vouched-set is paper-keyed authorship consent.
 - `authors[].orcid_discrepancy` — `true` when both `orcid` and `orcid_verified` are non-null and they differ. Clients SHOULD render a discrepancy indicator (e.g., a tooltip showing both values labeled "claimed" and "verified"). `false` otherwise. **Continuation-chain caveat:** On continuation-chain papers where the server-override mechanism fires (per `ARCHITECTURE.md` § 2.20), `orcid` in the response is the post-override value (the attestation), while `orcid_discrepancy` reflects the PRE-override comparison sampled before the override mutates the response payload. Therefore on these papers `orcid` MAY equal `orcid_verified` while `orcid_discrepancy` is `true` — this combination indicates the server corrected a broadcaster-claimed mismatch in-band. Clients treat the discrepancy signal as the authoritative audit indicator regardless of whether `orcid` and `orcid_verified` appear equal in the response.
 - `review_count` — number of reviews on this paper satisfying the canonical PEvO review-validity gate (`type='review'`, accredited author or anon-proxy, structurally-valid 4-dim rating object with each dimension an integer in `[1,5]`, not authored by the paper author or a named co-author) AND whose parent post is a valid PEvO paper (native pevo paper or `bridge_paper` authored by `config.hiveBridgeAccount`). Authoring client (`app` field) is not gated. Source of truth: `validReviewWhere()` AND `validPevoPaperWhere(source:'all')` in `backend/src/hafsql.ts` (both gates compose at every review-class surface for display↔reputation parity).
@@ -99,7 +99,7 @@ Single paper with full content and reviews.
     {
       "name": "Dr. Jane Smith",
       "hive": "scientist1",
-      "orcid": "0000-0001-2345-6789",
+      "orcid": "0000-0001-2345-6789" | null,
       "orcid_verified": "0000-0001-2345-6789" | null,
       "orcid_discrepancy": false,
       "affiliation": "MIT"
