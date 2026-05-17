@@ -56,7 +56,12 @@ Translation files live in `frontend/public/messages/<locale>.json` — one file 
 
 **Stub tracking — `frontend/public/messages/STUBS.md`.** Every commit that adds a stub appends entries to `STUBS.md` in the form `<locale>: <key>` — one line per locale-key pair that needs translation. When a translator lands a real translation, they remove the matching line from `STUBS.md` in the same commit that updates the locale file. An empty or missing section means that locale has no known pending stubs.
 
-**Sweep grouping inside `STUBS.md`.** Entries live under dated sub-headings of the form `### Added <YYYY-MM-DD> (<TASK-SLUG>)`. When a new sweep adds stubs, append a fresh sub-heading at the bottom of the `## Pending` section — do NOT merge new entries into an existing sweep's list, even if the date matches. The sweep header is what lets translators prioritize a batch and what lets later stale-entry audits be archeological rather than manual. The `<TASK-SLUG>` must be the slug of the task file that introduced the stubs (e.g. `FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND`), not a free-form description.
+**Sweep grouping inside `STUBS.md`.** Entries live under dated sub-headings. Two header variants:
+
+- `### Added <YYYY-MM-DD> (<TASK-SLUG>)` — new keys landing as stubs ahead of translation capacity.
+- `### Updated <YYYY-MM-DD> (<TASK-SLUG>)` — in-place English value changes on existing keys where the new wording requires retranslation, and the non-English locale files are re-stubbed with the new English in the same commit. Use `Updated` instead of `Added` when the key already existed; the distinction tells translators that translation memory from the prior text may mislead and the value needs fresh review.
+
+When a new sweep adds or updates stubs, append a fresh sub-heading at the bottom of the `## Pending` section — do NOT merge new entries into an existing sweep's list, even if the date matches. The sweep header is what lets translators prioritize a batch and what lets later stale-entry audits be archeological rather than manual. The `<TASK-SLUG>` must be the slug of the task file that introduced the stubs (e.g. `FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND`), not a free-form description.
 
 The stub list is the single source of truth for pending translation work. Grepping `STUBS.md` for `^ar:` yields every Arabic stub (sweep headers don't match the `<locale>:` pattern, so grouping doesn't break the grep invariant); grepping for a specific key yields every locale where it still needs translation. Do not scan locale files for identical-to-English values as a proxy — technical terms, product names, and borrowed words ("URL", "OK", "PEvO") legitimately appear verbatim across locales and would produce false positives.
 
