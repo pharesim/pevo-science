@@ -133,3 +133,9 @@ Findings triaged dismissed this pass:
 - maintainability M-1 (P2/60): opening sentence of `retryVerification` comment restates `if (this.state === 'loading') return;`. **Dismissed** — single-reviewer advisory, the surrounding block carries the load-bearing belt+suspenders rationale. Trim is optional.
 - reliability REL-2 (info/50): no `state === 'success'` guard in `retryVerification`. **Dismissed** — template-protected (Retry button renders only under `x-if="state === 'retriable_error'"`).
 - testing TG-1 (julik-frontend-races): inverse race direction (stale `.catch` overwriting newer `.then` success) not pinned by a companion spec. **Dismissed** — guard is symmetric in code; companion test is optional. Test surface for the documented failure shape is covered.
+
+---
+
+UI re-review signal (2026-05-17, working tree, commit pending): round-3 hold item landed.
+
+- Item 1 (inverted preamble comment on the concurrent-flights spec): `frontend/tests/unit/pages-accreditation-verify.test.js` (lines 252-259) — replaced the trailing "*the success state must survive*" clause with "*flight B's retriable_error state must not be overwritten by flight A's stale success resolution; the generation guard makes flight A's late `.then` bail.*" Pure prose; no assertions or test logic touched. All 13 specs pass under `npx vitest run tests/unit/pages-accreditation-verify.test.js` (4 pre-round-1 + 7 round-1 retriable + 2 round-2 race, identical to round-2 totals).

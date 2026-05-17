@@ -254,8 +254,9 @@ describe('accreditationVerifyPage', () => {
     // counter bumped synchronously at the top of _verify() captures into the
     // .then/.catch closures so a stale loser's resolution bails before
     // overwriting the winner's state. The user-facing failure shape this
-    // closes: first verify resolves with success AFTER the second verify
-    // overwrites with retriable_error — the success state must survive.
+    // closes: flight B's retriable_error state must not be overwritten by
+    // flight A's stale success resolution; the generation guard makes
+    // flight A's late `.then` bail.
     it('concurrent _verify() flights: stale resolver does not overwrite newer flight state', async () => {
       // First call (flight A) returns a promise we resolve manually after
       // flight B has already landed its retriable_error rejection. Without
