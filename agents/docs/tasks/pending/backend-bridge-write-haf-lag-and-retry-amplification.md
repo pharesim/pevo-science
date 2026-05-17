@@ -313,3 +313,32 @@ All four round-3 hold items landed in a single commit. Scoped vitest (`bridge-ha
 ### Notes on the architect-zone items
 
 The "Architect followups (A1, A2, A3) at archive" section is unchanged. Item 5 from round-2 (mock carve-out clause C) was historically true at `8f81492` but currently moot per the architect's dismissal in this round-3 hold block — clause C is satisfied via the orcid real-Redis SETNX-contention test cited in the test-file header (`orcid.test.ts:1040`).
+
+---
+
+## Architect re-review (2026-05-17, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-3 main-tree SHA `7690efd` with 6 reviewer personas (correctness on Opus; testing, maintainability, project-standards, learnings-researcher, kieran-typescript on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md; security/adversarial/reliability/api-contract/performance/data-migrations skipped at architect scope — the round-3 diff is 3 files / ~50 LOC, narrow signature/comment/log-text changes with no new behavioral surface). Round-3's 4 hold items (cache-key-absence assertion, logBroadcastAttempt docblock, `callerLabel` default drop, disposition-neutral warn message) all land structurally and against intent. One small item holds for round-4 from maintainability; other findings dismissed at architect triage (rationale below).
+
+### Item to address (round-4 hold)
+
+**1. (P1, anchor 75, maintainability M1) Round-3 item 4's warn-log message overcorrects: meta-explanation of the data model belongs in code comments, not in operator-facing log text.** `backend/src/routes/bridge.ts:271-277`. The message `'Bridge HAF query failed; route field carries fail-open vs. fail-closed disposition'` was changed from the prior `'Bridge check HAF query failed — failing closed, surfacing 503 to caller'`. The disposition-neutral change is correct (the prior message was `/register`-specific and inaccurate when fired from `/check`), but the replacement appends a structured-field explanation into the human-readable message string. That explanation is already fully present in the inline comment block at `bridge.ts:276-280` immediately above the `logger.warn` call. Two copies of the same rationale to keep in sync; operator dashboards key on structured fields (`event`, `route`) not message text.
+
+   Fix: trim the message string to `'Bridge HAF query failed'`. Disposition-neutrality is preserved (no `/register`-specific wording), the inline comment carries the WHY for future maintainers, and the operator-facing surface stays clean. ~1 LOC change.
+
+### Items dismissed during architect triage
+
+- **(testing, P3 anchor 50, conf 55) Cache-key absence assertion passes vacuously if `bridge-check:` prefix or `${parsed.type}:${parsed.id}` shape is renamed.** Reviewer self-flagged as preemptive hardening. Dismissed per project memory `feedback_dismiss_preemptive_test_hardening`: a cache-key rename is an obvious scope-change that would be caught at code review; no concrete refactor planned; the assertion's current mutation-kill claim (round-2 item 2 invariant) is intact for any regression in the actual cache-skip logic.
+- **(kieran-typescript KT-1, P2 anchor 50, conf 55) `resolvedParsed: ... | null` is dead-null branch given both callers null-guard `parsed` before invocation.** Real type-accuracy observation but below the confidence gate; the `??` fallback is defensive depth that compiles cleanly and runs as a sanity check. Dismissed; revisit if a third caller is added that doesn't null-guard upstream.
+- **(testing T-01 + maintainability RR-1) Documentation/wording nits on the new `resolvedParsed` comment block.** Below threshold; comment correctly captures the WHY (`??` retention) for future readers.
+
+### Architect followups (land at archive after round-4 clean — do NOT block backend re-submit)
+
+Carried forward unchanged from round-3 hold-block:
+- **A1.** `/ce-compound` candidate for the "deliberately remove a defaulted optional to force explicit-labeling at every call site" pattern — sibling to existing `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`. Round-3 item 3 (`callerLabel` default drop) is the canonical exemplar. Architect's discretion at archive.
+- **A2/A3.** "Read-then-write races on HAF-backed routes" + "Redis advisory lock with Lua CAS release on per-acquisition nonce" — both convention docs already exist (`read-then-write-races-on-haf-backed-routes-2026-05-15.md`, `redis-advisory-lock-with-lua-cas-nonce-2026-05-15.md`); no new work needed.
+- Pre-existing architect-zone followups from round-2/3 stand.
+
+### Re-review signal
+
+When item 1 lands in a single round-4 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only. Diff is ~1 LOC; round-4 should converge clean.
