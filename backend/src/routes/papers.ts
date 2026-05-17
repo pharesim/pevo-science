@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
-import { getPool } from '../db.js';
+import { getPool, HafQueryError } from '../db.js';
 import { broadcastJsonWithTimeout } from '../hive.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 import { config } from '../config.js';
@@ -1217,8 +1217,21 @@ async function fetchPaperDetailFromHaf(
 
     return detail;
   } catch (err) {
+    // Re-throw walker-abort errors as null is the cache-poisoning defense
+    // above; this catch only fires for actual query failures (pg pool
+    // exhausted, statement_timeout, network blip, hosting outage) or for
+    // upstream throws from `getAllAccreditedAccounts` /
+    // `getAccreditedOrcidsByAccount` / `getAllEverAccreditedOrcidsWithStatus`
+    // (all three loud-fail per their docstrings).
+    //
+    // Tag the error class so the route layer can translate to
+    // `503 SERVICE_UNAVAILABLE` with `details.retriable: true`. Pre-fix,
+    // this catch returned `null` and the route handler treated `null` as
+    // `404 NOT_FOUND`, making HAF outage indistinguishable from
+    // "paper does not exist" to clients. See
+    // `backend-fetch-paper-detail-haf-error-vs-not-found.md`.
     logger.error({ err }, 'HAF paper detail query failed');
-    return null;
+    throw new HafQueryError('fetchPaperDetailFromHaf', { cause: err });
   }
 }
 
@@ -2435,6 +2448,17 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
     }
     if (cached) return sendOk(res, cached);
     sendError(res, 404, 'NOT_FOUND', 'Paper not found');
+  } catch (err) {
+    if (err instanceof HafQueryError) {
+      return sendError(
+        res,
+        503,
+        'SERVICE_UNAVAILABLE',
+        'Paper detail temporarily unavailable. Please retry shortly.',
+        { retriable: true },
+      );
+    }
+    throw err;
   } finally {
     clearTimeout(walkerBudget);
   }
@@ -2701,8 +2725,13 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       authorship_claims,
     };
   } catch (err) {
+    // Loud-fail on HAF query failure so the route handler can translate
+    // to `503 SERVICE_UNAVAILABLE` with `details.retriable: true` rather
+    // than the pre-fix `null → 404` collapse that masked outage as
+    // "paper not found". See
+    // `backend-fetch-paper-detail-haf-error-vs-not-found.md`.
     logger.error({ err }, 'HAF enrichment query failed');
-    return null;
+    throw new HafQueryError('fetchEnrichmentFromHaf', { cause: err });
   }
 }
 
@@ -2730,6 +2759,17 @@ router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) 
     }
     if (!cached) return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
     sendOk(res, cached);
+  } catch (err) {
+    if (err instanceof HafQueryError) {
+      return sendError(
+        res,
+        503,
+        'SERVICE_UNAVAILABLE',
+        'Paper enrichment temporarily unavailable. Please retry shortly.',
+        { retriable: true },
+      );
+    }
+    throw err;
   } finally {
     clearTimeout(walkerBudget);
   }
@@ -2809,6 +2849,17 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
   let detail: Record<string, unknown> | null;
   try {
     detail = await fetchPaperDetailFromHaf(author, permlink, undefined, walkerAbort.signal) as Record<string, unknown> | null;
+  } catch (err) {
+    if (err instanceof HafQueryError) {
+      return sendError(
+        res,
+        503,
+        'SERVICE_UNAVAILABLE',
+        'Paper detail temporarily unavailable. Please retry shortly.',
+        { retriable: true },
+      );
+    }
+    throw err;
   } finally {
     clearTimeout(walkerBudget);
   }
@@ -2973,6 +3024,17 @@ router.get('/:author/:permlink/cite', async (req: Request, res: Response) => {
   let detail: Record<string, unknown> | null;
   try {
     detail = await fetchPaperDetailFromHaf(author, permlink, undefined, walkerAbort.signal) as Record<string, unknown> | null;
+  } catch (err) {
+    if (err instanceof HafQueryError) {
+      return sendError(
+        res,
+        503,
+        'SERVICE_UNAVAILABLE',
+        'Paper detail temporarily unavailable. Please retry shortly.',
+        { retriable: true },
+      );
+    }
+    throw err;
   } finally {
     clearTimeout(walkerBudget);
   }

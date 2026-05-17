@@ -175,11 +175,25 @@ export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
  * unreachable Postgres during test boot. `getPool()` returning `null` is
  * the documented disabled-mode shape (see `src/db.ts`).
  */
-export const dbStubFactory: () => typeof import('../../src/db.js') = () => ({
-  getPool: () => null,
-  isHafConfigured: () => false,
-  closeHafPool: async () => {},
-});
+export const dbStubFactory: () => typeof import('../../src/db.js') = () => {
+  // Mirror the real `HafQueryError` shape so consumers that `instanceof`
+  // against it (route handlers translating to 503) still see a class
+  // satisfying the import surface.
+  class HafQueryError extends Error {
+    public readonly operation: string;
+    constructor(operation: string, options?: { cause?: unknown }) {
+      super(`HAF query failed: ${operation}`, options as ErrorOptions);
+      this.name = 'HafQueryError';
+      this.operation = operation;
+    }
+  }
+  return {
+    getPool: () => null,
+    isHafConfigured: () => false,
+    closeHafPool: async () => {},
+    HafQueryError,
+  };
+};
 
 /**
  * Stub body for `vi.mock('../../src/redis.js', ...)`. Disabled-mode

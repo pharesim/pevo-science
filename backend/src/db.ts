@@ -6,6 +6,36 @@ const { Pool } = pg;
 
 let pool: pg.Pool | null = null;
 
+/**
+ * Tag class for HAF-pool query failures that route handlers want to
+ * translate to `503 SERVICE_UNAVAILABLE` (transient-outage) rather than
+ * `404 NOT_FOUND` (data missing). The two failure modes are otherwise
+ * indistinguishable at the helper-return layer when the helper's catch
+ * collapses both into `null`.
+ *
+ * Use at the fetcher boundary: in the helper's `catch (err)`, wrap as
+ * `throw new HafQueryError('paper detail', { cause: err })` so the route
+ * layer's `catch (err) { if (err instanceof HafQueryError) ... }` block
+ * can emit the retriable-503 envelope. The `cause` (Error.cause) carries
+ * the underlying pg / Postgres error for operator log correlation; the
+ * tag itself is the signal route handlers act on.
+ *
+ * Why a class rather than a discriminated `FetchResult<T>` union: the
+ * change is narrow and reuses the existing throw-path that
+ * `getAllAccreditedAccounts` / `getAccreditedOrcidsByAccount` /
+ * `getAllEverAccreditedOrcidsWithStatus` already established for HAF
+ * outages. Helpers that today return `null` for "data not found" keep
+ * that contract; the new throw distinguishes "HAF down" from "no row".
+ */
+export class HafQueryError extends Error {
+  public readonly operation: string;
+  constructor(operation: string, options?: { cause?: unknown }) {
+    super(`HAF query failed: ${operation}`, options as ErrorOptions);
+    this.name = 'HafQueryError';
+    this.operation = operation;
+  }
+}
+
 export function getPool(): pg.Pool | null {
   if (pool) return pool;
   if (config.hafDatabaseUrls.length === 0) return null;

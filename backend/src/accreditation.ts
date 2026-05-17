@@ -91,9 +91,12 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
  * spoof where a vouched co-author broadcasts a false ORCID for an
  * accredited peer (`agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`).
  *
- * Distinguishes "HAF returned 0 accredited" (legitimate empty population —
- * cached) from "HAF query failed" (re-thrown so callers can fail loudly
- * instead of caching an empty map on outage).
+ * **Error contract.** Throws on HAF unavailable; the route layer translates
+ * to 503 SERVICE_UNAVAILABLE with `details.retriable: true` (see
+ * `fetchPaperDetailFromHaf` and sibling enrichment/retract/cite handlers in
+ * `routes/papers.ts`). Distinguishes "HAF returned 0 accredited" (legitimate
+ * empty population, cached) from "HAF query failed" (re-thrown) so the
+ * retriable-outage signal survives intact instead of caching an empty map.
  *
  * `pool === null` (dev environment without HAF connected) returns an empty
  * map — that is a startup condition, not a transient outage.
@@ -213,11 +216,13 @@ export async function getAllAccreditedAccounts(): Promise<Set<string>> {
  * second revoke retired), not the first. See the CTE's docstring in
  * `hafsql.ts`.
  *
- * **Error contract.** Loud-fail parity with `getAccreditedOrcidsByAccount`
- * — distinguishes "HAF returned 0" (legitimate empty population, cached)
- * from "HAF query failed" (re-thrown). Audit emission silently degrading
- * to "no rows" on HAF outage would mask the visibility this task exists to
- * preserve.
+ * **Error contract.** Throws on HAF unavailable; the route layer translates
+ * to 503 SERVICE_UNAVAILABLE with `details.retriable: true` (see
+ * `fetchPaperDetailFromHaf` and sibling enrichment/retract/cite handlers in
+ * `routes/papers.ts`). Distinguishes "HAF returned 0" (legitimate empty
+ * population, cached) from "HAF query failed" (re-thrown). Audit emission
+ * silently degrading to "no rows" on HAF outage would mask the visibility
+ * this task exists to preserve.
  *
  * `pool === null` (dev environment without HAF connected) returns an empty
  * map — that is a startup condition, not a transient outage.
