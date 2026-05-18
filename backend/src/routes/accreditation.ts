@@ -297,6 +297,98 @@ async function deleteToken(token: string): Promise<void> {
   await deleteBroadcastAttempts(token);
 }
 
+// Grace-period record for the AbortError-after-success cascade. The SPA's
+// 30s AbortSignal.timeout can fire AFTER the backend has committed the on-
+// chain broadcast and deleted the pending token but BEFORE the 200 envelope
+// lands at the client. The SPA's retriable-error UX then sends the same
+// token again; without this record the route falls through to 400
+// BAD_REQUEST and the user enters the "Request New" cascade despite the
+// broadcast already succeeding. Keyed on `sha256(token)` (full digest, not
+// the truncated `hashTokenForLogs` form) so the record cannot be mined
+// from log lines. 24h TTL matches the original token TTL — symmetric
+// window covers any retry the user is likely to attempt on the same day.
+const ACCREDITATION_COMPLETED_TTL_SECONDS = 24 * 60 * 60;
+
+interface AccreditationCompletionRecord {
+  username: string;
+  tx_id: string;
+}
+
+const memoryAccreditationCompletions = new Map<
+  string,
+  { record: AccreditationCompletionRecord; expires_at: number }
+>();
+
+function accreditationCompletedKey(token: string): string {
+  const digest = crypto.createHash('sha256').update(token).digest('hex');
+  return `${config.appTag}:accreditation-completed:${digest}`;
+}
+
+/**
+ * Atomic write of the completion record + delete of the pending token on
+ * the broadcast-success path. The two operations execute serially in one
+ * Redis MULTI pipeline so a concurrent /verify retry cannot observe the
+ * "token deleted, record absent" half-state that produces the original
+ * 400 cascade. Partial-failure within the pipeline (SET succeeds, DEL
+ * fails or vice versa) is tolerated: a record without a token-delete
+ * leaves the pending token in place (next /verify finds the pending row
+ * and re-runs the existing-accreditation gate which short-circuits on
+ * the chain-side accredit op); a token-delete without a record returns
+ * 400 same as today (the pre-task baseline). The counter side-key delete
+ * is sequential after the pipeline — its lifetime is bounded by the
+ * token TTL, so a brief lingering counter between pipeline and counter
+ * delete is harmless.
+ */
+async function recordAccreditationCompletion(
+  token: string,
+  username: string,
+  txId: string,
+): Promise<void> {
+  const payload: AccreditationCompletionRecord = { username, tx_id: txId };
+  const serialized = JSON.stringify(payload);
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    await redis
+      .multi()
+      .set(accreditationCompletedKey(token), serialized, 'EX', ACCREDITATION_COMPLETED_TTL_SECONDS)
+      .del(`${config.appTag}:pending_accred:${token}`)
+      .exec();
+  }
+  memoryAccreditationCompletions.set(token, {
+    record: payload,
+    expires_at: Date.now() + ACCREDITATION_COMPLETED_TTL_SECONDS * 1000,
+  });
+  memoryTokens.delete(token);
+  await deleteBroadcastAttempts(token);
+}
+
+async function readAccreditationCompletion(
+  token: string,
+): Promise<AccreditationCompletionRecord | null> {
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      const raw = await redis.get(accreditationCompletedKey(token));
+      if (raw) {
+        try {
+          return JSON.parse(raw) as AccreditationCompletionRecord;
+        } catch {
+          return null;
+        }
+      }
+    } catch {
+      // Redis flap mid-read falls through to the in-memory map.
+    }
+  }
+  const cached = memoryAccreditationCompletions.get(token);
+  if (!cached) return null;
+  if (Date.now() > cached.expires_at) {
+    memoryAccreditationCompletions.delete(token);
+    return null;
+  }
+  return cached.record;
+}
+
 /**
  * Best-effort wrapper around `deleteToken` used by branches that have already
  * written or are about to write a final response envelope (200 success and
@@ -450,6 +542,21 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
 
   const pending = await getToken(token);
   if (!pending) {
+    // Grace-period idempotency: a prior /verify on this same token may
+    // have committed the on-chain broadcast and deleted the pending row
+    // before the SPA's AbortSignal.timeout fired. Without this check the
+    // user's retry falls through to 400 and cascades through "Request
+    // New". The completion record returns the same envelope shape the
+    // original fresh-success flight would have emitted, so the SPA's
+    // existing success-state handler renders without branching.
+    const completion = await readAccreditationCompletion(token);
+    if (completion) {
+      return sendOk(res, {
+        message: 'Accreditation confirmed',
+        username: completion.username,
+        tx_id: completion.tx_id,
+      });
+    }
     return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired token');
   }
 
@@ -831,18 +938,30 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       key,
     );
 
-    // F8: wrap deleteToken on the success path in best-effort cleanup so a
-    // Redis hiccup post-success cannot propagate to Express's async-error
-    // handler over the in-flight 200 envelope (closes the
-    // `helper-extraction-express5-response-ordering-2026-04-28.md` class
-    // for this route).
-    await deleteTokenBestEffort(
-      token,
-      pending.hive_username,
-      pending.email,
-      'accreditation.verify.delete_token_failed_post_success',
-      'accreditation.verify token cleanup failed on broadcast success — orphan TTLs out',
-    );
+    // Atomic completion-record write + pending-token delete on the
+    // broadcast-success path. Replaces the prior plain `deleteToken`
+    // call so the AbortError-after-success cascade closes: a retry on
+    // the same token finds the completion record and returns the
+    // identical 200 envelope. Wrapped in best-effort try/catch for the
+    // same reason the prior deleteToken was — a Redis hiccup post-
+    // success must NOT propagate to Express's async-error handler over
+    // the in-flight 200 envelope (closes the response-ordering class
+    // documented at `helper-extraction-express5-response-ordering-2026-04-28.md`).
+    try {
+      await recordAccreditationCompletion(token, pending.hive_username, result.id);
+    } catch (cleanupErr) {
+      logger.warn(
+        {
+          event: 'accreditation.verify.completion_record_failed_post_success',
+          route: 'accreditation.verify',
+          username: pending.hive_username,
+          email_hash: hashEmailForLogs(pending.email),
+          token_hash: hashTokenForLogs(token),
+          err: cleanupErr instanceof Error ? cleanupErr : new Error(String(cleanupErr)),
+        },
+        'accreditation.verify completion record + token cleanup failed on broadcast success — orphan TTLs out',
+      );
+    }
     // Wrap seedAccreditationBonus in PostBroadcastWriteError discipline (the
     // pattern documented at `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` and
     // adopted by ORCID's handleAccredit / handleLink). The chain op landed by

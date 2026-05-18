@@ -788,3 +788,122 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
     expect(bodyStr).not.toContain('reputation weights shape regression');
   });
 });
+
+describe('accreditation /verify — grace-period idempotency (AbortError-after-success)', () => {
+  // The SPA's 30s AbortSignal.timeout can fire AFTER the backend has
+  // committed the on-chain broadcast and deleted the pending token but
+  // BEFORE the 200 envelope lands at the client. The SPA's retriable-error
+  // UX sends the same token again; without a grace-period record the route
+  // falls through to 400 BAD_REQUEST and the user enters the "Request
+  // New" cascade despite the broadcast having actually succeeded. These
+  // specs pin the route-side fix: the success path writes an
+  // `accreditation-completed:<sha256(token)>` record atomically with the
+  // token delete; a subsequent /verify on the same token reads that
+  // record and returns the SAME 200 envelope as the original flight.
+  beforeEach(() => {
+    broadcastJsonMock.mockReset();
+    broadcastJsonMock.mockResolvedValue({ id: 'fresh-accred-tx-id' });
+    hafQueryMock.mockReset();
+    seedBonusMock.mockReset();
+    seedBonusMock.mockResolvedValue(undefined);
+    hafConfiguredFlag.value = true;
+  });
+
+  afterEach(async () => {
+    const redis = getRedis();
+    if (redis) {
+      const keys = await redis.keys(`${config.appTag}:pending_accred:accred-grace-*`);
+      if (keys.length > 0) await redis.del(...keys);
+      const counters = await redis.keys(`${config.appTag}:pending_accred_broadcast_attempts:accred-grace-*`);
+      if (counters.length > 0) await redis.del(...counters);
+      const completionKeys = await redis.keys(`${config.appTag}:accreditation-completed:*`);
+      if (completionKeys.length > 0) await redis.del(...completionKeys);
+      const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
+      if (limitKeys.length > 0) await redis.del(...limitKeys);
+      const idemKeys = await redis.keys(`${config.appTag}:idem:accred:*`);
+      if (idemKeys.length > 0) await redis.del(...idemKeys);
+    }
+  });
+
+  it('retried /verify on the same token returns the identical 200 envelope after broadcast success', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-grace-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'graceperioduser';
+    await seedPendingAccreditation(token, username);
+
+    // First flight: gate miss + idempotency miss → broadcast → success.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] }); // gate
+    hafQueryMock.mockResolvedValueOnce({ rows: [] }); // idempotency
+    broadcastJsonMock.mockResolvedValueOnce({ id: 'tx-grace-canary-1' });
+
+    const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+    expect(firstRes.status).toBe(200);
+    expect(firstRes.body.data).toMatchObject({
+      message: 'Accreditation confirmed',
+      username,
+      tx_id: 'tx-grace-canary-1',
+    });
+
+    // Side-effect: token was deleted on success; grace-period record
+    // was written atomically with the delete.
+    expect(await tokenExists(token)).toBe(false);
+    const digest = crypto.createHash('sha256').update(token).digest('hex');
+    const stored = await redis.get(`${config.appTag}:accreditation-completed:${digest}`);
+    expect(stored).not.toBeNull();
+    expect(JSON.parse(stored as string)).toEqual({
+      username,
+      tx_id: 'tx-grace-canary-1',
+    });
+
+    // Second flight on the same token: the SPA's retry after an
+    // AbortError. The broadcast must NOT fire again — the grace-period
+    // record satisfies the request.
+    const broadcastCallsBefore = broadcastJsonMock.mock.calls.length;
+    const retryRes = await request(app).post('/api/accreditation/verify').send({ token });
+
+    expect(retryRes.status).toBe(200);
+    expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBefore);
+    // Envelope shape MUST be identical to the original flight — the SPA's
+    // existing success-state handler renders without branching. Compare
+    // `body.data` directly: a future field added to the fresh-success
+    // shape that isn't mirrored in the grace-period path would fail this.
+    expect(retryRes.body.data).toEqual(firstRes.body.data);
+  });
+
+  it('grace-period miss with no pending token returns 400 BAD_REQUEST (pre-task baseline preserved)', async () => {
+    // No seedPendingAccreditation, no grace-period record. The unknown
+    // token must continue to surface 400 — anything else turns
+    // `/verify` into an existence oracle.
+    const token = `accred-grace-${crypto.randomBytes(8).toString('hex')}`;
+
+    const res = await request(app).post('/api/accreditation/verify').send({ token });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('BAD_REQUEST');
+    expect(res.body.error?.message).toMatch(/invalid or expired token/i);
+  });
+
+  it('grace-period record carries the broadcast tx_id, not the gate-hit tx_id', async () => {
+    // Sanity pin: the record stores the FRESH broadcast id. A regression
+    // that wrote the gate-existing tx_id (e.g., from a prior cached HAF
+    // lookup) would surface as a tx_id mismatch on retry. This guards
+    // against a future refactor that confuses the two id sources.
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-grace-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gracetxiduser';
+    await seedPendingAccreditation(token, username);
+
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+    broadcastJsonMock.mockResolvedValueOnce({ id: 'tx-fresh-id-only' });
+
+    const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+    expect(firstRes.body.data?.tx_id).toBe('tx-fresh-id-only');
+
+    const digest = crypto.createHash('sha256').update(token).digest('hex');
+    const stored = await redis.get(`${config.appTag}:accreditation-completed:${digest}`);
+    expect(JSON.parse(stored as string).tx_id).toBe('tx-fresh-id-only');
+  });
+});
