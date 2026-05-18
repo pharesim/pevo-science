@@ -240,3 +240,28 @@ None. No contract change in this task.
 - **Smtp transient + 4xx-refund DECR scheduling timing** (correctness C4 conf 50 advisory): pre-existing pattern, below confidence gate.
 
 ---
+
+## Backend re-review signal (2026-05-18) — round 4
+
+All three round-3 hold items landed in a single comment-only commit. No production-logic changes; the rate-limit behaviour is unchanged.
+
+- **Item 1 (P2 corr × ps × testing)** — `backend/tests/routes/accreditation.test.ts` BE-ACCRED-REQ-LIMITER header comment. Dropped the line citation `custody-upgrade.test.ts:498` from the prose; the comment now anchors on the sibling test's full title (`Hive getAccounts throws then recovers: 503 refunds limiter slot so the retry succeeds`). The named test title is grep-stable and survives line shifts per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`. Same anchor reused for the architect's clause-(c) sweep below.
+- **Item 2 (P2 corr × ps)** — same file, the 4xx-refund canary's preamble comment. Replaced the wrong-as-written `backend/src/middleware/rateLimit.ts:100-101` citation with `RateLimitConfig.skipFailedRequests` JSDoc anchor. The symbolic name is the type definition's stable surface.
+- **Item 3 (P2 ps × maintainability)** — three sites:
+  - `backend/tests/routes/accreditation.test.ts` 4xx-refund canary preamble (around the previous `accreditation.ts:25` citation): now anchors on the limiter identifier `accreditationRequestLimiter`. Behavioural prose ("see the comment block on `accreditationRequestLimiter`") survives line shifts.
+  - `backend/src/routes/accreditation.ts` `deleteTokenBestEffort` JSDoc: dropped the `per round-2 F8` task-cycle marker. Behavioural description preserved — JSDoc still enumerates the calling branches (200 success + idempotency-hit on /verify, 500 SMTP-failure cleanup on /request) without the rotting task-cycle anchor.
+  - Architect's clause-(c) sweep: the carve-out clause-(c) prose at the BE-ACCRED-REQ-LIMITER header also cited `custody-upgrade.test.ts:518`. Dropped the line citation; the prose now anchors on the same `Hive getAccounts throws then recovers: 503 refunds limiter slot so the retry succeeds` title used in Item 1, keeping clause (c)'s real-path-companion reference grep-stable.
+
+### Verification
+
+- `npm run typecheck` (backend, both `:src` and `:tests`): clean.
+- `npm run lint` (backend): clean.
+- `npx vitest run tests/routes/accreditation.test.ts -t "BE-ACCRED-REQ-LIMITER"` with Docker IP env overrides: 2 passed / 31 skipped (the two BE-ACCRED-REQ-LIMITER canaries pass; the other specs in the file are out-of-filter). Comment-only changes — no behaviour regression.
+
+### Files for re-review
+
+- `backend/src/routes/accreditation.ts` (Item 3 JSDoc)
+- `backend/tests/routes/accreditation.test.ts` (Items 1, 2, 3 + clause-(c) sweep)
+- This task file (round-4 signal block)
+
+---

@@ -302,8 +302,8 @@ async function deleteToken(token: string): Promise<void> {
 /**
  * Best-effort wrapper around `deleteToken` used by branches that have already
  * written or are about to write a final response envelope (200 success and
- * idempotency-hit paths on /verify per round-2 F8; 500 SMTP-failure cleanup
- * on /request). A Redis hiccup on cleanup must NOT propagate to Express's
+ * idempotency-hit paths on /verify; 500 SMTP-failure cleanup paths on
+ * /request). A Redis hiccup on cleanup must NOT propagate to Express's
  * async-error handler (`ERR_HTTP_HEADERS_SENT` would be the visible symptom
  * on the success branches; envelope-shape regression to the express-default
  * HTML 500 would be the symptom on the /request 500 branches — both

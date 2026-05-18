@@ -1555,13 +1555,14 @@ describe('BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions
 });
 
 // ──────────────────────────────────────────────
-// BACKEND-ACCREDITATION-LIMITER-SKIP-FAILED P1 canary: the accred-req
-// limiter at accreditation.ts:25 uses `skipFailedRequests: true` so a 5xx
-// SMTP-failure response refunds the per-account slot. Without it, transient
-// SMTP outages burn the user's 3/24h budget; three failures lock the
-// account out for a full day with no recourse. This test pins the slot-
-// refund behaviour. Mirrors the canary at
-// `backend/tests/routes/custody-upgrade.test.ts:498`.
+// Canary pinning the accred-req limiter's slot-refund behaviour: the
+// `accreditationRequestLimiter` declaration uses `skipFailedRequests: true`
+// so a 5xx SMTP-failure response refunds the per-account slot. Without it,
+// transient SMTP outages burn the user's 3/24h budget; three failures lock
+// the account out for a full day with no recourse. Mirrors the sibling
+// `Hive getAccounts throws then recovers: 503 refunds limiter slot so the
+// retry succeeds` canary against `upgradeLimiter` in
+// `backend/tests/routes/custody-upgrade.test.ts`.
 //
 // Carve-out justification (root CLAUDE.md test-mock carve-out clauses a/b/c):
 //   (a) Real-path impracticality: driving 3 deterministic SMTP failures
@@ -1574,11 +1575,13 @@ describe('BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions
 //       focus is rate-limit slot-refund mechanics, not cryptographic
 //       verification.
 //   (c) Real-path companion: the rate-limit primitive's slot-refund
-//       semantics have real-Redis coverage at
-//       `backend/tests/routes/custody-upgrade.test.ts:518` against the
-//       upgradeLimiter; that sibling canary exercises the same
-//       skipFailedRequests path through the rateLimit middleware against a
-//       different transient-failure source (Hive RPC throw → 503).
+//       semantics have real-Redis coverage in the sibling
+//       `Hive getAccounts throws then recovers: 503 refunds limiter slot so
+//       the retry succeeds` canary in
+//       `backend/tests/routes/custody-upgrade.test.ts` against the
+//       upgradeLimiter; that canary exercises the same skipFailedRequests
+//       path through the rateLimit middleware against a different transient-
+//       failure source (Hive RPC throw → 503).
 // ──────────────────────────────────────────────
 
 describe('BE-ACCRED-REQ-LIMITER — accred-req limiter refunds slot on transient SMTP failure', () => {
@@ -1659,19 +1662,18 @@ describe('BE-ACCRED-REQ-LIMITER — accred-req limiter refunds slot on transient
     }
   });
 
-  // Round-2 hold item 2: pin the symmetric 4xx-refund contract. The rateLimit
-  // primitive at backend/src/middleware/rateLimit.ts:100-101 refunds on ANY
-  // res.statusCode >= 400 (not just 5xx). The /api/accreditation/request
-  // 4xx paths (422 non-institutional email, 400 zod validation) short-
-  // circuit before storeToken/sendMail so refund-on-4xx is acceptable today,
-  // but a mutation flipping the middleware's threshold to `>= 500` would
-  // silently break the upstream user-experience contract documented at the
-  // limiter declaration. This canary drives three 422 non-institutional-
-  // email responses, then asserts the fourth request is NOT 429 — pins the
-  // symmetric refund. If a future change adds an expensive pre-handler op
-  // before the institutional-email gate, that route MUST get its own
-  // throttle (the limiter's symmetric refund will not rate-limit pre-
-  // handler probes); see the comment block at accreditation.ts:25.
+  // Pin the symmetric 4xx-refund contract: the `RateLimitConfig.skipFailedRequests`
+  // primitive refunds on ANY res.statusCode >= 400 (not just 5xx). The
+  // /api/accreditation/request 4xx paths (422 non-institutional email, 400 zod
+  // validation) short-circuit before storeToken/sendMail so refund-on-4xx is
+  // acceptable today, but a mutation flipping the middleware's threshold to
+  // `>= 500` would silently break the upstream user-experience contract
+  // documented at the limiter declaration. This canary drives three 422
+  // non-institutional-email responses, then asserts the fourth request is NOT
+  // 429 — pins the symmetric refund. If a future change adds an expensive
+  // pre-handler op before the institutional-email gate, that route MUST get
+  // its own throttle (the limiter's symmetric refund will not rate-limit
+  // pre-handler probes); see the comment block on `accreditationRequestLimiter`.
   it('three 422 non-institutional-email responses do NOT exhaust the 3/24h budget; fourth request not 429', async () => {
     const username = `aclim4xxrefnd${Date.now() % 1000}${Math.floor(Math.random() * 1000)}`;
     const redis = getRedis();
