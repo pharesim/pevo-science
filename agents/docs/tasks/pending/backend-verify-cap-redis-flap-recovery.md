@@ -226,3 +226,68 @@ How to call:
 - Response includes `prior_value` so the operator can record the pre-reset state in the incident log.
 
 What to log: every reset emits a structured `event: 'admin_reset_broadcast_counter'` info line with `admin_username`, `token_hash`, `prior_value`. Forbidden attempts emit `event: 'admin_reset_broadcast_counter_forbidden'`. Redis-unavailable resets emit `event: 'admin_reset_broadcast_counter_redis_unavailable'`. The plaintext token is NEVER logged — the route is the SOLE credential for `/verify`, so any operator-log retention window would otherwise be a replay grace period.
+
+---
+
+## Architect re-review (2026-05-18, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` on the round-1 implementation commit (10 reviewers — correctness + security + adversarial on Opus; testing/reliability/api-contract/maintainability/project-standards/kieran-typescript/learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Both architect-decided designs land in intent: the in-process pending-decrement queue + drainer recover the broadcast-attempts counter on Redis flap, and the admin reset endpoint provides the manual-reset operator runbook lever. Reviewers verified the queue's `attemptId` insulation, the per-cycle drain log, the overflow warn, and the admin-equality 403 audit log with no raw-token leak.
+
+Seven items held — three are substantial code-shape issues (key-string duplication, log event naming inconsistency, atomicity gap on the admin reset GET+DEL), one is a substantial cross-reviewer task-slug citation cluster, two are test-coverage gaps (500-branch + clause-(a)/(c) carve-out shortfall), and one is a contract-consistency follow-on (`Retry-After: 30` header on 503). Plus the comment-anchor cleanup which subsumes the slug citations from #7.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 100, maintainability + api-contract residual) `broadcastAttemptsKey` duplicated verbatim across `backend/src/routes/admin.ts` and `backend/src/routes/accreditation.ts`.** Both files define a private `broadcastAttemptsKey(token)` function whose body is the same template literal. A key-schema change in `accreditation.ts` (rename, suffix, hash) would leave `admin.ts` silently operating on a stale key — the admin reset endpoint would `GET` and `DEL` a key that no longer exists in the accreditation route's namespace, returning `prior_value: null` and "succeeding" without clearing the actual inflated counter. The drift hazard is invisible to typechecking and to existing tests.
+
+  Suggested fix: export `broadcastAttemptsKey` from `accreditation.ts`, import it in `admin.ts`. One source of truth. Test-helper duplications of the same template literal in `pending-decrement-queue.test.ts` and `admin.test.ts` are lower priority — defer to opportunistic cleanup when next touching those files.
+
+**2. (P1, conf 95, maintainability) Log event naming inconsistency between existing accreditation events (dotted-path form) and the 8 new events introduced by this commit (flat-underscore form).** All existing `accreditation.verify.*` log events use the canonical dotted-path shape per `auth-structured-log-shape-2026-04-29.md` (`event: '<module>.<handler>.<sub_event>'`, snake_case). This commit introduces 8 new events in flat-underscore form: `accred_verify_decrement_queue_drain`, `accred_verify_decrement_queue_retry_failed`, `accred_verify_decrement_queue_overflow`, `accred_verify_decrement_queue_drain_threw`, `admin_reset_broadcast_counter`, `admin_reset_broadcast_counter_forbidden`, `admin_reset_broadcast_counter_redis_unavailable`, `admin_reset_broadcast_counter_failed`. Operator dashboard filters keyed on `accreditation.*` miss all 8 new events.
+
+  Suggested fix: rename to dotted-path form. Queue events → `accreditation.verify.decrement_queue_drain`, `...decrement_queue_retry_failed`, `...decrement_queue_overflow`, `...decrement_queue_drain_threw`. Admin events → `accreditation.admin.reset_broadcast_counter`, `accreditation.admin.reset_broadcast_counter_forbidden`, `accreditation.admin.reset_broadcast_counter_redis_unavailable`, `accreditation.admin.reset_broadcast_counter_failed`. Update any test assertions that match exact event strings (the test for item 4 below extends this — pin the renamed `accreditation.admin.reset_broadcast_counter_failed` discriminator).
+
+**3. (P1, conf 100, project-standards × 6 sites + maintainability) Task-slug citations and one round-number reference introduced in 6+ sites across new production and test source.**
+
+  Sites (all `+` lines in this commit):
+  - `backend/src/lib/pending-decrement-queue.ts` file header docblock: cites the task slug + `agents/docs/tasks/.../backend-verify-cap-redis-flap-recovery.md`.
+  - `backend/src/config.ts` near the queue-drain config field: contains a `// See lib/pending-decrement-queue.ts and BE-VERIFY-CAP-REDIS-FLAP-RECOVERY.` comment.
+  - `backend/src/routes/accreditation.ts` three new comment blocks (catch block, Redis-unavailable branch, attemptId declaration): each cites `BE-VERIFY-CAP-REDIS-FLAP-RECOVERY`.
+  - `backend/src/routes/admin.ts` file header comment: `// Manual-reset runbook lever for BE-VERIFY-CAP-REDIS-FLAP-RECOVERY.`
+  - `backend/tests/lib/pending-decrement-queue.test.ts` header: `// Coverage for ... the in-process pending-decrement queue introduced by BE-VERIFY-CAP-REDIS-FLAP-RECOVERY.`
+  - `backend/tests/routes/accreditation.test.ts` new describe-block header: `// BE-VERIFY-CAP-REDIS-FLAP-RECOVERY — queue-enqueue + auto-recovery` + `// Round-3 hold #10 added the Redis-unavailable warn at the DECR site` (round-number reference too).
+  - `backend/tests/routes/admin.test.ts` file header docblock: task-slug citation.
+
+  Suggested fix: rewrite all sites to behavioral anchors. Examples — the queue file header: "In-process queue for retrying `/api/accreditation/verify` broadcast-attempt counter DECRs after a Redis flap. Drainer runs at `config.verifyDecrementQueueDrainMs` (default 30s)." The `config.ts` comment: "See `startDecrementQueueDrainer` in `lib/pending-decrement-queue.ts`." The `accreditation.ts` catch-block comment: "DECR threw during Redis flap — enqueue for periodic retry to prevent counter inflation until 24h TTL." The `admin.ts` file header: "Operator manual-reset lever: clears an inflated broadcast-attempts counter when the in-process pending-decrement queue cannot converge (process restart, 24h TTL expiry, or queue overflow)." The `accreditation.test.ts` describe-block: "queue-enqueue + auto-recovery against /verify broadcast-attempt counter on Redis flap." Drop the "Round-3 hold #10" round-number reference; replace with a description of the invariant being tested.
+
+  Per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the rewrite prose must not reintroduce task-slug citations, round-N markers, line-number anchors, or SHA references.
+
+**4. (P2, conf 88, testing T1) 500 branch in `backend/src/routes/admin.ts` (`redis.get` or `redis.del` throws under `isRedisAvailable() === true`) has no test in `backend/tests/routes/admin.test.ts`.** The catch block emits a distinct log discriminator and returns 500 `INTERNAL_ERROR`. Six other paths are tested (401 no auth, 400 missing token, 403 non-admin, 200 happy path, 200 `prior_value: null`, 503 Redis unavailable); the 500 path is the only branch without a regression pin. Reachable in production via ioredis reconnect during the operation window.
+
+  Suggested fix: add one spec that stubs `redis.get` (or `redis.del`) to reject mid-reset, asserts the 500 + `INTERNAL_ERROR` envelope, and asserts the log discriminator fires. Pin the renamed event per item 2 (after the rename, the discriminator is `accreditation.admin.reset_broadcast_counter_failed`).
+
+**5. (P2, conf 75, project-standards × 2) MOCK_VERIFY_SIGNATURE carve-out clauses (a) and (c) shortfall in `backend/tests/routes/admin.test.ts`.** Per the "Running Tests" carve-out (root `CLAUDE.md`), clause (a) requires the test file header to explicitly state cryptographic verification is bypassed AND why the focus permits it. The current header documents the mock's purpose but does not contain the required explicit statement. Clause (c) requires a real-path companion OR a follow-up task for the same risk class; the companion exists at `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts` (exercises both `verifyHiveSignature` branches with real signed requests) but the `admin.test.ts` header does not name it.
+
+  Suggested fix: extend the header to read approximately: "Cryptographic signature verification is bypassed by `MOCK_VERIFY_SIGNATURE`; only the header-presence gate and username-extraction are exercised by the mock. The test focus is the admin equality check, counter-reset logic, and Redis-state handling, not the Hive signature algorithm. The clause (c) real-path companion lives at `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts`, which exercises the middleware's both branches with genuine Hive-signed requests."
+
+**6. (low, conf 75, reliability) Non-atomic `redis.get(key)` + `redis.del(key)` pair in the admin reset route returns potentially stale `prior_value`.** If a concurrent write to the counter key lands between the `GET` and `DEL` commands (e.g., a parallel `/verify` request increments the counter), the `prior_value` returned to the operator does not match what was actually deleted. For the runbook use case — operator recording pre-reset state in an incident log — a stale `prior_value` is an audit-trail inaccuracy.
+
+  Suggested fix: replace the `GET` + `DEL` pair with `redis.getdel(key)` (ioredis exposes this for Redis 6.2+). One atomic command. If the Redis version cannot be assumed, use a 2-line Lua script: `local v = redis.call('GET', KEYS[1]); redis.call('DEL', KEYS[1]); return v`. PEvO's deployment uses a modern Redis; `redis.getdel` should work directly.
+
+**7. (low, conf 75, api-contract AC-1) 503 path of `POST /api/admin/accreditation/reset-broadcast-counter` omits `Retry-After: 30` header.** Per `agents/docs/api-contracts/common.md` and the sibling 503 paths on `POST /api/accreditation/verify` (both `ACCREDITATION_GATE_UNAVAILABLE` and `SERVICE_UNAVAILABLE` branches), retriable-503 emissions pair `details.retriable: true` with a `Retry-After: 30` header. The admin endpoint emits only the body signal. Any SPA code that reads `retryAfterSeconds` from the header on a retriable 503 gets `undefined` on this path, silently skipping the backoff floor.
+
+  Suggested fix: add `res.set('Retry-After', '30');` immediately before the `sendError` call on the 503 branch. Assert `res.headers['retry-after']` equals `'30'` in the 503 spec.
+
+### Items dismissed during architect triage
+
+- **(P1, conf 70, adversarial) Admin endpoint accepts JWT-bearer auth, potentially violating ARCHITECTURE.md § 6.5 invariant #1.** Verified at triage: the admin account is set via `HIVE_ADMIN_ACCOUNT` env var (default `pevo.admin`); no elevation route, no admin-management UI, no DB column tracks admin status. The signup flow can't register the admin account as a light account either — `create_claimed_account` consumes claimed-account tokens to mint a NEW Hive account, but the admin account is already on-chain, so Hive itself would reject the operation. The JWT path through `verifyHiveSignature` for the admin's username is structurally impossible under current architecture. If a future admin-management route lands, this concern re-opens; not held against round-1.
+- **(P2, conf 80, adversarial) Queue overflow at 1000 silently drops new entries while caller assumes successful enqueue.** Overflow requires sustained Redis outage AND high traffic; the admin reset endpoint provides operator recovery. Default-recommend dismiss per `feedback_dismiss_preemptive_test_hardening`.
+- **(low, conf 60, adversarial) Drainer break-on-first-fail strands queued entries behind a poison entry.** Recovery cadence is bounded (30s next-cycle re-attempt); if a poison entry exists, ALL entries on the same DECR target would also fail (real Redis issue, not entry-specific). Below the actionable bar.
+- **(low, conf 50, correctness residual) `prior_value` uses `Number(raw)` without NaN guard.** Unreachable from live code (the counter key is only INCR/DECR-written). Below the actionable bar.
+- **(P1, conf 90, api-contract AC-2) `agents/docs/api-contracts/accreditation.md` admin endpoint row not yet documented.** Architect-zone; landed at cluster archive time as part of the api-contracts sweep (implementer's [TODO Architect] block at task tail).
+
+### Re-review signal
+
+When items 1-7 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+Items 1-7 touch a mix of `backend/src/routes/admin.ts`, `backend/src/routes/accreditation.ts`, `backend/src/lib/pending-decrement-queue.ts`, `backend/src/config.ts`, and the three test files. Implementer's call whether one bundled commit, two (`code-shape + comment-anchor` + `tests`), or three; the zone-audit hook will be satisfied as long as all paths are under `backend/`.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
