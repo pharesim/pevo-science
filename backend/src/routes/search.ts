@@ -210,6 +210,10 @@ async function searchReviewsFromHaf(
   const ilikePattern = `%${query}%`;
   const textMatch = `c.body ILIKE ${ilikeParam} ESCAPE '\\'`;
 
+  // sort accepted for signature symmetry with searchPapersFromHaf;
+  // relevance-ranking for reviews is not yet implemented. When it is,
+  // wire the sort value through here (and add a ?type=review&sort=relevance
+  // happy-path spec at search.test.ts).
   const orderBy = 'c.created DESC';
 
   const snippetExpr = `substring(c.body from 1 for 300)`;

@@ -197,3 +197,11 @@ No `git mv` from `pending/` to `review/` was performed in this worktree; parent 
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect re-review scopes `/ce-code-review` to the round-4 commit. Anchor: single short comment addition at one location. Trivial single commit.
+
+## Backend re-review signal (2026-05-18, round-4)
+
+Round-4 hold item landed in this commit. One file touched:
+
+- `backend/src/routes/search.ts` — item 1: added a 4-line WHY comment immediately before `const orderBy = 'c.created DESC';` inside `searchReviewsFromHaf` (current location at the orderBy assignment, ~line 213-217). Comment text matches the architect's spelled-out text verbatim — explains that `sort` is accepted for signature symmetry with `searchPapersFromHaf`, that relevance-ranking for reviews is not yet implemented, and where to wire the sort value through (plus the companion `?type=review&sort=relevance` spec) when implemented. No production-behavior change; no new test required per the hold block.
+
+`npm run typecheck` clean (`typecheck:src` + `typecheck:tests`). `npm run lint` clean (only the 2 pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`, unrelated). Vitest deferred to the parent serialized run per prior signal blocks.
