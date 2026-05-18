@@ -150,5 +150,6 @@ const recoverLimiter = rateLimit({
 | `custody.ts:57 freshAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
 | `custody.ts:62 sessionAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
 | `accreditation.ts:35 accreditationRequestLimiter` | account | ✓ | ❌ (fresh-auth proof, not new credential) | ✓ | Correct adoption — one-shot ceremony |
+| `accreditation.ts accreditationVerifyLimiter` | IP | ✓ | ❌ (token claim, not credential probe) | ❌ | Correct adoption — IP-keyed one-shot ceremony; HAF outage / Redis pre-INCR transients are the legitimate-user-lockout surface; 256-bit token entropy is the brute-force rate-bound |
 
 The grid is the discriminator-in-practice: every site with `skipFailedRequests: true` is JWT-required AND has a concrete legitimate-user-lockout DoS surface that motivates the adoption.
