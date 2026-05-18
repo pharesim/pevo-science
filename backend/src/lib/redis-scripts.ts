@@ -141,38 +141,38 @@ export type SharedScriptName = keyof typeof SHARED_SCRIPTS;
 /**
  * Static contract for each script's return type. Used by `evalScript<N>`
  * so callers receive `ScriptReturn[N]` instead of `unknown` and don't need
- * a load-bearing `as` cast at the call site. The exhaustiveness guard
- * below makes `SHARED_SCRIPTS` ↔ `ScriptReturn` divergence a compile error
- * at the definition site (a script name present in one mapping but not
- * the other no longer resolves silently to `unknown` via `ScriptReturn[N]`).
+ * a load-bearing `as` cast at the call site. `_SCRIPT_RETURN_SHAPE` below
+ * is a stand-in value whose object-literal shape carries the per-script
+ * return types; `ScriptReturn = typeof _SCRIPT_RETURN_SHAPE` then re-exports
+ * that shape as the public type. Compile-time exhaustiveness is enforced
+ * by the `satisfies Record<SharedScriptName, unknown>` clause on the value
+ * — drift in either direction is a definition-site error:
+ *   - A script added to SHARED_SCRIPTS without a shape entry → the Record's
+ *     required-keys check rejects the literal ("Property 'X' is missing").
+ *   - A stale shape entry whose script was removed → satisfies-on-an-
+ *     object-literal applies the excess-property check ("Object literal
+ *     may only specify known properties, and 'X' does not exist in type
+ *     'Record<SharedScriptName, unknown>'").
  *
- * The mapped-type also makes future script additions automatically type-
- * safe (a `Promise<unknown>` return forced every caller to invent their
- * own ad-hoc cast, where a typo silently bypassed runtime checks).
+ * This is the convention's canonical `satisfies`-on-a-value form — see
+ * `agents/docs/solutions/conventions/satisfies-record-for-mapped-type-and-set-completeness-2026-05-17.md`.
+ * Replaces the prior `_NoMissingReturn`/`_NoExtraReturn` pair, which was
+ * mechanically correct but diverged from the documented repo-wide pattern
+ * for the same exhaustiveness invariant.
  *
  * Note: this is a STATIC contract, not a runtime guarantee. ioredis returns
  * `unknown` from `eval`/`evalsha` and the cast lives at the boundary inside
- * `evalScript`. Callers that depend on the array/numeric shape should add
- * runtime narrowing — see the defensive check in `rateLimit.ts` for the
- * pattern.
+ * `evalScript`. The placeholder values inside `_SCRIPT_RETURN_SHAPE` are
+ * never read at runtime; only the literal's shape matters for the
+ * `typeof`-derived type. Callers that depend on the array/numeric shape
+ * should add runtime narrowing — see the defensive check in `rateLimit.ts`.
  */
-export type ScriptReturn = {
-  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: number;
-  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
-  RATE_LIMIT_CHECK_AND_CONSUME: [number, number];
-};
-
-// Compile-time exhaustiveness guard. `_NoMissingReturn` catches a script
-// added to SHARED_SCRIPTS without a corresponding `ScriptReturn` entry;
-// `_NoExtraReturn` catches a stale `ScriptReturn` entry whose script was
-// removed from SHARED_SCRIPTS. Drift collapses one side to `false` and the
-// `_scriptReturnExhaustive: true` assignment fails to compile, surfacing
-// the divergence at the definition site rather than via a silent
-// `Promise<unknown>` at a call site.
-type _NoMissingReturn = Exclude<SharedScriptName, keyof ScriptReturn> extends never ? true : false;
-type _NoExtraReturn = Exclude<keyof ScriptReturn, SharedScriptName> extends never ? true : false;
-const _scriptReturnExhaustive: _NoMissingReturn & _NoExtraReturn = true;
-void _scriptReturnExhaustive;
+const _SCRIPT_RETURN_SHAPE = {
+  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: 0 as number,
+  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 as 0 | 1,
+  RATE_LIMIT_CHECK_AND_CONSUME: [0, 0] as [number, number],
+} satisfies Record<SharedScriptName, unknown>;
+export type ScriptReturn = typeof _SCRIPT_RETURN_SHAPE;
 
 const scriptShaCache = new Map<SharedScriptName, string>();
 

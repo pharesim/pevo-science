@@ -25,6 +25,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import express from 'express';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 vi.mock('../../src/redis.js', () => ({
   getRedis: () => null,
@@ -94,6 +96,109 @@ describe('rateLimit middleware — in-memory fallback', () => {
     await new Promise((r) => setTimeout(r, 50));
     const blocked = await request(app).get('/test').set('X-Hive-Username', username);
     expect(blocked.status).toBe(429);
+  });
+
+  // Round-5 → round-6 regression mirror: the symmetric Redis-path test at
+  // `rateLimit.test.ts` ('skipFailedRequests refunds slot on pre-status
+  // TCP-abort during pending await') pins the `writableEnded` half of the
+  // refund gate on the Redis branch. The in-memory branch carries an
+  // identical gate (`statusCode < 400 && writableEnded` at
+  // `rateLimit.ts:204-215`) — without this companion test, a one-sided
+  // revert to `statusCode < 400`-only on the in-memory branch would slip
+  // past CI because the Redis-path test skips when Redis is absent and
+  // the existing in-memory tests use synchronous supertest handlers where
+  // `writableEnded` is always true at the time the refund fires. This
+  // test runs against the in-memory path (Redis mocked to null at module
+  // scope) with a real http.createServer + raw http.request + req.destroy
+  // so the pre-status-abort sequence actually fires `'close'` with
+  // statusCode at the Node default of 200 and writableEnded false.
+  it('skipFailedRequests refunds slot on pre-status TCP-abort during pending await', async () => {
+    const limiterName = `inmem-abort-${Date.now()}`;
+    const username = `eve-${Date.now()}`;
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      const u = req.headers['x-hive-username'] as string | undefined;
+      if (u) req.hiveUsername = u;
+      next();
+    });
+    app.use(
+      rateLimit({
+        windowMs: 60_000,
+        max: 1,
+        keyFn: byAccount,
+        name: limiterName,
+        skipFailedRequests: true,
+      }),
+    );
+    // Slow route: aborted client-side mid-await. `res.statusCode` stays
+    // at the Node default (200) and `res.writableEnded` stays false —
+    // the round-4-only gate (statusCode < 400) would skip the refund;
+    // the round-5 gate (also requires writableEnded) refunds.
+    app.get('/slow', async (_req, res) => {
+      await new Promise((r) => setTimeout(r, 300));
+      if (!res.writableEnded) {
+        try {
+          res.json({ ok: true });
+        } catch {
+          // socket already destroyed by client abort
+        }
+      }
+    });
+    // Fast route: returns immediately. Used as the limiter follow-up
+    // probe to assert the slot was refunded after the abort. Shares the
+    // same in-memory `memStore` (one `rateLimit()` instance for the app)
+    // so a non-refunded slot would 429 this request.
+    app.get('/fast', (_req, res) => res.json({ ok: true }));
+
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const { port } = server.address() as AddressInfo;
+
+    // Open the request, then destroy the socket before the handler's
+    // 300ms timeout fires. The middleware's timestamp push has already
+    // landed (registration of the refund listeners happened in the
+    // middleware before `next()` ran).
+    await new Promise<void>((resolve) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: '/slow',
+          method: 'GET',
+          headers: { 'x-hive-username': username },
+        },
+        () => {},
+      );
+      req.on('error', () => {});
+      req.end();
+      setTimeout(() => {
+        req.destroy();
+        resolve();
+      }, 50);
+    });
+
+    // Poll the follow-up `/fast` request until the limiter admits it.
+    // Without the writableEnded half of the gate, the slot would stay
+    // consumed and every probe would 429 for the full windowMs.
+    let admitted = false;
+    for (let i = 0; i < 40; i++) {
+      const probe = await request(app).get('/fast').set('X-Hive-Username', username);
+      if (probe.status === 200) {
+        admitted = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+
+    // Drain handler's 300ms timer + close the server before asserting
+    // so a failed assertion doesn't leak the timer / leave the listener
+    // bound past test return.
+    await new Promise((r) => setTimeout(r, 350));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    expect(admitted).toBe(true);
   });
 
   it('refunds once on finish+close (no double-splice via once-guard)', async () => {

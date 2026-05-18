@@ -201,6 +201,7 @@ export function rateLimit(config: RateLimitConfig) {
       // refund only when the response completed cleanly; pre-status
       // TCP-abort (default `statusCode=200`, `writableEnded=false`) flows
       // to the splice so the slot is returned.
+      // Mirror of the Redis-path refund closure above; keep semantics in sync.
       let refunded = false;
       const refund = () => {
         if (refunded) return;
