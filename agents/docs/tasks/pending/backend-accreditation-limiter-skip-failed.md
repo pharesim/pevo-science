@@ -185,3 +185,58 @@ Round-2 fold landed in one commit per the architect's "all six items bundle into
 ### 4xx-vs-5xx semantics audit (acceptance #2 from the original task — confirmed in round-2)
 
 The original task's acceptance #2 asked for an audit of the `/api/accreditation/request` 4xx-vs-5xx surface. The round-1 commit landed `skipFailedRequests: true` against an assumed-asymmetric refund contract; round-2's Item 1 cross-check confirms the contract is actually symmetric (refund on any `>= 400`). Operationally bounded today because the 4xx paths short-circuit before any expensive op (`storeToken`/`sendMail`), so the symmetric refund does not amplify SMTP/token spend. Documented in the new comment block (acceptance #4: no contract change, no `api-contracts/` edit needed).
+
+---
+
+## Architect round-2 re-review (2026-05-18) — HELD PENDING FIXES
+
+`/ce-code-review` cluster-pass on commit `619160c` (round-2 fold) dispatched 9 reviewers: correctness, testing, maintainability, project-standards, security, reliability, adversarial, kieran-typescript, ce-learnings-researcher (skipping `ce-agent-native-reviewer` per root CLAUDE.md). Cross-reviewer corroboration on the wrong-as-written line citation (correctness × project-standards). All six round-1 hold items landed cleanly; the round-2 fold is functionally correct (security, adversarial, reliability all clean — symmetric 4xx-refund claim verified end-to-end, no exploitable amplification). One round-1 item (the carve-out clause-(c) line update from `:498` → `:518`) only landed half of the cleanup; two new citation hygiene gaps surfaced. Three items held; all bundle into one round-3 commit since they edit overlapping comment regions in the same two files.
+
+### Item 1 — Round-1 Item 6 half-fix: test prose at `:1564` still cites `custody-upgrade.test.ts:498`
+
+**Severity:** P2 · **Source:** project-standards PS-1 (conf 90)
+**File:** `backend/tests/routes/accreditation.test.ts:1564`
+
+Round-2's Item 6 updated the carve-out clause-(c) citation at `:1574` from `custody-upgrade.test.ts:498` to `:518`. But the prose at `:1564` (just 10 lines above, inside the same carve-out block) still cites `:498` — the line that hosts the plain 503-on-throw spec, NOT the slot-refund canary. The block now self-contradicts: one citation points at the slot-refund canary (`:518`), the other points at the unrelated RPC-throw spec (`:498`).
+
+**Fix shape:** update the prose at `:1564` to match the clause-(c) update at `:1574` — either both cite `:518`, OR both anchor on the describe-block title of the slot-refund canary (preferred per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`).
+
+### Item 2 — Wrong-as-written line citation: `rateLimit.ts:100-101` is not the refund branch
+
+**Severity:** P2 · **Cross-corroborated:** correctness × project-standards (conf 100)
+**File:** `backend/tests/routes/accreditation.test.ts:1663`
+
+The test inline comment block (rewritten in Item 5 of round-2) cites `rateLimit.ts:100-101` as "the rateLimit primitive that refunds on `statusCode >= 400`". But lines 100-101 in `rateLimit.ts` are `cleanupInterval.unref()` and the middleware function signature — NOT the refund branch. The actual `>= 400` refund gate is at line 156 (the `if (res.statusCode < 400 && res.writableEnded) return;` early-out inside the `'finish'` handler). The rewrite swapped one inaccuracy (about middleware mechanics) for another (about the line number).
+
+**Fix shape:** update the line citation from `rateLimit.ts:100-101` to `rateLimit.ts:156`, OR drop the line number entirely and anchor on `RateLimitConfig.skipFailedRequests` JSDoc — the same stable anchor Item 3 used in the production comment. Anchor on the symbol per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`.
+
+### Item 3 — Fresh line-number citations introduced in the same round that stripped them
+
+**Severity:** P2 · **Source:** project-standards PS-3 (conf 75) + maintainability M2 (conf 80)
+**Files:**
+- `backend/tests/routes/accreditation.test.ts:1674` — cites `accreditation.ts:25` (a fresh line-number citation introduced in the test comment rewrite, in the same round that stripped them from the production comment per Item 3).
+- `backend/src/routes/accreditation.ts:305` (JSDoc on `deleteTokenBestEffort`) — cites task-cycle marker `round-2 F8`; the test comment block also cites task-cycle markers + two file:line anchors.
+
+Item 3 of round-2 was supposed to anchor on stable symbols / behavioral descriptions, not transient slugs or line numbers. The fix landed at the production-comment site but the test comments and the helper JSDoc were not swept.
+
+**Fix shape:** drop the `accreditation.ts:25` line citation in the test comment (anchor on the limiter declaration's identifier `accreditationRequestLimiter`); drop the `round-2 F8` task-cycle marker in the JSDoc (anchor on the behavioral description of what the helper does); audit the test comment block for any remaining `file:line` anchors and convert to symbol/behavioral anchors.
+
+### Files for round-3
+
+- `backend/src/routes/accreditation.ts` (Item 3 — JSDoc)
+- `backend/tests/routes/accreditation.test.ts` (Items 1, 2, 3 — test comments)
+- This task file (round-3 implementer signal block when moving back to review/)
+
+### Architect archive-time follow-ups (recorded for the eventual archive)
+
+None. No contract change in this task.
+
+### Dismissed at architect triage (recorded for transparency)
+
+- **`deleteTokenBestEffort` route derivation via event-prefix string-match** (maintainability M1 + reliability REL-001 P2/80, kieran-ts kts-1 below gate): all 6 current call sites pass hardcoded literals with correct prefixes. The silent fallback to `'accreditation.verify'` is a forward-only defense-in-depth concern with no concrete failure mode today. Per `feedback_dismiss_preemptive_test_hardening`: defense-in-depth on a future-change trigger.
+- **AbortError-after-success cascade and TypeError 0s-cooldown loop**: belong to sibling task #4 (ui-network-error), not this one.
+- **Comments describe refund gate as `>= 400` alone, missing `!writableEnded` half** (correctness C2 conf 100 advisory): minor imprecision; the comment's purpose is to document refund semantics for the typical handler-emitted-error case, and the `!writableEnded` half handles TCP-abort separately. Not actionable as a defect.
+- **4xx-canary comment claims 4th request returns 200 in SMTP-configured path** (correctness C3 conf 75 advisory): the `not.toBe(429)` assertion is load-bearing regardless; comment imprecision about which path the 4th request actually hits is informational.
+- **Smtp transient + 4xx-refund DECR scheduling timing** (correctness C4 conf 50 advisory): pre-existing pattern, below confidence gate.
+
+---
