@@ -724,3 +724,40 @@ The convention doc at `agents/docs/solutions/conventions/satisfies-record-for-ma
 Ready for round-6 architect re-review. `/ce-code-review` scopes to commit `91beb3a` per the architect's hold-block guidance.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-05-18, round-6 → round-7) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `91beb3a` (9 reviewers — correctness/security/adversarial on opus; testing/reliability/maintainability/project-standards/kieran-typescript on sonnet; learnings-researcher unstructured; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All three round-5 hold items land in INTENT — correctness, testing, maintainability, reliability, security, and adversarial all return zero in-diff findings on the actual behavioral changes (in-memory abort-path test pins what it needs to, both exhaustiveness directions fire at the satisfies-on-a-value definition site, refund-closure cross-reference comment is accurate). Implementer's test-pinning revert exercise on the in-memory gate is the load-bearing claim and reviewers verified it independently.
+
+However, the new test-source comment block at `backend/tests/middleware/rateLimit-in-memory.test.ts:99-111` re-introduces two anti-patterns the round-3/4 cycle on retention-sweep just landed fixes for. Both are byte-trivial; clustered on the same comment block; should land in one commit.
+
+### Items held (must fix before archive)
+
+**1. (P2, cross-reviewer: project-standards 100 + learnings-researcher → promoted to 100) Round-number framing in test-source comment block.** `backend/tests/middleware/rateLimit-in-memory.test.ts:99-111`. The new comment opens with `// Round-5 → round-6 regression mirror:`. Per `agents/backend/CLAUDE.md` comment-anchor conventions: round numbers in production or test code go stale on archive (task files trim from `tasks-archive.md` at 250 lines; older entries fall off entirely, leaving the round-N label without a referent).
+
+  Suggested fix: replace the opening with behavioral prose, e.g. "Companion to the Redis-path pre-status-abort refund test in `rateLimit.test.ts` — without this mirror, a one-sided revert to `statusCode<400`-only on the in-memory branch would slip past CI because the Redis-path test skips when Redis is absent." Drop round-number framing throughout the rest of the block as well.
+
+**2. (P2, cross-reviewer: project-standards 100 + learnings-researcher → promoted to 100) Line-number anchor in same comment block.** `backend/tests/middleware/rateLimit-in-memory.test.ts:103-104`. The block cites `rateLimit.ts:204-215` as a specific line range. Per convention `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`: code comments must anchor on stable symbols (function names, behavioral descriptions), not line numbers.
+
+  Suggested fix: replace `rateLimit.ts:204-215` with "the in-memory refund closure in `rateLimit.ts`". The stable anchor is reinforced by Item 3's new in-place comment at the destination ("Mirror of the Redis-path refund closure above; keep semantics in sync.").
+
+### Items dismissed during architect triage
+
+- **(P3, conf 25-50, testing/reliability/adversarial) Timing-sensitive test on heavily-loaded CI (50ms abort + 300ms handler + 1s polling window).** Per `feedback_dismiss_preemptive_test_hardening`: theoretical-only flake; implementer verified correctness by deliberate revert exercise. No held item.
+- **(P3, conf 25, testing) On regression, test consumes ~1350ms before failure surfaces (no early-exit path on guaranteed-false detection).** Test-UX-latency only; assertion at line 201 catches the regression correctly. Default-recommend dismiss.
+- **(P3, conf 50, testing) supertest dual-server topology is sound but non-obvious.** Verified correct: both `http.createServer(app)` and `request(app)` route through the same Express `app` and the same `memStore` closure. No defect; future-reader-debugging UX nit only.
+- **(P3, conf 50, maintainability/reliability) Textual cross-reference comment cannot enforce symmetry; a one-sided drift still compiles.** Architect-considered-and-dismissed in the round-5 hold-block triage (helper extraction not warranted because closures capture different state); behavioral enforcement now lives in the new in-memory test landed by Item 1.
+- **(advisory, kieran-typescript/adversarial) Convention doc shape: `_SCRIPT_RETURN_SHAPE`'s `as` casts could mask drift; runtime placeholder values persist in emitted JS; future maintainer copying the pattern uses `as` to paper over genuine mismatch.** Architect-zone trade-offs; the `as` annotations on placeholder values are intentional (preserves per-key precision in `ScriptReturn` for `typeof` inference). Routed to A1 follow-up below, not held against the implementer here.
+- **(advisory, adversarial) Mutation-bypass walkthrough on the new test: downgrade to `statusCode<400`-only, invert `writableEnded`, drop `res.on('close')`, swap `&&` to `||` — all caught by the new test.** Documented residual; no defect.
+
+### Routed to architect-zone follow-up (NOT held here)
+
+- **Convention doc `agents/docs/solutions/conventions/satisfies-record-for-mapped-type-and-set-completeness-2026-05-17.md` "After" example shows `export type ScriptReturn = { ... } satisfies Record<...>` — invalid TypeScript (`satisfies` is value-level only; TS1109).** Cross-reviewer corroborated (kieran-typescript 80 + maintainability + learnings-researcher → promoted to 100). The implementer documented the form deviation in the round-6 commit message; the doc itself is what's wrong. Architect lands a rider on the doc in the same triage commit as this hold block.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-7 architect review scopes `/ce-code-review` to the round-7 commit only.
+
+Items 1+2 cluster in the same comment block in `rateLimit-in-memory.test.ts:99-111`. Single focused commit expected.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
