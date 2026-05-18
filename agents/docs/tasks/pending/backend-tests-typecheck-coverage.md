@@ -158,3 +158,38 @@ Round-1 hold items P1 #1, P1 #2, P2 #3 landed.
 - Gate 6 (`grep -n "Parameters<typeof handleBroadcastError>\[2\]" backend/tests/lib/broadcast-error.test.ts`) → **0 matches**.
 - Gate 7 (`grep -n "HandleBroadcastErrorOpts" backend/tests/lib/broadcast-error.test.ts`) → **9 matches** (1 import + 5 cast sites + 3 documentary comment references).
 - Gate 8: new follow-up task file at `agents/docs/tasks/pending/backend-tests-typecheck-residual-drift.md` filed with the standard task-file shape (heading + Owner/Created/Priority + Problem + Why path (b) + Acceptance + Tests + Out of scope + References + Priority rationale).
+
+---
+
+## Architect re-review (2026-05-18) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` on commit `2c34341` with 7 personas (correctness on Opus; testing/maintainability/project-standards/kieran-typescript/reliability/learnings on Sonnet; `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md). Round-1 acceptance verified: path-(b) defer-and-document filed `backend-tests-typecheck-residual-drift.md` follow-up + updated Acceptance #4 amendment; `run?: string` promoted to `LogContext` interface declaration; 5 `as TestLogContext` cast sites migrated to plain `LogContext` literals; 5 `Parameters<typeof handleBroadcastError>[2]` casts replaced with `HandleBroadcastErrorOpts` named-type form. 42/42 vitest pass. User-triaged 2026-05-18; 3 comment-anchor-hygiene items held below.
+
+### Items held (must fix before archive)
+
+1. **(P2 kieran-typescript+maintainability+learnings, cross-reviewer anchor 100)** Task-slug citation in production `LogContext.run` docblock at `backend/src/lib/broadcast-error.ts:295`. The docblock opens with "Backend-tests-typecheck-coverage round-1 hold item 2 (path (a)):" and ends with "See the task file for the alternative paths (b) and (c) that were dismissed." Per `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, task-slug citations in production code go stale on archive and the "See the task file" redirect becomes a dead pointer (archive truncates from the bottom at 250 lines so older entries fall off entirely).
+
+   Fix: rewrite the docblock with behavioral semantics only. Suggested shape: a per-attempt correlator that operators can set to correlate sibling structured-log entries; the helper spreads it through alongside `event:`/`err:`/etc. Drop the task slug and the "See the task file" redirect. Keep the behavioral description.
+
+2. **(P2 maintainability M1, anchor 75)** Task-slug citation in test file header at `backend/tests/lib/broadcast-error.test.ts:15`. Same convention violation as item 1, different file. The test header cites `backend-tests-typecheck-coverage` by slug. Behavioral fallback exists (`LogContext.run` docblock anchor), so the damage is more limited than item 1, but the slug still rots on archive.
+
+   Fix: drop the slug citation; keep the behavioral description (or replace the slug with a one-line description of what the test header is actually documenting).
+
+3. **(P3 correctness residual, anchor 75)** Cosmetic comment-vs-code drift at `backend/tests/lib/broadcast-error.test.ts:618, :840`. Both inline comments describe the cast at the site as `as unknown as Parameters<typeof handleBroadcastError>[2]` while the actual code at those sites now uses `as unknown as HandleBroadcastErrorOpts` (item 3 of round-1 already migrated the casts).
+
+   Fix: update both inline comments to describe the cast as `as unknown as HandleBroadcastErrorOpts`.
+
+### Items dismissed during architect triage (recorded for transparency)
+
+- (P2 maintainability M1, anchor 75) `run` field name under-descriptive on production interface — dismissed: architect explicitly endorsed `run` in the round-1 hold's path-(a) prescription ("`run` IS a real structured-log marker that operators see in production payloads"); re-litigating settled naming after the implementer landed it verbatim per the round-1 hold text is process churn. Rename if a real production caller surfaces a problem.
+- (P3 testing TG-1, anchor 75) Round-1 signal block lacks verbal verification sentence for Acceptance #5 spot-check — dismissed: tsc-clean exit-zero implies the structural gate works; PS-5 was already explicitly dismissed in round-1 ("Acceptance #5 EXPLICITLY required removal of the canary case. Verbal verification is the criterion as written.").
+- (P3 kieran-typescript residual) 9 `Parameters<typeof makeLogBroadcastAttempt>[2]` casts remain in same test file at ~lines 949-1192 — handed to separate architect action (filed as new task `backend-makelogbroadcastattempt-cast-narrow.md` for cluster-D follow-up).
+
+### Items handed to separate architect actions (still on the architect's backlog)
+
+- (Architect carry-forward, cluster-D) Convention-recurrence: surface `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15` and `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15` in `agents/backend/CLAUDE.md` so they reach implementer write-time context per `conventions-in-solutions-dont-reach-implementer-context-2026-05-18.md`. Lands in a separate architect commit during cluster archive.
+- (Architect carry-forward, cluster-D) 9 `Parameters<typeof makeLogBroadcastAttempt>[2]` casts in `backend/tests/lib/broadcast-error.test.ts:~949-1192` — filed as new `backend-makelogbroadcastattempt-cast-narrow.md` follow-up task.
+
+### Re-review signal
+
+When items 1–3 land, `git mv` this file back to `tasks/review/`. Round-3 architect re-review scopes `/ce-code-review` to commits since `2c34341`. Anchor: 3 docblock/comment edits in 2 files (one production, one test); single commit reasonable.
