@@ -695,3 +695,32 @@ When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-6 archite
 Items 1+3 cluster on `rateLimit.ts` and `rateLimit-in-memory.test.ts`. Item 2 is `redis-scripts.ts` only. Could land in one commit or two — implementer's call.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-18, commit `91beb3a`)
+
+All three round-6 hold items landed in a single commit `91beb3a` per the architect's "one commit or two — implementer's call" note. Tightly scoped to round-6: three files, +134 / -28 lines.
+
+**Item 1 (in-memory abort-path refund test).** Added `skipFailedRequests refunds slot on pre-status TCP-abort during pending await` at `backend/tests/middleware/rateLimit-in-memory.test.ts:104-202`. Construction mirrors the Redis-path companion at `rateLimit.test.ts:271-354`: `http.createServer` + Express app with one `rateLimit({ max: 1, skipFailedRequests: true })` middleware instance + two routes (`/slow` awaits 300ms, `/fast` returns immediately). Raw `http.request` to `/slow` + `req.destroy()` at 50ms triggers the pre-status TCP-abort sequence (`res.statusCode=200`, `res.writableEnded=false`). The follow-up probe to `/fast` (polled via supertest, sharing the same in-memory `memStore` through the same `rateLimit()` closure) asserts the slot was refunded. Server-close and 350ms timer-drain happen before the `expect(admitted).toBe(true)` assertion to avoid leaking the handler's timer on assertion-failure paths (architect's dismissed P3 nit).
+
+**Test-pinning verification.** Temporarily reverted the in-memory gate at `rateLimit.ts:208` to `statusCode<400`-only (the round-4 form) and re-ran: the new test failed with `expected false to be true` (slot stayed consumed, all follow-up `/fast` probes 429ed). Restored the round-5 `statusCode < 400 && writableEnded` gate and re-ran: all 4 in-memory tests pass. The round-6 gap is now closed — a one-sided revert to status-only on the in-memory branch will fail CI even when Redis is unavailable.
+
+**Item 2 (canonical `satisfies`-on-a-value exhaustiveness guard).** Replaced the 4-line `_NoMissingReturn` / `_NoExtraReturn` pattern at `backend/src/lib/redis-scripts.ts:159-175` with the convention's canonical form. Implementation: `const _SCRIPT_RETURN_SHAPE = { ... } satisfies Record<SharedScriptName, unknown>` + `export type ScriptReturn = typeof _SCRIPT_RETURN_SHAPE` (lines 159-194 in the post-fix file). Both divergence directions fail at the definition site:
+
+- Missing shape entry: `Record<SharedScriptName, unknown>`'s required-keys check fails — verified via scratch test: "Property 'D' is missing in type '{ A: number; B: 0 | 1; C: [number, number]; }' but required in type 'Record<\"A\" | \"B\" | \"C\" | \"D\", unknown>'."
+- Extra shape entry: `satisfies` on the object literal fires the excess-property check — verified via scratch test: "Object literal may only specify known properties, and 'D' does not exist in type 'Record<\"A\" | \"B\" | \"C\", unknown>'."
+
+**Form deviation from the architect's hold-block snippet.** The hold-block suggested `const _scriptReturnExhaustive = {} as Record<SharedScriptName, unknown> satisfies ScriptReturn`. That form fails to compile — TypeScript reports "Type 'Record<...>' does not satisfy the expected type 'ScriptReturn'. Types of property 'X' are incompatible. Type 'unknown' is not assignable to type 'number'." `unknown` is the universal supertype and is not assignable to any specific type via `satisfies`. The architect's "exact one-liner shape is at implementer discretion — there are a couple of equivalent forms; the goal is to land the convention's canonical `satisfies`-on-a-value pattern" gave latitude. The value-shape + `typeof` form keeps the `satisfies Record<SharedScriptName, unknown>` phrase (which IS the convention's documented canonical) and is the closest working analog to the convention doc's `type X = { ... } satisfies Record<...>` example (which itself is `';' expected` syntax — `satisfies` is a value-level operator only).
+
+The convention doc at `agents/docs/solutions/conventions/satisfies-record-for-mapped-type-and-set-completeness-2026-05-17.md` may benefit from an `Implementation note` rider documenting that the type-alias-level form shown in its "Examples" is conceptual; the working form attaches `satisfies` to a value (object literal) and re-exports via `typeof`. Flagging this as a doc maintenance note rather than a hold-block item, since the convention's intent (use `satisfies Record<UnionType, ...>` for union-completeness) is unchanged. Architect's call whether to update the doc during round-6 archive.
+
+**Item 3 (refund-closure cross-reference comment).** Added the suggested one-liner: `// Mirror of the Redis-path refund closure above; keep semantics in sync.` immediately above `let refunded = false` at `backend/src/middleware/rateLimit.ts:204` (now line 205 after the comment). The Redis-path refund closure at `:152-168` and the in-memory refund closure at `:205-216` are now textually cross-linked.
+
+**Verification.**
+- `npm run typecheck` (typecheck:src + typecheck:tests): clean.
+- `npx vitest run tests/middleware/rateLimit.test.ts tests/middleware/rateLimit-in-memory.test.ts` against real Redis: 16/16 pass.
+- `npx eslint` on the three touched files: clean.
+- Test-pinning revert exercise confirmed item 1 catches the in-memory one-sided revert.
+
+Ready for round-6 architect re-review. `/ce-code-review` scopes to commit `91beb3a` per the architect's hold-block guidance.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
