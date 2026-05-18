@@ -237,3 +237,42 @@ All three architect-listed dismissals (kieran-typescript KT-1, adversarial P3, t
 ### Architect-zone notes
 
 - None. The 1-3 fixes are fully contained to `backend/src/lib/fresh-auth.ts` and `backend/tests/lib/fresh-auth.test.ts`. No contract updates needed; no schema changes; no sibling-helper edits.
+
+---
+
+## Architect re-review (2026-05-18, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` on the round-2 hold-fix commit (9 reviewers — correctness + security + adversarial on Opus; testing/reliability/maintainability/project-standards/kieran-typescript/learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). The three round-1 hold items mostly landed — slug-citation sweep cleaned the five major sites cleanly, lock-cleanup test now structurally pins the `finally`-block discipline via the new `_getInFlightConsumesSizeForTests` test-only export, and the cross-helper test was added.
+
+Three items held — one is a residual rot-anchor miss from the round-2 sweep's own scope (self-violation audit shortfall per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`), one is a mutation-kill claim from the round-2 signal block that does not actually hold against the cross-helper test as written, and one is a type-safety / signature-clarity nit on the new test-only export.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 75, correctness + maintainability) Self-violation audit miss — two residual rot anchors in `backend/tests/lib/fresh-auth.test.ts` that the round-2 slug-strip sweep did not catch.**
+
+  - `// Acceptance per task §4:` — task-section reference inside the describe block body. Per root `CLAUDE.md` "Comment anchors", task-section references rot when the task archives.
+  - `(See Option B docblock in \`lib/fresh-auth.ts\`.)` — dangling pointer in the Redis-up dual-consume test's loser-reason comment. Round-2 stripped "Option B" from the production docblock in `lib/fresh-auth.ts`, but this parenthetical pointer to it was not updated; it now points at a label that no longer exists.
+
+  Suggested fix: rewrite `// Acceptance per task §4:` to a behavioral statement of what the section pins (e.g., "// Acceptance: both helpers must serialize concurrent dual-consume to exactly one winner under both Redis-up GETDEL atomicity and Redis-stubbed in-process-lock conditions."). Drop the `(See Option B docblock...)` parenthetical entirely — the preceding sentence already explains the wire shape — or rewrite to anchor on the stable symbol `(See the \`inFlightConsumes\` docblock in \`lib/fresh-auth.ts\`.)`.
+
+**2. (P2, conf 80, correctness) Cross-helper Redis-stubbed test's mutation-kill claim does not hold against the split-set mutation it names.** The round-2 signal block claims item 3's cross-helper test pins the shared-lock-domain invariant — a mutation splitting `inFlightConsumes` into per-helper sets (`inFlightConsumesByConsentHelper` + `inFlightConsumesBySessionHelper`) would fail the test's `winners.length === 1` assertion. Trace: after the stubbed `redis.getdel` rejection, the `catch → memStore.get → memStore.delete` path runs synchronously with no intervening `await`. JS microtask FIFO ordering serializes the first-resolving helper's `get → delete` chain before the second's `catch` runs, so the second helper's `memStore.get` returns `undefined` and it returns `expired`. The test observes `winners.length === 1` under split-set just as it does under shared-set. The lock's actual contract — defending against a future refactor that inserts an `await` between `memStore.get` and `memStore.delete` — is not exercised by the current test.
+
+  Suggested fix: add a structural anchor that directly asserts the shared-lock-domain invariant by identity, not via emergent wire behavior. Add a sibling test-only export to `backend/src/lib/fresh-auth.ts` exposing the `inFlightConsumes` Set instance read-only (alongside the existing `_getInFlightConsumesSizeForTests` — e.g., `_getInFlightConsumesSetReferenceForTests`). Add a new spec in the cross-helper describe block that imports the helper and asserts both `consumeFreshAuthToken` and `consumeSessionFreshAuthToken` consult the same Set instance (e.g., spy on `inFlightConsumes.has` via the exported reference and assert it is invoked from BOTH helpers' code paths, or directly assert reference equality via the export). The Set-identity assertion is independent of microtask ordering and survives Redis-absent CI (closes the secondary skipIf-gating gap that would otherwise need a no-Redis companion test). The existing wire-shape cross-helper test can remain alongside the new anchor as nice-to-have coverage.
+
+**3. (P2, conf 75, kieran-typescript) `_setMemStoreEntryForTests` signature appears type-safe but accepts adversarial values.** The function declares `entry: unknown` and immediately casts to `StoredEntry` without structural narrowing. The only caller plants a circular-reference value that fails `JSON.stringify` — definitionally NOT a `StoredEntry`. The cast is load-bearing for the test scenario, but the signature looks safe to future callers when it is deliberately accepting structurally invalid values.
+
+  Suggested fix: widen the parameter type to `StoredEntry | object` (or `StoredEntry | Record<string, unknown>`) with a JSDoc note that test callers may pass structurally invalid objects to trigger throw-on-stringify in production paths. The cast becomes from a known-broader-with-test-purpose type rather than from bare `unknown`, signaling the deliberate misuse without adding an eslint-disable annotation.
+
+### Items dismissed during architect triage
+
+- **(P2, conf 75, testing T-1) Cross-helper test gated `it.skipIf(!redisAvailable)` with no no-Redis companion.** Closed by item 2's Set-identity assertion — the new anchor doesn't require Redis at all (imports the Set instance and asserts identity), so per-helper-split mutation is detectable in Redis-absent CI regardless of the existing test's skipIf gate.
+- **(P2, conf 50, adversarial) Unbounded `inFlightConsumes` growth under hung-Redis + retry.** Speculative — requires sustained Redis outage AND high-traffic abandoned consumers. Default-recommend dismiss per `feedback_dismiss_preemptive_test_hardening`.
+- **(P3, conf 75, adversarial) Lock-held branch and consumed-token branch indistinguishable on the wire.** Observability nit; below actionable bar.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+Items 1-3 touch only `backend/src/lib/fresh-auth.ts` and `backend/tests/lib/fresh-auth.test.ts`. Implementer's call whether one commit or two.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
