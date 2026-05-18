@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import argon2 from 'argon2';
 import nodemailer from 'nodemailer';
@@ -71,6 +71,42 @@ async function cleanup() {
 
 afterAll(async () => { await cleanup(); });
 
+// `logCustodyBroadcast` in the /recover production path is fire-and-forget
+// (`.catch(() => {})`, no await) — the response can return before the audit-log
+// INSERT microtask settles, leaving a SELECT-INSERT race. Combined with
+// vitest.config.ts `retry: 3` and class-level `beforeAll` / `afterAll` cleanup
+// (not `beforeEach`), this is the three-condition trigger documented in
+// `agents/docs/solutions/conventions/vitest-retry-fire-and-forget-side-effect-poisoning-2026-05-04.md`.
+// Poll for at least 1 row, then add a 100ms settle delay to catch any imminent
+// double-log mutation before counting. The `beforeEach` reset in the "with DB"
+// describe block guarantees a clean baseline on every attempt (including
+// retries), so a settled count of 1 is ground truth and a count of 2+ surfaces
+// an over-log production mutation.
+//
+// Kept local to this file per the task's out-of-scope guidance — extraction to
+// `backend/tests/support/` would touch a sibling test file currently being
+// edited by another worker and is deferred.
+async function fetchSettledAuditRows(
+  pool: { query: (sql: string, params: unknown[]) => Promise<{ rows: { operation_type: string }[] }> },
+  username: string,
+  operationType: string,
+): Promise<{ operation_type: string }[]> {
+  const sql = `SELECT operation_type FROM custody_audit_log
+               WHERE username = $1 AND operation_type = $2`;
+  const start = Date.now();
+  while (Date.now() - start < 1500) {
+    const { rows } = await pool.query(sql, [username, operationType]);
+    if (rows.length >= 1) {
+      await new Promise((r) => setTimeout(r, 100));
+      const { rows: settled } = await pool.query(sql, [username, operationType]);
+      return settled;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  const { rows } = await pool.query(sql, [username, operationType]);
+  return rows;
+}
+
 // ─── Validation tests ────────────────────────────────────────
 // Keep these minimal — rate limit is 5/hr per IP
 
@@ -134,6 +170,21 @@ describe('POST /api/auth/recover — with DB', () => {
     );
   });
 
+  // Reset fire-and-forget audit-log rows on every attempt (including vitest
+  // retries). Without this, a retried `it` sees the row from attempt #1 plus
+  // the route call's row from attempt #2, breaking the
+  // `expect(rows.length).toBe(1)` ground-truth signal regardless of whether
+  // the assertion's claim under test is correct. See
+  // `agents/docs/solutions/conventions/vitest-retry-fire-and-forget-side-effect-poisoning-2026-05-04.md`.
+  // Scoped to TEST_USER only — never wipe the whole table.
+  beforeEach(async () => {
+    if (!dbReachable || !hasCustodyKey) return;
+    const pool = getAppPool()!;
+    await pool
+      .query(`DELETE FROM custody_audit_log WHERE username = ANY($1::text[])`, [[TEST_USER]])
+      .catch(() => {});
+  });
+
   it.skipIf(!dbReachable || !hasCustodyKey)('returns 404 for non-existent username', async () => {
     const res = await request(app)
       .post('/api/auth/recover')
@@ -159,14 +210,11 @@ describe('POST /api/auth/recover — with DB', () => {
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
 
-    // Should have audit log entry
+    // Should have audit log entry. `fetchSettledAuditRows` polls + settles to
+    // handle the fire-and-forget SELECT-INSERT race; combined with the
+    // `beforeEach` reset above, a count of 1 is ground truth.
     const pool = getAppPool()!;
-    const { rows } = await pool.query(
-      `SELECT operation_type FROM custody_audit_log
-       WHERE username = $1 AND operation_type = 'recovery_failure'
-       ORDER BY created_at DESC LIMIT 1`,
-      [TEST_USER],
-    );
+    const rows = await fetchSettledAuditRows(pool, TEST_USER, 'recovery_failure');
     expect(rows.length).toBe(1);
   });
 
@@ -234,12 +282,10 @@ describe('POST /api/auth/recover — with DB', () => {
       .send({ username: TEST_USER, password: TEST_PASSWORD });
     expect(oldLoginRes.status).toBe(401);
 
-    // Verify audit log
-    const { rows: auditRows } = await pool.query(
-      `SELECT operation_type FROM custody_audit_log
-       WHERE username = $1 AND operation_type = 'account_recovery'`,
-      [TEST_USER],
-    );
+    // Verify audit log. `fetchSettledAuditRows` polls + settles to handle the
+    // fire-and-forget SELECT-INSERT race; combined with the `beforeEach` reset
+    // above, a count of 1 is ground truth.
+    const auditRows = await fetchSettledAuditRows(pool, TEST_USER, 'account_recovery');
     expect(auditRows.length).toBe(1);
   });
 

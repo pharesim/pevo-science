@@ -46,3 +46,23 @@ Optionally, if `fetchSettledAuditRows` would naturally extract into a shared tes
 ## Priority rationale
 
 P3 because the failure mode is latent (compound condition: attempt #1 fails + retry fires + double-row visible to retry's assertion). The mutation-fence ground truth is still trustworthy on a green CI; the risk surfaces only when the test would have caught something real. Worth closing now while the pattern is fresh, but not urgent against in-flight work.
+
+## Backend re-review signal (2026-05-18, worktree-agent-ace4af48d2d2211ea)
+
+Round-1 implementation landed on `backend/tests/routes/recover.test.ts` only — production code untouched.
+
+**Citation drift discovered:** the task body cites `recover.test.ts:602-633` as the target block, but that block is the `/resend-verification` null-hash timing test with no audit-log assertion. The real sibling sites matching the convention's three trigger conditions (fire-and-forget audit write + strict-equality count + retry > 0) at HEAD are line 170 (`rejects wrong memo key`, `recovery_failure`) and line 243 (`succeeds with correct memo key`, `account_recovery`). Both fixed in this commit. The reference implementation file (`custody-upgrade-null-hash.test.ts`) was deleted by commit 1f1be4e; helper signature pulled from `git show 009b4a2:backend/tests/routes/custody-upgrade-null-hash.test.ts` and adapted.
+
+**Changes landed:**
+
+- Added `beforeEach` in the `POST /api/auth/recover — with DB` describe block that DELETEs `custody_audit_log` rows for `TEST_USER` (the only seeded username the block depends on; `otherUser` in `rejects duplicate email` is created/deleted within that test alone and needs no beforeEach scoping).
+- Added a module-local `fetchSettledAuditRows(pool, username, operationType)` bounded-poll helper (1.5s poll at 25ms intervals + 100ms settle window + final SELECT). Kept local per task's out-of-scope guidance.
+- Replaced direct SELECT + `expect(...).toBe(1)` at the two cited sites with helper calls; `beforeEach` reset guarantees the count is exactly 1, so `.toBe(1)` still mutation-kills an over-log production change.
+- Production code in `backend/src/routes/recover.ts` unchanged — fire-and-forget audit-log writes preserved per `auth-structured-log-shape-2026-04-29.md`.
+- Added `beforeEach` to the vitest import.
+
+**Verification:**
+
+- `cd backend && npx tsc --noEmit` — clean.
+- `cd backend && npm run lint` — clean (no warnings reported).
+- Targeted vitest deferred to the parent's serialized post-fan-out run.
