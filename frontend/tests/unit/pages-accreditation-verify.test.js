@@ -306,17 +306,16 @@ describe('accreditationVerifyPage', () => {
     // a rapid second click between state='loading' and Alpine's x-if
     // teardown of the Retry button would fire a second verifyAccreditation
     // call — the user-driven entry point into the item-1 race.
-    // UI-ACCREDITATION-VERIFY-NETWORK-ERROR-RETRIABLE: network-layer errors
-    // (`TypeError` from fetch failure, `AbortError` from the 30s fetch
-    // timeout in `api.js`) never reach `ApiRequestError` — `api.js`
-    // constructs `ApiRequestError` from the response body, so a fetch that
-    // never produces a response throws raw. Both carry no `.code`/`.details`,
-    // so without an explicit branch they would fall through to the generic
-    // `'error'` state with the Request New CTA and burn a 3/24h
-    // `/api/accreditation/request` slot against a still-valid token. The
-    // network-error branch routes them to the Retry CTA instead, sharing
-    // the existing `_startCooldown`/`_cooldownId`/`_tickCooldown` machinery
-    // — no new timer scaffolding.
+    // Network-layer errors (`TypeError` from fetch failure, `AbortError`
+    // from the 30s fetch timeout in `api.js`) never reach `ApiRequestError`
+    // — `api.js` constructs `ApiRequestError` from the response body, so a
+    // fetch that never produces a response throws raw. Both carry no
+    // `.code`/`.details`, so without an explicit branch they would fall
+    // through to the generic `'error'` state with the Request New CTA and
+    // burn a 3/24h `/api/accreditation/request` slot against a still-valid
+    // token. The network-error branch routes them to the Retry CTA instead,
+    // sharing the existing `_startCooldown`/`_cooldownId`/`_tickCooldown`
+    // machinery — no new timer scaffolding.
     describe('network-layer error handling', () => {
       function makeTypeError() {
         // Real fetch failures construct a plain `TypeError`. Synthesize the

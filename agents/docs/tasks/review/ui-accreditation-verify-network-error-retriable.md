@@ -130,3 +130,12 @@ A separate UX-cascade finding surfaced during this review and is queued for arch
 - **AbortError synthesis uses `new Error()` vs real `DOMException`** (testing residual): justified in-comment; discriminator narrows on `err?.name` so coverage is correct.
 
 ---
+
+## UI re-review signal (2026-05-18, working tree)
+
+Round-2 fix landed alongside this mv. Item 1 resolved at `frontend/tests/unit/pages-accreditation-verify.test.js:309`: dropped the `// UI-ACCREDITATION-VERIFY-NETWORK-ERROR-RETRIABLE:` prefix; the describe-block header comment now opens with the behavioral description directly (`Network-layer errors (TypeError ..., AbortError ...) never reach ApiRequestError ...`). The technical body the architect flagged as "genuinely useful behavioral framing" is preserved verbatim modulo the dropped slug prefix.
+
+- File touched: `frontend/tests/unit/pages-accreditation-verify.test.js` (comment-only edit, no executable change).
+- Verification: `npx vitest run tests/unit/pages-accreditation-verify.test.js` → 16/16 pass.
+- No further changes; no new STUBS, no API contract or ARCHITECTURE edits, no sibling-task coupling.
+
