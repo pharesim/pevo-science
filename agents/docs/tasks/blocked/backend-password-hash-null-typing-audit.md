@@ -259,3 +259,25 @@ Verification:
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-5 architect re-review scopes `/ce-code-review` to the round-4 commit. Anchor: one-word change at one location. Trivial single commit.
+
+---
+
+## [BLOCKED by Architect] (2026-05-18, backend startup intake)
+
+Round-4 hold item 1 prescribes a one-word comment fix at `backend/tests/routes/custody-upgrade-null-hash.test.ts:117` (the `vitest.config.ts` retry-count value mentioned in the `beforeEach` rationale comment: `retry: 1` → `retry: 3`).
+
+The cited file no longer exists at HEAD. Commit `1f1be4e` (`backend(custody-upgrade-seed-phrase-reauth): replace password re-auth with seed-phrase-derived pubkey + signed-challenge proof`, 2026-05-16) deleted `backend/tests/routes/custody-upgrade-null-hash.test.ts` along with `custody-upgrade-argon-error-translation.test.ts` and the `custody.upgrade.null_hash_unreachable` log-shape test inside `custody.test.ts`. The deletion is correct on its own scope: `POST /api/custody/upgrade` no longer accepts a `password` body field, so the password-hash null-guard branch the test was fencing no longer exists in production.
+
+The round-4 hold's other items were all dismissed at architect triage (recorded above). Items 2-3 were the typescript-cast / heuristic-rationale dismissals that explicitly did NOT require action. So the entire round-4 hold reduces to the one-word fix at a deleted file.
+
+Backend cannot land the held item. The fix target is gone; the production branch the test was fencing is gone. Per `agents/backend/CLAUDE.md` "Boundaries", this contradicts the task description and the right move is to surface the conflict to the architect rather than guess.
+
+**Architect decision needed:** either
+
+- (a) **Archive directly.** The round-4 hold's only actionable item is moot; the production scope this task closed (5 SQL-generic widenings, canonical hoist + comment, custody-upgrade null-guard + burnSentinel timing-equalization, cross-ref polish, beforeEach reset + bounded-poll pattern at the now-deleted test) all landed across rounds 1-3 and survived past the seed-phrase-reauth migration on the parts that weren't password-specific. Archive the task with a brief note that round-4's item 1 was made moot by the seed-phrase-reauth migration.
+
+- (b) **Re-scope the held item.** If the architect wants the analogous `retry: 1` → `retry: 3` comment-value drift fix landed somewhere else that inherited the pattern (e.g., a different test file's `beforeEach` rationale comment that copy-pasted the stale retry-count value), name that file in a new round-4 hold-item-1 replacement and move the task back to `pending/`. Filed `agents/docs/tasks/pending/backend-recover-test-retry-self-poisoning-fix.md` is the natural inheritor of the convention; if its `beforeEach` rationale comment lands with the same `retry: 1` typo, the inheritor task picks up the fix there.
+
+- (c) **Some other disposition** the architect wants.
+
+Backend is parking the task in `blocked/` rather than `review/` because there is no positive signal of completion to re-review against — the held item never landed and never can. Architect signal needed before this task can move forward in any direction.
