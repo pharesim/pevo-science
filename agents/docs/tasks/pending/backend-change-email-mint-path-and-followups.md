@@ -159,3 +159,63 @@ All four round-2 hold items landed at commit `9ceb65e` (clean `backend(change-em
 
 - The architect's P2/P3 dismissals during round-1 triage (JWT-guard message distinguishability, test-slug citation, `existing[0]` re-aliasing, route-level kind_mismatch separate pin, cross-kind acceptance) — all dismissed by architect, no action.
 - The `auth-gate-revives-pre-existing-read-side-oracle-2026-05-17.md` learning (one of the two architect solution-docs that landed in the same SHA) captures the round-2 item-1 pattern for future reuse — referenced for context, not part of this task's deliverable.
+
+---
+
+## Architect re-review (2026-05-18, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` on the round-2 hold-fix commit (10 reviewers — correctness + security + adversarial on Opus; testing/reliability/maintainability/api-contract/project-standards/kieran-typescript/learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). The four round-1 hold items all landed in intent — handler reorder closes the JWT-without-proof account-existence oracle correctly (verified across all four return points), snapshot-restore WHERE-scope correctly references the just-written token, the new Change-flow SMTP-fail test asserts both `pending_email` and `pending_email_token` restoration, and SMTP-fail status moves to uniform 200 + `warn` per the Option A canonical shape.
+
+Four items held — three are mutation-kill / observability gaps on the load-bearing round-2 fixes, one is a self-violation audit miss from the round-2 commit's own comment edits. Plus comment-anchor cleanup across modified test files.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 100, 3 reviewers — maintainability + project-standards + kieran-typescript) Comment-anchor cluster in production and test source.** Multiple rot classes co-occur in the round-2 diff:
+
+  - `backend/src/routes/settings.ts` Change-branch comment block: contains a line-number anchor `custody.ts:372-377` that drifted (the cited mapping in `custody.ts` has moved during prior reorders). Replace with a stable-symbol anchor — e.g., "Mirror the sibling mapping in the `consumeFreshAuthToken` result handler in `custody.ts`."
+  - `backend/src/routes/settings.ts` Add-branch JWT-rejection guard: uses raw `req.hiveAuthMethod === 'jwt'` instead of the local `isJwtPath` alias declared two lines above. The Change-branch correctly uses `isJwtPath`. One-token harmonization — replace the raw expression with `isJwtPath`.
+  - `backend/tests/routes/settings-email-fresh-auth.test.ts` new describe-block header: contains a task-slug citation (`BACKEND-CHANGE-EMAIL-MINT-PATH-AND-FOLLOWUPS`), four round/item qualifiers (`round-2 item 3`, `round-1 item 7`, `round-2 item 4`, `round-2 item 2`), and a line-number anchor (`settings.test.ts:376`). Rewrite to a behavioral describe header — e.g., "Change-flow SMTP-fail: prior pending_email triple is restored, not nulled; status is 200 not 500. Differential test contrasts with the Add-flow SMTP-fail spec in `settings.test.ts`."
+  - Same test file, inline `it()` comments under the new describe: contain `Round-2 item 4` and `Round-1 item 7 + round-2 item 2` qualifiers. Strip the `Round-N item N:` prefixes; keep the behavioral rationale.
+  - `backend/tests/routes/settings.test.ts` modified test comments at the Add-flow SMTP-fail spec: add `Round-2 item 4: ...` prefixes and retain a `Round-1 hold-fix item 1` qualifier. Strip the round/item prefixes; keep the behavioral rationale (log level is `warn`, status is 200, `err` field is an Error instance).
+
+  Per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the rewrite prose must not introduce new task-slug citations, round-N markers, line-number anchors, or SHA references.
+
+**2. (P2, conf 75, testing + security) No regression test for the JWT-without-proof + registered-other-email 401-uniformity invariant (item 1's load-bearing oracle closure).** The round-1 item-1 fix reordered the handler so the JWT-path fresh-auth consume runs BEFORE the duplicate-email SELECTs — closing the 401-vs-409 enumeration oracle. The new test added for round-2 covers the SMTP-fail Change-flow path (item 3) but NO test exercises the item-1 invariant: a JWT-bearing request with NO `fresh_auth_proof` and a `new_email` value that IS registered to ANOTHER account must return uniform 401 `FRESH_AUTH_REQUIRED`, not 409. A regression reverting the hoist would return 409 for a registered-email probe; the existing tests would not fail.
+
+  Suggested fix: add one spec in `backend/tests/routes/settings-email-fresh-auth.test.ts`:
+  1. Seed `OTHER_USER` with email `OTHER_EMAIL`.
+  2. POST `/api/settings/email` with `STATE_A_USER`'s JWT (no `fresh_auth_proof` in body), `new_email: OTHER_EMAIL`.
+  3. Assert status `401`, `code: 'FRESH_AUTH_REQUIRED'`.
+  4. Optional companion: same request with `new_email: UNREGISTERED_EMAIL` also returns 401 with identical envelope shape (uniformity assertion).
+
+**3. (P2, conf 75, 3 reviewers — testing + reliability + correctness) Concurrent-overwrite WHERE-scope no-op not directly tested.** The round-1 item-2 fix scoped the SMTP-fail Change-flow restore UPDATE with `WHERE username = $4 AND pending_email_token = $5` (the just-written token). The new round-2 SMTP-fail test exercises a SINGLE-request scenario where the just-written token IS the current row state — the restore fires identically whether the `AND pending_email_token = $5` clause is present or absent. A mutation dropping the scope clause passes the test silently.
+
+  Suggested fix: add one spec that simulates the concurrent-overwrite race. Use the SMTP mock's rejection callback to mutate the DB row mid-flight:
+  ```
+  vi.mocked(sendMail).mockImplementationOnce(async () => {
+    await pool.query(
+      'UPDATE users SET pending_email=$1, pending_email_token=$2 WHERE username=$3',
+      [NEW_EMAIL_C, TOKEN_C, STATE_A_USER],
+    );
+    throw new Error('SMTP fail');
+  });
+  ```
+  Then POST `/api/settings/email` with `new_email: NEW_EMAIL_B`. Assert status 200 + DB row's `pending_email === NEW_EMAIL_C` and `pending_email_token === TOKEN_C` (the concurrent winner's state survives; the restore no-ops because its WHERE clause's token no longer matches).
+
+**4. (low, conf 90, reliability + adversarial) Restore UPDATE `rowCount` discarded — operator log cannot distinguish "rolled back" vs "raced and skipped".** The round-2 SMTP-fail Change-flow restore UPDATE silently no-ops when a concurrent change-email request has already overwritten the row. The single `logger.warn` emission with `event: 'settings.email_post.smtp_send_failed'` fires before the restore attempt and carries no information about whether the restore actually wrote anything back. An operator responding to an SMTP outage incident cannot tell from the log stream whether "rolled back successfully" or "raced — prior write already in-flight, restore skipped." The `rowCount` from the restore query is available but discarded.
+
+  Suggested fix: capture the result of the restore UPDATE; when `result.rowCount === 0`, emit an additional `logger.warn` with a distinct event discriminator (e.g., `event: 'settings.email_post.smtp_fail_restore_raced'`, carrying `username` and `email_hash`) so the operator can tell the difference. Minimal additional log volume — fires only on the race path, not the normal SMTP-fail path.
+
+### Items dismissed during architect triage
+
+- **(P2, conf 80, api-contract AC-02) Frontend `frontend/src/pages/settings.js` shows success toast on SMTP-fail 200 (user believes email was dispatched when none was).** UI-zone follow-up; filed as a new pending task `ui-settings-email-smtp-fail-copy-soft-hint.md` for the UI agent to soften the existing success copy with a "if nothing arrives, try again" hint. Non-breaking, doesn't disclose SMTP state. Not held against this task.
+- **(medium, adversarial) Double-SMTP-fail same-user cascade — B's snapshot captures A's transient pending_email; B's restore writes A's never-delivered token back.** Bounded blast radius: same authenticated owner; the user is restoring their own prior state. Below the actionable bar.
+- **(P1, conf 90, api-contract AC-01) `agents/docs/api-contracts/settings.md` doesn't document the 500→200 SMTP-fail status change.** Architect-zone — landed at cluster archive time as part of the api-contracts sweep.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+Items 1-4 touch a mix of `backend/src/routes/settings.ts`, `backend/tests/routes/settings-email-fresh-auth.test.ts`, and `backend/tests/routes/settings.test.ts`. Implementer's call whether one bundled commit or two (`comment-anchor + alias` first, then `tests + observability`); either works.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
