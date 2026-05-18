@@ -4,8 +4,9 @@ import { getPool, isHafConfigured } from '../../src/db.js';
 /**
  * Per-layer cascade-fail defense canary for `CROSS JOIN LATERAL
  * jsonb_array_elements(... -> 'citations')` sites at:
- *   - backend/src/routes/profile.ts (citations CTE inside profile stats)
- *   - backend/src/routes/stats.ts   (total_citations subquery inside /api/stats)
+ *   - backend/src/routes/profile.ts (the `citations` CTE inside profile stats)
+ *   - backend/src/routes/stats.ts   (the `total_citations` subquery inside
+ *                                    /api/stats)
  *
  * Pins that a chain post broadcasting a non-array `pevo.citations` (null,
  * string, integer, object) does NOT raise `cannot extract elements from a
@@ -34,35 +35,39 @@ import { getPool, isHafConfigured } from '../../src/db.js';
  * ingestion) is the same class the existing real-path coverage cannot
  * exercise without seeding a malformed chain post.
  *
- * jsonb_array_elements audit results for backend/src/ as of 2026-05-16:
- *   - backend/src/hafsql.ts:371 (excludeSelfReviewWhere NOT EXISTS subquery)
+ * jsonb_array_elements audit (canonical home — sibling canary
+ * `notification-queries-lateral-guard-canary.test.ts` cross-references this
+ * table). Every `jsonb_array_elements` call site in `backend/src/` and its
+ * disposition, anchored on stable symbol / CTE / arm names:
+ *   - hafsql.ts `excludeSelfReviewWhere` (NOT EXISTS subquery)
  *       → already correct, reference implementation (CASE-WHEN at SRF arg).
- *   - backend/src/hafsql.ts:732 (authorsWithSupersessionSelect)
- *       → OUT OF SCOPE here; tracked by
- *         `backend-self-review-exclusion-everywhere` round-4/5 item 2.
- *   - backend/src/reputation.ts:607 (paper_resolved_votes NOT EXISTS)
- *       → already correct (CASE-WHEN at SRF arg, landed round-4 of the
- *         sibling task).
- *   - backend/src/reputation.ts:793 (citing_papers CTE CROSS JOIN LATERAL)
- *       → OUT OF SCOPE here; tracked by
- *         `backend-self-review-exclusion-everywhere` round-5 item 1.
- *   - backend/src/notification-queries.ts:337 (arm 6a CROSS JOIN LATERAL)
- *       → MIGRATED in this task (was line 329 pre-fix). See sibling test
- *         `notification-queries-lateral-guard-canary.test.ts`.
- *   - backend/src/notification-queries.ts:373 (arm 6b CROSS JOIN LATERAL)
- *       → MIGRATED in this task (was line 358 pre-fix). See sibling test
- *         `notification-queries-lateral-guard-canary.test.ts`.
- *   - backend/src/routes/profile.ts:147 (citations CTE CROSS JOIN LATERAL)
- *       → MIGRATED in this task (was line 137 pre-fix). Covered here.
- *   - backend/src/routes/stats.ts:82 (total_citations comma-cross-join SRF)
- *       → MIGRATED in this task (was line 71 pre-fix). Covered here.
- *   - backend/src/routes/ipfs.ts:265 (jsonb_array_elements_text on
- *     c.json_metadata->'image')
- *       → EXEMPT (different SRF, non-pevo-namespaced field, IPFS-pinner
- *         blast radius rather than user read path; out of scope per task).
- *   - backend/src/ipfs-cleanup.ts:38 (jsonb_array_elements_text on
- *     c.json_metadata->'image')
- *       → EXEMPT (same disposition as routes/ipfs.ts:265).
+ *   - hafsql.ts `authorsWithSupersessionSelect`
+ *       → OUT OF SCOPE here; the cycle-cascade `authorsWithSupersession`
+ *         helper is fixed separately alongside the reputation-cycle
+ *         cascade audit.
+ *   - reputation.ts `paper_resolved_votes` NOT EXISTS subquery
+ *       → already correct (CASE-WHEN at SRF arg).
+ *   - reputation.ts `citing_papers` CTE CROSS JOIN LATERAL
+ *       → OUT OF SCOPE here; the cycle-cascade `citing_papers` CTE is
+ *         fixed separately alongside the reputation-cycle cascade audit.
+ *   - notification-queries.ts arm 6a of `fetchNotificationsFromHaf`
+ *       (CROSS JOIN LATERAL on `citing.json_metadata -> 'citations'`)
+ *       → MIGRATED. Sibling canary covers it.
+ *   - notification-queries.ts arm 6b of `fetchNotificationsFromHaf`
+ *       (bridge-paper CROSS JOIN LATERAL on the same field)
+ *       → MIGRATED. Sibling canary covers it.
+ *   - routes/profile.ts `citations` CTE (CROSS JOIN LATERAL)
+ *       → MIGRATED. Covered here (profile.ts-shape tests below).
+ *   - routes/stats.ts `total_citations` subquery (comma-cross-join SRF)
+ *       → MIGRATED. Covered here (stats.ts-shape tests below).
+ *   - routes/ipfs.ts `jsonb_array_elements_text` on
+ *     `c.json_metadata -> 'image'`
+ *       → EXEMPT (different SRF function `jsonb_array_elements_text`,
+ *         non-pevo-namespaced `image` field, IPFS-pinner blast radius
+ *         rather than user read path).
+ *   - ipfs-cleanup.ts `jsonb_array_elements_text` on
+ *     `c.json_metadata -> 'image'`
+ *       → EXEMPT (same disposition as routes/ipfs.ts).
  */
 describe('citations CROSS JOIN LATERAL cascade-fail defense (profile.ts + stats.ts shape)', () => {
   it.skipIf(!isHafConfigured())(
