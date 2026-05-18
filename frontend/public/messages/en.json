@@ -841,7 +841,7 @@
     "emailHint": "Institutional emails (e.g. .edu, .ac.uk) are accepted directly. Others require ORCID verification.",
     "fullName": "Full Name",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "Institution",
+    "institution": "Institution (optional)",
     "institutionPlaceholder": "MIT",
     "field": "Field of Research",
     "fieldPlaceholder": "Neuroscience",

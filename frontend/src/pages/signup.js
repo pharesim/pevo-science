@@ -44,7 +44,7 @@ const template = `
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.institution')"></label>
-                  <input type="text" x-model="institution" required
+                  <input type="text" x-model="institution"
                          class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
                          :placeholder="$t('signup.institutionPlaceholder')">
                 </div>
@@ -188,7 +188,7 @@ export function initSignupPage() {
     },
 
     get canSubmit() {
-      const baseFields = this.email && this.fullName && this.institution && this.field;
+      const baseFields = this.email && this.fullName && this.field;
       if (!baseFields) return false;
       // ORCID branch: password is optional. User can set one later in Settings.
       if (this.orcidToken) return true;

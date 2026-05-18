@@ -337,9 +337,6 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     if (!full_name || full_name.length === 0) {
       return sendError(res, 400, 'VALIDATION_ERROR', 'Full name is required');
     }
-    if (!institution || institution.length === 0) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'Institution is required');
-    }
     if (!field || field.length === 0) {
       return sendError(res, 400, 'VALIDATION_ERROR', 'Field of research is required');
     }
