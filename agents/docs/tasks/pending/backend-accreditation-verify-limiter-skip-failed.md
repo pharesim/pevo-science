@@ -110,3 +110,64 @@ The audit confirms no 4xx path on `/verify` has an expensive precondition (HAF q
 - `npm run typecheck` (backend) — clean.
 - `npm run lint` (backend) — clean.
 - Targeted vitest: `tests/routes/accreditation-idempotency.test.ts` — all 13 specs pass (12 prior + 1 new slot-refund canary). New spec runtime: ~25ms.
+
+---
+
+## Architect round-1 re-review (2026-05-18) — HELD PENDING FIXES
+
+`/ce-code-review` cluster-pass on commit `be457dc` dispatched 9 reviewers: correctness, testing, maintainability, project-standards, security, reliability, adversarial, api-contract, kieran-typescript, ce-learnings-researcher (skipping `ce-agent-native-reviewer` per root CLAUDE.md). Cross-reviewer corroboration on the asymmetric Retry-After concern (reliability × adversarial × api-contract, promoted to anchor 100). The round-1 implementation is functionally correct in scope — `skipFailedRequests: true` lands cleanly, `Retry-After: 30` survives `sendError`, the 503-refund canary mirrors the sibling pattern correctly. Three items held; all in the same file (`accreditation.ts`) + test file, bundle into one round-2 commit.
+
+### Item 1 — Sibling 503 SERVICE_UNAVAILABLE path also emits `retriable: true` but no `Retry-After`
+
+**Severity:** P2 · **Cross-corroborated:** reliability × adversarial × api-contract (conf 100)
+**File:** `backend/src/routes/accreditation.ts:762-768` (pre-INCR Redis-counter failure 503 path)
+
+`/verify` has two retriable 503 branches:
+- 503 `ACCREDITATION_GATE_UNAVAILABLE` — round-1 NOW emits `Retry-After: 30` ✓
+- 503 `SERVICE_UNAVAILABLE` (pre-INCR Redis-counter failure) — emits `details.retriable: true` but NO `Retry-After`
+
+The SPA's `frontend/src/api.js` parses `Retry-After` into `err.retryAfterSeconds`. Absent → `null` → `_startCooldown(null)` → `initial = 0` → no cooldown → Retry button immediately clickable. Combined with the new `skipFailedRequests: true`, every spam-click refunds the slot. The amplification is bounded only by user fatigue + the broadcast-cap token-counter, NOT by the IP limiter (which the round-1 preamble comment just declared as "the coherent backoff floor"). The task's preamble claim "shared coherent backoff floor" is incomplete with one of two retriable 503 branches uncovered.
+
+**Fix shape:** one-line edit. Add `res.set('Retry-After', '30');` before the existing `sendError(res, 503, 'SERVICE_UNAVAILABLE', ...)` at the pre-INCR branch. Mirrors the GATE_UNAVAILABLE pattern exactly. Add a test pin (`expect(res.headers['retry-after']).toBe('30')`) on the existing SERVICE_UNAVAILABLE spec.
+
+### Item 2 — Preamble comment on `accreditationVerifyLimiter` cites four line-number anchors (two already stale)
+
+**Severity:** P2 · **Source:** maintainability M1 (conf 90)
+**File:** `backend/src/routes/accreditation.ts` (preamble comment block on the new limiter declaration, ~lines 40-58)
+
+The new preamble enumerates the 4xx/5xx status surface with raw line citations: `accreditation.ts:552-558`, `rateLimit.ts:100-101`, `accreditation.ts:436`, `accreditation.ts:442`. Per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`, line numbers are the rot warning sign. The sibling preamble on `accreditationRequestLimiter` (lines 25-38) shows the correct identifier-only pattern.
+
+Bonus: `:436` and `:442` are already stale at write time — actual lines are `:455` and `:461`. The `rateLimit.ts:100-101` reference is wrong-as-written (lines 100-101 are not the refund branch; the gate is at line 156). The same wrong-as-written `rateLimit.ts:100-101` appears in the round-2 sibling task `backend-accreditation-limiter-skip-failed` test comments — both should use `RateLimitConfig.skipFailedRequests` JSDoc as the stable anchor.
+
+**Fix shape:** strip the line spans from the preamble. Anchor on the status code + error code identifiers (the symbolic name `ACCREDITATION_GATE_UNAVAILABLE`, `BROADCAST_ATTEMPT_LIMIT_EXCEEDED`, etc.) and the `RateLimitConfig.skipFailedRequests` JSDoc. Match the sibling preamble's shape exactly.
+
+### Item 3 — Test slug citations `BACKEND-ACCREDITATION-VERIFY-LIMITER-SKIP-FAILED acceptance #N:`
+
+**Severity:** P2 · **Source:** maintainability M2 (conf 95)
+**File:** `backend/tests/routes/accreditation-idempotency.test.ts:540, 580`
+
+Two new test-block headers lead with `BACKEND-ACCREDITATION-VERIFY-LIMITER-SKIP-FAILED acceptance #N:` slug references. Per `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, these rot on archive — once `tasks-archive.md` trims past 250 lines the slug becomes unfindable. The technical body below each slug header is genuinely useful prose; only the slug prefix needs to go.
+
+**Fix shape:** drop the `BACKEND-ACCREDITATION-VERIFY-LIMITER-SKIP-FAILED acceptance #N:` prefix at both sites. Keep the technical content describing what each spec pins. Optionally anchor on the behavioral description (e.g., "503 refunds the per-IP limiter slot — pins `skipFailedRequests: true` against a mutation that would reintroduce slot consumption on transient HAF outage").
+
+### Files for round-2
+
+- `backend/src/routes/accreditation.ts` (Items 1 + 2)
+- `backend/tests/routes/accreditation-idempotency.test.ts` (Items 1 + 3)
+- This task file (round-2 implementer signal block when moving back to review/)
+
+### Architect archive-time follow-ups (recorded for the eventual archive)
+
+- **`agents/docs/api-contracts/accreditation.md`** ACCREDITATION_GATE_UNAVAILABLE row (line ~146) must document `Retry-After: 30` emission. **Now expanded** by round-2 Item 1: also document `Retry-After: 30` on the SERVICE_UNAVAILABLE row (line ~145, currently says "No Retry-After header" — the round-2 fix will change this). Update `common.md:86` cross-cutting note accordingly. Architect lands at archive time.
+- **`skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md` audit grid** add a new row for `accreditationVerifyLimiter` (per-IP, 5/60s, skipFailed=true). The grid is the convention's enforcement artifact. Architect updates at archive time.
+
+### Dismissed at architect triage (recorded for transparency)
+
+- **Token brute-force amplification via symmetric refund on 400 BAD_REQUEST** (security R1 conf 90 informational): the 400-invalid-token path refunds the slot, effectively removing the per-IP brute-force cap. NOT exploitable due to 256-bit token entropy (`crypto.randomBytes(32).toString('hex')`). The limiter never bounded brute-force meaningfully; entropy did.
+- **503 status as token-validity oracle during HAF outage** (security R2 conf 80 informational): pre-existing; the 503 fires only after `getToken` returns non-null. Not regressed by this diff.
+- **500 INTERNAL_ERROR path (missing admin key) deletes token before responding** (security R3 conf 85 informational): operator-misconfiguration path; attacker reaching it must already know a valid token, so not a discovery vector.
+- **30s Retry-After fixed cadence — no jitter** (reliability R2 conf 60 below gate): thundering-herd on HAF recovery. PEvO single-instance, small user population; not realizable at scale.
+- **Tight-loop slot-refund canary may race deferred DECR refund** (testing T1 conf 70 below gate): the test passes locally and mirrors precedent; theoretical timing race only.
+- **Slot-refund canary doesn't pin Retry-After + retriable on the 6th call** (testing T2 conf 75 advisory): focus boundary; sibling round-3 503 spec covers it. Per `feedback_dismiss_preemptive_test_hardening`.
+
+---
