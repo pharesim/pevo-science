@@ -820,7 +820,7 @@
     "emailHint": "כתובות דוא\"ל מוסדיות (לדוגמה .edu, .ac.uk) מתקבלות ישירות. אחרות דורשות אימות ORCID.",
     "fullName": "שם מלא",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "מוסד",
+    "institution": "מוסד (אופציונלי)",
     "institutionPlaceholder": "MIT",
     "field": "תחום מחקר",
     "fieldPlaceholder": "מדעי המוח",

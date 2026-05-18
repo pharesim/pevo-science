@@ -820,7 +820,7 @@
     "emailHint": "Adresy uczelniane (np. .edu, .ac.uk) są akceptowane bezpośrednio. Pozostałe wymagają weryfikacji ORCID.",
     "fullName": "Imię i nazwisko",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "Instytucja",
+    "institution": "Instytucja (opcjonalnie)",
     "institutionPlaceholder": "MIT",
     "field": "Dziedzina badań",
     "fieldPlaceholder": "Neuronauka",

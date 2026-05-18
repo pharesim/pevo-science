@@ -820,7 +820,7 @@
     "emailHint": "Institutionelle E-Mails (z. B. .edu, .ac.uk) werden direkt akzeptiert. Andere erfordern eine ORCID-Verifizierung.",
     "fullName": "Vollständiger Name",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "Institution",
+    "institution": "Institution (optional)",
     "institutionPlaceholder": "MIT",
     "field": "Forschungsgebiet",
     "fieldPlaceholder": "Neurowissenschaften",

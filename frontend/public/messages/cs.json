@@ -820,7 +820,7 @@
     "emailHint": "Institucionální e-maily (např. .edu, .ac.uk) jsou přijímány přímo. Ostatní vyžadují ověření přes ORCID.",
     "fullName": "Celé jméno",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "Instituce",
+    "institution": "Instituce (volitelné)",
     "institutionPlaceholder": "MIT",
     "field": "Obor výzkumu",
     "fieldPlaceholder": "Neurověda",

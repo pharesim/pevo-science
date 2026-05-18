@@ -820,7 +820,7 @@
     "emailHint": "ایمیل‌های سازمانی (مانند .edu، .ac.uk) مستقیماً پذیرفته می‌شوند. سایر آدرس‌ها نیاز به تأیید ORCID دارند.",
     "fullName": "نام کامل",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "مؤسسه",
+    "institution": "مؤسسه (اختیاری)",
     "institutionPlaceholder": "MIT",
     "field": "حوزه پژوهش",
     "fieldPlaceholder": "علوم اعصاب",

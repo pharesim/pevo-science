@@ -820,7 +820,7 @@
     "emailHint": "机构邮箱（如 .edu、.ac.uk）可直接使用。其他邮箱需要通过 ORCID 验证。",
     "fullName": "全名",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "机构",
+    "institution": "机构（可选）",
     "institutionPlaceholder": "MIT",
     "field": "研究领域",
     "fieldPlaceholder": "神经科学",

@@ -824,7 +824,7 @@
     "emailHint": "Institutionele e-mailadressen (bijv. .edu, .ac.uk) worden direct geaccepteerd. Andere vereisen ORCID-verificatie.",
     "fullName": "Volledige naam",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "Instelling",
+    "institution": "Instelling (optioneel)",
     "institutionPlaceholder": "MIT",
     "field": "Onderzoeksgebied",
     "fieldPlaceholder": "Neurowetenschappen",

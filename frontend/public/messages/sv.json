@@ -820,7 +820,7 @@
     "emailHint": "Institutionella e-postadresser (t.ex. .edu, .ac.uk) accepteras direkt. Andra kräver ORCID-verifiering.",
     "fullName": "Fullständigt namn",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "Institution",
+    "institution": "Institution (valfritt)",
     "institutionPlaceholder": "MIT",
     "field": "Forskningsområde",
     "fieldPlaceholder": "Neurovetenskap",

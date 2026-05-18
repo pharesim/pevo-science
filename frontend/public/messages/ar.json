@@ -820,7 +820,7 @@
     "emailHint": "يُقبل البريد الأكاديمي مباشرة (مثل .edu أو .ac.uk). تتطلب العناوين الأخرى التحقق عبر ORCID.",
     "fullName": "الاسم الكامل",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "المؤسسة",
+    "institution": "المؤسسة (اختياري)",
     "institutionPlaceholder": "MIT",
     "field": "مجال البحث",
     "fieldPlaceholder": "علم الأعصاب",

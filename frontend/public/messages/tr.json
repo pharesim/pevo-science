@@ -824,7 +824,7 @@
     "emailHint": "Kurumsal e-postalar (ör. .edu, .ac.uk) doğrudan kabul edilir. Diğerleri ORCID doğrulaması gerektirir.",
     "fullName": "Tam ad",
     "fullNamePlaceholder": "Dr. Jane Smith",
-    "institution": "Kurum",
+    "institution": "Kurum (isteğe bağlı)",
     "institutionPlaceholder": "MIT",
     "field": "Araştırma alanı",
     "fieldPlaceholder": "Sinirbilim",
