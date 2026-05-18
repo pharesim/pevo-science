@@ -1029,6 +1029,11 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       expect(res.status).toBe(503);
       expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
       expect(res.body.error.details).toEqual({ retriable: true });
+      // Server-driven backoff cadence: the 503 SERVICE_UNAVAILABLE branch
+      // emits `Retry-After: 30` so the SPA's ApiRequestError parses a
+      // coherent retry floor (matches the sibling ACCREDITATION_GATE_UNAVAILABLE
+      // 503 emit). Both retriable 503 branches on /verify share the cadence.
+      expect(res.headers['retry-after']).toBe('30');
       // Broadcast NOT invoked — the pre-INCR failed before the broadcast
       // site, mirroring the cap-exceeded short-circuit shape.
       expect(broadcastJsonMock).not.toHaveBeenCalled();

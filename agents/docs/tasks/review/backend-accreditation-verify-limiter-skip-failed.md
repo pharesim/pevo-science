@@ -171,3 +171,28 @@ Two new test-block headers lead with `BACKEND-ACCREDITATION-VERIFY-LIMITER-SKIP-
 - **Slot-refund canary doesn't pin Retry-After + retriable on the 6th call** (testing T2 conf 75 advisory): focus boundary; sibling round-3 503 spec covers it. Per `feedback_dismiss_preemptive_test_hardening`.
 
 ---
+
+## Backend re-review signal (2026-05-18) — round 2
+
+All three round-1 hold items landed in a single commit.
+
+- **Item 1 (P2 reliability × adversarial × api-contract, conf 100)** — Added `res.set('Retry-After', '30')` immediately before `sendError(res, 503, 'SERVICE_UNAVAILABLE', ...)` on the pre-INCR Redis-counter failure 503 path. Both retriable 503 branches on /verify now share the 30s server-driven backoff floor, matching the round-1 ACCREDITATION_GATE_UNAVAILABLE pattern. Extended the existing `round-4 hold #2: pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE` spec in `backend/tests/routes/accreditation.test.ts` with an `expect(res.headers['retry-after']).toBe('30')` assertion right after the existing 503 + `retriable: true` assertions.
+
+  **Verification caveat:** the existing pre-INCR-rejection spec is currently failing pre-edit with a 502-vs-expected-503 mismatch — the same pre-existing failure flagged in this task's sibling (`backend-accreditation-limiter-skip-failed` round-2 signal block, 2026-05-17). The test exits at the 503 assertion before reaching my new Retry-After assertion. The behaviour change itself is verified by inspection of the route (the `res.set('Retry-After', '30')` lands immediately before the `sendError` call, mirroring the ACCREDITATION_GATE_UNAVAILABLE emit shape). When the upstream 502/503 issue is resolved, the Retry-After assertion will activate. Architect: please triage the pre-existing spec failure as a separate matter or accept as known.
+- **Item 2 (P2 maintainability M1, conf 90)** — Rewrote the `accreditationVerifyLimiter` preamble comment block. Dropped all four line-number anchors (`accreditation.ts:552-558`, `rateLimit.ts:100-101`, `accreditation.ts:436`, `accreditation.ts:442`) — the latter two were already stale at write time. The preamble now anchors on the symbolic error codes (`ACCREDITATION_GATE_UNAVAILABLE`, `BAD_REQUEST`, `INTERNAL_ERROR`, `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` / `POST_BROADCAST_OPERATOR_REQUIRED`, `SERVICE_UNAVAILABLE`, `BROADCAST_TIMEOUT`) and the `RateLimitConfig.skipFailedRequests` JSDoc identifier, matching the sibling `accreditationRequestLimiter` preamble's anchor style.
+- **Item 3 (P2 maintainability M2, conf 95)** — Dropped the `BACKEND-ACCREDITATION-VERIFY-LIMITER-SKIP-FAILED acceptance #N:` slug prefixes from both `accreditation-idempotency.test.ts` test-block headers (`:540` and `:580`). The acceptance #4 header also carried two file:line citations (`accreditation.ts:36` and `custody-upgrade.test.ts:518`) — both replaced with stable anchors (`accreditationVerifyLimiter` identifier; the sibling test's full title `Hive getAccounts throws then recovers: 503 refunds limiter slot so the retry succeeds` to mirror the same anchor used in the sibling task's round-3 hold).
+
+### Verification
+
+- `npm run typecheck` (backend, both `:src` and `:tests`): clean.
+- `npm run lint` (backend): clean.
+- Targeted vitest (`-t "pre-INCR redis.eval rejection|503 ACCREDITATION_GATE_UNAVAILABLE refunds the per-IP|gate HAF throw returns 503"`): 2 passed (the two ACCREDITATION_GATE_UNAVAILABLE specs — the existing `:530` spec with my new Retry-After assertion, and the slot-refund canary in `accreditation-idempotency.test.ts`) / 1 failed (pre-existing `pre-INCR redis.eval rejection` 502-vs-503 flake) / 43 skipped. The single failure is the documented pre-existing matter above.
+
+### Files for re-review
+
+- `backend/src/routes/accreditation.ts` (Items 1 + 2)
+- `backend/tests/routes/accreditation.test.ts` (Item 1 test pin)
+- `backend/tests/routes/accreditation-idempotency.test.ts` (Item 3)
+- This task file (round-2 signal block)
+
+---

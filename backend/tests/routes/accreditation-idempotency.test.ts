@@ -537,12 +537,11 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
         code: 'ACCREDITATION_GATE_UNAVAILABLE',
         details: { retriable: true },
       });
-      // BACKEND-ACCREDITATION-VERIFY-LIMITER-SKIP-FAILED acceptance #5:
-      // server-driven backoff cadence. The SPA's ApiRequestError
-      // infrastructure (frontend/src/api.js:28-33,63-71) already parses
-      // Retry-After into `err.retryAfterSeconds`. 30s is the
-      // operator-tunable HAF-outage recovery default. supertest
-      // lowercases header names per the Node http convention.
+      // Server-driven backoff cadence: the 503 ACCREDITATION_GATE_UNAVAILABLE
+      // emit sets `Retry-After: 30` so the SPA's `ApiRequestError` parses
+      // a coherent retry floor via its `retryAfterSeconds` accessor.
+      // 30s is the operator-tunable HAF-outage recovery default.
+      // supertest lowercases header names per the Node http convention.
       expect(res.headers['retry-after']).toBe('30');
       // Broadcast must NOT fire under HAF outage — the override class is
       // closed by short-circuiting before the broadcast path.
@@ -577,17 +576,18 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     }
   });
 
-  // BACKEND-ACCREDITATION-VERIFY-LIMITER-SKIP-FAILED acceptance #4: the
-  // /verify limiter at accreditation.ts:36 declares `skipFailedRequests:
-  // true` so a 503 ACCREDITATION_GATE_UNAVAILABLE response refunds the
-  // per-IP slot. Without it, a HAF outage burns the IP's 5 slots/60s in
-  // 5 retries and the legitimate user trips 429 RATE_LIMITED for the
-  // next ~60s — locked out even after HAF recovers. Mirrors
-  // backend/tests/routes/custody-upgrade.test.ts:518 (sibling pin for
-  // the upgrade limiter). The limiter is keyed `byIp`; supertest pins
-  // remoteAddress to 127.0.0.1 so every request in this file shares the
-  // same bucket. The afterEach hook clears `rl:accred-verify:*` keys so
-  // this spec starts at an empty bucket.
+  // Pin the per-IP slot-refund behaviour: the `accreditationVerifyLimiter`
+  // declares `skipFailedRequests: true` so a 503 ACCREDITATION_GATE_UNAVAILABLE
+  // response refunds the per-IP slot. Without it, a HAF outage burns the
+  // IP's 5 slots/60s in 5 retries and the legitimate user trips 429
+  // RATE_LIMITED for the next ~60s — locked out even after HAF recovers.
+  // Mirrors the sibling `Hive getAccounts throws then recovers: 503
+  // refunds limiter slot so the retry succeeds` canary against the
+  // `upgradeLimiter` in `backend/tests/routes/custody-upgrade.test.ts`.
+  // The limiter is keyed `byIp`; supertest pins remoteAddress to
+  // 127.0.0.1 so every request in this file shares the same bucket. The
+  // afterEach hook clears `rl:accred-verify:*` keys so this spec starts
+  // at an empty bucket.
   it('503 ACCREDITATION_GATE_UNAVAILABLE refunds the per-IP limiter slot (skipFailedRequests canary)', async () => {
     const redis = getRedis();
     if (!redis) return;
