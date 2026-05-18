@@ -82,3 +82,51 @@ This task should NOT start until `ui-accreditation-verify-retriable-handling` ro
 - `frontend/src/pages/accreditation-verify.js` — verify page (already has `_isRetriable` and the cooldown machinery).
 - `frontend/src/api.js` — `ApiRequestError` shape; verify whether `TypeError` and `AbortError` propagate raw or wrapped.
 - Sibling: `ui-accreditation-verify-retriable-handling` (just landed; covers backend-emitted retriable envelopes).
+
+---
+
+## Implementer signal (UI, 2026-05-17, commit `a6fc5d4`)
+
+Round-1 implementation landed at commit `a6fc5d4` (`ui(accreditation-verify): route network-layer errors to Retry CTA`). The mv-to-review commit (`480909d`) was a pure rename with no content; the implementation is the prior commit. Design decisions made:
+- **Discriminator shape:** `_isNetworkError(err)` predicate on `err?.name === 'TypeError' || err?.name === 'AbortError'`, separate from `_isRetriable` (which keys on `err?.code` / `err?.details?.retriable` for backend-emitted retriable envelopes).
+- **Cooldown:** AbortError → 5s (backend slow but reachable; give it time before re-arming the 30s fetch timeout). TypeError → 0s (offline / DNS / CORS — user is the trigger, immediate retry once connectivity restored).
+- **Copy key:** new `verify.networkUnavailable` in `en.json` + 15 locale stubs + STUBS.md sweep entry.
+- **State machine:** reuses existing `retriable_error` state; `_isNetworkError` runs before `_isRetriable` in the catch arm (no collision since `ApiRequestError.name === 'ApiRequestError'`).
+- **Tests:** 3 specs in `pages-accreditation-verify.test.js` — TypeError → 0s; AbortError → 5s + tick; Retry click re-invokes against the same token.
+
+---
+
+## Architect round-1 re-review (2026-05-18) — HELD PENDING FIXES
+
+`/ce-code-review` cluster-pass on commit `a6fc5d4` dispatched 8 reviewers: correctness, testing, maintainability, project-standards, julik-frontend-races, reliability, adversarial, ce-learnings-researcher (skipping `ce-agent-native-reviewer` per root CLAUDE.md). Cross-reviewer corroboration on the slug-citation finding (maintainability × project-standards, anchor 100). The round-1 implementation is functionally well-defended: four guard layers (`_mounted` check, `_verifyGeneration` capture-and-compare, `_cooldownId` capture-and-compare, `state === 'loading'` early-return) correctly bound concurrent retry / unmount-during-cooldown / late-resolver scenarios. Type-safety clean. One item held; one-line edit.
+
+### Item 1 — Net-new task-slug citation in test header
+
+**Severity:** P2 · **Cross-corroborated:** maintainability maint-1 × project-standards PS-1 (conf 100)
+**File:** `frontend/tests/unit/pages-accreditation-verify.test.js:309`
+
+The new `describe('network-layer error handling')` block header opens with `// UI-ACCREDITATION-VERIFY-NETWORK-ERROR-RETRIABLE:`. Per `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, the slug rots on archive — once `tasks-archive.md` trims past 250 lines, the slug becomes an unfindable phantom. The technical body that follows the colon is genuinely useful behavioral framing and stands on its own.
+
+**Fix shape:** drop the `// UI-ACCREDITATION-VERIFY-NETWORK-ERROR-RETRIABLE:` prefix. Open with the behavioral description directly, e.g. `// Network-layer errors (TypeError ..., AbortError ...) never reach ApiRequestError -- api.js ...`.
+
+### Files for round-2
+
+- `frontend/tests/unit/pages-accreditation-verify.test.js` (Item 1)
+- This task file (round-2 implementer signal block when moving back to review/)
+
+### Architect archive-time follow-ups (recorded for the eventual archive)
+
+- None for round-2's Item 1 scope. The `[TODO Architect]` cross-cutting AbortError-after-success cascade is being addressed via a separate architect-owned brainstorm follow-up (see "Sibling architect task" below).
+
+### Sibling architect task (filed at architect triage)
+
+A separate UX-cascade finding surfaced during this review and is queued for architect design work: **AbortError-after-server-success cascade**. Fetch reaches server, server completes broadcast + deletes token, response is lost (AbortError at 30s timeout). User clicks Retry on the now-deleted token → backend 400 BAD_REQUEST → SPA classifies as `ApiRequestError` (not retriable) → routes to "Request New" CTA → burns 1 of 3 daily `/accreditation/request` slots even though the accreditation actually succeeded. The exact cascade this task aimed to prevent, shifted one error class up. P2/conf-75. Fix requires backend coordination (existing-accreditation gate on the 400 path, or a frontend probe of `/api/accreditations`) — out of scope for this task's round-2.
+
+### Dismissed at architect triage (recorded for transparency)
+
+- **TypeError + 0s cooldown enables tight click-loop on permanent-cause failures** (adversarial adv-2 + reliability REL-R2, P3 conf 75): bounded by template-driven state machine (Retry button vanishes during `state === 'loading'`) + backend rate limiter on `/accreditation/verify` (5/60s/IP) + user fatigue. PEvO single-instance scale. The 0s cooldown was the deliberate design choice per Q2 ("immediate retry on connectivity restoration").
+- **In-flight fetch not abortable on component teardown** (julik-frontend-races below gate): fetch uses internal `AbortSignal.timeout(30s)`. Resolution branches doubly-guarded by `_mounted` + `_verifyGeneration`; no stale state writes. Request-cost concern only, not a UI race.
+- **Permanent-cause TypeError test coverage gap** (reliability T1 conf 60 below gate): preemptive test hardening.
+- **AbortError synthesis uses `new Error()` vs real `DOMException`** (testing residual): justified in-comment; discriminator narrows on `err?.name` so coverage is correct.
+
+---
