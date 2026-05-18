@@ -122,3 +122,37 @@ The full audit is duplicated as a docblock comment at the top of `backend/tests/
 
 - The initial worker edit on profile.ts and stats.ts wrapped SQL identifier names with backticks inside the JS template-literal comments, prematurely terminating the JS template. Parent dropped the backticks in favor of bare identifier names (matching the convention already established by the round-3 fix on `backend-self-review-exclusion-everywhere` item #8).
 - No `git mv` from `pending/` to `review/` was performed in this worktree; parent serializes that after all in-flight workers merge.
+
+---
+
+## Architect re-review (2026-05-18) — HELD PENDING FIXES (round 1)
+
+`/ce-code-review` on commit `6fdb460` with 9 personas (correctness/adversarial on Opus; testing/maintainability/project-standards/performance/reliability/kieran-typescript/learnings on Sonnet; `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md). The 4-site CASE-WHEN-at-SRF-arg migration is mechanically sound: every malformed JSONB shape (jsonb null, SQL null, string, integer, object) falls through to `'[]'::jsonb` and produces zero LATERAL rows; canary mutation-kill verified (remove CASE-WHEN → `jsonb_array_elements` raises on non-array argument → tests fail); carve-out clause-(c) compliance confirmed in both canary headers. User-triaged 2026-05-18; 3 docblock-quality items bundled below (all touch the same canary headers in the same edit pass).
+
+### Items held (must fix before archive)
+
+1. **(P2 maintainability+learnings, cross-reviewer anchor 100)** Docblock line-number rot in both canary test file headers. Both `backend/tests/routes/citations-lateral-guard-canary.test.ts` and `backend/tests/notification-queries-lateral-guard-canary.test.ts` duplicate a 9-site audit table with absolute line-number anchors (`hafsql.ts:371`, `reputation.ts:607`, `routes/profile.ts:147`, `routes/stats.ts:82`, `routes/ipfs.ts:265`, `ipfs-cleanup.ts:38`, etc.) plus tilde-approximations (`now ~337`, `now ~373`) that acknowledge the rot but do not resolve it. Per `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`, anchor on stable symbol/CTE/function names.
+
+   Fix: rewrite the audit table to use stable anchors only. Suggested replacements: `excludeSelfReviewWhere` (hafsql.ts), `paper_resolved_votes NOT EXISTS` (reputation.ts), `authorsWithSupersessionSelect` (hafsql.ts, out-of-scope sibling), `citing_papers CTE CROSS JOIN LATERAL` (reputation.ts, out-of-scope sibling), `citations CTE` (routes/profile.ts), `total_citations subquery` (routes/stats.ts), `arm 6a / arm 6b of fetchNotificationsFromHaf` (notification-queries.ts), `jsonb_array_elements_text on c.json_metadata -> 'image'` (ipfs.ts + ipfs-cleanup.ts, EXEMPT). No line numbers, no `~N` approximations.
+
+2. **(P2 maintainability M1, anchor 75)** Audit table duplicated across both canary file headers. The 9-site enumeration appears verbatim in two places, doubling rot exposure and forcing every future audit update to land in two files. Pick one canonical home (`citations-lateral-guard-canary.test.ts` is the natural pick since it covers more migrated sites) and replace the duplicate in the sibling file with a one-line cross-reference: `// See citations-lateral-guard-canary.test.ts header for the full jsonb_array_elements audit.`
+
+3. **(P3 learnings, anchor 50, bundled because zero-marginal-cost in the same edit pass)** Round-N citations referencing sibling tasks rot on archive. Both canary headers contain references like "landed round-4 of the sibling task", "tracked by `backend-self-review-exclusion-everywhere` round-4/5 item 2", "round-5 item 1". When the sibling task archives, the round numbers lose meaning and the slug becomes a dead pointer (archive truncates from the bottom at 250 lines). Per `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`.
+
+   Fix: replace round-N + slug references with behavioral descriptions. Suggested: "covered by the `excludeSelfReviewWhere` reference implementation", "tracked alongside the reputation-cycle cascade audit", "the cycle-cascade `citing_papers` CTE is fixed separately", etc. Drop the round-N qualifiers and slug pointers; keep the behavioral content.
+
+### Items dismissed during architect triage (recorded for transparency)
+
+- (P3 adversarial #1, anchor 35) Array-of-primitives (`[1, 2, 3]`) passes the array guard then relies on downstream `->>` null-tolerance — dismissed: no constructible exploit, theoretical.
+- (P3 adversarial #2, anchor 40) Silent swallow of malformed-row signal in stats.ts (post-fix, malformed rows contribute 0 silently) — dismissed per `feedback_pevo_logging_minimal`: PEvO log volume is too high; adding an observability hook here is preemptive.
+- (P2 performance, anchor 60) CASE-WHEN double-traversal of the `-> 'citations'` path — dismissed: same complexity as the prior WHERE-guard placebo; cached behind hafCache (5-min stats, 30s profile/notifications); not introduced by this diff; below confidence gate.
+- (P3 testing T1, anchor 75) arm-6b canary structurally identical to arm-6a — dismissed per `feedback_dismiss_preemptive_test_hardening`; both canaries pin per-call-site mutation, no behavioral risk class is missed by re-using the spec shape across the two arms.
+- (P3 learnings) IPFS exemption is structural-rationale-only rather than mechanical-audit-anchored — dismissed below confidence gate: structural rationale (different SRF function `jsonb_array_elements_text`, non-pevo-namespaced `image` field, IPFS-pinner blast radius rather than user read path) is already stronger than enumeration-only; adding a `grep -rn jsonb_array_elements_text` invariant statement would be preemptive.
+
+### Items handed to separate architect actions (still on the architect's backlog)
+
+- (Architect carry-forward, cluster-D) Convention-recurrence: surface `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15` and `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15` in `agents/backend/CLAUDE.md` so they reach implementer write-time context per `conventions-in-solutions-dont-reach-implementer-context-2026-05-18.md`. Lands in a separate architect commit during cluster archive.
+
+### Re-review signal
+
+When items 1–3 land, `git mv` this file back to `tasks/review/`. Round-2 architect re-review scopes `/ce-code-review` to commits since `6fdb460`. Anchor: header-only edits to the two new canary test files; single commit reasonable.
