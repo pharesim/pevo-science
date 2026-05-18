@@ -193,3 +193,21 @@ Round-1 hold items P1 #1, P1 #2, P2 #3 landed.
 ### Re-review signal
 
 When items 1–3 land, `git mv` this file back to `tasks/review/`. Round-3 architect re-review scopes `/ce-code-review` to commits since `2c34341`. Anchor: 3 docblock/comment edits in 2 files (one production, one test); single commit reasonable.
+
+---
+
+## Backend re-review signal (2026-05-18, working tree)
+
+Round-2 hold items 1-3 landed in a single commit (header-only / comment-only edits to 2 files).
+
+- **Item 1 (P2 anchor 100):** `LogContext.run` docblock at `backend/src/lib/broadcast-error.ts` rewritten. Dropped the task-slug citation paragraph (`Backend-tests-typecheck-coverage round-1 hold item 2 (path (a))...`) and the "See the task file for the alternative paths (b) and (c) that were dismissed" redirect. Kept the behavioral semantics: per-attempt / per-spec discriminator for structured-log filtering, optional, declared on `LogContext` itself so excess-property checking catches typos (`rn:`, `runID:`) at every spread caller.
+- **Item 2 (P2 anchor 75):** Test file header at `backend/tests/lib/broadcast-error.test.ts` rewritten. Dropped the `backend-tests-typecheck-coverage` slug citation, the round-2 / round-4 hold #1 / round-5 hold #1 round-N qualifiers, and the "round-1 hold item 3" reference. Kept the behavioral description: `run` is a declared optional `LogContext` field; tests pass it through plain `LogContext` with full excess-property checking; the spread-kill fixtures still use `HandleBroadcastErrorOpts` for adversarial runtime shapes; the named-type form survives signature refactors and is greppable.
+- **Item 3 (P3 anchor 75):** Inline comments at the two spread-kill fixture sites in `backend/tests/lib/broadcast-error.test.ts` updated. Both now describe the cast as `as unknown as HandleBroadcastErrorOpts` (matching the actual code at those sites after round-1 item 3 migrated the casts). Sibling cross-reference at the first site dropped the "round-5 hold #1 fixture below" qualifier in favor of "sibling spread-kill fixture below"; the second site's reference to "the type-bypass via... at the fixture (above)" kept the structural pointer (no rot in "above").
+
+**Out-of-scope cleanup that was tempting but not held by the architect:** the "line ~614" anchor in the first inline comment and the surrounding `BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION round-4 hold #1` block-comment heading at line ~605 ARE convention violations against `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` and `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`. Left intentionally alone — the architect's items 1-3 were scoped tightly to the cast-description and `run`-docblock surfaces; expanding to a full sweep on this commit would exceed scope and risk a held-revert in round-3. Architect can hold them in round-3 (or fold into the cluster-D carry-forward) if desired.
+
+**Verification:**
+
+- `cd backend && npx tsc --noEmit` — clean.
+- `cd backend && npm run lint` — clean (no warnings).
+- Targeted vitest deferred to the parent's serialized post-fan-out run.

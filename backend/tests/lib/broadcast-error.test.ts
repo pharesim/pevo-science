@@ -12,21 +12,19 @@ import {
 import { BroadcastTimeoutError } from '../../src/hive.js';
 import { logger } from '../../src/logger.js';
 
-// Round-1 hold of `backend-tests-typecheck-coverage` (path (a)) promoted the
-// `run` debug-marker field from a test-only widening cast to a declared
-// optional field on `LogContext` itself. Tests now pass `{ run: '<spec-id>' }`
-// through the plain `LogContext` interface, with full excess-property
-// checking and no widening cast. See the `LogContext.run` docblock in
-// `backend/src/lib/broadcast-error.ts` for the rationale. The 5 spread-kill
-// / type-bypass adversarial fixtures (round-2 type-bypass regression guard,
-// round-4 hold #1, round-5 hold #1) still use `as unknown as
+// `run` is a declared optional field on `LogContext` (see the `LogContext.run`
+// docblock in `backend/src/lib/broadcast-error.ts`). Tests pass
+// `{ run: '<spec-id>' }` through the plain `LogContext` interface with full
+// excess-property checking; no widening cast.
+//
+// The adversarial spread-kill fixtures still use `as unknown as
 // HandleBroadcastErrorOpts` to exercise the runtime sanitizing destructure
 // against caller-supplied fields that are NOT on `LogContext` (`event`,
-// `err`, `cause`, `txId`, `failedStep`). Those casts remain because they
-// intentionally bypass the type to land an adversarial runtime shape; the
-// named-type form replaces the structural function-parameter-index query
-// (round-1 hold item 3) so the cast survives signature refactors and is
-// greppable across the suite.
+// `err`, `cause`, `txId`, `failedStep`). Those casts intentionally bypass the
+// type to land an adversarial runtime shape; the named-type form survives
+// signature refactors and is greppable across the suite (versus the
+// structural `Parameters<typeof handleBroadcastError>[2]` query that
+// silently shifts if the function signature changes).
 
 function mockResponse() {
   const res = {
@@ -615,8 +613,8 @@ describe('handleBroadcastError', () => {
     const cause = new Error('redis flap');
     const err = new PostBroadcastWriteError('hive-tx-spread-override-1', cause, 'cache_write');
 
-    // Type-bypass via `as unknown as Parameters<...>[2]` mirrors the round-5
-    // hold #1 fixture below (line ~614): `event` is intentionally NOT a
+    // Type-bypass via `as unknown as HandleBroadcastErrorOpts` mirrors the
+    // sibling spread-kill fixture below: `event` is intentionally NOT a
     // declared `LogContext` field (the helper writes `event:` itself, AFTER
     // the spread, so it overrides any caller-supplied value), so a typed
     // caller cannot supply it. The cast lets the test exercise the runtime
@@ -837,7 +835,7 @@ describe('handleBroadcastError', () => {
     // reverted only the warn-site spread back to `...opts.logContext` while
     // leaving the error-site sanitized would leave `callArgs.cause ===
     // 'caller-override-cause'` here with no failing assertion. The
-    // type-bypass via `as unknown as Parameters<...>[2]` at the fixture
+    // type-bypass via `as unknown as HandleBroadcastErrorOpts` at the fixture
     // (above) carries the adversarial `cause: 'caller-override-cause'`
     // value into the helper; the destructure at broadcast-error.ts MUST
     // strip it before the spread.
