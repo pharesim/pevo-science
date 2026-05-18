@@ -275,8 +275,9 @@ function initBridgePostingKeyCache(): void {
  * throwing — re-logging would be noise).
  *
  * Accepts `ErrorOptions` so re-throw sites can pass `{cause: err}` to
- * preserve the underlying error chain (ES2022 native; pino's err serializer
- * walks `.cause` recursively). Existing call sites that pass only a message
+ * preserve the underlying error chain (ES2022 native; PEvO's custom
+ * `redactErrSerializer` (`logger.ts`) walks `.cause` recursively — stock
+ * `pino-std-serializers` does not). Existing call sites that pass only a message
  * continue to work unchanged (`options` is optional and forwarded directly
  * to `super`). Other existing boot-fatal sites (`validateConfig`,
  * `initBridgePostingKeyCache`) currently throw without a cause; adopting

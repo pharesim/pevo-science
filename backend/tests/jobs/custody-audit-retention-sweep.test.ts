@@ -35,6 +35,14 @@
  *     subtests above exercise the same throw class via real Postgres against
  *     the live column comment, so a regression in the SQL path is caught
  *     end-to-end elsewhere — this mocked test is purely the cause-chain pin.
+ *   - The `startRetentionSweepTicker(null)` null-pool subtest uses
+ *     `vi.spyOn(global, 'setInterval')` as a transparent negative-assertion
+ *     probe (no `mockImplementation` — the real `setInterval` still fires if
+ *     reached). The advertised contract is that `setInterval` must NOT be
+ *     called when `pool` is null; the spy is the only mechanism that verifies
+ *     the negative. There is no real path to exercise a "did not happen"
+ *     contract, so no clause (c) real-path companion is needed — the spy
+ *     does not bypass any code path, it only observes whether one is taken.
  *
  * BootFatalError mechanism (round-3 item 1): `validateRetentionSweepConfig`
  * does NOT call `flushAndExit()` itself. Instead it throws a `BootFatalError`

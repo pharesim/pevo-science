@@ -263,3 +263,58 @@ Round-3 hold items 1-4 landed in a single focused commit across `backend/src/sta
 - `npm run typecheck`: clean (both `typecheck:src` and `typecheck:tests` exit 0).
 - `npx vitest run tests/jobs/custody-audit-retention-sweep.test.ts` against real Postgres + Redis: 14/14 pass (1.03s).
 
+## Architect re-review (2026-05-18, round-4 → round-5) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `498e463` (6 reviewers — correctness on opus; testing/reliability/maintainability/project-standards on sonnet; learnings-researcher unstructured; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All four round-3 hold items land in INTENT — correctness, testing, maintainability all return zero in-diff findings on the behavioral changes (slug citations cleanly dropped at both sites, line-number anchor replaced with stable symbolic anchor, "mirror that pattern" rewritten to explicit `instanceof BootFatalError` discrimination claim, null-pool smoke test now spies + asserts no `setInterval` registration with `try/finally` + `mockRestore` cleanup). The `vi.spyOn(global, 'setInterval')` pattern is structurally correct and catches the architect's stated mutation.
+
+Two items held — neither is a defect against round-3 hold scope, both are P2/P3 follow-ups surfaced during the round-4 re-review. Byte-trivial; should land in one focused commit.
+
+### Items held (must fix before archive)
+
+**1. (P2, conf 100, project-standards + learnings-researcher) `setInterval` spy not acknowledged in test file header's mock-carve-out block (clause a).** `backend/tests/jobs/custody-audit-retention-sweep.test.ts`. Round-4 added `const setIntervalSpy = vi.spyOn(global, 'setInterval')` inside the null-pool subtest, but the test file's header mock-carve-out block (unchanged by this commit) covers only the pg.Pool-shaped mock for the prior subtest. Per root `CLAUDE.md` "Running Tests" carve-out clause (a): every mock target requires file-header acknowledgement with justification for why the real path is impractical.
+
+  `setInterval` falls outside the carve-out's named mock-target scope (shared pool/cache helpers, third-party libs non-trivial-to-run-per-test, observability surfaces) — it is a Node global. Structurally, this spy is a "transparent negative-assertion probe" (no `mockImplementation`, real path still fires when reached) rather than infrastructure substitution. That distinction is not in the carve-out doc yet — routed to A3 architect follow-up below — but the local fix (header bullet) is correct regardless.
+
+  Suggested fix: add a bullet to the header's mock-carve-out block naming the `setInterval` spy as a transparent negative-assertion probe; state that there is no real path to exercise (the contract is that `setInterval` must NOT be called when `pool` is null — the spy is the only mechanism that verifies the negative); note no clause (c) real-path companion is needed because the spy doesn't bypass any code path.
+
+**2. (P3, conf 75, reliability) BootFatalError docblock misattributes recursive `.cause` walking to "pino's err serializer".** `backend/src/startup-checks.ts:278-279`. The new prose reads "pino's err serializer walks `.cause` recursively." Stock `pino-std-serializers`'s err serializer does NOT walk `.cause` recursively — it serializes the top-level error only. The recursive traversal is in PEvO's custom `redactErrSerializer` at `backend/src/logger.ts:183-187`.
+
+  The runtime behavior is correct (because PEvO's serializer does walk), but the attribution is to the wrong layer. Concrete risk: a future maintainer who replaces or simplifies PEvO's custom serializer based on the (wrong) assumption that stock pino handles `.cause` recursion natively would silently lose cause-chain diagnostic signal on every `BootFatalError` re-throw. This isn't preemptive hardening per `feedback_dismiss_preemptive_test_hardening` — it's a real correctness claim about which layer does the work, and the docblock is the contract for ErrorOptions / `{cause: err}` usage at re-throw sites.
+
+  Suggested fix: change `pino's err serializer walks `.cause` recursively` to `PEvO's custom redactErrSerializer (`logger.ts`) walks `.cause` recursively`.
+
+### Items dismissed during architect triage
+
+- **(P3, conf 75, correctness/testing) `vi.spyOn(global, 'setInterval')` has a global scope but synchronous capture window; no positive-path companion asserting setInterval IS called when pool is non-null.** Adjacent positive-path test exists in the same file's `runs sweep and registers tick` subtest (the load-bearing positive case is already covered by the integration test that exercises the real `setInterval` schedule); the null-pool spy is purpose-specific to the negative assertion. Default-recommend dismiss.
+- **(P3, conf 25, reliability) On a heavily-loaded CI runner the `vi.useFakeTimers()` discipline elsewhere in the suite could collide with `setInterval` spying.** Reviewers verified `vitest.config.ts` locks environment to `node`; `global.setInterval` is the same as `globalThis.setInterval` in Node; spy cleanup runs in `finally` before any cross-test surface. Theoretical-only.
+- **(advisory, maintainability) Sync vs async catch in `index.ts` discriminate on `instanceof BootFatalError` but behave asymmetrically (sync suppresses fatal log; async logs `err.message` via `logger.fatal`). Pre-existing; the round-4 fix accurately describes the async discrimination without overclaiming symmetry.** Round-4 hold item 3 specifically addressed this; the new wording is correct.
+- **(advisory, reliability) No test directly exercises the async `.catch` BootFatalError discrimination path in `index.ts`.** Future testing gap; not introduced by this commit, and the discrimination logic is straightforward enough that test coverage is preemptive hardening. Default-recommend dismiss.
+
+### Routed to architect-zone follow-ups (NOT held here)
+
+- **A2 — convention doc `agents/docs/solutions/conventions/boot-fatal-call-stack-unwind-and-rethrow-trap-2026-05-11.md` Related section cites `backend/src/index.ts ... (lines 60-90)` — line-number anchor in a convention doc, violating the docblock-anchor convention.** Pre-existing; architect lands the fix in the same triage commit as this hold block.
+- **A3 — test-mock carve-out doc `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` doesn't name "transparent wrapping spy" (no `mockImplementation`, real path still fires) as a distinct class from infrastructure-substitution mocks.** F3 above is the immediate instance; pattern could recur for `setTimeout`, `clearInterval`, `Date.now`. Architect adds a one-sentence rider in the same triage commit.
+- **Pre-existing residual (NOT addressed by this cluster):** `backend/tests/jobs/custody-audit-retention-sweep.test.ts:39` still has `(round-3 item 1)` round-number anchor. Out of scope for this round (predates `498e463`); flag for opportunistic cleanup when next touching the file. Not held.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-5 architect review scopes `/ce-code-review` to the round-5 commit only.
+
+Items 1+2 touch different files (`backend/tests/jobs/custody-audit-retention-sweep.test.ts` header vs `backend/src/startup-checks.ts` docblock). Implementer's call whether one commit or two; either works.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-18, round-5 fix commit)
+
+Round-4 hold items 1-2 landed in a single focused commit across `backend/tests/jobs/custody-audit-retention-sweep.test.ts` (test file header) and `backend/src/startup-checks.ts` (BootFatalError docblock).
+
+- **Item 1 (P2 setInterval spy not acknowledged in mock-carve-out)** — Added a new bullet to the test file's mock-carve-out block under the `Mock-carve-out (clause a + clause c per CLAUDE.md "Running Tests")` heading. The bullet describes the `vi.spyOn(global, 'setInterval')` introduced in round-4 for the null-pool subtest as a "transparent negative-assertion probe" — no `mockImplementation`, real `setInterval` still fires if reached. Names the contract under test ("setInterval must NOT be called when `pool` is null") and states explicitly that there is no real path to exercise a "did not happen" contract, so no clause (c) real-path companion is needed (the spy doesn't bypass any code path, it only observes whether one is taken).
+- **Item 2 (P3 BootFatalError docblock misattributes recursive .cause walk)** — Replaced "pino's err serializer walks `.cause` recursively" with "PEvO's custom `redactErrSerializer` (`logger.ts`) walks `.cause` recursively — stock `pino-std-serializers` does not". Anchor is on the function name (`redactErrSerializer`) and module (`logger.ts`), not line numbers, per the docblock-anchor convention. The explicit "stock pino-std-serializers does not" clause exists so a future maintainer replacing the custom serializer doesn't silently lose the cause-chain on `BootFatalError` re-throws. Verified via grep that `redactErrSerializer` exists at `backend/src/logger.ts:124` and recurses via `redactErrSerializer(errAny.cause, depth + 1)` (lines 185, 199, 242, 272).
+
+**Verification gates run.**
+- `npm run lint`: clean.
+- `npm run typecheck`: clean (both `typecheck:src` and `typecheck:tests` exit 0).
+- `npx vitest run tests/jobs/custody-audit-retention-sweep.test.ts` against real Postgres + Redis: 14/14 pass (876ms).
+
