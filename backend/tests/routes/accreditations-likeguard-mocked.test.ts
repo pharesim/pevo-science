@@ -1,6 +1,6 @@
 /**
- * Mocked-pool SQL-contract coverage for the BE-ACCREDITATIONS-LIKEGUARD
- * defenses on GET /api/accreditations.
+ * Mocked-pool SQL-contract coverage for the LIKE-escape + ESCAPE-clause
+ * defenses on GET /api/accreditations (`?field=` and `?institution=` filters).
  *
  * Carve-out justification per root CLAUDE.md "Running Tests" → "Carve-out for
  * deterministic edge-case coverage":
@@ -11,14 +11,16 @@
  *       happy path, 400 + message on the length-cap violation). They CANNOT
  *       assert the SQL contract — specifically: that the bound parameter
  *       carries the LIKE-escaped form (`%` → `\%`, `_` → `\_`, `\` → `\\`)
- *       and that both ILIKE call sites in the single combined query carry an
- *       `ESCAPE '\\'` clause. The bound parameters and the emitted SQL string
- *       are internal to the `pool.query()` call; HAF returns rows without
- *       echoing them back, so a regression that drops `escapeLikePattern()`
- *       (search-filters.ts:53) or drops `ESCAPE '\\'` from accreditations.ts:41
- *       or :45 still produces HTTP 200 + array on real HAF and the real-path
- *       specs pass vacuously. This block pins the contract deterministically
- *       by mocking `getPool()` and capturing the SQL + params at the bind site.
+ *       and that both ILIKE call sites in the single window-function data
+ *       query in `fetchAccreditationsFromHaf` carry an `ESCAPE '\\'` clause.
+ *       The bound parameters and the emitted SQL string are internal to the
+ *       `pool.query()` call; HAF returns rows without echoing them back, so a
+ *       regression that drops `escapeLikePattern()` (exported from
+ *       `backend/src/types/search-filters.ts`) or drops `ESCAPE '\\'` from
+ *       either of the conditions-array push sites in `fetchAccreditationsFromHaf`
+ *       still produces HTTP 200 + array on real HAF and the real-path specs
+ *       pass vacuously. This block pins the contract deterministically by
+ *       mocking `getPool()` and capturing the SQL + params at the bind site.
  *
  *       Cryptographic verification is NOT bypassed here — the route is
  *       unauthenticated read, so there is no `verifyHiveSignature` middleware
@@ -35,8 +37,8 @@
  *       covers only the SQL-string and params-array shape — a different
  *       mutation class. Both blocks together close the contract.
  *
- * Mirrors the shape of the BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP block at
- * `disciplines-canon-mocked.test.ts:817-903`.
+ * Mirrors the shape of the `GET /api/search — ?q= LIKE-escape SQL contract`
+ * describe block in `disciplines-canon-mocked.test.ts`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -63,13 +65,13 @@ beforeEach(async () => {
 });
 
 describe('GET /api/accreditations — ?field= / ?institution= LIKE-escape SQL contract (mocked pool)', () => {
-  // The accreditations route uses a single combined query with a window-
-  // function count (`count(*) OVER ()::int AS total`) — there is no separate
-  // count branch. The two ILIKE call sites are the two conditions in the
-  // conditions array (the `field` ILIKE at accreditations.ts:41 and the
-  // `institution` ILIKE at accreditations.ts:45). Both fragments end up in
-  // the same emitted SQL string. The architect's round-2 hold "count branch
-  // + data branch" wording maps to these two ILIKE fragments.
+  // The accreditations route uses a single window-function data query in
+  // `fetchAccreditationsFromHaf` (window-function count `count(*) OVER ()::int
+  // AS total` carried alongside the row data — there are NOT separate count
+  // and data branches). The two ILIKE call sites are the two conditions
+  // appended to the `conditions` array inside `fetchAccreditationsFromHaf`:
+  // the `latest.field ILIKE …` push and the `latest.institution ILIKE …`
+  // push. Both fragments end up in the same emitted SQL string.
 
   it('?field= bound parameter is LIKE-escaped (% → \\%, _ → \\_, \\ → \\\\) with `${escaped}%` prefix-match suffix', async () => {
     let capturedParams: unknown[] | undefined;
@@ -87,8 +89,9 @@ describe('GET /api/accreditations — ?field= / ?institution= LIKE-escape SQL co
     // The crafted payload: `%`, `_`, `\` — all three LIKE metacharacters
     // plus the escape character itself. Post-fix bound parameter must
     // contain the escaped form (`\%`, `\_`, `\\`) with a trailing `%` as
-    // the deliberate prefix-match wildcard appended by the route at
-    // accreditations.ts:42.
+    // the deliberate prefix-match wildcard appended by the route after
+    // `escapeLikePattern()` returns (the `${escaped}%` template at the
+    // `field` push site in `fetchAccreditationsFromHaf`).
     const res = await request(app).get('/api/accreditations?field=%25_%5C');
     expect(res.status).toBe(200);
     expect(capturedParams).toBeDefined();
@@ -177,9 +180,8 @@ describe('GET /api/accreditations — ?field= / ?institution= LIKE-escape SQL co
     // When both filters are supplied, the conditions array gathers BOTH
     // ILIKE fragments and the emitted SQL carries TWO `ESCAPE '\\'` clauses
     // — one per ILIKE site. Pinning the exact count to 2 catches a
-    // regression that drops the clause from one site while leaving the
-    // other clean (the "count branch + data branch" framing in the
-    // architect's round-2 hold).
+    // regression that drops the clause from one ILIKE push site in
+    // `fetchAccreditationsFromHaf` while leaving the other clean.
     let capturedSql: string | undefined;
     hafQueryMock.mockImplementation(async (sql: string) => {
       if (sql.includes('ROW_NUMBER() OVER (PARTITION BY') && capturedSql === undefined) {

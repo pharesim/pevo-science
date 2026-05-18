@@ -302,3 +302,45 @@ The header cites `disciplines-canon-mocked.test.ts:817-903` as the shape this bl
 - **`meta.total === baseline` proxy passes vacuously when baseline is 0** (testing T-1 conf 75): the mocked-pool sibling is the load-bearing layer; baseline=0 vacuity is environmental, not a real failure mode. Per `feedback_dismiss_preemptive_test_hardening`: defense-in-depth on a test that's already cross-pinned at a stronger layer.
 
 ---
+
+## Backend re-review signal (2026-05-18, commit SHA `71b3099`) — round 4
+
+All three citation-hygiene items landed in a single comment-only commit on `backend/tests/routes/accreditations-likeguard-mocked.test.ts`. No production-code changes.
+
+**Item 1 (P2, maintainability M-1 × project-standards PS-1 + PS-2) — Raw line-number citations stripped.**
+
+Removed the five raw line-number citations from the header docstring and the inline comments:
+
+- Header clause (a) prose previously cited `search-filters.ts:53` (wrong path — actual is `backend/src/types/search-filters.ts`) and `accreditations.ts:41 or :45`. Now anchors on the symbol `escapeLikePattern()` (with correct path `backend/src/types/search-filters.ts`) and on the conditions-array push sites inside `fetchAccreditationsFromHaf`.
+- Top-of-describe-block comment previously cited `accreditations.ts:41` and `:45` for the two ILIKE push sites. Now anchors on the function name `fetchAccreditationsFromHaf` and the SQL fragments `latest.field ILIKE …` / `latest.institution ILIKE …` that identify the two push sites without line numbers.
+- Crafted-payload comment in spec 1 previously cited `accreditations.ts:42` for the `${escaped}%` prefix-match suffix. Now anchors on the `${escaped}%` template at the `field` push site in `fetchAccreditationsFromHaf`.
+
+**Item 2 (P2, maintainability M-2) — Task-slug citations dropped + SQL shape framing corrected.**
+
+- Header opening line previously read "Mocked-pool SQL-contract coverage for the BE-ACCREDITATIONS-LIKEGUARD defenses on GET /api/accreditations." Now reads "Mocked-pool SQL-contract coverage for the LIKE-escape + ESCAPE-clause defenses on GET /api/accreditations (`?field=` and `?institution=` filters)." — behavioral description, no slug.
+- Header "Mirrors the shape of …" line previously cited `BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP block at disciplines-canon-mocked.test.ts:817-903`. See Item 3 fix below.
+- Top-of-describe-block comment previously framed the SQL as "single combined query with a window-function count … There is no separate count branch … The architect's round-2 hold 'count branch + data branch' wording maps to these two ILIKE fragments." Replaced with the actual SQL shape: "single window-function data query in `fetchAccreditationsFromHaf` (window-function count `count(*) OVER ()::int AS total` carried alongside the row data — there are NOT separate count and data branches)." No reference to the architect's round-2 hold framing.
+- Both-filters spec comment previously closed with "(the 'count branch + data branch' framing in the architect's round-2 hold)." Replaced with "drops the clause from one ILIKE push site in `fetchAccreditationsFromHaf` while leaving the other clean." No coordination-doc framing.
+
+**Item 3 (P3, maintainability M-3 × project-standards PS-1) — Cross-file line range replaced with describe-block title.**
+
+Header "Mirrors the shape of …" line previously cited `disciplines-canon-mocked.test.ts:817-903`. Now reads "Mirrors the shape of the `GET /api/search — ?q= LIKE-escape SQL contract` describe block in `disciplines-canon-mocked.test.ts`." — the describe-block title at line 817 is `GET /api/search — ?q= LIKE-escape SQL contract (BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP)`; the prefix before the parenthetical task-slug is stable and grep-able, and citing it (without the slug suffix) avoids re-importing a slug citation in the act of fixing one.
+
+**Verification:**
+
+- `npm run typecheck` from `backend/`: clean (both `typecheck:src` and `typecheck:tests` pass with zero output).
+- `npm run lint` from `backend/`: clean (zero output).
+- `npx vitest run tests/routes/accreditations-likeguard-mocked.test.ts` (with Docker IP env overrides per root CLAUDE.md): 5/5 specs pass in 1.52s. As expected — these are comment-only changes; no spec assertions touched.
+
+**Grep verification (post-fix):**
+
+- `grep -n 'BE-ACCREDITATIONS-LIKEGUARD\|BE-SEARCH-Q-LIKEGUARD' backend/tests/routes/accreditations-likeguard-mocked.test.ts` returns zero hits.
+- `grep -nE 'accreditations\.ts:[0-9]|search-filters\.ts:[0-9]|disciplines-canon-mocked\.test\.ts:[0-9]' backend/tests/routes/accreditations-likeguard-mocked.test.ts` returns zero hits.
+- `grep -n 'count branch\|data branch' backend/tests/routes/accreditations-likeguard-mocked.test.ts` returns one hit — the deliberate "there are NOT separate count and data branches" clarification that names the wrong mental model in order to refute it. No remaining endorsement of the count/data-branch framing.
+
+**Files staged:**
+
+- `backend/tests/routes/accreditations-likeguard-mocked.test.ts` (Items 1, 2, 3)
+- This task file (round-4 implementer signal block)
+
+The `git mv` to `tasks/review/` is the re-review signal (parent agent performs the move per the task instructions).
