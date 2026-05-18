@@ -116,10 +116,4 @@ The tests-tsconfig overrides the root's Node16 module setting to `module: ESNext
 
 ## Comment anchors
 
-Write comments and docblocks against stable invariants — not against task coordination state or line numbers. Two specific failure modes recur often enough that they have their own conventions:
-
-- **Task-slug citations rot on archive.** Per `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, do not embed task slugs (`backend-foo-bar`), round numbers (`round-3 hold item 2`), or "see the task file" redirects in production or test code. Task files archive into `agents/docs/tasks-archive.md`, which trims from the bottom at 250 lines — older entries fall off entirely. The citation becomes a dead pointer; the round number loses meaning. Anchor on behavioral semantics ("per-attempt correlator", "see `/resume-signup` handler") instead.
-
-- **Line-number anchors drift.** Per `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`, do not cite specific line numbers in code comments or docblocks (`hafsql.ts:371`, `accreditation.ts:919`, `now ~337`). Any edit above the referenced line silently stales the anchor; the `~N` tilde-approximation form acknowledges the rot but does not resolve it. Anchor on exported function names, CTE labels, route handler paths, or other stable symbols.
-
-Coordination context — round numbers, hold items, task slugs — belongs in commit messages and task files, not in production or test source. The same rule applies inside `agents/docs/solutions/` entries (those persist, but slug+round qualifiers in their bodies still rot when the cited task archives). The `commit-msg` zone-audit hook is the runtime backstop for ownership; these anchoring conventions are the durability backstop for everything else.
+See root `CLAUDE.md` "Comment anchors" for the project-wide rules (task-slug citations, line-number / SHA anchors, audit-own-replacement). Applies to all `.ts`, `.test.ts`, SQL, and migration source under `backend/`.

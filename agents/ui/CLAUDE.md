@@ -93,6 +93,10 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 
 **Commit policy:** see root `CLAUDE.md` "Commits and Pushes".
 
+## Comment anchors
+
+See root `CLAUDE.md` "Comment anchors" for the project-wide rules (task-slug citations, line-number / SHA anchors, audit-own-replacement). Applies to all `.js`, `.test.js`, `.spec.js`, and HTML/template source under `frontend/`.
+
 ## Guidance for Future Work
 
 - **Task completion:** `git mv agents/docs/tasks/pending/<slug>.md agents/docs/tasks/review/` per root rule #7. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
