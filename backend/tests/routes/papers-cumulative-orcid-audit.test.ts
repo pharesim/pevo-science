@@ -128,19 +128,17 @@ function paperDetailSelectSql(sql: string): boolean {
 function headAuthorsLookupSql(sql: string): boolean {
   return sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3');
 }
-// Canonical-root walker's START row probe (`findCanonicalRoot` at
-// `papers.ts:1692`). The walker's SQL projects `cont_author` /
+// Canonical-root walker's START row probe (`findCanonicalRoot`, production
+// SQL at `papers.ts:1760`). The walker's SQL projects `cont_author` /
 // `cont_permlink` columns (`json_metadata -> $3 -> 'continues' ->> 'author'`)
-// which `headAuthorsLookupSql` does NOT — the head-authors lookup is a
-// simpler 3-param probe with no continues projection. Round-2 hold item 1:
-// the previous mock had `headAuthorsLookupSql` swallowing the walker query
-// (both match on `parent_permlink = $3` + `SELECT c.author, c.json_metadata`),
-// returning the head-row without cont_author/cont_permlink columns, which
-// drove the walker into `cont_columns_invalid` bail at every test request
-// and prevented the audit code from executing. This matcher discriminates
-// on the walker-specific `AS cont_author` projection so the two queries
-// route to separate mock handlers. The walker matcher MUST be listed BEFORE
-// the head-authors matcher in the `if/else` chain below.
+// on top of the same `SELECT c.author, c.json_metadata … parent_permlink = $3`
+// shape `headAuthorsLookupSql` discriminates on. Both predicates therefore
+// match the walker SQL — this matcher MUST be listed before the head-authors
+// matcher in the mock's if/else chain below, or the walker probe gets
+// swallowed by the head-authors handler, the returned row lacks
+// cont_author/cont_permlink columns, the walker bails with
+// `cont_columns_invalid`, and `buildCumulativeAuthorsForChain` never reaches
+// the audit-emission branches.
 function canonicalRootWalkerStartSql(sql: string): boolean {
   return sql.includes('AS cont_author') && sql.includes('AS cont_permlink');
 }
@@ -193,16 +191,18 @@ function seedTwoLinkChain(opts: {
     if (isAccreditationStatusSql(sql)) {
       return { rows: opts.accreditationStatus ?? [] };
     }
-    // Canonical-root walker's START + per-hop parent probes (round-2 hold
-    // item 1). MUST be checked BEFORE `headAuthorsLookupSql` because the
-    // walker SQL's `SELECT c.author, c.json_metadata, ... AS cont_author,
+    // Canonical-root walker's START + per-hop parent probes. MUST be checked
+    // BEFORE `headAuthorsLookupSql` because the walker SQL's
+    // `SELECT c.author, c.json_metadata, ... AS cont_author,
     // ... AS cont_permlink` superstring-matches the head-authors lookup
-    // discriminator. alice/p1 is the canonical root in every canary here
-    // (no `continues` pointer), so the walker SQL's
+    // discriminator (see `canonicalRootWalkerStartSql` docstring above for
+    // the swallow-failure mode). alice/p1 is the canonical root in every
+    // canary here (no `continues` pointer), so the walker SQL's
     // `'continues' IS NOT NULL` predicate would return 0 rows against real
     // HAF — returning the empty rowset here mirrors that and lets the
     // walker bail via the SQL-empty-row path (debug log) rather than the
-    // `cont_columns_invalid` warn-log path the prior coercion produced.
+    // `cont_columns_invalid` warn-log path that surfaces when the head-authors
+    // matcher swallows the walker query.
     if (canonicalRootWalkerStartSql(sql)) {
       return { rows: [] };
     }
@@ -397,16 +397,15 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
   });
 
   it('active spoof, case d (accredited target has no on-chain ORCID): audit fires with accreditationStatus=active, claim suppressed', async () => {
-    // Round-2 hold item 2: branch (d) of the active arm — alice is
-    // accredited but her on-chain attestation carries no ORCID. bob's
-    // continuation supplies a forged ORCID claim for alice. The audit
-    // primitive MUST fire with `accreditationStatus: 'active' as const`
-    // (alice is in the active set) and `accreditedOrcid: null` (her
-    // attestation has no ORCID), and the display ORCID gets suppressed
-    // to null (the accredited user's silence is the authority). Pre-fix
-    // the emission omitted `accreditationStatus` and bypassed dedup;
-    // dashboards filtering by `accreditationStatus === 'active'` silently
-    // missed case-d spoofs.
+    // Branch (d) of the active arm — alice is accredited but her on-chain
+    // attestation carries no ORCID. bob's continuation supplies a forged
+    // ORCID claim for alice. The audit primitive MUST fire with
+    // `accreditationStatus: 'active' as const` (alice is in the active set)
+    // and `accreditedOrcid: null` (her attestation has no ORCID), and the
+    // display ORCID gets suppressed to null (the accredited user's silence
+    // is the authority). If a regression drops the additive field or skips
+    // the dedup Set consult, dashboards filtering by
+    // `accreditationStatus === 'active'` silently miss case-d spoofs.
     const warnSpy = vi.spyOn(logger, 'warn');
     seedTwoLinkChain({
       // Same self-claim avoidance shape as the other spoof canaries —
@@ -436,9 +435,9 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
     expect(aliceEntry?.orcid).toBeNull();
     const event = findAuditEvent(warnSpy);
     expect(event).toBeDefined();
-    // The new additive field (round-2 hold item 2) MUST be present on
-    // case-d emissions so operators filtering by accreditationStatus
-    // don't silently miss them.
+    // The additive `accreditationStatus` field MUST be present on case-d
+    // emissions so operators filtering by accreditationStatus don't silently
+    // miss them.
     expect(event!.accreditationStatus).toBe('active');
     expect(event!.claimedOrcid).toBe('forged-orcid-by-bob');
     expect(event!.accreditedOrcid).toBeNull();

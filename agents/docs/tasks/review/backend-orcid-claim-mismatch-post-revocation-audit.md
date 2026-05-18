@@ -408,3 +408,40 @@ Although M3's anchor (70) is below the strict 75 confidence gate, it surfaces th
 - `backend/tests/routes/papers-cumulative-orcid-audit.test.ts` (item 2: round-N marker cleanup at 3 sites)
 
 Per root CLAUDE.md rule #8, this file moves from `tasks/review/` back to `tasks/pending/`. After landing the round-4 fixes, `git mv` back to `tasks/review/` for round-4 re-review.
+
+---
+
+## Backend re-review signal (2026-05-18, working tree) — round 4
+
+Both round-3 hold items landed. Targeted vitest on `tests/routes/papers-cumulative-orcid-audit.test.ts` green (5/5). `npm run typecheck` (src + tests) and `npm run lint` clean.
+
+### Item 1 (`AccreditationStatus` type relocation) — landed
+
+`backend/src/accreditation.ts`. Applied architect's recommended option (a): moved `export type AccreditationStatus = 'active' | 'revoked'` from the sandwich between `getAllEverAccreditedOrcidsWithStatus`'s docstring and its function body to a module-level type-export zone immediately after the imports (line 7). `getAllEverAccreditedOrcidsWithStatus`'s docstring now flows directly into its `export async function` declaration with no intervening declarations; readers scanning for the function get the docstring → function boundary unambiguously, and the type is callable-anchored at the top of the module where module-level exports are visually expected.
+
+### Item 2 (round-N hold-item marker cleanup) — landed
+
+Production and test sites flagged by the architect (papers.ts:476 case-d emission site + test file lines 135/196/400/439) replaced with behavioral-invariant descriptions:
+
+- `backend/src/routes/papers.ts:476` — case-d comment now ends with the invariant `payload MUST carry accreditationStatus: 'active' and MUST consult the same auditedKeys dedup set as case (b); otherwise dashboards filtering by accreditationStatus === 'active' silently miss case-d spoofs.` Drops the `(round-2 hold item 2)` framing; the behavior is the anchor.
+- `backend/tests/routes/papers-cumulative-orcid-audit.test.ts:131-143` (`canonicalRootWalkerStartSql` docstring) — rewritten per architect's example shape: anchors on the SQL-shape collision with `headAuthorsLookupSql`, names the swallow-failure mode (`cont_columns_invalid` bail → audit code never reached), points at production code at `papers.ts:1760`. Matcher-ordering MUST is preserved as a behavioral constraint.
+- `backend/tests/routes/papers-cumulative-orcid-audit.test.ts:196-208` (matcher-chain comment) — `(round-2 hold item 1)` framing removed; comment now cross-references the `canonicalRootWalkerStartSql` docstring above for the swallow-failure rationale and explains the empty-rowset return as mirroring real HAF's `'continues' IS NOT NULL` predicate result for canonical-root posts.
+- `backend/tests/routes/papers-cumulative-orcid-audit.test.ts:400-409` (case-d canary `it()` comment) — `Round-2 hold item 2:` framing replaced with the case-d behavioral premise (alice accredited but no on-chain ORCID, bob forges a claim, audit MUST fire with active status + null accreditedOrcid, display suppressed). Regression framing kept as the assertion's rationale, not the comment's anchor.
+- `backend/tests/routes/papers-cumulative-orcid-audit.test.ts:439-441` (additive-field assertion comment) — `(round-2 hold item 2)` parenthetical removed; comment now describes the additive-field invariant directly.
+
+Other `round-N` mentions in `papers.ts` (lines 727, 971, 1824, 1897, 1936) are from sibling tasks (BACKEND-REPUTATION-SSOT, BACKEND-MULTI-AUTHOR-CUMULATIVE-UNION forward-walker work) and are out of scope for this hold — they belong to those tasks' own self-audit obligations under `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`.
+
+### Acceptance check (re-verified)
+
+- Single-cycle post-revocation canary fires with `accreditationStatus: 'revoked'`, accreditedOrcid `0000-0000-0000-1234`. [PASS]
+- Multi-cycle post-revocation canary's accreditedOrcid is ORCID-Y. [PASS]
+- Active spoof regression canary fires with `accreditationStatus: 'active'`, server overrides. [PASS]
+- Case-d active spoof canary fires with `accreditationStatus: 'active'`, `accreditedOrcid: null`, display suppressed. [PASS]
+- Post-revocation match canary does not fire. [PASS]
+
+### Files for round-4
+
+- `backend/src/accreditation.ts` (item 1)
+- `backend/src/routes/papers.ts` (item 2 production site)
+- `backend/tests/routes/papers-cumulative-orcid-audit.test.ts` (item 2 test sites)
+- This task file (re-review signal block; file moves back to `tasks/review/` in the same commit)

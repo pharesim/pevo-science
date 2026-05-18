@@ -470,10 +470,10 @@ function buildCumulativeAuthorsForChain(
         // Case (d): accredited target with no on-chain ORCID + broadcaster
         // claim present. Suppress the claim (set to null) and emit audit
         // event so operators see the spoof attempt. Categorically an
-        // active-arm spoof — payload carries `accreditationStatus: 'active'`
-        // and consults the same dedup set as case (b) so dashboards
-        // filtering by `accreditationStatus === 'active'` don't silently
-        // miss it (round-2 hold item 2).
+        // active-arm spoof — payload MUST carry `accreditationStatus: 'active'`
+        // and MUST consult the same `auditedKeys` dedup set as case (b);
+        // otherwise dashboards filtering by `accreditationStatus === 'active'`
+        // silently miss case-d spoofs.
         emitOrcidClaimMismatchAudit(
           {
             status: 'active',

@@ -4,6 +4,8 @@ import { logger } from './logger.js';
 import { hafCache } from './cache.js';
 import { T, activeAccreditationsCteBody, accreditationStatusCteBody, getCachedGenesisBlock } from './hafsql.js';
 
+export type AccreditationStatus = 'active' | 'revoked';
+
 /**
  * Batch-check accreditation status for multiple accounts.
  * Returns a Set of accredited usernames.
@@ -234,8 +236,6 @@ export async function getAllAccreditedAccounts(): Promise<Set<string>> {
  * during autocomplete — the explicit `AllEver` keeps the semantic
  * distinction visible at the call site.
  */
-export type AccreditationStatus = 'active' | 'revoked';
-
 export async function getAllEverAccreditedOrcidsWithStatus(): Promise<
   Map<string, { orcid: string | null; status: AccreditationStatus }>
 > {
