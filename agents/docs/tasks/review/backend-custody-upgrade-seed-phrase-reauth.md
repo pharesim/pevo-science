@@ -761,3 +761,27 @@ When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-7 archite
 Items 1+2 cluster in the same comment block in `rateLimit-in-memory.test.ts:99-111`. Single focused commit expected.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-18, round-7 fix commit)
+
+Round-6 → round-7 hold items 1 and 2 both landed in a single commit per the architect's "Single focused commit expected" guidance. Test file `backend/tests/middleware/rateLimit-in-memory.test.ts` only; comment-only edits, no behavioral changes.
+
+**Item 1 (P2, round-number framing in test-source comment block).** Replaced the opening `// Round-5 → round-6 regression mirror:` with the architect's suggested behavioral prose: `// Companion to the Redis-path pre-status-abort refund test in rateLimit.test.ts`. The block now anchors on the companion test's name (a stable symbol — vitest test IDs survive line drift and survive task archive), not on coordination-round state.
+
+**Item 2 (P2, line-number anchor in same comment block).** Replaced `rateLimit.ts:204-215` with "the in-memory refund closure in `rateLimit.ts`". The behavioral descriptor is reinforced by the round-6 cross-reference comment at the destination ("Mirror of the Redis-path refund closure above; keep semantics in sync.") so a future reader can navigate by symbol.
+
+**Audit-own-replacement sweep (per `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`).** After landing the two architect-held edits, re-grepped the file for `round-[0-9]` and `.ts:[0-9]` and found a sibling inline comment in the `/slow` handler body carrying the same round-N rot pattern ("the round-4-only gate ... the round-5 gate ..."). Same rot class, same file — rewrote it in the same commit to anchor on the behavioral predicate instead: `a `statusCode < 400` gate alone would skip the refund; the `statusCode < 400 && writableEnded` gate refunds.` Post-sweep grep is clean — no remaining `round-N` or `<file>.ts:N` anchors anywhere in the file. The reframed sibling reads more directly without the round-N cross-reference because the predicates ARE the comparison.
+
+### Verification
+
+- `npm run lint` (eslint src/): clean.
+- `npm run typecheck` (typecheck:src + typecheck:tests): clean.
+- `npx vitest run tests/middleware/rateLimit-in-memory.test.ts` against real Redis + Postgres: 4/4 pass. Tests are comment-only-affected; no behavioral change expected and none observed.
+
+### Files landed
+
+- `backend/tests/middleware/rateLimit-in-memory.test.ts` — comment block at the abort-path test reframed to anchor on the companion-test symbol and on the in-memory refund closure (stable symbols); sibling inline comment on the `/slow` route reframed to anchor on the behavioral gate predicate.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

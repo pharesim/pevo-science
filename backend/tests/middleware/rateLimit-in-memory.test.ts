@@ -98,20 +98,21 @@ describe('rateLimit middleware — in-memory fallback', () => {
     expect(blocked.status).toBe(429);
   });
 
-  // Round-5 → round-6 regression mirror: the symmetric Redis-path test at
+  // Companion to the Redis-path pre-status-abort refund test in
   // `rateLimit.test.ts` ('skipFailedRequests refunds slot on pre-status
-  // TCP-abort during pending await') pins the `writableEnded` half of the
-  // refund gate on the Redis branch. The in-memory branch carries an
-  // identical gate (`statusCode < 400 && writableEnded` at
-  // `rateLimit.ts:204-215`) — without this companion test, a one-sided
-  // revert to `statusCode < 400`-only on the in-memory branch would slip
-  // past CI because the Redis-path test skips when Redis is absent and
-  // the existing in-memory tests use synchronous supertest handlers where
-  // `writableEnded` is always true at the time the refund fires. This
-  // test runs against the in-memory path (Redis mocked to null at module
-  // scope) with a real http.createServer + raw http.request + req.destroy
-  // so the pre-status-abort sequence actually fires `'close'` with
-  // statusCode at the Node default of 200 and writableEnded false.
+  // TCP-abort during pending await') — that test pins the `writableEnded`
+  // half of the refund gate on the Redis branch. The in-memory refund
+  // closure in `rateLimit.ts` carries an identical gate
+  // (`statusCode < 400 && writableEnded`); without this mirror a
+  // one-sided revert to `statusCode < 400`-only on the in-memory branch
+  // would slip past CI because the Redis-path test skips when Redis is
+  // absent and the existing in-memory tests use synchronous supertest
+  // handlers where `writableEnded` is always true at the time the refund
+  // fires. This test runs against the in-memory path (Redis mocked to
+  // null at module scope) with a real http.createServer + raw
+  // http.request + req.destroy so the pre-status-abort sequence actually
+  // fires `'close'` with statusCode at the Node default of 200 and
+  // writableEnded false.
   it('skipFailedRequests refunds slot on pre-status TCP-abort during pending await', async () => {
     const limiterName = `inmem-abort-${Date.now()}`;
     const username = `eve-${Date.now()}`;
@@ -134,8 +135,8 @@ describe('rateLimit middleware — in-memory fallback', () => {
     );
     // Slow route: aborted client-side mid-await. `res.statusCode` stays
     // at the Node default (200) and `res.writableEnded` stays false —
-    // the round-4-only gate (statusCode < 400) would skip the refund;
-    // the round-5 gate (also requires writableEnded) refunds.
+    // a `statusCode < 400` gate alone would skip the refund; the
+    // `statusCode < 400 && writableEnded` gate refunds.
     app.get('/slow', async (_req, res) => {
       await new Promise((r) => setTimeout(r, 300));
       if (!res.writableEnded) {
