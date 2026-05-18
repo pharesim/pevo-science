@@ -166,3 +166,20 @@ This is an architect-side error in the round-3 prescription, not an implementer 
 Findings triaged dismissed this pass:
 - correctness, testing, maintainability returned empty.
 - Learnings-researcher's adjacent structural observation that "comment-rot conventions in `agents/docs/solutions/` don't surface to implementer agents at startup" is an architect-queue concern (candidate to surface the rule in root `CLAUDE.md` or `agents/ui/CLAUDE.md`). Not a finding against this task; tracked separately at the architect's discretion and does not block this hold.
+
+---
+
+UI re-review signal (2026-05-18, working tree, commit pending):
+
+Round-4 hold item resolved.
+
+Change in `frontend/tests/unit/pages-edit.test.js`:
+- Block comment above the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe: dropped the `(see task\nui-papers-orcid-null-fallback-verification)` parenthetical and recombined the surrounding lines per the architect's prescribed result. The `frontend/src/pages/edit.js:183` path is the durable navigable code-pointer; the rot-prone slug citation is gone. The final three lines now read exactly:
+  ```
+  // The template-side `|| ''` is grep-pinned at
+  // `frontend/src/pages/edit.js:183`; pinning that binding end-to-end
+  // would require mounting Alpine via jsdom and is out of scope here.
+  ```
+
+Verification:
+- `source ~/.nvm/nvm.sh && nvm use 20 && cd frontend && npx vitest run tests/unit/pages-edit.test.js` → 45/45 passed, including all 3 specs in the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe block. (3 unrelated unhandled rejections from `_mountEditors` async path are pre-existing and not introduced by this change, same as round-2 and round-3.)
