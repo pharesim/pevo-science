@@ -250,3 +250,55 @@ A regression re-introducing the `as string` cast (coercing `['a','b']` → `'a,b
 - This task file (round-3 implementer signal block)
 
 The `git mv` to `tasks/review/` is the re-review signal (parent agent performs the move per the task instructions).
+
+---
+
+## Architect round-3 re-review (2026-05-18) — HELD PENDING FIXES
+
+`/ce-code-review` cluster-pass on commit `2c970c1` dispatched 6 reviewers: correctness, testing, maintainability, project-standards, kieran-typescript, ce-learnings-researcher (skipping `ce-agent-native-reviewer` per root CLAUDE.md; conditional reviewers like security/adversarial/api-contract not selected — this round is tests-only). Cross-reviewer corroboration on the line-number anchor concerns (maintainability × project-standards, promoted to anchor 100). Both P2 items from round-2 landed cleanly: the mocked-pool SQL-contract spec correctly pins the ESCAPE clause and bound-param escape; the `meta.total === baseline` proxy catches the `as string` regression. Three citation-hygiene items held; all in the new mocked-test file, bundle into one round-4 commit.
+
+### Item 1 — Header carve-out + inline comments cite raw line numbers on production source
+
+**Severity:** P2 · **Cross-corroborated:** maintainability M-1 × project-standards PS-1 + PS-2 (conf 100)
+**File:** `backend/tests/routes/accreditations-likeguard-mocked.test.ts` (header docstring + inline comments)
+
+Five raw line-number citations on production source: `accreditations.ts:41`, `:42`, `:45` (twice each), `search-filters.ts:53`. Per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`, anchor on the exported symbol (e.g., `escapeLikePattern()`, the conditions-array push sites in `fetchAccreditationsFromHaf`) rather than the line number — the line numbers shift on any insertion above.
+
+Additionally: `search-filters.ts:53` cites the wrong path. Actual file is `backend/src/types/search-filters.ts`. The citation is already broken at write time, demonstrating the rot risk concretely.
+
+**Fix shape:** strip the line spans from the header docstring and inline comments. Anchor on `escapeLikePattern()` (already named in the prose) and the conditions-array push sites' behavioral description. Fix the `search-filters.ts:53` path bug (or drop the line citation entirely and anchor on the symbol name).
+
+### Item 2 — Task-slug citations in the mocked-test file
+
+**Severity:** P2 · **Source:** maintainability M-2 (conf 95)
+**File:** `backend/tests/routes/accreditations-likeguard-mocked.test.ts` (header + inline comments)
+
+Multiple task-slug citations embedded: `BE-ACCREDITATIONS-LIKEGUARD`, `BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP`, two references to "round-2 hold count branch + data branch" framing. Per `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, these rot on archive.
+
+Doubly fragile: the "count branch + data branch" framing is also factually wrong — the accreditations route uses one window-function query with `ROW_NUMBER() OVER (PARTITION BY ...)`, not separate count and data branches. The comment imports a mental model from the architect's round-2 hold prose that doesn't match the actual SQL shape.
+
+**Fix shape:** drop the slug citations; replace the "count branch + data branch" prose with the actual SQL shape ("the single window-function data query in `fetchAccreditationsFromHaf`"). Anchor on the behavioral description, not the architect's coordination-doc framing.
+
+### Item 3 — Cross-file line range `disciplines-canon-mocked.test.ts:817-903`
+
+**Severity:** P3 · **Cross-corroborated:** maintainability M-3 × project-standards PS-1 (conf 100)
+**File:** `backend/tests/routes/accreditations-likeguard-mocked.test.ts` (header "mirrors this shape" prose)
+
+The header cites `disciplines-canon-mocked.test.ts:817-903` as the shape this block mirrors. Per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`, anchor on the describe-block title — line ranges rot on any insertion above. Cross-file line citations are especially rot-prone (one edit in the sibling file shifts the citation without any signal in this file's history).
+
+**Fix shape:** replace the line range with the describe-block title from `disciplines-canon-mocked.test.ts`. The named subsection survives line shifts and is grep-able.
+
+### Files for round-4
+
+- `backend/tests/routes/accreditations-likeguard-mocked.test.ts` (Items 1, 2, 3)
+- This task file (round-4 implementer signal block when moving back to review/)
+
+### Architect archive-time follow-ups (recorded for the eventual archive)
+
+- **`agents/docs/api-contracts/accreditation.md`** GET /api/accreditations section update (round-1 [TODO Architect] still open from round-1 hold-block): document 200-char cap, per-param "too long" 400 messages, repeated-param silent-unfilter, LIKE-metacharacter literal-treatment, prefix-match semantics. Mirror the `papers.md:487` `?discipline=` precedent shape. Architect lands at archive.
+
+### Dismissed at architect triage (recorded for transparency)
+
+- **`meta.total === baseline` proxy passes vacuously when baseline is 0** (testing T-1 conf 75): the mocked-pool sibling is the load-bearing layer; baseline=0 vacuity is environmental, not a real failure mode. Per `feedback_dismiss_preemptive_test_hardening`: defense-in-depth on a test that's already cross-pinned at a stronger layer.
+
+---
