@@ -1026,11 +1026,11 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
 // These tests pin the data-side null-preservation contract:
 // _prefillForm normalizes `primary.orcid: null` to `authorOrcid: ''`
 // via its `|| ''` coalesce, and existing co-authors retain `orcid: null`
-// untouched so the Alpine template binding at `edit.js:183`
-// (`:value="ca.orcid || ''"`) is responsible for the falsy coalesce at
-// render time. The template-side `|| ''` is grep-pinned at
-// `frontend/src/pages/edit.js:183`; pinning that binding end-to-end
-// would require mounting Alpine via jsdom and is out of scope here.
+// untouched so the Alpine template binding `:value="ca.orcid || ''"` in
+// `frontend/src/pages/edit.js` is responsible for the falsy coalesce at
+// render time. The template-side `|| ''` is grep-pinned by that binding
+// expression; pinning it end-to-end would require mounting Alpine via
+// jsdom and is out of scope here.
 describe('editPage _prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

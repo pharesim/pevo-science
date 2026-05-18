@@ -183,3 +183,26 @@ Change in `frontend/tests/unit/pages-edit.test.js`:
 
 Verification:
 - `source ~/.nvm/nvm.sh && nvm use 20 && cd frontend && npx vitest run tests/unit/pages-edit.test.js` → 45/45 passed, including all 3 specs in the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe block. (3 unrelated unhandled rejections from `_mountEditors` async path are pre-existing and not introduced by this change, same as round-2 and round-3.)
+
+---
+
+UI re-review signal (2026-05-18, post-c19173e in-place cleanup at user direction):
+
+Architect `/ce-code-review` on the round-4 hold-fix surfaced a cross-reviewer P1 finding (maintainability + project-standards + learnings-researcher, confidence 100): the round-4 hold-block prescription endorsed `frontend/src/pages/edit.js:183` as "the durable navigable code-pointer," but raw line-number anchors are themselves a documented rot class per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` — the same convention round-4 cited to justify removing the slug. Same architect-prescription self-contradiction shape round-4 caught in round-3. User authorized a one-off UI in-place fix to skip a round-5 hold cycle.
+
+Change in `frontend/tests/unit/pages-edit.test.js`:
+- Block comment above the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe: replaced both `edit.js:183` occurrences (one on line 1029, one on line 1032) with a binding-expression anchor. The Alpine binding `:value="ca.orcid || ''"` is grep-stable and survives any insertion above line 183 in `edit.js`. The five-line comment block now reads:
+  ```
+  // untouched so the Alpine template binding `:value="ca.orcid || ''"` in
+  // `frontend/src/pages/edit.js` is responsible for the falsy coalesce at
+  // render time. The template-side `|| ''` is grep-pinned by that binding
+  // expression; pinning it end-to-end would require mounting Alpine via
+  // jsdom and is out of scope here.
+  ```
+  Path-only references (`frontend/src/pages/edit.js`) remain — file paths are stable anchors per the same convention; only the `:NNN` line-number suffix is the rot class.
+
+Out of scope (pre-existing, untouched line):
+- `papers.ts: 417-434` raw-line range on lines 1016-1017 of the same block comment. Same rot class, but the diff did not touch those lines. Maintainability reviewer surfaced as residual_risk; not actioned per tight-scope discipline. Candidate cleanup for a future task or the next time the block is edited.
+
+Verification:
+- `source ~/.nvm/nvm.sh && nvm use 20 && cd frontend && npx vitest run tests/unit/pages-edit.test.js` → 45/45 passed. Same 3 pre-existing `_mountEditors` unhandled rejections; not introduced by this change.
