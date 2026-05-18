@@ -156,3 +156,24 @@ The full audit is duplicated as a docblock comment at the top of `backend/tests/
 ### Re-review signal
 
 When items 1–3 land, `git mv` this file back to `tasks/review/`. Round-2 architect re-review scopes `/ce-code-review` to commits since `6fdb460`. Anchor: header-only edits to the two new canary test files; single commit reasonable.
+
+---
+
+## Backend re-review signal (2026-05-18, worktree-agent-a1cfdf4c8b511ac21 cherry-picked to main)
+
+Round-1 hold items 1-3 landed in a single header-only commit on the two canary test files.
+
+- **Item 1 (P2 anchor 100):** Audit table in `backend/tests/routes/citations-lateral-guard-canary.test.ts` rewritten to use stable symbol/CTE/arm anchors only — `excludeSelfReviewWhere`, `paper_resolved_votes NOT EXISTS`, `authorsWithSupersessionSelect`, `citing_papers CTE CROSS JOIN LATERAL`, `citations CTE`, `total_citations subquery`, `arm 6a / arm 6b of fetchNotificationsFromHaf`, `jsonb_array_elements_text on c.json_metadata -> 'image'`. All `file.ts:NNN` line refs and `~N` tilde-approximations removed.
+- **Item 2 (P2 anchor 75):** Duplicated 9-site audit in `backend/tests/notification-queries-lateral-guard-canary.test.ts` replaced with the one-line cross-reference: `// See citations-lateral-guard-canary.test.ts header for the full jsonb_array_elements audit.` The canonical-home header notes the cross-reference relationship so future maintainers find the canonical pointer from either entry-point.
+- **Item 3 (P3 anchor 50):** Round-N + sibling-slug references dropped from both files (`round-4 of the sibling task`, `round-4/5 item 2`, `round-5 item 1` all gone). Replaced with behavioral descriptions: "the cycle-cascade `citing_papers` CTE is fixed separately alongside the reputation-cycle cascade audit", etc.
+
+**Verification:**
+
+- `cd backend && npx tsc --noEmit -p tests/tsconfig.json` — clean (0 errors total — the 249-error backlog the task body referenced was cleared by the `backend-tests-typecheck-residual-drift` archive on 2026-05-18; both canary files are 0 errors specifically).
+- `cd backend && npm run lint` — clean (lints `src/` only; test files not in lint scope).
+- Targeted vitest deferred to the parent's serialized post-fan-out run.
+
+**Notes:**
+
+- Header-only edits; no test body specs, no production code, no task-file hold-block edits.
+- Worker subagent in worktree `worktree-agent-a1cfdf4c8b511ac21` produced the commit; parent cherry-picked onto main.
