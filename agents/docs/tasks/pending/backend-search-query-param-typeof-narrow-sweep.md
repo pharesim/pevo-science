@@ -160,3 +160,40 @@ Both round-3 hold items landed in a single commit. Parent re-took over after wor
 `npx tsc --noEmit` clean. `npm run lint` clean (only the 2 pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`, unrelated). Targeted vitest deferred to the parent's serialized run after all in-flight backend tasks merge back.
 
 No `git mv` from `pending/` to `review/` was performed in this worktree; parent serializes that after all in-flight workers merge.
+
+## Architect re-review (2026-05-18, round-3 → round-4) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `9335aef` with 6 personas (correctness opus; testing, maintainability, project-standards, kieran-typescript, ce-learnings-researcher sonnet). `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md. `ce-adversarial-reviewer` skipped (production change 1 line, no auth/payments/mutations; well below the 50-line threshold). Round-3 items 1 (signature tighten) and 2 (`?sort=relevance` happy-path) both confirmed landed at `9335aef`; sweep is now exhaustive (`grep -n 'sort: ' backend/src/routes/search.ts` shows 4 hits, all `SearchSort`). Cluster-3 architect triage produced 1 new item to address.
+
+### Items to address
+
+1. **(P2 maintainability+kieran-typescript, anchor 100 cross-reviewer)** `searchReviewsFromHaf` now accepts narrowed `sort: SearchSort` but the body ignores it. At `backend/src/routes/search.ts:213`, `orderBy` is hardcoded to `'c.created DESC'` regardless of the `sort` argument. The round-3 type-narrowing achieved the symmetry it was meant to (call sites in `searchFromHaf` at `:289` and `:312` now flow `SearchSort` → `SearchSort` without widening), but the narrower signature now implies behavior the function does not provide. A reader at the call site reasonably assumes `sort='relevance'` will change ordering for reviews; it won't. The next developer adding relevance-ranking to reviews may miss that the parameter is already accepted-and-discarded.
+
+   Architect-decision baked into the fix: this is the round-2 architect-explicit symmetry-with-future-relevance-ranking decision (round-2 hold item 1 chose "narrow the type, keep the param" over "remove the param"). The right fix is NOT to remove the parameter — that undoes round-2. The right fix is to document the intentional discard at the code site so the architect's symmetry rationale is self-explanatory without archive-spelunking.
+
+   Fix: add a short WHY comment at `backend/src/routes/search.ts:213` (immediately before `const orderBy = 'c.created DESC';`) along the lines of:
+
+   ```ts
+   // sort accepted for signature symmetry with searchPapersFromHaf;
+   // relevance-ranking for reviews is not yet implemented. When it is,
+   // wire the sort value through here (and add a ?type=review&sort=relevance
+   // happy-path spec at search.test.ts).
+   ```
+
+   No production-behavior change; no new test required.
+
+### Items dismissed during architect triage
+
+- (P3 advisory, cross-reviewer correctness+testing anchor 100) Commit message body of sibling cluster commit `bba29c0` undercounts the round-2 canary's asserted fields (says "asserts 4", actual is 6); in-tree comment is accurate — dismissed. Commit message is git-immutable; adding archive-note metadata would be preemptive documentation hardening (cousin of `feedback_dismiss_preemptive_test_hardening`). Anyone reading the diff resolves the discrepancy in seconds.
+- (P3 testing TG-1) `?sort=date` happy-path only incidentally covered by accreditation-gate tests — dismissed per `feedback_dismiss_preemptive_test_hardening`. Coverage is present and stable; a dedicated spec would harden against hypothetical future deletion of the gate-coverage.
+- (P3 kieran-typescript TG-02) No `?type=review&sort=relevance` test — dismissed as preemptive (currently harmless because `sort` is ignored in that branch; only becomes relevant after the item-1 comment lands and a future relevance-for-reviews implementation arrives — at which point the spec is part of THAT task, not this one).
+- (P3 project-standards RR-1) Task file remained in `tasks/pending/` after round-3 fix landed — dismissed. Backend CLAUDE.md sequence (b) explicitly permits "signal block in commit N, `git mv` in commit N+1". The mv has since happened (file is currently in `tasks/review/` at round-4 intake, presumably moved by the parent serialized run); loose end closed.
+
+### Items handed to separate architect actions (still on the architect's backlog)
+
+- (Learnings advisory, carried from round-3) `backend/src/routes/papers.ts:477,479,517-519` is a known-remaining `req.query.x as string` sweep target per the `req-query-as-string-cast-silent-coerce-2026-05-16` learning. The architect should verify a follow-up `backend-papers-query-cast-sweep` task exists in `tasks/pending/` or file one before final cluster archive (after round-4 lands).
+- Vitest deferred per signal block; verify green on parent serialized run before final cluster archive.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect re-review scopes `/ce-code-review` to the round-4 commit. Anchor: single short comment addition at one location. Trivial single commit.
