@@ -638,3 +638,60 @@ The pre-existing accreditation test failure `round-4 hold #2: pre-INCR redis.eva
 - `backend/tests/middleware/rateLimit.test.ts` — added `skipFailedRequests refunds slot on pre-status TCP-abort during pending await` test (real-Redis path, raw `http.request` + `req.destroy()` to drive socket abort before any status set).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-18, round-5 → round-6) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `2493383` (9 reviewers — correctness/security/adversarial on opus; testing/reliability/maintainability/project-standards/kieran-typescript on sonnet; learnings-researcher unstructured; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Round-4 hold items 1 (P0 refund gate) and 2 (P1 exhaustiveness guard) both land cleanly — verified by correctness, security, reliability, and adversarial independently. The new test would fail under round-4's `statusCode<400`-only form (default `statusCode=200` + `writableEnded=false` would skip refund), confirming the round-5 fix is pinned. Once-guard ordering flip is behaviorally equivalent to round-4 for all reachable state transitions.
+
+Three items held — small follow-ups, no functional defects.
+
+### Items held (must fix before archive)
+
+**1. (P2, cross-reviewer: testing P2/100 + adversarial P2/75 → promoted to 100) In-memory path refund-gate widening has no abort-path regression test.** The round-5 widening landed symmetrically on both Redis (`backend/src/middleware/rateLimit.ts:152-168`) AND in-memory (`backend/src/middleware/rateLimit.ts:204-215`) paths, but the new test `skipFailedRequests refunds slot on pre-status TCP-abort during pending await` at `backend/tests/middleware/rateLimit.test.ts:259-353` exercises ONLY the Redis branch — it returns early via `if (!ready) return` when Redis is unavailable. `backend/tests/middleware/rateLimit-in-memory.test.ts` was not modified; all three of its tests use synchronous supertest handlers with `writableEnded=true`. A one-sided revert to `statusCode<400` on the in-memory path would slip past CI (Redis-path test would still pass). Round-3 hold item 5 originally raised this gap; round-5 closed it on the Redis side only.
+
+  Suggested fix: add a parallel test in `rateLimit-in-memory.test.ts` that exercises pre-status abort against the in-memory path. The file already mocks `getRedis()` to null at module scope (via `vi.mock`). Construction: `http.createServer` + `express` app + `rateLimit({ skipFailedRequests: true, max: 1 })` + handler that awaits 300ms; raw `http.request` + `req.destroy()` at 50ms; poll the limiter's in-memory `entry.timestamps.length` (or send a follow-up request and assert it passes the `>= max` check) → expect the slot to have been spliced back out.
+
+**2. (P2, cross-reviewer: kieran-typescript P2/75 + learnings-researcher → promoted to 100) Exhaustiveness guard has a canonical one-liner; current 4-line form is an alternative.** `backend/src/lib/redis-scripts.ts:165-175`. The implementer's `_NoMissingReturn`/`_NoExtraReturn`/`_scriptReturnExhaustive` + `void` pattern is mechanically correct AND symmetric (catches both divergence directions). However, `agents/docs/solutions/conventions/satisfies-record-for-mapped-type-and-set-completeness-2026-05-17.md` documents the canonical form as a value-level `satisfies` expression — exactly the pattern the round-4 hold's snippet was reaching for, just placed on a value not a type alias.
+
+  Suggested fix:
+
+  ```ts
+  export type ScriptReturn = {
+    INCR_AND_EXPIRE_ON_ZERO_TO_ONE: number;
+    RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
+    RATE_LIMIT_CHECK_AND_CONSUME: [number, number];
+  };
+
+  // Compile-time exhaustiveness: empty object value annotated as full
+  // Record forces ScriptReturn to cover every SharedScriptName; trailing
+  // `satisfies ScriptReturn` forces SharedScriptName to cover every
+  // ScriptReturn key. Drift in either direction fails compile.
+  const _scriptReturnExhaustive = {} as Record<SharedScriptName, unknown> satisfies ScriptReturn;
+  void _scriptReturnExhaustive;
+  ```
+
+  (The exact one-liner shape is at implementer discretion — there are a couple of equivalent forms; the goal is to land the convention's canonical `satisfies`-on-a-value pattern.) Test it locally the same way the round-5 implementer did: add a stray `FOO` to `SHARED_SCRIPTS` without updating `ScriptReturn`, confirm `tsc --noEmit` errors at the const line; revert. Update the doc comment block at lines 137-159 to describe the new mechanism.
+
+  Architect's call: prefer the convention's canonical form to keep `ScriptReturn` consistent with the documented pattern across the repo (this is the convention's named instance — `redis-scripts.ts:ScriptReturn`). The 4-line form is not wrong, but it diverges from the documented standard for the same exhaustiveness invariant.
+
+**3. (P2, conf 75, maintainability M1) Refund-closure cross-reference comment missing.** `backend/src/middleware/rateLimit.ts:152-168` (Redis path) and `:204-215` (in-memory path) are structurally identical `refund` closures. A future one-sided fix to one closure would not be caught textually — extracting a shared helper is not the right shape (closures capture different state), but a one-line cross-reference would make the symmetry obligation explicit.
+
+  Suggested fix: add `// Mirror of the Redis-path refund closure above; keep semantics in sync.` immediately above the in-memory `let refunded = false` at `:204`.
+
+### Items dismissed during architect triage
+
+- **(P3, conf 75, adversarial) Test 300ms timer leak on assertion-failure path** at `backend/tests/middleware/rateLimit.test.ts:301`. Test-quality nit; per `feedback_dismiss_preemptive_test_hardening`. Implementer may opt to switch to `vi.useFakeTimers()` or reorder the drain-then-assert sequence if convenient during the round-6 work, but it is not held.
+- **(P3, conf 75, adversarial) Pre-existing cascade: Redis reconnect during refund window silently drops DECR.** `backend/src/middleware/rateLimit.ts:157-164`. Round-5's wider gate makes the refund path fire more often, proportionally widening the cascade window, but the failure mode (DECR rejection caught and logged at `debug`) is not new. Log-level promotion to `warn` falls under `feedback_pevo_logging_minimal` (default-recommend dismiss). Bounded by windowMs; single-instance per `project_single_instance_only`. Documented residual.
+- **(security RR) Doc-comment drift at `rateLimit.ts:188`.** The in-memory inline comment still reads "splice it back out on finish when status >= 400" — stale relative to the new gate; the longer JSDoc block above documents the new gate correctly. One-line nit, can be cleaned up opportunistically when item 3's cross-reference comment lands. Not held.
+- **(correctness/adversarial RR) Type-widening edge on the exhaustiveness guard.** If `SHARED_SCRIPTS` ever gained a string index signature, the guard would silently disable. Theoretical only; current code uses `as const`. Not held.
+- **(correctness TG) Once-guard reordering invariant not pinned by a test.** Preemptive hardening per `feedback_dismiss_preemptive_test_hardening`. The reordering is verified-correct by 4 reviewers independently; a regression test would be useful documentation but not load-bearing.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-6 architect review scopes `/ce-code-review` to the round-6 commit only.
+
+Items 1+3 cluster on `rateLimit.ts` and `rateLimit-in-memory.test.ts`. Item 2 is `redis-scripts.ts` only. Could land in one commit or two — implementer's call.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
