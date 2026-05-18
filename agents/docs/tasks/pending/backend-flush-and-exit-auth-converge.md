@@ -96,3 +96,29 @@ The rewrite drops the stale line-number citation and restates what's actually tr
 - `npx vitest run tests/lib/flush-and-exit.test.ts` from `backend/`: 1 file passed, 2 passed / 0 failed.
 
 Task file remains in `tasks/pending/`; parent agent will `git mv` it back to `tasks/review/` per the worktree-fanout protocol.
+
+---
+
+## Architect re-review (2026-05-18, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` on the round-2 hold-fix commit (5 reviewers — correctness on Opus; testing/maintainability/project-standards/learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). The round-1 hold item (stale companion-comment citing the deleted `routes/auth.ts` line range) landed cleanly — the replacement docblock anchors on `flushAndExit()` and the two mock-based tests below, both stable symbols. Reviewers verified the new prose has no rot anchors.
+
+Maintainability reviewer surfaced one item on the SURROUNDING (pre-existing) content of the same test file — borderline-scope per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`. The describe-label rot is the most-visible site (appears in every test runner output) and the cost of cleanup is trivial; rather than dragging it to "opportunistic cleanup when next touching the file," round-3 closes it.
+
+### Item held (must fix before archive)
+
+**1. (P2, conf 100, maintainability) Round-number qualifiers and task-slug citation in describe label + header docblock at `backend/tests/lib/flush-and-exit.test.ts`.** The describe label contains a `(round-N hold #N)` parenthetical that appears in every vitest runner output indefinitely. The file-level header docblock above the describe contains a `Round-N hold #N (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):` line plus `Round-N wrapped` and `Round-N adds` round-history qualifiers. Per root `CLAUDE.md` "Comment anchors", task slugs and round-N markers in production or test source rot when the originating task archives.
+
+  Suggested fix: rewrite the describe label to drop the round/hold parenthetical, keeping only the behavioral framing (`flushAndExit — boot-fatal flush+exit watchdog`). Rewrite the header docblock to describe what the helper defends against (boot-fatal flush watchdog + the convergence with `routes/auth.ts`'s SENTINEL_ARGON2_HASH_PROMISE catch site) instead of which task introduced which behavior — anchor on the helper name and the two production call-site contexts (boot-fatal validation chain at `index.ts`, async catch at `routes/auth.ts`).
+
+  Per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the rewrite itself must not introduce new rot anchors (no task slugs, no round numbers, no line numbers, no SHAs in the replacement prose).
+
+### Items dismissed during architect triage
+
+- **(advisory, learnings-researcher) `agents/docs/solutions/conventions/boot-fatal-flush-watchdog-pattern-2026-05-11.md` body contains a task-slug citation `backend-flush-and-exit-auth-converge.md` in its guidance section.** Pre-existing in the convention doc itself, not introduced by this round-2 commit. Out of scope for this hold; routed to architect-zone `/ce-compound-refresh` follow-up at cluster archive time.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
