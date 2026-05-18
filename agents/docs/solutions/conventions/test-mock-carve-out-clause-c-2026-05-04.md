@@ -40,6 +40,7 @@ The mock-target scope covered by the carve-out is broader than the helpers liter
 - Shared pool/cache helpers — `getPool()`, `getAppPool()`, `getRedis()`, `getHafPool()`.
 - Third-party libraries non-trivial to run for real per-test — nodemailer transporter, hive-API client, IPFS client.
 - Observability surfaces — logger spies (e.g., `vi.spyOn(logger, 'warn')`).
+- **Transparent wrapping spies** on runtime primitives — `vi.spyOn(global, 'setInterval')`, `vi.spyOn(global, 'setTimeout')`, etc., WITHOUT a `mockImplementation` so the real primitive still fires if the code under test reaches it. These are observability probes for negative-assertion testing (the contract is that the primitive must NOT be called under a specific code path; the spy is the only mechanism to verify a "did not happen" claim). Distinct from infrastructure-substitution mocks: a transparent wrapping spy does NOT bypass any code path, so clause (c)'s real-path companion requirement does not apply — there is no integrated path to mirror, only an integrated path to negatively assert. Clause (a)'s file-header acknowledgement still applies: name the spy target and state the contract being verified ("primitive X must NOT be called when condition Y holds").
 
 Always-real surfaces (NOT carve-out-eligible, unchanged from clause (b)): `verifyHiveSignature` and other auth/permission middleware.
 

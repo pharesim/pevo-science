@@ -62,20 +62,27 @@ The `Set<OrcidMode>` typing prevents typos in the array literal (each element mu
 
 ## Guidance
 
-Use `satisfies Record<UnionType, ...>` at the definition site to make the constraint compile-enforced:
+Use `satisfies Record<UnionType, ...>` at the definition site to make the constraint compile-enforced.
+
+**`satisfies` is value-level only — the type-alias form does not compile.** A pseudocode shape like `export type ScriptReturn = { ... } satisfies Record<SharedScriptName, unknown>` is convenient shorthand for describing intent, but `satisfies` is a postfix operator on expressions (TS 4.9+) and cannot appear after a type-alias right-hand side; the parser reports `';' expected` (TS1109). The working canonical attaches `satisfies` to a value (object literal carrying the shape) and re-exports the public type via `typeof`:
 
 ```ts
-// For mapped types:
-export type ScriptReturn = {
-  RATE_LIMIT_CHECK_AND_CONSUME: [number, number];
-  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: number;
-  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
+// For mapped types — the working canonical form:
+const _SCRIPT_RETURN_SHAPE = {
+  RATE_LIMIT_CHECK_AND_CONSUME: [0, 0] as [number, number],
+  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: 0 as number,
+  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 as 0 | 1,
 } satisfies Record<SharedScriptName, unknown>;
 //  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 //  Both divergence directions now fail at the definition site:
 //    - SHARED_SCRIPTS key missing from ScriptReturn → compile error
+//      (Record<SharedScriptName, unknown>'s required-keys check fails)
 //    - ScriptReturn key not in SHARED_SCRIPTS       → compile error
+//      (object-literal excess-property check that `satisfies` enforces)
+export type ScriptReturn = typeof _SCRIPT_RETURN_SHAPE;
 ```
+
+Two things make the value-shape form work: (a) each placeholder value carries an `as <type>` annotation so `typeof _SCRIPT_RETURN_SHAPE[K]` recovers the intended per-key type (without the annotations, `typeof` would infer narrowed literal types like `0` instead of `number`); (b) the `_` underscore prefix signals "internal implementation detail" — only `ScriptReturn` is part of the public API. The `_SCRIPT_RETURN_SHAPE` constant is a runtime artifact (small object literal that survives into the emitted JS), but its cost is negligible against the load-bearing exhaustiveness invariant it underwrites.
 
 For `Set`-of-union shapes where you also want literal-typo protection:
 
@@ -131,7 +138,7 @@ Skip the constraint and use an honest comment when:
 
 ## Examples
 
-**`ScriptReturn` — the canonical fix:**
+**`ScriptReturn` — the canonical fix (value-shape + `typeof` form):**
 
 ```ts
 // Before
@@ -141,15 +148,17 @@ export type ScriptReturn = {
   RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
 };
 
-// After
-export type ScriptReturn = {
-  RATE_LIMIT_CHECK_AND_CONSUME: [number, number];
-  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: number;
-  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 | 1;
+// After — value-shape + `typeof` (the working analog; the type-alias form
+// `type X = { ... } satisfies Record<...>` does not compile)
+const _SCRIPT_RETURN_SHAPE = {
+  RATE_LIMIT_CHECK_AND_CONSUME: [0, 0] as [number, number],
+  INCR_AND_EXPIRE_ON_ZERO_TO_ONE: 0 as number,
+  RELEASE_LOCK_IF_TOKEN_MATCHES: 0 as 0 | 1,
 } satisfies Record<SharedScriptName, unknown>;
+export type ScriptReturn = typeof _SCRIPT_RETURN_SHAPE;
 ```
 
-The single-line change collapses both divergence directions to a compile error at the definition site.
+The two-line addition collapses both divergence directions to a compile error at the definition site. The placeholder values carry `as <type>` annotations so `typeof` preserves the original per-key precision; without them, `typeof` would infer narrowed literal types (e.g., `0` instead of `number`) and downstream `ScriptReturn[N]` consumers would lose type information.
 
 **`VALID_MODES` — the honest-comment path (chosen by round-4 implementer):**
 

@@ -274,5 +274,5 @@ Reverting `throw new BootFatalError(...)` to bare `return;` breaks the test. Rev
 - `agents/docs/solutions/conventions/boot-fatal-flush-watchdog-pattern-2026-05-11.md` — `flushAndExit()` is the exit primitive this pattern routes through.
 - `agents/docs/solutions/conventions/defensive-recursive-serializer-and-pino-err-redact-policy-2026-05-11.md` — the redact policy that preserves `BootFatalError.type` through serialization for operator alerting.
 - `backend/src/startup-checks.ts` — `BootFatalError`, `validateConfig`, `initBridgePostingKeyCache`.
-- `backend/src/index.ts` — the boot try/catch + positive-guard `if (app)` block (lines 60-90).
+- `backend/src/index.ts` — the synchronous boot try/catch wrapping `validateConfig()` / `createApp()` + the positive-guard `if (app)` block.
 - `agents/docs/tasks-archive.md` — `BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT` archive: round-3 introduced the `return`-after-flush defect; round-4 introduced the structured-throw success pattern AND the catch-rethrow re-entry trap; round-5 closed the trap via definite-assignment narrowing.
