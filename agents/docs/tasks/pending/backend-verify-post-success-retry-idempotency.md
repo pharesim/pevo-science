@@ -150,3 +150,75 @@ Landed the grace-period idempotency machinery in `backend/src/routes/accreditati
 
 ---
 
+## Architect re-review (2026-05-18, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` on the round-1 implementation commit (10 reviewers — correctness + security + adversarial on Opus; testing/reliability/api-contract/maintainability/project-standards/kieran-typescript/learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). The five acceptance items land in intent: grace-period record at `${appTag}:accreditation-completed:<sha256(token)>`, MULTI pipeline atomicity for the SET + DEL pair, in-memory fallback Map, best-effort wrap around the post-broadcast cleanup, and the three new specs in the grace-period describe block.
+
+Nine items held — two are P1 structural concerns on the load-bearing failure modes (record-vs-seed-bonus ordering + MULTI/EXEC rejection skipping in-memory writes), one is a P1 type-safety hole on the new JSON.parse path, and six are P2/lower observability + symmetry + comment + test-gap fixes. The fixes cluster naturally onto `accreditation.ts` + the new test specs.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 85, adversarial) Completion record written BEFORE the `seedAccreditationBonus` rethrow lets retry bypass 502 POST_BROADCAST_OPERATOR_REQUIRED.** Current order on the broadcast-success path: (a) `recordAccreditationCompletion` writes grace-period record + deletes pending token; (b) `seedAccreditationBonus` throws `PostBroadcastWriteError` with severity `'permanent'` on a permanent failure (e.g., `getReputationWeights()` shape regression); (c) outer catch returns 502 POST_BROADCAST_OPERATOR_REQUIRED to the user. On retry, the pending token is gone but the completion record exists → grace-period read returns 200 with the original envelope. The 502's operator-actionable signal is silently masked; the user sees inconsistent UX (first call 502 "contact support", retry 200 "Accreditation confirmed"). `PostBroadcastWriteError` with severity `'permanent'` exists specifically because the next batch cycle will NOT self-heal a `getReputationWeights()` shape regression; the grace-period record must not hide it.
+
+  Suggested fix: reorder so `recordAccreditationCompletion` is called AFTER `seedAccreditationBonus` succeeds. Retain the inline try/catch + warn for the Redis-flap class on the record write — extracted to a `recordAccreditationCompletionBestEffort` helper per item 4. The retry's 400 BAD_REQUEST on a seed-bonus-permanent-failure path restores the operator's incident signal (first call 502 + subsequent 400 → user reports → operator triages).
+
+**2. (P1, conf 90, reliability R1) MULTI/EXEC rejection skips in-memory fallback writes.** The `redis.multi().set(...).del(...).exec()` call in `recordAccreditationCompletion` is not wrapped in an inner try/catch. If the pipeline rejects (Redis-down mid-pipeline, connection drop, ioredis internal error), the exception propagates out of the function. The in-memory writes that follow the Redis block never execute. The outer call-site try/catch at the broadcast-success site logs a warn and sends 200 (broadcast did happen), but `memoryTokens` still has the pending row, `memoryAccreditationCompletions` has no entry, and the counter side-key is not cleared. The implementer's signal-block contract `"a Redis-less deployment still gets the grace-period idempotency"` holds for Redis-absent-at-write-call but FAILS for Redis-present-but-pipeline-throws.
+
+  Suggested fix: wrap the `redis.multi().exec()` block in an inner try/catch inside `recordAccreditationCompletion`. On pipeline failure, emit a structured warn (e.g., `event: 'accreditation.verify.completion_record_pipeline_failed'`) with `token_hash` + `err` discriminator and fall through to the in-memory writes regardless. The outer call-site try/catch remains as the catch-all for any other failure mode (e.g., the in-memory write itself throwing). Pipeline failure becomes the helper's dedicated log signal; the call-site warn covers everything else.
+
+**3. (P1, conf 90, kieran-typescript KT-1) Unsafe `JSON.parse(raw) as AccreditationCompletionRecord` cast in `readAccreditationCompletion`.** `JSON.parse` returns `any`; the cast silently accepts whatever shape Redis returns. A corrupt write or future schema-drift produces an object with `undefined` fields → 200 envelope sent with `username: undefined` and/or `tx_id: undefined`. The SPA's success UI then renders empty fields. The in-memory branch (`return cached.record`) is safe (write-site is typed), so only the Redis-read path is exposed.
+
+  Suggested fix: add a runtime shape guard before the cast in `readAccreditationCompletion`:
+  ```
+  const parsed = JSON.parse(raw);
+  if (
+    typeof parsed !== 'object' || parsed === null ||
+    typeof parsed.username !== 'string' ||
+    typeof parsed.tx_id !== 'string'
+  ) {
+    logger.warn({ event: 'accreditation.verify.completion_record_invalid_shape', token_hash: hashTokenForLogs(token) }, 'completion record shape invalid; falling through to 400');
+    return null;
+  }
+  return parsed as AccreditationCompletionRecord;
+  ```
+  Returning `null` on shape mismatch falls through to the existing 400 BAD_REQUEST path — better than serving a malformed 200.
+
+**4. (P2, conf 75, maintainability M1) Best-effort cleanup pattern duplicated: inline try/catch at the broadcast-success site instead of a `recordAccreditationCompletionBestEffort` helper sibling.** The module already exposes `deleteTokenBestEffort` (3 call sites) — a named helper wrapping `deleteToken` in try/catch + structured warn. The round-1 broadcast-success site inlines an identical 14-line try/catch + warn structure rather than extracting the parallel helper. Coexisting forms create drift hazard.
+
+  Suggested fix: extract `recordAccreditationCompletionBestEffort(token, username, txId, pending)` adjacent to `deleteTokenBestEffort`. Wrap the call to `recordAccreditationCompletion` in the same try/catch + warn shape (`event: 'accreditation.verify.completion_record_failed_post_success'`, `route`, `username`, `email_hash`, `token_hash`, `err`). The broadcast-success call site collapses to a single line: `await recordAccreditationCompletionBestEffort(token, pending.hive_username, result.id, pending);`. Land this alongside the reorder from item 1.
+
+**5. (P2, conf 75, maintainability M2) Asymmetric key strategy between Redis and in-memory store for the grace-period record.** Redis side uses `accreditationCompletedKey(token)` = `${config.appTag}:accreditation-completed:${sha256(token)}` (hashed); in-memory `memoryAccreditationCompletions.set(token, ...)` keys on the raw token string. Every other sibling Map/Redis pair in this module is symmetric (`memoryTokens` ↔ `pending_accred:${token}`, `memoryBroadcastAttempts` ↔ `pending_accred_broadcast_attempts:${token}` — both raw). The asymmetry is intentional (Redis logs may surface keys via MONITOR/slow-log; the hash provides defense-in-depth that the other older pairs don't have), but it's silently asymmetric and a future refactor unifying the stores would hit a behavioral change.
+
+  Suggested fix: add a 2-3-line comment at the `memoryAccreditationCompletions` declaration site explaining the intentional asymmetry — Redis side hashes for log-defense-in-depth; in-memory side keys raw because process memory already exposes the token, so hashing inside the process buys nothing.
+
+**6. (P2, conf 80, adversarial) Process restart drops the `memoryAccreditationCompletions` Map → recreates the AbortError-after-success cascade for Redis-less or Redis-flap-at-write-time scenarios.** The in-memory fallback is a flap-resilience mechanism, not a sustained Redis-less deployment mode. The contract `"a Redis-less deployment still gets the grace-period idempotency"` holds within a single process lifetime, NOT across restarts. Implicit in the design but not documented.
+
+  Suggested fix: add a code comment at the `memoryAccreditationCompletions` declaration explaining the limitation (in-memory fallback is flap-resilience, not sustained Redis-less mode; restart-induced loss is the accepted trade-off). Bundle with item 5's comment if convenient. Update the task signal block at re-review time to acknowledge this design contract.
+
+**7. (P2, conf 80, kieran-typescript KT-2) Test spec 3 reads `JSON.parse(stored as string).tx_id` with no preceding null guard.** Spec 1 (in the same test file) does the same pattern correctly with `expect(stored).not.toBeNull()` before the parse. Spec 3 omits the guard. If `redis.get()` returns `null`, the assertion fails as `undefined !== 'tx-fresh-id-only'` with no indication that the real problem is a missing record.
+
+  Suggested fix: add `expect(stored).not.toBeNull();` before the `JSON.parse` line in spec 3. One-line addition for symmetry with spec 1.
+
+**8. (low, conf 75, correctness + reliability R2) `memoryAccreditationCompletions` excluded from the hourly `cleanupExpiredTokens()` sweep.** The hourly sweep iterates `memoryTokens` for expired entries but does not sweep `memoryAccreditationCompletions`. Entries are evicted only lazily on `readAccreditationCompletion` access — under normal Redis-up operation, stale 24h-TTL entries accumulate until process restart. Bounded by 24h × write-rate, but the asymmetry with the sibling `memoryTokens` cleanup is unmotivated.
+
+  Suggested fix: add a sweep loop for `memoryAccreditationCompletions` inside `cleanupExpiredTokens()`, mirroring the existing `memoryTokens` sweep. Iterate entries, delete those whose `expires_at < Date.now()`. No new logging.
+
+**9. (low, residual + learnings-researcher) Grace-period hit for revoked users returns 200 even if a WoT-revoke landed on-chain after the original broadcast.** The completion record carries `{username, tx_id}` only; it does not re-verify current chain state on retry. A user revoked between the original successful broadcast and the retry receives a cached "Accreditation confirmed" 200, even though their on-chain accreditation has been revoked. Out of scope per the task Goal ("scoped to the fresh broadcast success path"), but a future reader could mistake the absence of a chain re-check for a correctness gap.
+
+  Suggested fix: add a 2-line comment at the grace-period read site documenting that the record does NOT re-verify current chain state — revoke events after the original broadcast are not visible from the cached envelope, and this is the accepted trade-off for the idempotency-record approach.
+
+### Items dismissed during architect triage
+
+- **(P1, conf 90, api-contract AC-01) `agents/docs/api-contracts/accreditation.md` does not document the 400→200 grace-period conversion.** Architect-zone; landed at cluster archive time as part of the api-contracts sweep (implementer filed [TODO Architect] block above).
+- **(low, conf 85, api-contract AC-02) Grace-period 200 indistinguishable from fresh broadcast (no `outcome` discriminator field).** Architect resolves at contract-update time: either add `outcome: 'grace_period_replay'` to the response and document, or explicitly document the case as opaque. Not held against this task.
+- **(low, residual) Sibling branches (existing-accreditation gate-hit, per-token idempotency-hit) NOT scoped to this task; AbortError-after-success cascade survives there.** Explicitly out-of-scope per task Goal; filed as a separate follow-up task `tasks/pending/backend-verify-grace-period-sibling-branch-coverage.md`.
+- **(P2, conf 50-75, adversarial) Drainer break-on-first-fail / unbounded growth concerns.** Speculative; bounded blast radius. Default-recommend dismiss per `feedback_dismiss_preemptive_test_hardening`.
+
+### Re-review signal
+
+When items 1-9 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+Items 1-9 touch `backend/src/routes/accreditation.ts` (helper extraction + reorder + shape guard + Map sweep + comments) and `backend/tests/routes/accreditation-idempotency.test.ts` (null guard). Implementer's call whether one focused commit or two (`reorder + helper-extract + reliability fixes` first, then `tests + comments`); either works.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
