@@ -720,6 +720,19 @@ export function handleBroadcastErrorAmbiguous(
 export type AttemptOutcome = 'success' | 'failure' | 'timeout';
 
 /**
+ * Logger-instance parameter shape for {@link makeLogBroadcastAttempt}. Carries
+ * the two pino method bindings the factory uses (`info` on `outcome:'success'`,
+ * `warn` on `outcome:'failure'`/`'timeout'`). Exported as a named type so test
+ * fixtures that inject a `vi.fn`-spied logger can cast to a stable name rather
+ * than the structural `Parameters<typeof makeLogBroadcastAttempt>[2]` query
+ * (which silently shifts if the function gains a leading parameter).
+ */
+export type MakeLogBroadcastAttemptOpts = {
+  info: typeof logger.info;
+  warn: typeof logger.warn;
+};
+
+/**
  * Returns a per-attempt audit-log closure pre-bound to `eventLabel` and
  * `baseContext`. Each invocation emits one structured pino event:
  *
@@ -746,7 +759,7 @@ export type AttemptOutcome = 'success' | 'failure' | 'timeout';
 export function makeLogBroadcastAttempt(
   eventLabel: string,
   baseContext: LogContext,
-  loggerInstance: { info: typeof logger.info; warn: typeof logger.warn } = logger,
+  loggerInstance: MakeLogBroadcastAttemptOpts = logger,
 ): (outcome: AttemptOutcome, extra?: Record<string, unknown>) => void {
   return (outcome, extra) => {
     const fields = {

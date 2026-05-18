@@ -8,6 +8,7 @@ import {
   classifyPostBroadcastSeverity,
   AppPoolNotInitialisedError,
   type HandleBroadcastErrorOpts,
+  type MakeLogBroadcastAttemptOpts,
 } from '../../src/lib/broadcast-error.js';
 import { BroadcastTimeoutError } from '../../src/hive.js';
 import { logger } from '../../src/logger.js';
@@ -944,7 +945,7 @@ describe('makeLogBroadcastAttempt', () => {
     const log = makeLogBroadcastAttempt(
       'custody.broadcast.attempt',
       { username: 'alice', op_types: ['vote'], op_count: 1 },
-      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+      { info, warn } as unknown as MakeLogBroadcastAttemptOpts,
     );
 
     log('success', { tx_id: 'mock-tx-id', block_num: 12345 });
@@ -971,7 +972,7 @@ describe('makeLogBroadcastAttempt', () => {
     const log = makeLogBroadcastAttempt(
       'custody.broadcast.attempt',
       { username: 'bob', op_types: ['comment'], op_count: 1 },
-      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+      { info, warn } as unknown as MakeLogBroadcastAttemptOpts,
     );
 
     log('failure');
@@ -994,7 +995,7 @@ describe('makeLogBroadcastAttempt', () => {
     const log = makeLogBroadcastAttempt(
       'custody.broadcast.attempt',
       { username: 'carol', op_types: ['vote'], op_count: 1 },
-      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+      { info, warn } as unknown as MakeLogBroadcastAttemptOpts,
     );
 
     log('timeout');
@@ -1023,7 +1024,7 @@ describe('makeLogBroadcastAttempt', () => {
         op_types: ['comment', 'comment_options'],
         op_count: 2,
       },
-      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+      { info, warn } as unknown as MakeLogBroadcastAttemptOpts,
     );
 
     log('success', { tx_id: 'mock-tx-id' });
@@ -1051,7 +1052,7 @@ describe('makeLogBroadcastAttempt', () => {
     const log = makeLogBroadcastAttempt(
       'custody.broadcast.attempt',
       { username: 'eve', op_types: ['vote'], op_count: 1 },
-      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+      { info, warn } as unknown as MakeLogBroadcastAttemptOpts,
     );
 
     log('success', { event: 'attacker_override', tx_id: 'mock-tx-id' });
@@ -1076,7 +1077,7 @@ describe('makeLogBroadcastAttempt', () => {
     const log = makeLogBroadcastAttempt(
       'custody.broadcast.attempt',
       { username: 'frank', op_types: ['vote'], op_count: 1 },
-      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+      { info, warn } as unknown as MakeLogBroadcastAttemptOpts,
     );
 
     // Call with outcome:'failure' but try to override via extra:{outcome:'success'}.
@@ -1100,7 +1101,7 @@ describe('makeLogBroadcastAttempt', () => {
     const log = makeLogBroadcastAttempt(
       'custody.broadcast.attempt',
       { username: 'base-user', op_types: ['vote'], op_count: 1 },
-      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+      { info, warn } as unknown as MakeLogBroadcastAttemptOpts,
     );
 
     log('success', { username: 'extra-user', tx_id: 'mock-tx' });
@@ -1130,7 +1131,7 @@ describe('makeLogBroadcastAttempt', () => {
     const log = makeLogBroadcastAttempt(
       'custody.broadcast.attempt',
       { username: 'gerry', op_types: ['vote'], op_count: 1 },
-      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+      { info, warn } as unknown as MakeLogBroadcastAttemptOpts,
     );
 
     log('success', { tx_id: 'mock-tx' });
@@ -1187,7 +1188,7 @@ describe('makeLogBroadcastAttempt', () => {
   it('emits the correct eventLabel for each route (custody.broadcast.attempt vs bridge.register.attempt)', () => {
     const info = vi.fn();
     const warn = vi.fn();
-    const fakeLogger = { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2];
+    const fakeLogger = { info, warn } as unknown as MakeLogBroadcastAttemptOpts;
 
     const custodyLog = makeLogBroadcastAttempt(
       'custody.broadcast.attempt',
