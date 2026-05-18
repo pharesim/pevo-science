@@ -63,11 +63,21 @@
  * skips the suite rather than failing.
  */
 
+import crypto from 'node:crypto';
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import argon2 from 'argon2';
 import jwt from 'jsonwebtoken';
 import { MockBroadcastTimeoutError } from '../support/broadcast-mocks.js';
+
+/** Local hex-SHA-256 helper for asserting `custody_audit_log.user_agent`
+ *  contents. Mirrors `hashUserAgentForAudit` from custody.ts so a divergence
+ *  (e.g., a regression that swaps to truncation, HMAC, or a different digest)
+ *  surfaces as an inequality on the row value rather than passing because
+ *  both sides imported the same helper. */
+function sha256Hex(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
 
 // Mock chain broadcast: every consent-op broadcast in this suite resolves
 // to a fixed tx_id / block_num so we can assert audit-log rows without
@@ -437,7 +447,7 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
   // ─── POST /api/custody/broadcast (consent ops) ─────────────────────────
 
   describe('POST /api/custody/broadcast (author_accept / author_resign)', () => {
-    it('author_accept with valid fresh-auth → 200 + audit-log row carries auth_mechanism + session_id + user_agent', async () => {
+    it('author_accept with valid fresh-auth → 200 + audit-log row carries auth_mechanism + session_id + hashed user_agent', async () => {
       const issued = await issueFreshAuthToken(
         ALICE,
         'password',
@@ -475,7 +485,11 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(rows[0].auth_mechanism).toBe('password');
       expect(rows[0].fresh_auth_outcome).toBe('verified');
       expect(rows[0].session_id).toMatch(/^[0-9a-f]{16}$/);
-      expect(rows[0].user_agent).toBe('PEvO-Test/1.0');
+      // GDPR Art. 5(1)(c): UA hashed at insert. Assert the 64-char hex
+      // SHA-256 shape AND the exact digest so a regression that drops
+      // hashing (writes the raw UA) or swaps the algorithm surfaces here.
+      expect(rows[0].user_agent).toMatch(/^[0-9a-f]{64}$/);
+      expect(rows[0].user_agent).toBe(sha256Hex('PEvO-Test/1.0'));
     });
 
     it('author_resign with valid fresh-auth → 200 + audit-log row carries all four consent fields', async () => {
@@ -519,7 +533,147 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(rows[0].auth_mechanism).toBe('password');
       expect(rows[0].fresh_auth_outcome).toBe('verified');
       expect(rows[0].session_id).toMatch(/^[0-9a-f]{16}$/);
-      expect(rows[0].user_agent).toBe('PEvO-Test-Resign/1.0');
+      expect(rows[0].user_agent).toMatch(/^[0-9a-f]{64}$/);
+      expect(rows[0].user_agent).toBe(sha256Hex('PEvO-Test-Resign/1.0'));
+    });
+
+    it('user_agent NULL when consent-op broadcast sends empty User-Agent header', async () => {
+      // GDPR Art. 5(1)(c) NULL-handling acceptance: absent / empty /
+      // non-string UA persists as NULL (no hash of an absent value).
+      // Empty-string is the wire-driveable case; non-string is covered by
+      // the pure-helper test in `custody-user-agent-hash.test.ts`.
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_accept', 'noua-root', 'noua-permlink'),
+      );
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .set('User-Agent', '')
+        .send({
+          fresh_auth_proof: issued.token,
+          operations: [authorAcceptOp(ALICE, 'noua-root', 'noua-permlink')],
+        });
+      expect(res.status).toBe(200);
+
+      const pool = getAppPool()!;
+      const sql = `SELECT user_agent FROM custody_audit_log WHERE username = $1`;
+      const start = Date.now();
+      let rows: Array<{ user_agent: string | null }> = [];
+      while (Date.now() - start < 1500) {
+        const r = await pool.query(sql, [ALICE]);
+        if (r.rows.length >= 1) { rows = r.rows; break; }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(rows.length).toBe(1);
+      expect(rows[0].user_agent).toBeNull();
+    });
+
+    it('user_agent stable: two consent-op broadcasts with identical UA yield identical hashes (correlation invariant)', async () => {
+      // (d) Acceptance: correlation-across-ops invariant — the forensic
+      // purpose for retaining UA (proving session continuity between
+      // consent ops via change-detection) is satisfied by hash-equality
+      // without retaining the raw value.
+      const UA = 'PEvO-Test-Stable/3.0';
+
+      const accept = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_accept', 'stable-root', 'stable-permlink'),
+      );
+      const r1 = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .set('User-Agent', UA)
+        .send({
+          fresh_auth_proof: accept.token,
+          operations: [authorAcceptOp(ALICE, 'stable-root', 'stable-permlink')],
+        });
+      expect(r1.status).toBe(200);
+
+      const resign = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_resign', 'stable-root', 'stable-permlink'),
+      );
+      const r2 = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .set('User-Agent', UA)
+        .send({
+          fresh_auth_proof: resign.token,
+          operations: [authorResignOp(ALICE, 'stable-root', 'stable-permlink')],
+        });
+      expect(r2.status).toBe(200);
+
+      const pool = getAppPool()!;
+      const sql = `SELECT operation_type, user_agent FROM custody_audit_log
+                   WHERE username = $1 ORDER BY created_at ASC`;
+      const start = Date.now();
+      let rows: Array<{ operation_type: string; user_agent: string | null }> = [];
+      while (Date.now() - start < 1500) {
+        const r = await pool.query(sql, [ALICE]);
+        if (r.rows.length >= 2) { rows = r.rows; break; }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(rows.length).toBe(2);
+      expect(rows[0].user_agent).toBe(sha256Hex(UA));
+      expect(rows[1].user_agent).toBe(sha256Hex(UA));
+      expect(rows[0].user_agent).toBe(rows[1].user_agent);
+    });
+
+    it('user_agent distinct: two consent-op broadcasts with different UAs yield different hashes', async () => {
+      // (e) Acceptance: hash injectivity at audit-scale — a UA change
+      // between ops surfaces as a hash inequality, preserving the
+      // continuity-change signal the operator relies on.
+      const UA_A = 'PEvO-Test-Browser-A/4.0';
+      const UA_B = 'PEvO-Test-Browser-B/4.0';
+
+      const accept = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_accept', 'distinct-root', 'distinct-permlink'),
+      );
+      const r1 = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .set('User-Agent', UA_A)
+        .send({
+          fresh_auth_proof: accept.token,
+          operations: [authorAcceptOp(ALICE, 'distinct-root', 'distinct-permlink')],
+        });
+      expect(r1.status).toBe(200);
+
+      const resign = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_resign', 'distinct-root', 'distinct-permlink'),
+      );
+      const r2 = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .set('User-Agent', UA_B)
+        .send({
+          fresh_auth_proof: resign.token,
+          operations: [authorResignOp(ALICE, 'distinct-root', 'distinct-permlink')],
+        });
+      expect(r2.status).toBe(200);
+
+      const pool = getAppPool()!;
+      const sql = `SELECT operation_type, user_agent FROM custody_audit_log
+                   WHERE username = $1 ORDER BY created_at ASC`;
+      const start = Date.now();
+      let rows: Array<{ operation_type: string; user_agent: string | null }> = [];
+      while (Date.now() - start < 1500) {
+        const r = await pool.query(sql, [ALICE]);
+        if (r.rows.length >= 2) { rows = r.rows; break; }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(rows.length).toBe(2);
+      expect(rows[0].user_agent).toBe(sha256Hex(UA_A));
+      expect(rows[1].user_agent).toBe(sha256Hex(UA_B));
+      expect(rows[0].user_agent).not.toBe(rows[1].user_agent);
     });
 
     it('author_accept WITHOUT fresh_auth_proof → 401 FRESH_AUTH_REQUIRED + reason missing', async () => {

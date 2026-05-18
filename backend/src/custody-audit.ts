@@ -42,6 +42,10 @@ export type CustodyAuditExtras = {
   auth_mechanism: 'password' | 'orcid';
   fresh_auth_outcome: FreshAuthOutcome;
   session_id?: string;
+  /** SHA-256 hash of the request's User-Agent header. Hashed at the route
+   *  boundary via `hashUserAgentForAudit` for GDPR data minimization; raw
+   *  header values never reach this writer. Absent / empty / non-string
+   *  headers arrive as `undefined` and persist as NULL. */
   user_agent?: string;
 };
 

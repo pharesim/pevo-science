@@ -105,6 +105,22 @@ function bearerSessionId(req: Request): string | null {
   return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
 }
 
+/** SHA-256 hash of the User-Agent header for audit-log storage. Returns
+ *  `undefined` for absent, empty, or non-string headers; the audit-log
+ *  writer translates `undefined` to NULL.
+ *
+ *  Hashing satisfies GDPR Art. 5(1)(c) data minimization: the forensic
+ *  purpose of retaining a UA (correlating UA changes between consent ops
+ *  to prove session continuity) is satisfied by hash-equality without
+ *  retaining the raw header, which can leak OS / browser version and in
+ *  some mobile apps a device or username substring. Full 64-char digest
+ *  (no truncation): collision resistance matters here in a way it does
+ *  not for `bearerSessionId`'s compact correlator. */
+export function hashUserAgentForAudit(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
 /** Result discriminator for `findConsentOpsInBundle`. The single-consent rule
  *  is structural: a bundle either contains zero consent ops (no fresh-auth
  *  required), exactly one consent op (fresh-auth required for that op), or
@@ -671,7 +687,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         auth_mechanism: freshAuthMechanism,
         fresh_auth_outcome: 'verified',
         session_id: bearerSessionId(req) ?? undefined,
-        user_agent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
+        user_agent: hashUserAgentForAudit(req.headers['user-agent']),
       };
       logCustodyBroadcast(username, opTypes, result.id, result.block_num, auditExtras).catch(() => {});
       // Pino-side per-attempt signal (round-2 hold #4 — every attempt logged).
