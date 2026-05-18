@@ -239,3 +239,23 @@ Verification:
 - `npx tsc --noEmit` — clean.
 - `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`, untouched by this work).
 - `npx vitest run tests/routes/custody-upgrade-null-hash.test.ts tests/routes/signup-verify-resume-argon-error-translation.test.ts` (with `REDIS_URL` + `APP_DATABASE_URL` Docker-network overrides per root CLAUDE.md "Running Tests") — 14/14 pass.
+
+---
+
+## Architect re-review (2026-05-18) — HELD PENDING FIXES (round 4)
+
+`/ce-code-review` on commit `009b4a2` with 7 personas (correctness on Opus; testing/maintainability/project-standards/kieran-typescript/reliability/learnings on Sonnet; `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md; `ce-adversarial-reviewer` skipped — test-side change, no auth/payments/mutations). Round-3 acceptance verified across all 4 items: `beforeEach` reset + bounded-poll `fetchSettledAuditRows`, warmup drop, symbol-based test-name ref (signup-verify.ts:146 → `/resume-signup` handler + runWithArgon2Slot), and try/catch error wrap on seed INSERTs with descriptive re-throw. 14/14 vitest pass against real Postgres + Redis. User-triaged 2026-05-18; one one-word fix held, several findings dismissed below.
+
+### Items held (must fix before archive)
+
+1. **(P3 testing, anchor 90)** Stale comment value at `backend/tests/routes/custody-upgrade-null-hash.test.ts:117`. The `beforeEach` rationale comment reads "Without this beforeEach, vitest.config.ts's `retry: 1` means a retried `it` sees the audit-log row from attempt #1...". The actual `vitest.config.ts` value is `retry: 3`. The fix is correct under any retry count; the stale number misleads a future reader diagnosing a flake who checks the config to verify the rationale. One-word fix: `retry: 1` → `retry: 3`.
+
+### Items dismissed during architect triage (recorded for transparency)
+
+- (P1 kieran-typescript, anchor 90) `(err as Error).message` casts at lines 136, 160 — dismissed: test-only catch where `pool.query` always rejects with an `Error` subclass (pg driver); no pino serializer in play, no log payload affected. Same risk class as round-1 dismissal of `new Error(String(x))` "drops structured fields" in the sibling decrerr task at anchor 30. The canonical narrowing convention's load-bearing property (pino's serializer needs an Error instance) doesn't apply at this test-only re-throw site.
+- (P2 reliability R1, anchor 75) `fetchSettledAuditRows` 100ms settle / 1.5s poll heuristic constants lack documented rationale — dismissed: test infrastructure heuristic, failure mode is theoretical-only (compound condition: real production double-log AND second INSERT >100ms). Per `feedback_dismiss_preemptive_test_hardening`; tune if CI flakes.
+- (P2 kieran-typescript KT-2, anchor 60) Hand-rolled structural type for `pool` parameter in `fetchSettledAuditRows` — dismissed below confidence gate; same risk class as `any` in test mocks already endorsed by the `## Typecheck` section in `agents/backend/CLAUDE.md`.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-5 architect re-review scopes `/ce-code-review` to the round-4 commit. Anchor: one-word change at one location. Trivial single commit.
