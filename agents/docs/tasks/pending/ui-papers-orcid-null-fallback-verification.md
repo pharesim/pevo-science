@@ -137,3 +137,32 @@ Change in `frontend/tests/unit/pages-edit.test.js`:
 
 Verification:
 - `source ~/.nvm/nvm.sh && nvm use 20 && cd frontend && npx vitest run tests/unit/pages-edit.test.js` → 45/45 passed, including all 3 specs in the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe block. (3 unrelated unhandled rejections from `_mountEditors` async path are pre-existing and not introduced by this change, same as round-2.)
+
+---
+
+Architect re-review (2026-05-18, round-4) — HELD PENDING FIXES:
+
+Round-3 hold-fix at commit `dd6d2ad` correctly executed the literal round-3 prescription: substring `, commit `6bf50d0`` removed from the block comment, replaced with `(see task ui-papers-orcid-null-fallback-verification)`. 45/45 tests pass; no functional regression. `/ce-code-review` cluster (correctness, testing, maintainability, project-standards, learnings-researcher) confirms the fix landed verbatim.
+
+**However, the round-3 hold-block's prescribed fix shape was itself wrong.** Learnings-researcher surfaced `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` (landed 2026-05-15, three days before the round-3 hold was written) which explicitly enumerates `(see task <slug>)` framing in source comments as a rot class. Mechanism: task files are deleted on archive per root CLAUDE.md rule #7, then fall off `tasks-archive.md` after the 250-line trim. The slug becomes a dead pointer the moment this very task archives — which would be the next commit if this fix were left as-is. Companion conventions `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` and `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` reinforce the same conclusion.
+
+This is an architect-side error in the round-3 prescription, not an implementer execution failure. The implementer followed the hold-block instruction faithfully and should not infer any process critique. One item blocks archive.
+
+1. **Task-slug citation in test-file comment is a documented rot class** (P2 — cross-reviewer: project-standards + learnings-researcher, anchor 75).
+
+   `frontend/tests/unit/pages-edit.test.js` block comment above the `_prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)` describe currently reads (lines ~1031-1034):
+   > "...The template-side `|| ''` is grep-pinned at `frontend/src/pages/edit.js:183` (see task ui-papers-orcid-null-fallback-verification); pinning that binding end-to-end would require mounting Alpine via jsdom and is out of scope here."
+
+   The `(see task ui-papers-orcid-null-fallback-verification)` parenthetical is the rot pointer. The `frontend/src/pages/edit.js:183` path two lines earlier in the same comment is the durable navigable code-pointer; the parenthetical adds no information the file-path doesn't already supply.
+
+   **Fix shape:** drop the parenthetical and the surrounding whitespace. Resulting four lines:
+   ```
+   // The template-side `|| ''` is grep-pinned at
+   // `frontend/src/pages/edit.js:183`; pinning that binding end-to-end
+   // would require mounting Alpine via jsdom and is out of scope here.
+   ```
+   Pure deletion — one source comment, one file. Re-run `npx vitest run tests/unit/pages-edit.test.js` to confirm 45/45 still pass (a comment-only edit, so no behavior change is possible, but the suite run is the convention).
+
+Findings triaged dismissed this pass:
+- correctness, testing, maintainability returned empty.
+- Learnings-researcher's adjacent structural observation that "comment-rot conventions in `agents/docs/solutions/` don't surface to implementer agents at startup" is an architect-queue concern (candidate to surface the rule in root `CLAUDE.md` or `agents/ui/CLAUDE.md`). Not a finding against this task; tracked separately at the architect's discretion and does not block this hold.
