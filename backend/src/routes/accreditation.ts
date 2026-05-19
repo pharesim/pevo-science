@@ -121,7 +121,7 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
       return Number(result);
     }
     // Symmetric to the decrement-side
-    // `accred_verify_broadcast_decrement_redis_unavailable` warn: when
+    // `accreditation.verify.broadcast_decrement_redis_unavailable` warn: when
     // Redis is configured but unavailable at INCR time, cap enforcement
     // silently falls through to the in-memory map (which has no record of
     // any prior Redis-side counter for this token across instances). Emit
@@ -206,7 +206,7 @@ async function decrementBroadcastAttempts(
         // cycle so the counter eventually returns to its pre-INCR value
         // rather than staying inflated until the 24h TTL, then re-throw.
         // Re-throwing preserves the existing outer-catch
-        // `accred_verify_broadcast_decrement_failed` warn (the route's
+        // `accreditation.verify.broadcast_decrement_failed` warn (the route's
         // per-request signal) — the queue handles recovery, the outer-catch
         // warn handles operator correlation.
         if (attemptId) {
@@ -220,7 +220,7 @@ async function decrementBroadcastAttempts(
     // silent fallback would leave the Redis-side counter inflated until 24h
     // TTL with no operator signal. Emit a structured warn here so operators
     // can correlate counter drift with Redis incidents; the sibling
-    // `accred_verify_broadcast_decrement_failed` event covers the
+    // `accreditation.verify.broadcast_decrement_failed` event covers the
     // throw-during-DECR case but not this silent-noop case.
     //
     // Also enqueue for the periodic drain cycle so the counter is decremented

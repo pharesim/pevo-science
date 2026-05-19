@@ -362,3 +362,33 @@ When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-3 archite
 - `agents/docs/api-contracts/accreditation.md` — `POST /api/admin/accreditation/reset-broadcast-counter` contract row landed in the architect-zone cluster commit.
 - `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — "Auto-recovery: in-process pending-decrement queue" + "Manual reset runbook" sections landed.
 - `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` — `admin.ts` prefix added to the per-file prefix table.
+
+---
+
+## Backend re-review signal (2026-05-19) — round 3
+
+Both round-3 hold items landed.
+
+### Item 1 — comment cross-refs to dotted-path form
+
+Three cross-reference comments in `backend/src/routes/accreditation.ts` now use the canonical dotted-path event names:
+
+- `incrementBroadcastAttempts` docblock (just before the in-memory `silent fallback` warn site): the bare `` `accred_verify_broadcast_decrement_redis_unavailable` warn `` reference is now `` `accreditation.verify.broadcast_decrement_redis_unavailable` warn ``.
+- `decrementBroadcastAttempts` catch block (just before re-throw on DECR rejection): the bare `` `accred_verify_broadcast_decrement_failed` warn `` reference is now `` `accreditation.verify.broadcast_decrement_failed` warn ``.
+- `decrementBroadcastAttempts` Redis-unavailable mid-request branch (just before the `enqueue + warn` site): the bare `` `accred_verify_broadcast_decrement_failed` event `` reference is now `` `accreditation.verify.broadcast_decrement_failed` event ``.
+
+Note on the architect hold block's "L243" claim: a fourth `+`-line at `accreditation.ts:243` was cited, but direct grep on the file post-round-2 found only the three pre-existing cross-refs above (the round-2 commit `a678463`'s `+`-line at that region introduced the `'enqueued_for_drain'` return statement and an adjacent `Round-3 hold #6` round-number comment, NOT a flat-underscore event-name cross-ref). The round-number comment lives in task `backend-comment-anchor-rot-sweep-accreditation-ts`'s scope, not here. All three actual flat-underscore cross-references have been swept.
+
+Convention-enforcing-fix self-audit per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`: the replacement prose substitutes one event-name form for another. No task-slug citations, round-N markers, line-number anchors, or SHA references introduced.
+
+### Item 2 — `broadcastAttemptsKey` import in `pending-decrement-queue.test.ts`
+
+`backend/tests/lib/pending-decrement-queue.test.ts` now imports `broadcastAttemptsKey` from `../../src/routes/accreditation.js` and uses it directly at all 12 prior `counterKey(...)` call sites. The module-local `counterKey` helper is removed; the unused `config` import (its sole consumer was `counterKey`) is removed too. Single source of truth for the broadcast-attempts key string now in `accreditation.ts`; the dual-tracked `admin.ts`, `admin.test.ts`, and `pending-decrement-queue.test.ts` consumers all import the same canonical function.
+
+### Verification
+
+- `npm run typecheck` (`:src` and `:tests`): clean.
+- `npm run lint` (`src/`): clean.
+- `npx vitest run tests/lib/pending-decrement-queue.test.ts` with Docker IP env overrides: **9/9 pass**. The drain-log assertion (`accreditation.verify.decrement_queue_drain` discriminator) continues to pass on the renamed event names, confirming the comment cross-references and the actual emitted events stayed in sync.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;

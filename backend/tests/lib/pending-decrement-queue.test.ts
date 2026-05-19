@@ -11,7 +11,6 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import crypto from 'node:crypto';
-import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
 import * as redisModule from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
@@ -19,10 +18,7 @@ import {
   enqueueDecrement,
   __test_seams as queueTestSeams,
 } from '../../src/lib/pending-decrement-queue.js';
-
-function counterKey(token: string): string {
-  return `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
-}
+import { broadcastAttemptsKey } from '../../src/routes/accreditation.js';
 
 describe('pending-decrement-queue', () => {
   beforeEach(() => {
@@ -36,7 +32,7 @@ describe('pending-decrement-queue', () => {
   it('enqueueDecrement records an entry and returns true', () => {
     const token = `pdq-enq-${crypto.randomBytes(8).toString('hex')}`;
     const attemptId = crypto.randomBytes(8).toString('hex');
-    const ok = enqueueDecrement({ token, attemptId, key: counterKey(token) });
+    const ok = enqueueDecrement({ token, attemptId, key: broadcastAttemptsKey(token) });
     expect(ok).toBe(true);
     expect(queueTestSeams.getQueueDepth()).toBe(1);
     expect(queueTestSeams.hasAttempt(attemptId)).toBe(true);
@@ -45,9 +41,9 @@ describe('pending-decrement-queue', () => {
   it('idempotent on attemptId — duplicate enqueue keeps depth at 1', () => {
     const token = `pdq-idem-${crypto.randomBytes(8).toString('hex')}`;
     const attemptId = crypto.randomBytes(8).toString('hex');
-    enqueueDecrement({ token, attemptId, key: counterKey(token) });
-    enqueueDecrement({ token, attemptId, key: counterKey(token) });
-    enqueueDecrement({ token, attemptId, key: counterKey(token) });
+    enqueueDecrement({ token, attemptId, key: broadcastAttemptsKey(token) });
+    enqueueDecrement({ token, attemptId, key: broadcastAttemptsKey(token) });
+    enqueueDecrement({ token, attemptId, key: broadcastAttemptsKey(token) });
     expect(queueTestSeams.getQueueDepth()).toBe(1);
   });
 
@@ -59,7 +55,7 @@ describe('pending-decrement-queue', () => {
       return;
     }
     const token = `pdq-drain-${crypto.randomBytes(8).toString('hex')}`;
-    const key = counterKey(token);
+    const key = broadcastAttemptsKey(token);
     // Seed the counter at 1 so drain's DECR brings it to 0.
     await redis.set(key, '1');
     const attemptId = crypto.randomBytes(8).toString('hex');
@@ -81,7 +77,7 @@ describe('pending-decrement-queue', () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `pdq-race-${crypto.randomBytes(8).toString('hex')}`;
-    const key = counterKey(token);
+    const key = broadcastAttemptsKey(token);
     await redis.del(key);
     expect(await redis.get(key)).toBeNull();
 
@@ -98,7 +94,7 @@ describe('pending-decrement-queue', () => {
     if (!redis) return; // Real Redis required to exercise the toggle.
     const token = `pdq-noredis-${crypto.randomBytes(8).toString('hex')}`;
     const attemptId = crypto.randomBytes(8).toString('hex');
-    enqueueDecrement({ token, attemptId, key: counterKey(token) });
+    enqueueDecrement({ token, attemptId, key: broadcastAttemptsKey(token) });
 
     const isAvailableSpy = vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false);
     const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => logger);
@@ -127,7 +123,7 @@ describe('pending-decrement-queue', () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `pdq-drainlog-${crypto.randomBytes(8).toString('hex')}`;
-    const key = counterKey(token);
+    const key = broadcastAttemptsKey(token);
     await redis.set(key, '1');
     const attemptId = crypto.randomBytes(8).toString('hex');
     enqueueDecrement({ token, attemptId, key });
@@ -159,8 +155,8 @@ describe('pending-decrement-queue', () => {
     if (!redis) return;
     const token1 = `pdq-fail1-${crypto.randomBytes(8).toString('hex')}`;
     const token2 = `pdq-fail2-${crypto.randomBytes(8).toString('hex')}`;
-    enqueueDecrement({ token: token1, attemptId: 'a1', key: counterKey(token1) });
-    enqueueDecrement({ token: token2, attemptId: 'a2', key: counterKey(token2) });
+    enqueueDecrement({ token: token1, attemptId: 'a1', key: broadcastAttemptsKey(token1) });
+    enqueueDecrement({ token: token2, attemptId: 'a2', key: broadcastAttemptsKey(token2) });
 
     const decrSpy = vi
       .spyOn(redis, 'decr')
@@ -190,7 +186,7 @@ describe('pending-decrement-queue', () => {
     try {
       // Fill to cap.
       for (let i = 0; i < 1000; i++) {
-        const ok = enqueueDecrement({ token: `pdq-of-${i}`, attemptId: `aid-${i}`, key: counterKey(`pdq-of-${i}`) });
+        const ok = enqueueDecrement({ token: `pdq-of-${i}`, attemptId: `aid-${i}`, key: broadcastAttemptsKey(`pdq-of-${i}`) });
         expect(ok).toBe(true);
       }
       expect(queueTestSeams.getQueueDepth()).toBe(1000);
@@ -199,7 +195,7 @@ describe('pending-decrement-queue', () => {
       const ok = enqueueDecrement({
         token: 'pdq-of-overflow',
         attemptId: 'aid-overflow',
-        key: counterKey('pdq-of-overflow'),
+        key: broadcastAttemptsKey('pdq-of-overflow'),
       });
       expect(ok).toBe(false);
       expect(queueTestSeams.getQueueDepth()).toBe(1000);
