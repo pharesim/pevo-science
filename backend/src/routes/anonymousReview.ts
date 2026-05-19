@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import type { z } from 'zod';
 import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
@@ -108,7 +109,10 @@ async function cleanupExpiredMappings(): Promise<void> {
 // POST /api/reviews/anonymous
 // ──────────────────────────────────────────────
 
-router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anonymousReviewSchema), async (req: Request, res: Response) => {
+router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anonymousReviewSchema), async (
+  req: Request<Record<string, string>, unknown, z.infer<typeof anonymousReviewSchema>>,
+  res: Response,
+) => {
   const username = req.hiveUsername!;
   const { paper_author, paper_permlink, body, rating } = req.body;
 

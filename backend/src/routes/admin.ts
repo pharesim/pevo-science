@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import type { z } from 'zod';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -26,7 +27,10 @@ router.post(
   '/accreditation/reset-broadcast-counter',
   verifyHiveSignature,
   validate(accreditationVerifySchema),
-  async (req: Request, res: Response) => {
+  async (
+    req: Request<Record<string, string>, unknown, z.infer<typeof accreditationVerifySchema>>,
+    res: Response,
+  ) => {
     const username = req.hiveUsername!;
     if (username !== config.hiveAdminAccount) {
       // Hash the would-be target token before logging so an unauthorized
@@ -35,14 +39,14 @@ router.post(
         {
           event: 'accreditation.admin.reset_broadcast_counter_forbidden',
           attempted_by: username,
-          token_hash: hashTokenForLogs(req.body.token as string),
+          token_hash: hashTokenForLogs(req.body.token),
         },
         'admin reset-broadcast-counter rejected — caller is not the configured admin account',
       );
       return sendError(res, 403, 'FORBIDDEN', `Only ${config.hiveAdminAccount} can reset broadcast counters`);
     }
 
-    const token = req.body.token as string;
+    const token = req.body.token;
     const key = broadcastAttemptsKey(token);
     const redis = getRedis();
 

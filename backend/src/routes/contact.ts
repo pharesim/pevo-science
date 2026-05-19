@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import type { z } from 'zod';
 import { config } from '../config.js';
 import { createSmtpTransporter } from '../lib/smtp.js';
 import { sendOk, sendError } from '../response.js';
@@ -21,7 +22,10 @@ const router = Router();
 // POST /api/contact
 // ──────────────────────────────────────────────
 
-router.post('/', contactLimiter, validate(contactSchema), async (req: Request, res: Response) => {
+router.post('/', contactLimiter, validate(contactSchema), async (
+  req: Request<Record<string, string>, unknown, z.infer<typeof contactSchema>>,
+  res: Response,
+) => {
   const { category, email, subject, message } = req.body;
 
   const label = CATEGORY_LABELS[category] || 'General';

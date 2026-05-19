@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import type { z } from 'zod';
 import crypto from 'node:crypto';
 import { createSmtpTransporter } from '../lib/smtp.js';
 import { PrivateKey } from '@hiveio/dhive';
@@ -550,7 +551,10 @@ async function cleanupExpiredTokens(): Promise<void> {
 // POST /api/accreditation/request
 // ──────────────────────────────────────────────
 
-router.post('/request', verifyHiveSignature, accreditationRequestLimiter, validate(accreditationRequestSchema), async (req: Request, res: Response) => {
+router.post('/request', verifyHiveSignature, accreditationRequestLimiter, validate(accreditationRequestSchema), async (
+  req: Request<Record<string, string>, unknown, z.infer<typeof accreditationRequestSchema>>,
+  res: Response,
+) => {
   const hive_username = req.hiveUsername!;
   const { full_name, institution, field, email, orcid } = req.body;
 
@@ -641,7 +645,10 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
 // POST /api/accreditation/verify
 // ──────────────────────────────────────────────
 
-router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifySchema), async (req: Request, res: Response) => {
+router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifySchema), async (
+  req: Request<Record<string, string>, unknown, z.infer<typeof accreditationVerifySchema>>,
+  res: Response,
+) => {
   const { token } = req.body;
 
   // Per-request attempt identifier used by the in-process pending-decrement

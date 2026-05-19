@@ -582,7 +582,10 @@ const notificationPrefsSchema = z.object({
   email: z.string().email().max(254).nullable(),
 });
 
-router.put('/:username/notification-preferences', verifyHiveSignature, validate(notificationPrefsSchema), async (req: Request, res: Response) => {
+router.put('/:username/notification-preferences', verifyHiveSignature, validate(notificationPrefsSchema), async (
+  req: Request<Record<string, string>, unknown, z.infer<typeof notificationPrefsSchema>>,
+  res: Response,
+) => {
   const username = req.params.username as string;
 
   if (req.hiveUsername !== username) {
