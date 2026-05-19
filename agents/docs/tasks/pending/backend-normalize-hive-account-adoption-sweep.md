@@ -87,3 +87,80 @@ Wrapper adoption at the 6 sites is correct and the architect's grep audit verifi
 - **Commit message description of `helpers.ts` change** is inverted (says "inline trim/lowercase" — actual change adopted `normalizeHiveAccount`). Dismissed per architect triage: future maintainers read the diff (which is correct), not the commit body, post-landing.
 - **Silent admit-set narrowing** for historical chain posts with exotic-whitespace hive entries dismissed per architect triage: narrowing IS the convention's intent; pre-fix tolerance was inconsistent with the canonical normalization.
 - **Reputation cycle silent re-scoring** dismissed per architect triage: correct outcome; per PEvO logging-minimal posture no operator signal added.
+
+## Backend re-review signal (2026-05-20, commit `74ab764`)
+
+Landed all 6 hold items in a single focused commit. Per-item summary:
+
+1. **`tests/hafsql.test.ts` `paper_resolved_votes` cascade-fail defense.** Updated `subqueryShape` to mirror the post-fix production predicate (`LOWER(TRIM(a ->> 'hive')) ~ '^[a-z0-9.-]+$' AND LOWER(TRIM(...)) = plv.voter`). Added a 4th synthetic scenario: `authors=[{hive:'alice'},{hive:'Bob'}]`, voters `{alice, bob, carol}` — asserts bob is excluded from the non-self voter set. Targeted revert of the `LOWER(TRIM(...))` wrap admits 'bob' and turns the new case red.
+
+2. **`tests/hafsql.test.ts` `authorshipClaimsCteBody` helper-output canary.** New describe block calls the production helper and matches both LOWER(TRIM) conjuncts in the emitted SQL (charset regex + claimer equality). Corrected the synthetic-VALUES test's misleading docblock companion citation to anchor on this new canary instead of `excludeSelfReviewWhere-callsite-canaries.test.ts` (which never covered the CTE).
+
+3. **`src/hafsql.ts` auto-accept arm structural-safety note.** Inline SQL comment explains why the direct-integer-subscript form (`-> cb.author_index`) is intrinsically fail-soft against malformed shapes (no array iteration to guard; NULL chains through the equality conjunct). Comment anchors on behavioral invariants only.
+
+4. **`tests/routes/anonymousReview.test.ts` Carol control.** Replaced the vacuous `if (res.status === 403) { expect(...).not.toContain(...) }` with unconditional `expect(res.status).not.toBe(403)`. The downstream 500 (missing `pevoAnonPostingKey` in test env) no longer hides an incorrect-self-block regression.
+
+5. **`tests/routes/anonymousReview.test.ts` + `tests/routes/retract.test.ts` whitespace-padded route-layer coverage.** Added `{hive: '  bob  '}` for anonymous self-block (403) and `{hive: '  originalauthor  '}` for bridge retract (200 authorized). Closes the route-layer gap where only uppercase mutations were exercised.
+
+6. **`tests/routes/continuation-author-gate.test.ts` off-charset reject test for `extractAuthorizedContinuationAuthors`.** Pins semicolon, '@', underscore, and internal-space rejection via the `normalizeHiveAccount` charset-regex path. Chose this file over `helpers.test.ts` for cohesion with the existing helper covers. The existing lowercasing/whitespace-trim tests left the charset-regex rejection uncovered.
+
+### Targeted vitest runs (all green)
+
+- `tests/hafsql.test.ts`: 27 passed, 2 skipped (HAF-gated, expected).
+- `tests/routes/anonymousReview.test.ts` + `tests/routes/retract.test.ts`: 16 passed.
+- `tests/helpers.test.ts` + `tests/excludeSelfReviewWhere-callsite-canaries.test.ts`: 52 passed (regression check).
+- `tests/routes/continuation-author-gate.test.ts`: 51 passed.
+
+### Convention-required grep audit
+
+`grep -rnE '\.hive\b' backend/src/`:
+
+```
+backend/src/lib/author-supersession.ts:32: * (`authors[i].hive`) are broadcaster-controlled and may carry mixed-case,
+backend/src/lib/author-supersession.ts:178:    const hive = typeof e.hive === 'string' ? e.hive : null;
+backend/src/lib/author-supersession.ts:183:      hive: e.hive,
+backend/src/consent-ops.ts:232: * @param claimedAuthors - the historical union of `pevo.authors[].hive`
+backend/src/helpers.ts:183:      const hive = normalizeHiveAccount(e.hive);
+backend/src/routes/profile.ts:439:            .map((a) => normalizeHiveAccount(a.hive))
+backend/src/reputation.ts:525:            -- broadcaster-controlled authors[i].hive via LOWER(TRIM(...))
+backend/src/reputation.ts:637:            -- controlled authors[i].hive via LOWER(TRIM(...)) plus the
+backend/src/config.ts:61:  hiveApiNodes: (process.env.HIVE_API_NODES || 'https://api.hive.blog,https://api.deathwing.me,https://anyx.io')
+backend/src/routes/anonymousReview.ts:136:      // Canonicalize the broadcaster-controlled `authors[i].hive` via
+backend/src/routes/anonymousReview.ts:142:      if (authors.some(a => normalizeHiveAccount(a.hive) === username)) {
+backend/src/hafsql.ts:338: *   - Reviews whose author appears as a named `.hive` entry in the
+backend/src/hafsql.ts:412:  // the predicate's intent (match author identity by `.hive` key) is
+backend/src/hafsql.ts:538: * - authors[author_index].hive matches the claimer's username
+backend/src/hafsql.ts:659:          -- controlled authors[i].hive via LOWER(TRIM(...)) plus the
+backend/src/hafsql.ts:795: *   - `authors[i].hive` empty/absent → no JOIN match → `aa.orcid` NULL →
+backend/src/hafsql.ts:797: *   - `authors[i].hive` set but not currently accredited → no JOIN match →
+backend/src/hafsql.ts:799: *   - `authors[i].hive` accredited but the accreditation carries NULL
+backend/src/hafsql.ts:801: *   - `authors[i].hive` accredited with a non-NULL accreditation `orcid` →
+backend/src/hafsql.ts:805: * The LEFT JOIN canonicalizes the chain `authors[i].hive` via
+backend/src/routes/papers.ts:235:  const auditKey = `${args.rootAuthor}/${args.rootPermlink}/${args.hive}`;
+backend/src/routes/papers.ts:243:      hive: args.hive,
+backend/src/routes/papers.ts:257: * is the union of `pevo.authors[].hive` (lowercased, trimmed,
+backend/src/routes/papers.ts:338:      const hive = normalizeHiveAccount(entry.hive);
+backend/src/routes/papers.ts:388:    out.hive = hive;
+backend/src/routes/papers.ts:537: * intersection of `authors[].hive` with the current `accreditedAccounts`
+backend/src/routes/papers.ts:575: * `authors[]` is the union of `pevo.authors[].hive` across all chain posts
+backend/src/routes/papers.ts:642:    .map((a) => normalizeHiveAccount(a.hive))
+backend/src/routes/papers.ts:958:        .map((a) => normalizeHiveAccount(a.hive))
+backend/src/routes/papers.ts:1221:        //     `pevo.authors[].hive` across all chain posts (in
+backend/src/routes/papers.ts:1388:      .map((a) => normalizeHiveAccount(a.hive))
+backend/src/routes/papers.ts:1591: *      `pevo.authors[].hive` extracted from chain posts `0..N-1` (i.e., all
+backend/src/routes/papers.ts:1814:      // `pevo.authors[].hive` set — admitting authors invited mid-chain
+backend/src/routes/papers.ts:3097:        // Canonicalize the broadcaster-controlled `authors[i].hive` via
+backend/src/routes/papers.ts:3102:        authorized = paperAuthors.some((a) => normalizeHiveAccount(a.hive) === username);
+```
+
+Re-disposition:
+
+- All `// `, `* `, and `-- ` lines are JSDoc / inline / SQL comments — not call-sites.
+- `author-supersession.ts:178` reads `e.hive` raw as input to `computeSupersession`, which itself calls `normalizeHiveAccount(hive)` at its first statement. The raw read is the canonicalization helper's own input, not a lookup site.
+- `author-supersession.ts:183` carries the raw broadcaster value into the supersession-augmented author render (preserves display value alongside computed verification flags). Not a comparison.
+- `config.ts:61` is `process.env.HIVE_API_NODES` parsing; grep matches the `.hive.blog` substring of the default API node URL.
+- `routes/papers.ts:235, :243, :388` — `args.hive` / `out.hive` field reads in audit-log construction and the per-author render record; caller normalized upstream.
+- `helpers.ts:183`, `profile.ts:439`, `anonymousReview.ts:142`, `papers.ts:338, :642, :958, :1388, :3102` — all explicit `normalizeHiveAccount(...)` call-sites. Conforming.
+
+No raw byte-equality remaining at any `.hive` lookup site. Wrapper adoption is exhaustive.
+

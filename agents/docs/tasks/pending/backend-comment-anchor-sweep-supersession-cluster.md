@@ -88,3 +88,35 @@ Comment rewrites must accurately describe the test or invariant they anchor on, 
 3. **`backend/src/types/domain.ts:17-21`** — rewritten `orcid_verified` docblock claims "always populated at runtime" and labels the empty-map collapse as "case-1 of the supersession lattice". Both are inaccurate: `applyAuthorSupersession` (`backend/src/lib/author-supersession.ts:175-188`) returns `{}` (no supersession keys) for non-object `authors[i]` entries — neither `orcid_verified` nor `orcid_discrepancy` is set; the codebase lattice terminology is `case-1/case-2` for the empty-map cell, not bare `case-1`. Rewrite to match actual code behavior: populated for well-formed object entries; absent entirely for non-object entries (JS path); SQL projection always populates via `jsonb_build_object`. Optionally widen `applyAuthorSupersession`'s non-object branch to return `{orcid_verified: null, orcid_discrepancy: false}` instead so the "always populated" framing becomes accurate.
 
 4. **`backend/tests/routes/continuation-author-gate.test.ts:326`** (and any other added-line above/below relative anchors the sweep introduced) — the sweep's own replacement text added at least one new "above/below" relative anchor. Per the docblock-anchor convention, relative positional anchors silently stale on insertion. Replace with named-symbol references (helper name, invariant description, or test-name reference). Per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the sweep must not introduce new rot in its own added lines.
+
+## Backend re-review signal (2026-05-20, commit `9fdf48b`)
+
+Hold-block items 1-4 landed in one commit. Per-item summary:
+
+1. **`continuation-author-gate.test.ts` chain-walk-SQL predicate-pin canary (the `validPevoPaperWhere` regex test).** Previous comment claimed it pinned "parameter binding to the cumulative-union admit-set". The actual assertion is `expect(sql).toMatch(/->>\s*'type'\)\s*=\s*'paper'/)` — the `validPevoPaperWhere` predicate's paper arm. Rewritten to anchor on the predicate text directly; noted that the bridge-paper arm is covered separately by the bridge-paper continuation canary.
+
+2. **`continuation-author-gate.test.ts` type-spoof rejection canary.** Previous comment claimed named-co-author admit-set / cumulative-union assertion. Rewritten to describe the actual invariant: a named co-author posting `pevo.type='review'` with a `continues` pointer is rejected on TYPE by both the SQL's `validPevoPaperWhere` predicate (filters review-typed rows out of the candidate set) AND the JS `isPevoAnyPaper` re-check (defense in depth). The cumulative-union admit-set is precondition (responder seed), not assertion.
+
+3. **`types/domain.ts` docblock + `lib/author-supersession.ts` non-object branch.** Took the optional widening: `applyAuthorSupersession` now returns `{orcid_verified: null, orcid_discrepancy: false}` for non-object author entries (previously returned `{}`, no supersession keys). The widening makes the docblock's "always populated at runtime" framing accurate AND aligns the JS-side projection with the SQL-side `jsonb_build_object`'s emit-both-keys invariant for every output entry. Dropped the inaccurate "case-1 of the supersession lattice" terminology — no such lattice-case enumeration exists in the codebase (`computeSupersession` enumerates four cases, none labelled case-1). New docblock describes runtime population on both SQL and JS surfaces directly.
+
+4. **`helpers.test.ts` native-paper symmetry canary comment ("specs above" relative anchor introduced by the prior sweep commit).** Rewritten to reference `isPevoBridgePaper`'s bridge-arm directly — a stable named-symbol anchor. The hold-block's pointer at `continuation-author-gate.test.ts:326` was a file-attribution slip: the rotted relative anchor introduced by the sweep is at `helpers.test.ts:326` (the `}` at `continuation-author-gate.test.ts:326` carries no comment).
+
+### Self-audit (added lines only)
+
+`git diff --no-color | grep '^+' | grep -v '^+++'` for the rot patterns:
+
+- `round-\d`: 0 hits.
+- All-caps-with-hyphens task slugs: 0 hits.
+- Line-number anchors (`:\d+` in comments): 0 hits.
+- 7+ hex SHA-like patterns: 0 hits.
+- Relative positional anchors (`above`, `below`, `next test`, `previous test`): 0 hits.
+
+### Verification
+
+- `typecheck:src` and `typecheck:tests`: clean.
+- `tests/routes/continuation-author-gate.test.ts`: 50/50 pass.
+- `tests/helpers.test.ts` + `tests/routes/profile-papers-supersession.test.ts`: 56/56 pass (the supersession test file exercises the `applyAuthorSupersession` non-object branch indirectly via SQL-projection parity assertions).
+- `tests/routes/papers-canonical-orcid-resolution.test.ts`: 27/27 pass.
+
+No behavioral test changes (comment-only edits + a runtime widening from `{}` to `{orcid_verified: null, orcid_discrepancy: false}` for non-object author entries — the widened branch is not exercised by existing assertions, which only test object-shaped author entries).
+
