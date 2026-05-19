@@ -8,6 +8,13 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ) {
+  // Intentional design: this middleware does NOT auto-translate
+  // `HafQueryError` to a 503-retriable envelope. Translation is per-route
+  // so each handler supplies a resource-specific user-facing string
+  // ("Profile reviews temporarily unavailable" vs "Review temporarily
+  // unavailable"). See the `HafQueryError` class docstring in `db.ts` for
+  // the full rationale; future "consolidate to middleware" refactors
+  // would silently collapse the per-route message strings.
   // Path B: pass the raw Error so the project-wide logger wrapper
   // (`redactErrInArg` → `safeRedactErr` → `redactErrSerializer` in
   // backend/src/logger.ts) projects the canonical `{type, message, stack,

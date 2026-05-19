@@ -1012,6 +1012,12 @@ async function fetchPapersFromHaf(
 
     return { rows, total };
   } catch (err) {
+    // Intentional swallow-to-null: listing contract serves [] on outage;
+    // outage indistinguishable from "no papers match this filter" is the
+    // accepted cost for listings. Route maps null → 200 [] at the
+    // envelope layer (GET `/`). Sibling-resource detail surfaces
+    // (`fetchPaperDetailFromHaf`) loud-fail with `HafQueryError` because
+    // a single-resource lookup CAN distinguish outage from "no row".
     logger.error({ err }, 'HAF papers query failed');
     return null;
   }

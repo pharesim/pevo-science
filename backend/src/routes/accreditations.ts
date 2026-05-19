@@ -85,6 +85,10 @@ async function fetchAccreditationsFromHaf(
 
     return { rows, total };
   } catch (err) {
+    // Intentional swallow-to-null: listing contract serves [] on outage;
+    // outage indistinguishable from "no accreditations on this filter"
+    // is the accepted cost for listings. Route maps null → 200 [] at the
+    // envelope layer (GET `/`).
     logger.error({ err }, 'HAF accreditations query failed');
     return null;
   }
@@ -165,6 +169,12 @@ async function fetchAccreditationStatusFromHaf(username: string) {
       },
     };
   } catch (err) {
+    // Intentional swallow-to-null: single-account status cosmetically
+    // collapses outage to "not accredited" (route returns
+    // `is_accredited: false`). Same accepted-cost pattern as
+    // `profile.ts:getAccreditationFromHaf`; translating to 503 retriable
+    // would surface an outage banner on every profile load during a HAF
+    // blip even for unaccredited browsers.
     logger.error({ err }, 'HAF accreditation status query failed');
     return null;
   }

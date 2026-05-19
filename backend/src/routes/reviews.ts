@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getPool, HafQueryError } from '../db.js';
+import { getPool, HafQueryError, isRetriableHafError } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
@@ -156,7 +156,10 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 
     sendError(res, 404, 'NOT_FOUND', 'Review not found');
   } catch (err) {
-    if (err instanceof HafQueryError) {
+    if (err instanceof HafQueryError && isRetriableHafError(err)) {
+      // Cause-discriminated retriable envelope (see `isRetriableHafError`
+      // in `db.ts`). Deterministic pg failures fall through to the
+      // central 500 so SPA retry doesn't loop a dead query.
       return sendError(
         res,
         503,

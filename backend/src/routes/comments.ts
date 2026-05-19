@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getPool, HafQueryError } from '../db.js';
+import { getPool, HafQueryError, isRetriableHafError } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -185,8 +185,19 @@ async function fetchCommentsFromHaf(
 
     return { rows, total };
   } catch (err) {
+    // Loud-fail on HAF query failure so the route handler can translate
+    // to `503 SERVICE_UNAVAILABLE` with `details.retriable: true`. The
+    // sibling `paperExistsInHaf` preflight already throws; translating
+    // the listing helper too keeps the route contract uniform across the
+    // sequential queries. An outage that starts BETWEEN the preflight
+    // (which succeeds) and this query (which fails) would otherwise
+    // collapse to `200 []` for a paper the user knows has comments — the
+    // SPA could not distinguish "comments listing temporarily down" from
+    // "this paper has no comments yet". `hafCache.getOrSet` skips storing
+    // on null AND on rejection (try/finally cleanup), so the throw does
+    // not poison the cache for subsequent recovery-window callers.
     logger.error({ err }, 'HAF comments query failed');
-    return null;
+    throw new HafQueryError('fetchCommentsFromHaf', { cause: err });
   }
 }
 
@@ -215,7 +226,11 @@ router.get('/', async (req: Request, res: Response) => {
 
     sendOk(res, [], { page: params.page, limit: params.limit, total: 0 });
   } catch (err) {
-    if (err instanceof HafQueryError) {
+    if (err instanceof HafQueryError && isRetriableHafError(err)) {
+      // Cause-discriminated retriable envelope. Deterministic pg failures
+      // (syntax error, permission error, data-type mismatch) fall through
+      // to the central 500 handler so the SPA's retry-on-503-retriable
+      // loop doesn't hammer a dead query.
       return sendError(
         res,
         503,

@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { getPool, HafQueryError } from '../db.js';
+import { getPool, HafQueryError, isRetriableHafError } from '../db.js';
 import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
@@ -444,7 +444,10 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
 
     sendOk(res, result.rows, { page, limit, total: result.total });
   } catch (err) {
-    if (err instanceof HafQueryError) {
+    if (err instanceof HafQueryError && isRetriableHafError(err)) {
+      // Cause-discriminated retriable envelope (see `isRetriableHafError`
+      // in `db.ts`). Deterministic pg failures fall through to the
+      // central 500 so SPA retry doesn't loop a dead query.
       return sendError(
         res,
         503,
@@ -630,7 +633,10 @@ router.get('/:username/reviews', async (req: Request, res: Response) => {
 
     sendOk(res, result.rows, { page, limit, total: result.total });
   } catch (err) {
-    if (err instanceof HafQueryError) {
+    if (err instanceof HafQueryError && isRetriableHafError(err)) {
+      // Cause-discriminated retriable envelope (see `isRetriableHafError`
+      // in `db.ts`). Deterministic pg failures fall through to the
+      // central 500 so SPA retry doesn't loop a dead query.
       return sendError(
         res,
         503,

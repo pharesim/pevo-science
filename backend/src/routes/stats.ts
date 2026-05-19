@@ -127,6 +127,12 @@ export async function fetchStatsFromHaf() {
       highest_reputation_score,
     };
   } catch (err) {
+    // Intentional swallow-to-null: stats projection is a periodic-refresh
+    // dashboard surface; route falls back to ZERO_STATS / cached values
+    // on outage. Outage indistinguishable from "fresh empty deployment"
+    // is the accepted cost for the stats projection (translating to 503
+    // retriable would surface a banner on every cold cache miss during a
+    // HAF blip).
     logger.error({ err }, 'HAF stats query failed');
     return null;
   }

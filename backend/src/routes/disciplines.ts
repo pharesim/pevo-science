@@ -52,6 +52,10 @@ async function fetchDisciplinesFromHaf() {
       paper_count: row.paper_count,
     }));
   } catch (err) {
+    // Intentional swallow-to-null: listing contract serves [] on outage;
+    // outage indistinguishable from "no disciplines registered yet" is
+    // the accepted cost for listings. Route maps null → 200 [] at the
+    // envelope layer (see `parseDisciplines` / GET `/`).
     logger.error({ err }, 'HAF disciplines query failed');
     return null;
   }

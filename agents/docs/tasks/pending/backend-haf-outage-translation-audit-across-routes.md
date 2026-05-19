@@ -171,3 +171,43 @@ The audit's intent ("single-resource lookups: outage ≠ missing data") is corre
 - **Finding #10 (SPA wiring gap on the 4 routes)** filed as `ui-haf-outage-503-retry-affordance.md` in `tasks/pending/` for the UI agent. Out-of-scope for this backend task per its acceptance; the new task closes the audit's value-prop.
 - **API contract files** (this task signal's `[TODO Architect]` #2) updated by architect in the same review pass: `agents/docs/api-contracts/profiles.md`, `reviews.md`, `papers.md` now enumerate 503 SERVICE_UNAVAILABLE for the affected routes.
 - **`notification-queries.ts` memoize-in-catch concern** (learnings researcher #2) dismissed at architect verification: `hafCache.getOrSet` provides single-flight coalescing for concurrent same-key callers; helper is called once per route invocation, so the per-request multi-call amplifier does not apply.
+
+## Backend re-review signal (2026-05-20)
+
+Round-2 implementation closes all 6 hold items. Targeted canary suite + sibling canaries all pass (27/27).
+
+### Per-item landed changes
+
+1. **`backend/src/routes/comments.ts` — `fetchCommentsFromHaf` translated.** Listing helper now throws `HafQueryError` on raw-pg failure mirroring the preflight `paperExistsInHaf` shape. Route-layer catch (already present from round-1) translates to 503 retriable. Composition asymmetry closed: a HAF outage starting BETWEEN the preflight and listing queries no longer collapses to `200 []` for a paper the user knows has comments. The cache-coherence note re-verified: `hafCache.getOrSet` skips storing on null AND on rejection (`try/finally` cleanup in `cache.ts`), so the throw does NOT poison the cache for subsequent recovery-window callers. Inline rationale comment placed at the new throw site.
+
+2. **`backend/src/db.ts` — `HafQueryError` docstring extended.** New "Why not auto-translate in the central `errorHandler`" paragraph anchored on the class itself plus a one-line inline comment in `backend/src/middleware/errorHandler.ts` cross-referencing the rationale. Both anchors live next to stable symbols (class identity, middleware function name), so future "consolidate to middleware" refactors hit a doc-block before silently collapsing per-route message strings.
+
+3. **All 4 route catch arms — cause-discriminated retriable classification.** New `isRetriableHafError(err)` helper exported from `backend/src/db.ts` classifies based on pg error code (`err.cause.code`): PostgreSQL connection-class `08*` and `57014` (statement_timeout) are retriable; everything else (`42601` syntax error, `42501` permission error, etc.) falls through to the central 500 handler. No-code errors (generic JS Error from network/pool layer) default to retriable, matching the helper's intent in wrapping the throw as `HafQueryError`. Catch arms updated at `comments.ts`, `profile.ts` (papers + reviews routes), and `reviews.ts` to use `instanceof HafQueryError && isRetriableHafError(err)`.
+
+4. **`backend/tests/routes/haf-outage-translation-canaries.test.ts` — SQL-fragment discriminators on every canary.** Replaced blanket `mockRejectedValue` with `mockImplementation((sql) => sql.includes(...) ? throw : resolve)` on all four route canaries. Each discriminator anchors on a stable SQL invariant unique to the targeted helper: `authorship_claims` CTE (fetchUserPapersFromHaf), `c.parent_author != ''` (fetchUserReviewsFromHaf), `c.body, c.json_metadata` + `paper_title` projection (fetchReviewFromHaf), `SELECT 1 FROM ... LIMIT 1` without `WITH RECURSIVE` (paperExistsInHaf). False-positive risk on sibling queries firing first is closed.
+
+5. **`backend/src/routes/profile.ts` enrichment Promise.all canary added.** New test makes user-papers query succeed with one row (so `result.rows.length > 0` advances past the early-return), then rejects a subsequent accreditation enrichment query (`SELECT account FROM active_accreditations` from `getAllAccreditedAccounts`). The `try { Promise.all([accreditation helpers]) } catch` wrap translates that into `HafQueryError('profile-papers-enrichment')`. Mutation-kill verified: a revert of the wrap surfaces as raw pg → 500, not 503 retriable.
+
+6. **Intentional-swallow listing catches — inline rationale comments added at 5 sites.** `stats.ts:fetchStatsFromHaf`, `disciplines.ts:fetchDisciplinesFromHaf`, `accreditations.ts:fetchAccreditationsFromHaf`, `accreditations.ts:fetchAccreditationStatusFromHaf`, `papers.ts:fetchPapersFromHaf`. Each comment anchors on the behavioral statement ("listing contract serves [] on outage", "single-account status cosmetically collapses outage to 'not accredited'", etc.) without naming this task or its round number. `comments.ts` listing arm is N/A per the hold note (item 1 changed it from swallow to translate).
+
+### Additional canary
+
+Added a "deterministic pg-error class → 500" canary at the bottom of the test file: mocks a `42601` (syntax error) on the reviews single-doc fetch and asserts `500 INTERNAL_ERROR`, NOT `503 retriable`. Pins the new `isRetriableHafError` cause-discrimination gate so a future regression that classifies all `HafQueryError`s as retriable fails red.
+
+### Test results
+
+```
+tests/routes/haf-outage-translation-canaries.test.ts     9 passed (9)
+tests/routes/papers-haf-error-vs-not-found.test.ts       sibling: passed
+tests/routes/profile-papers-supersession.test.ts         sibling: passed
+
+Test Files  3 passed (3)
+Tests       27 passed (27)
+```
+
+`npx tsc --noEmit` clean across `backend/`.
+
+### Notes for architect
+
+- Held-item #2 prescription mentions "verified SPA-side max-attempts cap rationale" as an alternative to discrimination. Chose discrimination per the prescription's "default to discrimination — it's the right contract". The new `isRetriableHafError` helper plus the deterministic-pg canary close the symmetric concern at the backend layer; SPA-side cap is separately enforced by the `ui-haf-outage-503-retry-affordance` task.
+- Test file's `vi.mock('../../src/db.js')` now also exports `isRetriableHafError` matching the production shape. Kept as an inline test-only copy (structurally identical to the production helper) because the test mocks the whole `db.js` module — pulling the real implementation would defeat the mock isolation.
