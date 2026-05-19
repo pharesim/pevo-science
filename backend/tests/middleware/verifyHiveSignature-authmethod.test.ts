@@ -1,13 +1,14 @@
 /**
- * BACKEND-VERIFYHIVE-AUTHMETHOD-DISCRIMINATOR — real-path pin for the
- * `req.hiveAuthMethod` field set by `verifyHiveSignature`.
+ * Real-path pin for the `req.hiveAuthMethod` field set by
+ * `verifyHiveSignature`. JWT-success branch sets `'jwt'`; signature-success
+ * branch sets `'signature'`; auth failures leave the field unset.
  *
- * Acceptance criterion #6 (first half): exercise both branches of the
- * unified middleware and assert the field is set correctly. This is the
- * real-path integration test — no MOCK_VERIFY_SIGNATURE — so the JWT
- * verification runs against the real `jsonwebtoken` library and the Hive
- * signature path runs cryptographic recovery + posting-key match against
- * a deterministic test keypair (same pattern as `routes/auth.test.ts`).
+ * Exercises both branches of the unified middleware against the real
+ * `jsonwebtoken` library and against cryptographic recovery + posting-key
+ * match on a deterministic test keypair (same pattern as
+ * `routes/auth.test.ts`). No `MOCK_VERIFY_SIGNATURE` fixture: this is the
+ * real-path companion to the fixture-driven route tests in
+ * `tests/routes/settings-email-fresh-auth.test.ts`.
  *
  * Test-mock carve-out (per root CLAUDE.md "Running Tests"):
  *
@@ -117,12 +118,12 @@ describe('verifyHiveSignature — req.hiveAuthMethod discriminator', () => {
   });
 
   it('falls through from invalid Bearer to signature branch and sets "signature" when signature verifies', async () => {
-    // Acceptance criterion contract: an invalid JWT does NOT set the field
-    // to 'jwt'. The middleware logs and falls through to the signature
-    // branch; if the request also carries valid signature headers, the
-    // success branch sets 'signature'. This pins the "set on the branch
-    // that successfully authenticated" semantic vs. an earlier failure
-    // accidentally leaving the field stamped.
+    // An invalid JWT must NOT leave the field stamped as 'jwt'. The
+    // middleware logs and falls through to the signature branch; if the
+    // request also carries valid signature headers, the success branch
+    // sets 'signature'. Pins the "set on the branch that successfully
+    // authenticated" semantic — an earlier-branch failure cannot leak
+    // its method label into the eventual success path.
     const app = makeApp();
     const expiredJwt = jwt.sign({ sub: TEST_USERNAME }, config.sessionSecret, { expiresIn: '-1s' });
 
@@ -143,8 +144,8 @@ describe('verifyHiveSignature — req.hiveAuthMethod discriminator', () => {
   });
 
   it('does not invoke the downstream handler on 401, so the field is never observed unset by a handler', async () => {
-    // Acceptance criterion #3: failures (401 returns) leave the field
-    // unset. The contract is "set on success only" — the request never
+    // Failures (401 returns) leave `req.hiveAuthMethod` unset. The
+    // middleware contract is "set on success only" — the request never
     // reaches a downstream handler on the 401 path, so this is implicit.
     // Pin it: a request with no JWT and no signature headers gets a 401
     // and never reaches the /probe handler that would echo the field.

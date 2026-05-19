@@ -24,7 +24,7 @@
  *  - Keychain path (no Authorization header) → no body proof required,
  *    change-email succeeds.
  *  - Add-flow no-row branch via Keychain path → INSERT new row, no proof
- *    required (regression guard for acceptance criterion #6).
+ *    required (no-row-before-JWT invariant regression guard).
  *
  * Mocks (per root CLAUDE.md "Carve-out for deterministic edge-case coverage"):
  *
@@ -33,17 +33,20 @@
  *   target hash matches? mechanism matches registered factors? It is NOT
  *   focused on cryptographic signature verification, which is covered by
  *   real-signed-request tests in `auth.test.ts` and sibling auth-focused
- *   suites. The MOCK_VERIFY_SIGNATURE fixture preserves the
- *   401-on-missing-header gate and the username-extraction behavior; only
- *   the cryptographic signature check is bypassed. The route's JWT-vs-
- *   Keychain discriminator reads `req.headers['authorization']` directly,
- *   so Bearer presence/absence drives the gate behavior under test
- *   independent of whether the JWT cryptographically verifies. nodemailer
- *   is also mocked so the route's sendVerificationEmail() resolves without
- *   live SMTP — SMTP shape is covered by `lib/smtp.test.ts`.
+ *   suites. The `MOCK_VERIFY_SIGNATURE` fixture preserves the
+ *   401-on-missing-header gate and the username-extraction behavior, and
+ *   mirrors the production `req.hiveAuthMethod` discriminator (set to
+ *   `'jwt'` when an Authorization Bearer header is present, `'signature'`
+ *   otherwise); only the cryptographic signature check is bypassed. The
+ *   change-email route reads `req.hiveAuthMethod === 'jwt'` via its local
+ *   `isJwtPath` alias, so Bearer presence/absence drives the gate behavior
+ *   under test independent of whether the JWT cryptographically verifies.
+ *   nodemailer is also mocked so the route's sendVerificationEmail()
+ *   resolves without live SMTP — SMTP shape is covered by
+ *   `lib/smtp.test.ts`.
  *
- *   (b) verifyHiveSignature is mocked via MOCK_VERIFY_SIGNATURE; this is a
- *   non-auth-focused suite (the fresh-auth body-proof gate is the
+ *   (b) verifyHiveSignature is mocked via `MOCK_VERIFY_SIGNATURE`; this is
+ *   a non-auth-focused suite (the fresh-auth body-proof gate is the
  *   in-scope security predicate, not the upstream signature/JWT
  *   verification). Per the clause-b refinement, this is permitted because
  *   the suite's focus is downstream behavior (the route's discrimination
@@ -55,9 +58,11 @@
  *   verify path is exercised against real `jsonwebtoken` verification in
  *   `settings-set-password.test.ts` (which mints real JWTs against
  *   config.sessionSecret and uses the real verifyHiveSignature middleware).
- *   The follow-up task `backend-verifyhive-authmethod-discriminator.md`
- *   carries the additional real-path-companion coverage for the explicit
- *   discriminator field once introduced.
+ *   The `req.hiveAuthMethod` discriminator itself is pinned end-to-end
+ *   against the real middleware in
+ *   `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts`,
+ *   which exercises both the JWT-success and signature-success branches
+ *   with real cryptographic verification.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
@@ -511,9 +516,10 @@ describe.skipIf(!dbReachable)('POST /api/settings/email — Keychain path skips 
   });
 
   it('Keychain path: Add-flow no-row branch → INSERT new row, no proof required', async () => {
-    // Acceptance criterion #6: the Add-flow no-row branch (INSERT new row
-    // for a Keychain user with no accounts row yet) is unchanged
-    // behaviorally. No Bearer + no row → INSERT path, no body proof.
+    // Regression guard for the Keychain Add-flow no-row branch: INSERT a
+    // new row for a Keychain user with no accounts row yet. No Bearer +
+    // no row → INSERT path, no body proof required. The no-row-before-JWT
+    // invariant means this path is unreachable on the JWT discriminator.
     const res = await request(app)
       .post('/api/settings/email')
       .set('X-Hive-Username', NO_ROW_USER)
@@ -531,20 +537,20 @@ describe.skipIf(!dbReachable)('POST /api/settings/email — Keychain path skips 
 });
 
 // ────────────────────────────────────────────────────────────────────
-// BACKEND-VERIFYHIVE-AUTHMETHOD-DISCRIMINATOR — downstream-consumption pin
-//
-// Acceptance criterion #6 (second half): assert the route consumes
-// req.hiveAuthMethod (set by the middleware) rather than re-parsing the
-// Authorization header. The discriminator's wire behavior is already
-// asserted by the JWT-path / Keychain-path describes above; this block
-// pins that the field-driven discrimination matches the header-presence
-// gate that drives MOCK_VERIFY_SIGNATURE's hiveAuthMethod assignment, so
-// a future drift where the route reverts to header re-parsing while the
+// Downstream-consumption pin: assert the settings/email route consumes
+// `req.hiveAuthMethod === 'jwt'` (via the local `isJwtPath` alias) rather
+// than re-parsing `req.headers['authorization']` itself. The
+// discriminator's wire behavior is already asserted by the JWT-path /
+// Keychain-path describes above; this block pins that the field-driven
+// discrimination matches the header-presence gate that drives
+// `MOCK_VERIFY_SIGNATURE`'s `hiveAuthMethod` assignment, so a future
+// drift where the route reverts to header re-parsing while the
 // middleware stops setting the field would surface as a test failure.
 //
-// (The real-path companion lives in
-// `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts`,
-// which runs the production verifyHiveSignature and pins both branches.)
+// (The real-path companion at
+// `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts` runs
+// the production `verifyHiveSignature` and pins both success branches
+// against real `jsonwebtoken` + real Hive-signature recovery.)
 // ────────────────────────────────────────────────────────────────────
 
 describe.skipIf(!dbReachable)(

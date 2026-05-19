@@ -4,14 +4,14 @@
  * Extracts X-Hive-Username from the request header and sets req.hiveUsername.
  * Returns 401 if the header is missing (same behavior as the real middleware).
  *
- * Also mirrors the real middleware's `req.hiveAuthMethod` discriminator
- * (BACKEND-VERIFYHIVE-AUTHMETHOD-DISCRIMINATOR): the field is set to `'jwt'`
- * when the request carries `Authorization: Bearer ...`, otherwise `'signature'`.
- * Cryptographic verification of the Bearer token is bypassed (that's the
- * carve-out point of this fixture), but the discriminator's wire-shape gate
- * is reproduced so route handlers that consume `req.hiveAuthMethod` (e.g.,
- * the change-email branch of POST `/api/settings/email`) see the same value
- * they would under real verification.
+ * Also mirrors the real middleware's `req.hiveAuthMethod` discriminator: the
+ * field is set to `'jwt'` when the request carries `Authorization: Bearer ...`,
+ * otherwise `'signature'`. Cryptographic verification of the Bearer token is
+ * bypassed (that's the carve-out point of this fixture), but the discriminator's
+ * wire-shape gate is reproduced so route handlers that consume
+ * `req.hiveAuthMethod` (e.g., the change-email branch of POST
+ * `/api/settings/email` via the `isJwtPath` alias) see the same value they
+ * would under real verification.
  *
  * `req.hiveCustody` is populated from the JWT's `custody` claim on the JWT
  * path (decoded WITHOUT signature verification — that's the bypassed leg of
@@ -19,11 +19,21 @@
  * custody (e.g., POST `/api/custody/fresh-auth` requires `'light'`) see the
  * same value they would under the real middleware.
  *
+ * The `req` parameter is typed as a narrow `Pick<Request, ...>` rather than
+ * `Record<string, unknown>` so that the `hiveAuthMethod` / `hiveCustody`
+ * assignments below are checked against the global `Express.Request`
+ * augmentation. A future maintainer adding a third member to the
+ * `hiveAuthMethod` union (or making a typo at the assignment site here) gets
+ * a compile-time signal instead of silent drift through an `unknown`-valued
+ * slot.
+ *
  * Usage:
  *   import { MOCK_VERIFY_SIGNATURE } from '../fixtures/mock-auth.js';
  *
  *   vi.mock('../../src/middleware/verifyHiveSignature.js', () => MOCK_VERIFY_SIGNATURE);
  */
+
+import type { Request } from 'express';
 
 function decodeJwtCustodyClaim(authHeader: string | undefined): 'light' | 'self' {
   if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
@@ -41,7 +51,11 @@ function decodeJwtCustodyClaim(authHeader: string | undefined): 'light' | 'self'
 }
 
 export const MOCK_VERIFY_SIGNATURE = {
-  verifyHiveSignature: (req: Record<string, unknown>, _res: unknown, next: () => void) => {
+  verifyHiveSignature: (
+    req: Pick<Request, 'hiveUsername' | 'hiveCustody' | 'hiveAuthMethod' | 'headers'>,
+    _res: unknown,
+    next: () => void,
+  ) => {
     const headers = req.headers as Record<string, string> | undefined;
     const username = headers?.['x-hive-username'];
     if (!username) {
