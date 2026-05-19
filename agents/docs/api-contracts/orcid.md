@@ -87,6 +87,13 @@ Complete the ORCID OAuth2 flow. Exchanges the authorization code for an access t
 
 **Auth:** Required for `accredit` and `link` modes (JWT or Hive-signature headers). The authenticated caller must match the `username` bound into the state by `/start`; otherwise the request is rejected with 403. Not required for `signup` and `login` modes (their state has no bound username). This closes the state-hijack path where a leaked state could be replayed by a different user.
 
+**State consumption semantics.** The OAuth `state` parameter is consumed (DEL from Redis) only on success paths, on application-error paths for unauthenticated modes (`signup`, `login`), and on the application-error paths of authenticated modes that have already passed the auth check. Two error paths intentionally do NOT consume state:
+
+- **403 FORBIDDEN on authenticated modes** (`accredit`, `link` — caller identity does not match the `username` bound at `/start`). The legitimate initiator can retry `/callback` with a valid bearer without being forced back through the ORCID OAuth redirect.
+- **Infrastructure errors on the state-read and auth-dispatch paths** (any throw from the state-read `redis.get` or the auth middleware before the auth check returns). The widened try/catch maps these to 500 INTERNAL_ERROR with state preserved, so a transient Redis flap or auth-stack throw on the first attempt does not burn the user's `state` token.
+
+State is consumed on a 500 INTERNAL_ERROR only when the throw originates downstream of the consume DEL (token-exchange dispatch and beyond).
+
 **Body:**
 
 ```json
