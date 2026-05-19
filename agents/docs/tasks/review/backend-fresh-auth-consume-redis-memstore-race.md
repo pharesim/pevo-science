@@ -279,7 +279,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ---
 
-## Backend re-review signal (2026-05-19, commit SHA c6c8f15)
+## Backend re-review signal (2026-05-19, commit SHA `259498a`)
 
 All three round-3 hold items landed in a single commit. Touched files: `backend/src/lib/fresh-auth.ts` (item 2 new export + item 3 signature widening) and `backend/tests/lib/fresh-auth.test.ts` (item 1 rot-anchor strip + item 2 new identity test).
 
