@@ -161,7 +161,7 @@ describe('isPevoReview', () => {
 });
 
 describe('pevoString', () => {
-  // Round-4 hold item 1: typed read for `pevo`-string fields. Replaces the
+  // Typed read for `pevo`-string fields. Replaces the
   // `(pevo[key] as string) ?? null` cast pattern at the per-version IPFS
   // triple in `papers.ts` head-meta override. Three runtime-shape failure
   // modes the cast pattern silently lets through:
@@ -201,7 +201,7 @@ describe('pevoString', () => {
 });
 
 describe('pevoStringArray', () => {
-  // Round-7 sibling helper for `pevoString`. Mirrors the runtime-shape
+  // Sibling helper for `pevoString`. Mirrors the runtime-shape
   // failure modes the cast pattern `(pevo[key] as string[]) || []`
   // silently lets through:
   //   (a) Non-array runtime values (string, number, object) flow through
@@ -227,11 +227,11 @@ describe('pevoStringArray', () => {
     expect(pevoStringArray({ keywords: ['', 'foo', ''] }, 'keywords')).toEqual(['foo']);
   });
 
-  // Round-2 hold item 1: pin the whitespace-vs-empty boundary explicitly.
-  // The filter is `entry.length > 0`, NOT `entry.trim().length > 0` — a
-  // future "polish" change to trim-and-test would silently change public
-  // API behavior (whitespace-only keywords would start dropping). This
-  // test fails red on that mutation.
+  // Pin the whitespace-vs-empty boundary explicitly. The filter is
+  // `entry.length > 0`, NOT `entry.trim().length > 0` — a future "polish"
+  // change to trim-and-test would silently change public API behavior
+  // (whitespace-only keywords would start dropping). This test fails red
+  // on that mutation.
   it('keeps whitespace-only entries (filter is length > 0, not trim().length > 0)', () => {
     expect(pevoStringArray({ keywords: ['   ', 'foo'] }, 'keywords')).toEqual(['   ', 'foo']);
   });
@@ -319,11 +319,12 @@ describe('toPaperSummary', () => {
     expect(result.citation_count).toBe(0);
     expect(result.author_reputation).toBe(0);
     expect(result.is_accredited).toBe(false);
-    // Round-4 hold item 4(b): native-paper case — `type: 'paper'` with any
-    // author renders source_type='native'. The bridge-author identity check
-    // is not load-bearing here (native-typed metadata never reaches the bridge
-    // arm of `isPevoBridgePaper`); pinning it explicitly closes the symmetry
-    // gap left by the round-3 spoofed/legitimate bridge_paper specs above.
+    // Native-paper symmetry case: `type: 'paper'` with any author renders
+    // source_type='native'. The bridge-author identity check is not
+    // load-bearing here (native-typed metadata never reaches the bridge arm
+    // of `isPevoBridgePaper`); pinning it explicitly closes the symmetry
+    // gap left by the spoofed/legitimate bridge_paper specs above (which
+    // exercise the bridge arm where author identity IS load-bearing).
     expect(result.source_type).toBe('native');
   });
 
@@ -347,12 +348,12 @@ describe('toPaperSummary', () => {
     expect(result.review_count).toBe(0);
   });
 
-  // Round-3 hold item 3: `isPevoBridgePaper` is the load-bearing identity check
-  // for `toPaperSummary`'s source_type/doi rendering. A spoofed bridge_paper
-  // (type set, but author ≠ config.hiveBridgeAccount) MUST degrade to the
-  // native render shape. Without this assertion, a future regression that
-  // narrowed `isPevoBridgePaper` back to a meta-only check would slip past
-  // both helpers.test.ts (which only tests the predicate directly) and
+  // Bridge-author identity is the load-bearing check for `toPaperSummary`'s
+  // source_type/doi rendering. A spoofed bridge_paper (type set, but author
+  // ≠ config.hiveBridgeAccount) MUST degrade to the native render shape.
+  // Without this assertion, a future regression that narrowed
+  // `isPevoBridgePaper` back to a meta-only check would slip past both
+  // helpers.test.ts (which only tests the predicate directly) and
   // bridge-paper-author-gate.test.ts (which only tests SQL shape).
   it("degrades a spoofed bridge_paper (non-bridge author) to native source_type with null doi", () => {
     const post = {

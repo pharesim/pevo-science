@@ -93,9 +93,11 @@ async function getProfileStats(username: string) {
     // `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md`.
     //
     // Param-shape: canonical paramIdx++ counter pattern (per
-    // `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md`
-    // and the round-2 hold #1 convention from reviews.ts). Offset arithmetic
-    // silently mis-binds if any bind is added/removed; the counter adapts.
+    // `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md`).
+    // Offset arithmetic silently mis-binds if any bind is added/removed; the
+    // counter adapts. Adopted across the sibling `routes/reviews.ts` SQL
+    // builders too — the counter-based shape is the project-wide convention
+    // for chained `activeAccreditationsCteBody(N)` consumers.
     const accredCte = activeAccreditationsCteBody(1);
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;

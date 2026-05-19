@@ -1,8 +1,7 @@
 /**
  * Continuation-author consent-gate canary tests.
  *
- * Pins the gate added in BACKEND-CONTINUATION-POST-AUTHOR-CONSENT-GATE
- * and extended in BACKEND-MULTI-AUTHOR-CUMULATIVE-UNION:
+ * Pins the consent gate for continuation-chain admission, extended to cumulative-union author tracking.
  * `resolveContinuationChain` admits a continuation post `C` at hop N into
  * a paper's version chain only when BOTH:
  *   1. `C.author` is in the **cumulative union** of `pevo.authors[].hive`
@@ -22,8 +21,9 @@
  *     differs from the on-chain accredited ORCID; mismatch emits an
  *     `orcid_claim_mismatch` audit warn.
  *   - Per-version display for `pevo.ipfs_cid` / `pevo.document_hash` /
- *     `pevo.ipfs_filename` (round-5 atomic-triple sentinel-aware
- *     fallback to root, unchanged).
+ *     `pevo.ipfs_filename` (sentinel-aware atomic-triple fallback to
+ *     root: head's three IPFS keys either fully express or fully fall
+ *     back, never partially compose).
  *   - Drops are forbidden by construction — the union only grows; no
  *     chain post can remove a hive that another chain post added. A
  *     structural invariant replaces what was previously a
@@ -512,13 +512,13 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('rejects a continuation type-spoof: named co-author posting pevo.type=review with continues pointer', async () => {
-    // Item 1 (round-2 hold): a named co-author bob is in alice's
-    // pevo.authors[]. bob posts a comment with pevo.type='review' AND
-    // pevo.continues={alice, p1}. Without the validPevoPaperWhere predicate
-    // on the chain-walk SQL (and the JS-side isPevoAnyPaper re-check), the
-    // chain-walker would admit it and bob's review content would surface
-    // as alice/p1's apparent paper body via the version walker's
-    // unconditional body-overwrite at line 581-585.
+    // Pins the chain-walk SQL's named-co-author admit-set against the cumulative union.
+    // A named co-author bob is in alice's pevo.authors[]. bob posts a comment
+    // with pevo.type='review' AND pevo.continues={alice, p1}. Without the
+    // validPevoPaperWhere predicate on the chain-walk SQL (and the JS-side
+    // isPevoAnyPaper re-check), the chain-walker would admit it and bob's
+    // review content would surface as alice/p1's apparent paper body via
+    // the version walker's unconditional body-overwrite of `detail.body`.
     //
     // Defense in depth: even if the SQL predicate were dropped, the JS
     // re-check on the candidate's parsed metadata catches it.
@@ -560,10 +560,11 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('chain-walk SQL pins validPevoPaperWhere predicate (pevo.type identity)', async () => {
-    // Item 1 (round-2 hold): the chain-walk SQL must include the
-    // validPevoPaperWhere predicate so a candidate with pevo.type != 'paper'
-    // never reaches the application layer. The predicate text contains
-    // the literal `'type'` -> ... -> 'paper' arm and the bridge-paper arm.
+    // Pins the chain-walk SQL's parameter binding to the cumulative-union admit-set.
+    // The chain-walk SQL must include the validPevoPaperWhere predicate so a
+    // candidate with pevo.type != 'paper' never reaches the application layer.
+    // The predicate text contains the literal `'type'` -> ... -> 'paper' arm
+    // and the bridge-paper arm.
     installResponder(async (sql, _params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
         return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
@@ -599,10 +600,11 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     return /SELECT\s+account,\s*orcid\s+FROM\s+active_accreditations\b/i.test(sql);
   }
   /** Mock paper-detail SELECT row for a multi-link chain seed.
-   *  BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION wrapped the paper SELECT
-   *  with `activeAccreditationsCteBody(4)` so `parent_permlink` shifted
-   *  from `$3` to `$4`. The discriminator accepts both forms so this
-   *  test file stays robust across future param re-layouts. */
+   *  The paper SELECT is wrapped with `activeAccreditationsCteBody(N)`
+   *  for the ORCID-resolution projection, so `parent_permlink` may bind
+   *  to any positional parameter depending on the CTE param count. The
+   *  discriminator accepts any `$N` so this test file stays robust across
+   *  future param re-layouts. */
   function paperDetailSelectSql(sql: string): boolean {
     return sql.includes('SELECT c.author, c.permlink, c.title') && /parent_permlink = \$\d+/.test(sql);
   }
@@ -927,7 +929,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     // carol and falls back to bob's most-recent claim. That claim
     // carries the spoofed ORCID. carol is accredited but her
     // accreditation has no on-chain ORCID — exactly the spoof surface
-    // the round-2 hold identifies. Using carol (not alice/bob) keeps the
+    // this test pins. Using carol (not alice/bob) keeps the
     // root and head authors having their own self-claims, isolating the
     // no-self-claim no-on-chain-orcid path.
     const warnSpy = vi.spyOn(logger, 'warn');
@@ -1055,12 +1057,12 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('shows head\'s ipfs_cid for the default view when continuation provides one (per-version display)', async () => {
-    // Round-3 hold item 2: ipfs_cid / document_hash / ipfs_filename apply
-    // per-version. The default `/api/papers/:author/:permlink` view reads
-    // from the chain head, like other free-edit fields. bob's v2 carries
-    // its own CID (bob's revised PDF); that's the displayed CID, not
-    // root's. Per-version retention is preserved on chain (Hive
-    // immutability) and accessible via ?version=N.
+    // Per-version display invariant: ipfs_cid / document_hash / ipfs_filename
+    // apply per-version. The default `/api/papers/:author/:permlink` view reads
+    // from the chain head, like other free-edit fields. bob's v2 carries its
+    // own CID (bob's revised PDF); that's the displayed CID, not root's.
+    // Per-version retention is preserved on chain (Hive immutability) and
+    // accessible via ?version=N.
     const continuationMeta = {
       app: `${config.appTag}/test`,
       [config.appTag]: {
@@ -1104,11 +1106,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('falls back to root\'s ipfs_cid when head metadata doesn\'t carry one', async () => {
-    // Round-3 hold item 2: when the head version doesn't carry an
-    // ipfs_cid/document_hash/ipfs_filename, the default view falls back
-    // to the root's value. This covers the legitimate case where a
-    // continuation evolves only the body/abstract and inherits the
-    // root's PDF unchanged.
+    // Sentinel-aware fallback: when the head version doesn't carry an
+    // ipfs_cid/document_hash/ipfs_filename, the default view falls back to
+    // the root's value. This covers the legitimate case where a continuation
+    // evolves only the body/abstract and inherits the root's PDF unchanged.
     const continuationMeta = {
       app: `${config.appTag}/test`,
       [config.appTag]: {
@@ -1149,24 +1150,24 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.ipfs_filename).toBe('root.pdf');
   });
 
-  // Round-4 hold item 1 + round-5 sentinel-aware atomic triple: pevoString
-  // helper closes three runtime-shape gaps the round-3 cast-and-coalesce
-  // pattern silently let through. The cast shape
+  // pevoString helper + sentinel-aware atomic triple: closes runtime-shape
+  // gaps a cast-and-coalesce pattern silently let through. The cast shape
   // `(headPevo.ipfs_cid as string) ?? (rootPevo.ipfs_cid as string) ?? null`
   // is a TS assertion, not a narrowing — runtime values like `''`, `0`, and
-  // `{}` flowed through unchanged. Under round-5's sentinel-aware atomic
-  // triple, when head expresses any of the triple keys (even with non-string
+  // `{}` flowed through unchanged. Under the sentinel-aware atomic triple,
+  // when head expresses any of the triple keys (even with non-string
   // values), head's view wins for the entire triple — all three fields
   // collapse to null because pevoString narrows the bad values out. No
   // fallback to root: per-field Frankenstein composition is rejected
   // structurally. The three integration canaries below pin all-null
   // collapse for each non-string runtime shape on head.
-  it('admits head\'s triple as all-null when head sets all three keys to empty strings (round-5 atomic-triple)', async () => {
-    // Under round-5: `'ipfs_cid' in headPevo` is true (key present, even
-    // with empty-string value), so head's triple wins atomically. pevoString
-    // narrows '' → null for each, yielding an all-null triple. Root's
-    // triple is NOT consulted — the per-field fallback that would have
-    // produced root.ipfs_cid is structurally unavailable here.
+  it('admits head\'s triple as all-null when head sets all three keys to empty strings (atomic-triple)', async () => {
+    // Key-presence wins for the atomic triple: `'ipfs_cid' in headPevo` is
+    // true (key present, even with empty-string value), so head's triple
+    // wins atomically. pevoString narrows '' → null for each, yielding an
+    // all-null triple. Root's triple is NOT consulted — the per-field
+    // fallback that would have produced root.ipfs_cid is structurally
+    // unavailable here.
     const continuationMeta = {
       app: `${config.appTag}/test`,
       [config.appTag]: {
@@ -1208,8 +1209,8 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.ipfs_filename).toBe(null);
   });
 
-  it('admits head\'s triple as all-null when head sets all three keys to numeric 0 (round-5 atomic-triple)', async () => {
-    // Under round-5: `'ipfs_cid' in headPevo` is true (key present with
+  it('admits head\'s triple as all-null when head sets all three keys to numeric 0 (atomic-triple)', async () => {
+    // Key-presence wins: `'ipfs_cid' in headPevo` is true (key present with
     // value 0), so head's triple wins atomically. pevoString narrows 0 →
     // null for each, yielding an all-null triple. Root's triple is NOT
     // consulted.
@@ -1254,8 +1255,8 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.ipfs_filename).toBe(null);
   });
 
-  it('admits head\'s triple as all-null when head sets all three keys to objects/arrays (round-5 atomic-triple)', async () => {
-    // Under round-5: `'ipfs_cid' in headPevo` is true (key present with
+  it('admits head\'s triple as all-null when head sets all three keys to objects/arrays (atomic-triple)', async () => {
+    // Key-presence wins: `'ipfs_cid' in headPevo` is true (key present with
     // object/array value), so head's triple wins atomically. pevoString
     // narrows {} / [] → null for each, yielding an all-null triple. The API
     // contract promises string-or-null and atomic-triple keeps that
@@ -1301,13 +1302,13 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.ipfs_filename).toBe(null);
   });
 
-  // Round-5 hold items 1+2: sentinel-aware atomic triple. The IPFS triple
-  // is read entirely from head when head expresses any of the three keys
-  // (even with null / non-string values), and entirely from root when head
-  // expresses none of them. Per-field fallback (which produced Frankenstein
-  // composition where the displayed triple never existed on chain in any
-  // single version) is structurally unavailable.
-  it('admits an atomic triple from head when head supplies any one of the three fields as a non-string but at least one is a valid string (round-5 atomic-triple)', async () => {
+  // Sentinel-aware atomic triple invariant: the IPFS triple is read entirely
+  // from head when head expresses any of the three keys (even with null /
+  // non-string values), and entirely from root when head expresses none of
+  // them. Per-field fallback (which produced Frankenstein composition where
+  // the displayed triple never existed on chain in any single version) is
+  // structurally unavailable.
+  it('admits an atomic triple from head when head supplies any one of the three fields as a non-string but at least one is a valid string (atomic-triple)', async () => {
     // Head supplies `ipfs_cid: 'QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'` (valid) plus pathological values
     // for the other two. Atomic triple: head wins for the entire triple
     // (head expressed an opinion via the valid CID); the other two collapse
@@ -1354,16 +1355,16 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.document_hash).toBe(null);
   });
 
-  it('rejects asymmetric Frankenstein composition: head supplies two of the three keys, third is missing (round-5 atomic-triple)', async () => {
+  it('rejects asymmetric Frankenstein composition: head supplies two of the three keys, third is missing (atomic-triple)', async () => {
     // Head supplies `ipfs_cid: 'QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', ipfs_filename: 0` — two keys
     // present, document_hash key entirely absent. Under per-field fallback
-    // (the round-4 shape this canary would FAIL against), document_hash
-    // would fall through to root's `sha256:root`, producing Frankenstein
-    // composition: head's CID + root's hash. Under round-5's atomic
-    // triple, head's view wins for the entire triple because head
-    // expressed an opinion (two keys present); document_hash collapses
-    // to null because the key is absent → pevoString returns null. The
-    // displayed triple is consistent with what head broadcast.
+    // (the pre-atomic-triple shape this canary would FAIL against),
+    // document_hash would fall through to root's `sha256:root`, producing
+    // Frankenstein composition: head's CID + root's hash. Under the atomic
+    // triple, head's view wins for the entire triple because head expressed
+    // an opinion (two keys present); document_hash collapses to null because
+    // the key is absent → pevoString returns null. The displayed triple is
+    // consistent with what head broadcast.
     //
     // This is the kill canary for the "Frankenstein" anti-pattern. Revert
     // the atomic-triple block to per-field fallback and this test FAILS
@@ -1409,7 +1410,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.document_hash).toBe(null);
   });
 
-  it('preserves head\'s explicit null ipfs_cid (inline-only continuation, no PDF) (round-5 sentinel-aware)', async () => {
+  it('preserves head\'s explicit null ipfs_cid (inline-only continuation, no PDF) (sentinel-aware)', async () => {
     // Head expresses an inline-only continuation: ipfs_cid: null is the
     // explicit "no PDF on this version, body is everything" signal. The
     // sentinel-aware `'in'` check distinguishes this from "head omitted
@@ -1418,9 +1419,9 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     // surfaced; the frontend's `is_diffable` toggle correctly reads
     // ipfs_cid: null and renders inline.
     //
-    // This is the kill canary for round-3's `??` problem. Revert the
-    // sentinel-aware `'in'` check to `pevoString(headPevo, 'ipfs_cid')
-    // ?? pevoString(rootPevo, 'ipfs_cid')` and this test FAILS with
+    // Kill canary for the `??` coalesce pattern. Revert the sentinel-aware
+    // `'in'` check to `pevoString(headPevo, 'ipfs_cid') ?? pevoString(rootPevo,
+    // 'ipfs_cid')` and this test FAILS with
     // `expect ipfs_cid to be null but received 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'`.
     const continuationMeta = {
       app: `${config.appTag}/test`,
@@ -1463,11 +1464,11 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.document_hash).toBe(null);
   });
 
-  it('falls back to root when head omits all triple keys (no opinion expressed) (round-5 sentinel-aware)', async () => {
+  it('falls back to root when head omits all triple keys (no opinion expressed) (sentinel-aware)', async () => {
     // Head expresses no opinion on the triple — none of the keys are
     // present in head's pevo metadata. The `'in'` check returns false
     // for all three, so the entire triple inherits from root. This is
-    // the only path that consults root's triple under the round-5
+    // the only path that consults root's triple under the atomic-triple
     // shape; pin it explicitly so a future refactor doesn't regress
     // back to per-field fallback.
     const continuationMeta = {
@@ -1510,24 +1511,23 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.document_hash).toBe('sha256:root');
   });
 
-  // Round-6 hold item 3: OR-arm-deletion mutation kill canaries. The
-  // sentinel predicate at papers.ts is `'ipfs_cid' in headPevo ||
-  // 'ipfs_filename' in headPevo || 'document_hash' in headPevo`. Every
-  // prior "head wins" canary in this suite sets `ipfs_cid` as a present
-  // key, so a mutation that deletes either of the latter two OR arms
-  // (or collapses the predicate to just `'ipfs_cid' in headPevo`)
-  // leaves all of them green. These two canaries (head expressing ONLY
-  // `document_hash`, then head expressing ONLY `ipfs_filename`) close
-  // that gap: each head shape activates exactly one of the two
-  // non-`ipfs_cid` OR arms, so deleting that arm flips the head-wins
-  // path into the root-fallback branch and the canary fails.
-  it('admits head\'s triple as document_hash-only when head expresses ONLY document_hash (round-6 OR-arm-kill)', async () => {
+  // OR-arm-deletion mutation kill canaries. The sentinel predicate at
+  // papers.ts is `'ipfs_cid' in headPevo || 'ipfs_filename' in headPevo ||
+  // 'document_hash' in headPevo`. Every prior "head wins" canary in this
+  // suite sets `ipfs_cid` as a present key, so a mutation that deletes
+  // either of the latter two OR arms (or collapses the predicate to just
+  // `'ipfs_cid' in headPevo`) leaves all of them green. These two canaries
+  // (head expressing ONLY `document_hash`, then head expressing ONLY
+  // `ipfs_filename`) close that gap: each head shape activates exactly
+  // one of the two non-`ipfs_cid` OR arms, so deleting that arm flips
+  // the head-wins path into the root-fallback branch and the canary fails.
+  it('admits head\'s triple as document_hash-only when head expresses ONLY document_hash (OR-arm-kill)', async () => {
     // Head's pevo metadata expresses ONLY `document_hash` (no
     // `ipfs_cid`, no `ipfs_filename`). Root has the full triple.
-    // Under round-5's atomic block: `'document_hash' in headPevo` is
-    // true → head wins → ipfs_cid and ipfs_filename collapse to null
-    // (absent on head; pevoString returns null), document_hash
-    // surfaces head's value.
+    // Under the atomic block: `'document_hash' in headPevo` is true →
+    // head wins → ipfs_cid and ipfs_filename collapse to null (absent
+    // on head; pevoString returns null), document_hash surfaces head's
+    // value.
     //
     // Mutation kill: revert `'document_hash' in headPevo` from the
     // OR predicate (or collapse the predicate to
@@ -1576,11 +1576,11 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.document_hash).toBe('sha256:head-only');
   });
 
-  it('admits head\'s triple as ipfs_filename-only when head expresses ONLY ipfs_filename (round-6 OR-arm-kill)', async () => {
+  it('admits head\'s triple as ipfs_filename-only when head expresses ONLY ipfs_filename (OR-arm-kill)', async () => {
     // Head's pevo metadata expresses ONLY `ipfs_filename` (no
     // `ipfs_cid`, no `document_hash`). Root has the full triple.
-    // Under round-5's atomic block: `'ipfs_filename' in headPevo` is
-    // true → head wins → ipfs_cid and document_hash collapse to null,
+    // Under the atomic block: `'ipfs_filename' in headPevo` is true →
+    // head wins → ipfs_cid and document_hash collapse to null,
     // ipfs_filename surfaces head's value.
     //
     // Mutation kill: revert `'ipfs_filename' in headPevo` from the
@@ -1631,10 +1631,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('?version=N retrieves per-version ipfs_cid (regression pin)', async () => {
-    // Round-3 hold item 2: ipfs_cid is preserved per-version on chain.
-    // The dedicated ?version=N path reads each version's metadata
-    // directly via reconstructVersionsFromHaf — alice's v1 surfaces
-    // its CID, bob's v2 surfaces its (different) CID.
+    // Per-version retention invariant: ipfs_cid is preserved per-version on
+    // chain. The dedicated ?version=N path reads each version's metadata
+    // directly via reconstructVersionsFromHaf — alice's v1 surfaces its CID,
+    // bob's v2 surfaces its (different) CID.
     const v1Meta = {
       app: `${config.appTag}/test`,
       [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmV1CidCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC', document_hash: 'sha256:v1' },
@@ -1823,8 +1823,8 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('wall-clock budget: aborts forward walker mid-walk, emits continuation_chain_wall_clock_exceeded', async () => {
-    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 canary for the
-    // FORWARD walker. The backward walker is suppressed (its initial
+    // Wall-clock-budget canary for the FORWARD walker. The backward walker
+    // is suppressed (its initial
     // probe returns 0 rows so findCanonicalRoot bails at
     // sql_filter_or_missing at debug, NOT capturing budget time). Only
     // the forward walker's chain-walk SQL queries are delayed (~80ms).
@@ -1889,8 +1889,8 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
     try {
       const res = await request(app).get('/api/papers/alice/p1');
-      // Round-2 item 4 (P2 reliability): walker-aborted requests surface
-      // as 503 so HTTP-status monitors catch degraded HAF. Pre-round-2
+      // HAF-degradation surfacing: walker-aborted requests surface as 503
+      // so HTTP-status monitors catch degraded HAF. Pre-fix, walker-aborts
       // returned 200 with possibly-stale or partial-chain data.
       expect(res.status).toBe(503);
 
@@ -1915,7 +1915,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('forward walker does NOT emit wall-clock event on fast HAF (orthogonal signal pinning)', async () => {
-    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 paired canary.
+    // Wall-clock-budget paired negative canary.
     //
     // The forward walker has no separate depth-cap event (it exits
     // silently at MAX_HOPS), so this canary's role is the negative
@@ -1962,12 +1962,12 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     }
   });
 
-  // Sibling-route DoS-amplifier closure: BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET
-  // round-2 hold item 2. Pre-fix only `GET /:author/:permlink` carried the
-  // AbortController wrapper; `/cite`, `/retract`, `/enrichment` reached the
-  // same forward walker via `fetchPaperDetailFromHaf` / `fetchEnrichmentFromHaf`
-  // without a per-request budget, so the same attacker-posted long chains
-  // under degraded HAF could starve worker threads on those three URLs.
+  // Sibling-route DoS-amplifier closure for the HAF walker wall-clock budget.
+  // Pre-fix only `GET /:author/:permlink` carried the AbortController wrapper;
+  // `/cite`, `/retract`, `/enrichment` reached the same forward walker via
+  // `fetchPaperDetailFromHaf` / `fetchEnrichmentFromHaf` without a per-request
+  // budget, so the same attacker-posted long chains under degraded HAF could
+  // starve worker threads on those three URLs.
   // These canaries pin the wrapper presence + the route's abort-detection
   // 503 surface. /retract is covered in retract.test.ts where auth is
   // mocked.
@@ -2061,14 +2061,14 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
 // ──────────────────────────────────────────────
 
 /**
- * Pins the validation added in BACKEND-PAPER-DETAIL-CID-VALIDATE-ON-EMIT:
- * paper-detail responses MUST clear `ipfs_cid` to `null` (and emit a
- * structured `paper_detail_ipfs_cid_rejected` operator warn) when the
+ * Pins the emit-time CID validation invariant on paper-detail responses:
+ * `ipfs_cid` MUST be cleared to `null` (and a structured
+ * `paper_detail_ipfs_cid_rejected` operator warn emitted) when the
  * chain-supplied value fails the syntactic CID-shape predicate. This is
- * the integration canary at the buildPaperDetail emit site (no continuation
- * chain). Mutation kill: deleting the `validatedCid()` wrapper at
- * `routes/papers.ts:1067` lets a whitespace-padded CID surface unchanged
- * in the API response, failing this assertion red.
+ * the integration canary at the `buildPaperDetail` emit site (no
+ * continuation chain). Mutation kill: deleting the `validatedCid()`
+ * wrapper at the detail emit site lets a whitespace-padded CID surface
+ * unchanged in the API response, failing this assertion red.
  *
  * The pure-predicate canary lives in `tests/lib/ipfs-validation.test.ts`;
  * this file only pins the wired-up emit path.
@@ -2175,16 +2175,16 @@ describe('GET /api/papers/:author/:permlink — output-side ipfs_cid validation'
 });
 
 describe('GET /api/papers/:author/:permlink — pevoString family adoption: route-level mutation-kill', () => {
-  // Round-2 hold items 2 + 3a for backend-pevo-string-helper-adoption-sweep.
+  // pevoString-family route-level mutation-kill canaries.
   //
-  // Item 2 (pevoStringArray route-level mutation-kill): the keywords field is
+  // pevoStringArray adoption (keywords filtering): the keywords field is
   // read at four call sites via `pevoStringArray`. Existing route tests only
   // assert `toHaveProperty('keywords')` — they would pass whether the field
   // is `['neuroscience']` (filtered) or `[42, '', 'neuroscience']` (the
   // unfiltered cast pattern). This describe pins the filtering effect end-to-end
   // so reverting the migration at any of the 4 sites fails red.
   //
-  // Item 3a (language fallback): both `fetchPaperDetailFromHaf` (head-meta
+  // pevoString language fallback: both `fetchPaperDetailFromHaf` (head-meta
   // override) and `buildPaperDetail` use `pevoString(pevo, 'language') ?? 'en'`.
   // Single-version papers (no continuation) route through `buildPaperDetail` —
   // covered here. The integration with the head-meta override path is covered
@@ -2221,10 +2221,10 @@ describe('GET /api/papers/:author/:permlink — pevoString family adoption: rout
     // unfiltered cast `(pevo.keywords as string[]) || []` would surface
     // `[42, '', 'neuroscience']` in the response (numeric/empty leak through);
     // `pevoStringArray` narrows entries to non-empty strings only. Asserting
-    // `['neuroscience']` pins the migration at the buildPaperDetail call site
-    // (`papers.ts:1749`), which is the active code path for single-version
-    // papers (no continuation chain). A revert at this site would surface
-    // the numeric `42` and empty string and fail red.
+    // `['neuroscience']` pins the migration at the `buildPaperDetail` call
+    // site, which is the active code path for single-version papers (no
+    // continuation chain). A revert at this site would surface the numeric
+    // `42` and empty string and fail red.
     const row = paperRowWithFields('alice', 'p1', { keywords: [42, '', 'neuroscience'] });
     installResponder(async (sql, _params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
@@ -2251,7 +2251,7 @@ describe('GET /api/papers/:author/:permlink — pevoString family adoption: rout
     // was `headPevo.language || 'en'`; post-migration it is
     // `pevoString(pevo, 'language') ?? 'en'`. Both yield `'en'` here. A
     // regression that dropped the `?? 'en'` fallback would surface `null`
-    // and fail red. Pins the buildPaperDetail call site (`papers.ts:1757`).
+    // and fail red. Pins the `buildPaperDetail` call site.
     const row = paperRowWithFields('alice', 'p1', {}); // language absent
     installResponder(async (sql, _params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {

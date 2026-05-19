@@ -1,5 +1,5 @@
 /**
- * Mocked-pool SQL-shape canaries for BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION.
+ * Mocked-pool SQL-shape canaries for the ORCID-supersession projection.
  *
  * Pins the supersession projection (`orcid_verified`, `orcid_discrepancy`) on
  * both the list (`GET /api/papers`) and detail (`GET /api/papers/:author/:permlink`)
@@ -387,8 +387,8 @@ describe('hive-account normalization parity across SQL JOIN, computeSupersession
   });
 
   it('hive normalization parity: `\\tbob`, ` bob`, `bob\\n`, `Alice` resolve identically across JS and SQL', () => {
-    // The architect's round-3 hold prescribed this parity test. JS
-    // `normalizeHiveAccount` and the SQL JOIN `LOWER(TRIM(...)) ~ regex`
+    // Pins the per-input parity between JS normalizeHiveAccount and the SQL JOIN's LOWER(TRIM(...)) regex guard.
+    // JS `normalizeHiveAccount` and the SQL JOIN `LOWER(TRIM(...)) ~ regex`
     // must agree per-input on whether the value names a real account.
     //
     //   - `\tbob`  → SQL: LOWER(TRIM)='\tbob' (TRIM no-op on tab); regex
@@ -410,9 +410,9 @@ describe('hive-account normalization parity across SQL JOIN, computeSupersession
   });
 
   it('papers.ts adopts normalizeHiveAccount at sibling accredited_authors lookup sites', async () => {
-    // Round-3 item 2: the list-endpoint `accredited_authors` row builder and
-    // the non-chain-detail `accredited_authors` projection must use the
-    // wrapper, not raw `.hive` lookups. Companion test stages a chain paper
+    // Pins the wrapping-primitive adoption at the list-endpoint accredited_authors row builder and the non-chain-detail branch.
+    // Both must use the normalizeHiveAccount wrapper, not raw `.hive` lookups.
+    // Companion test stages a chain paper
     // with mixed-case `authors[i].hive = 'Alice'` and asserts that both
     // `orcid_verified` AND `accredited_authors` resolve correctly in the same
     // response row — proving the wrapper is adopted at the sibling lookup

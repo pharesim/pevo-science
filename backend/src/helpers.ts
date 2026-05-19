@@ -347,11 +347,13 @@ export function toPaperSummary(post: {
     discipline: paperDisciplineField(pevo.discipline) ?? '',
     keywords: pevoStringArray(pevo, 'keywords'),
     authors: summaryAuthors,
-    // Output-side CID shape validation. Closes the fourth emit path missed
-    // by BACKEND-PAPER-DETAIL-CID-VALIDATE-ON-EMIT round-1 (the three sites
-    // in `routes/papers.ts` were wrapped; this site, which feeds
-    // `/api/profile/:username/papers` and any future consumer of
-    // `toPaperSummary`, was unwrapped). See task round-2 hold item 1.
+    // Output-side CID shape validation. The validate-on-emit invariant: every
+    // emit path that surfaces `ipfs_cid` to API consumers wraps the chain
+    // value in `validatedCid()` so a whitespace-padded or otherwise
+    // syntactically invalid CID is cleared to `null` at the boundary. This
+    // toPaperSummary site feeds `/api/profile/:username/papers` (and any
+    // future consumer of the summary projection); without the wrap, it would
+    // be the only emit path leaking unvalidated CIDs.
     ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
       author: post.author,
       permlink: post.permlink,

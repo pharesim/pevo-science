@@ -14,8 +14,10 @@ export interface PaperAuthor {
    *
    *  Note: PaperSummary's runtime shape strips `affiliation` per the
    *  contract, even though the type leaves it optional. The supersession
-   *  fields are optional on both PaperSummary and PaperDetail (absent when
-   *  the caller didn't wire the orcid map; populated otherwise).
+   *  fields are always populated at runtime; they collapse to null/false
+   *  (case-1 of the supersession lattice) when the caller passes an empty
+   *  accreditation map (e.g., test fixtures). Type-optional for
+   *  partial-fixture construction.
    */
   orcid_verified?: string | null;
   /** `true` IFF chain `orcid` and `orcid_verified` are both non-empty AND
