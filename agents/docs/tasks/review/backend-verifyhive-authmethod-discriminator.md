@@ -89,7 +89,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ---
 
-## Backend re-review signal (2026-05-19, commit SHA `8b97461`)
+## Backend re-review signal (2026-05-19, commit SHA `5fc0cae`)
 
 All three round-2 hold items landed in a single bundled commit. Touched files:
 
