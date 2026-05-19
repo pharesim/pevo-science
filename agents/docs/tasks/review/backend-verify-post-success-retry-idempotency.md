@@ -292,3 +292,46 @@ When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-3 archite
 - (security / reliability residuals) revoke-after-broadcast cached 200, token-replay across grace window, process-restart memory loss — explicitly accepted trade-offs documented at the `memoryAccreditationCompletions` declaration block in code.
 - (maintainability M-2 / project-standards PSR-001) "Round-2 F3" and "round-3 hold #3" citations claimed to be in `+` lines by two reviewers — false positive; direct grep against the round-2 diff confirms these are pre-existing context lines, not `f30a2d1` introductions. Pre-existing anchor rot in `accreditation.ts` and its test files is filed as a separate pending task (`backend-comment-anchor-rot-sweep-accreditation-ts`).
 
+---
+
+## Backend re-review signal (2026-05-19) — round 3
+
+All 3 round-3 hold items landed.
+
+### Item 1 — orphaned `deleteTokenBestEffort` JSDoc moved to its function
+
+The pre-existing JSDoc describing `deleteTokenBestEffort` (covering the 200-success / idempotency-hit / 500-SMTP cleanup branches and the `helper-extraction-express5-response-ordering-2026-04-28.md` ordering hazard) now sits immediately above `async function deleteTokenBestEffort` in `backend/src/routes/accreditation.ts`. Content unchanged; only the location moved. The two consecutive JSDoc blocks that were sitting above `recordAccreditationCompletionBestEffort` are now one JSDoc block per function, properly attached for IDE hover-doc tooling.
+
+### Item 2 — `recordAccreditationCompletionBestEffort` JSDoc rewritten as a contract
+
+The JSDoc above `recordAccreditationCompletionBestEffort` no longer names which call sites use it (the prior text said "broadcast-success path AFTER `seedAccreditationBonus` succeeds", which became inaccurate after the sibling task added gate-hit and idem-hit callers). The new docblock describes what the wrapper guarantees: response-ordering protection around the completion-record write so a propagating Redis error does not reach Express's async-error handler over an in-flight 200 envelope. It references `helper-extraction-express5-response-ordering-2026-04-28.md` for the ordering hazard, names `completion_record_pipeline_failed` as the inner-catch log discriminator for the Redis-down-mid-pipeline class, and explicitly mentions the in-memory-write-throw / unexpected-exception failure modes the outer catch covers.
+
+### Item 3 — pipeline-rejection inner-catch spec landed
+
+New spec in `backend/tests/routes/accreditation-idempotency.test.ts` under the existing grace-period describe block: `pipeline rejection in recordAccreditationCompletion → 200 envelope; warn fires; in-memory fallback satisfies retry under Redis flap`. Stubs `redis.multi` with `mockReturnValueOnce` returning a chain whose `.exec()` rejects, mirroring the real call shape (`.multi().set(...).del(...).exec()`). Spies `logger.warn`. Asserts:
+
+- **(a) 200 envelope on the broadcast-success flight.** `expect(firstRes.status).toBe(200)` + matching `tx_id: 'tx-pipeline-reject-1'`.
+- **(b) `accreditation.verify.completion_record_pipeline_failed` warn fires** with `route`, `username`, `token_hash` discriminators and message text containing `pipeline failed`.
+- **(c) In-memory fallback satisfies retry under sustained Redis flap.** Documented inline why a plain retry on healthy Redis would not exercise the in-memory path (pipeline rejection leaves the Redis-side pending row intact — the `del` was inside the rejected MULTI — so `getToken` finds the row on retry and the route re-broadcasts). The realistic scenario is a sustained flap: the spec spies `isRedisAvailable` to return false on the retry leg, modeling Redis going down between the broadcast and the retry. Under that flap, `getToken` falls through to `memoryTokens` (empty — the fallback deleted the entry), `!pending` reads `memoryAccreditationCompletions` (the fallback's set), and returns the cached 200 envelope; `broadcastJsonMock` is NOT re-invoked.
+- Also pins the Redis-side completion-record absence: `expect(redisStored).toBeNull()`.
+
+Carve-out justification per root `CLAUDE.md` "Running Tests" clause (a): the `redis.multi().exec()` rejection class cannot be exercised against real Redis per-test. Clause (c) real-path companion: the sibling grace-period specs in this same file exercise the live `redis.multi` chain end-to-end against the real client — different risk class (happy path vs pipeline rejection), same integrated path.
+
+### Deviation worth flagging
+
+Architect hold-block item 3's acceptance (c) reads "the in-memory completion record is readable on retry (issue a second `/verify` with the same token, assert 200 with cached envelope, assert `broadcastJsonMock` is NOT re-invoked)". A literal reading suggests no flap precondition on the retry — but with current code, a plain retry on healthy Redis sees the un-deleted pending row in Redis (the `del` was inside the rejected MULTI) and re-broadcasts. The in-memory fallback only wins when `getToken`'s Redis branch is unreachable, i.e., under a Redis flap. The spec encodes that as a `vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false)` on the retry leg. This matches the architect's "in-memory fallback satisfies the retry" intent but adds the missing flap precondition.
+
+Two alternative directions the architect may want instead (not implemented here):
+
+1. **Add a separate `deleteToken(token)` fallback to the inner catch** in `recordAccreditationCompletion`. After the pipeline rejection warn, attempt to delete the pending row directly (best-effort) so a healthy-Redis retry would also hit the `!pending` branch. This is a small code change with a real reliability win (the in-memory fallback intent is "the post-broadcast cleanup completes regardless of pipeline outcome"; the current code only completes the in-memory cleanup). Flag this and the spec can drop the flap precondition.
+2. **Document the flap precondition in the convention doc** at `chain-write-timeout-ambiguous-outcome-2026-04-22.md` so future readers know the in-memory fallback's recovery boundary is "Redis must be unavailable on the retry leg".
+
+The spec lands the architect's three acceptance clauses as-prescribed; the deviation is the added flap precondition required to make (c) actually exercise the in-memory path.
+
+### Verification
+
+- `npm run typecheck` (`:src` and `:tests`): clean.
+- `npm run lint` (`src/`): clean.
+- `npx vitest run tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **19/19 pass** — 16 pre-existing grace-period and sibling specs + 3 grace-period idempotency specs from round-1 + the new pipeline-rejection spec from round-3.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;

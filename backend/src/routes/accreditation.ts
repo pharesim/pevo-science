@@ -455,33 +455,19 @@ async function readAccreditationCompletion(
 }
 
 /**
- * Best-effort wrapper around `deleteToken` used by branches that have already
- * written or are about to write a final response envelope (200 success and
- * idempotency-hit paths on /verify; 500 SMTP-failure cleanup paths on
- * /request). A Redis hiccup on cleanup must NOT propagate to Express's
- * async-error handler (`ERR_HTTP_HEADERS_SENT` would be the visible symptom
- * on the success branches; envelope-shape regression to the express-default
- * HTML 500 would be the symptom on the /request 500 branches — both
- * captured by `helper-extraction-express5-response-ordering-2026-04-28.md`).
- * Caller passes `event` + `msg` discriminators so operators can correlate
- * the orphan back to the specific branch that observed the failure; the
- * 24h token TTL is the backstop. The discriminator string convention is to
- * prefix the event with the calling route (`accreditation.request.*` vs
- * `accreditation.verify.*`) — log search keys on that.
- */
-/**
- * Best-effort wrapper around `recordAccreditationCompletion` used on the
- * /verify broadcast-success path AFTER `seedAccreditationBonus` succeeds.
- * Mirrors `deleteTokenBestEffort`'s shape because the same response-
- * ordering hazard applies: the 200 envelope has not been written yet,
- * but a propagating Redis error on the completion-record write must not
- * reach Express's async-error handler over the in-flight 200 (closes
- * the response-ordering class documented at `helper-extraction-express5-
- * response-ordering-2026-04-28.md`). The internal pipeline-rejection
- * catch in `recordAccreditationCompletion` handles the Redis-down-mid-
- * pipeline class; this outer wrapper catches any other failure mode
- * (e.g., the in-memory writes themselves throwing, or unexpected
- * exceptions from the helper).
+ * Best-effort wrapper around `recordAccreditationCompletion`. Contract: a
+ * propagating Redis (or other) error from the completion-record write must
+ * not reach Express's async-error handler at any branch where a 200 envelope
+ * is about to be written. The async-error handler would observe
+ * `ERR_HTTP_HEADERS_SENT` over the in-flight success, regressing the same
+ * response-ordering class captured at
+ * `helper-extraction-express5-response-ordering-2026-04-28.md`. The wrapper
+ * always returns; failures emit a structured warn so operators can correlate
+ * the orphan back to the branch that observed it. The 24h Redis TTL on
+ * completion records is the backstop. Internal pipeline-rejection inside
+ * `recordAccreditationCompletion` handles the Redis-down-mid-pipeline class
+ * (via the `completion_record_pipeline_failed` log); this outer catch covers
+ * any other failure mode (in-memory write throw, unexpected helper exception).
  */
 async function recordAccreditationCompletionBestEffort(
   token: string,
@@ -506,6 +492,21 @@ async function recordAccreditationCompletionBestEffort(
   }
 }
 
+/**
+ * Best-effort wrapper around `deleteToken` used by branches that have already
+ * written or are about to write a final response envelope (200 success and
+ * idempotency-hit paths on /verify; 500 SMTP-failure cleanup paths on
+ * /request). A Redis hiccup on cleanup must NOT propagate to Express's
+ * async-error handler (`ERR_HTTP_HEADERS_SENT` would be the visible symptom
+ * on the success branches; envelope-shape regression to the express-default
+ * HTML 500 would be the symptom on the /request 500 branches — both
+ * captured by `helper-extraction-express5-response-ordering-2026-04-28.md`).
+ * Caller passes `event` + `msg` discriminators so operators can correlate
+ * the orphan back to the specific branch that observed the failure; the
+ * 24h token TTL is the backstop. The discriminator string convention is to
+ * prefix the event with the calling route (`accreditation.request.*` vs
+ * `accreditation.verify.*`) — log search keys on that.
+ */
 async function deleteTokenBestEffort(
   token: string,
   username: string,

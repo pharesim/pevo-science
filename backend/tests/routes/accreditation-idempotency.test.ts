@@ -82,6 +82,7 @@ vi.mock('../../src/reputation.js', () => ({
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
+import * as redisModule from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
 
 config.pevoAdminPostingKey = PrivateKey.fromSeed('pevo-accred-idem-test-admin').toString();
@@ -1035,5 +1036,99 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     expect(retryRes.body.data.outcome).toBeUndefined();
     expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBefore);
     expect(hafQueryMock.mock.calls.length).toBe(hafCallsBefore);
+  });
+
+  it('pipeline rejection in recordAccreditationCompletion → 200 envelope; warn fires; in-memory fallback satisfies retry under Redis flap', async () => {
+    // Carve-out clause (a) per root CLAUDE.md "Running Tests": the
+    // Redis-down-mid-pipeline rejection class on `redis.multi().exec()` is
+    // impractical to exercise per-test against real Redis (the connection
+    // would have to be physically broken between INCR-pre-DECR and the
+    // MULTI dispatch). Clause (c) real-path companion: the happy-path
+    // grace-period specs above this one exercise the live `redis.multi`
+    // chain against the real client. This spec stubs `redis.multi` once
+    // to drive the inner-catch path; the broadcast and HAF mocks stay as
+    // in the sibling grace-period specs.
+    //
+    // Retry leg context: pipeline rejection leaves the Redis-side pending
+    // row intact (the row's `del` was inside the rejected MULTI), so a
+    // plain retry on a healthy Redis would re-broadcast. The realistic
+    // scenario where the in-memory fallback satisfies the retry is a
+    // sustained flap — Redis went down between the broadcast and the
+    // retry. Spying `isRedisAvailable` to false on the retry leg models
+    // that flap; under it, `getToken` falls through to `memoryTokens`
+    // (empty — the fallback deleted the entry) and the `!pending`
+    // grace-period read falls through to `memoryAccreditationCompletions`
+    // (the fallback's set), returning the cached 200 envelope without
+    // re-broadcasting.
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-grace-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gracepipelinefail';
+    await seedPendingAccreditation(token, username);
+
+    // First flight: gate miss + idempotency miss → broadcast success.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] }); // gate
+    hafQueryMock.mockResolvedValueOnce({ rows: [] }); // idempotency
+    broadcastJsonMock.mockResolvedValueOnce({ id: 'tx-pipeline-reject-1' });
+
+    // Stub the MULTI pipeline used inside `recordAccreditationCompletion`.
+    // The chain shape mirrors the real call: .multi().set(...).del(...).exec().
+    const multiSpy = vi.spyOn(redis, 'multi').mockReturnValueOnce({
+      set: () => ({
+        del: () => ({
+          exec: () => Promise.reject(new Error('pipeline boom')),
+        }),
+      }),
+    } as unknown as ReturnType<typeof redis.multi>);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+    try {
+      const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+
+      // Acceptance (a): broadcast still happens → 200 success envelope.
+      expect(firstRes.status).toBe(200);
+      expect(firstRes.body.data).toMatchObject({
+        message: 'Accreditation confirmed',
+        username,
+        tx_id: 'tx-pipeline-reject-1',
+      });
+
+      // Acceptance (b): the pipeline-rejection warn discriminator fires.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'accreditation.verify.completion_record_pipeline_failed',
+          route: 'accreditation.verify',
+          username,
+          token_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
+        }),
+        expect.stringContaining('pipeline failed'),
+      );
+
+      // Redis side did NOT land a completion record (the MULTI rejected).
+      const digest = crypto.createHash('sha256').update(token).digest('hex');
+      const redisStored = await redis.get(`${config.appTag}:accreditation-completed:${digest}`);
+      expect(redisStored).toBeNull();
+
+      // Acceptance (c): under a sustained Redis flap, the in-memory fallback
+      // satisfies the retry without re-broadcasting.
+      const isAvailableSpy = vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false);
+      try {
+        const broadcastCallsBefore = broadcastJsonMock.mock.calls.length;
+        const retryRes = await request(app).post('/api/accreditation/verify').send({ token });
+
+        expect(retryRes.status).toBe(200);
+        expect(retryRes.body.data).toMatchObject({
+          message: 'Accreditation confirmed',
+          username,
+          tx_id: 'tx-pipeline-reject-1',
+        });
+        expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBefore);
+      } finally {
+        isAvailableSpy.mockRestore();
+      }
+    } finally {
+      multiSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
   });
 });
