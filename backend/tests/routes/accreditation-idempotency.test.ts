@@ -85,6 +85,7 @@ import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
 import * as redisModule from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
+import { broadcastAttemptsKey } from '../../src/routes/accreditation.js';
 
 config.pevoAdminPostingKey = PrivateKey.fromSeed('pevo-accred-idem-test-admin').toString();
 
@@ -122,7 +123,7 @@ async function tokenExists(token: string): Promise<boolean> {
 async function readBroadcastAttemptsCounter(token: string): Promise<number | null> {
   const redis = getRedis();
   if (!redis) return null;
-  const raw = await redis.get(`${config.appTag}:pending_accred_broadcast_attempts:${token}`);
+  const raw = await redis.get(broadcastAttemptsKey(token));
   return raw === null ? null : Number(raw);
 }
 
@@ -141,7 +142,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     if (redis) {
       const keys = await redis.keys(`${config.appTag}:pending_accred:accred-idem-*`);
       if (keys.length > 0) await redis.del(...keys);
-      const counters = await redis.keys(`${config.appTag}:pending_accred_broadcast_attempts:accred-idem-*`);
+      const counters = await redis.keys(broadcastAttemptsKey('accred-idem-*'));
       if (counters.length > 0) await redis.del(...counters);
       // Clear the per-IP /verify rate-limit window — supertest pins
       // remoteAddress to 127.0.0.1, so each test in this file shares the
@@ -229,7 +230,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     // Pre-seed the counter at cap so a cap check that ran first would
     // return 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED.
     const cap = config.verifyBroadcastAttemptsCap;
-    await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, cap.toString(), 'EX', 86400);
+    await redis.set(broadcastAttemptsKey(token), cap.toString(), 'EX', 86400);
 
     // Gate miss, then per-token idempotency hit. Both layers run before the
     // pre-INCR, so either layer's hit consumes zero cap slots.
@@ -419,7 +420,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     if (redis) {
       const keys = await redis.keys(`${config.appTag}:pending_accred:accred-idem-*`);
       if (keys.length > 0) await redis.del(...keys);
-      const counters = await redis.keys(`${config.appTag}:pending_accred_broadcast_attempts:accred-idem-*`);
+      const counters = await redis.keys(broadcastAttemptsKey('accred-idem-*'));
       if (counters.length > 0) await redis.del(...counters);
       const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
       if (limitKeys.length > 0) await redis.del(...limitKeys);
@@ -497,7 +498,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     // Pre-seed counter at cap. The gate must short-circuit BEFORE the cap
     // check; otherwise this would return 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED.
     const cap = config.verifyBroadcastAttemptsCap;
-    await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, cap.toString(), 'EX', 86400);
+    await redis.set(broadcastAttemptsKey(token), cap.toString(), 'EX', 86400);
 
     hafQueryMock.mockResolvedValueOnce({
       rows: [{ trx_id: 'tx-prior-gate-at-cap', block_num: 88888, action: 'accredit' }],
@@ -733,7 +734,7 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
     if (redis) {
       const keys = await redis.keys(`${config.appTag}:pending_accred:accred-idem-*`);
       if (keys.length > 0) await redis.del(...keys);
-      const counters = await redis.keys(`${config.appTag}:pending_accred_broadcast_attempts:accred-idem-*`);
+      const counters = await redis.keys(broadcastAttemptsKey('accred-idem-*'));
       if (counters.length > 0) await redis.del(...counters);
       // Clear the per-IP /verify rate-limit window — supertest pins
       // remoteAddress to 127.0.0.1, so each test in this file shares the
@@ -825,7 +826,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     if (redis) {
       const keys = await redis.keys(`${config.appTag}:pending_accred:accred-grace-*`);
       if (keys.length > 0) await redis.del(...keys);
-      const counters = await redis.keys(`${config.appTag}:pending_accred_broadcast_attempts:accred-grace-*`);
+      const counters = await redis.keys(broadcastAttemptsKey('accred-grace-*'));
       if (counters.length > 0) await redis.del(...counters);
       const completionKeys = await redis.keys(`${config.appTag}:accreditation-completed:*`);
       if (completionKeys.length > 0) await redis.del(...completionKeys);

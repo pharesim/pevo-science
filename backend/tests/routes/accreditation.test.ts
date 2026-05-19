@@ -120,7 +120,10 @@ import { getRedis } from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
 import { INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA } from '../../src/lib/redis-scripts.js';
 import * as redisModule from '../../src/redis.js';
-import { __test_seams as accreditationTestSeams } from '../../src/routes/accreditation.js';
+import {
+  __test_seams as accreditationTestSeams,
+  broadcastAttemptsKey,
+} from '../../src/routes/accreditation.js';
 import { __test_seams as queueTestSeams } from '../../src/lib/pending-decrement-queue.js';
 
 // Ensure the admin-posting-key guard inside /verify doesn't short-circuit.
@@ -491,9 +494,9 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
 // window is also a retry-amplification axis: each retry enqueues a fresh
 // broadcast at the dhive layer, and Hive does not deduplicate identical
 // custom_json ops. The cap (config.verifyBroadcastAttemptsCap, default 3)
-// bounds the per-token blast radius. Counter lives at
-// `${appTag}:pending_accred_broadcast_attempts:${token}` and is incremented
-// atomically with INCR before each broadcast.
+// bounds the per-token blast radius. Counter key construction lives at the
+// `broadcastAttemptsKey(token)` export in `src/routes/accreditation.ts` and
+// is incremented atomically with INCR before each broadcast.
 //
 // Semantics:
 //  - Pre-INCR happens on every /verify call that reaches the broadcast site
@@ -511,7 +514,7 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
 async function broadcastAttemptCount(token: string): Promise<number> {
   const redis = getRedis();
   if (!redis) return 0;
-  const raw = await redis.get(`${config.appTag}:pending_accred_broadcast_attempts:${token}`);
+  const raw = await redis.get(broadcastAttemptsKey(token));
   return raw === null ? 0 : Number(raw);
 }
 
@@ -549,7 +552,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // `cap + 1`, tripping the cap gate. This isolates the cap-exceeded
     // branch from the timeout-decrement / rejection-delete path
     // arithmetic, giving a mutation-sensitive assertion against the gate.
-    await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, String(cap), 'EX', 24 * 60 * 60);
+    await redis.set(broadcastAttemptsKey(token), String(cap), 'EX', 24 * 60 * 60);
     const ip = `10.5.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
 
     // Mock would reject if reached; the cap gate must short-circuit BEFORE
@@ -710,7 +713,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token);
-    await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, String(cap), 'EX', 24 * 60 * 60);
+    await redis.set(broadcastAttemptsKey(token), String(cap), 'EX', 24 * 60 * 60);
     const ip = `10.6.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
 
     const loggerWarnSpy = vi.spyOn(logger, 'warn');
@@ -754,7 +757,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // the route and the test reference the same constant is the actual
     // drift defense.
     const script = INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA;
-    const key = `${config.appTag}:pending_accred_broadcast_attempts:lua-test-${crypto.randomBytes(8).toString('hex')}`;
+    const key = broadcastAttemptsKey(`lua-test-${crypto.randomBytes(8).toString('hex')}`);
     try {
       const ttlSec = 60;
       const count1 = await redis.eval(script, 1, key, String(ttlSec));
@@ -787,7 +790,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // below is load-bearing — a 16-hex stub token would coincidentally never
     // match the 64-hex pattern and the assertion would pass by construction.
     const token = crypto.randomBytes(32).toString('hex');
-    const counterKey = `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
+    const counterKey = broadcastAttemptsKey(token);
     // Seed the pending row directly via the helper (writes to the
     // `pending_accred:<token>` key). The describe block's afterEach matches
     // `*accred-cap-*` keys for cleanup and does NOT pick up this token shape;
@@ -857,7 +860,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
       // Explicit cleanup: token doesn't match the afterEach `accred-cap-*`
       // pattern (c switched to a 64-hex token to make the
       // redaction assertion load-bearing).
-      await redis.del(`${config.appTag}:pending_accred_broadcast_attempts:${token}`);
+      await redis.del(broadcastAttemptsKey(token));
       await redis.del(`${config.appTag}:pending_accred:${token}`);
     }
   });
@@ -977,7 +980,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // re-deletes it. Mutation-kill: removing the DEL leaves the counter
     // at -1 in some orderings.
     const token = `accred-decr-race-${crypto.randomBytes(8).toString('hex')}`;
-    const counterKey = `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
+    const counterKey = broadcastAttemptsKey(token);
     // Pre-DEL: ensure the key is absent before we drive the decrement.
     await redis.del(counterKey);
     expect(await redis.get(counterKey)).toBeNull();
@@ -1222,7 +1225,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // flap, entry was enqueued. After Redis recovers, drain should DECR the
     // counter back to 0.
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
-    const counterKey = `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
+    const counterKey = broadcastAttemptsKey(token);
     await redis.set(counterKey, '1');
     const attemptId = crypto.randomBytes(8).toString('hex');
 

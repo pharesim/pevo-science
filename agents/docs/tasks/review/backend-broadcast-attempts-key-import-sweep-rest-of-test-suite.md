@@ -54,3 +54,51 @@ Replace every inline template-string copy of the broadcast-attempts key in the t
 - `backend/src/routes/accreditation.ts` — `export function broadcastAttemptsKey(token: string)` (the single source of truth).
 - `backend/tests/routes/admin.test.ts` and `backend/tests/lib/pending-decrement-queue.test.ts` — already migrated; use as the pattern reference.
 - `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` — the stable-symbol-anchoring convention this sweep continues to apply.
+
+---
+
+## Backend implementer signal (2026-05-19) — round 1
+
+Sweep complete. Both target test files migrated to `broadcastAttemptsKey()`; the production source of truth at `backend/src/routes/accreditation.ts` is unchanged (it already exports the helper).
+
+### accreditation.test.ts — 7 substitutions + 1 narrative comment update
+
+- Added the import alongside the existing `accreditationTestSeams` import (single import statement, both names braced).
+- `broadcastAttemptCount(token)` helper body now calls `broadcastAttemptsKey(token)` (5 call sites elsewhere in the file rely on this helper; not redundant).
+- `redis.set(broadcastAttemptsKey(token), String(cap), 'EX', 24 * 60 * 60)` at the two pre-seed-at-cap sites (replace_all match because the two lines are byte-identical).
+- `const key = broadcastAttemptsKey(\`lua-test-${crypto.randomBytes(8).toString('hex')}\`)` at the Lua-script INCR site (token-shaped string passed as the `token` arg).
+- `const counterKey = broadcastAttemptsKey(token)` at three local-variable sites (replace_all).
+- `await redis.del(broadcastAttemptsKey(token))` at the one explicit-cleanup site.
+- Narrative comment at the per-token broadcast-attempts cap describe block: replaced "Counter lives at `${appTag}:pending_accred_broadcast_attempts:${token}`" with a reference to the `broadcastAttemptsKey(token)` export, per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15` (anchor on the symbol, not the keyspace literal).
+
+### accreditation.test.ts — 1 narrative comment intentionally left as inline literal
+
+The pino-redaction narrative at the 504 BROADCAST_TIMEOUT + DECR-rejection spec retains the inline `<appTag>:pending_accred_broadcast_attempts:<64-hex token>` form. That comment specifically describes what pino sees on the wire when ioredis attaches `command.args` to a `ReplyError` rejection — substituting `broadcastAttemptsKey(...)` would obscure the redaction concern (the comment is anchored on the serialized string shape, not key construction). Same principle as the task's `logger-redact.test.ts` carve-out: pino-redaction-anchored literals stay. Grep for `pending_accred_broadcast_attempts` in this file returns only this one site.
+
+### accreditation-idempotency.test.ts — 6 substitutions
+
+- Added the import (new line, no pre-existing accreditation-source import to extend).
+- `readBroadcastAttemptsCounter(token)` helper body now calls `broadcastAttemptsKey(token)` (3 call sites elsewhere; not redundant).
+- `redis.set(broadcastAttemptsKey(token), cap.toString(), 'EX', 86400)` at the two pre-seed-at-cap sites (replace_all match because byte-identical).
+- `redis.keys(broadcastAttemptsKey('accred-idem-*'))` at the three idem-test afterEach cleanup sites (replace_all match because byte-identical).
+- `redis.keys(broadcastAttemptsKey('accred-grace-*'))` at the one grace-test afterEach cleanup site.
+
+Glob suffixes pass through `broadcastAttemptsKey(token: string)` correctly — the helper just templates the string, and the argument-name semantic ("token") is loose enough that a glob suffix is a reasonable use of the helper from a single-source-of-truth perspective. Grep for `pending_accred_broadcast_attempts` in this file returns nothing.
+
+### `config` import — retained in both files
+
+Both files have many other `config.*` usages (`config.appTag` for `pending_accred:` token keys and rate-limit keys, `config.verifyBroadcastAttemptsCap`, `config.smtpHost`, `config.pevoAdminPostingKey`, idempotency-cache keys, etc.). Task acceptance §1's "remove the `config` import if no other usage remains" condition does not fire — the broadcast-attempts keyspace is a small fraction of total `config` usage in these files.
+
+### Verification
+
+- `npm run typecheck` (`:src` + `:tests`): clean.
+- `npm run lint` (`src/`): clean.
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **51/52 pass**. The single failure (`pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE`, 502-vs-503 mismatch) is the documented pre-existing flake — explicitly named in the round-2 backend signal block of the verify-post-success-retry-idempotency task ("the single failure ... is the documented pre-existing flake — flagged in the round-2 signal blocks of both sibling tasks"). Task acceptance §4 explicitly carves out pre-existing failures from this sweep's scope.
+
+### Files for review
+
+- `backend/tests/routes/accreditation.test.ts` — import extension + 7 substitutions + 1 narrative comment update.
+- `backend/tests/routes/accreditation-idempotency.test.ts` — new import + 6 substitutions.
+- This task file (round-1 signal block).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
