@@ -663,6 +663,21 @@ export function authorshipClaimsCteBody(
           -- validated lowercase Hive account name; an uppercase mid-case
           -- entry in pevo.authors would otherwise leave a legitimate
           -- co-author's claim pending indefinitely.
+          --
+          -- Structural-safety note on the missing jsonb_typeof(...) guard:
+          -- this arm uses a direct integer subscript (-> cb.author_index)
+          -- into the authors array, NOT jsonb_array_elements(...) like
+          -- the sibling cascade-fail defenses. The integer-subscript form
+          -- is intrinsically fail-soft against malformed shapes: on a
+          -- non-array parent, -> N returns NULL; ->> 'hive' on NULL
+          -- returns NULL; LOWER(TRIM(NULL)) = NULL; the equality conjunct
+          -- evaluates NULL (not TRUE), the EXISTS row is rejected, and
+          -- the claim stays pending. There is no array iteration to guard,
+          -- so an explicit jsonb_typeof(...) check would be redundant.
+          -- A parity-driven refactor that adds the guard here is harmless;
+          -- one that erases the LOWER(TRIM(...)) canonicalization (citing
+          -- the missing guard as justification) is the failure mode to
+          -- defend against.
           SELECT 1 FROM ${T.comments} c
           WHERE c.author = cb.paper_author
             AND c.permlink = cb.paper_permlink

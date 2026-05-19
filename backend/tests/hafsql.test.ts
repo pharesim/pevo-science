@@ -663,11 +663,36 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
  * full chain with seeded data per shape per test is impractical. The
  * assertion shape (admit/reject against the auto-accept arm) is exactly
  * what the test-mock carve-out clause-(c) is for. The real-path companion
- * is the SQL-string presence check in `excludeSelfReviewWhere-callsite-
- * canaries.test.ts`-style source assertions (the helper's source contains
- * the new pattern); deeper integrated coverage would require seeded HAF
- * fixtures, which are not yet available.
+ * is the sibling helper-output canary (`authorshipClaimsCteBody hive-
+ * username auto-accept SQL-shape canary`) that calls the production helper
+ * and asserts the post-fix predicate substrings appear in its emitted SQL;
+ * deeper integrated coverage would require seeded HAF fixtures, which are
+ * not yet available.
  */
+/**
+ * Helper-output canary for the hive-username auto-accept arm. Calls the
+ * production helper and asserts that both canonicalization conjuncts —
+ * `LOWER(TRIM(... ->> 'hive')) ~ '^[a-z0-9.-]+$'` (charset guard) and
+ * `LOWER(TRIM(...)) = cb.claimer` (equality after normalization) — appear
+ * in the emitted SQL. A targeted revert that drops either conjunct from
+ * the helper turns this canary red, providing the real-path coverage
+ * companion the synthetic-VALUES behavioral test below references.
+ */
+describe('authorshipClaimsCteBody hive-username auto-accept SQL-shape canary', () => {
+  it('emits LOWER(TRIM(...)) charset-regex and equality conjuncts at the auto-accept arm', () => {
+    const frag = authorshipClaimsCteBody(1);
+    // Charset guard conjunct on the broadcaster-controlled hive value.
+    expect(frag.sql).toMatch(
+      /LOWER\(TRIM\(c\.json_metadata -> \$3 -> 'authors' -> cb\.author_index ->> 'hive'\)\) ~ '\^\[a-z0-9\.-\]\+\$'/,
+    );
+    // Equality conjunct after the same canonicalization, against the
+    // chain-validated lowercase `cb.claimer`.
+    expect(frag.sql).toMatch(
+      /LOWER\(TRIM\(c\.json_metadata -> \$3 -> 'authors' -> cb\.author_index ->> 'hive'\)\) = cb\.claimer/,
+    );
+  });
+});
+
 describe('authorshipClaimsCteBody hive-username auto-accept normalization (real Postgres, synthetic rows)', () => {
   it('canonicalizes broadcast pevo.authors[i].hive before matching claimer', { timeout: 30_000 }, async (ctx) => {
     const pool = getPool();
@@ -756,6 +781,11 @@ describe('paper_resolved_votes NOT EXISTS subquery cascade-fail defense (real Po
     // test is intentionally a structural mirror (not a substring scrape)
     // so a future refactor that splits the inline shape into a helper
     // keeps the cascade-fail defense exercised.
+    // Mirror the production predicate's broadcaster-canonicalization arm:
+    // LOWER(TRIM(a ->> 'hive')) charset-regex + equality. The pre-fix shape
+    // (`a ->> 'hive' = plv.voter`) is preserved as a structural-revert canary
+    // below — a targeted revert that drops the LOWER(TRIM(...)) wrap from the
+    // production CTE must turn the uppercase-co-author admission test red.
     const subqueryShape = `
       NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements(
@@ -765,7 +795,8 @@ describe('paper_resolved_votes NOT EXISTS subquery cascade-fail defense (real Po
           END
         ) a
         WHERE jsonb_typeof(a) = 'object'
-          AND a ->> 'hive' = plv.voter
+          AND LOWER(TRIM(a ->> 'hive')) ~ '^[a-z0-9.-]+$'
+          AND LOWER(TRIM(a ->> 'hive')) = plv.voter
       )
     `;
 
@@ -847,6 +878,36 @@ describe('paper_resolved_votes NOT EXISTS subquery cascade-fail defense (real Po
     const admitted2 = result2.rows.map((r) => r.voter as string).sort();
     // alice excluded (paper author), bob excluded (named co-author), carol admitted.
     expect(admitted2).toEqual(['carol']);
+
+    // (4) Broadcaster-canonicalization arm: mid-case `authors[i].hive` MUST
+    // still be treated as a co-author identity claim (excluded from the
+    // non-self vote set). Without LOWER(TRIM(...)) on the broadcaster value,
+    // an uppercase `'Bob'` byte-mismatches against the chain-validated
+    // lowercase voter column `plv.voter`, NOT EXISTS evaluates TRUE for bob,
+    // and bob's vote inflates the paper-author's reputation. Targeted-revert
+    // canary: dropping the LOWER(TRIM(...)) wrap from the production CTE
+    // admits 'bob' here and turns this assertion red.
+    const uppercaseCoauthor = JSON.stringify({
+      pevotest: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'Bob' }] },
+    });
+    const sql3 = `
+      WITH up AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
+           plv(voter) AS (VALUES
+             ('alice'::text),
+             ('bob'::text),
+             ('carol'::text)
+           )
+      SELECT plv.voter FROM plv
+      CROSS JOIN up
+      WHERE plv.voter != up.author
+        AND ${subqueryShape}
+      ORDER BY plv.voter
+    `;
+    const result3 = await pool.query(sql3, ['pevotest', uppercaseCoauthor]);
+    const admitted3 = result3.rows.map((r) => r.voter as string).sort();
+    // alice excluded (paper author), bob excluded (uppercase co-author
+    // canonicalized), carol admitted as the only third-party voter.
+    expect(admitted3).toEqual(['carol']);
   });
 });
 

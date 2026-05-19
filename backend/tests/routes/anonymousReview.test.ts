@@ -177,10 +177,13 @@ describe('POST /api/reviews/anonymous — co-author self-block normalization', (
 
   // Control: the same flow with a true third-party reviewer succeeds past
   // the self-block predicate. Pins that the normalization change did not
-  // over-exclude legitimate non-author reviewers. We don't assert beyond the
-  // self-block gate (the rest of the handler depends on broadcast-key
-  // config); we only assert that the 403 self-block does NOT fire for a
-  // non-author reviewer.
+  // over-exclude legitimate non-author reviewers. The route requires
+  // pevoAnonPostingKey downstream of the self-block check (unset in this
+  // test environment) and returns 500 — that's expected and not what this
+  // case is asserting. The load-bearing claim is that the 403 self-block
+  // does NOT fire for carol. An if-guarded `not.toContain(...)` would be
+  // vacuous on non-403 paths and miss a regression that incorrectly self-
+  // blocks a third party.
   it('admits a true third-party accredited reviewer past the self-block gate', async () => {
     getAccreditationMock.mockResolvedValueOnce({
       name: 'Carol',
@@ -211,11 +214,52 @@ describe('POST /api/reviews/anonymous — co-author self-block normalization', (
         rating: { methodology: 4, novelty: 4, clarity: 4, significance: 4 },
       });
 
-    // The self-block 403 must NOT fire. The handler may surface a different
-    // error downstream (missing posting key, broadcast failure, etc.) but
-    // never with the self-block message.
-    if (res.status === 403) {
-      expect(res.body.error.message).not.toContain('Authors cannot review their own papers');
-    }
+    // Unconditional negative assertion: the 403 self-block must NOT fire
+    // for a non-author reviewer regardless of the downstream status. A
+    // regression where normalization mis-canonicalizes carol's identity
+    // and triggers the self-block would surface as a 403 here and fail
+    // this expectation red.
+    expect(res.status).not.toBe(403);
+  });
+
+  // Whitespace-padded broadcaster value: a `{hive: '  bob  '}` entry must
+  // still self-block bob. The SQL behavioral matrix in hafsql.test.ts
+  // already covers the TRIM half of LOWER(TRIM(...)) at the predicate
+  // level; this assertion extends route-layer coverage so a regression
+  // that breaks .trim() in normalizeHiveAccount while keeping
+  // .toLowerCase() is caught at the route boundary too.
+  it('rejects a whitespace-padded-hive co-author attempting to anonymous-review their own paper', async () => {
+    getAccreditationMock.mockResolvedValueOnce({
+      name: 'Bob',
+      institution: 'Test U',
+      field: 'Test',
+      method: 'orcid',
+      orcid: null,
+      timestamp: '2026-01-01T00:00:00Z',
+      tx_id: 'tx-mock',
+    });
+    hiveCallMock.mockResolvedValueOnce({
+      json_metadata: JSON.stringify({
+        pevotest: {
+          type: 'paper',
+          authors: [{ hive: 'alice' }, { hive: '  bob  ' }],
+        },
+      }),
+    });
+
+    const res = await request(app)
+      .post('/api/reviews/anonymous')
+      .set('X-Hive-Username', 'bob')
+      .set('X-Hive-Signature', 'mock-sig')
+      .send({
+        paper_author: 'alice',
+        paper_permlink: 'quantum-paper',
+        body: 'Review my own paper',
+        rating: { methodology: 5, novelty: 5, clarity: 5, significance: 5 },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.message).toContain('Authors cannot review their own papers');
   });
 });

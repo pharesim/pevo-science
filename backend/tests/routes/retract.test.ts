@@ -296,6 +296,25 @@ describe('POST /api/papers/:author/:permlink/retract — bridge-paper authorizat
     expect(res.status).toBe(403);
     expect(broadcastJsonMock).not.toHaveBeenCalled();
   });
+
+  // Whitespace-padded broadcaster value: a `{hive: '  originalauthor  '}`
+  // entry must still authorize the legitimate retract. The SQL behavioral
+  // matrix in hafsql.test.ts already covers the TRIM half of
+  // LOWER(TRIM(...)) at the predicate level; this assertion extends
+  // route-layer coverage so a regression that breaks .trim() in
+  // normalizeHiveAccount while keeping .toLowerCase() is caught at the
+  // route boundary too.
+  it('authorizes a retract whose pevo.authors hive entry is whitespace-padded', async () => {
+    installBridgePaperHafMock('  originalauthor  ');
+
+    const res = await request(app)
+      .post(`/api/papers/${config.hiveBridgeAccount}/bridge-paper-1/retract`)
+      .set('X-Hive-Username', 'originalauthor')
+      .send({ reason: 'data fabrication' });
+
+    expect(res.status).toBe(200);
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('POST /api/papers/:author/:permlink/retract — wall-clock budget (round-2 item 2)', () => {

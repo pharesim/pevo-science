@@ -202,6 +202,33 @@ describe('extractAuthorizedContinuationAuthors', () => {
     expect(set.has('attacker')).toBe(false);
     expect(set.size).toBe(1);
   });
+
+  it('rejects off-charset hive values that fall outside the Hive consensus charset', () => {
+    // The helper now canonicalizes broadcaster values via the shared
+    // `normalizeHiveAccount` wrapper, which rejects entries whose
+    // post-LOWER/TRIM form falls outside `^[a-z0-9.-]+$`. Pre-wrap, the
+    // helper admitted any non-empty trimmed string — so a malformed
+    // `{hive: 'al;ice'}` (semicolon is not a Hive-consensus charset member)
+    // ended up in the admitted set and could match a chain-validated
+    // username after coincidental normalization elsewhere. Post-wrap, the
+    // entry is dropped entirely. This pins the off-charset reject path
+    // that the existing lowercasing/whitespace-trim tests don't exercise.
+    const set = helpers.extractAuthorizedContinuationAuthors({
+      authors: [
+        { hive: 'al;ice' },       // semicolon — off-charset
+        { hive: 'bob@host' },     // @ — off-charset
+        { hive: 'CAROL_X' },      // underscore — off-charset (still rejected after LOWER)
+        { hive: 'dave space' },   // internal space — off-charset
+        { hive: 'eve' },          // well-formed control — admitted
+      ],
+    }, 'alice');
+    expect(set.has('al;ice')).toBe(false);
+    expect(set.has('bob@host')).toBe(false);
+    expect(set.has('carol_x')).toBe(false);
+    expect(set.has('dave space')).toBe(false);
+    expect(set.has('eve')).toBe(true);
+    expect(set.size).toBe(1);
+  });
 });
 
 // ──────────────────────────────────────────────
