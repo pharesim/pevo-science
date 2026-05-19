@@ -125,7 +125,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ---
 
-## Backend re-review signal (2026-05-19, working tree)
+## Backend re-review signal (2026-05-19, commit SHA `5705a99`)
 
 Cleanup of round-N qualifiers and task-slug citations in `backend/tests/lib/flush-and-exit.test.ts`'s describe label and header docblock landed. The previous docblock anchored on the originating task slug + round numbers (`Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT)`, `Round-3 wrapped boot-fatal sites...`, `Round-4 adds a 2s setTimeout watchdog...`); the describe label suffixed `(round-4 hold #1)`. Both are coordination-state anchors that rot when the originating task archives off the bottom of `tasks-archive.md`. The rewrite anchors on stable symbols only: the `flushAndExit` helper name and the two production call-site contexts (the boot-fatal validation chain in `src/index.ts` and the async `.catch` on `SENTINEL_ARGON2_HASH_PROMISE` in `src/routes/auth.ts`).
 
