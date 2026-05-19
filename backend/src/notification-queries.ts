@@ -552,6 +552,16 @@ export async function fetchNotificationsFromHaf(
       has_more: events.length >= limit,
     };
   } catch (err) {
+    // Intentional swallow-to-null (kept asymmetric with the
+    // single-resource paper/review/comment-existence sites that throw):
+    // this notifications query is a broad multi-CTE scan keyed on a
+    // caller-supplied `sinceBlock` that can legitimately reach the
+    // 30s statement_timeout under wide ranges (e.g. since_block=genesis
+    // for a fresh client). Translating to 503 retriable on every such
+    // timeout would mis-classify "expensive query" as "HAF outage"
+    // and the polling SPA's retry would compound load. The route
+    // surfaces an empty-events response on null — same observational
+    // shape the SPA already handles for "no new events".
     logger.error({ err }, 'HAF notifications query failed');
     return null;
   }

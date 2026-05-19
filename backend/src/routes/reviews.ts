@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getPool } from '../db.js';
+import { getPool, HafQueryError } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
@@ -119,8 +119,13 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
 
     return buildReviewDetail(row, meta, parentTitle);
   } catch (err) {
+    // Loud-fail on HAF query failure so the route handler can translate to
+    // `503 SERVICE_UNAVAILABLE` with `details.retriable: true` rather than
+    // collapsing the failure to `null → 404 NOT_FOUND` (which made HAF
+    // outage indistinguishable from "review does not exist"). Mirrors the
+    // sibling pattern at `fetchPaperDetailFromHaf` in `routes/papers.ts`.
     logger.error({ err }, 'HAF review query failed');
-    return null;
+    throw new HafQueryError('fetchReviewFromHaf', { cause: err });
   }
 }
 
@@ -145,10 +150,23 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
   const author = req.params.author as string;
   const permlink = req.params.permlink as string;
 
-  const hafResult = await fetchReviewFromHaf(author, permlink);
-  if (hafResult) return sendOk(res, await enrichReviewDetail(hafResult));
+  try {
+    const hafResult = await fetchReviewFromHaf(author, permlink);
+    if (hafResult) return sendOk(res, await enrichReviewDetail(hafResult));
 
-  sendError(res, 404, 'NOT_FOUND', 'Review not found');
+    sendError(res, 404, 'NOT_FOUND', 'Review not found');
+  } catch (err) {
+    if (err instanceof HafQueryError) {
+      return sendError(
+        res,
+        503,
+        'SERVICE_UNAVAILABLE',
+        'Review temporarily unavailable. Please retry shortly.',
+        { retriable: true },
+      );
+    }
+    throw err;
+  }
 });
 
 export default router;

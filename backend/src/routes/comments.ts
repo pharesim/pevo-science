@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getPool } from '../db.js';
+import { getPool, HafQueryError } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -42,8 +42,14 @@ async function paperExistsInHaf(author: string, permlink: string): Promise<boole
     );
     return result.rows.length > 0;
   } catch (err) {
+    // Loud-fail on HAF query failure so the route handler can translate to
+    // `503 SERVICE_UNAVAILABLE` with `details.retriable: true` rather than
+    // collapsing to `null → 404 Paper not found` (which made HAF outage
+    // indistinguishable from "paper does not exist"). The `null` return
+    // shape is reserved for the pool-unavailable startup condition (above);
+    // a query throw is a transient outage signal.
     logger.error({ err }, 'HAF paper existence check failed');
-    return null;
+    throw new HafQueryError('paperExistsInHaf', { cause: err });
   }
 }
 
@@ -193,20 +199,33 @@ router.get('/', async (req: Request, res: Response) => {
   const permlink = req.params.permlink as string;
   const params = parseCommentParams(req);
 
-  const exists = await paperExistsInHaf(author, permlink);
-  if (exists === false || exists === null) {
-    return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
-  }
+  try {
+    const exists = await paperExistsInHaf(author, permlink);
+    if (exists === false || exists === null) {
+      return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
+    }
 
-  const cacheKey = `comments:${author}:${permlink}:p=${params.page}:l=${params.limit}:s=${params.sort}:o=${params.order}`;
-  const result = await hafCache.getOrSet(cacheKey, () =>
-    fetchCommentsFromHaf(author, permlink, params),
-  );
-  if (result) {
-    return sendOk(res, result.rows, { page: params.page, limit: params.limit, total: result.total });
-  }
+    const cacheKey = `comments:${author}:${permlink}:p=${params.page}:l=${params.limit}:s=${params.sort}:o=${params.order}`;
+    const result = await hafCache.getOrSet(cacheKey, () =>
+      fetchCommentsFromHaf(author, permlink, params),
+    );
+    if (result) {
+      return sendOk(res, result.rows, { page: params.page, limit: params.limit, total: result.total });
+    }
 
-  sendOk(res, [], { page: params.page, limit: params.limit, total: 0 });
+    sendOk(res, [], { page: params.page, limit: params.limit, total: 0 });
+  } catch (err) {
+    if (err instanceof HafQueryError) {
+      return sendError(
+        res,
+        503,
+        'SERVICE_UNAVAILABLE',
+        'Comments temporarily unavailable. Please retry shortly.',
+        { retriable: true },
+      );
+    }
+    throw err;
+  }
 });
 
 export default router;

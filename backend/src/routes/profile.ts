@@ -254,6 +254,13 @@ async function fetchUserPapersFromHaf(
   const pool = getPool();
   if (!pool) return null;
 
+  // Loud-fail on HAF query failure (mirrors the contract on
+  // `fetchPaperDetailFromHaf` in `routes/papers.ts`): the route layer
+  // translates `HafQueryError` to 503 SERVICE_UNAVAILABLE with
+  // `details.retriable: true`, distinguishing transient outage from the
+  // legitimate "no papers for this user" empty-result case. Pre-fix, this
+  // helper logged and returned `null`, collapsing the route response to a
+  // 200 with empty rows for both shapes — clients had no signal to retry.
   try {
     // Build CTEs for authorship claims to include claimed papers
     const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
@@ -309,7 +316,7 @@ async function fetchUserPapersFromHaf(
     return { rows, total };
   } catch (err) {
     logger.error({ err }, 'HAF user papers query failed');
-    return null;
+    throw new HafQueryError('fetchUserPapersFromHaf', { cause: err });
   }
 }
 
@@ -354,13 +361,32 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
     // Enrich with accreditation and reputation
     if (result.rows.length > 0) {
       const authorNames = result.rows.map((r) => r.author);
-      const [accreditedSet, batchScores, allAccredited, accreditedOrcidsByAccount, accreditationOrcidStatus] = await Promise.all([
-        getAccreditedSet(authorNames),
-        getReputationScores(authorNames),
-        getAllAccreditedAccounts(),
-        getAccreditedOrcidsByAccount(),
-        getAllEverAccreditedOrcidsWithStatus(),
-      ]);
+      // Translate raw pg failures from any of the loud-fail HAF helpers
+      // (`getAllAccreditedAccounts`, `getAccreditedOrcidsByAccount`,
+      // `getAllEverAccreditedOrcidsWithStatus`) into `HafQueryError` so the
+      // outer route catch returns 503 retriable. `getAccreditedSet` and
+      // `getReputationScores` are safe-fail by contract (the former returns
+      // an empty set on outage; the latter falls back to last-known cached
+      // values), so they don't reach the wrapping branch in practice — but
+      // wrapping the whole Promise.all is the simplest shape that doesn't
+      // leak a raw pg error if a future helper changes contract.
+      let accreditedSet: Set<string>;
+      let batchScores: Map<string, number>;
+      let allAccredited: Set<string>;
+      let accreditedOrcidsByAccount: Map<string, string | null>;
+      let accreditationOrcidStatus: Map<string, { orcid: string | null; status: import('../accreditation.js').AccreditationStatus }>;
+      try {
+        [accreditedSet, batchScores, allAccredited, accreditedOrcidsByAccount, accreditationOrcidStatus] = await Promise.all([
+          getAccreditedSet(authorNames),
+          getReputationScores(authorNames),
+          getAllAccreditedAccounts(),
+          getAccreditedOrcidsByAccount(),
+          getAllEverAccreditedOrcidsWithStatus(),
+        ]);
+      } catch (err) {
+        if (err instanceof HafQueryError) throw err;
+        throw new HafQueryError('profile-papers-enrichment', { cause: err });
+      }
 
       // Cross-surface cumulative-union enrichment: identical shape to
       // `fetchPapersFromHaf` listing — for each row, fetch the chain-level
@@ -584,7 +610,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     return { rows, total };
   } catch (err) {
     logger.error({ err }, 'HAF user reviews query failed');
-    return null;
+    throw new HafQueryError('fetchUserReviewsFromHaf', { cause: err });
   }
 }
 
@@ -595,13 +621,26 @@ router.get('/:username/reviews', async (req: Request, res: Response) => {
   const sort = (req.query.sort as string) === 'votes' ? 'votes' : 'date';
 
   const cacheKey = `profile-reviews:${username}:${JSON.stringify({ sort, order, page, limit })}`;
-  const result = await hafCache.getOrSet(cacheKey, async () => {
-    const hafResult = await fetchUserReviewsFromHaf(username, limit, offset, order, sort);
-    if (hafResult) return hafResult;
-    return { rows: [], total: 0 };
-  });
+  try {
+    const result = await hafCache.getOrSet(cacheKey, async () => {
+      const hafResult = await fetchUserReviewsFromHaf(username, limit, offset, order, sort);
+      if (hafResult) return hafResult;
+      return { rows: [], total: 0 };
+    });
 
-  sendOk(res, result.rows, { page, limit, total: result.total });
+    sendOk(res, result.rows, { page, limit, total: result.total });
+  } catch (err) {
+    if (err instanceof HafQueryError) {
+      return sendError(
+        res,
+        503,
+        'SERVICE_UNAVAILABLE',
+        'Profile reviews temporarily unavailable. Please retry shortly.',
+        { retriable: true },
+      );
+    }
+    throw err;
+  }
 });
 
 // ──────────────────────────────────────────────
