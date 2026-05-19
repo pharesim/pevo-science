@@ -40,6 +40,7 @@ Single review with full details.
 
 **Errors:**
 - `NOT_FOUND` — review does not exist, is not a PEvO review (fails `validReviewWhere()` in `backend/src/hafsql.ts`), or its parent post is not a valid PEvO paper (fails `validPevoPaperWhere(source:'all')` in `backend/src/hafsql.ts`; covers both native pevo paper posts and `bridge_paper` posts authored by `config.hiveBridgeAccount`)
+- `SERVICE_UNAVAILABLE` (503) — transient HAF failure on the review fetch. `details.retriable: true`. Distinguished from `NOT_FOUND` so consumers can surface a retry affordance for outages instead of treating them as "review does not exist." Sibling route to the other 503-retriable HAF-outage emitters; see the cross-cutting note in [common.md § Error envelope](common.md).
 
 ---
 

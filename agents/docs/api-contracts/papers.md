@@ -390,7 +390,9 @@ Discussion comments on a paper (threaded). Returns a flat list of all comments; 
 - Replies to comments have `parent_author` = parent commenter and `parent_permlink` = parent comment permlink.
 - `net_votes` reflects accredited votes only.
 
-**Errors:** `NOT_FOUND` if paper does not exist.
+**Errors:**
+- `NOT_FOUND` — paper does not exist (preflight `paperExistsInHaf` returned no rows).
+- `SERVICE_UNAVAILABLE` (503) — transient HAF failure on the preflight existence check. `details.retriable: true`. Distinguished from `NOT_FOUND` so consumers can surface a retry affordance for outages instead of treating them as "paper does not exist." The comments-listing arm (`fetchCommentsFromHaf`) retains its swallow-to-empty contract on its own outage; consumers MUST treat `200` with `data: []` as either "no comments yet" OR "comments-listing query failed silently" — the discriminator is whether `paperExistsInHaf` succeeded (it did, since a 200 was returned at all). Sibling route to the other 503-retriable HAF-outage emitters; see the cross-cutting note in [common.md § Error envelope](common.md).
 
 ---
 

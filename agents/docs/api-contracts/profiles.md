@@ -58,6 +58,9 @@ Papers authored by a specific researcher.
 - `authors[]` cumulative-union — this surface returns the **head broadcaster's** `pevo.authors[]` only. Unlike `PaperDetail` from `/api/papers/:author/:permlink` (which applies cumulative-union across the continuation chain), `/api/profile/:username/papers` does not currently reconstruct continuation-chain co-authors. Cross-surface authors-set parity is tracked separately; consumers needing the cumulative-union authors set should fetch `/api/papers/:author/:permlink` per paper.
 - **Cache staleness:** `orcid_verified` / `orcid_discrepancy` on this surface MAY be up to ~10 minutes stale relative to current `active_accreditations` state. The response is wrapped in a short-TTL response cache (≤30 seconds) inside the `getAccreditedOrcidsByAccount` 10-minute map cache; net worst-case revocation lag is bounded by the inner map TTL. This is the chain-is-SSoT / cache-is-perf-layer posture; tighter than the 30-minute window documented for `/api/papers` paper-detail but conceptually identical.
 
+**Errors:**
+- `SERVICE_UNAVAILABLE` (503) — transient HAF failure on the user-papers fetch or the post-fetch accreditation enrichment. `details.retriable: true`. Distinguished from a legitimate empty result (200 with empty `data[]`) so consumers can surface a retry affordance instead of rendering "no papers." Sibling route to the other 503-retriable HAF-outage emitters; see the cross-cutting note in [common.md § Error envelope](common.md).
+
 ---
 
 ### GET /api/profile/:username/reviews
@@ -67,6 +70,9 @@ Reviews authored by a specific researcher.
 **Query Parameters:** `sort` (`date`, `votes`), `order`, `page`, `limit`
 
 **Response `data`:** Array of review summaries with pagination metadata.
+
+**Errors:**
+- `SERVICE_UNAVAILABLE` (503) — transient HAF failure on the user-reviews fetch. `details.retriable: true`. Distinguished from a legitimate empty result (200 with empty `data[]`); same retry contract as `/api/profile/:username/papers` above.
 
 ---
 
