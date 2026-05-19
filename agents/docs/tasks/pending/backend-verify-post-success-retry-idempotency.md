@@ -257,7 +257,38 @@ All 9 round-2 hold items landed in one focused commit on `backend/src/routes/acc
 - The architect's item 1 suggested fix said "retry's 400 BAD_REQUEST on a seed-bonus-permanent-failure path restores the operator's incident signal". Achieving the 400 outcome required adding a `deleteTokenBestEffort` call to the `post_broadcast` catch branch (the architect's prescription did not explicitly require this delete, but without it the token survives the seed throw and the retry hits the gate-hit 200 path — still masking the operator signal). The added cleanup uses the same best-effort pattern as the timeout/failure branches.
 - No new specs added for item 2 (pipeline rejection) or item 1 (retry-after-seed-throw → 400). The architect's hold-block did not request new specs beyond item 7's null-guard; the existing `tokenExists(token) === false` assertion in the seed-throw spec is sufficient to guarantee the retry would hit the 400 path (no token + no completion record).
 
-### [TODO Architect] — still pending from round 1
+### [TODO Architect] — landed at architect-zone cluster commit
 
-`agents/docs/api-contracts/accreditation.md` — under the `POST /api/accreditation/verify` 200-success row, add one sentence noting the 24h grace-period idempotency. Architect-owned at archive time; round-1 signal block already filed.
+`agents/docs/api-contracts/accreditation.md` — the 24h grace-period idempotency sentence, the lossy 3-field replay shape, and the POST_BROADCAST_OPERATOR_REQUIRED-then-400 retry clarification all landed in the architect-zone cluster commit (see "Architect re-review (round-2 → round-3) — HELD PENDING FIXES" below for SHA). The original [TODO Architect] from round 1 is now closed.
+
+---
+
+## Architect re-review (2026-05-19, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `f30a2d1` (the round-2 hold-block fixes — 11 reviewers, `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 9 hold-block items land in intent and pass per-persona spot-checks; comment anchors comply with the conventions; shape guard, pipeline catch, helper extraction, and the seed-then-record reorder are correct. Three residual items found during cluster triage warrant a small round-3 pass.
+
+### Items held (must fix before archive)
+
+**1. (P2, conf 100, maintainability + reliability + kieran-typescript) Orphaned JSDoc block: `deleteTokenBestEffort`'s docblock now describes the wrong function.** The pre-existing `/** Best-effort wrapper around \`deleteToken\` ... */` block at `backend/src/routes/accreditation.ts:457-471` was not moved when `recordAccreditationCompletionBestEffort` (lines 486+) was inserted between it and `deleteTokenBestEffort` (line 509). Two consecutive `/** */` blocks now sit at 457-485; TypeScript / IDE hover-doc tooling attaches the immediately-preceding JSDoc to the next declaration. Result: lines 457-471 are functionally orphaned (or, depending on tool, mis-attached to `recordAccreditationCompletionBestEffort`); `deleteTokenBestEffort` at line 509 has no docblock; a developer hovering over `deleteTokenBestEffort` sees no documentation.
+
+  Suggested fix: move the JSDoc currently at lines 457-471 to immediately precede `async function deleteTokenBestEffort` at line 509. One mechanical move, no content change. Verify via TypeDoc / IDE hover after the move that each helper shows its own description.
+
+**2. (P2, conf 75, maintainability) `recordAccreditationCompletionBestEffort` JSDoc claims it is "used on the /verify broadcast-success path AFTER `seedAccreditationBonus` succeeds" — but the helper is now also called from the existing-accreditation gate-hit and per-token idempotency-hit branches (via `backend-verify-grace-period-sibling-branch-coverage`, commit `1e2609a`).** The "broadcast-success path AFTER `seedAccreditationBonus`" scope claim is incorrect for two of the three current call sites (no seed-bonus precondition on the gate-hit or idem-hit branches).
+
+  Suggested fix: rewrite the docblock at lines 472-485 to describe what the wrapper guarantees (response-ordering protection around the completion-record write — no propagating Redis error reaches Express's async-error handler over the in-flight 200 envelope) rather than which call sites use it. Naming the call sites in a docblock is a maintenance hazard whenever a new caller lands; describing the contract is stable. Reference `helper-extraction-express5-response-ordering-2026-04-28.md` for the ordering hazard. Bundle this fix with item 1's docblock move.
+
+**3. (P2, conf 80, testing + adversarial residual) The pipeline-rejection inner-catch path in `recordAccreditationCompletion` is untested; the round-2 signal block's deviation note claim that "the existing `tokenExists(token) === false` assertion is sufficient" is factually incorrect.** That assertion fires from the post-broadcast catch's `deleteTokenBestEffort` call (the new cleanup added on the `post_broadcast` outcome branch), NOT from the pipeline-rejection inner catch inside `recordAccreditationCompletion`. The two are different code paths; a regression that re-removes the inner catch (or moves the in-memory writes inside the try block) would not be caught by any existing spec.
+
+  Suggested fix: add one new spec to `backend/tests/routes/accreditation-idempotency.test.ts` under the existing grace-period describe block. Stub `redis.multi` to return an object whose `.exec()` rejects (e.g., `vi.spyOn(redis, 'multi').mockReturnValueOnce({ set: () => ({ del: () => ({ exec: () => Promise.reject(new Error('pipeline boom')) }) }) } as unknown as ReturnType<typeof redis.multi>)` or equivalent). Drive a fresh broadcast-success path and assert: (a) the response is 200 (broadcast did happen), (b) the `accreditation.verify.completion_record_pipeline_failed` warn fires (spy on `logger.warn`), (c) the in-memory completion record is readable on retry (issue a second `/verify` with the same token, assert 200 with cached envelope, assert `broadcastJsonMock` is NOT re-invoked). The carve-out in CLAUDE.md "Running Tests" applies — pipeline-rejection is impractical to exercise per-test against real Redis; document clause (a) justification in the spec block, and rely on the existing real-path companion (other specs in the same file exercising real-Redis grace-period paths) for clause (c).
+
+  Adversarial extension `adv-2` (per-command errors in ioredis MULTI return as `[Error, null]` tuples without throwing — so per-command failures bypass the inner catch entirely) is **out of scope for this hold**. The inner catch as designed covers the connection-level rejection class; the per-command class is a separate engineering question that should be considered if the design ever surfaces a real production incident. Do not bundle it into round-3.
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+### Items dismissed during architect triage
+
+- (adversarial adv-2) ioredis MULTI per-command errors bypass inner catch — out of scope per item 3 note; defer to future review if real incident surfaces.
+- (api-contract AC-2 / AC-3) `outcome` discriminator absence on retry / shape-mismatch 400 indistinguishable from expired-token — landed in the architect-zone cluster commit (api-contracts/accreditation.md).
+- (security / reliability residuals) revoke-after-broadcast cached 200, token-replay across grace window, process-restart memory loss — explicitly accepted trade-offs documented at the `memoryAccreditationCompletions` declaration block in code.
+- (maintainability M-2 / project-standards PSR-001) "Round-2 F3" and "round-3 hold #3" citations claimed to be in `+` lines by two reviewers — false positive; direct grep against the round-2 diff confirms these are pre-existing context lines, not `f30a2d1` introductions. Pre-existing anchor rot in `accreditation.ts` and its test files is filed as a separate pending task (`backend-comment-anchor-rot-sweep-accreditation-ts`).
 
