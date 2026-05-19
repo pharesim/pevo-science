@@ -1159,18 +1159,18 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
   });
 
   // ──────────────────────────────────────────────
-  // BE-VERIFY-CAP-REDIS-FLAP-RECOVERY — queue-enqueue + auto-recovery
-  //
-  // Architect-decided design (a) per
-  // agents/docs/tasks/.../backend-verify-cap-redis-flap-recovery.md.
+  // queue-enqueue + auto-recovery against /verify broadcast-attempt counter
+  // on Redis flap. When DECR can't land (Redis flap mid-request), the
+  // pending-decrement queue takes the entry so the counter eventually
+  // returns to its pre-INCR value rather than staying inflated until the
+  // 24h TTL.
   // ──────────────────────────────────────────────
 
   it('flap-recovery: decrementBroadcastAttempts(token, attemptId) with isRedisAvailable()=false enqueues for the periodic drain cycle', async () => {
-    // Round-3 hold #10 added the Redis-unavailable warn at the DECR site, but
-    // left the counter inflated until the 24h TTL with no auto-recovery. This
-    // task adds the queue: when DECR can't land due to a Redis flap mid-request,
-    // the entry is enqueued for retry. A regression that drops the enqueue
-    // returns to the silent-noop pre-flap-recovery shape.
+    // The Redis-unavailable warn at the DECR site already fires structured
+    // operator signal; the queue is what closes the loop by retrying DECR
+    // when Redis recovers. A regression that drops the enqueue returns the
+    // counter to the silent-noop "inflated until 24h TTL" shape.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for flap-recovery specs');
     queueTestSeams.clearQueue();

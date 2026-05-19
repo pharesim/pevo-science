@@ -6,20 +6,20 @@ import { validate, accreditationVerifySchema } from '../validation.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { logger } from '../logger.js';
 import { hashTokenForLogs } from '../lib/log-pii.js';
+import { broadcastAttemptsKey } from './accreditation.js';
 
 const router = Router();
 
-function broadcastAttemptsKey(token: string): string {
-  return `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
-}
-
 // ──────────────────────────────────────────────
 // POST /api/admin/accreditation/reset-broadcast-counter
-// Manual-reset runbook lever for BE-VERIFY-CAP-REDIS-FLAP-RECOVERY.
-// Auth: admin Hive signature against config.hiveAdminAccount (singular per
-// project_admin_is_singular memory). Operator-facing escape hatch when an
-// `/api/accreditation/verify` broadcast-attempts counter is inflated due to
-// a Redis flap and a user reports persistent BROADCAST_ATTEMPT_LIMIT_EXCEEDED.
+//
+// Operator manual-reset lever: clears an inflated `/api/accreditation/verify`
+// broadcast-attempts counter when the in-process pending-decrement queue
+// cannot converge (process restart between flap and drain, 24h TTL expiry,
+// or queue overflow), or when a user reports persistent
+// BROADCAST_ATTEMPT_LIMIT_EXCEEDED despite no actual broadcast having fired.
+//
+// Auth: admin Hive signature against `config.hiveAdminAccount` (singular).
 // ──────────────────────────────────────────────
 
 router.post(
@@ -33,7 +33,7 @@ router.post(
       // probe doesn't leak the plaintext token to operator logs.
       logger.warn(
         {
-          event: 'admin_reset_broadcast_counter_forbidden',
+          event: 'accreditation.admin.reset_broadcast_counter_forbidden',
           attempted_by: username,
           token_hash: hashTokenForLogs(req.body.token as string),
         },
@@ -51,15 +51,18 @@ router.post(
       // fallback is per-process and the operator likely doesn't know
       // which container holds the inflated counter. Surface 503 so the
       // operator can retry once Redis is back, matching the auto-recovery
-      // queue's same-fail-open semantics.
+      // queue's same-fail-open semantics. Pair the body's `retriable:true`
+      // with a `Retry-After: 30` header to match the sibling /verify 503
+      // paths' floor — SPAs read the header to schedule backoff.
       logger.warn(
         {
-          event: 'admin_reset_broadcast_counter_redis_unavailable',
+          event: 'accreditation.admin.reset_broadcast_counter_redis_unavailable',
           admin_username: username,
           token_hash: hashTokenForLogs(token),
         },
         'admin reset-broadcast-counter: Redis unavailable; counter unchanged',
       );
+      res.set('Retry-After', '30');
       return sendError(
         res,
         503,
@@ -71,14 +74,17 @@ router.post(
 
     let priorValue: number | null = null;
     try {
-      const raw = await redis.get(key);
+      // Atomic GETDEL (Redis 6.2+) reads + deletes in a single command so the
+      // `prior_value` returned to the operator matches the value that was
+      // actually cleared, even if a concurrent /verify INCR lands between
+      // the read and the delete.
+      const raw = await redis.getdel(key);
       priorValue = raw === null ? null : Number(raw);
-      await redis.del(key);
     } catch (err) {
       logger.error(
         {
           err,
-          event: 'admin_reset_broadcast_counter_failed',
+          event: 'accreditation.admin.reset_broadcast_counter_failed',
           admin_username: username,
           token_hash: hashTokenForLogs(token),
         },
@@ -92,7 +98,7 @@ router.post(
     // and a timestamp injected by pino.
     logger.info(
       {
-        event: 'admin_reset_broadcast_counter',
+        event: 'accreditation.admin.reset_broadcast_counter',
         admin_username: username,
         token_hash: hashTokenForLogs(token),
         prior_value: priorValue,

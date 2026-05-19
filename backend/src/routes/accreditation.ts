@@ -82,7 +82,7 @@ const memoryTokens = new Map<string, PendingAccreditation>();
 // incremented atomically with INCR.
 const memoryBroadcastAttempts = new Map<string, number>();
 
-function broadcastAttemptsKey(token: string): string {
+export function broadcastAttemptsKey(token: string): string {
   return `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
 }
 
@@ -200,30 +200,30 @@ async function decrementBroadcastAttempts(
         }
         return 'decremented';
       } catch (decrErr) {
-        // BE-VERIFY-CAP-REDIS-FLAP-RECOVERY: the immediate DECR threw (Redis
-        // flap mid-request, OOM, evicted-to-read-only). Enqueue for retry by
-        // the periodic drain cycle so the counter eventually returns to its
-        // pre-INCR value, then re-throw. Re-throwing preserves the existing
-        // outer-catch `accred_verify_broadcast_decrement_failed` warn (the
-        // route's per-request signal) — the queue handles recovery, the
-        // outer-catch warn handles operator correlation.
+        // DECR threw during a Redis flap (mid-request unavailability, OOM,
+        // evicted-to-read-only). Enqueue for retry by the periodic drain
+        // cycle so the counter eventually returns to its pre-INCR value
+        // rather than staying inflated until the 24h TTL, then re-throw.
+        // Re-throwing preserves the existing outer-catch
+        // `accred_verify_broadcast_decrement_failed` warn (the route's
+        // per-request signal) — the queue handles recovery, the outer-catch
+        // warn handles operator correlation.
         if (attemptId) {
           enqueueDecrement({ token, attemptId, key });
         }
         throw decrErr;
       }
     }
-    // Round-3 hold #10: if Redis was reachable at INCR time but is unavailable
-    // now (mid-request flap), the in-memory map has no record of the Redis-side
-    // counter and a silent fallback would leave the Redis-side counter inflated
-    // until 24h TTL with no operator signal. Emit a structured warn here so
-    // operators can correlate counter drift with Redis incidents; the sibling
+    // If Redis was reachable at INCR time but is unavailable now (mid-request
+    // flap), the in-memory map has no record of the Redis-side counter and a
+    // silent fallback would leave the Redis-side counter inflated until 24h
+    // TTL with no operator signal. Emit a structured warn here so operators
+    // can correlate counter drift with Redis incidents; the sibling
     // `accred_verify_broadcast_decrement_failed` event covers the
     // throw-during-DECR case but not this silent-noop case.
     //
-    // BE-VERIFY-CAP-REDIS-FLAP-RECOVERY: also enqueue for the periodic drain
-    // cycle so the counter is decremented when Redis recovers, instead of
-    // sitting inflated until the 24h Redis TTL.
+    // Also enqueue for the periodic drain cycle so the counter is decremented
+    // when Redis recovers, instead of sitting inflated until the 24h TTL.
     if (attemptId) {
       enqueueDecrement({ token, attemptId, key });
     }
@@ -644,10 +644,10 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
 router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifySchema), async (req: Request, res: Response) => {
   const { token } = req.body;
 
-  // BE-VERIFY-CAP-REDIS-FLAP-RECOVERY: per-request attempt identifier used by
-  // the in-process pending-decrement queue. Generated once per /verify call so
-  // a duplicate enqueue (e.g. retry within the same request lifetime) is
-  // idempotent — the queue is keyed on attemptId.
+  // Per-request attempt identifier used by the in-process pending-decrement
+  // queue. Generated once per /verify call so a duplicate enqueue (e.g. retry
+  // within the same request lifetime) is idempotent — the queue is keyed on
+  // attemptId.
   const attemptId = crypto.randomBytes(8).toString('hex');
 
   const pending = await getToken(token);

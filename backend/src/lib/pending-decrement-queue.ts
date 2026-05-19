@@ -1,12 +1,12 @@
 /**
- * In-process pending-decrement queue for the
- * /api/accreditation/verify broadcast-attempt counter.
+ * In-process queue for retrying `/api/accreditation/verify` broadcast-attempt
+ * counter DECRs after a Redis flap.
  *
- * Architect-decided design (a) per
- * agents/docs/tasks/.../backend-verify-cap-redis-flap-recovery.md.
  * When `decrementBroadcastAttempts` cannot land its DECR (Redis unavailable
- * mid-request, or `redis.decr` throws), the route enqueues `(token, attemptId,
- * key)` here. A periodic drainer retries DECR on Redis when available.
+ * mid-request, or `redis.decr` throws), the route enqueues
+ * `(token, attemptId, key)` here. A periodic drainer
+ * (`config.verifyDecrementQueueDrainMs`, default 30s) retries DECR on Redis
+ * when available, returning the counter to its pre-INCR value.
  *
  * Bounded blast radius:
  *   - In-process state. No cross-process / cross-container persistence.
@@ -18,8 +18,9 @@
  * Idempotency: the queue is keyed on `attemptId`. A duplicate enqueue for
  * the same `attemptId` overwrites the prior entry rather than double-counting.
  *
- * The drain emits a structured `accred_verify_decrement_queue_drain` log line
- * per cycle so operators can correlate counter drift with Redis incidents.
+ * The drain emits a structured `accreditation.verify.decrement_queue_drain`
+ * log line per cycle so operators can correlate counter drift with Redis
+ * incidents.
  */
 
 import { config } from '../config.js';
@@ -57,7 +58,7 @@ export function enqueueDecrement(entry: { token: string; attemptId: string; key:
       overflowReported = true;
       logger.warn(
         {
-          event: 'accred_verify_decrement_queue_overflow',
+          event: 'accreditation.verify.decrement_queue_overflow',
           queue_depth: queue.size,
           token_hash: hashTokenForLogs(entry.token),
         },
@@ -81,7 +82,8 @@ export function enqueueDecrement(entry: { token: string; attemptId: string; key:
  * On success, remove from queue. On Redis unavailable or per-entry retry
  * failure, leave entries queued for the next cycle.
  *
- * Emits a structured `accred_verify_decrement_queue_drain` log per cycle.
+ * Emits a structured `accreditation.verify.decrement_queue_drain` log per
+ * cycle.
  */
 export async function drainQueue(): Promise<void> {
   const initialDepth = queue.size;
@@ -91,7 +93,7 @@ export async function drainQueue(): Promise<void> {
   if (!redis || !isRedisAvailable()) {
     logger.debug(
       {
-        event: 'accred_verify_decrement_queue_drain',
+        event: 'accreditation.verify.decrement_queue_drain',
         queue_depth: queue.size,
         drained: 0,
         skipped_redis_unavailable: true,
@@ -118,7 +120,7 @@ export async function drainQueue(): Promise<void> {
       logger.warn(
         {
           err,
-          event: 'accred_verify_decrement_queue_retry_failed',
+          event: 'accreditation.verify.decrement_queue_retry_failed',
           token_hash: hashTokenForLogs(entry.token),
         },
         'pending-decrement retry failed — entry remains queued for next cycle',
@@ -131,7 +133,7 @@ export async function drainQueue(): Promise<void> {
 
   logger.info(
     {
-      event: 'accred_verify_decrement_queue_drain',
+      event: 'accreditation.verify.decrement_queue_drain',
       queue_depth: queue.size,
       drained,
       initial_depth: initialDepth,
@@ -151,7 +153,10 @@ export function startDecrementQueueDrainer(): void {
   if (drainTimer) return;
   drainTimer = setInterval(() => {
     drainQueue().catch((err) => {
-      logger.error({ err, event: 'accred_verify_decrement_queue_drain_threw' }, 'pending-decrement drain cycle threw');
+      logger.error(
+        { err, event: 'accreditation.verify.decrement_queue_drain_threw' },
+        'pending-decrement drain cycle threw',
+      );
     });
   }, config.verifyDecrementQueueDrainMs);
   drainTimer.unref();

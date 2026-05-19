@@ -1,6 +1,7 @@
 /**
- * Coverage for `lib/pending-decrement-queue.ts` — the in-process pending-
- * decrement queue introduced by BE-VERIFY-CAP-REDIS-FLAP-RECOVERY.
+ * Coverage for `lib/pending-decrement-queue.ts` — the in-process queue that
+ * retries `/api/accreditation/verify` broadcast-attempt counter DECRs after
+ * a Redis flap.
  *
  * Carve-out justification (per root CLAUDE.md): the Redis-unavailable drain
  * path is exercised against the real Redis client by toggling
@@ -111,7 +112,7 @@ describe('pending-decrement-queue', () => {
       expect(queueTestSeams.hasAttempt(attemptId)).toBe(true);
       expect(debugSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          event: 'accred_verify_decrement_queue_drain',
+          event: 'accreditation.verify.decrement_queue_drain',
           skipped_redis_unavailable: true,
         }),
         expect.stringContaining('Redis unavailable'),
@@ -140,7 +141,7 @@ describe('pending-decrement-queue', () => {
       // observability of drain cycles.
       expect(infoSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          event: 'accred_verify_decrement_queue_drain',
+          event: 'accreditation.verify.decrement_queue_drain',
           queue_depth: 0,
           drained: 1,
           initial_depth: 1,
@@ -173,7 +174,7 @@ describe('pending-decrement-queue', () => {
       expect(queueTestSeams.getQueueDepth()).toBe(2);
       expect(warnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          event: 'accred_verify_decrement_queue_retry_failed',
+          event: 'accreditation.verify.decrement_queue_retry_failed',
           token_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
         }),
         expect.stringContaining('retry failed'),
@@ -207,7 +208,7 @@ describe('pending-decrement-queue', () => {
         ([payload]) =>
           payload != null &&
           typeof payload === 'object' &&
-          (payload as Record<string, unknown>).event === 'accred_verify_decrement_queue_overflow',
+          (payload as Record<string, unknown>).event === 'accreditation.verify.decrement_queue_overflow',
       );
       expect(overflowCalls.length).toBe(1);
     } finally {

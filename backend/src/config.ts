@@ -107,7 +107,7 @@ export const config = {
   verifyBroadcastAttemptsCap: parseInt(process.env.VERIFY_BROADCAST_ATTEMPTS_CAP || '3', 10),
   // Drain interval (ms) for the in-process pending-decrement queue that
   // recovers DECR calls failed during a Redis flap on /api/accreditation/verify.
-  // See lib/pending-decrement-queue.ts and BE-VERIFY-CAP-REDIS-FLAP-RECOVERY.
+  // See `startDecrementQueueDrainer` in `lib/pending-decrement-queue.ts`.
   verifyDecrementQueueDrainMs: parseInt(process.env.VERIFY_DECREMENT_QUEUE_DRAIN_MS || '30000', 10),
   // Per-request wall-clock budget (ms) for the HAF chain walkers in
   // `routes/papers.ts` (`findCanonicalRoot` + `resolveContinuationChain` +
