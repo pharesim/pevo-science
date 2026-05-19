@@ -12,12 +12,23 @@ export interface PaperAuthor {
    *  otherwise. Populated read-time by the supersession projection per
    *  `agents/docs/hive-schemas.md` § 1.1.
    *
+   *  Runtime population:
+   *   - SQL surfaces (`authorsWithSupersessionSelect` projection): the
+   *     `jsonb_build_object` emits both supersession keys for every author
+   *     entry the projection processes, defaulting to null/false via the
+   *     CASE arms.
+   *   - JS surfaces (`applyAuthorSupersession`): both supersession keys are
+   *     emitted for every output entry, including the non-object-entry
+   *     branch which projects to `{orcid_verified: null, orcid_discrepancy:
+   *     false}` (no name/hive/orcid/affiliation propagation).
+   *
+   *  Both fields stay type-optional on `PaperAuthor` so partial-fixture
+   *  construction (test inputs that pre-date supersession, manual
+   *  hand-built author entries) does not require synthesizing the
+   *  supersession defaults at every call site.
+   *
    *  Note: PaperSummary's runtime shape strips `affiliation` per the
-   *  contract, even though the type leaves it optional. The supersession
-   *  fields are always populated at runtime; they collapse to null/false
-   *  (case-1 of the supersession lattice) when the caller passes an empty
-   *  accreditation map (e.g., test fixtures). Type-optional for
-   *  partial-fixture construction.
+   *  contract, even though the type leaves it optional.
    */
   orcid_verified?: string | null;
   /** `true` IFF chain `orcid` and `orcid_verified` are both non-empty AND

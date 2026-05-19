@@ -323,8 +323,8 @@ describe('toPaperSummary', () => {
     // source_type='native'. The bridge-author identity check is not
     // load-bearing here (native-typed metadata never reaches the bridge arm
     // of `isPevoBridgePaper`); pinning it explicitly closes the symmetry
-    // gap left by the spoofed/legitimate bridge_paper specs above (which
-    // exercise the bridge arm where author identity IS load-bearing).
+    // gap relative to the bridge_paper specs (which exercise the bridge
+    // arm of `isPevoBridgePaper` where author identity IS load-bearing).
     expect(result.source_type).toBe('native');
   });
 

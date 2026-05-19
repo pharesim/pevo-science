@@ -173,7 +173,16 @@ export function applyAuthorSupersession(
 ): Array<Record<string, unknown>> {
   if (!Array.isArray(authors)) return [];
   return authors.map((entry) => {
-    if (!entry || typeof entry !== 'object') return {};
+    // Non-object entries (null, strings, numbers, arrays interpreted as
+    // non-object, etc.) cannot carry name/hive/orcid/affiliation fields,
+    // so the projection collapses to the supersession defaults only. This
+    // keeps the output shape's supersession-key set total: every returned
+    // entry has both `orcid_verified` and `orcid_discrepancy` set, matching
+    // the SQL-side `jsonb_build_object` projection which always emits both
+    // keys (with the equivalent null/false defaults via its CASE arms).
+    if (!entry || typeof entry !== 'object') {
+      return { orcid_verified: null, orcid_discrepancy: false };
+    }
     const e = entry as Record<string, unknown>;
     const hive = typeof e.hive === 'string' ? e.hive : null;
     const chainOrcid = typeof e.orcid === 'string' ? e.orcid : null;

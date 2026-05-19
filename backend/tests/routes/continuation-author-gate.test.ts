@@ -512,13 +512,15 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('rejects a continuation type-spoof: named co-author posting pevo.type=review with continues pointer', async () => {
-    // Pins the chain-walk SQL's named-co-author admit-set against the cumulative union.
-    // A named co-author bob is in alice's pevo.authors[]. bob posts a comment
-    // with pevo.type='review' AND pevo.continues={alice, p1}. Without the
-    // validPevoPaperWhere predicate on the chain-walk SQL (and the JS-side
-    // isPevoAnyPaper re-check), the chain-walker would admit it and bob's
-    // review content would surface as alice/p1's apparent paper body via
-    // the version walker's unconditional body-overwrite of `detail.body`.
+    // Pins type-spoof rejection: a named co-author bob is in alice's
+    // pevo.authors[] (admit-set precondition seeded by the responder), but
+    // bob posts a comment with pevo.type='review' AND pevo.continues={alice,
+    // p1}. The chain-walker rejects on TYPE: the SQL's validPevoPaperWhere
+    // predicate filters review-typed rows out of the candidate set, AND the
+    // JS-side isPevoAnyPaper re-check rejects any review-typed candidate
+    // that leaks past the SQL filter. Without these two type-rejections,
+    // bob's review content would surface as alice/p1's apparent paper body
+    // via the version walker's unconditional body-overwrite of `detail.body`.
     //
     // Defense in depth: even if the SQL predicate were dropped, the JS
     // re-check on the candidate's parsed metadata catches it.
@@ -560,11 +562,15 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('chain-walk SQL pins validPevoPaperWhere predicate (pevo.type identity)', async () => {
-    // Pins the chain-walk SQL's parameter binding to the cumulative-union admit-set.
-    // The chain-walk SQL must include the validPevoPaperWhere predicate so a
-    // candidate with pevo.type != 'paper' never reaches the application layer.
-    // The predicate text contains the literal `'type'` -> ... -> 'paper' arm
-    // and the bridge-paper arm.
+    // Pins the validPevoPaperWhere predicate text inside the forward
+    // chain-walk SQL: the `pevo.type = 'paper'` arm must appear so a
+    // candidate with pevo.type != 'paper' never reaches the application
+    // layer. The asserted regex matches the `->>'type') = 'paper'` literal
+    // emitted by validPevoPaperWhere's paper arm. The predicate also
+    // contains a bridge-paper arm; only the paper arm is asserted here
+    // because that arm is the load-bearing predicate text for the
+    // native-paper type-spoof rejection (the bridge-paper carve-out is
+    // covered by the bridge-paper continuation canary).
     installResponder(async (sql, _params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
         return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
