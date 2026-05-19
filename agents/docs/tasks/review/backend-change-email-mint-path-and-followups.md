@@ -219,3 +219,25 @@ When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-3 archite
 Items 1-4 touch a mix of `backend/src/routes/settings.ts`, `backend/tests/routes/settings-email-fresh-auth.test.ts`, and `backend/tests/routes/settings.test.ts`. Implementer's call whether one bundled commit or two (`comment-anchor + alias` first, then `tests + observability`); either works.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-19, commit SHA `e22273c`)
+
+All four round-3 hold items addressed in one bundled commit:
+
+**Item 1 (P3, maintainability+project-standards) — Comment-anchor cleanup across production and test source.** Replaced line-number anchors at the `custody.ts` consent-path handler / `settings.ts` change-email handler with stable-symbol anchors (e.g. "the consent-path `consumeFreshAuthToken` result handler in `custody.ts`", "the sibling change-email handler at `POST /api/settings/email`"). Harmonized the Add-flow JWT-rejection guard to use the local `isJwtPath` alias (one-token consistency with the Change-branch). Stripped Round-N / item-N qualifiers from inline `it()` comments in `settings-email-fresh-auth.test.ts` and `settings.test.ts`. Rewrote the new describe-block header behaviorally (contrasting Change-flow restore against Add-flow DELETE). Audit-own-replacement clear — no new task slugs, SHAs, or line-number anchors introduced. One additional adjacent line-number anchor in the set-password status-mapping comment was fixed under the audit-own-replacement rule.
+
+**Item 2 (P2, security+adversarial) — JWT-without-proof account-existence oracle closure regression test.** Two new specs in `settings-email-fresh-auth.test.ts` assert that a JWT-bearing request with no `fresh_auth_proof` returns uniform 401 `FRESH_AUTH_REQUIRED` whether `new_email` IS or IS NOT registered to another account. Mutation kill: a regression reverting the handler ordering (consume BEFORE duplicate-email SELECT) would surface as a 409 leak on one of the two specs.
+
+**Item 3 (P1, correctness+adversarial) — Concurrent-overwrite WHERE-scope direct test.** New spec simulates a concurrent change-email request landing mid-flight by mutating the row inside the sendMail rejection callback. Asserts the restore UPDATE's `AND pending_email_token = <just-written>` clause no-ops, preserving the concurrent winner's state. A mutation that drops the scope clause would surface as the winner's state being clobbered. A companion spec asserts the new `settings.email_post.smtp_fail_restore_raced` warn fires on the race path only.
+
+**Item 4 (low, reliability+adversarial) — Restore-UPDATE rowCount observability.** SMTP-fail Change-flow restore now captures `result.rowCount` and emits a distinct `settings.email_post.smtp_fail_restore_raced` warn when the restore no-ops (race path). Operators responding to SMTP-outage incidents can distinguish "rolled back successfully" from "raced — prior write already in-flight, restore skipped" via log discriminator. Fires on race path only; no added volume to the normal SMTP-fail path.
+
+**Verification gates (run from `backend/`):**
+- `npm run typecheck` (`:src` + `:tests`): clean.
+- `npm run lint`: clean.
+- `npx vitest run tests/routes/settings-email-fresh-auth.test.ts`: 23/23 pass.
+- `npx vitest run tests/routes/settings.test.ts`: 22/22 pass.
+
+**Deviations:** None. Pre-existing rot patterns elsewhere in the test files (`BACKEND-SETTINGS-EMAIL-REAUTH-FRESH-AUTH` header, `orcid.test.ts` line-number citations) were out of round-3 scope and left untouched; they belong to separate audit-passes if surfaced.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
