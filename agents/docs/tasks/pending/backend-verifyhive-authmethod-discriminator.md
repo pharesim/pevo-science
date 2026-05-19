@@ -86,3 +86,63 @@ When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-2 archite
 Items 1-3 touch a mix of `backend/src/routes/settings.ts`, `backend/tests/fixtures/mock-auth.ts`, `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts`, and `backend/tests/routes/settings-email-fresh-auth.test.ts`. Implementer's call whether one bundled commit or two.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-19, commit SHA `8b97461`)
+
+All three round-2 hold items landed in a single bundled commit. Touched files:
+
+- `backend/tests/fixtures/mock-auth.ts` — item 1 (slug + Bearer-presence anchor rewrite in docblock) + item 3 (parameter type narrowed to `Pick<Request, 'hiveUsername' | 'hiveCustody' | 'hiveAuthMethod' | 'headers'>`, `import type { Request } from 'express'` added).
+- `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts` — item 1 (file-header docblock rewritten to behavioral anchors; two inline subtest comments stripped of "Acceptance criterion" references and reworded against the middleware contract).
+- `backend/tests/routes/settings-email-fresh-auth.test.ts` — item 1 (slug + "Acceptance criterion #6" sites stripped in two places; replacement prose anchors on the `isJwtPath` alias + the no-row-before-JWT invariant) + item 2 (carve-out clause-(a) prose rewritten to describe the post-migration state and to name the real-path companion under clause (c)).
+
+### Item 1 — task-slug + Acceptance-criterion citation strip
+
+Sites the architect listed:
+
+- `backend/src/routes/settings.ts` production comment near the JWT-path discriminator — *already cleaned in a wave-1 commit on a sibling hold*. The current state of that comment (around the `isJwtPath` constant) anchors on `req.hiveAuthMethod` semantics and the middleware's success branches. No further edit needed; verified via `grep -n "BACKEND-VERIFYHIVE-AUTHMETHOD-DISCRIMINATOR"` returning no hits in `settings.ts`.
+- `backend/tests/fixtures/mock-auth.ts` fixture docblock — slug parenthetical removed; replacement names the route consumer behaviorally (the change-email branch of POST `/api/settings/email` via the `isJwtPath` alias).
+- `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts` file-header docblock — slug + "Acceptance criterion #6 (first half)" replaced with: real-path pin for `req.hiveAuthMethod`; JWT-success sets `'jwt'`, signature-success sets `'signature'`, auth failures leave it unset. Both inline subtest comments ("Acceptance criterion contract" + "Acceptance criterion #3") rewritten to describe the invariant each subtest pins (no leak of an earlier-branch failure into the success label; 401 path never reaches a downstream handler).
+- `backend/tests/routes/settings-email-fresh-auth.test.ts` — line-514 inline "Acceptance criterion #6" reworded to "Regression guard for the Keychain Add-flow no-row branch [...] The no-row-before-JWT invariant means this path is unreachable on the JWT discriminator." The describe-block header (formerly slug + "Acceptance criterion #6 (second half)") now reads: "Downstream-consumption pin: assert the settings/email route consumes `req.hiveAuthMethod === 'jwt'` (via the local `isJwtPath` alias) rather than re-parsing `req.headers['authorization']` itself."
+
+Audit-own-replacement: the new prose anchors on stable symbols (`req.hiveAuthMethod`, `isJwtPath`, `MOCK_VERIFY_SIGNATURE`, `verifyHiveSignature`, the no-row-before-JWT invariant) — no new task slugs, SHAs, round-N markers, or line-number anchors introduced.
+
+### Item 2 — stale clause-(a) justification rewrite
+
+The pre-existing prose in `settings-email-fresh-auth.test.ts` claimed the route reads `req.headers['authorization']` directly and that the discriminator would be extracted to `req.hiveAuthMethod` "once introduced." The new prose:
+
+- Names `MOCK_VERIFY_SIGNATURE` as the fixture and notes it mirrors the production `req.hiveAuthMethod` discriminator (set to `'jwt'` when an Authorization Bearer header is present, `'signature'` otherwise).
+- Names the production discriminator at the route: `req.hiveAuthMethod === 'jwt'` via the local `isJwtPath` alias.
+- Clause-(c) real-path companion explicitly points at `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts`, naming what that file pins (both success branches with real cryptographic verification).
+
+### Item 3 — fixture parameter type narrowing
+
+Parameter signature for the fixture's `verifyHiveSignature` changed from:
+
+```
+(req: Record<string, unknown>, _res: unknown, next: () => void)
+```
+
+to:
+
+```
+(req: Pick<Request, 'hiveUsername' | 'hiveCustody' | 'hiveAuthMethod' | 'headers'>, _res: unknown, next: () => void)
+```
+
+with `import type { Request } from 'express'` added at the top. Because the global `Express.Request` augmentation in `backend/src/middleware/verifyHiveSignature.ts` declares `hiveAuthMethod?: 'jwt' | 'signature'`, the `req.hiveAuthMethod = ...` assignment inside the fixture is now checked against that union — and similarly for the existing `req.hiveCustody = ...` assignment against `'light' | 'self'`. A docblock paragraph was added explaining why the narrow type was chosen over `Record<string, unknown>` (so the rationale survives if a future maintainer wonders why the fixture imports an Express type).
+
+### Verification
+
+From `backend/`, after `npm install`:
+
+- `npm run typecheck` (`:src` + `:tests`): clean.
+- `npm run lint`: clean.
+- `npx vitest run tests/middleware/verifyHiveSignature-authmethod.test.ts tests/routes/settings-email-fresh-auth.test.ts` with `REDIS_URL` + `APP_DATABASE_URL` env overrides per CLAUDE.md "Running Tests": **28/28 pass** in 2.11s. No mock-fixture changes broke the wider consumer set (validated by the `tests/tsconfig.json` typecheck pass, which covers all `MOCK_VERIFY_SIGNATURE` callers).
+
+### Deviations / dismissals during fix
+
+- `settings.ts` production comment-anchor rewrite is out-of-scope for this commit: the slug was already removed and the surrounding comment block already anchors on stable symbols (`req.hiveAuthMethod`, the unified `verifyHiveSignature` middleware, JWT/signature success branches). No new edit was made there.
+- Pre-existing line-number anchors in this test file at unrelated sites (e.g., `orcid.test.ts:207-209`, `orcid.test.ts:251-277`) are NOT in scope per the hold block, which named the carve-out clause-(a) docblock and the new describe-block header as the targets.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
