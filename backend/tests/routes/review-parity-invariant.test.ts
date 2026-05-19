@@ -102,8 +102,9 @@ describe('review parity invariant: display set === paper_reviews CTE set', () =>
       const author = findPaper.rows[0].author as string;
       const permlink = findPaper.rows[0].permlink as string;
 
-      // Display-side SQL: mirrors the paper-detail review list at
-      // backend/src/routes/papers.ts:2201-2216. Predicates:
+      // Display-side SQL: mirrors the paper-detail review list inside
+      // `fetchEnrichmentFromHaf` in `backend/src/routes/papers.ts`.
+      // Predicates:
       //   - c.author = ANY($4::text[])  [reviewAuthors = accredited ∪ anon]
       //   - validReviewWhere
       //   - excludeSelfReviewWhere
@@ -117,8 +118,8 @@ describe('review parity invariant: display set === paper_reviews CTE set', () =>
           AND ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam: '$3' })}
       `, [author, permlink, config.appTag, reviewAuthors]);
 
-      // Reputation-side SQL: mirrors paper_reviews CTE at
-      // backend/src/reputation.ts:562-585. Predicates:
+      // Reputation-side SQL: mirrors the `paper_reviews` CTE in
+      // `backend/src/reputation.ts`. Predicates:
       //   - validReviewWhere
       //   - excludeSelfReviewWhere
       //   - (c.author = ANY($2::text[]) OR c.author = $4)

@@ -30,7 +30,7 @@
  *    reported by the runner instead of silently passing an assertion-free
  *    body.
  *
- * Concurrent dual-consume race (2026-05-16):
+ * Concurrent dual-consume race:
  *  - Concurrent dual-consume tests for both `consumeFreshAuthToken` and
  *    `consumeSessionFreshAuthToken`. Two variants per helper:
  *    (a) Redis-up (real Redis GETDEL atomicity + in-process lock layered
@@ -97,10 +97,10 @@ const T: FreshAuthTarget = {
 };
 const TH = computeFreshAuthTargetHash(T);
 
-// Module-scope `redisAvailable` capture lets `it.skipIf(...)` evaluate
-// the "Redis present?" predicate at test-registration time. A flat
-// module-scoped check (rather than a per-test inline early-return) makes
-// Redis absence visible in the runner output as a `skipped` count.
+// Hoisted to module scope: `redisAvailable` capture lets `it.skipIf(...)`
+// evaluate the "Redis present?" predicate at test-registration time. A
+// flat module-scoped check (rather than a per-test inline early-return)
+// makes Redis absence visible in the runner output as a `skipped` count.
 //
 // Implementation note: `getRedis()` returns the redis instance before
 // its `connect()` promise resolves; the global `setup.ts`'s beforeAll

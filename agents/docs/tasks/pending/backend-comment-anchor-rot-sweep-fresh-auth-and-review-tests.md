@@ -108,3 +108,39 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 - `npx vitest run tests/lib/fresh-auth.test.ts tests/routes/settings-email-fresh-auth.test.ts tests/routes/review-parity-invariant.test.ts` continues to pass (63 passed | 1 skipped; the skip is pre-existing).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-19, round 2)
+
+All three hold-block items landed in this round:
+
+- **Item 1** — `backend/tests/lib/fresh-auth.test.ts`: prepended `Hoisted to module scope:` to the opening line of the `redisAvailable` comment so the design decision (module-scope hoist) is the lead signal before the consequence.
+- **Item 2** — `backend/tests/lib/fresh-auth.test.ts`: dropped the `(2026-05-16)` calendar-date qualifier from the `Concurrent dual-consume race` section heading in the file-header docblock. The surrounding section content already names the shared-lock-domain invariant; the bare heading reads cleanly without a behavioral suffix.
+- **Item 3** — extended grep target to include `\w+\.ts:\d+` and rewrote all 4 file:line citation sites to anchor on stable symbols:
+  - `review-parity-invariant.test.ts` L106 (was `papers.ts:2201-2216`) → anchors on `fetchEnrichmentFromHaf` (the function in `backend/src/routes/papers.ts` whose review-list SQL the test mirrors).
+  - `review-parity-invariant.test.ts` L121 (was `reputation.ts:562-585`) → anchors on the `paper_reviews` CTE in `backend/src/reputation.ts`.
+  - `settings-email-fresh-auth.test.ts` L647 (was `orcid.test.ts:207-209`) → anchors on the `config.orcidClientId` / `config.orcidClientSecret` module-level assignment in `orcid.test.ts`.
+  - `settings-email-fresh-auth.test.ts` L725 (was `orcid.test.ts:251-277`) → anchors on the `installOrcidFetchStub` helper in `orcid.test.ts`.
+
+### Acceptance grep (post-edit)
+
+```
+$ grep -nE "(round[- ]?[0-9]|hold #|BE-[A-Z_-]+|BACKEND-[A-Z_-]+|Acceptance criterion #|F[0-9]+[: ]|\w+\.ts:[0-9]+)" \
+    backend/tests/lib/fresh-auth.test.ts \
+    backend/tests/routes/settings-email-fresh-auth.test.ts \
+    backend/tests/routes/review-parity-invariant.test.ts
+(no output — zero hits)
+```
+
+### Verification
+
+- `npm run typecheck` (src + tests): clean.
+- `npm run lint`: clean.
+- `npx vitest run tests/lib/fresh-auth.test.ts tests/routes/settings-email-fresh-auth.test.ts tests/routes/review-parity-invariant.test.ts` (with Docker IP env overrides per `CLAUDE.md` "Running Tests"): **3 files passed, 63 passed | 1 skipped (64 total)** — matches the architect's pre-hold baseline; the skip is pre-existing.
+
+### Self-audit (per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`)
+
+Replacement prose introduces no new round-N markers, task slugs, file:line citations, SHA references, or partial-strip stubs. New anchors are stable symbols: `fetchEnrichmentFromHaf` (exported function name in `papers.ts`), `paper_reviews` (CTE label in `reputation.ts`), `config.orcidClientId` / `config.orcidClientSecret` (module-level config assignments), `installOrcidFetchStub` (helper-function name in `orcid.test.ts`), and `Hoisted to module scope:` (design-intent phrasing for the `redisAvailable` module-scope decision). All replacements name behavioral or code-symbol invariants that survive line drift.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

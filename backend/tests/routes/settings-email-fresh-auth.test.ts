@@ -644,7 +644,8 @@ describe.skipIf(!dbReachable)(
       rtPasswordHash = await argon2.hash(RT_PASSWORD, { type: argon2.argon2id });
       // Patch ORCID credentials — the dev .env leaves these empty and the
       // /api/orcid/start handler short-circuits with 500 if either is
-      // missing. Mirrors the pattern at orcid.test.ts:207-209.
+      // missing. Mirrors the module-level `config.orcidClientId` /
+      // `config.orcidClientSecret` assignment in `orcid.test.ts`.
       config.orcidClientId = 'test-orcid-client-id';
       config.orcidClientSecret = 'test-orcid-client-secret';
       await clearRateLimitKeys([
@@ -722,7 +723,7 @@ describe.skipIf(!dbReachable)(
       // pub.orcid.org returns enough external works to satisfy the
       // accreditation precondition (handleFreshAuth itself does not gate
       // on works, but the shared installer keeps the stub general). Mirrors
-      // the pattern in orcid.test.ts:251-277.
+      // the `installOrcidFetchStub` helper in `orcid.test.ts`.
       const worksCount = config.orcidMinWorks;
       const group = Array.from({ length: worksCount }, (_, i) => ({
         'work-summary': [
