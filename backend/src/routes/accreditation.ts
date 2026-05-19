@@ -91,20 +91,20 @@ export function broadcastAttemptsKey(token: string): string {
  * Atomically claim the next broadcast-attempt slot for `token`. Returns the
  * post-increment count. Caller treats
  * `count > config.verifyBroadcastAttemptsCap` as "cap exceeded — surface
- * limit-exceeded envelope" (round-3 hold #2 chose soft-block: token is NOT
- * destroyed on the cap-exceeded path; counter and token both TTL out
- * within 24h).
+ * limit-exceeded envelope". Soft-block semantics: the token is NOT destroyed
+ * on the cap-exceeded path; counter and token both TTL out within 24h, so a
+ * user blocked by transient retries gets a fresh chance after the TTL window.
  *
- * INCR + conditional EXPIRE run as a single Lua call (round-2 hold #6) so a
- * crash or connection drop between the two operations cannot leave a TTL-
- * less counter stranded past the token's 24h life. EXPIRE fires on every
- * transition-to-1 (count==0 → count==1), not only on the very first write
- * (round-3 hold #7). After a pre-INCR + DECR-on-timeout cycle the counter
- * persists at 0 and a subsequent INCR re-primes EXPIRE; safety is preserved
- * because the TTL anchor `pending.expires_at` monotonically shrinks across
- * cycles, so the counter cannot outlive the token. Re-priming TTL on
- * EVERY INCR (irrespective of count) would let an attacker indefinitely
- * extend the counter past the token's natural expiration.
+ * INCR + conditional EXPIRE run as a single Lua call so a crash or
+ * connection drop between the two operations cannot leave a TTL-less
+ * counter stranded past the token's 24h life. EXPIRE fires on every
+ * transition-to-1 (count==0 → count==1), not only on the very first write,
+ * because after a pre-INCR + DECR-on-timeout cycle the counter persists at
+ * 0 and a subsequent INCR re-primes EXPIRE; safety is preserved because the
+ * TTL anchor `pending.expires_at` monotonically shrinks across cycles, so
+ * the counter cannot outlive the token. Re-priming TTL on EVERY INCR
+ * (irrespective of count) would let an attacker indefinitely extend the
+ * counter past the token's natural expiration.
  */
 async function incrementBroadcastAttempts(pending: PendingAccreditation): Promise<number> {
   const redis = getRedis();
@@ -145,19 +145,19 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
 }
 
 /**
- * Status discriminator for `decrementBroadcastAttempts` (round-3 hold #6).
+ * Status discriminator for `decrementBroadcastAttempts`.
  *
  * The decrement compensates a pre-incremented broadcast attempt that
- * resolved to a 504 BROADCAST_TIMEOUT (round-2 hold #2): the cap is meant
- * to bound retries on definitive chain rejections, not punish transient
- * slow-Hive timeouts (3 unlucky attempts would force a fresh email under
- * the 3/24h per-account limit). Pre-INCR is necessary for the atomic
- * concurrent-claim guarantee (4 parallel /verify calls must enqueue at
- * most `cap` broadcasts); decrement-after-timeout is the simplest shape
- * that preserves both that guarantee and the verify-then-retry UX. `DECR`
- * on a missing key resolves to -1; the floor at 0 (via DEL when `after<0`)
- * keeps the counter from going negative if a parallel
- * deleteBroadcastAttempts (success path) raced ahead of this decrement.
+ * resolved to a 504 BROADCAST_TIMEOUT: the cap is meant to bound retries
+ * on definitive chain rejections, not punish transient slow-Hive timeouts
+ * (3 unlucky attempts would force a fresh email under the 3/24h per-account
+ * limit). Pre-INCR is necessary for the atomic concurrent-claim guarantee
+ * (4 parallel /verify calls must enqueue at most `cap` broadcasts);
+ * decrement-after-timeout is the simplest shape that preserves both that
+ * guarantee and the verify-then-retry UX. `DECR` on a missing key resolves
+ * to -1; the floor at 0 (via DEL when `after<0`) keeps the counter from
+ * going negative if a parallel deleteBroadcastAttempts (success path) raced
+ * ahead of this decrement.
  *
  *   `'decremented'`       — the counter was successfully decremented (Redis
  *                            DECR landed, OR no-Redis in-memory fallback ran).
@@ -168,16 +168,15 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
  *                            site-specific structured event so a degraded
  *                            decrement is dashboard-keyable per call site.
  *
- * Round-4 hold #3: the `'failed'` arm was dropped — the immediate-DECR
- * throw path re-throws (so the route's outer catch handles it) and never
- * returned `'failed'` in practice. If a future caller wants a non-throwing
- * failure return, add the arm back at that point with its narrowing site.
+ * The immediate-DECR throw path re-throws (route's outer catch handles it)
+ * rather than surfacing a `'failed'` discriminator; if a future caller wants
+ * a non-throwing failure return, add the arm back at that point.
  *
- * Returning a discriminator (round-3 hold #6) lets call sites switch on the
- * degraded path WITHOUT the helper having to know each caller's structured-
- * log event name. The internal `broadcast_decrement_redis_unavailable` warn
- * continues to fire from inside the helper for the broader operator-
- * correlation signal; callers add their site-specific event on top.
+ * Returning a discriminator lets call sites switch on the degraded path
+ * WITHOUT the helper having to know each caller's structured-log event
+ * name. The internal `broadcast_decrement_redis_unavailable` warn continues
+ * to fire from inside the helper for the broader operator-correlation
+ * signal; callers add their site-specific event on top.
  */
 export type DecrementBroadcastAttemptsResult =
   | 'decremented'
@@ -236,9 +235,9 @@ async function decrementBroadcastAttempts(
       },
       'accreditation.verify counter decrement: Redis unavailable mid-request — counter may persist inflated until 24h TTL',
     );
-    // Round-3 hold #6: return a status discriminator so the hit-branch
-    // caller (and any future caller) can emit a site-specific degraded
-    // event alongside the helper-internal warn.
+    // Return a status discriminator so the hit-branch caller (and any
+    // future caller) can emit a site-specific degraded event alongside
+    // the helper-internal warn.
     return 'enqueued_for_drain';
   }
   // No Redis configured at all → in-memory fallback path.
@@ -691,20 +690,19 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     return sendError(res, 500, 'INTERNAL_ERROR', 'Admin posting key not configured');
   }
 
-  // Round-3 hold #7: ordering is (a) compute idempotency_key, (b) HAF
-  // probe (no state change), (c) if hit -> 200 short-circuit (no cap
-  // consumed), (d) if miss -> increment cap, broadcast. The probe ran
-  // AFTER the pre-INCR in earlier rounds, which produced the mixed-
-  // envelope class adversarial A3 surfaced: under cap exhaustion AND a
-  // confirmed-on-chain accreditation, concurrent retries could receive
-  // 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED on retry N+1 while retry N
-  // returned 200 outcome:'already_landed' — same logical op, two
-  // outcomes. Moving the probe ahead of the INCR mirrors the F2
-  // fresh-auth hoist ordering principle: checks that depend on state
-  // changing should run AFTER checks that establish whether the
-  // operation is needed at all. The probe is read-only and has no
-  // ordering constraint with the cap counter; the cap exists to bound
-  // chain ops, and a hit consumes zero chain ops.
+  // Ordering: (a) compute idempotency_key, (b) HAF probe (no state change),
+  // (c) if hit -> 200 short-circuit (no cap consumed), (d) if miss ->
+  // increment cap, broadcast. The probe MUST run before the pre-INCR; a
+  // probe-after-INCR ordering produces the mixed-envelope class — under
+  // cap exhaustion AND a confirmed-on-chain accreditation, concurrent
+  // retries could receive 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED on retry
+  // N+1 while retry N returned 200 outcome:'already_landed' (same logical
+  // op, two outcomes). Probe-then-INCR mirrors the fresh-auth ordering
+  // principle: checks that depend on state changing should run AFTER
+  // checks that establish whether the operation is needed at all. The
+  // probe is read-only and has no ordering constraint with the cap
+  // counter; the cap exists to bound chain ops, and a hit consumes zero
+  // chain ops.
   const evidenceHash = crypto
     .createHash('sha256')
     .update(`${pending.email}:${pending.hive_username}:${pending.token}`)
@@ -712,8 +710,8 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
 
   // Idempotency key for Option A.4 dedup. Deterministic per (token, username)
   // pair so a retry — including a retry after a 504 BROADCAST_TIMEOUT, where
-  // the token is preserved per round-2 hold #2 — computes the same value, and
-  // the pre-broadcast HAF lookup short-circuits to 200 instead of broadcasting
+  // the token is preserved by soft-block semantics — computes the same value,
+  // and the pre-broadcast HAF lookup short-circuits to 200 instead of broadcasting
   // a duplicate accredit op signed by the admin key. Distinct from
   // `evidence_hash` (which encodes the email; staying email-free here keeps
   // the on-chain field decoupled from PII so a future schema-stability
@@ -729,14 +727,13 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   // AND without consuming a cap slot. Token cleanup follows the existing
   // post-broadcast convention.
   //
-  // Round-2 F1 / round-3 hold #7: on the HAF-hit branch we run
-  // seedAccreditationBonus (original spec acceptance #2(b)) but NO cap
+  // On the HAF-hit branch we run seedAccreditationBonus, but NO cap
   // decrement is needed because the probe runs before the INCR — no slot
   // was claimed. Both seed and token cleanup are best-effort under their
   // existing try/catch wrappers. A PERMANENT bonus-seed throw surfaces as
-  // a 502 POST_BROADCAST_OPERATOR_REQUIRED via F3's severity
-  // discrimination (programmer-error class — operator-actionable, not
-  // auto-reconciled).
+  // a 502 POST_BROADCAST_OPERATOR_REQUIRED via the severity-discriminator
+  // contract on `PostBroadcastWriteError` (programmer-error class —
+  // operator-actionable, not auto-reconciled).
   const hafPool = isHafConfigured() ? getPool() : null;
   if (hafPool) {
     // User-level "is this account already accredited?" gate. Runs BEFORE the
@@ -751,7 +748,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // Order: validation → existing-accreditation gate → idempotency check →
     // broadcast. Each layer fires only if the prior didn't short-circuit;
     // both layers run BEFORE the broadcast-attempt cap pre-INCR so a hit
-    // here consumes zero cap slots (mirrors the round-3 hold #7 reordering
+    // here consumes zero cap slots (mirroring the probe-before-INCR rule
     // for the per-token check). Token cleanup follows the existing
     // best-effort wrap pattern. `seedAccreditationBonus` is NOT re-invoked
     // on gate-hit because the prior /verify that produced the on-chain
@@ -761,10 +758,10 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     try {
       const existingForUser = await findExistingAccreditation(hafPool, pending.hive_username);
       if (existingForUser) {
-        // Round-1 hold #4: metadata-update invariant. Gate-hit short-circuits
-        // before the pending row's metadata (full_name, institution, field
-        // captured at /request) would be embedded into a fresh accredit op.
-        // This is correct under the current product model: there is no
+        // Metadata-update invariant. Gate-hit short-circuits before the
+        // pending row's metadata (full_name, institution, field captured at
+        // /request) would be embedded into a fresh accredit op. This is
+        // correct under the current product model: there is no
         // `update_accreditation` custom_op, no UI affordance for editing
         // accreditation metadata post-verification, and the only path that
         // could re-issue an accredit op with new metadata is a second
@@ -774,8 +771,8 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         // a paired design pass (broadcast a fresh accredit op, distinct
         // `update_accreditation` op type, or reject metadata changes at
         // /request when an accreditation exists). The gate's revoke-aware
-        // semantics (round-1 hold #1) preserve the re-accreditation path
-        // after revoke — that flow DOES rebroadcast with fresh metadata.
+        // semantics preserve the re-accreditation path after revoke — that
+        // flow DOES rebroadcast with fresh metadata.
         logger.info(
           {
             event: 'accreditation.verify.existing_accreditation_hit',
@@ -857,7 +854,8 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
           },
           'accreditation.verify idempotency hit — returning existing tx_id without re-broadcasting',
         );
-        // F1 part 2: seed the accreditation bonus on the hit branch too.
+        // Seed the accreditation bonus on the hit branch too (mirrors the
+        // fresh-broadcast path's seedAccreditationBonus call).
         // Permanent throws (TypeError/SyntaxError/RangeError re-thrown by
         // `seedAccreditationBonus`) surface as 502
         // POST_BROADCAST_OPERATOR_REQUIRED carrying the EXISTING (already-
@@ -940,50 +938,49 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     );
   }
 
-  // Per-token broadcast-attempt cap (BE-VERIFY-BROADCAST-ATTEMPTS-CAP).
-  // The 504 BROADCAST_TIMEOUT envelope deliberately preserves the token so
-  // the legitimate caller can verify chain state and retry; that survival
-  // window is also a retry-amplification axis (each retry enqueues a fresh
-  // broadcast at the dhive layer, and Hive does not deduplicate identical
-  // custom_json ops). Pre-broadcast INCR atomically claims the next slot,
-  // so the cap holds even under concurrent retries on the same token.
+  // Per-token broadcast-attempt cap. The 504 BROADCAST_TIMEOUT envelope
+  // deliberately preserves the token so the legitimate caller can verify
+  // chain state and retry; that survival window is also a retry-
+  // amplification axis (each retry enqueues a fresh broadcast at the
+  // dhive layer, and Hive does not deduplicate identical custom_json ops).
+  // Pre-broadcast INCR atomically claims the next slot, so the cap holds
+  // even under concurrent retries on the same token.
   //
-  // Round-3 hold #8 — structural scope: the cap is a CONCURRENCY-BURST
-  // defense, not a sequential-flood defense. Because deleteToken (see
-  // `deleteToken` below) drops both the pending row AND the counter
-  // side-key, and the catch-block 'failure' branch calls deleteToken on
-  // the first 502, the sequential-retry case ends after one definitive
-  // failure and cannot accumulate the counter. The cap engages on the
-  // parallel-retry case: N concurrent /verify calls on the same token
-  // claim slots atomically and at most `cap` broadcasts fire.
+  // Structural scope: the cap is a CONCURRENCY-BURST defense, not a
+  // sequential-flood defense. Because deleteToken (see `deleteToken`
+  // below) drops both the pending row AND the counter side-key, and the
+  // catch-block 'failure' branch calls deleteToken on the first 502, the
+  // sequential-retry case ends after one definitive failure and cannot
+  // accumulate the counter. The cap engages on the parallel-retry case:
+  // N concurrent /verify calls on the same token claim slots atomically
+  // and at most `cap` broadcasts fire.
   //
   // Timeout outcomes decrement the counter on the catch path
   // (decrementBroadcastAttempts) so transient slow-Hive windows do not
   // permanently consume slots — only definitive 502 BROADCAST_FAILED
-  // outcomes count toward the cap (round-2 hold #2).
+  // outcomes count toward the cap.
   //
-  // Round-3 hold #11: the pre-INCR call sits OUTSIDE the broadcast try
-  // below, so a `redis.eval` rejection (OOM, Lua error, connection drop)
-  // would propagate to Express 5's async handler → 500 INTERNAL_ERROR
-  // with no retry guidance, asymmetric to the broadcast site's 502/504
-  // envelope discipline. Wrap the call in a local try/catch returning
-  // 503 SERVICE_UNAVAILABLE with `{ retriable: true }` per the existing
-  // 503 pattern in this file's siblings (auth.ts, bridge.ts).
+  // The pre-INCR call sits OUTSIDE the broadcast try below, so a
+  // `redis.eval` rejection (OOM, Lua error, connection drop) would
+  // propagate to Express 5's async handler → 500 INTERNAL_ERROR with no
+  // retry guidance, asymmetric to the broadcast site's 502/504 envelope
+  // discipline. The local try/catch returns 503 SERVICE_UNAVAILABLE with
+  // `{ retriable: true }` per the existing 503 pattern in this file's
+  // siblings (auth.ts, bridge.ts).
   //
-  // Round-3 hold #2: chose soft-block (sub-option ii). On cap-exceeded,
-  // surface the limit envelope but DO NOT call deleteToken — destroying
-  // the token here gives a stolen-token attacker with cap+1 rotating
-  // XFFs an asymmetric token-burn DoS (cheap rotating IPs vs the
-  // legitimate user's 24h re-`/request` lockout under the 3/24h byAccount
-  // limit). Soft-block leaves the token alive: the legitimate retry will
-  // re-hit the cap until the counter TTLs out (~24h from the first INCR),
-  // but the user retains the option to wait it out instead of burning a
-  // fresh `/request` slot, and the Redis 24h TTL converges both keys
-  // independently. Sub-options (i) accept-and-document and
-  // (iii) require verifyHiveSignature were considered; (i) accepts a
-  // capability-loss DoS that's cheap to mount, and (iii) imposes a UX
-  // penalty on light-account users who lack ready Hive Keychain access
-  // on the verify-link landing page.
+  // Soft-block semantics on cap-exceeded: surface the limit envelope but
+  // DO NOT call deleteToken. Destroying the token here would give a
+  // stolen-token attacker with cap+1 rotating XFFs an asymmetric
+  // token-burn DoS (cheap rotating IPs vs the legitimate user's 24h
+  // re-`/request` lockout under the 3/24h byAccount limit). Leaving the
+  // token alive means the legitimate retry will re-hit the cap until the
+  // counter TTLs out (~24h from the first INCR), but the user retains
+  // the option to wait it out instead of burning a fresh `/request` slot;
+  // the Redis 24h TTL converges both keys independently. Hard-block (also
+  // destroying the token) and re-auth-required were considered: the
+  // former accepts a capability-loss DoS that's cheap to mount; the
+  // latter imposes a UX penalty on light-account users who lack ready
+  // Hive Keychain access on the verify-link landing page.
   const cap = config.verifyBroadcastAttemptsCap;
   let attempts: number;
   try {
@@ -1009,10 +1006,10 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     );
   }
   if (attempts > cap) {
-    // Round-2 hold #5: structured `event:` discriminator so operators can
-    // dashboard/alert on cap-exceeded without message-substring grep,
-    // matching the sibling event anchors in routes/orcid.ts and
-    // lib/broadcast-error.ts (`binding_lock_extend_*`, `lock_contention_held`,
+    // Structured `event:` discriminator so operators can dashboard/alert
+    // on cap-exceeded without message-substring grep, matching the sibling
+    // event anchors in routes/orcid.ts and lib/broadcast-error.ts
+    // (`binding_lock_extend_*`, `lock_contention_held`,
     // `post_broadcast_msg_fn_threw`, `post_broadcast_write_failed`).
     logger.warn(
       {
@@ -1024,19 +1021,18 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         attempts,
         cap,
       },
-      'accreditation.verify broadcast attempt cap exceeded; soft-blocking (token preserved per round-3 hold #2)',
+      'accreditation.verify broadcast attempt cap exceeded; soft-blocking (token preserved)',
     );
-    // Round-3 hold #2 (soft-block): do NOT deleteToken on the cap-exceeded
-    // path. Counter and token both TTL out within 24h independently, so the
-    // legitimate user can wait for the burst to drain rather than being
-    // forced into the 3/24h /request lockout window.
+    // Soft-block: do NOT deleteToken on the cap-exceeded path. Counter
+    // and token both TTL out within 24h independently, so the legitimate
+    // user can wait for the burst to drain rather than being forced into
+    // the 3/24h /request lockout window.
     //
-    // Round-2 hold #1: distinct error code BROADCAST_ATTEMPT_LIMIT_EXCEEDED
-    // (NOT BROADCAST_FAILED). The broadcast was never invoked when the cap
+    // Distinct error code BROADCAST_ATTEMPT_LIMIT_EXCEEDED (NOT
+    // BROADCAST_FAILED). The broadcast was never invoked when the cap
     // fires, so reusing BROADCAST_FAILED conflated client retry-pressure
     // with chain rejection — operators alerting on BROADCAST_FAILED rate
-    // could not separate the two. The architect adds the corresponding row
-    // to agents/docs/api-contracts/accreditation.md at archive time.
+    // could not separate the two.
     return sendError(
       res,
       502,
@@ -1074,21 +1070,22 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     );
 
     // Wrap seedAccreditationBonus in PostBroadcastWriteError discipline (the
-    // pattern documented at `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` and
-    // adopted by ORCID's handleAccredit / handleLink). The chain op landed by
-    // this point; a seed-bonus throw is a downstream cascade failure that
-    // requires operator action — `seedAccreditationBonus` only rethrows on
-    // PERMANENT class errors (TypeError/SyntaxError/RangeError) because
-    // transient Redis/HAF blips stay swallowed inside the cascade fn per
-    // `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`. Round-2 F3 makes that
-    // severity explicit at the wrap site so handleBroadcastError emits 502
-    // POST_BROADCAST_OPERATOR_REQUIRED (not POST_BROADCAST_FAILED) and the
-    // user-facing message asks the user to contact support instead of
-    // saying "will reconcile automatically" (round-3 hold #3 corrected the
-    // prior "support has been notified" copy to an honest "please contact
-    // support" until alerting actually fires). The permanent class is
-    // operator-actionable and the next batch cycle will NOT self-heal a
-    // shape regression in `getReputationWeights()` output.
+    // pattern documented at
+    // `agents/docs/solutions/conventions/cascade-fns-rethrow-permanent-errors-2026-05-16.md`
+    // and adopted by ORCID's handleAccredit / handleLink). The chain op
+    // landed by this point; a seed-bonus throw is a downstream cascade
+    // failure that requires operator action — `seedAccreditationBonus`
+    // only rethrows on PERMANENT class errors (TypeError/SyntaxError/
+    // RangeError) because transient Redis/HAF blips stay swallowed inside
+    // the cascade fn per the same convention. The severity is marked
+    // `'permanent'` explicitly at this wrap site so handleBroadcastError
+    // emits 502 POST_BROADCAST_OPERATOR_REQUIRED (not POST_BROADCAST_FAILED)
+    // and the user-facing message asks the user to contact support rather
+    // than "will reconcile automatically": the permanent class is
+    // operator-actionable, and the next batch cycle will NOT self-heal a
+    // shape regression in `getReputationWeights()` output. User-facing copy
+    // is intentionally "please contact support" until alerting actually
+    // fires.
     //
     // Seed must run BEFORE the completion record is written. A
     // PostBroadcastWriteError on the seed-bonus throw surfaces 502
@@ -1136,9 +1133,9 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     });
     // On timeout: do NOT deleteToken — the 504 is retriable-after-verify, so
     // the token must survive its 24h TTL so the caller can retry after
-    // verifying chain state (the broadcast outcome is uncertain). Round-2
-    // hold #2: also decrement the broadcast-attempt counter so a transient
-    // slow-Hive window does not consume cap slots. Only definitive 502
+    // verifying chain state (the broadcast outcome is uncertain). Also
+    // decrement the broadcast-attempt counter so a transient slow-Hive
+    // window does not consume cap slots: only definitive 502
     // BROADCAST_FAILED outcomes count toward the cap. The pre-INCR claim
     // remains necessary for atomic concurrency (4 parallel /verify calls
     // must enqueue at most `cap` broadcasts), so the shape is
@@ -1158,11 +1155,11 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // harmless because the broadcast already failed terminally.
     if (outcome === 'timeout') {
       try {
-        // Round-4 hold #1: capture the discriminator the helper introduced
-        // in round-3 hold #6. `'enqueued_for_drain'` means Redis was
-        // configured at INCR time but unavailable at DECR time (mid-request
-        // flap). The helper-internal `broadcast_decrement_redis_unavailable`
-        // warn fires for the broader operator-correlation signal; this
+        // Capture the discriminator the helper returns: `'enqueued_for_drain'`
+        // means Redis was configured at INCR time but unavailable at DECR
+        // time (mid-request flap). The helper-internal
+        // `accreditation.verify.broadcast_decrement_redis_unavailable` warn
+        // fires for the broader operator-correlation signal; this
         // site-specific event lets a dashboard/alert key on the timeout
         // call site (vs other future decrement callers) without parsing
         // message strings.
@@ -1182,11 +1179,11 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       } catch (decrErr) {
         // Compensation failure is not user-visible (the 504 has already been
         // sent and the counter will TTL out with the token). Log so operators
-        // can correlate counter drift with Redis incidents. Round-3 hold #1:
-        // emit `token_hash` (12-hex sha256 prefix) instead of the raw 64-hex
-        // token. The token is the SOLE credential at /api/accreditation/verify
-        // (no Hive sig, no other auth) so logging the plaintext for 24h would
-        // give anyone with operator-log read access the ability to replay the
+        // can correlate counter drift with Redis incidents. Emit `token_hash`
+        // (12-hex sha256 prefix) instead of the raw 64-hex token: the token
+        // is the SOLE credential at /api/accreditation/verify (no Hive sig,
+        // no other auth) so logging the plaintext for 24h would give anyone
+        // with operator-log read access the ability to replay the
         // verification and enqueue an `accredit` op signed by the admin key.
         logger.warn(
           {
@@ -1204,10 +1201,10 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       try {
         await deleteToken(token);
       } catch (deleteErr) {
-        // Include `token_hash` (12-hex sha256 prefix) in the structured fields
-        // so operators can correlate the orphan against Redis state during the
-        // 24h TTL window. Round-3 hold #1: hashed, NOT plaintext (see
-        // sibling timeout branch above for the plaintext-leak threat model).
+        // Include `token_hash` (12-hex sha256 prefix) in the structured
+        // fields so operators can correlate the orphan against Redis state
+        // during the 24h TTL window. Hashed, NOT plaintext (see sibling
+        // timeout branch above for the plaintext-leak threat model).
         // Per agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md
         // ("Survivor log fields for orphan resources").
         logger.error(
@@ -1235,7 +1232,8 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     //
     // This branch ONLY fires on PERMANENT seed-bonus errors
     // (TypeError/SyntaxError/RangeError rethrown from
-    // `seedAccreditationBonus` per `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`).
+    // `seedAccreditationBonus` per
+    // `agents/docs/solutions/conventions/cascade-fns-rethrow-permanent-errors-2026-05-16.md`).
     // Transient cascade errors stay swallowed inside the cascade fn. The
     // user-facing envelope is 502 POST_BROADCAST_OPERATOR_REQUIRED, NOT
     // POST_BROADCAST_FAILED — the missed bonus will NOT self-heal via the

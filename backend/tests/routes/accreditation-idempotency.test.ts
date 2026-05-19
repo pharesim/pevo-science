@@ -15,17 +15,17 @@
  * mocked here — /verify is rate-limited but not auth-gated. Real Redis
  * stores the pending-accreditation row.
  *
- * Round-2 F6 (carve-out clause c) follow-up: real-path HAF integration
- * coverage for `findAccreditationBroadcastByIdempotencyKey`,
+ * Carve-out clause (c) follow-up: real-path HAF integration coverage for
+ * `findAccreditationBroadcastByIdempotencyKey`,
  * `findCustodyBroadcastByIdempotencyKey`, and `findExistingAccreditation`
- * is filed as `backend-idempotency-haf-integration-test.md`. This file's
- * HAF mocks pin the route-side glue; the integration test will exercise
- * the SQL shape against a live HAF pool.
+ * is filed as a separate integration-test task. This file's HAF mocks pin
+ * the route-side glue; the integration test will exercise the SQL shape
+ * against a live HAF pool.
  *
- * Two-layer HAF call ordering: starting with the existing-accreditation
- * gate (BACKEND-ACCREDITATION-EXISTING-ACCREDITATION-GATE), /verify
- * performs TWO sequential HAF queries when both layers fire (gate miss
- * flows into per-token idempotency check). Tests below chain
+ * Two-layer HAF call ordering: the existing-accreditation gate runs before
+ * the per-token idempotency check, so /verify performs TWO sequential HAF
+ * queries when both layers fire (gate miss flows into per-token
+ * idempotency check). Tests below chain
  * `hafQueryMock.mockResolvedValueOnce({rows: []})` for the gate
  * preamble where needed.
  */
@@ -148,7 +148,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
       // returns 429 before reaching the route handler.
       const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
       if (limitKeys.length > 0) await redis.del(...limitKeys);
-      // Clear the idempotency cache — F5 caches HAF lookup results;
+      // Clear the idempotency cache — the route caches HAF lookup results;
       // afterEach reset prevents one spec's cached result from poisoning
       // a subsequent spec keyed on the same idempotency_key.
       const idemKeys = await redis.keys(`${config.appTag}:idem:accred:*`);
@@ -156,7 +156,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     }
   });
 
-  it('HAF hit returns existing tx_id with outcome:already_landed, skips broadcast, seeds bonus, no cap slot consumed (F1 + round-3 hold #7)', async () => {
+  it('HAF hit returns existing tx_id with outcome:already_landed, skips broadcast, seeds bonus, no cap slot consumed', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
@@ -181,17 +181,17 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
         outcome: 'already_landed',
       });
       expect(broadcastJsonMock).not.toHaveBeenCalled();
-      // F1 part 2: bonus seed fires on the hit branch too.
+      // Bonus seed fires on the hit branch too (mirrors the fresh broadcast path).
       expect(seedBonusMock).toHaveBeenCalledWith(username);
       // Token cleanup runs on the hit path so the next retry-with-same-token
       // returns 400 BAD_REQUEST instead of looping back through HAF.
       expect(await tokenExists(token)).toBe(false);
-      // Round-3 hold #7: the idempotency probe now runs BEFORE the cap
+      // The idempotency probe runs BEFORE the cap
       // pre-INCR, so a hit branch consumes ZERO cap slots. The counter
       // key never exists (no INCR happened).
       const counter = await readBroadcastAttemptsCounter(token);
       expect(counter === null || counter === 0).toBe(true);
-      // F19/F20 hit-path event pin: logger.info called with the
+      // Hit-path event pin: logger.info called with the
       // discriminator + structured fields. Operators dashboard on this.
       const matchingCall = infoSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
@@ -210,7 +210,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     }
   });
 
-  // Round-3 hold #7 — adversarial A3 cap+idempotency mixed-envelope class.
+  // Adversarial cap+idempotency mixed-envelope class:
   // The pre-fix ordering (cap-INCR first, then idempotency probe) could send
   // concurrent retries through both branches: retry N returns 502
   // BROADCAST_ATTEMPT_LIMIT_EXCEEDED on cap exhaustion while retry N+1
@@ -218,7 +218,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
   // chain row indexed. Hoisting the probe above the INCR closes this: an
   // idempotency hit always returns 200 (no cap consumed), regardless of
   // the counter's current value.
-  it('idempotency hit returns 200 even when broadcast-attempts counter is at cap (round-3 hold #7 ordering)', async () => {
+  it('idempotency hit returns 200 even when broadcast-attempts counter is at cap (probe-before-INCR ordering)', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
@@ -317,7 +317,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     }
   });
 
-  it('HAF unconfigured — broadcast still fires + idempotency_haf_unconfigured warn (F19, F10 rename)', async () => {
+  it('HAF unconfigured — broadcast still fires + idempotency_haf_unconfigured warn', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
@@ -334,7 +334,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
       // No HAF call because isHafConfigured() returned false.
       expect(hafQueryMock).not.toHaveBeenCalled();
       expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-      // F10 rename: event is `_haf_unconfigured`, not `_haf_unavailable`.
+      // Event discriminator is `_haf_unconfigured`, not `_haf_unavailable`.
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
         return ctx?.event === 'accreditation.verify.idempotency_haf_unconfigured';
@@ -398,11 +398,11 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
   });
 });
 
-// BACKEND-ACCREDITATION-EXISTING-ACCREDITATION-GATE — user-level "is this
-// account already accredited?" HAF gate. Runs BEFORE the per-token
-// idempotency check to close the multi-token coexistence class (two pending
-// tokens for the same user produce different per-token keys, so the
-// per-token check can't catch each other).
+// Existing-accreditation gate — user-level "is this account already
+// accredited?" HAF gate. Runs BEFORE the per-token idempotency check to
+// close the multi-token coexistence class (two pending tokens for the
+// same user produce different per-token keys, so the per-token check
+// can't catch each other).
 describe('accreditation /verify — existing-accreditation gate (user-level)', () => {
   beforeEach(() => {
     broadcastJsonMock.mockReset();
@@ -520,7 +520,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
   // bounded duplicate class. The route now returns 503 SERVICE_UNAVAILABLE
   // with a stable error code, preserves the token (no deleteToken), does
   // NOT increment the pre-INCR rate-limit counter, and does NOT broadcast.
-  it('gate HAF throw returns 503 ACCREDITATION_GATE_UNAVAILABLE — token preserved, no broadcast, no cap INCR (round-3 α)', async () => {
+  it('gate HAF throw returns 503 ACCREDITATION_GATE_UNAVAILABLE — token preserved, no broadcast, no cap INCR', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
@@ -674,16 +674,16 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     }
   });
 
-  // Round-1 hold #1 — revoke→re-accredit flow. A user previously accredited
-  // and subsequently revoked (e.g., wot.ts:347 WoT-cleanup revoke producer)
-  // must NOT hit the gate on their stale accredit op when retrying /verify.
-  // Pre-fix the gate filtered on `action = 'accredit'` only and would have
-  // returned 200 outcome:'already_accredited' with the stale tx_id, eaten
-  // the fresh token in cleanup, and silently locked the user out of
-  // re-accreditation. Post-fix the gate selects from action IN
-  // ('accredit','revoke') ORDER BY (block_num, id) DESC LIMIT 1 and returns
-  // null when the LIMIT-1 row is 'revoke', falling through to the per-token
-  // idempotency check and ultimately broadcasting the fresh accredit op.
+  // Revoke→re-accredit flow. A user previously accredited and subsequently
+  // revoked (e.g., the WoT-cleanup revoke producer in wot.ts) must NOT hit
+  // the gate on their stale accredit op when retrying /verify. The gate
+  // selects from action IN ('accredit','revoke') ORDER BY (block_num, id)
+  // DESC LIMIT 1 and returns null when the LIMIT-1 row is 'revoke', falling
+  // through to the per-token idempotency check and ultimately broadcasting
+  // the fresh accredit op. A regression that filters on action='accredit'
+  // only would surface 200 outcome:'already_accredited' with the stale
+  // tx_id, eat the fresh token in cleanup, and silently lock the user out
+  // of re-accreditation.
   it('revoke→re-accredit flow: latest action is revoke → gate falls through, fresh broadcast fires', async () => {
     const redis = getRedis();
     if (!redis) return;
@@ -704,8 +704,8 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     const res = await request(app).post('/api/accreditation/verify').send({ token });
 
     // Fresh broadcast envelope — the gate did NOT short-circuit on the
-    // stale accredit tx_id. This is the regression guard for the round-1
-    // P1 hold.
+    // stale accredit tx_id. This is the regression guard for the
+    // revoke-aware gate filter.
     expect(res.status).toBe(200);
     expect(res.body.data.tx_id).toBe('fresh-accred-tx-id');
     expect(res.body.data.outcome).toBeUndefined();
@@ -740,7 +740,7 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
       // returns 429 before reaching the route handler.
       const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
       if (limitKeys.length > 0) await redis.del(...limitKeys);
-      // Clear the idempotency cache — F5 caches HAF lookup results;
+      // Clear the idempotency cache — the route caches HAF lookup results;
       // afterEach reset prevents one spec's cached result from poisoning
       // a subsequent spec keyed on the same idempotency_key.
       const idemKeys = await redis.keys(`${config.appTag}:idem:accred:*`);
@@ -748,7 +748,7 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
     }
   });
 
-  it('seedAccreditationBonus throws → 502 POST_BROADCAST_OPERATOR_REQUIRED with tx_id + failed_step:reputation_seed (F3 permanent discrimination)', async () => {
+  it('seedAccreditationBonus throws → 502 POST_BROADCAST_OPERATOR_REQUIRED with tx_id + failed_step:reputation_seed (permanent-severity discrimination)', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
@@ -760,19 +760,20 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
     broadcastJsonMock.mockResolvedValueOnce({ id: 'confirmed-on-chain-tx' });
     // seedAccreditationBonus rethrows ONLY permanent classes (TypeError/
-    // SyntaxError/RangeError per BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS).
-    // Pin the permanent class explicitly so the test exercises the branch
-    // F3 added (severity:'permanent' → POST_BROADCAST_OPERATOR_REQUIRED).
+    // SyntaxError/RangeError per
+    // agents/docs/solutions/conventions/cascade-fns-rethrow-permanent-errors-2026-05-16.md).
+    // Pin the permanent class explicitly so the test exercises the
+    // severity:'permanent' → POST_BROADCAST_OPERATOR_REQUIRED branch.
     seedBonusMock.mockRejectedValueOnce(new TypeError('reputation weights shape regression'));
 
     const res = await request(app).post('/api/accreditation/verify').send({ token });
 
-    // F3: permanent severity surfaces as POST_BROADCAST_OPERATOR_REQUIRED
+    // Permanent severity surfaces as POST_BROADCAST_OPERATOR_REQUIRED
     // (distinct from POST_BROADCAST_FAILED — operator alerts route to DB
     // on-call, user message asks the user to contact support directly
-    // instead of "will reconcile automatically"; round-3 hold #3 corrected
-    // the prior "support has been notified" copy to an honest "please
-    // contact support" until alerting actually fires).
+    // instead of "will reconcile automatically"; user-facing copy is
+    // intentionally "please contact support" rather than "support has been
+    // notified" until alerting actually fires).
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe('POST_BROADCAST_OPERATOR_REQUIRED');
     expect(res.body.error.details).toMatchObject({
@@ -782,10 +783,9 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
       failed_step: 'reputation_seed',
     });
     // User-facing message reflects the permanent severity — "contact
-    // support" instead of the transient "reconcile" copy. Round-3 hold #3
-    // changed the prior "support has been notified" wording (which falsely
-    // implied an alerting backend exists) to honest "please contact
-    // support" copy.
+    // support" instead of the transient "reconcile" copy. "Please contact
+    // support" rather than "support has been notified" is the honest
+    // wording until an alerting backend exists.
     expect(res.body.error.message).toMatch(/contact support/i);
     // Token cleaned up by the post_broadcast catch branch — the seed-
     // bonus throw fires BEFORE the completion-record write, so the

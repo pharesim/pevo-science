@@ -62,3 +62,52 @@ At least one occurrence of `Round-3 hold #3` exists in a docblock-style comment 
 - `agents/docs/solutions/conventions/cascade-fns-rethrow-permanent-errors-2026-05-16.md` (the replacement target for the `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` slug-style markers)
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-19)
+
+Sweep complete on all three named files. The acceptance grep returns zero hits.
+
+```
+grep -nE "(round[- ]?[0-9]|hold #|BE-[A-Z_-]+|BACKEND-[A-Z_-]+|F[0-9]+ )" \
+  backend/src/routes/accreditation.ts \
+  backend/tests/routes/accreditation.test.ts \
+  backend/tests/routes/accreditation-idempotency.test.ts
+# (empty)
+```
+
+### Sites swept
+
+**`backend/src/routes/accreditation.ts`** — round-N qualifiers and slug citations removed from:
+- `incrementBroadcastAttempts` docblock (3 round-N references: soft-block rationale, Lua-INCR-EXPIRE atomicity, transition-to-1 invariant). Behavioral content preserved.
+- `decrementBroadcastAttempts` docblock + discriminator type comment (4 round-N references). The `'failed'` arm dismissal phrasing is now stable; the discriminator's purpose is described directly.
+- `decrementBroadcastAttempts` Redis-unavailable branch (1 round-N reference dropped from the discriminator-return comment).
+- Idempotency-key + probe-before-INCR rationale block (2 round-N references; cap-on-hit invariant kept).
+- Existing-accreditation gate metadata-update comment (2 round-N references).
+- Per-token broadcast-attempts cap rationale block (6+ round-N references, including the soft-block design choice). Sub-option (i)/(iii) tradeoff narrative preserved as "hard-block" and "re-auth-required were considered" phrasing.
+- Cap-exceeded log message string: the "(token preserved per round-3 hold #2)" parenthetical dropped to "(token preserved)" — the discriminator is preserved.
+- `seedAccreditationBonus` wrap-site comment: both `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` citations replaced with the canonical doc path `agents/docs/solutions/conventions/cascade-fns-rethrow-permanent-errors-2026-05-16.md`. The `Round-2 F3` and `round-3 hold #3` qualifiers dropped; the severity-discrimination behavior and the user-facing "contact support" rationale are described directly.
+- Outer catch branches' compensating-decrement and cleanup-failure log comments (3 round-N references; token-hash threat model preserved).
+
+**`backend/tests/routes/accreditation.test.ts`** — sweep of file header docblock (round-N + 4 BE-slug citations) and ~60 inline comment / describe / it-title sites. The describe blocks renamed from slug-named to behaviorally-named:
+- `POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT` → `... broadcast-timeout discrimination`.
+- `POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP` → `... per-token broadcast-attempts cap`.
+- `BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions (Item 3 part C)` → `accreditation.ts structured-log emissions`.
+- `BE-ACCRED-REQ-LIMITER — accred-req limiter refunds slot on transient SMTP failure` → `accred-req limiter refunds slot on transient SMTP failure`.
+
+The `INTENTIONAL RED` callout in the file header was preserved with the slug citation removed — the load-bearing forcing-function language stays.
+
+**`backend/tests/routes/accreditation-idempotency.test.ts`** — sweep of file header (1 round-N + 1 BACKEND-slug) and ~15 inline comment / it-title sites. Cascade-fns reference replaced with doc path. The revoke→re-accredit gate behavior narrative preserved verbatim minus the round-N pointer.
+
+### Self-audit per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`
+
+Replacement prose was spot-checked against the rot patterns. No new task-slug citations introduced (the only slug-style references in the replacements point to durable solution-doc paths). No round-N references in the replacements. No line-number anchors. No SHA references. All anchors are stable symbols (function names, branch names, behavior descriptions).
+
+### Verification
+
+- `npm run typecheck` (`:src` and `:tests`): clean.
+- `npm run lint` (`src/`): clean.
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **51/52 pass**. The single failure (`pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE with {retriable:true}` — expected 503, received 502) is a documented pre-existing flake — verified via `git stash`: the failure reproduces on a clean tree at the same SHA before this commit's edits. The flake was previously flagged in the round-2 signal block of `backend-verify-post-success-retry-idempotency`. Not caused by this task's changes.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;

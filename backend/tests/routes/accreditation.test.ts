@@ -1,10 +1,9 @@
 /**
  * /api/accreditation/{request,verify} coverage.
  *
- * Round-3 addition (BE-ORCID-BROADCAST-ABORT-TIMEOUT): per-route timeout
- * specs for the /verify path. The helper's timeout mechanism is unit-tested
- * in hive-broadcast-timeout.test.ts; these specs cover the route-level
- * catch-and-discriminate pattern:
+ * Per-route /verify broadcast-error specs cover the catch-and-discriminate
+ * pattern (helper-level timeout mechanism is unit-tested in
+ * hive-broadcast-timeout.test.ts):
  *   (a) BroadcastTimeoutError → 504 BROADCAST_TIMEOUT with the
  *       common.md {retriable:false, outcome:'uncertain', verify_before_retry:true,
  *       timeout_ms:number} envelope AND the token must survive (retriable-
@@ -22,17 +21,16 @@
  * real Redis (or in-memory fallback), so the token-lifecycle assertions
  * exercise the real persistence layer.
  *
- * Per-test redis.del / redis.decr / redis.eval rejection mocks
- * (BE-HANDLE-BROADCAST-ERROR-HELPER round 3 + BE-VERIFY-BROADCAST-ATTEMPTS-CAP
- * rounds 3-4): several specs near the bottom of this file use
- * `vi.spyOn(redis, '<verb>').mockRejectedValueOnce(...)` for one call, then
- * `mockRestore()`. Mocked surfaces:
- *   - `redis.del`: 502-with-deleteToken-rejection spec
- *     (BE-HANDLE-BROADCAST-ERROR-HELPER round 3).
- *   - `redis.decr`: round-3 hold #5 decrement-failure log path (504 timeout
- *     followed by a Redis-side rejection on the compensating decrement).
- *   - `redis.eval`: round-4 hold #2 pre-INCR 503 path (Redis-side rejection
- *     on the cap-counter eval, before the broadcast site).
+ * Per-test redis.del / redis.decr / redis.eval rejection mocks: several
+ * specs near the bottom of this file use
+ * `vi.spyOn(redis, '<verb>').mockRejectedValueOnce(...)` for one call,
+ * then `mockRestore()`. Mocked surfaces:
+ *   - `redis.del`: 502-with-deleteToken-rejection (broadcast failure
+ *     cleanup branch).
+ *   - `redis.decr`: decrement-failure log path (504 timeout followed by a
+ *     Redis-side rejection on the compensating decrement).
+ *   - `redis.eval`: pre-INCR 503 path (Redis-side rejection on the
+ *     cap-counter eval, before the broadcast site).
  * The failure modes (Redis evicted to read-only mid-request, transient
  * connection drop, OOM, Lua error) are impractical to induce against the
  * real dev-mode Redis container — the deterministic single-call rejection
@@ -43,20 +41,19 @@
  * envelopes is provided by adjacent specs (e.g. the immediately preceding
  * "non-timeout broadcast error → 502 BROADCAST_FAILED").
  *
- * Round-4 hold item 1 — INTENTIONAL RED in this file:
- * The cleanup-failure spec (502 BROADCAST_FAILED + deleteToken rejection)
- * and the decrement-failure spec (504 BROADCAST_TIMEOUT + decr rejection)
- * use ioredis-shaped error objects (`Object.assign(new Error('flap'), {
- * command: { name: '<verb>', args: [<key>] }, name: 'ReplyError' })`) to
- * exercise the real ioredis rejection shape. The `args` array carries the
- * raw Redis key — which for cap-counter operations contains the 64-hex
- * verification token. The redaction-negative assertion
+ * INTENTIONAL RED in this file: the cleanup-failure spec (502
+ * BROADCAST_FAILED + deleteToken rejection) and the decrement-failure spec
+ * (504 BROADCAST_TIMEOUT + decr rejection) use ioredis-shaped error
+ * objects (`Object.assign(new Error('flap'), { command: { name: '<verb>',
+ * args: [<key>] }, name: 'ReplyError' })`) to exercise the real ioredis
+ * rejection shape. The `args` array carries the raw Redis key — which for
+ * cap-counter operations contains the 64-hex verification token. The
+ * redaction-negative assertion
  * (`expect(JSON.stringify(loggerSpy.mock.calls)).not.toMatch(/[0-9a-f]{64}/)`)
  * will FAIL RED until pino's redact configuration is widened to scrub
- * `err.command.args`. Production fix is deferred to
- * `backend-bridge-key-startup-validation-and-pino-redact.md`. Do NOT
- * "fix" the test back to passing — leave the failure visible so the
- * deferred work has a forcing function.
+ * `err.command.args`. Production fix is deferred to a follow-up pino-redact
+ * widening task. Do NOT "fix" the test back to passing — leave the failure
+ * visible so the deferred work has a forcing function.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -98,7 +95,7 @@ vi.mock('../../src/hive.js', () => ({
 // Stub the existing-accreditation gate to always miss. Carve-out clause (a):
 // the gate's α-disposition (HAF-throw → 503 ACCREDITATION_GATE_UNAVAILABLE)
 // fires non-deterministically under the burst loads driven by the
-// BE-VERIFY-BROADCAST-ATTEMPTS-CAP specs (cap+2 sequential and cap+1 parallel
+// per-token broadcast-attempts cap specs (cap+2 sequential and cap+1 parallel
 // /verify calls), because the test HAF pool can flake on transient pool
 // pressure. The gate's own contract is exercised in the sibling file
 // `accreditation-idempotency.test.ts` against an explicit mocked pool, with
@@ -215,7 +212,7 @@ describe('POST /api/accreditation/verify', () => {
 });
 
 // ──────────────────────────────────────────────
-// BE-ORCID-BROADCAST-ABORT-TIMEOUT — route-level BroadcastTimeoutError discrimination.
+// /verify route-level BroadcastTimeoutError discrimination.
 //
 // Envelope per agents/docs/api-contracts/common.md (no verify_location — that
 // field is orcid-specific; accreditation callers verify chain state via
@@ -261,7 +258,7 @@ async function tokenExists(token: string): Promise<boolean> {
   return raw !== null;
 }
 
-describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', () => {
+describe('POST /api/accreditation/verify — broadcast-timeout discrimination', () => {
   beforeEach(() => {
     broadcastJsonMock.mockReset();
     broadcastJsonMock.mockResolvedValue({ id: 'mock-accred-tx' });
@@ -305,11 +302,10 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
 
     broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
 
-    // BE-LOG-PII-EMAIL-HASH round-1 hold item 2a: handleBroadcastError emits
-    // logger.error with `email_hash: hashEmailForLogs(pending.email)` per
-    // accreditation.ts:451. Pre-fix shape was `email: <plaintext>`. The spy
-    // pins the migration so a regression that reverts the field name or drops
-    // the helper fails this spec.
+    // PII redaction invariant: handleBroadcastError must emit logger.error
+    // with `email_hash: hashEmailForLogs(pending.email)` rather than the
+    // plaintext email — the warn payload is a structured-log emit and any
+    // regression that reverts to the plaintext field shape fails this spec.
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
     try {
       const res = await request(app)
@@ -346,12 +342,13 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
     }
   });
 
-  // BE-HANDLE-BROADCAST-ERROR-HELPER round-2 hold #1 (P1): when the broadcast
-  // fails (502 path) AND deleteToken's underlying redis.del rejects, the route
-  // must NOT let the rejection propagate to Express 5's async error handler
-  // (which would attempt to write 500 over the already-sent 502 →
-  // ERR_HTTP_HEADERS_SENT). The cleanup-failure log line documents the
-  // orphaned token; the token TTLs out within 24h so the orphan is harmless.
+  // Response-ordering invariant on the 502 broadcast-failure path: when
+  // deleteToken's underlying redis.del rejects, the route must NOT let the
+  // rejection propagate to Express 5's async error handler (which would
+  // attempt to write 500 over the already-sent 502 → ERR_HTTP_HEADERS_SENT).
+  // The cleanup-failure log line documents the orphaned token; the token
+  // TTLs out within 24h so the orphan is harmless. See
+  // agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md.
   it('502 BROADCAST_FAILED path with deleteToken rejection: response stays 502, no header-sent error, cleanup-failure logged, no raw token leak', async () => {
     const redis = getRedis();
     if (!redis) return;
@@ -362,19 +359,18 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
     const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
     if (limitKeys.length > 0) await redis.del(...limitKeys);
 
-    // Round-4 hold #7c: round-3 hold #5 spec used a 16-hex-tail mock token
-    // (`accred-timeout-<16-hex>`). The negative-regex `not.toMatch(/[0-9a-f]{64}/)`
-    // assertion below is vacuous against such a token by construction (no
-    // 64-hex substring CAN appear). Use a 64-hex token to make the redaction
-    // assertion load-bearing — a regression that drops `hashTokenForLogs` and
-    // logs the raw token would surface as a real 64-hex match.
+    // The redaction-negative assertion below (`not.toMatch(/[0-9a-f]{64}/)`)
+    // requires a 64-hex token to be load-bearing — a short-tail mock token
+    // (like `accred-timeout-<16-hex>`) makes the regex vacuous by
+    // construction. A regression that drops `hashTokenForLogs` and logs
+    // the raw token must surface as a real 64-hex match.
     const token = crypto.randomBytes(32).toString('hex');
     const tokenKey = `${config.appTag}:pending_accred:${token}`;
     await seedPendingAccreditation(token);
 
     broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
 
-    // Round-4 hold #1: ioredis-shaped error (NOT plain `new Error(...)`).
+    // ioredis-shaped error (NOT plain `new Error(...)`).
     // ioredis attaches `command.name` and `command.args` to ReplyError-shaped
     // rejections; the `args` array carries the raw Redis key, which for
     // pending_accred operations is `<appTag>:pending_accred:<64-hex token>`.
@@ -395,12 +391,11 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
     // emitted with the canonical fields, AND that no ERR_HTTP_HEADERS_SENT
     // line was emitted (load-bearing negative — its presence would prove the
     // rejection escaped the local try/catch and reached errorHandler).
-    // Round-3 hold #1 of BE-HANDLE-BROADCAST-ERROR-HELPER: the prior version
-    // of this spec only asserted (a) the 502 envelope and that redis.del was
-    // called; it was mutation-insensitive against deletion of the local
-    // try/catch (the rejection would still surface as 502 from supertest's
-    // first-response semantics). The spy assertions below are the real
-    // mutation-sensitivity guards. Per
+    // Mutation-sensitivity: asserting only (a) the 502 envelope and that
+    // redis.del was called would NOT catch a regression that deletes the
+    // local try/catch (the rejection would still surface as 502 via
+    // supertest's first-response semantics). The spy assertions below on
+    // the cleanup-failure log shape are the real mutation guards. Per
     // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md
     // and agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md.
     const loggerErrorSpy = vi.spyOn(logger, 'error');
@@ -435,7 +430,7 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
       // also called by handleBroadcastError for the 502 path, so we must pin
       // the cleanup-specific message to distinguish the two calls.
       expect(loggerErrorSpy).toHaveBeenCalledWith(
-        // Round-3 hold #1: payload now carries `token_hash` (12-hex sha256 prefix)
+        // payload now carries `token_hash` (12-hex sha256 prefix)
         // instead of the raw 64-hex token. Operator-correlation is preserved
         // (the hash is stable across log lines for the same token), but the
         // plaintext-replay capability is removed.
@@ -451,14 +446,13 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
         expect.stringMatching(/ERR_HTTP_HEADERS_SENT/i),
       );
 
-      // (d) Round-4 hold #1 + #7a: no raw 64-hex token substring in the
-      // logger.error payload. `expect.objectContaining({token_hash})` ignores
-      // EXTRA fields (`err`, `err.command.args`, etc.) so the positive
-      // assertion above is mutation-insensitive against an ioredis-shaped
-      // error whose `command.args` carries the raw key. This negative
-      // assertion catches the leak. INTENTIONAL RED until pino redact
-      // covers `err.command.args` (deferred to
-      // backend-bridge-key-startup-validation-and-pino-redact.md).
+      // (d) No raw 64-hex token substring in the logger.error payload.
+      // `expect.objectContaining({token_hash})` ignores EXTRA fields
+      // (`err`, `err.command.args`, etc.) so the positive assertion above
+      // is mutation-insensitive against an ioredis-shaped error whose
+      // `command.args` carries the raw key. This negative assertion catches
+      // the leak. INTENTIONAL RED until pino redact covers
+      // `err.command.args` (deferred follow-up).
       //
       // Some logger.error call args are circular (handleBroadcastError logs
       // include `res` / `req` objects that close cycles), so we serialize
@@ -481,16 +475,16 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
     } finally {
       delSpy.mockRestore();
       loggerErrorSpy.mockRestore();
-      // Explicit cleanup: token doesn't match the afterEach `accred-timeout-*`
-      // pattern (round-4 hold #7c switched to a 64-hex token to make the
-      // redaction assertion load-bearing).
+      // Explicit cleanup: this spec's token is a 64-hex random value (not
+      // the `accred-timeout-<short>` shape the afterEach sweep uses) so it
+      // must be removed here.
       await redis.del(tokenKey);
     }
   });
 });
 
 // ──────────────────────────────────────────────
-// BE-VERIFY-BROADCAST-ATTEMPTS-CAP — per-token broadcast-attempts cap.
+// Per-token broadcast-attempts cap.
 //
 // The 504 BROADCAST_TIMEOUT envelope (above) deliberately preserves the token
 // so the legitimate caller can verify chain state and retry. That survival
@@ -501,7 +495,7 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
 // `${appTag}:pending_accred_broadcast_attempts:${token}` and is incremented
 // atomically with INCR before each broadcast.
 //
-// Round-2 hold semantics (BE-VERIFY-BROADCAST-ATTEMPTS-CAP):
+// Semantics:
 //  - Pre-INCR happens on every /verify call that reaches the broadcast site
 //    (atomic concurrent-claim — under N parallel retries on the same token,
 //    at most `cap` broadcasts fire).
@@ -521,7 +515,7 @@ async function broadcastAttemptCount(token: string): Promise<number> {
   return raw === null ? 0 : Number(raw);
 }
 
-describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', () => {
+describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', () => {
   beforeEach(() => {
     broadcastJsonMock.mockReset();
   });
@@ -545,7 +539,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       .send({ token });
   }
 
-  it('cap-exceeded path: pre-seeded counter ≥ cap returns BROADCAST_ATTEMPT_LIMIT_EXCEEDED; broadcast NOT invoked; token PRESERVED (round-3 soft-block)', async () => {
+  it('cap-exceeded path: pre-seeded counter ≥ cap returns BROADCAST_ATTEMPT_LIMIT_EXCEEDED; broadcast NOT invoked; token PRESERVED (soft-block)', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
@@ -564,16 +558,16 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
 
     const res = await postVerify(token, ip);
     expect(res.status).toBe(502);
-    // Round-2 hold #1: the distinct error code (NOT BROADCAST_FAILED) is
+    // the distinct error code (NOT BROADCAST_FAILED) is
     // what HTTP-only consumers and operator alerts key off.
     expect(res.body.error.code).toBe('BROADCAST_ATTEMPT_LIMIT_EXCEEDED');
     expect(res.body.error.details).toEqual({ retriable: false });
     expect(res.body.error.message).toMatch(/limit exceeded/i);
     // Broadcast NOT invoked — the cap gate fires before the broadcast site.
     expect(broadcastJsonMock).not.toHaveBeenCalled();
-    // Round-3 hold #2 (soft-block): token is PRESERVED on the cap-exceeded
-    // path. A stolen-token attacker with cap+1 rotating XFFs cannot mount
-    // an asymmetric token-burn DoS; the legitimate user can wait for the
+    // Soft-block: token is PRESERVED on the cap-exceeded path. A
+    // stolen-token attacker with cap+1 rotating XFFs cannot mount an
+    // asymmetric token-burn DoS; the legitimate user can wait for the
     // 24h Redis TTL to drain instead of being forced into the 3/24h
     // /request lockout. Counter and token both TTL out independently.
     expect(await tokenExists(token)).toBe(true);
@@ -582,7 +576,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     expect(await broadcastAttemptCount(token)).toBe(cap + 1);
   });
 
-  it('round-2 hold #2: 504 timeout outcomes DECREMENT the counter; user retrying through transient slow-Hive window does not burn cap slots', async () => {
+  it('504 timeout outcomes DECREMENT the counter; user retrying through transient slow-Hive window does not burn cap slots', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
@@ -610,7 +604,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     expect(await tokenExists(token)).toBe(true);
   });
 
-  it('round-2 hold #4: concurrent retries claim slots atomically — exactly `cap` broadcasts fire under cap+1 parallel /verify calls; (cap+1)th returns BROADCAST_ATTEMPT_LIMIT_EXCEEDED', async () => {
+  it('concurrent retries claim slots atomically — exactly `cap` broadcasts fire under cap+1 parallel /verify calls; (cap+1)th returns BROADCAST_ATTEMPT_LIMIT_EXCEEDED', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
@@ -646,7 +640,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     // pre-INCR pushes the counter to cap+1).
     const responses = Promise.all(ips.map((ip) => postVerify(token, ip)));
 
-    // Round-3 hold #6: deterministic barrier — poll the counter directly
+    // deterministic barrier — poll the counter directly
     // until every parallel /verify call has claimed its pre-INCR slot
     // (counter == cap + 1). The prior 100ms sleep was brittle on slow CI
     // and on operator-tuned high caps (cap=10 → 11 parallel supertest
@@ -694,7 +688,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     expect(await broadcastAttemptCount(token)).toBe(0);
   });
 
-  it('clears the attempt counter on terminal (502) broadcast failure (sequential-flood scope per round-3 hold #8)', async () => {
+  it('clears the attempt counter on terminal (502) broadcast failure (sequential-flood scope per )', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
@@ -710,7 +704,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     expect(await broadcastAttemptCount(token)).toBe(0);
   });
 
-  it('round-2 hold #5: cap-exceeded log emits structured `event:` field for operator dashboards', async () => {
+  it('cap-exceeded log emits structured `event:` field for operator dashboards', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
@@ -741,7 +735,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     }
   });
 
-  it('round-2 hold #6: Lua INCR + EXPIRE-if-first runs in one round trip — counter key has positive TTL anchored to token life on first write', async () => {
+  it('Lua INCR + EXPIRE-if-first runs in one round trip — counter key has positive TTL anchored to token life on first write', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
 
@@ -749,13 +743,13 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     // INCR-then-EXPIRE pair were used and a crash interleaved between the
     // two, the key would persist TTL-less past the token's 24h life and
     // a legitimate user would be locked out for 24h with no automatic
-    // recovery. The Lua atomicity is the round-2 hold #6 invariant; we
+    // recovery. The Lua atomicity is the invariant; we
     // exercise it here by replaying the exact script the route runs and
     // asserting the on-disk TTL bound after a single EVAL.
     //
-    // Round-3 hold #4: import the canonical script body from
+    // import the canonical script body from
     // `lib/redis-scripts.ts` instead of duplicating it verbatim. The
-    // round-2 rationale ("export-only-for-tests would invite drift") was
+    // the rationale ("export-only-for-tests would invite drift") was
     // weaker than the verbatim-duplication drift it accepted — having
     // the route and the test reference the same constant is the actual
     // drift defense.
@@ -785,7 +779,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     }
   });
 
-  it('round-3 hold #5: decrement-failure log path fires the structured warn discriminator on a 504 + redis.decr rejection without writing headers twice; no raw token leak', async () => {
+  it('decrement-failure log path fires the structured warn discriminator on a 504 + redis.decr rejection without writing headers twice; no raw token leak', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     // 64-hex token (matches production `crypto.randomBytes(32).toString('hex')`
@@ -810,7 +804,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     // route's compensating call after the timer-fire 504; subsequent DECRs
     // (e.g. tear-down cleanup) revert to default behavior.
     //
-    // Round-4 hold #1: ioredis-shaped error (NOT plain `new Error(...)`).
+    // ioredis-shaped error (NOT plain `new Error(...)`).
     // ioredis attaches `command.args` to ReplyError-shaped rejections; the
     // `args` array carries the raw Redis key, which for the cap counter is
     // `<appTag>:pending_accred_broadcast_attempts:<64-hex token>`. pino
@@ -846,7 +840,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
         }),
         expect.stringContaining('counter decrement after timeout failed'),
       );
-      // Round-3 hold #1 cross-check: the warn payload carries token_hash,
+      // Cross-check: the warn payload carries token_hash,
       // NOT the raw 64-hex token. Serialize all logger.warn call args and
       // assert no 64-hex substring leaks.
       const flatPayload = JSON.stringify(loggerWarnSpy.mock.calls);
@@ -861,15 +855,15 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       decrSpy.mockRestore();
       loggerWarnSpy.mockRestore();
       // Explicit cleanup: token doesn't match the afterEach `accred-cap-*`
-      // pattern (round-4 hold #7c switched to a 64-hex token to make the
+      // pattern (c switched to a 64-hex token to make the
       // redaction assertion load-bearing).
       await redis.del(`${config.appTag}:pending_accred_broadcast_attempts:${token}`);
       await redis.del(`${config.appTag}:pending_accred:${token}`);
     }
   });
 
-  it('round-4 hold #1+#2: 504 timeout + Redis-unavailable mid-request → route emits `timeout_decrement_degraded` warn with discriminator fields', async () => {
-    // Pins the route-level consumer of the round-3 hold #6 discriminator
+  it('+#2: 504 timeout + Redis-unavailable mid-request → route emits `timeout_decrement_degraded` warn with discriminator fields', async () => {
+    // Pins the route-level consumer of the discriminator
     // (`DecrementBroadcastAttemptsResult`). The helper returns
     // `'enqueued_for_drain'` when Redis was configured at INCR time but
     // `isRedisAvailable()` returns false at DECR time (mid-request flap).
@@ -882,7 +876,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     // once the broadcast site is reached, so getToken/incrementBroadcast
     // see Redis available (real seed path), the broadcast throws timeout,
     // and the compensating decrement observes Redis unavailable. Mirrors
-    // the round-3 hold #5 staging (seed + broadcast-throws-timeout) but
+    // the staging (seed + broadcast-throws-timeout) but
     // exercises the degraded-return branch instead of the throw branch.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
@@ -911,7 +905,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
       // Broadcast was invoked exactly once before the timer fired.
       expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-      // The new site-specific warn fires with the round-4 hold #1
+      // The new site-specific warn fires with the 
       // discriminator + structured fields. Mutation-sensitive call-shape
       // assertion: dropping the event name, the route label, the
       // attempt_id, or the token_hash would all fail this assertion.
@@ -925,7 +919,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
         }),
         expect.stringContaining('enqueued for drain'),
       );
-      // Round-3 hold #1 cross-check: the raw token does NOT leak through
+      // Cross-check: the raw token does NOT leak through
       // the new warn payload (token_hash is the 12-hex prefix; the full
       // accred-cap-<16-hex> literal is the regex target).
       const flatPayload = JSON.stringify(loggerWarnSpy.mock.calls);
@@ -942,7 +936,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     } finally {
       isAvailableSpy.mockRestore();
       loggerWarnSpy.mockRestore();
-      // Round-5 hold #4: the 'enqueued_for_drain' branch leaves a pending
+      // the 'enqueued_for_drain' branch leaves a pending
       // decrement in the module-level queue Map. Subsequent flap-recovery
       // specs each clearQueue() at their start, so the leak is absorbed
       // today, but the ordering dependency is fragile — clear here so the
@@ -951,7 +945,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     }
   });
 
-  it('round-3 hold #12: VERIFY_BROADCAST_ATTEMPTS_CAP env var is wired through to config.verifyBroadcastAttemptsCap (operators can flip the cap without redeploy)', async () => {
+  it('VERIFY_BROADCAST_ATTEMPTS_CAP env var is wired through to config.verifyBroadcastAttemptsCap (operators can flip the cap without redeploy)', async () => {
     // Without this spec, a typo in config.ts (e.g. VERIFY_BROADCAST_CAP)
     // would silently pass every cap-related spec since they read
     // `config.verifyBroadcastAttemptsCap` directly and would just pin the
@@ -972,7 +966,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     }
   });
 
-  it('round-3 hold #13: decrementBroadcastAttempts `if (after < 0) DEL` race-recovery branch — pre-deleted counter key stays absent', async () => {
+  it('decrementBroadcastAttempts `if (after < 0) DEL` race-recovery branch — pre-deleted counter key stays absent', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     // Simulate the parallel-deleteToken-races-the-decrement case: the
@@ -988,7 +982,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     await redis.del(counterKey);
     expect(await redis.get(counterKey)).toBeNull();
 
-    // Call directly via __test_seams (round-3 hold #13 explicitly asks for
+    // Call directly via __test_seams (explicitly asks for
     // a unit-style spec; routing through the route would mask the
     // race-recovery DEL behind the broader timeout flow).
     await accreditationTestSeams.decrementBroadcastAttempts(token);
@@ -998,8 +992,8 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     expect(await redis.get(counterKey)).toBeNull();
   });
 
-  it('round-4 hold #2: pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE with {retriable:true} and structured increment-failed warn', async () => {
-    // Round-3 hold #11 wrapped the pre-INCR call in a try/catch returning 503
+  it('pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE with {retriable:true} and structured increment-failed warn', async () => {
+    // The pre-INCR call is wrapped in a try/catch returning 503
     // SERVICE_UNAVAILABLE so a `redis.eval` rejection (OOM, Lua error,
     // connection drop) does NOT escape Express 5's async error handler as a
     // 500 INTERNAL_ERROR. Without an explicit spec, a future mutation that
@@ -1055,7 +1049,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     }
   });
 
-  it('round-4 hold #3b: decrementBroadcastAttempts emits Redis-unavailable warn and returns without touching in-memory map or redis.decr when isRedisAvailable() returns false mid-request', async () => {
+  it('b: decrementBroadcastAttempts emits Redis-unavailable warn and returns without touching in-memory map or redis.decr when isRedisAvailable() returns false mid-request', async () => {
     // A structured warn fires when Redis was reachable at INCR time but
     // `isRedisAvailable()` returns false at DECR time. Without a direct
     // spec, a mutation that drops the warn silently degrades cap
@@ -1083,7 +1077,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       // `isRedisAvailable()` returned false → the function should NOT have
       // called `redis.decr` on the live client.
       expect(decrSpy).not.toHaveBeenCalled();
-      // Structured warn fires with the round-3 hold #10 discriminator and
+      // Structured warn fires with the discriminator and
       // a token_hash (NOT raw token).
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1099,8 +1093,8 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     }
   });
 
-  it('round-4 hold #3c (Reliability-R2): incrementBroadcastAttempts emits Redis-unavailable warn when isRedisAvailable() returns false mid-request and falls through to in-memory fallback', async () => {
-    // Symmetric to round-3 hold #10's decrement-side warn. Without an
+  it('c (Reliability-R2): incrementBroadcastAttempts emits Redis-unavailable warn when isRedisAvailable() returns false mid-request and falls through to in-memory fallback', async () => {
+    // Symmetric to 's decrement-side warn. Without an
     // increment-side warn, operators see the decrement-unavailable warn
     // alone and cannot tell whether cap enforcement was active at INCR
     // time or had already degraded to the in-memory fallback. The new
@@ -1114,7 +1108,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     // before reaching the pre-INCR site. A unit-style call against the helper
     // is the only way to drive the in-memory-fallback warn path
     // deterministically without monkey-patching the entire module's view
-    // of Redis. Mirrors the round-4 hold #3b decrement spec.
+    // of Redis. Mirrors the b decrement spec.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = crypto.randomBytes(32).toString('hex');
@@ -1252,7 +1246,6 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
 });
 
 // ──────────────────────────────────────────────
-// BACKEND-LOG-SHAPE-CONVERGENCE-SIBLING-FILES (Item 3 part C):
 // Mutation-killing spy assertions on operationally-critical structured log
 // emissions in `backend/src/routes/accreditation.ts` per
 // `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`.
@@ -1276,16 +1269,15 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
 //   (c) Real-path companion: the broadcast-error 502 path has real-Redis
 //       coverage in the sibling specs (`non-timeout broadcast error → 502
 //       BROADCAST_FAILED with retriable=false`); SMTP-failure handling has
-//       a real-path companion in `backend/tests/routes/recover.test.ts`'s
-//       BE-AUTH-SMTP-STATUS-CODE-ORACLE block (mirrors the same throw-from-
-//       sendMail wiring against the recover/reset routes). The cleanup
-//       catch handler shape is verified structurally; the underlying
-//       `cleanupExpiredTokens` helper is pure-iteration over a private Map
-//       and has no production failure mode today, so the catch is a future-
-//       proofing log-shape pin.
+//       a real-path companion in `backend/tests/routes/recover.test.ts`
+//       (mirrors the same throw-from-sendMail wiring against the recover/
+//       reset routes). The cleanup catch handler shape is verified
+//       structurally; the underlying `cleanupExpiredTokens` helper is
+//       pure-iteration over a private Map and has no production failure
+//       mode today, so the catch is a future-proofing log-shape pin.
 // ──────────────────────────────────────────────
 
-describe('BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions (Item 3 part C)', () => {
+describe('accreditation.ts structured-log emissions', () => {
   it('accreditation.request.smtp_send_failed: sendMail throw emits canonical error log shape with err: <Error>', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
     const sendMailSpy = vi.fn().mockRejectedValue(new Error('SMTP connection refused'));
@@ -1383,13 +1375,13 @@ describe('BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions
   });
 
   it('accreditation.verify.token_cleanup_failed: pins the canonical event field on a 502 + redis.del rejection', async () => {
-    // The earlier deleteToken-rejection spec (BE-HANDLE-BROADCAST-ERROR-HELPER
-    // round-2 hold #1, ~line 332) asserts the cleanup-failure log path via a
-    // message-substring match (`stringContaining('token cleanup failed after
-    // broadcast failure')`). Per the round-2 hold-block on this task, we
-    // additionally pin the structured `event:` discriminator exactly so a
-    // future log-message edit can't silently drop the dashboard-keyable
-    // anchor while the message-text assertion still passes.
+    // The earlier deleteToken-rejection spec in this file asserts the
+    // cleanup-failure log path via a message-substring match
+    // (`stringContaining('token cleanup failed after broadcast failure')`).
+    // This spec additionally pins the structured `event:` discriminator
+    // exactly so a future log-message edit can't silently drop the
+    // dashboard-keyable anchor while the message-text assertion still
+    // passes.
     const redis = getRedis();
     if (!redis) return;
     // Clear the per-IP rate-limit window so this spec doesn't 429 from
@@ -1572,7 +1564,7 @@ describe('BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions
 // Carve-out justification (root CLAUDE.md test-mock carve-out clauses a/b/c):
 //   (a) Real-path impracticality: driving 3 deterministic SMTP failures
 //       against a real relay is slow + non-deterministic; the nodemailer
-//       transporter spy used by the sibling BE-LOG-SHAPE-CONVERGENCE specs
+//       transporter spy used by the sibling structured-log-emission specs
 //       is the canonical pattern for this surface in this file.
 //   (b) Mock targets: `nodemailer.createTransport` (same target as
 //       sibling specs). `verifyHiveSignature` is mocked at the file level
@@ -1589,7 +1581,7 @@ describe('BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions
 //       failure source (Hive RPC throw → 503).
 // ──────────────────────────────────────────────
 
-describe('BE-ACCRED-REQ-LIMITER — accred-req limiter refunds slot on transient SMTP failure', () => {
+describe('accred-req limiter refunds slot on transient SMTP failure', () => {
   it('three SMTP-failure 500s do NOT exhaust the 3/24h budget; fourth request succeeds (not 429)', async () => {
     // Three failures then a success — without skipFailedRequests, the
     // first three calls consume all three slots and the fourth 429s.
