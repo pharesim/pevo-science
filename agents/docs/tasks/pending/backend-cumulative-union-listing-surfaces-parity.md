@@ -126,3 +126,33 @@ Not one of the three task-body alternatives. Each named alternative has a proble
 This task is moved to `review/` for architect ratification of the design alternative (Option 4). No code changes have been made. If the architect ratifies, the file moves back to `pending/` for implementation; if a different alternative is preferred, the architect amends and the file likewise returns to `pending/`.
 
 [TODO Architect] When ratifying, please also clarify items 1-4 above.
+
+---
+
+## Architect ratification (2026-05-19) — Option 4 ratified; ready for implementation
+
+**Decision:** Option 4 (per-page enrichment via shared `resolveChainCumulativeAuthors` helper, backed by a per-root Redis chain cache) is ratified as designed. Rationale matches backend's points 1-5: drift-free by construction (single JS pipeline shared with detail), sibling-task synergy (the same helper is the natural foundation for the walker task and the ORCID-mismatch-audit task), cache shape matches the workload (chains are immutable once formed), no new infra needed (single-instance PEvO + existing `hafCache`), honors the chain-is-SSoT / cache-is-perf-layer posture. The named alternatives are correctly rejected: recursive CTE forks the algorithm into JS-vs-SQL and is the bug class this task is closing; denormalization adds a watcher daemon PEvO has no need for; bounded approximation concedes the 2026-05-16 user-triage policy.
+
+### Answers to open items
+
+1. **Search-surface scope — leave search out of scope.** Backend's factual finding is correct: `searchPapersFromHaf` returns `SearchRow{type, author, permlink, title, snippet, created}` and does NOT route through `toPaperSummary`. There is no `authors[]` / `accredited_authors` field on search results today to be made parity-incorrect. The acceptance criterion implicit in the task body's listing-of-call-sites is satisfied without touching search. If a future task adds author fields to `SearchRow` for badging, that task carries the parity obligation explicitly.
+
+2. **API contract update — architect-owned, lands at archive.** `agents/docs/api-contracts/papers.md` already documents `accredited_authors` on both `PaperSummary` (line 55) and `PaperDetail` (line 118), and the orcid-supersession block at line 145 explicitly extends `PaperSummary.authors[]` semantics from the detail shape. The cumulative-union extension is a tightening of the same field on the same surface — implementation lands the code, architect appends the cumulative-union semantics note on `PaperSummary` (mirroring the detail-surface invariant already captured by `backend-multi-author-cumulative-union`) during the review-pass archive of this task. No separate `profiles.md` edit is anticipated — the profile-paper-list response shape inherits `PaperSummary` per `agents/docs/api-contracts/profiles.md`. If the implementation surfaces a `profiles.md` divergence, the architect handles it in the same archive pass.
+
+3. **`is_accredited` semantics on listing rows — keep row-author-scoped.** Confirm: `is_accredited = accreditedSet.has(r.author)` stays head-author-scoped. The cumulative-union extends `accredited_authors[]` (the multi-author display set) but `is_accredited` (the singular bool used for filter / sort) remains a property of the row's head author. They are semantically distinct: one is the multi-author display badge set, the other is a row-level filter/sort flag. Conflating them would muddy listing-filter UX where users want "papers by accredited scientists" (head-author filter) distinct from "papers with any accredited co-author" (which the cumulative `accredited_authors[]` already supports for client-side filtering).
+
+4. **Commit shape — one commit per backend's recommendation, with a carve-out.** Land the helper extraction + both call-site enrichments + the Redis cache key as a single landable unit; the cross-surface invariant is the whole point of the task and partial landings would leave temporary parity skew. Carve-out: if the helper extraction from `papers.ts:868-1003` requires a non-trivial refactor of the detail-surface call-site (rather than a pure lift), split the refactor into a prep commit followed by the enrichment commit. Judgement call left to implementer.
+
+### Implementation guidance
+
+- The helper signature `resolveChainCumulativeAuthors(rootAuthor, rootPermlink, …)` should accept an optional pre-resolved chain (the detail surface already resolves `resolveContinuationChain` for its own purposes) so detail can pass its chain through without re-fetching. Listing/profile pass the root pair and let the helper resolve internally + cache.
+- Redis cache key shape `${config.appTag}:cache:chain-authors:<root-author>:<root-permlink>` matches the `[reference_redis_app_tag]` convention. 30-min TTL is in band with the existing paper-detail cache TTL — same staleness window the contract already documents for `orcid_verified` / `orcid_discrepancy`. Confirm the cache value shape is the full `{authors[], accredited_authors[]}` pair (not just one or the other) so a single fetch serves the whole enrichment.
+- Per-page parallelism via `Promise.all` is correct for cold pages; the existing `hafWalkerWallClockMs` + `MAX_HOPS = 50` cap from b22ce5d bounds the worst case.
+- Acceptance-criterion enumeration of `fetchUserPapersFromHaf` in `profile.ts` and the `authorship_claims` UNION arm (per `backend-papers-filter-accreditation` round-1 adv-P3/90) carries through unchanged — both surfaces are covered by the shared-helper approach.
+- Real-HAF canary per task acceptance: pick a multi-link paper where the head broadcaster dropped a chain author from their own `pevo.authors[]`; assert detail / listing / profile all return cumulative `authors[]` and `accredited_authors`.
+
+### Sibling-task unblock signal
+
+When this task archives (helper lands + listing/profile enrichment lands + cache key in place), `backend-canonical-root-walker-cumulative-aware.md` becomes implementable: its step-2 dependency `resolveChainCumulativeAuthors` will exist. The architect will move that task from `blocked/` back to `pending/` at this task's archive pass (or sooner if a partial-landing of the helper alone is feasible per item 4's carve-out).
+
+This file moves back to `tasks/pending/` for backend implementation. No re-review signal needed in advance of implementation — the implementer `git mv`s to `tasks/review/` when ready and the architect's next review pass picks it up.
