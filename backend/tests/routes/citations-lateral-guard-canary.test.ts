@@ -42,14 +42,11 @@ import { getPool, isHafConfigured } from '../../src/db.js';
  *   - hafsql.ts `excludeSelfReviewWhere` (NOT EXISTS subquery)
  *       → already correct, reference implementation (CASE-WHEN at SRF arg).
  *   - hafsql.ts `authorsWithSupersessionSelect`
- *       → OUT OF SCOPE here; the cycle-cascade `authorsWithSupersession`
- *         helper is fixed separately alongside the reputation-cycle
- *         cascade audit.
+ *       → already correct (CASE-WHEN at SRF arg).
  *   - reputation.ts `paper_resolved_votes` NOT EXISTS subquery
  *       → already correct (CASE-WHEN at SRF arg).
  *   - reputation.ts `citing_papers` CTE CROSS JOIN LATERAL
- *       → OUT OF SCOPE here; the cycle-cascade `citing_papers` CTE is
- *         fixed separately alongside the reputation-cycle cascade audit.
+ *       → already correct (CASE-WHEN at SRF arg).
  *   - notification-queries.ts arm 6a of `fetchNotificationsFromHaf`
  *       (CROSS JOIN LATERAL on `citing.json_metadata -> 'citations'`)
  *       → MIGRATED. Sibling canary covers it.

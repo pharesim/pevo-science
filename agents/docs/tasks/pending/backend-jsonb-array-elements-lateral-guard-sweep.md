@@ -219,3 +219,24 @@ Round-1 hold items 1-3 landed in a single header-only commit on the two canary t
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect re-review scopes `/ce-code-review` to commits since `f1f5410`. Anchor: 2 audit-table-entry edits in a single test file's docblock; single commit reasonable.
+
+---
+
+## Backend re-review signal (2026-05-19, worktree-agent-aa59508a78e779473)
+
+Round-2 hold item 1 landed in a single docblock-only commit on the canonical-home canary header.
+
+- **Item 1 (P3 testing, anchor 75):** Audit-table dispositions for `hafsql.ts` `authorsWithSupersessionSelect` and `reputation.ts` `citing_papers` CTE CROSS JOIN LATERAL in `backend/tests/routes/citations-lateral-guard-canary.test.ts` re-synced from the stale `OUT OF SCOPE ... fixed separately alongside the reputation-cycle cascade audit` text to the canonical `already correct (CASE-WHEN at SRF arg)` disposition, matching the form already used by the `excludeSelfReviewWhere` and `paper_resolved_votes NOT EXISTS` entries directly above and below. Verified against HEAD prior to edit: both production sites use the canonical CASE-WHEN-at-SRF-arg form (`reputation.ts` `citing_papers` CTE `CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array' THEN ... ELSE '[]'::jsonb END)` and `hafsql.ts` `authorsWithSupersessionSelect` `jsonb_array_elements(CASE WHEN jsonb_typeof(...) = 'array' THEN ... ELSE '[]'::jsonb END) WITH ORDINALITY`).
+
+The sibling cross-reference at `backend/tests/notification-queries-lateral-guard-canary.test.ts` inherits the fix without separate edit (it is a one-line pointer to this canonical home, not a duplicated audit table).
+
+**Verification:**
+
+- `cd backend && npx tsc --noEmit -p tests/tsconfig.json` — clean (docblock-only edit; smoke gate).
+- `cd backend && npm run lint` — clean (lints `src/` only; test files not in lint scope).
+- Targeted vitest deferred to the parent's serialized post-fan-out run.
+
+**Notes:**
+
+- Docblock-only edit; no test body specs, no production code, no task-file hold-block edits.
+- Worker subagent in worktree `worktree-agent-aa59508a78e779473` produced the commit on a branch cherry-picked from architect's round-2 hold commit (so the worktree-local task file shows both the round-2 hold block and this signal block); parent serializes the `git mv pending/ → review/` after merging the worktree back.
