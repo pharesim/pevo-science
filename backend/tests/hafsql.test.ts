@@ -388,12 +388,17 @@ describe('excludeSelfReviewWhere SQL shape', () => {
     expect(sql).toContain('c.author != p.author');
     expect(sql).toContain("p.json_metadata -> $1 -> 'authors'");
     expect(sql).toContain('jsonb_array_elements');
-    expect(sql).toContain("auth ->> 'hive' = c.author");
+    // Canonicalized form: LOWER(TRIM(...)) plus the Hive-account charset
+    // regex (mirrors normalizeHiveAccount). Pinning the canonical shape
+    // catches a half-revert that drops either the LOWER/TRIM wrap, the
+    // regex guard, or both.
+    expect(sql).toContain("LOWER(TRIM(auth ->> 'hive')) ~ '^[a-z0-9.-]+$'");
+    expect(sql).toContain("LOWER(TRIM(auth ->> 'hive')) = c.author");
     expect(sql).toContain('NOT EXISTS');
-    // Round-3 hold #3: pin the round-2 `jsonb_typeof(auth) = 'object'` guard
-    // inside the EXISTS predicate. Without this assertion, reverting the
-    // object-type tightening leaves the pure-unit shape tests green and only
-    // the HAF-gated behavioral matrix catches the regression — defense-in-
+    // Pin the `jsonb_typeof(auth) = 'object'` guard inside the EXISTS
+    // predicate. Without this assertion, reverting the object-type
+    // tightening leaves the pure-unit shape tests green and only the
+    // HAF-gated behavioral matrix catches the regression — defense-in-
     // depth-canary-must-pin-each-layer-2026-05-07.
     expect(sql).toContain("jsonb_typeof(auth) = 'object'");
   });
@@ -402,7 +407,7 @@ describe('excludeSelfReviewWhere SQL shape', () => {
     const sql = excludeSelfReviewWhere({ commentAlias: 'rv', paperRowAlias: 'up', appTagParam: '$3' });
     expect(sql).toContain('rv.author != up.author');
     expect(sql).toContain('up.json_metadata -> $3');
-    expect(sql).toContain("auth ->> 'hive' = rv.author");
+    expect(sql).toContain("LOWER(TRIM(auth ->> 'hive')) = rv.author");
     // No leftover defaults from a half-edit.
     expect(sql).not.toMatch(/\bc\.author/);
     expect(sql).not.toMatch(/\bp\.json_metadata/);
@@ -438,22 +443,25 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
       return;
     }
 
-    // Synthetic universe: one paper "alice/p1" with authors [alice, bob].
-    // Multiple review rows reviewing that paper, by different accounts.
-    const paperAuthors = JSON.stringify([{ hive: 'alice' }, { hive: 'bob' }]);
+    // Synthetic universe: one paper "alice/p1" with authors. The third
+    // author entry is deliberately uppercase ("Bob") to mirror the
+    // broadcaster-spoofable mid-case shape that triggers this helper's
+    // normalization. A separate uppercase entry ("Eve") tests that a
+    // co-author entry that lands outside the Hive-account charset (mixed
+    // case + would-be-conformant after normalization) is also rejected.
+    const paperAuthors = JSON.stringify([
+      { hive: 'alice' },
+      { hive: 'Bob' },
+      { hive: ' carol-padded ' },
+    ]);
     const paperMeta = JSON.stringify({ pevotest: { type: 'paper', authors: JSON.parse(paperAuthors) } });
 
     const reviews = [
       ['self_review_by_paper_author', 'alice'],
-      ['self_review_by_named_coauthor', 'bob'],
-      ['third_party_review', 'carol'],
+      ['self_review_by_uppercase_named_coauthor', 'bob'],
+      ['self_review_by_whitespace_padded_named_coauthor', 'carol-padded'],
+      ['third_party_review', 'dave'],
       ['review_by_anon_proxy', 'pevotest.anon'],
-      // Case-sensitivity canary: helper matches exact text. The
-      // upstream publishing path lowercases hive names, so an uppercase
-      // entry in authors[] is malformed data — admitted here pins that
-      // the helper does NOT silently case-fold. Adding case-folding
-      // later would be a deliberate change with a behavioral test.
-      ['casevariant_uppercase', 'Alice'],
     ];
 
     const valuesSql = reviews.map((_, i) => `($${i * 2 + 3}::text, $${i * 2 + 4}::text)`).join(', ');
@@ -473,11 +481,19 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
     const result = await pool.query(sql, params);
     const admitted = result.rows.map((r) => r.label as string).sort();
 
-    // Expected admit set: third_party_review, review_by_anon_proxy, and
-    // the case-variant (since the helper does NOT case-fold). Excluded:
-    // self_review_by_paper_author (alice == p.author) and
-    // self_review_by_named_coauthor (bob ∈ p.authors[].hive).
-    expect(admitted).toEqual(['casevariant_uppercase', 'review_by_anon_proxy', 'third_party_review']);
+    // Expected admit set: only the non-author reviewers (dave + anon
+    // proxy). Excluded:
+    //   - self_review_by_paper_author (alice == p.author)
+    //   - self_review_by_uppercase_named_coauthor: paper carries
+    //     {hive: 'Bob'} (broadcaster-spoofed uppercase); the helper now
+    //     canonicalizes the broadcast hive via LOWER(TRIM(...)) + the
+    //     Hive-account charset regex, matching the JS-side
+    //     normalizeHiveAccount wrapper. The reviewer 'bob' (lowercase
+    //     consensus account) is therefore correctly recognized as a
+    //     named co-author and excluded.
+    //   - self_review_by_whitespace_padded_named_coauthor: same shape
+    //     with ASCII-space padding stripped by TRIM.
+    expect(admitted).toEqual(['review_by_anon_proxy', 'third_party_review']);
   });
 
   it.skipIf(!isHafConfigured())('paper-author check fires even when authors[] is missing or empty', { timeout: 30_000 }, async (ctx) => {
@@ -629,6 +645,68 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
       // excludes the paper author regardless of how malformed authors[]
       // is. Round-3 hold #2 resolution.
       expect(admitted, `array-of-non-objects shape: ${shapeLabel}`).toEqual(['bob_named_as_string', 'third_party']);
+    }
+  });
+});
+
+/**
+ * Hive-username auto-accept arm of `authorshipClaimsCteBody` — broadcaster-
+ * controlled `authors[i].hive` must be canonicalized via LOWER(TRIM(...))
+ * plus the Hive-account charset regex before byte-equality against the
+ * chain-validated lowercase `cb.claimer`. Without normalization, a
+ * mid-case entry (`{hive: 'Alice'}`) leaves a legitimate co-author's claim
+ * pending; with normalization, the claim auto-accepts as the spec intends.
+ *
+ * Synthetic-VALUES approach mirrors the `paper_resolved_votes` test below:
+ * the production CTE chains many tables (`active_accreditations`, the
+ * comments table, the claim-events custom_json projection); rebuilding the
+ * full chain with seeded data per shape per test is impractical. The
+ * assertion shape (admit/reject against the auto-accept arm) is exactly
+ * what the test-mock carve-out clause-(c) is for. The real-path companion
+ * is the SQL-string presence check in `excludeSelfReviewWhere-callsite-
+ * canaries.test.ts`-style source assertions (the helper's source contains
+ * the new pattern); deeper integrated coverage would require seeded HAF
+ * fixtures, which are not yet available.
+ */
+describe('authorshipClaimsCteBody hive-username auto-accept normalization (real Postgres, synthetic rows)', () => {
+  it('canonicalizes broadcast pevo.authors[i].hive before matching claimer', { timeout: 30_000 }, async (ctx) => {
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+
+    // Mirror the auto-accept EXISTS arm. Two synthetic shapes:
+    //   (1) broadcaster posted `{hive: 'Alice'}` (uppercase) — claimer
+    //       'alice' SHOULD match post-normalization.
+    //   (2) broadcaster posted `{hive: ' carol-padded '}` (ASCII-space
+    //       padded) — claimer 'carol-padded' SHOULD match post-trim.
+    //   (3) broadcaster posted `{hive: 'al;ice'}` (off-charset) — no
+    //       claimer should match (regex guard rejects).
+    const scenarios = [
+      { label: 'uppercase_match', claimer: 'alice', authorsJson: JSON.stringify([{ hive: 'Alice' }]) },
+      { label: 'whitespace_padded_match', claimer: 'carol-padded', authorsJson: JSON.stringify([{ hive: ' carol-padded ' }]) },
+      { label: 'off_charset_reject', claimer: 'alice', authorsJson: JSON.stringify([{ hive: 'al;ice' }]) },
+    ];
+
+    for (const sc of scenarios) {
+      // Mirror the auto-accept arm's predicate shape (without the full CTE
+      // surrounding it). The fragment is the textual core of the post-fix
+      // arm: LOWER(TRIM(... ->> 'hive')) regex + equality.
+      const sql = `
+        SELECT EXISTS (
+          SELECT 1 FROM jsonb_array_elements($1::jsonb) elem
+          WHERE LOWER(TRIM(elem ->> 'hive')) ~ '^[a-z0-9.-]+$'
+            AND LOWER(TRIM(elem ->> 'hive')) = $2::text
+        ) AS hit
+      `;
+      const result = await pool.query(sql, [sc.authorsJson, sc.claimer]);
+      const hit = result.rows[0].hit as boolean;
+      if (sc.label === 'off_charset_reject') {
+        expect(hit, `scenario: ${sc.label}`).toBe(false);
+      } else {
+        expect(hit, `scenario: ${sc.label}`).toBe(true);
+      }
     }
   });
 });

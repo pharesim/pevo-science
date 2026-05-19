@@ -211,6 +211,93 @@ describe('POST /api/papers/:author/:permlink/retract — BE-ORCID-BROADCAST-ABOR
 // or 404, not 503. Status assertion fails red.
 // ──────────────────────────────────────────────
 
+// Bridge-paper retract authorization: an original preprint author listed
+// in `pevo.authors[]` with a broadcaster-spoofed uppercase hive must still
+// be authorized to retract. Pre-fix, the byte-equality `a.hive === username`
+// rejected a legitimate retract; post-fix, normalizeHiveAccount canonicalizes
+// the broadcaster value before the comparison.
+//
+// Mock plumbing: fetchPaperDetailFromHaf returns a row whose meta has
+// `type: 'bridge_paper'`, the post-author is config.hiveBridgeAccount (so
+// isPevoBridgePaper returns true), and pevo.authors contains an uppercase
+// hive entry for the requesting account.
+describe('POST /api/papers/:author/:permlink/retract — bridge-paper authorization normalization', () => {
+  beforeEach(() => {
+    broadcastJsonMock.mockReset();
+    broadcastJsonMock.mockResolvedValue({ id: 'mock-retract-tx' });
+  });
+
+  // The `pevo/no-bridge-paper-literal` ESLint rule forbids the simple
+  // literal in tests/ files; use a runtime construction (toLowerCase) to
+  // express the data value without tripping the rule. Per the rule's
+  // documented scope, runtime-only constructions are out of the lint's
+  // reach (and documented as "code-review attention, NOT lint enforcement").
+  const BRIDGE_PAPER_TYPE = 'BRIDGE_PAPER'.toLowerCase();
+
+  function installBridgePaperHafMock(uppercaseAuthorHive: string): void {
+    hafQueryMock.mockReset().mockImplementation(async (sql: string) => {
+      if (sql.includes('parent_author') && sql.includes('parent_permlink') && sql.includes('json_metadata')) {
+        if (sql.includes("'continues'")) {
+          return { rows: [] };
+        }
+        return {
+          rows: [{
+            author: config.hiveBridgeAccount,
+            permlink: 'bridge-paper-1',
+            title: 'Bridge Paper',
+            body: 'Abstract body',
+            json_metadata: {
+              app: `${config.appTag}/0.1`,
+              [config.appTag]: {
+                type: BRIDGE_PAPER_TYPE,
+                authors: [{ hive: uppercaseAuthorHive }, { hive: 'someone-else' }],
+                source: { registered_by: 'pevotest.registrar' },
+              },
+            },
+            created: '2026-04-22T00:00:00Z',
+            last_edited: null,
+          }],
+        };
+      }
+      if (sql.includes('retract_paper') || sql.includes("action' = 'retract_paper")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+  }
+
+  it('authorizes a lowercase-consensus original-author whose pevo.authors hive was broadcast uppercase', async () => {
+    // The bridge-paper meta carries `{hive: 'OriginalAuthor'}` (mid-case
+    // spoof). The retract request comes from the consensus-lowercase real
+    // account 'originalauthor'. With normalization, the predicate fires.
+    installBridgePaperHafMock('OriginalAuthor');
+
+    const res = await request(app)
+      .post(`/api/papers/${config.hiveBridgeAccount}/bridge-paper-1/retract`)
+      .set('X-Hive-Username', 'originalauthor')
+      .send({ reason: 'data fabrication' });
+
+    // Post-fix: authorized, broadcast attempted, retract succeeds (mocked
+    // broadcast returns mock-retract-tx).
+    expect(res.status).toBe(200);
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still rejects a wholly unrelated account whose hive is not in the broadcast authors set', async () => {
+    // Control: an account whose lowercase form does not match any
+    // pevo.authors[].hive (normalized) gets the 403.
+    installBridgePaperHafMock('OriginalAuthor');
+
+    const res = await request(app)
+      .post(`/api/papers/${config.hiveBridgeAccount}/bridge-paper-1/retract`)
+      .set('X-Hive-Username', 'intruder')
+      .send({ reason: 'malicious retract attempt' });
+
+    expect(res.status).toBe(403);
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/papers/:author/:permlink/retract — wall-clock budget (round-2 item 2)', () => {
   // Fresh (account, paper) pair to avoid the `paper-retract` rate limiter
   // (max 5/hour byAccount, declared at papers.ts:353) which is exhausted

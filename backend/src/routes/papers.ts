@@ -3094,7 +3094,12 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
         authorized = true;
       } else {
         const paperAuthors = (pevo.authors || []) as Array<{ hive?: string | null }>;
-        authorized = paperAuthors.some((a) => a.hive === username);
+        // Canonicalize the broadcaster-controlled `authors[i].hive` via
+        // `normalizeHiveAccount` before comparing against the chain-validated
+        // (always-lowercase) `username`. A `pevo.authors[]` entry posted as
+        // `{hive: 'Alice'}` would otherwise byte-mismatch and reject a
+        // legitimate original-author's retract request on a bridge paper.
+        authorized = paperAuthors.some((a) => normalizeHiveAccount(a.hive) === username);
       }
     }
   }

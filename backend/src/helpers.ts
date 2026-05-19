@@ -26,7 +26,7 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { paperDisciplineField } from './types/disciplines.js';
 import { validatedCid } from './lib/ipfs-validation.js';
-import { applyAuthorSupersession } from './lib/author-supersession.js';
+import { applyAuthorSupersession, normalizeHiveAccount } from './lib/author-supersession.js';
 
 export function parseMeta(raw: unknown): Record<string, unknown> {
   if (typeof raw === 'string') {
@@ -175,10 +175,13 @@ export function extractAuthorizedContinuationAuthors(
   for (const entry of arr) {
     if (entry && typeof entry === 'object') {
       const e = entry as Record<string, unknown>;
-      if (typeof e.hive === 'string') {
-        const hive = e.hive.trim().toLowerCase();
-        if (hive.length > 0) authors.add(hive);
-      }
+      // Canonicalize via `normalizeHiveAccount` — same wrapper used by the
+      // SQL-side `authorsWithSupersessionSelect` JOIN guard. The wrapper
+      // also rejects malformed inputs whose charset falls outside Hive
+      // consensus's `[a-z0-9.-]` (e.g., `{hive: '\tbob'}` or `{hive:
+      // 'al;ice'}`), keeping JS and SQL admit-sets in lockstep.
+      const hive = normalizeHiveAccount(e.hive);
+      if (hive) authors.add(hive);
     }
   }
   return authors;

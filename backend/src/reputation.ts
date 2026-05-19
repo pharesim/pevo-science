@@ -521,12 +521,20 @@ export async function computeReputationBatch(
                 AND c.parent_author = ''
                 AND (c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'orcid') = co.orcid
             ))
-            -- Auto-accept: hive username match
+            -- Auto-accept: hive username match. Canonicalize the
+            -- broadcaster-controlled authors[i].hive via LOWER(TRIM(...))
+            -- plus the Hive-account charset regex (mirrors
+            -- normalizeHiveAccount and the SQL-side guard in
+            -- authorsWithSupersessionSelect) before byte-equality against
+            -- the chain-validated lowercase ce.claimer. An uppercase
+            -- mid-case entry would otherwise leave a legitimate co-author's
+            -- claim unaccepted in the reputation cycle.
             OR (ce.author_index IS NOT NULL AND EXISTS (
               SELECT 1 FROM ${T.comments} c
               WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
                 AND c.parent_author = ''
-                AND (c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'hive') = ce.claimer
+                AND LOWER(TRIM(c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'hive')) ~ '^[a-z0-9.-]+$'
+                AND LOWER(TRIM(c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'hive')) = ce.claimer
             ))
           )
       ),
@@ -625,6 +633,14 @@ export async function computeReputationBatch(
         WHERE plv.voter != up.author
           AND plv.weight != 0
           AND NOT EXISTS (
+            -- Co-author voter exclusion: canonicalize the broadcaster-
+            -- controlled authors[i].hive via LOWER(TRIM(...)) plus the
+            -- Hive-account charset regex (mirrors normalizeHiveAccount and
+            -- excludeSelfReviewWhere) before byte-equality against the
+            -- chain-validated lowercase plv.voter. An uppercase mid-case
+            -- pevo.authors entry would otherwise admit a co-author's vote
+            -- into the paper_resolved_votes set, inflating the paper-
+            -- author's reputation score.
             SELECT 1 FROM jsonb_array_elements(
               CASE WHEN jsonb_typeof(up.json_metadata -> $3 -> 'authors') = 'array'
                 THEN up.json_metadata -> $3 -> 'authors'
@@ -632,7 +648,8 @@ export async function computeReputationBatch(
               END
             ) a
             WHERE jsonb_typeof(a) = 'object'
-              AND a ->> 'hive' = plv.voter
+              AND LOWER(TRIM(a ->> 'hive')) ~ '^[a-z0-9.-]+$'
+              AND LOWER(TRIM(a ->> 'hive')) = plv.voter
           )
       ),
 

@@ -9,6 +9,7 @@ import {
   broadcastSendOperationsWithTimeout,
 } from '../hive.js';
 import { HIVE_ACCOUNT_NAME_REGEX } from '../lib/hive-account-name.js';
+import { normalizeHiveAccount } from '../lib/author-supersession.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -132,7 +133,13 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
       const meta = typeof post.json_metadata === 'string' ? JSON.parse(post.json_metadata) : post.json_metadata;
       const pevoMeta = meta[config.appTag] || meta.pevo;
       const authors: Array<{ hive?: string }> = pevoMeta?.authors || [];
-      if (authors.some(a => a.hive === username)) {
+      // Canonicalize the broadcaster-controlled `authors[i].hive` via
+      // `normalizeHiveAccount` before comparing against the chain-validated
+      // (always-lowercase) `username`. A `pevo.authors[]` entry posted as
+      // `{hive: 'Alice'}` would otherwise bypass the self-block and let an
+      // accredited co-author defeat the anonymous-review trust model for
+      // their own paper.
+      if (authors.some(a => normalizeHiveAccount(a.hive) === username)) {
         return sendError(res, 403, 'FORBIDDEN', 'Authors cannot review their own papers');
       }
     }

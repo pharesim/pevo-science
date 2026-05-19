@@ -429,6 +429,16 @@ export function excludeSelfReviewWhere(opts: {
   //
   // Behavioral coverage of both cases lives in `hafsql.test.ts` —
   // (1) non-array top-level shapes, (2) array-of-non-objects shapes.
+  //
+  // The `LOWER(TRIM(...)) ~ '^[a-z0-9.-]+$'` canonicalization on the
+  // broadcaster-controlled `auth ->> 'hive'` value mirrors the JS-side
+  // `normalizeHiveAccount` wrapper and the SQL-side pattern in
+  // `authorsWithSupersessionSelect`. The right-hand side (`${r}.author`) is
+  // a chain-validated lowercase Hive account name (consensus enforces the
+  // `[a-z0-9.-]` charset on the op layer). Without the canonicalization, a
+  // broadcaster posting `{hive: 'Alice'}` mid-case in `pevo.authors[]`
+  // would byte-mismatch against the lowercase reviewer/voter author column
+  // and admit a co-author into the "third-party" review/vote set.
   return `(
     ${r}.author != ${p}.author
     AND NOT EXISTS (
@@ -439,7 +449,8 @@ export function excludeSelfReviewWhere(opts: {
         END
       ) auth
       WHERE jsonb_typeof(auth) = 'object'
-        AND auth ->> 'hive' = ${r}.author
+        AND LOWER(TRIM(auth ->> 'hive')) ~ '^[a-z0-9.-]+$'
+        AND LOWER(TRIM(auth ->> 'hive')) = ${r}.author
     )
   )`;
 }
@@ -644,11 +655,20 @@ export function authorshipClaimsCteBody(
             )
         ) THEN 'accepted'
         WHEN cb.author_index IS NOT NULL AND EXISTS (
+          -- Hive-username auto-accept arm: canonicalize the broadcaster-
+          -- controlled authors[i].hive via LOWER(TRIM(...)) plus the
+          -- Hive-account charset regex (mirrors normalizeHiveAccount and
+          -- the SQL-side guard in authorsWithSupersessionSelect) before
+          -- byte-equality against cb.claimer. The claimer is a chain-
+          -- validated lowercase Hive account name; an uppercase mid-case
+          -- entry in pevo.authors would otherwise leave a legitimate
+          -- co-author's claim pending indefinitely.
           SELECT 1 FROM ${T.comments} c
           WHERE c.author = cb.paper_author
             AND c.permlink = cb.paper_permlink
             AND c.parent_author = ''
-            AND (c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'hive') = cb.claimer
+            AND LOWER(TRIM(c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'hive')) ~ '^[a-z0-9.-]+$'
+            AND LOWER(TRIM(c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'hive')) = cb.claimer
         ) THEN 'accepted'
         ELSE 'pending'
       END AS status
