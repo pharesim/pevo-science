@@ -26,28 +26,58 @@
  */
 
 /**
- * Normalize a chain-metadata `hive` value to its lookup-canonical form.
+ * Hive consensus restricts account names to `[a-z0-9.-]`. The chain enforces
+ * this at the op layer, so every `account` value in `active_accreditations`
+ * conforms by construction. Chain `json_metadata` payloads
+ * (`authors[i].hive`) are broadcaster-controlled and may carry mixed-case,
+ * space-padded, or otherwise malformed variants. This regex is the
+ * normalize-and-validate boundary: anything that does not match (after
+ * lowercase + ASCII-space trim) is rejected as "not a valid Hive account
+ * reference."
+ */
+const HIVE_ACCOUNT_RE = /^[a-z0-9.-]+$/;
+
+/** Strip leading/trailing ASCII space (U+0020) only. Matches PostgreSQL's
+ *  `TRIM(text)` semantics exactly — `TRIM` with no character-set arg strips
+ *  only U+0020, not the broader ECMA-262 WhiteSpace set that JS
+ *  `String.prototype.trim()` covers (tab, LF, CR, NBSP, BOM, U+2028/2029,
+ *  etc.). Using the broader JS trim here would create cross-surface drift:
+ *  `'\tbob'` would normalize to `bob` in JS but stay `\tbob` in SQL. */
+function trimAsciiSpace(s: string): string {
+  return s.replace(/^ +| +$/g, '');
+}
+
+/**
+ * Normalize a chain-metadata `hive` value to its lookup-canonical form, or
+ * return `null` when the value cannot represent a real Hive account.
  *
- * Hive consensus enforces lowercase account names at op level — every
- * `account` value in `active_accreditations` is lowercase by chain rule.
- * But chain `json_metadata` payloads (`authors[i].hive`) can carry
- * mixed-case or whitespace-padded variants: a co-author input form that
- * doesn't normalize, or hand-broadcast metadata. Without canonicalization
- * before the supersession lookup, a vouched co-author can suppress the
- * `orcid_verified` surface (silencing the discrepancy audit signal) by
- * varying case on the `hive` field.
+ * Returns `null` for:
+ *   - non-string inputs
+ *   - strings that canonicalize to empty after lowercase + ASCII-space trim
+ *   - strings that contain characters outside Hive's account-name charset
+ *     `[a-z0-9.-]` after canonicalization (this rejects mixed-whitespace
+ *     inputs like `'\tbob'` or `'bob\n'`, and broadcaster typos like
+ *     `'al;ice'`)
+ *
+ * The last rule is the load-bearing one: it rejects malformed broadcaster
+ * input at the boundary so a co-author entry like `{hive: '\tAlice'}` or
+ * `{hive: 'al;ice'}` cannot silently lookup against the accreditation map.
+ * Without this rejection, the SQL-side and JS-side normalization shapes
+ * could diverge — PostgreSQL `TRIM()` strips only ASCII space (U+0020),
+ * while JS `String.prototype.trim()` strips the full ECMA-262 WhiteSpace
+ * set. Rejecting at the boundary eliminates the asymmetry: both sides
+ * agree such inputs do not name a real account.
  *
  * The SQL-side LEFT JOIN in `authorsWithSupersessionSelect` uses
- * `LOWER(TRIM(a.elem ->> 'hive'))` for the same purpose. The two paths
- * MUST stay in lockstep; the parity is the contract.
- *
- * Returns `null` for non-string inputs or strings that canonicalize to
- * empty (preserves the case-1 behavior: "no hive → no verified ORCID").
+ * `LOWER(TRIM(...)) ~ '^[a-z0-9.-]+$'` as the parity-symmetric guard. The
+ * two paths MUST stay in lockstep; the parity is the contract.
  */
-export function canonicalHiveKey(hive: unknown): string | null {
+export function normalizeHiveAccount(hive: unknown): string | null {
   if (typeof hive !== 'string') return null;
-  const norm = hive.trim().toLowerCase();
-  return norm.length === 0 ? null : norm;
+  const norm = trimAsciiSpace(hive.toLowerCase());
+  if (norm.length === 0) return null;
+  if (!HIVE_ACCOUNT_RE.test(norm)) return null;
+  return norm;
 }
 
 /**
@@ -59,23 +89,27 @@ export function canonicalHiveKey(hive: unknown): string | null {
  * `/api/profile/:username/papers`).
  *
  * Four cases:
- *   - hive empty/absent OR not in `orcidMap` → verified=null, discrepancy=false.
+ *   - hive empty/absent/malformed OR not in `orcidMap` → verified=null, discrepancy=false.
  *   - hive in `orcidMap` with null attestation → verified=null, discrepancy=false.
- *   - hive in `orcidMap` with non-null attestation, chain orcid empty →
+ *   - hive in `orcidMap` with non-null attestation, chain orcid empty/whitespace-only →
  *     verified=attestation, discrepancy=false (no claim to compare against).
  *   - hive in `orcidMap` with non-null attestation, chain orcid non-empty AND
  *     differs from attestation → verified=attestation, discrepancy=true.
  *
- * The hive value is canonicalized via `canonicalHiveKey` before the
+ * The hive value is canonicalized via `normalizeHiveAccount` before the
  * `orcidMap` lookup — see the helper's docstring for why. Callers MAY
- * pre-canonicalize (e.g., `buildCumulativeAuthorsForChain` already
- * lowercases for its own bookkeeping); canonicalizing again is idempotent.
+ * pre-canonicalize; doing so again is idempotent.
+ *
+ * The chain `orcid` is whitespace-trimmed before the empty-check. A
+ * broadcaster posting `{orcid: ' '}` (whitespace-only) is treated as "no
+ * claim" rather than "I claim a whitespace ORCID" — matches the SQL-side
+ * `NULLIF(BTRIM(...), '')` guard.
  *
  * @param hive - the author entry's hive username; canonicalized
- *   internally via `canonicalHiveKey`. `orcidMap` keys are exact
+ *   internally via `normalizeHiveAccount`. `orcidMap` keys are exact
  *   (already-lowercase) account names from `active_accreditations`.
  * @param chainOrcid - the chain-stored `authors[i].orcid` value, or null
- *   when the field is missing/empty.
+ *   when the field is missing/empty/whitespace-only.
  * @param orcidMap - per-accredited-account ORCID map from
  *   `getAccreditedOrcidsByAccount` (`null` value = accredited without ORCID).
  */
@@ -84,13 +118,14 @@ export function computeSupersession(
   chainOrcid: string | undefined | null,
   orcidMap: Map<string, string | null>,
 ): { orcid_verified: string | null; orcid_discrepancy: boolean } {
-  const key = canonicalHiveKey(hive);
+  const key = normalizeHiveAccount(hive);
   if (key === null) {
     return { orcid_verified: null, orcid_discrepancy: false };
   }
   const attested = orcidMap.has(key) ? (orcidMap.get(key) ?? null) : null;
-  const claimed = typeof chainOrcid === 'string' && chainOrcid.length > 0 ? chainOrcid : null;
-  const discrepancy = attested !== null && claimed !== null && attested !== claimed;
+  const trimmedOrcid =
+    typeof chainOrcid === 'string' && chainOrcid.trim().length > 0 ? chainOrcid.trim() : null;
+  const discrepancy = attested !== null && trimmedOrcid !== null && attested !== trimmedOrcid;
   return { orcid_verified: attested, orcid_discrepancy: discrepancy };
 }
 

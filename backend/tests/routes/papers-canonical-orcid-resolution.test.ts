@@ -30,7 +30,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 
 const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
-  hafQueryMock: vi.fn(async (..._args: any[]) => ({ rows: [] as any[] })),
+  hafQueryMock: vi.fn(async (..._args: any[]) => ({ rows: [] as unknown[] })),
   getPoolMock: vi.fn(),
 }));
 
@@ -45,7 +45,7 @@ const { hafCache } = await import('../../src/cache.js');
 const { config } = await import('../../src/config.js');
 const {
   applyAuthorSupersession,
-  canonicalHiveKey,
+  normalizeHiveAccount,
   computeSupersession,
 } = await import('../../src/lib/author-supersession.js');
 const app = createApp();
@@ -275,29 +275,40 @@ describe('GET /api/papers — ORCID supersession projection on list endpoint', (
   });
 });
 
-// ──────────────────────────────────────────────
-// Round-2 hold-block items 1-4 canaries.
-//
-// Item 1 (P1): hive-key normalization parity across the three supersession
-// paths (SQL JOIN, JS applyAuthorSupersession, JS buildCumulativeAuthorsForChain).
-// Item 2 (P2): SQL/JS empty-string chain-orcid parity (NULLIF wrap).
-// Item 3 (P2): `affiliation` MUST NOT leak into PaperSummary.
-// Item 4 (P2): `?version=N` and `metadata_restored` fallback branches must
-// surface supersession fields (mutation-kill: deleting `applyAuthorSupersession`
-// from either branch fails the corresponding canary red).
-// ──────────────────────────────────────────────
+// Canaries for hive-account normalization parity (SQL JOIN regex guard ↔ JS
+// `normalizeHiveAccount`), whitespace/empty chain-orcid parity (SQL BTRIM ↔ JS
+// `.trim().length`), affiliation parameterization (PaperSummary omits;
+// PaperDetail retains), and `?version=N` / `metadata_restored` fallback
+// branches applying `applyAuthorSupersession` post-JS-build.
 
-describe('supersession round-2 hold — item 1 (hive-key normalization parity)', () => {
-  it('canonicalHiveKey normalizes mixed-case + whitespace; returns null for empty/non-string', () => {
-    expect(canonicalHiveKey('Alice')).toBe('alice');
-    expect(canonicalHiveKey('  ALICE  ')).toBe('alice');
-    expect(canonicalHiveKey('alice')).toBe('alice');
-    expect(canonicalHiveKey('')).toBeNull();
-    expect(canonicalHiveKey('   ')).toBeNull();
-    expect(canonicalHiveKey(null)).toBeNull();
-    expect(canonicalHiveKey(undefined)).toBeNull();
-    expect(canonicalHiveKey(42)).toBeNull();
-    expect(canonicalHiveKey({ hive: 'alice' })).toBeNull();
+describe('hive-account normalization parity across SQL JOIN, computeSupersession, and applyAuthorSupersession', () => {
+  it('normalizeHiveAccount lowercases + ASCII-space trims; rejects empty/non-string and non-account chars', () => {
+    // Accepts the canonical and space-padded forms.
+    expect(normalizeHiveAccount('Alice')).toBe('alice');
+    expect(normalizeHiveAccount('  ALICE  ')).toBe('alice');
+    expect(normalizeHiveAccount('alice')).toBe('alice');
+    // Hive account names allow dots and hyphens.
+    expect(normalizeHiveAccount('alice.bob')).toBe('alice.bob');
+    expect(normalizeHiveAccount('alice-bob')).toBe('alice-bob');
+    // Rejects empty/whitespace-only and non-string inputs.
+    expect(normalizeHiveAccount('')).toBeNull();
+    expect(normalizeHiveAccount('   ')).toBeNull();
+    expect(normalizeHiveAccount(null)).toBeNull();
+    expect(normalizeHiveAccount(undefined)).toBeNull();
+    expect(normalizeHiveAccount(42)).toBeNull();
+    expect(normalizeHiveAccount({ hive: 'alice' })).toBeNull();
+    // Rejects non-ASCII-space whitespace (tab, LF) — these are NOT stripped
+    // by PostgreSQL's TRIM(), so JS must reject too. Without this rejection,
+    // a broadcaster posting `{hive: '\tbob'}` would split-brain: JS resolves
+    // to `bob`, SQL JOIN (with TRIM-only) leaves `\tbob` and fails the regex
+    // guard, suppressing `orcid_verified` on the SQL-projected surfaces only.
+    expect(normalizeHiveAccount('\tbob')).toBeNull();
+    expect(normalizeHiveAccount('bob\n')).toBeNull();
+    expect(normalizeHiveAccount('bob\r')).toBeNull();
+    // Rejects characters outside the Hive account-name charset.
+    expect(normalizeHiveAccount('al;ice')).toBeNull();
+    expect(normalizeHiveAccount('alice@example')).toBeNull();
+    expect(normalizeHiveAccount('alice_bob')).toBeNull(); // underscore not in [a-z0-9.-]
   });
 
   it('computeSupersession matches mixed-case hive against lowercase orcidMap key', () => {
@@ -331,7 +342,7 @@ describe('supersession round-2 hold — item 1 (hive-key normalization parity)',
     const lowerResult = applyAuthorSupersession(lowerCaseAuthors, orcidMap);
     // The chain-field passthrough preserves the raw `hive` value (so the
     // UI can render what was broadcast); only the supersession fields are
-    // normalized via canonicalHiveKey. Pin the supersession parity directly.
+    // normalized via normalizeHiveAccount. Pin the supersession parity directly.
     expect(mixedResult[0].orcid_verified).toBe('0000-0000-0000-AAAA');
     expect(mixedResult[0].orcid_discrepancy).toBe(true);
     expect(mixedResult[1].orcid_verified).toBe('0000-0000-0000-BBBB');
@@ -342,13 +353,13 @@ describe('supersession round-2 hold — item 1 (hive-key normalization parity)',
     );
   });
 
-  it('SQL JOIN uses LOWER(TRIM(...)) so mixed-case chain hive matches lowercase aa.account', async () => {
-    // Mutation-kill: drop the LOWER(TRIM(...)) wrap from the JOIN predicate
-    // → SQL still queries, but mixed-case chain hives no longer match the
-    // lowercase `active_accreditations.account` column → split-brain across
-    // SQL and JS paths. The SQL-shape canary detects the LOWER(TRIM wrap
-    // directly; the parity-of-output assertion is enforced via the JS unit
-    // tests above (the real LOWER(TRIM behavior is a PostgreSQL primitive).
+  it('SQL JOIN uses LOWER(TRIM(...)) + regex guard so mixed-case matches and malformed inputs are rejected', async () => {
+    // Mutation-kill: drop the LOWER(TRIM(...)) wrap → mixed-case chain hives
+    // no longer match the lowercase `active_accreditations.account` column.
+    // Mutation-kill: drop the `~ '^[a-z0-9.-]+$'` regex guard → broadcaster
+    // input like `{hive: '\tbob'}` falls through SQL TRIM unchanged (TRIM
+    // only strips ASCII space) but is silently dropped by JS
+    // `normalizeHiveAccount`, producing cross-surface split-brain.
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
@@ -360,6 +371,7 @@ describe('supersession round-2 hold — item 1 (hive-key normalization parity)',
     const listSql = capturedSqls.find((s) => s.includes('authors_with_supersession') && !s.includes('count(*)::int AS total'));
     expect(listSql).toBeDefined();
     expect(listSql).toMatch(/LOWER\(TRIM\(a\.elem ->> 'hive'\)\)/);
+    expect(listSql).toMatch(/~\s*'\^\[a-z0-9\.-\]\+\$'/);
 
     // Detail endpoint
     capturedSqls.length = 0;
@@ -371,16 +383,108 @@ describe('supersession round-2 hold — item 1 (hive-key normalization parity)',
     const detailSql = capturedSqls.find((s) => s.includes('authors_with_supersession') && s.includes('parent_author'));
     expect(detailSql).toBeDefined();
     expect(detailSql).toMatch(/LOWER\(TRIM\(a\.elem ->> 'hive'\)\)/);
+    expect(detailSql).toMatch(/~\s*'\^\[a-z0-9\.-\]\+\$'/);
+  });
+
+  it('hive normalization parity: `\\tbob`, ` bob`, `bob\\n`, `Alice` resolve identically across JS and SQL', () => {
+    // The architect's round-3 hold prescribed this parity test. JS
+    // `normalizeHiveAccount` and the SQL JOIN `LOWER(TRIM(...)) ~ regex`
+    // must agree per-input on whether the value names a real account.
+    //
+    //   - `\tbob`  → SQL: LOWER(TRIM)='\tbob' (TRIM no-op on tab); regex
+    //                 fails → no match. JS: trimAsciiSpace='\tbob';
+    //                 regex fails → null.            Both reject ✓
+    //   - ` bob`   → SQL: LOWER(TRIM)='bob'; regex matches → JOIN.
+    //                 JS: trimAsciiSpace='bob'; regex matches → 'bob'. ✓
+    //   - `bob\n`  → SQL: LOWER(TRIM)='bob\n' (TRIM no-op on LF); regex
+    //                 fails → no match. JS: 'bob\n'; regex fails → null. ✓
+    //   - `Alice`  → SQL: 'alice'; regex matches → JOIN.
+    //                 JS: 'alice'; regex matches → 'alice'. ✓
+    //
+    // The JS half is asserted directly; the SQL half is proven by the regex
+    // canary above + the PostgreSQL TRIM/regex primitives.
+    expect(normalizeHiveAccount('\tbob')).toBeNull();
+    expect(normalizeHiveAccount(' bob')).toBe('bob');
+    expect(normalizeHiveAccount('bob\n')).toBeNull();
+    expect(normalizeHiveAccount('Alice')).toBe('alice');
+  });
+
+  it('papers.ts adopts normalizeHiveAccount at sibling accredited_authors lookup sites', async () => {
+    // Round-3 item 2: the list-endpoint `accredited_authors` row builder and
+    // the non-chain-detail `accredited_authors` projection must use the
+    // wrapper, not raw `.hive` lookups. Companion test stages a chain paper
+    // with mixed-case `authors[i].hive = 'Alice'` and asserts that both
+    // `orcid_verified` AND `accredited_authors` resolve correctly in the same
+    // response row — proving the wrapper is adopted at the sibling lookup
+    // sites (not just the supersession projection).
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 1 }] };
+      // List-endpoint data SELECT — includes authors_with_supersession and
+      // `c.parent_author = ''`. Discriminator: presence of the projection
+      // column plus the parent_author filter (root posts only).
+      if (sql.includes('authors_with_supersession') && sql.includes("c.parent_author = ''")) {
+        return {
+          rows: [{
+            author: 'alice',
+            permlink: 'p1',
+            title: 'Test',
+            abstract: 'A',
+            json_metadata: {
+              app: `${config.appTag}/test`,
+              [config.appTag]: { type: 'paper', authors: [{ name: 'Alice', hive: 'Alice' }] },
+            },
+            created: '2026-04-01T00:00:00Z',
+            net_votes: 0,
+            review_count: 0,
+            citation_count: 0,
+            avg_rating: 0,
+            author_reputation: 0,
+            authors_with_supersession: [{
+              name: 'Alice',
+              hive: 'Alice',
+              orcid: null,
+              orcid_verified: '0000-0000-0000-AAAA',
+              orcid_discrepancy: false,
+            }],
+          }],
+        };
+      }
+      if (sql.includes('FROM active_accreditations')) {
+        return { rows: [{ account: 'alice' }] };
+      }
+      return { rows: [] };
+    });
+    const res = await request(app).get('/api/papers?limit=1');
+    expect(res.status).toBe(200);
+    const row = res.body.data[0];
+    expect(row.authors[0].orcid_verified).toBe('0000-0000-0000-AAAA');
+    // Mutation-kill: revert to raw `.hive` lookup against accreditedSet →
+    // `accredited_authors` becomes `[]` (because `'Alice' !== 'alice'`),
+    // surfacing the same-response-row split-brain the architect flagged.
+    expect(row.accredited_authors).toContain('alice');
   });
 });
 
-describe('supersession round-2 hold — item 2 (empty-string chain orcid parity)', () => {
+describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()', () => {
   it('computeSupersession treats empty-string chain orcid as no claim (discrepancy=false)', () => {
     const orcidMap = new Map<string, string | null>([['alice', '0000-0000-0000-9999']]);
     const result = computeSupersession('alice', '', orcidMap);
     expect(result.orcid_verified).toBe('0000-0000-0000-9999');
     // Empty string is "no claim", not "claim of empty"; discrepancy stays false.
     expect(result.orcid_discrepancy).toBe(false);
+  });
+
+  it('computeSupersession treats whitespace-only chain orcid as no claim (discrepancy=false)', () => {
+    // Without `.trim().length > 0` in JS + `BTRIM` in SQL, a broadcaster
+    // posting `{orcid: " "}` surfaces a false-positive discrepancy against
+    // an accredited author. Pin the no-claim collapse on whitespace input.
+    const orcidMap = new Map<string, string | null>([['alice', '0000-0000-0000-9999']]);
+    const single = computeSupersession('alice', ' ', orcidMap);
+    expect(single.orcid_verified).toBe('0000-0000-0000-9999');
+    expect(single.orcid_discrepancy).toBe(false);
+    const multi = computeSupersession('alice', '   ', orcidMap);
+    expect(multi.orcid_verified).toBe('0000-0000-0000-9999');
+    expect(multi.orcid_discrepancy).toBe(false);
   });
 
   it('applyAuthorSupersession: accredited author broadcasting orcid="" yields discrepancy=false', () => {
@@ -394,10 +498,10 @@ describe('supersession round-2 hold — item 2 (empty-string chain orcid parity)
     expect(out[0].orcid_discrepancy).toBe(false);
   });
 
-  it('SQL CASE wraps chain orcid in NULLIF so empty-string is rejected as no claim', async () => {
-    // Mutation-kill: revert the NULLIF wrap → SQL accepts empty-string chain
-    // orcid as a comparable value → false-positive discrepancy for every
-    // accredited author who left the orcid field blank.
+  it('SQL CASE wraps chain orcid in NULLIF(BTRIM(...), \'\') so empty AND whitespace-only are rejected', async () => {
+    // Mutation-kill: revert BTRIM → SQL accepts ' ' (whitespace-only) chain
+    // orcid as a comparable value → false-positive discrepancy. Both list and
+    // detail SQL must use NULLIF(BTRIM(...), '') for the chain orcid comparison.
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
@@ -409,18 +513,21 @@ describe('supersession round-2 hold — item 2 (empty-string chain orcid parity)
     const sqls = capturedSqls.filter((s) => s.includes('orcid_discrepancy'));
     expect(sqls.length).toBeGreaterThan(0);
     for (const sql of sqls) {
-      // Both list and detail SQL must wrap the chain orcid comparison in NULLIF.
-      expect(sql).toMatch(/NULLIF\(\(a\.elem ->> 'orcid'\), ''\)/);
+      expect(sql).toMatch(/NULLIF\(BTRIM\(a\.elem ->> 'orcid'\), ''\)/);
     }
   });
 });
 
-describe('supersession round-2 hold — item 3 (affiliation MUST NOT leak into PaperSummary)', () => {
+describe('affiliation parameterization (PaperSummary omits, PaperDetail retains)', () => {
   it('list endpoint SQL omits the affiliation projection from the authors jsonb_build_object', async () => {
     // PaperSummary's `authors[]` schema (see `agents/docs/api-contracts/papers.md`)
     // explicitly omits `affiliation`. PaperDetail carries it. Both endpoints
     // share `authorsWithSupersessionSelect`; the helper is parameterized so
     // the list endpoint passes `{ includeAffiliation: false }`.
+    //
+    // This SQL-shape canary is the affiliation contract kill switch: revert
+    // the `includeAffiliation: false` default at the helper or flip the
+    // list-endpoint call site to `true`, and the assertion fails red.
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
@@ -430,9 +537,6 @@ describe('supersession round-2 hold — item 3 (affiliation MUST NOT leak into P
     await request(app).get('/api/papers?limit=1');
     const listSql = capturedSqls.find((s) => s.includes('authors_with_supersession') && !s.includes('count(*)::int AS total'));
     expect(listSql).toBeDefined();
-    // The list endpoint MUST NOT project `affiliation` inside jsonb_build_object.
-    // Pin the literal SQL fragment so any future widening of `includeAffiliation`
-    // default fails this canary.
     expect(listSql).not.toMatch(/'affiliation',\s+a\.elem ->> 'affiliation'/);
   });
 
@@ -447,48 +551,9 @@ describe('supersession round-2 hold — item 3 (affiliation MUST NOT leak into P
     expect(detailSql).toBeDefined();
     expect(detailSql).toMatch(/'affiliation',\s+a\.elem ->> 'affiliation'/);
   });
-
-  it('list response authors[i] lacks the affiliation key', async () => {
-    // Behavior canary: if the SQL change were reverted but the test still
-    // mocked an `affiliation` field into the projected row, the route
-    // would surface it. The SQL canary above pins the projection; this
-    // canary pins the response shape end-to-end given the SQL contract.
-    hafQueryMock.mockImplementation(async (sql: string) => {
-      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 1 }] };
-      if (sql.includes('authors_with_supersession')) {
-        return {
-          rows: [{
-            author: 'alice',
-            permlink: 'p1',
-            title: 'Test',
-            abstract: 'A',
-            json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }] } },
-            created: '2026-04-01T00:00:00Z',
-            net_votes: 0,
-            review_count: 0,
-            citation_count: 0,
-            avg_rating: 0,
-            author_reputation: 0,
-            // The SQL projection (with includeAffiliation:false) omits the
-            // affiliation key entirely. This row mirrors that contract; the
-            // response must not synthesize the field elsewhere.
-            authors_with_supersession: [
-              { name: 'Alice', hive: 'alice', orcid: null, orcid_verified: null, orcid_discrepancy: false },
-            ],
-          }],
-        };
-      }
-      return { rows: [] };
-    });
-    const res = await request(app).get('/api/papers?limit=1');
-    expect(res.status).toBe(200);
-    const author = res.body.data[0].authors[0];
-    expect(author.hive).toBe('alice');
-    expect(author).not.toHaveProperty('affiliation');
-  });
 });
 
-describe('supersession round-2 hold — item 4 (?version=N + metadata_restored fallback canaries)', () => {
+describe('?version=N and metadata_restored fallback branches apply applyAuthorSupersession post-build', () => {
   // Both branches build `detail` in JS (bypassing the SQL-projected
   // authors_with_supersession column) and then apply `applyAuthorSupersession`
   // post-build. The canaries stage the route through each branch and assert
@@ -508,7 +573,7 @@ describe('supersession round-2 hold — item 4 (?version=N + metadata_restored f
     accreditedOrcid: string | null;
     versionAuthors: Array<Record<string, unknown>>;
   }): void {
-    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+    hafQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
       // findCanonicalRoot's initial probe: alice/v1 has no continues → 0 rows.
       // Discriminator: AS cont_author + IS NOT NULL filter.
       if (/AS\s+cont_author/.test(sql) && /'continues'\s+IS NOT NULL/.test(sql)) {

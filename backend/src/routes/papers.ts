@@ -26,7 +26,7 @@ import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { validatedCid } from '../lib/ipfs-validation.js';
 import {
-  canonicalHiveKey,
+  normalizeHiveAccount,
   computeSupersession,
   applyAuthorSupersession,
 } from '../lib/author-supersession.js';
@@ -335,7 +335,7 @@ function buildCumulativeAuthorsForChain(
     for (const e of authorsArr) {
       if (!e || typeof e !== 'object') continue;
       const entry = e as Record<string, unknown>;
-      const hive = canonicalHiveKey(entry.hive);
+      const hive = normalizeHiveAccount(entry.hive);
       if (hive === null) continue;
 
       if (!firstOccurrence.has(hive)) {
@@ -780,8 +780,8 @@ async function fetchPapersFromHaf(
           ? (batchScores.get(r.author as string) ?? 0)
           : 0,
         accredited_authors: pevoAuthors
-          .filter(a => a.hive && allAccredited.has(a.hive))
-          .map(a => a.hive!),
+          .map((a) => normalizeHiveAccount(a.hive))
+          .filter((hive): hive is string => hive !== null && allAccredited.has(hive)),
         source_type: isBridge
           ? ((pevo.source as Record<string, unknown>)?.type as 'arxiv' | 'crossref') || 'arxiv'
           : 'native',
@@ -1173,8 +1173,8 @@ async function fetchPaperDetailFromHaf(
     detail.author_reputation = detail.is_accredited ? authorReputation.score : 0;
     const detailAuthors = (detail.authors as Array<Record<string, unknown>>) || [];
     detail.accredited_authors = detailAuthors
-      .filter((a) => typeof a.hive === 'string' && accreditedAccountSet.has(a.hive as string))
-      .map((a) => (a.hive as string).trim().toLowerCase());
+      .map((a) => normalizeHiveAccount(a.hive))
+      .filter((hive): hive is string => hive !== null && accreditedAccountSet.has(hive));
 
     // Citation count
     const pevo = safePevoMeta(meta);

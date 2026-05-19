@@ -767,21 +767,29 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
  *     `orcid_verified = aa.orcid`; `orcid_discrepancy = true` IFF the
  *     chain `orcid` is also non-null AND differs from `aa.orcid`.
  *
- * The LEFT JOIN normalizes the chain `authors[i].hive` via `LOWER(TRIM(...))`
- * before keying against `active_accreditations.account`. Hive consensus
- * enforces lowercase account names at op level, but chain `json_metadata`
- * payloads can carry mixed-case or whitespace-padded variants (a co-author
- * input form that doesn't normalize, or hand-broadcast metadata). Without
- * normalization a vouched co-author can suppress the `orcid_verified`
- * surface — silencing the discrepancy audit signal — by varying case on the
- * `hive` field. Matches the JS-side normalization in `canonicalHiveKey`
- * (see `backend/src/routes/papers.ts`); the parity is the contract.
+ * The LEFT JOIN canonicalizes the chain `authors[i].hive` via
+ * `LOWER(TRIM(...))` AND a Hive-account regex `~ '^[a-z0-9.-]+$'` before
+ * keying against `active_accreditations.account`. Hive consensus enforces
+ * lowercase account names from `[a-z0-9.-]` at op level, so every
+ * accreditation account is regex-conforming by chain rule. Chain
+ * `json_metadata` payloads are broadcaster-controlled and may carry
+ * mixed-case, whitespace-padded, or otherwise malformed `hive` variants. The
+ * regex guard is load-bearing: PostgreSQL `TRIM()` strips only U+0020
+ * (space), while JS `String.prototype.trim()` strips the full ECMA-262
+ * WhiteSpace set (tab, LF, CR, NBSP, etc.). Without the regex guard, a
+ * broadcaster posting `{hive: '\tbob'}` would split-brain across surfaces:
+ * SQL `LOWER(TRIM(...))` returns `\tbob` (unchanged), no JOIN match,
+ * `orcid_verified=null`; JS `.trim().toLowerCase()` returns `bob`, JOIN
+ * matches, `orcid_verified` populated. Rejecting non-conforming inputs at
+ * the boundary eliminates the asymmetry — both sides agree such inputs do
+ * not name a real account. Matches the JS-side normalization in
+ * `normalizeHiveAccount`; the parity is the contract.
  *
- * Chain orcid is wrapped in `NULLIF(..., '')` so an empty-string broadcast
- * value (publishers default the publish form to `orcid: ''`) is normalized
- * to "no claim", matching the JS-side `computeSupersession` semantics. The
- * raw `IS NOT NULL` check admits empty strings, which would mark every
- * accredited author who left the orcid field blank as having a discrepancy.
+ * Chain orcid is wrapped in `NULLIF(BTRIM(...), '')` so empty AND
+ * whitespace-only broadcast values are normalized to "no claim", matching
+ * the JS-side `computeSupersession` semantics. `BTRIM` (not `TRIM`) strips
+ * ASCII whitespace from both ends; without it, `{orcid: ' '}` (single
+ * space) would surface a false-positive discrepancy.
  *
  * @param commentAlias - SQL alias for the post row (e.g., 'c', 'p').
  * @param appTagParam - bind-param placeholder for `config.appTag` (e.g., '$3').
@@ -813,8 +821,8 @@ export function authorsWithSupersessionSelect(
         ${affiliationField}'orcid_verified',    aa.orcid,
         'orcid_discrepancy', CASE
                                WHEN aa.orcid IS NOT NULL
-                                AND NULLIF((a.elem ->> 'orcid'), '') IS NOT NULL
-                                AND aa.orcid <> (a.elem ->> 'orcid')
+                                AND NULLIF(BTRIM(a.elem ->> 'orcid'), '') IS NOT NULL
+                                AND aa.orcid <> BTRIM(a.elem ->> 'orcid')
                                THEN true
                                ELSE false
                              END
@@ -827,7 +835,9 @@ export function authorsWithSupersessionSelect(
            ELSE '[]'::jsonb
       END
     ) WITH ORDINALITY AS a(elem, ordinality)
-    LEFT JOIN active_accreditations aa ON aa.account = LOWER(TRIM(a.elem ->> 'hive'))
+    LEFT JOIN active_accreditations aa
+      ON LOWER(TRIM(a.elem ->> 'hive')) ~ '^[a-z0-9.-]+$'
+     AND aa.account = LOWER(TRIM(a.elem ->> 'hive'))
   ), '[]'::jsonb)`;
 }
 

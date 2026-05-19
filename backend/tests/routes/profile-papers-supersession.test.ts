@@ -33,7 +33,7 @@
  *       - `tests/routes/papers-canonical-orcid-resolution.test.ts` mocks
  *         the SQL projection and pins the four-case matrix shape on the
  *         papers endpoints; the helper unit tests inside that file
- *         exercise the JS helpers (`canonicalHiveKey`, `computeSupersession`,
+ *         exercise the JS helpers (`normalizeHiveAccount`, `computeSupersession`,
  *         `applyAuthorSupersession`) directly.
  *       The shared lib module these tests target is the same one
  *       `toPaperSummary` consumes; this file pins the route-level wiring
@@ -185,12 +185,12 @@ describe('GET /api/profile/:username/papers — ORCID supersession parity', () =
   });
 
   it('mixed-case hive matches the lowercase accreditation entry (cross-path parity)', async () => {
-    // The `canonicalHiveKey` helper normalizes mixed-case chain `hive` to
-    // lowercase before the `orcidMap` lookup. Without normalization, a
+    // The `normalizeHiveAccount` helper normalizes mixed-case chain `hive`
+    // to lowercase before the `orcidMap` lookup. Without normalization, a
     // vouched co-author posting `{hive: "Alice"}` could suppress the
     // `orcid_verified` surface. The papers-list and detail endpoints'
-    // SQL projection uses `LOWER(TRIM(...))`; the JS helper used by this
-    // route must produce the same supersession output.
+    // SQL projection uses the same canonicalization at the JOIN; the JS
+    // helper used by this route must produce the same supersession output.
     stage(
       [{ name: 'Alice', hive: 'Alice', orcid: '0000-0000-0000-1234' }],
       [{ account: 'alice', orcid: '0000-0000-0000-9999' }],

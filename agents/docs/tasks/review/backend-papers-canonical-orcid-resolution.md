@@ -403,3 +403,55 @@ The following contract-doc edits in `agents/docs/api-contracts/papers.md` will l
 ### Re-review signal
 
 When items 1-9 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `37a49a1`. Items 1+2 share the wrapper/parity scope and should land together with the parity test (item 1) and the call-site audit grep (item 2). Item 4 is the orcid analog; item 6 is the rename. Items 3, 5, 7, 8, 9 are mechanical cleanups that bundle naturally alongside the substantive edits.
+
+---
+
+## Backend re-review signal (2026-05-19, round-3 — working tree of this commit)
+
+All 9 hold-block items land in this single commit alongside the signal block + the `git mv` back to `tasks/review/`. Approach choice for item 1: **option (a) — reject malformed at the boundary** (the strongest fix; aligns with the architect's just-landed solutions doc `sql-trim-vs-js-trim-whitespace-character-set-asymmetry-2026-05-19.md`).
+
+### Items addressed
+
+**Item 1 (P1) — SQL TRIM vs JS `.trim()` asymmetry, closed via reject-at-boundary.** Both sides now agree on rejection: SQL adds `LOWER(TRIM(a.elem ->> 'hive')) ~ '^[a-z0-9.-]+$'` as a second JOIN predicate; JS `normalizeHiveAccount` narrows from `.trim()` to a new `trimAsciiSpace` helper (`s.replace(/^ +| +$/g, '')`) that matches PostgreSQL `TRIM` semantics exactly, then applies the same `[a-z0-9.-]+` regex check. Inputs containing non-ASCII whitespace (`\t`, `\n`, `\r`, NBSP, etc.) are rejected on both paths; inputs containing characters outside Hive's account charset (`al;ice`, `alice_bob`, `alice@example`) are rejected on both paths. Mixed-case + ASCII-space-padded inputs (`'Alice'`, `'  alice  '`) continue to resolve to canonical lowercase on both paths. Parity test (`tests/routes/papers-canonical-orcid-resolution.test.ts` — `hive normalization parity: \tbob, ` bob`, bob\n, Alice resolve identically across JS and SQL`) pins the cross-path behavior on each of the 4 architect-prescribed inputs, plus expanded `normalizeHiveAccount` unit coverage for non-ASCII whitespace and out-of-charset inputs.
+
+**Item 2 (P1) — `normalizeHiveAccount` adopted at the two sibling lookup sites in `papers.ts`.** Replaced `pevoAuthors.filter(a => a.hive && allAccredited.has(a.hive)).map(a => a.hive!)` at the list-endpoint row builder with `pevoAuthors.map(a => normalizeHiveAccount(a.hive)).filter(...)`. Replaced the non-chain-detail branch's `.filter(...accreditedAccountSet.has(a.hive)).map(a => a.hive.trim().toLowerCase())` with the same wrapper-based pattern. Companion test `papers.ts adopts normalizeHiveAccount at sibling accredited_authors lookup sites` stages a chain paper with `authors[0].hive = 'Alice'` (mixed case) and asserts `orcid_verified` AND `accredited_authors` resolve correctly in the same response row — the same-row-split-brain regression the architect flagged.
+
+**Item 3 (P1) — Comment-anchor cleanup in test source.** Replaced the `Round-2 hold-block items 1-4 canaries` section comment block with a single behavioral line. Stripped `supersession round-2 hold — item N (...)` prefixes from the four `describe()` labels, keeping the behavioral parenthesized content (`hive-account normalization parity across SQL JOIN, computeSupersession, and applyAuthorSupersession`, `chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()`, `affiliation parameterization (PaperSummary omits, PaperDetail retains)`, `?version=N and metadata_restored fallback branches apply applyAuthorSupersession post-build`).
+
+**Item 4 (P2) — Whitespace-only chain orcid bypass closed.** SQL: `NULLIF((a.elem ->> 'orcid'), '')` → `NULLIF(BTRIM(a.elem ->> 'orcid'), '')` so single-space and multi-space orcid values are treated as no-claim. The `aa.orcid <> ...` equality check also wraps in `BTRIM(...)` so a `'0000-0000-0000-1234 '` chain claim (trailing space) compares equal to the trimmed attestation. JS: `computeSupersession` now reads `typeof chainOrcid === 'string' && chainOrcid.trim().length > 0 ? chainOrcid.trim() : null` — matching the SQL BTRIM behavior. Companion tests (`computeSupersession treats whitespace-only chain orcid as no claim`, `SQL CASE wraps chain orcid in NULLIF(BTRIM(...), '')...`) pin both halves.
+
+**Item 5 — Redundant item-3 behavior canary deleted.** Dropped the `list response authors[i] lacks the affiliation key` test that was reading back what the mock returned (mocked SQL row already omits `affiliation`, so the response assertion was vacuous). The SQL-shape canary (`list endpoint SQL omits the affiliation projection from the authors jsonb_build_object`) is the affiliation contract kill switch; its comment now explicitly documents that role.
+
+**Item 6 — `canonicalHiveKey` renamed to `normalizeHiveAccount` across the lib, all call sites in `routes/papers.ts`, and tests.** New name aligns with the `string | null` return signature (the prior "Key" connoted a non-null map key). JSDoc rewritten to describe the lowercase + ASCII-space-trim + charset-regex semantics. Two stale JSDoc references in `tests/routes/profile-papers-supersession.test.ts` updated to the new name (collateral cleanup forced by the rename — the test file's behavior remains untouched; task 2 round-2 owns the substantive edits to that file).
+
+**Item 7 — `hafsql.ts` JSDoc parenthetical file-path supplement dropped.** The JSDoc on `authorsWithSupersessionSelect` previously read "Matches the JS-side normalization in `canonicalHiveKey` (see `backend/src/routes/papers.ts`)." Updated to "Matches the JS-side normalization in `normalizeHiveAccount`" — function-name anchor only, no file path. The JSDoc paragraph is also expanded to describe the new regex guard and BTRIM-on-orcid behavior.
+
+**Items 8 + 9 — Mechanical test cleanups.** `rows: [] as any[]` in the `vi.hoisted` initializer → `rows: [] as unknown[]`. Unused `params: unknown[]` in the `stageVersionRoute` mock → `_params: unknown[]` per the underscore-prefix convention used elsewhere in the same file.
+
+### Test coverage added
+
+Net change in `tests/routes/papers-canonical-orcid-resolution.test.ts`: 20 → 22 tests after deleting the redundant item-3 canary and adding 4 new tests for round-3:
+
+- `normalizeHiveAccount` unit test extended to cover non-ASCII whitespace rejection (`\tbob`, `bob\n`, `bob\r`) and out-of-charset rejection (`al;ice`, `alice@example`, `alice_bob`).
+- Cross-path parity test for the architect-prescribed 4-input matrix (`\tbob`, ` bob`, `bob\n`, `Alice`).
+- Call-site adoption canary: chain paper with mixed-case `Alice` resolves `orcid_verified` AND `accredited_authors` in same row.
+- `computeSupersession` whitespace-only chain orcid → no-claim collapse.
+
+The SQL canaries (regex guard + BTRIM) were added to the existing per-describe canaries — each describe block's SQL canary now asserts both the original wrap and the new round-3 addition (regex match for the JOIN; BTRIM for the CASE).
+
+### Verification
+
+- `npm run typecheck` from `backend/`: clean.
+- `npm run lint` from `backend/`: clean.
+- `npx vitest run tests/routes/papers-canonical-orcid-resolution.test.ts` (Redis+Postgres reachable via Docker IPs): **22/22 pass.**
+- Broader regression sweep (`papers-canonical-orcid-resolution`, `paper-detail-v3`, `papers-enrichment-parity-gate`, `canonical-root-walker`, `profile-papers-supersession`, `profile`): **63/64 pass, 1 pre-existing real-HAF flake** on `paper-detail-v3.test.ts > 'includes versions array and retraction fields when paper exists'` — confirmed pre-existing via `git stash` round-trip (same test fails red on `HEAD~1` against the unstashed state with identical 503 error).
+
+### Notes for architect
+
+- The new solutions doc `sql-trim-vs-js-trim-whitespace-character-set-asymmetry-2026-05-19.md` landed in commit `395ef20` while round-3 fixes were in flight. The doc names two acceptable parity shapes (reject-at-boundary vs widen-SQL-whitespace) and prescribes the non-ASCII-space test discipline; this implementation chose shape (a) and the parity test inputs match the doc's prescription. No drift between this commit's behavior and the doc's prescription.
+- `normalizeHiveAccount` is now the canonical name across `routes/papers.ts` and the lib. Task 2 round-2 (the `backend-profile-papers-supersession-parity` hold) inherits the renamed symbol; no new symbol the task-2 fix needs to introduce. The two JSDoc references in `profile-papers-supersession.test.ts` were updated in this commit as collateral cleanup forced by the rename — the test file's behavior is unchanged.
+- The architect-side contract-doc deferrals (PaperSummary/PaperDetail `authors[i].hive` and `authors[i].orcid` field notes) in `agents/docs/api-contracts/papers.md` are settled by this commit's emit-shape behavior: `authors[i].hive` continues to emit verbatim chain-broadcast value (no boundary rewrite of the emitted entry — only the lookup is normalized); `authors[i].orcid` emits verbatim too. Consumers compare case-insensitively / treat empty+whitespace as null per the doc deferral notes; the implementation defends those semantics on the read path.
+
+### Re-review signal
+
+`git mv tasks/pending/backend-papers-canonical-orcid-resolution.md tasks/review/` in the same commit as the source edits. The architect's next `/ce-code-review` pass scopes to commits since `395ef20` (the solutions-doc commit) — this round-3 backend commit is the only one in that range touching the supersession source.
