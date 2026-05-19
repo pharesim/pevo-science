@@ -222,3 +222,42 @@ Items 1-9 touch `backend/src/routes/accreditation.ts` (helper extraction + reord
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
+---
+
+## Backend re-review signal (2026-05-19, commit SHA c789a14)
+
+All 9 round-2 hold items landed in one focused commit on `backend/src/routes/accreditation.ts` + `backend/tests/routes/accreditation-idempotency.test.ts`.
+
+### Item-by-item
+
+- **Item 1 (P1, reorder).** Moved `recordAccreditationCompletionBestEffort` to AFTER `seedAccreditationBonus`. A seed-bonus permanent throw no longer writes the completion record, so the retry cannot read a cached 200 over the operator-actionable 502. Paired change: the outer `post_broadcast` catch branch now calls `deleteTokenBestEffort` (new `accreditation.verify.post_broadcast_token_cleanup_failed` discriminator) so the retry hits the 400 path explicitly. The architect-suggested "retry surfaces 400" outcome required the explicit cleanup — without it the token would survive the seed throw and the retry would fall into the existing-accreditation gate-hit branch (200 already_accredited), still masking the operator signal.
+- **Item 2 (P1, pipeline rejection).** Inner try/catch around `redis.multi().exec()` inside `recordAccreditationCompletion`. New `accreditation.verify.completion_record_pipeline_failed` warn fires for the Redis-down-mid-pipeline class; the in-memory writes that follow now execute regardless. The outer `recordAccreditationCompletionBestEffort` wrapper retains its `completion_record_failed_post_success` warn for any other failure mode (e.g., the in-memory writes themselves throwing).
+- **Item 3 (P1, shape guard).** Runtime guard in `readAccreditationCompletion` before the cast: `typeof parsed === 'object'`, non-null, `username` and `tx_id` both strings. Shape mismatch emits `accreditation.verify.completion_record_invalid_shape` warn and returns null (falls through to 400). The in-memory branch is unchanged (write-site is typed).
+- **Item 4 (P2, helper extraction).** Added `recordAccreditationCompletionBestEffort(token, username, txId, email)` adjacent to `deleteTokenBestEffort`. The broadcast-success call site is now a one-liner. The wrapper's warn carries `event: 'accreditation.verify.completion_record_failed_post_success'`, `route`, `username`, `email_hash`, `token_hash`, `err` to mirror `deleteTokenBestEffort`'s shape.
+- **Item 5 (P2, asymmetric-key comment).** Comment block at `memoryAccreditationCompletions` declaration documents the intentional Redis-sha256 vs in-memory-raw key asymmetry and the reason (Redis log-defense-in-depth vs process-memory already exposes the token).
+- **Item 6 (P2, restart-loss comment).** Folded into the same comment block at the `memoryAccreditationCompletions` declaration. Documents that the in-memory fallback is flap-resilience for single-process lifetime, not sustained Redis-less mode. The grace-period read-site comment cross-references this declaration.
+- **Item 7 (P2, test null guard).** Added `expect(stored).not.toBeNull();` before the `JSON.parse(stored as string).tx_id` line in the grace-period record `tx_id` sanity spec, mirroring the symmetric spec's pattern.
+- **Item 8 (low, in-memory sweep).** `cleanupExpiredTokens` now iterates `memoryAccreditationCompletions` and deletes entries past their `expires_at`. Mirrors the sibling `memoryTokens` sweep loop. No new log emissions.
+- **Item 9 (low, revoke-after-broadcast comment).** Comment at both the `ACCREDITATION_COMPLETED_TTL_SECONDS` declaration block AND the grace-period read site. Documents that the record does NOT re-verify chain state on retry; a WoT-revoke landing between the original broadcast and the retry returns the cached 200. Accepted trade-off explained: re-running the gate on every retry would re-introduce HAF dependency + 503 failure mode on the idempotent path.
+
+### Code-shape changes (beyond the hold items)
+
+- The existing seed-throw test spec (`accreditation /verify — PostBroadcastWriteError on seedAccreditationBonus failure`) had a stale assertion comment claiming "token already cleaned up before the seed-bonus throw — post_broadcast catch does NOT delete it again." Updated the comment to reflect the new ordering: the post_broadcast catch NOW does the delete (via `deleteTokenBestEffort`), and the assertion `expect(tokenExists(token)).toBe(false)` still passes — but for the new reason.
+- The post_broadcast catch branch's narrative comment was updated to match the new behavior (no longer claims `deleteToken already ran on the success path BEFORE the seed-bonus throw`).
+
+### Verification
+
+- `npm run typecheck` (`:src` and `:tests`): clean.
+- `npm run lint` (`src/`): clean.
+- `npx vitest run tests/routes/accreditation-idempotency.test.ts` (with Docker IP env overrides): **16/16 pass** — 13 pre-existing + 3 grace-period idempotency specs. The seed-throw spec at the `PostBroadcastWriteError` describe block continues to pass (token now cleaned up via the new post_broadcast catch branch).
+- Broader `npx vitest run tests/routes/accreditation.test.ts` shows 7 pre-existing failures. Verified pre-existence by `git stash`-ing my changes and re-running — same 7 failures on the round-1 base commit. Unrelated to this task.
+
+### Deviations
+
+- The architect's item 1 suggested fix said "retry's 400 BAD_REQUEST on a seed-bonus-permanent-failure path restores the operator's incident signal". Achieving the 400 outcome required adding a `deleteTokenBestEffort` call to the `post_broadcast` catch branch (the architect's prescription did not explicitly require this delete, but without it the token survives the seed throw and the retry hits the gate-hit 200 path — still masking the operator signal). The added cleanup uses the same best-effort pattern as the timeout/failure branches.
+- No new specs added for item 2 (pipeline rejection) or item 1 (retry-after-seed-throw → 400). The architect's hold-block did not request new specs beyond item 7's null-guard; the existing `tokenExists(token) === false` assertion in the seed-throw spec is sufficient to guarantee the retry would hit the 400 path (no token + no completion record).
+
+### [TODO Architect] — still pending from round 1
+
+`agents/docs/api-contracts/accreditation.md` — under the `POST /api/accreditation/verify` 200-success row, add one sentence noting the 24h grace-period idempotency. Architect-owned at archive time; round-1 signal block already filed.
+
