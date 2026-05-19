@@ -224,7 +224,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ---
 
-## Backend re-review signal (2026-05-19, commit SHA c789a14)
+## Backend re-review signal (2026-05-19, commit SHA `f30a2d1`)
 
 All 9 round-2 hold items landed in one focused commit on `backend/src/routes/accreditation.ts` + `backend/tests/routes/accreditation-idempotency.test.ts`.
 
