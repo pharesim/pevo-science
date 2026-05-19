@@ -9,6 +9,7 @@ import { config } from '../../src/config.js';
 import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 import { TIMING_ORACLE_FLOOR_MS, TIMING_ORACLE_CEILING_MS } from '../support/timing-constants.js';
+import { fetchSettledAuditRows } from '../support/audit-log-poll-settle.js';
 
 const app = createApp();
 
@@ -71,41 +72,14 @@ async function cleanup() {
 
 afterAll(async () => { await cleanup(); });
 
-// `logCustodyBroadcast` in the /recover production path is fire-and-forget
-// (`.catch(() => {})`, no await) — the response can return before the audit-log
-// INSERT microtask settles, leaving a SELECT-INSERT race. Combined with
-// vitest.config.ts `retry: 3` and class-level `beforeAll` / `afterAll` cleanup
-// (not `beforeEach`), this is the three-condition trigger documented in
-// `agents/docs/solutions/conventions/vitest-retry-fire-and-forget-side-effect-poisoning-2026-05-04.md`.
-// Poll for at least 1 row, then add a 100ms settle delay to catch any imminent
-// double-log mutation before counting. The `beforeEach` reset in the "with DB"
-// describe block guarantees a clean baseline on every attempt (including
-// retries), so a settled count of 1 is ground truth and a count of 2+ surfaces
-// an over-log production mutation.
-//
-// Kept local to this file per the task's out-of-scope guidance — extraction to
-// `backend/tests/support/` would touch a sibling test file currently being
-// edited by another worker and is deferred.
-async function fetchSettledAuditRows(
-  pool: { query: (sql: string, params: unknown[]) => Promise<{ rows: { operation_type: string }[] }> },
-  username: string,
-  operationType: string,
-): Promise<{ operation_type: string }[]> {
-  const sql = `SELECT operation_type FROM custody_audit_log
-               WHERE username = $1 AND operation_type = $2`;
-  const start = Date.now();
-  while (Date.now() - start < 1500) {
-    const { rows } = await pool.query(sql, [username, operationType]);
-    if (rows.length >= 1) {
-      await new Promise((r) => setTimeout(r, 100));
-      const { rows: settled } = await pool.query(sql, [username, operationType]);
-      return settled;
-    }
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  const { rows } = await pool.query(sql, [username, operationType]);
-  return rows;
-}
+// `fetchSettledAuditRows` (imported from ../support/audit-log-poll-settle.js)
+// defends against the SELECT-INSERT race created by `logCustodyBroadcast`
+// fire-and-forget INSERTs combined with vitest's `retry: 3`. The poll + 100ms
+// settle window catches an in-flight retry-poisoned (or over-log-mutated)
+// second INSERT before the count assertion runs; the `beforeEach` reset in
+// the "with DB" describe block guarantees a clean baseline so a settled count
+// of 1 is ground truth and a count of 2+ surfaces an over-log production
+// mutation. See the helper's docblock for the full rationale.
 
 // ─── Validation tests ────────────────────────────────────────
 // Keep these minimal — rate limit is 5/hr per IP
