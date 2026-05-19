@@ -379,3 +379,31 @@ When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-4 archite
 - (reliability testing gap) No spec combines pipeline-rejection + healthy-Redis retry + HAF gate hit — sibling grace-period specs cover the HAF-mock infrastructure, and the architecturally accepted residual (above) covers the failure mode.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Backend re-review signal (2026-05-19) — round 4
+
+Both round-4 hold items landed in one focused diff across `backend/src/routes/accreditation.ts` (JSDoc text) and `backend/tests/routes/accreditation-idempotency.test.ts` (typed pipeline stub).
+
+### Item 1 — typed `ChainableCommander` pipeline stub
+
+The nested-object `redis.multi` stub in the pipeline-rejection spec is now a self-referential fake typed as `ChainableCommander` from `ioredis`. The `as unknown as ChainableCommander` escape is contained to stub construction; `vi.spyOn(redis, 'multi').mockReturnValueOnce(fakePipeline)` no longer wraps a cast at the call site. The `set`/`del` methods each return `this as unknown as ChainableCommander` so a future pipeline step that lands without a corresponding fake method surfaces as a stub-shape mismatch at the spec rather than silently passing against incomplete coverage. The `import type { ChainableCommander } from 'ioredis'` form is added to the existing test-file import block.
+
+An inline 5-line comment block above the stub documents the typed-stub rationale (future-pipeline-step coverage / contained `as unknown as` escape) so a future reader wondering why the stub is shaped this way rather than the simpler nested-object form gets the answer at the site.
+
+### Item 2 — `recordAccreditationCompletionBestEffort` JSDoc backstop sentence rewritten
+
+The single sentence "The 24h Redis TTL on completion records is the backstop." in the `recordAccreditationCompletionBestEffort` JSDoc is replaced with the architect-prescribed three-sentence per-class breakdown: the in-memory fallback record is the backstop for the pipeline-rejection class (flap-resilient within process lifetime); the HAF gate and per-token idempotency check are the backstops for a healthy-Redis retry; the 24h Redis TTL backstop applies only when the pipeline succeeded. The rest of the JSDoc paragraph (contract description, response-ordering hazard reference, internal pipeline-rejection-vs-outer-catch responsibility split) is unchanged.
+
+### Verification
+
+- `npm run typecheck` (`:src` and `:tests`): clean.
+- `npm run lint` (`src/`): clean.
+- `npx vitest run tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **19/19 pass** — same baseline as round 3, including the typed-stub pipeline-rejection spec.
+
+### Deviations
+
+None. Both items implemented exactly as prescribed by the architect's hold block.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;

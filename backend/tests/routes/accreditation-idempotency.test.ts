@@ -34,6 +34,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
+import type { ChainableCommander } from 'ioredis';
 
 const { broadcastJsonMock, MockBroadcastTimeoutError } = vi.hoisted(() => ({
   broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'fresh-accred-tx-id' }),
@@ -1073,13 +1074,21 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
 
     // Stub the MULTI pipeline used inside `recordAccreditationCompletion`.
     // The chain shape mirrors the real call: .multi().set(...).del(...).exec().
-    const multiSpy = vi.spyOn(redis, 'multi').mockReturnValueOnce({
-      set: () => ({
-        del: () => ({
-          exec: () => Promise.reject(new Error('pipeline boom')),
-        }),
-      }),
-    } as unknown as ReturnType<typeof redis.multi>);
+    // Typed as `ChainableCommander` so a future pipeline step (e.g., an extra
+    // `.set(...)` or `.expire(...)`) that lands without a corresponding fake
+    // method surfaces at the stub instead of silently passing — the
+    // `as unknown as` escape is contained to stub construction, not the call
+    // site.
+    const fakePipeline = {
+      set(..._args: unknown[]): ChainableCommander {
+        return this as unknown as ChainableCommander;
+      },
+      del(..._args: unknown[]): ChainableCommander {
+        return this as unknown as ChainableCommander;
+      },
+      exec: () => Promise.reject(new Error('pipeline boom')),
+    } as unknown as ChainableCommander;
+    const multiSpy = vi.spyOn(redis, 'multi').mockReturnValueOnce(fakePipeline);
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
 
     try {

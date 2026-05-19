@@ -462,8 +462,12 @@ async function readAccreditationCompletion(
  * response-ordering class captured at
  * `helper-extraction-express5-response-ordering-2026-04-28.md`. The wrapper
  * always returns; failures emit a structured warn so operators can correlate
- * the orphan back to the branch that observed it. The 24h Redis TTL on
- * completion records is the backstop. Internal pipeline-rejection inside
+ * the orphan back to the branch that observed it. Backstops differ by
+ * failure class: the in-memory fallback record is the backstop for the
+ * pipeline-rejection class (flap-resilient within the process lifetime); the
+ * HAF gate and per-token idempotency check are the backstops for a
+ * healthy-Redis retry. The 24h Redis TTL backstop applies only when the
+ * pipeline succeeded. Internal pipeline-rejection inside
  * `recordAccreditationCompletion` handles the Redis-down-mid-pipeline class
  * (via the `completion_record_pipeline_failed` log); this outer catch covers
  * any other failure mode (in-memory write throw, unexpected helper exception).
