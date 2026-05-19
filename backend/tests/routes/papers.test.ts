@@ -243,3 +243,57 @@ describe('GET /api/papers/:author/:permlink', () => {
     }
   });
 });
+
+// Cross-surface cumulative-union parity (detail / listing / profile).
+// Pins the invariant that `authors[].hive` and `accredited_authors` are the
+// same set across the three response surfaces for the same paper. The
+// cumulative-union helper (`resolveChainCumulativeAuthors`) is the single
+// construction site for all three surfaces, so by construction the sets
+// must match — this canary catches wiring regressions where one surface
+// stops routing through the helper. For multi-link papers where the head
+// broadcaster dropped a chain author from their own `pevo.authors[]`,
+// parity holds because the helper reconstructs the union from chain
+// history; for single-link papers, parity holds trivially. The test
+// iterates real listing data, so it passes vacuously when the corpus is
+// empty; the deterministic dropped-author scenario is covered separately
+// at the helper-unit level.
+describe('Cross-surface cumulative-union parity', () => {
+  it('detail, listing, and profile agree on authors and accredited_authors for the same paper', { timeout: 90_000 }, async () => {
+    const listRes = await request(app).get('/api/papers?limit=5');
+    expect(listRes.status).toBe(200);
+    if (listRes.body.data.length === 0) return;
+
+    for (const listingRow of listRes.body.data) {
+      const { author, permlink } = listingRow;
+      const detailRes = await request(app).get(`/api/papers/${author}/${permlink}`);
+      if (detailRes.status !== 200) continue;
+
+      const detailHives = (detailRes.body.data.authors as Array<{ hive?: string }>)
+        .map((a) => a.hive)
+        .filter((h): h is string => typeof h === 'string')
+        .sort();
+      const listingHives = (listingRow.authors as Array<{ hive?: string }>)
+        .map((a) => a.hive)
+        .filter((h): h is string => typeof h === 'string')
+        .sort();
+      expect(listingHives).toEqual(detailHives);
+
+      const detailAccredited = ([...(detailRes.body.data.accredited_authors as string[] | undefined ?? [])]).sort();
+      const listingAccredited = ([...(listingRow.accredited_authors as string[] | undefined ?? [])]).sort();
+      expect(listingAccredited).toEqual(detailAccredited);
+
+      const profileRes = await request(app).get(`/api/profile/${author}/papers?limit=50`);
+      if (profileRes.status !== 200) continue;
+      const profileRow = (profileRes.body.data as Array<{ author: string; permlink: string; authors?: Array<{ hive?: string }>; accredited_authors?: string[] }>)
+        .find((p) => p.author === author && p.permlink === permlink);
+      if (!profileRow) continue;
+      const profileHives = (profileRow.authors ?? [])
+        .map((a) => a.hive)
+        .filter((h): h is string => typeof h === 'string')
+        .sort();
+      const profileAccredited = ([...(profileRow.accredited_authors ?? [])]).sort();
+      expect(profileHives).toEqual(detailHives);
+      expect(profileAccredited).toEqual(detailAccredited);
+    }
+  });
+});

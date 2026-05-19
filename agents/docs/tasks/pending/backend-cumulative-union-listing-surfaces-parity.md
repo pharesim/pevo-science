@@ -156,3 +156,38 @@ This task is moved to `review/` for architect ratification of the design alterna
 When this task archives (helper lands + listing/profile enrichment lands + cache key in place), `backend-canonical-root-walker-cumulative-aware.md` becomes implementable: its step-2 dependency `resolveChainCumulativeAuthors` will exist. The architect will move that task from `blocked/` back to `pending/` at this task's archive pass (or sooner if a partial-landing of the helper alone is feasible per item 4's carve-out).
 
 This file moves back to `tasks/pending/` for backend implementation. No re-review signal needed in advance of implementation — the implementer `git mv`s to `tasks/review/` when ready and the architect's next review pass picks it up.
+
+---
+
+## Backend implementation summary (2026-05-19)
+
+Option 4 landed as ratified. Helper extracted, three surfaces wired, real-HAF + deterministic helper canaries added.
+
+### Files
+
+- `backend/src/routes/papers.ts` — new `resolveChainCumulativeAuthors(rootAuthor, rootPermlink, { accreditedAccounts, accreditedOrcids, accreditationOrcidStatus, prebuiltChainPosts?, memo?, signal? })` plus the `ChainCumulativeAuthorsResult` type. Helper short-circuits to `null` when `chain.length === 1` so the existing supersession projections (SQL `authorsWithSupersessionSelect` at detail+listing, JS `applyAuthorSupersession` at profile) keep emit-shape — preserves bridge-paper `hive: null` carrier entries and other non-hive entries the cumulative-union construction intentionally strips. `fetchPaperDetailFromHaf` now routes the `chain.length > 1` branch through the helper via `prebuiltChainPosts`, write-through populates the listing/profile per-root cache for free.
+- `backend/src/routes/papers.ts` — `fetchPapersFromHaf` listing path Promise-fans the helper per row alongside the existing reputation/accreditation/vote batches; helper output overrides `authors` + `accredited_authors` when non-null, falls back to the head-meta projection on helper-null or thrown error.
+- `backend/src/routes/profile.ts` — `GET /api/profile/:username/papers` enrichment loop adds the same per-row Promise.all; covers the `authorship_claims` UNION arm because the helper does not distinguish claim-derived rows from author-derived rows.
+- `backend/tests/routes/papers.test.ts` — real-HAF cross-surface parity canary: iterates real listing data and asserts `authors[].hive` and `accredited_authors` agree across detail / listing / profile responses.
+- `backend/tests/routes/papers-cumulative-cross-surface-parity-mocked.test.ts` — deterministic helper-level canary covering the dropped-chain-author scenario, the write-through cache invariant, and the accredited-set intersection. Header documents the carve-out per CLAUDE.md.
+
+### Cache
+
+`${appTag}:cache:chain-authors:<root-author>:<root-permlink>`, 30-min TTL, value shape `{ authors: Array<Record>, accredited_authors: string[] }` matching the architect's spec. Detail surface write-throughs warm the cache for listing/profile. Single-link helper outputs are not cached (helper returns null) — `resolveContinuationChain` does one fast HAF probe per cold listing row to detect single-link, within the architect's documented cost envelope.
+
+### Cost-of-change
+
+- Algorithm: pure JS cumulative-union via the shared `buildCumulativeAuthorsForChain`. No SQL plan delta; no new HAF view; no recursive CTE.
+- Cold listing-page latency (cache miss): per row, one `resolveContinuationChain` HAF query (~5-20ms) parallelized via `Promise.all`. Multi-link rows additionally pay one `reconstructVersionsFromHaf` per row (the same query detail already pays). 25-row pages bottleneck at ~50ms for single-link corpus; multi-link rows add the version-replay cost.
+- Warm listing-page latency: helper Redis hit per row. With 30-min TTL the warm window is wide and detail write-through keeps the cache fresh for frequently-viewed papers. Single-link rows always pay the HAF probe (no cached "single-link" sentinel; optimization deferred — see "Open follow-up" below).
+- Write-path delta: none. No watcher daemon, no denormalized table.
+
+### Items for the architect to land during archive
+
+[TODO Architect] `agents/docs/api-contracts/papers.md` — extend the cumulative-union semantics note from `PaperDetail.authors[]` (already documented under the multi-author trust model) to `PaperSummary.authors[]` + `PaperSummary.accredited_authors`. The detail-surface invariant ("drops are forbidden by construction") now holds across detail / listing / profile responses for multi-link papers. The 30-min cache TTL on listing/profile means an accreditation revocation surfaces with the same staleness window the contract already documents for `orcid_verified` / `orcid_discrepancy`.
+
+[TODO Architect] `agents/docs/api-contracts/profiles.md` — verify `PaperSummary` inheritance language still accurately describes the response shape after the cumulative-union extension. No anticipated text change; flagged for explicit verification per architect ratification item 2.
+
+### Open follow-up (not blocking archive)
+
+Single-link cached sentinel: today `resolveChainCumulativeAuthors` returns `null` for single-link papers without caching the null result, so every cold listing row pays one `resolveContinuationChain` probe (~5-20ms). A sentinel-cache shape (e.g. cache a wrapper `{ result: null }` so `hafCache.set` accepts it) would let warm single-link rows skip the probe entirely. Architect to decide whether this is worth a separate task once production listing latency data is available.

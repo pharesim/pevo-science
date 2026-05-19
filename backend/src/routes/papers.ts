@@ -530,6 +530,169 @@ function buildCumulativeAuthorsForChain(
   });
 }
 
+/**
+ * Shared `{ authors, accredited_authors }` projection used by the detail,
+ * listing, and profile surfaces. `authors` is the cumulative-union output
+ * of `buildCumulativeAuthorsForChain`; `accredited_authors` is the
+ * intersection of `authors[].hive` with the current `accreditedAccounts`
+ * set. Cached as a single value so a Redis hit serves the whole enrichment.
+ */
+export interface ChainCumulativeAuthorsResult {
+  authors: Array<Record<string, unknown>>;
+  accredited_authors: string[];
+}
+
+interface ResolveChainCumulativeAuthorsOptions {
+  accreditedAccounts: Set<string>;
+  accreditedOrcids: Map<string, string | null>;
+  accreditationOrcidStatus: Map<string, { orcid: string | null; status: AccreditationStatus }>;
+  /**
+   * Pre-built chain posts (with per-link latest pevo metadata) if the caller
+   * has already done the work. The detail surface passes this to avoid the
+   * `resolveContinuationChain` + `reconstructVersionsFromHaf` round-trip;
+   * listing and profile pass only the root pair and let the helper resolve
+   * internally.
+   */
+  prebuiltChainPosts?: Array<{ author: string; permlink: string; pevo: Record<string, unknown> }>;
+  memo?: HeadAuthorsMemo;
+  signal?: AbortSignal;
+}
+
+/**
+ * Cache TTL for the per-root cumulative-authors entry. Aligned with the
+ * documented ORCID supersession staleness window on `PaperSummary`
+ * (`api-contracts/papers.md`): an accreditation revocation or new claim
+ * propagates to listing/profile within this window. The detail surface
+ * computes live and writes-through to this cache, so any detail hit on a
+ * paper effectively re-warms the listing entry for free.
+ */
+const CHAIN_CUMULATIVE_AUTHORS_TTL_MS = 1_800_000;
+
+/**
+ * Resolve the cumulative-union `{ authors, accredited_authors }` for a
+ * continuation chain rooted at `(rootAuthor, rootPermlink)`. The cumulative
+ * union is per `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`:
+ * `authors[]` is the union of `pevo.authors[].hive` across all chain posts
+ * (drops are forbidden by construction), and `accredited_authors[]` is the
+ * intersection of that union with the currently-accredited account set.
+ *
+ * Surfaces:
+ *   - Detail: passes `prebuiltChainPosts` to share the already-resolved
+ *     chain + per-link metadata. The helper short-circuits the HAF round-
+ *     trip and writes-through to the per-root Redis cache so listing/profile
+ *     hits stay warm.
+ *   - Listing / profile: pass only the root pair. The helper checks the
+ *     per-root Redis cache, then on miss walks the chain via
+ *     `resolveContinuationChain` (+ `reconstructVersionsFromHaf` for
+ *     `chain.length > 1` so the carry-forward `lastGoodMeta` semantics
+ *     match the detail surface exactly), builds the cumulative union, and
+ *     caches the pair under
+ *     `${appTag}:cache:chain-authors:<root-author>:<root-permlink>`.
+ *
+ * Returns `null` when HAF is unreachable or the chain cannot be resolved;
+ * callers fall back to the head-metadata projection they already had.
+ */
+export async function resolveChainCumulativeAuthors(
+  rootAuthor: string,
+  rootPermlink: string,
+  options: ResolveChainCumulativeAuthorsOptions,
+): Promise<ChainCumulativeAuthorsResult | null> {
+  const cacheKey = `chain-authors:${rootAuthor}:${rootPermlink}`;
+
+  if (options.prebuiltChainPosts && options.prebuiltChainPosts.length > 0) {
+    const result = buildChainCumulativeFromPosts(
+      options.prebuiltChainPosts,
+      rootAuthor,
+      rootPermlink,
+      options,
+    );
+    // Write-through so a subsequent listing/profile fetch in the next ~30
+    // min hits the warm cache instead of re-walking the chain. The detail
+    // surface is the only path that does the chain walk per-request anyway;
+    // sharing the result is free.
+    await hafCache.set(cacheKey, result, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
+    return result;
+  }
+
+  const cached = await hafCache.get<ChainCumulativeAuthorsResult>(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const computed = await computeChainCumulativeFromHaf(rootAuthor, rootPermlink, options);
+  if (computed === null) return null;
+
+  await hafCache.set(cacheKey, computed, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
+  return computed;
+}
+
+function buildChainCumulativeFromPosts(
+  chainPosts: Array<{ author: string; permlink: string; pevo: Record<string, unknown> }>,
+  rootAuthor: string,
+  rootPermlink: string,
+  options: ResolveChainCumulativeAuthorsOptions,
+): ChainCumulativeAuthorsResult {
+  const authors = buildCumulativeAuthorsForChain(
+    chainPosts,
+    rootAuthor,
+    rootPermlink,
+    options.accreditedAccounts,
+    options.accreditedOrcids,
+    options.accreditationOrcidStatus,
+  );
+  const accredited = authors
+    .map((a) => normalizeHiveAccount(a.hive))
+    .filter((hive): hive is string => hive !== null && options.accreditedAccounts.has(hive));
+  return { authors, accredited_authors: accredited };
+}
+
+async function computeChainCumulativeFromHaf(
+  rootAuthor: string,
+  rootPermlink: string,
+  options: ResolveChainCumulativeAuthorsOptions,
+): Promise<ChainCumulativeAuthorsResult | null> {
+  const pool = getPool();
+  if (!pool) return null;
+
+  const chain = await resolveContinuationChain(rootAuthor, rootPermlink, options.memo, options.signal);
+  if (chain.length === 0) return null;
+
+  // Single-link short-circuit: when the chain is just the root, there is no
+  // cumulative work to do — the head metadata IS the only contribution. The
+  // listing / profile / detail surfaces each have their own supersession-
+  // aware projection of `pevo.authors[]` (SQL `authorsWithSupersessionSelect`
+  // for listing+detail; JS `applyAuthorSupersession` for profile via
+  // `toPaperSummary`) that preserve bridge-paper `hive: null` carrier
+  // entries and other non-hive entries the cumulative-union construction
+  // intentionally strips. Returning `null` here signals "no override
+  // needed" so callers keep their existing projection and parity holds at
+  // the single-link case. Multi-link papers go through the full cumulative
+  // path below.
+  if (chain.length === 1) return null;
+
+  // Multi-link: replay version history to pick up per-link latest metadata
+  // with the `lastGoodMeta` carry-forward, matching the detail surface's
+  // construction exactly. The chain is passed through to dedupe the
+  // `resolveContinuationChain` query the version reconstructor would
+  // otherwise re-issue.
+  const fullVersions = await reconstructVersionsFromHaf(
+    rootAuthor,
+    rootPermlink,
+    chain,
+    options.memo,
+    options.signal,
+  );
+  const latestMetaByLink = new Map<string, Record<string, unknown>>();
+  for (const v of fullVersions) {
+    latestMetaByLink.set(`${v.post_author}/${v.post_permlink}`, v.json_metadata);
+  }
+  const chainPosts = chain.map((link) => ({
+    author: link.author,
+    permlink: link.permlink,
+    pevo: safePevoMeta(latestMetaByLink.get(`${link.author}/${link.permlink}`) ?? {}),
+  }));
+
+  return buildChainCumulativeFromPosts(chainPosts, rootAuthor, rootPermlink, options);
+}
+
 const retractLimiter = rateLimit({ name: 'paper-retract', windowMs: 3_600_000, max: 5, keyFn: byAccount });
 // ──────────────────────────────────────────────
 // HAF SQL implementation for paper listing
@@ -720,18 +883,49 @@ async function fetchPapersFromHaf(
     }));
 
     // Parallel: batch reputation + per-row accredited set + full-accredited
-    // set + resolved votes. `batchResolveVotes` needs `allAccreditedArr`, so
-    // it chains on `getAllAccreditedAccounts` within the same Promise.all —
-    // total cold-cache latency: max(allAccredited + batchResolveVotes,
-    // reputation, perRowAccreditedSet) instead of allAccredited serialized
-    // before the parallel fan-out (BACKEND-REPUTATION-SSOT round-2 hold #8).
+    // set + resolved votes + accreditation ORCID maps (used by the
+    // cumulative-authors helper for per-row enrichment). `batchResolveVotes`
+    // needs `allAccreditedArr`, so it chains on `getAllAccreditedAccounts`
+    // within the same Promise.all — total cold-cache latency is bounded by
+    // the slowest sibling rather than serialized fetches.
     const allAccreditedPromise = getAllAccreditedAccounts();
-    const [batchScores, accreditedSet, voteData, allAccredited] = await Promise.all([
+    const [batchScores, accreditedSet, voteData, allAccredited, accreditedOrcidsByAccount, accreditationOrcidStatus] = await Promise.all([
       getReputationScores(authors),
       getAccreditedSet(authors),
       allAccreditedPromise.then(set => batchResolveVotes(pool, paperKeys, [...set])),
       allAccreditedPromise,
+      getAccreditedOrcidsByAccount(),
+      getAllEverAccreditedOrcidsWithStatus(),
     ]);
+
+    // Cross-surface cumulative-union enrichment: for each row, fetch the
+    // chain-level cumulative `authors` + `accredited_authors` so multi-link
+    // papers carry the same dropped-author-preserving projection the detail
+    // surface uses. Per-root Redis cache (30 min) absorbs warm pages; cold
+    // pages walk in parallel via `Promise.all`. `is_accredited` stays
+    // row-author-scoped (singular bool used for filter/sort).
+    const chainAuthorsByKey = new Map<string, ChainCumulativeAuthorsResult>();
+    await Promise.all(
+      dataResult.rows.map(async (r: Record<string, unknown>) => {
+        const key = `${r.author}/${r.permlink}`;
+        try {
+          const result = await resolveChainCumulativeAuthors(
+            r.author as string,
+            r.permlink as string,
+            {
+              accreditedAccounts: allAccredited,
+              accreditedOrcids: accreditedOrcidsByAccount,
+              accreditationOrcidStatus,
+            },
+          );
+          if (result !== null) chainAuthorsByKey.set(key, result);
+        } catch (err) {
+          // Chain-walk failure for one row must not take down the whole
+          // listing. Fall back to the head-meta projection below.
+          logger.warn({ err, author: r.author, permlink: r.permlink }, 'chain cumulative authors enrichment failed');
+        }
+      }),
+    );
 
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {
       const meta = parseMeta(r.json_metadata);
@@ -754,6 +948,15 @@ async function fetchPapersFromHaf(
       // the SQL gate already enforces this, so this JS-level check is
       // defense-in-depth for any future call path that bypasses the gate.
       const isBridge = isPevoBridgePaper(meta, r.author as string);
+      // Cumulative-union takeover: when the helper returned a result, use it
+      // for `authors` + `accredited_authors` so multi-link papers reflect
+      // the union across chain posts. When the helper returned null
+      // (chain walk failed, HAF unreachable), keep the head-meta projection
+      // — same shape as the pre-helper behavior.
+      const chainResult = chainAuthorsByKey.get(`${r.author}/${r.permlink}`);
+      const headAccreditedAuthors = pevoAuthors
+        .map((a) => normalizeHiveAccount(a.hive))
+        .filter((hive): hive is string => hive !== null && allAccredited.has(hive));
       return {
         author: r.author,
         permlink: r.permlink,
@@ -761,7 +964,7 @@ async function fetchPapersFromHaf(
         abstract: r.abstract,
         discipline: paperDisciplineField(pevo.discipline),
         keywords: pevoStringArray(pevo, 'keywords'),
-        authors: authorsWithSupersession,
+        authors: chainResult?.authors ?? authorsWithSupersession,
         ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
           author: r.author as string,
           permlink: r.permlink as string,
@@ -772,16 +975,15 @@ async function fetchPapersFromHaf(
         review_count: (r.review_count as number) ?? 0,
         avg_rating: (r.avg_rating as number) ?? 0,
         citation_count: (r.citation_count as number) ?? 0,
-        // Symmetric chain pre-check: non-accredited author shows score 0
-        // even if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
-        // direction-of-truth: chain is SSoT, batch map is a perf cache).
+        // is_accredited is the row author's accreditation; cumulative-union
+        // extends `accredited_authors[]` (the multi-author display set) but
+        // is_accredited remains row-author-scoped (the singular bool used
+        // for listing filter / sort).
         is_accredited: accreditedSet.has(r.author as string),
         author_reputation: accreditedSet.has(r.author as string)
           ? (batchScores.get(r.author as string) ?? 0)
           : 0,
-        accredited_authors: pevoAuthors
-          .map((a) => normalizeHiveAccount(a.hive))
-          .filter((hive): hive is string => hive !== null && allAccredited.has(hive)),
+        accredited_authors: chainResult?.accredited_authors ?? headAccreditedAuthors,
         source_type: isBridge
           ? ((pevo.source as Record<string, unknown>)?.type as 'arxiv' | 'crossref') || 'arxiv'
           : 'native',
@@ -1077,14 +1279,24 @@ async function fetchPaperDetailFromHaf(
             pevo: safePevoMeta(latestMetaByLink.get(`${link.author}/${link.permlink}`) ?? {}),
           }));
 
-          const cumulativeAuthors = buildCumulativeAuthorsForChain(
-            chainPosts,
+          // Route through the shared cumulative-authors helper so the
+          // detail, listing, and profile surfaces share one construction.
+          // The prebuiltChainPosts shortcut skips the helper's HAF round-trip
+          // (detail already has the chain + per-link metadata) and writes
+          // through to the per-root Redis cache, warming listing/profile
+          // for subsequent requests within the TTL window.
+          const cumulativeAuthors = (await resolveChainCumulativeAuthors(
             row.author as string,
             row.permlink as string,
-            accreditedAccountSet,
-            accreditedOrcidsByAccount,
-            accreditationOrcidStatus,
-          );
+            {
+              accreditedAccounts: accreditedAccountSet,
+              accreditedOrcids: accreditedOrcidsByAccount,
+              accreditationOrcidStatus,
+              prebuiltChainPosts: chainPosts,
+              memo,
+              signal,
+            },
+          ))?.authors ?? [];
 
           detail.json_metadata = headMeta;
           detail.authors = cumulativeAuthors;

@@ -6,7 +6,8 @@ import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
 import { normalizeHiveAccount } from '../lib/author-supersession.js';
-import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount } from '../accreditation.js';
+import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAllEverAccreditedOrcidsWithStatus } from '../accreditation.js';
+import { resolveChainCumulativeAuthors, type ChainCumulativeAuthorsResult } from './papers.js';
 import { getReputationScore, getReputationScores } from '../reputation.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -351,26 +352,65 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
     // Enrich with accreditation and reputation
     if (result.rows.length > 0) {
       const authorNames = result.rows.map((r) => r.author);
-      const [accreditedSet, batchScores, allAccredited] = await Promise.all([
+      const [accreditedSet, batchScores, allAccredited, accreditedOrcidsByAccount, accreditationOrcidStatus] = await Promise.all([
         getAccreditedSet(authorNames),
         getReputationScores(authorNames),
         getAllAccreditedAccounts(),
+        getAccreditedOrcidsByAccount(),
+        getAllEverAccreditedOrcidsWithStatus(),
       ]);
+
+      // Cross-surface cumulative-union enrichment: identical shape to
+      // `fetchPapersFromHaf` listing — for each row, fetch the chain-level
+      // cumulative `authors` + `accredited_authors` so multi-link papers
+      // include co-authors the head broadcaster may have dropped from
+      // their own `pevo.authors[]`. Includes papers reached via the
+      // `authorship_claims` UNION arm — the helper does not distinguish
+      // claim-derived rows from author-derived rows. Per-root Redis cache
+      // absorbs warm pages; cold pages walk in parallel.
+      const chainAuthorsByKey = new Map<string, ChainCumulativeAuthorsResult>();
+      await Promise.all(
+        result.rows.map(async (row) => {
+          const key = `${row.author}/${row.permlink}`;
+          try {
+            const chainResult = await resolveChainCumulativeAuthors(
+              row.author,
+              row.permlink,
+              {
+                accreditedAccounts: allAccredited,
+                accreditedOrcids: accreditedOrcidsByAccount,
+                accreditationOrcidStatus,
+              },
+            );
+            if (chainResult !== null) chainAuthorsByKey.set(key, chainResult);
+          } catch (err) {
+            logger.warn({ err, author: row.author, permlink: row.permlink }, 'profile chain cumulative authors enrichment failed');
+          }
+        }),
+      );
+
       for (const row of result.rows) {
         const authorAccredited = accreditedSet.has(row.author);
         row.is_accredited = authorAccredited;
         // Symmetric chain pre-check: a non-accredited author shows score 0
-        // even if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
-        // direction-of-truth: chain is SSoT, batch map is a perf cache).
+        // even if a stale batch entry survives in Redis (chain is SSoT,
+        // batch map is a perf cache).
         row.author_reputation = authorAccredited ? (batchScores.get(row.author) ?? 0) : 0;
-        // Hive-account canonicalization at the accreditation lookup site —
-        // mirrors the wrapper adoption in routes/papers.ts so chain-broadcast
-        // mixed-case `authors[i].hive = 'Alice'` matches the lowercase
-        // `active_accreditations.account` set. Drift caught by the
-        // wrapping-primitive exhaustive call-site audit pattern.
-        row.accredited_authors = (row.authors || [])
-          .map((a) => normalizeHiveAccount(a.hive))
-          .filter((hive): hive is string => hive !== null && allAccredited.has(hive));
+
+        const chainResult = chainAuthorsByKey.get(`${row.author}/${row.permlink}`);
+        if (chainResult !== null && chainResult !== undefined) {
+          // Cumulative-union takeover: helper output replaces the head-meta
+          // projection so dropped chain authors stay visible at the profile
+          // surface.
+          row.authors = chainResult.authors as unknown as typeof row.authors;
+          row.accredited_authors = chainResult.accredited_authors;
+        } else {
+          // Helper unreachable (HAF down, single-link fast-path failed):
+          // fall back to the head-meta projection.
+          row.accredited_authors = (row.authors || [])
+            .map((a) => normalizeHiveAccount(a.hive))
+            .filter((hive): hive is string => hive !== null && allAccredited.has(hive));
+        }
       }
     }
 
