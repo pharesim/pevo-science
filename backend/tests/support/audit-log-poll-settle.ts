@@ -57,18 +57,7 @@ export async function fetchSettledAuditRows(
 ): Promise<{ operation_type: string }[]> {
   const sql = `SELECT operation_type FROM custody_audit_log
                WHERE username = $1 AND operation_type = $2`;
-  const start = Date.now();
-  while (Date.now() - start < POLL_BUDGET_MS) {
-    const { rows } = await pool.query(sql, [username, operationType]);
-    if (rows.length >= 1) {
-      await sleep(SETTLE_MS);
-      const { rows: settled } = await pool.query(sql, [username, operationType]);
-      return settled;
-    }
-    await sleep(POLL_INTERVAL_MS);
-  }
-  const { rows } = await pool.query(sql, [username, operationType]);
-  return rows;
+  return pollAndSettle<{ operation_type: string }>(pool, sql, [username, operationType], 1);
 }
 
 /**
@@ -84,6 +73,15 @@ export async function fetchSettledAuditRows(
  * user input. (Tests construct it from string literals.)
  *
  * `orderBy` is similarly raw and optional; omit for unordered results.
+ *
+ * Type-safety note on `TRow`: this generic is caller-asserted. TypeScript
+ * resolves `TRow` from the caller's annotation alone — the `columns: string`
+ * argument is not bound to `TRow` at compile time, so a caller writing
+ * `columns: 'auth_mechanism'` with `TRow = { user_agent: string }` compiles
+ * clean and fails only at assertion time. The generic exists for call-site
+ * ergonomics (avoids a cast on every result.read), not as a structural
+ * guarantee that the SELECT column list aligns with the row shape. Reviewers
+ * and callers must verify `columns` and `TRow` agree by inspection.
  */
 export async function fetchSettledAuditRowsWith<TRow>(opts: {
   pool: PoolLike<TRow>;
@@ -96,17 +94,38 @@ export async function fetchSettledAuditRowsWith<TRow>(opts: {
   const orderClause = orderBy ? ` ORDER BY ${orderBy}` : '';
   const sql = `SELECT ${columns} FROM custody_audit_log
                WHERE username = $1${orderClause}`;
+  return pollAndSettle<TRow>(pool, sql, [username], minRows);
+}
+
+/**
+ * Private poll + settle loop shared by `fetchSettledAuditRows` and
+ * `fetchSettledAuditRowsWith`. Polls `sql` (with `params`) every
+ * `POLL_INTERVAL_MS` for up to `POLL_BUDGET_MS`; once a query returns at least
+ * `minRows`, waits `SETTLE_MS` and re-SELECTs once more so an in-flight
+ * over-log mutation (a hypothetical production change that fires a duplicate
+ * INSERT) surfaces as `rows.length > minRows` instead of slipping past unseen.
+ * If the budget is exhausted without reaching `minRows`, returns the last
+ * SELECT's rows so the caller's assertion can fail meaningfully (no settle on
+ * budget exhaustion is intentional design — the test wants the under-count
+ * failure to surface promptly).
+ */
+async function pollAndSettle<TRow>(
+  pool: PoolLike<TRow>,
+  sql: string,
+  params: unknown[],
+  minRows: number,
+): Promise<TRow[]> {
   const start = Date.now();
   while (Date.now() - start < POLL_BUDGET_MS) {
-    const { rows } = await pool.query(sql, [username]);
+    const { rows } = await pool.query(sql, params);
     if (rows.length >= minRows) {
       await sleep(SETTLE_MS);
-      const { rows: settled } = await pool.query(sql, [username]);
+      const { rows: settled } = await pool.query(sql, params);
       return settled;
     }
     await sleep(POLL_INTERVAL_MS);
   }
-  const { rows } = await pool.query(sql, [username]);
+  const { rows } = await pool.query(sql, params);
   return rows;
 }
 

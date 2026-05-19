@@ -1,6 +1,6 @@
 /**
- * Round-3 of BACKEND-COAUTHOR-TRUST-MODEL — custody endpoint extension for
- * `author_accept` / `author_resign` consent ops behind a fresh-auth gate.
+ * Custody consent-op endpoints (author_accept / author_resign) behind a
+ * fresh-auth gate.
  *
  * Coverage shape (real-DB + mocked-dhive):
  *  - POST /api/custody/fresh-auth (password mechanism)
