@@ -131,16 +131,24 @@ export function computeSupersession(
 
 /**
  * Apply the supersession rule to a chain-shaped authors array. Returns a
- * new array (does not mutate the input). Each entry's chain fields are
- * preserved verbatim; `orcid_verified` and `orcid_discrepancy` are added
- * per the four-case rule in `computeSupersession`.
+ * new array (does not mutate the input). Each entry is projected through
+ * an enumerated key set — `name`, `hive`, `orcid`, `affiliation`, plus
+ * `orcid_verified` and `orcid_discrepancy` — matching the SQL-side
+ * `authorsWithSupersessionSelect` projection's `jsonb_build_object` keys.
+ *
+ * The enumerated projection is load-bearing: it pins the JS-side output
+ * shape to the same key set the SQL side emits, so a broadcaster posting
+ * `authors: [{hive: 'alice', orcid: '...', evil_field: 'payload'}]` cannot
+ * leak `evil_field` through the JS-projected response surfaces
+ * (`/api/profile/:username/papers`, chain-detail fallbacks). Prior shape
+ * (`{ ...entry, ...supersession }`) spread-merged every chain field.
  *
  * Callers that emit PaperSummary (which omits `affiliation` per
  * `agents/docs/api-contracts/papers.md`) should strip `affiliation` from
  * the returned entries — the SQL-side helper parameterizes this via
- * `includeAffiliation`; the JS helper preserves all chain fields and
- * leaves the contract-shape enforcement to the caller (see
- * `helpers.ts:toPaperSummary` for the PaperSummary site).
+ * `includeAffiliation`; the JS helper retains `affiliation` so PaperDetail
+ * fallback consumers reuse it unchanged. `helpers.ts:toPaperSummary` is
+ * the PaperSummary affiliation-strip site.
  */
 export function applyAuthorSupersession(
   authors: unknown,
@@ -153,6 +161,12 @@ export function applyAuthorSupersession(
     const hive = typeof e.hive === 'string' ? e.hive : null;
     const chainOrcid = typeof e.orcid === 'string' ? e.orcid : null;
     const supersession = computeSupersession(hive, chainOrcid, orcidMap);
-    return { ...e, ...supersession };
+    return {
+      name: e.name,
+      hive: e.hive,
+      orcid: e.orcid,
+      affiliation: e.affiliation,
+      ...supersession,
+    };
   });
 }

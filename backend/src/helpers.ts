@@ -299,7 +299,16 @@ export function extractAbstract(body: string): string {
 
 /** Extract a PaperSummary shape from a Hive post + parsed metadata.
  *  review_count, citation_count, author_reputation, and is_accredited
- *  default to 0/false — callers should enrich from HAF or batch lookups. */
+ *  default to 0/false — callers should enrich from HAF or batch lookups.
+ *
+ *  ORCID supersession per `agents/docs/hive-schemas.md` § 1.1: every
+ *  `authors[i]` gets `orcid_verified` and `orcid_discrepancy` populated
+ *  from `orcidMap` (typically supplied by the caller via
+ *  `getAccreditedOrcidsByAccount()`). Callers without an accreditation
+ *  context pass `new Map()`; the supersession projection collapses to
+ *  case-1/case-2 ("no claim") for every author. PaperSummary's contract
+ *  omits `affiliation` per `agents/docs/api-contracts/papers.md`, so the
+ *  post-supersession entries are stripped of that field. */
 export function toPaperSummary(post: {
   author: string;
   permlink: string;
@@ -307,28 +316,22 @@ export function toPaperSummary(post: {
   body: string;
   created: string;
   net_votes: number;
-}, meta: Record<string, unknown>, orcidMap?: Map<string, string | null>): PaperSummary {
+}, meta: Record<string, unknown>, orcidMap: Map<string, string | null>): PaperSummary {
   const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
-  // ORCID supersession (per `agents/docs/hive-schemas.md` § 1.1). When the
-  // caller supplies `orcidMap` (from `getAccreditedOrcidsByAccount()`), every
-  // `authors[i]` gets `orcid_verified` and `orcid_discrepancy` populated per
-  // the canonical four-case rule. Without the map, the raw chain authors
-  // pass through — backwards-compatible for any caller that hasn't been
-  // wired yet. PaperSummary's contract omits `affiliation` per
-  // `agents/docs/api-contracts/papers.md`, so the post-supersession entries
-  // are stripped of that field before being projected onto the response.
   const rawAuthors = Array.isArray(pevo.authors) ? (pevo.authors as Array<Record<string, unknown>>) : [];
-  const supersededAuthors = orcidMap
-    ? applyAuthorSupersession(rawAuthors, orcidMap)
-    : rawAuthors;
-  const summaryAuthors = supersededAuthors.map((entry) => {
-    // Strip affiliation to honor the PaperSummary shape. The helper
-    // preserves all chain fields by design (so PaperDetail callers can
-    // reuse it); per-surface contract enforcement happens at the
-    // emit site.
-    const { affiliation: _affiliation, ...rest } = entry as Record<string, unknown> & { affiliation?: unknown };
-    return rest;
-  }) as unknown as PaperSummary['authors'];
+  const supersededAuthors = applyAuthorSupersession(rawAuthors, orcidMap);
+  const summaryAuthors: PaperAuthor[] = supersededAuthors.map((entry) => {
+    // Strip affiliation to honor the PaperSummary shape. `applyAuthorSupersession`
+    // emits the enumerated key set (name, hive, orcid, affiliation,
+    // orcid_verified, orcid_discrepancy) so PaperDetail consumers reuse it
+    // unchanged; here we drop the one PaperSummary-prohibited key. The
+    // double cast through `unknown` is the TS-prescribed pattern for
+    // narrowing the structurally-typed object literal to the nominal
+    // PaperAuthor interface — chain shape is trustable per `parseMeta`'s
+    // upstream parse, but TS can't infer that.
+    const { affiliation: _affiliation, ...rest } = entry;
+    return rest as unknown as PaperAuthor;
+  });
   return {
     author: post.author,
     permlink: post.permlink,

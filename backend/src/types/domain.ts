@@ -7,6 +7,21 @@ export interface PaperAuthor {
   hive?: string;
   orcid?: string;
   affiliation?: string;
+  /** Accreditation-attested ORCID for the author's `hive` account when
+   *  currently accredited AND the accreditation carries an ORCID. `null`
+   *  otherwise. Populated read-time by the supersession projection per
+   *  `agents/docs/hive-schemas.md` § 1.1.
+   *
+   *  Note: PaperSummary's runtime shape strips `affiliation` per the
+   *  contract, even though the type leaves it optional. The supersession
+   *  fields are optional on both PaperSummary and PaperDetail (absent when
+   *  the caller didn't wire the orcid map; populated otherwise).
+   */
+  orcid_verified?: string | null;
+  /** `true` IFF chain `orcid` and `orcid_verified` are both non-empty AND
+   *  differ. Surfaces the discrepancy audit signal per ARCHITECTURE.md
+   *  § 2 "Multi-Author Trust Model". */
+  orcid_discrepancy?: boolean;
 }
 
 export interface Citation {

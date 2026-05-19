@@ -1,21 +1,18 @@
 /**
  * ORCID supersession parity canary for GET /api/profile/:username/papers.
  *
- * Round-1 of BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION wired
- * `orcid_verified`/`orcid_discrepancy` into `/api/papers` (list) and
- * `/api/papers/:author/:permlink` (detail). The profile-papers endpoint
- * shares the PaperSummary shape with `/api/papers` but assembles rows via
- * a different code path (`fetchUserPapersFromHaf` → `toPaperSummary`), so
- * the round-1 SQL-side projection didn't reach it. The follow-up task
- * `BACKEND-PROFILE-PAPERS-SUPERSESSION-PARITY` extends supersession to
- * this endpoint via the JS-side helpers in
- * `backend/src/lib/author-supersession.ts`.
+ * The SQL-projection in `authorsWithSupersessionSelect` runs on `/api/papers`
+ * (list) and `/api/papers/:author/:permlink` (detail), but the profile-papers
+ * endpoint assembles rows via `fetchUserPapersFromHaf` → `toPaperSummary` —
+ * a JS-side code path that doesn't round-trip through the SQL projection.
+ * This file pins the JS-side supersession wiring on /api/profile/:username/papers,
+ * mirroring the SQL-projected matrix shape from the canonical 4-case rule in
+ * `agents/docs/hive-schemas.md` § 1.1 (plus a case-4b match-companion).
  *
- * Tests pin the canonical four-case rule per `agents/docs/hive-schemas.md`
- * § 1.1, plus a case-4b companion (chain orcid matches attestation →
- * `orcid_verified` populated, `orcid_discrepancy=false`), plus a
- * negative-control canary asserting PaperSummary `authors[i]` does NOT
- * carry the `affiliation` field (per `agents/docs/api-contracts/papers.md`).
+ * Negative-control canaries cover the affiliation-strip contract
+ * (PaperSummary omits per `agents/docs/api-contracts/papers.md`), the JS
+ * spread-leak gap (broadcaster-controlled extra fields must drop), and the
+ * HAF-outage 503-retriable path.
  *
  * **Carve-out (per CLAUDE.md "Running Tests" carve-out clauses (a)/(b)/(c)):**
  *   (a) Real-corpus seeding of the four-case matrix is impractical: each
@@ -43,15 +40,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 
 const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
-  hafQueryMock: vi.fn(async (..._args: any[]) => ({ rows: [] as any[] })),
+  hafQueryMock: vi.fn(async (..._args: any[]) => ({ rows: [] as unknown[] })),
   getPoolMock: vi.fn(),
 }));
 
-vi.mock('../../src/db.js', () => ({
-  getPool: getPoolMock,
-  isHafConfigured: () => getPoolMock() !== null,
-  closeHafPool: async () => { /* no-op */ },
-}));
+vi.mock('../../src/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/db.js')>();
+  return {
+    ...actual,
+    getPool: getPoolMock,
+    isHafConfigured: () => getPoolMock() !== null,
+    closeHafPool: async () => { /* no-op */ },
+  };
+});
 
 const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');
@@ -69,10 +70,10 @@ beforeEach(async () => {
 
 /**
  * Build a `user_papers` data row with a chain `authors[]` array of the
- * caller's choosing. The shape mirrors what `fetchUserPapersFromHaf`
- * selects via the UNION (author, permlink, title, body, json_metadata,
- * created — total_rshares is in the inner CTE but omitted from the
- * outer SELECT, matching `routes/profile.ts:283`).
+ * caller's choosing. The shape mirrors the columns selected by
+ * `fetchUserPapersFromHaf`'s data query (`author`, `permlink`, `title`,
+ * `body`, `json_metadata`, `created`) — `total_rshares` is in the inner
+ * CTE but omitted from the outer SELECT.
  */
 function userPapersRow(authors: Array<Record<string, unknown>>): Record<string, unknown> {
   return {
@@ -225,24 +226,82 @@ describe('GET /api/profile/:username/papers — ORCID supersession parity', () =
     expect(author).not.toHaveProperty('affiliation');
   });
 
-  it('without an orcidMap fetch (degraded HAF / no pool), supersession fields are absent — backward compatible', async () => {
-    // When the route's `getAccreditedOrcidsByAccount()` returns an empty
-    // map (e.g., HAF pool unavailable), each author entry's
-    // `orcid_verified` resolves to `null` and `orcid_discrepancy` resolves
-    // to `false` — the case-1/case-2 empty-map collapse. This pins the
-    // graceful-degradation behavior: the route doesn't error, doesn't
-    // surface stale supersession, and the fields are populated with the
-    // documented "no claim" defaults rather than being absent. (Absence
-    // is a backwards-compat hatch for callers that haven't passed an
-    // orcidMap at all; the wired route always passes one.)
+  it('empty accreditation set: supersession fields collapse to case-1 defaults (null/false), 200 OK', async () => {
+    // When the on-chain `active_accreditations` set is empty (no accredited
+    // accounts), `getAccreditedOrcidsByAccount()` returns an empty Map —
+    // distinct from the throw path (HAF unreachable) covered separately
+    // below. Each author entry's `orcid_verified` resolves to `null` and
+    // `orcid_discrepancy` resolves to `false` (the case-1/case-2 collapse).
+    // Route is 200 OK with the per-author defaults; the empty accreditation
+    // set is not a degraded state.
     stage(
       [{ name: 'Grace', hive: 'grace', orcid: '0000-0000-0000-7000' }],
-      [], // empty active_accreditations
+      [], // empty active_accreditations (no accredited accounts on chain)
     );
     const res = await request(app).get('/api/profile/alice/papers');
     expect(res.status).toBe(200);
     const author = res.body.data[0].authors[0];
     expect(author.orcid_verified).toBeNull();
     expect(author.orcid_discrepancy).toBe(false);
+  });
+
+  it('HAF outage on getAccreditedOrcidsByAccount → 503 SERVICE_UNAVAILABLE with retriable:true', async () => {
+    // When HAF is reachable but the `active_accreditations` CTE query throws
+    // (e.g., partial-HAF outage, query timeout), the route MUST translate to
+    // 503 with `retriable: true` matching the sibling-route pattern in
+    // routes/papers.ts. Without the route-level try/catch wrapping
+    // `getAccreditedOrcidsByAccount` in `HafQueryError`, the raw pg error
+    // would propagate to the central 500 handler.
+    //
+    // Mutation kill: revert the route's try/catch around
+    // getAccreditedOrcidsByAccount and the response goes 500 INTERNAL_ERROR
+    // instead of 503 SERVICE_UNAVAILABLE retriable.
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      // active_accreditations CTE query throws.
+      if (sql.includes('FROM active_accreditations') && sql.includes('SELECT account, orcid')) {
+        throw new Error('HAF query timed out (simulated outage)');
+      }
+      return { rows: [] };
+    });
+    const res = await request(app).get('/api/profile/alice/papers');
+    expect(res.status).toBe(503);
+    expect(res.body.status).toBe('error');
+    expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    expect(res.body.error.details?.retriable).toBe(true);
+  });
+
+  it('broadcaster-controlled extra fields on authors[i] do NOT leak through the JS projection', async () => {
+    // The SQL-side `authorsWithSupersessionSelect` enumerates the projected
+    // keys inside `jsonb_build_object`, so any broadcaster-controlled extra
+    // field is dropped at the SQL boundary. The JS-side helper used by this
+    // route must produce the same enumerated shape. Mutation kill: revert
+    // `applyAuthorSupersession` to `{ ...entry, ...supersession }` and the
+    // assertion below surfaces the leaked field red.
+    stage(
+      [{
+        name: 'Heidi',
+        hive: 'heidi',
+        orcid: '0000-0000-0000-8000',
+        evil_field: 'broadcaster-controlled payload',
+        // Also test a more plausibly-named injection vector.
+        verified_at: '2026-05-19T00:00:00Z',
+      }],
+      [{ account: 'heidi', orcid: '0000-0000-0000-8000' }],
+    );
+    const res = await request(app).get('/api/profile/alice/papers');
+    expect(res.status).toBe(200);
+    const author = res.body.data[0].authors[0];
+    // Supersession fields land — the enumerated projection still includes
+    // them via the spread of `supersession`.
+    expect(author.orcid_verified).toBe('0000-0000-0000-8000');
+    // The enumerated keys land verbatim.
+    expect(author.name).toBe('Heidi');
+    expect(author.hive).toBe('heidi');
+    expect(author.orcid).toBe('0000-0000-0000-8000');
+    // Broadcaster-controlled extras are dropped (and affiliation is stripped
+    // by toPaperSummary for PaperSummary).
+    expect(author).not.toHaveProperty('evil_field');
+    expect(author).not.toHaveProperty('verified_at');
+    expect(author).not.toHaveProperty('affiliation');
   });
 });

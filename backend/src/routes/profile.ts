@@ -1,10 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { getPool } from '../db.js';
+import { getPool, HafQueryError } from '../db.js';
 import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
+import { normalizeHiveAccount } from '../lib/author-supersession.js';
 import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount } from '../accreditation.js';
 import { getReputationScore, getReputationScores } from '../reputation.js';
 import { logger } from '../logger.js';
@@ -245,7 +246,7 @@ async function fetchUserPapersFromHaf(
   offset: number,
   sortCol: string,
   order: string,
-  orcidMap?: Map<string, string | null>,
+  orcidMap: Map<string, string | null>,
 ) {
   const pool = getPool();
   if (!pool) return null;
@@ -316,43 +317,76 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
   const sort = (req.query.sort as string) === 'votes' ? 'net_votes' : 'created';
 
   const cacheKey = `profile-papers:${username}:${JSON.stringify({ sort, order, page, limit })}`;
-  const result = await hafCache.getOrSet(cacheKey, async () => {
-    // Fetch the accreditation orcid map inside the cache miss path so the
-    // cached PaperSummary rows carry the supersession projection. The
-    // 30-min cache staleness applies to `orcid_verified`/`orcid_discrepancy`
-    // here for the same reason it applies on `/api/papers` (see
-    // `agents/docs/api-contracts/papers.md` cache-staleness note);
-    // `getAccreditedOrcidsByAccount` is itself 10-min cached, so cold-cache
-    // requests pay one cheap accreditation fetch and cache the projected
-    // result for 30 min.
-    const orcidMap = await getAccreditedOrcidsByAccount();
-    const hafResult = await fetchUserPapersFromHaf(username, limit, offset, sort, order, orcidMap);
-    if (hafResult) return hafResult;
-    return { rows: [], total: 0 };
-  });
+  try {
+    const result = await hafCache.getOrSet(cacheKey, async () => {
+      // Fetch the accreditation orcid map inside the cache miss path so the
+      // cached PaperSummary rows carry the supersession projection.
+      //
+      // Cache windows for supersession freshness on this surface:
+      //   - `hafCache.getOrSet` here uses the QueryCache default (30s), so
+      //     response-level cache hits serve the same projected map for
+      //     up to 30 seconds per (username, sort, order, page, limit) key.
+      //   - `getAccreditedOrcidsByAccount` is 10-min cached internally, so
+      //     cold response-cache misses re-use the accreditation set for
+      //     up to ~10 minutes before re-fetching.
+      // Net supersession revocation window observed on this endpoint: up
+      // to ~10 minutes from the on-chain revoke event. See
+      // `agents/docs/api-contracts/profiles.md` cache-staleness note.
+      //
+      // HAF outage handling: `getAccreditedOrcidsByAccount` throws when
+      // HAF is up but the query fails. Wrap in `HafQueryError` so the
+      // route's outer catch returns 503 retriable rather than letting
+      // the raw pg error propagate to the central 500 handler.
+      let orcidMap: Map<string, string | null>;
+      try {
+        orcidMap = await getAccreditedOrcidsByAccount();
+      } catch (err) {
+        throw new HafQueryError('getAccreditedOrcidsByAccount', { cause: err });
+      }
+      const hafResult = await fetchUserPapersFromHaf(username, limit, offset, sort, order, orcidMap);
+      if (hafResult) return hafResult;
+      return { rows: [], total: 0 };
+    });
 
-  // Enrich with accreditation and reputation
-  if (result.rows.length > 0) {
-    const authorNames = result.rows.map((r) => r.author);
-    const [accreditedSet, batchScores, allAccredited] = await Promise.all([
-      getAccreditedSet(authorNames),
-      getReputationScores(authorNames),
-      getAllAccreditedAccounts(),
-    ]);
-    for (const row of result.rows) {
-      const authorAccredited = accreditedSet.has(row.author);
-      row.is_accredited = authorAccredited;
-      // Symmetric chain pre-check: a non-accredited author shows score 0
-      // even if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
-      // direction-of-truth: chain is SSoT, batch map is a perf cache).
-      row.author_reputation = authorAccredited ? (batchScores.get(row.author) ?? 0) : 0;
-      row.accredited_authors = (row.authors || [])
-        .filter((a) => a.hive && allAccredited.has(a.hive))
-        .map((a) => a.hive!);
+    // Enrich with accreditation and reputation
+    if (result.rows.length > 0) {
+      const authorNames = result.rows.map((r) => r.author);
+      const [accreditedSet, batchScores, allAccredited] = await Promise.all([
+        getAccreditedSet(authorNames),
+        getReputationScores(authorNames),
+        getAllAccreditedAccounts(),
+      ]);
+      for (const row of result.rows) {
+        const authorAccredited = accreditedSet.has(row.author);
+        row.is_accredited = authorAccredited;
+        // Symmetric chain pre-check: a non-accredited author shows score 0
+        // even if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
+        // direction-of-truth: chain is SSoT, batch map is a perf cache).
+        row.author_reputation = authorAccredited ? (batchScores.get(row.author) ?? 0) : 0;
+        // Hive-account canonicalization at the accreditation lookup site —
+        // mirrors the wrapper adoption in routes/papers.ts so chain-broadcast
+        // mixed-case `authors[i].hive = 'Alice'` matches the lowercase
+        // `active_accreditations.account` set. Drift caught by the
+        // wrapping-primitive exhaustive call-site audit pattern.
+        row.accredited_authors = (row.authors || [])
+          .map((a) => normalizeHiveAccount(a.hive))
+          .filter((hive): hive is string => hive !== null && allAccredited.has(hive));
+      }
     }
-  }
 
-  sendOk(res, result.rows, { page, limit, total: result.total });
+    sendOk(res, result.rows, { page, limit, total: result.total });
+  } catch (err) {
+    if (err instanceof HafQueryError) {
+      return sendError(
+        res,
+        503,
+        'SERVICE_UNAVAILABLE',
+        'Profile papers temporarily unavailable. Please retry shortly.',
+        { retriable: true },
+      );
+    }
+    throw err;
+  }
 });
 
 // ──────────────────────────────────────────────

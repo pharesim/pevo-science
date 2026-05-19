@@ -217,3 +217,56 @@ If the call-site audit surfaces 3+ non-supersession callers, consider splitting 
 ### Re-review signal
 
 When items 1-7 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `d41da25`. Items 2 (PaperAuthor type) + 4 (JS spread shape) + 5 (orcidMap required) share helper/type-system scope and could land as a single commit; item 3 (HAF outage) is the route-correctness item with the test rewrite; items 1, 6, 7 are documentation/test cleanups.
+
+---
+
+## Backend re-review signal (2026-05-19, round-2 — working tree of this commit)
+
+All 7 hold-block items land in this single commit alongside the signal block + the `git mv` back to `tasks/review/`. This commit follows the task-1 round-3 commit `ed7dfa9` (which renamed `canonicalHiveKey` to `normalizeHiveAccount` and added the SQL regex guard); task-2 round-2 inherits the renamed helper into the explicit-projection + type-system cleanup.
+
+### Items addressed
+
+**Item 1 — Comment-anchor cleanup in `profile-papers-supersession.test.ts`.** Rewrote the file-header docstring on behavioral anchors: dropped both task-slug citations (`BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION`, `BACKEND-PROFILE-PAPERS-SUPERSESSION-PARITY`) and the `Round-1 of` qualifier. New header lead is "The SQL-projection in `authorsWithSupersessionSelect` runs on `/api/papers` (list) and `/api/papers/:author/:permlink` (detail), but the profile-papers endpoint assembles rows via `fetchUserPapersFromHaf` → `toPaperSummary` — a JS-side code path that doesn't round-trip through the SQL projection. This file pins the JS-side supersession wiring on /api/profile/:username/papers." Replaced the `matching routes/profile.ts:283` line-number reference in the `userPapersRow` docblock with a stable-symbol reference to the columns selected by `fetchUserPapersFromHaf`'s data query.
+
+**Item 2 — `PaperAuthor` type extended; `as unknown as PaperSummary['authors']` cast removed.** Adopted option (a) from the hold block: added `orcid_verified?: string | null` and `orcid_discrepancy?: boolean` to `backend/src/types/domain.ts` `PaperAuthor`. Kept `affiliation?` (mild type-vs-runtime drift on PaperSummary, defensible per the architect's prescription). The double-cast at the `toPaperSummary` boundary in `helpers.ts` is gone; a per-entry `rest as unknown as PaperAuthor` narrowing remains inside the map callback — a localized cast on the structurally-typed object literal, much tighter scope than the prior array-level cast. Grep-audit of `as unknown as PaperSummary` / `as unknown as PaperDetail` across `backend/src/`: no other drift sites.
+
+**Item 3 — HAF-outage 503 retriable on profile-papers + mislabeled-test rewrite.** Added `import { HafQueryError } from '../db.js'` to `routes/profile.ts`. Wrapped `getAccreditedOrcidsByAccount()` inside the route's `hafCache.getOrSet` callback in a try/catch that translates pg/HAF errors to `HafQueryError`. The route handler now wraps the entire body in a try/catch that catches `HafQueryError` and returns 503 SERVICE_UNAVAILABLE with `retriable: true`, matching the sibling-route pattern in `routes/papers.ts`. The previously-mislabeled "degraded HAF / no pool" test is renamed to "empty accreditation set: supersession fields collapse to case-1 defaults (null/false), 200 OK" — it actually exercises the empty-accreditation case, not the throw path. A new test "HAF outage on getAccreditedOrcidsByAccount → 503 SERVICE_UNAVAILABLE with retriable:true" stages the actual throw (mock pg.query rejecting on the `FROM active_accreditations` SQL) and asserts the 503 envelope. Mutation-kill: revert the try/catch around `getAccreditedOrcidsByAccount` → response goes 500 instead of 503-retriable. **Test discovery during item 3:** the `vi.mock('../../src/db.js', ...)` mock was using the override-everything form, which broke `import { HafQueryError } from '../db.js'` (the mock didn't expose the class symbol). Switched the mock to the `importOriginal` form so `HafQueryError` and other db.ts exports stay reachable while `getPool`/`isHafConfigured`/`closeHafPool` are overridden.
+
+**Item 4 — JS spread replaced with explicit projection in `applyAuthorSupersession`.** Switched the helper from `return { ...e, ...supersession }` to an enumerated projection — `{name: e.name, hive: e.hive, orcid: e.orcid, affiliation: e.affiliation, ...supersession}`. The output key set now matches the SQL-side `authorsWithSupersessionSelect`'s `jsonb_build_object` keys exactly, so broadcaster-controlled extra fields (`evil_field`, `verified_at`, etc.) drop on the JS path the same way they drop on the SQL path. Companion canary `broadcaster-controlled extra fields on authors[i] do NOT leak through the JS projection` stages `authors: [{hive: 'heidi', evil_field: 'payload', verified_at: '...'}]` and asserts both extras are dropped from the response while supersession fields land verbatim.
+
+**Item 5 — `orcidMap` required in `toPaperSummary`.** Signature: `orcidMap?: Map<...>` → `orcidMap: Map<...>`. Body: dropped the conditional `orcidMap ? applyAuthorSupersession(rawAuthors, orcidMap) : rawAuthors` dead branch — now unconditionally `applyAuthorSupersession(rawAuthors, orcidMap)`. JSDoc rewritten to describe actual behavior: "Callers without an accreditation context pass `new Map()`; the supersession projection collapses to case-1/case-2 (\"no claim\") for every author." Call-site audit: only one production caller (`routes/profile.ts`) already passes the map; 4 legacy callers in `tests/helpers.test.ts` updated to pass `new Map()` via `replace_all`. `fetchUserPapersFromHaf`'s `orcidMap?` parameter also tightened to required to match. No call-sites left passing nothing.
+
+**Item 6 — Cache-TTL comment corrected.** Replaced the "cache the projected result for 30 min" comment with an accurate description: "`hafCache.getOrSet` here uses the QueryCache default (30s), so response-level cache hits serve the same projected map for up to 30 seconds... `getAccreditedOrcidsByAccount` is 10-min cached internally, so cold response-cache misses re-use the accreditation set for up to ~10 minutes before re-fetching. Net supersession revocation window observed on this endpoint: up to ~10 minutes from the on-chain revoke event." Cross-references the architect-side `profiles.md` cache-staleness note.
+
+**Item 7 — `rows: [] as any[]` → `unknown[]` in `profile-papers-supersession.test.ts`.** Mechanical fix, same as task-1 round-3 item 8.
+
+### Drift finding closed during round-2
+
+**`routes/profile.ts:349-351` adopted `normalizeHiveAccount`.** While landing the route-level try/catch for item 3, the same `(row.authors || []).filter((a) => a.hive && allAccredited.has(a.hive)).map((a) => a.hive!)` raw-lookup pattern that task-1 round-3 item 2 fixed in `routes/papers.ts` was discovered on the profile-papers enrichment path. Replaced with the wrapper-based pattern per `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`. This site was NOT in task-2's hold block; surfacing it here as a drift discovered during round-2. The fix follows the same shape as the task-1 round-3 item 2 sibling sites in `routes/papers.ts`, so it composes naturally into the same wrapper-adoption story.
+
+### Test coverage added/changed
+
+`backend/tests/routes/profile-papers-supersession.test.ts`:
+- Renamed/clarified "degraded HAF / no pool" → "empty accreditation set: supersession fields collapse to case-1 defaults".
+- Added "HAF outage on getAccreditedOrcidsByAccount → 503 SERVICE_UNAVAILABLE with retriable:true" — exercises the actual throw path via mocked pg rejection.
+- Added "broadcaster-controlled extra fields on authors[i] do NOT leak through the JS projection" — pins the enumerated-projection contract.
+
+Total: 10 tests in `profile-papers-supersession.test.ts` (up from 8).
+
+### Verification
+
+- `npm run typecheck` from `backend/`: clean (after extending PaperAuthor with `orcid_verified?` / `orcid_discrepancy?` and fixing the `entry → PaperAuthor` cast pattern).
+- `npm run lint` from `backend/`: clean.
+- `npx vitest run tests/routes/profile-papers-supersession.test.ts`: **10/10 pass.**
+- Broader regression sweep (`profile-papers-supersession`, `profile-papers-cid-validate`, `profile`, `helpers`, `papers-canonical-orcid-resolution`, `paper-detail-v3`, `canonical-root-walker`): **111/112 pass, 1 pre-existing real-HAF flake** on `paper-detail-v3.test.ts > 'includes versions array and retraction fields when paper exists'` (same `jesusalejos/...` wall-clock-exceeded flake task-1 round-3 confirmed pre-existing via `git stash` round-trip; the same fingerprint on this run).
+
+### Notes for architect
+
+- Item 2 chose option (a) (extend PaperAuthor) over (b) (split into PaperSummaryAuthor + PaperDetailAuthor) for minimum churn. The `affiliation?` type-vs-runtime drift on PaperSummary is mild (the field is always undefined at runtime, type-optional). If a future refactor wants strict per-surface types, splitting into PaperSummaryAuthor + PaperDetailAuthor is a localized follow-up; the supersession fields are already optional on the base type and would propagate naturally.
+- Item 4's explicit projection includes `affiliation` even for PaperSummary callers; `toPaperSummary` post-strips it. The architectural shape is: helper preserves all enumerated chain fields; per-surface contract enforcement happens at the emit site. Same pattern as the SQL helper's `includeAffiliation` flag, just enforced one level closer to the response.
+- The route-level try/catch in item 3 wraps the full request flow including the enrichment pass after the cache miss. The enrichment also makes HAF queries (`getAccreditedSet`, `getAllAccreditedAccounts`, `getReputationScores`). Those don't currently throw `HafQueryError` directly, so if they fail with a raw pg error, the central 500 handler still picks them up. Tightening those to also translate to `HafQueryError` is a separate follow-up that would extend the pattern across the route file; this commit's scope is item 3's specific path. The pattern is now in place for future extension.
+- Drift finding above (`routes/profile.ts:349-351`) is the third site closed by the wrapping-primitive call-site audit. With this commit, the wrapper is the single source of truth for hive-account canonicalization on the JS-side accreditation lookups across both papers and profile routes.
+
+### Re-review signal
+
+`git mv tasks/pending/backend-profile-papers-supersession-parity.md tasks/review/` in the same commit as the source edits. The architect's next `/ce-code-review` pass scopes to commits since `ed7dfa9` (the task-1 round-3 commit) — this commit and that one form the supersession-cluster round-3/round-2 pair.

@@ -306,7 +306,7 @@ describe('toPaperSummary', () => {
       },
     };
 
-    const result = toPaperSummary(post, meta);
+    const result = toPaperSummary(post, meta, new Map());
     expect(result.author).toBe('alice');
     expect(result.permlink).toBe('my-paper');
     expect(result.title).toBe('Test Paper');
@@ -338,7 +338,7 @@ describe('toPaperSummary', () => {
     };
     const meta = { app: APP_ID, [TAG]: {} };
 
-    const result = toPaperSummary(post, meta);
+    const result = toPaperSummary(post, meta, new Map());
     expect(result.abstract.length).toBe(300);
     expect(result.discipline).toBe('');
     expect(result.keywords).toEqual([]);
@@ -370,7 +370,7 @@ describe('toPaperSummary', () => {
         source: { type: 'arxiv', doi: '10.0000/spoof.1' },
       },
     };
-    const result = toPaperSummary(post, meta);
+    const result = toPaperSummary(post, meta, new Map());
     // Source_type falls back to 'native' because the author is not the bridge
     // account; the metadata `source.type` MUST NOT leak through.
     expect(result.source_type).toBe('native');
@@ -394,7 +394,7 @@ describe('toPaperSummary', () => {
         source: { type: 'crossref', doi: '10.1000/legit.1' },
       },
     };
-    const result = toPaperSummary(post, meta);
+    const result = toPaperSummary(post, meta, new Map());
     expect(result.source_type).toBe('crossref');
     expect(result.doi).toBe('10.1000/legit.1');
   });
