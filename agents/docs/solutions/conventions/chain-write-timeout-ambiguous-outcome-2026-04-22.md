@@ -421,6 +421,37 @@ Audit checklist before stamping `retriable: true` on any envelope:
 
 This sibling principle applies wherever the codebase emits a non-2xx that signals retry-with-same-body: not just chain-write timeouts. It pairs naturally with the timeout convention because both failure modes get tempting `retriable: true` annotations that quietly violate the contract — timeouts because outcome is ambiguous (retry may double-write), single-use-state because the retry's body is already invalid (retry can't even reach the original handler).
 
+## Auto-recovery: in-process pending-decrement queue
+
+Some routes maintain a Redis counter alongside the broadcast (e.g., `POST /api/accreditation/verify`'s per-token broadcast-attempts cap). The counter is INCR'd before broadcast and DECR'd on timeout-or-failure to keep the cap accurate. When the DECR fails because Redis is mid-flap, the counter stays inflated and the user sees a spurious `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` (soft-block) on subsequent attempts until the 24h TTL clears the key.
+
+PEvO's mitigation is an **in-process pending-decrement queue + drainer**, implemented at `backend/src/lib/pending-decrement-queue.ts`:
+
+- The route catches the failed DECR, calls `enqueueDecrement({ token, attemptId, key })`, then re-throws the original error. The token + attemptId double-key insulates concurrent enqueues for the same token (each attempt has a distinct attemptId; idempotent retries within the cycle are deduplicated by the queue's `Map` keying).
+- A `setInterval`-driven drainer (default 30s cycle, configurable via `VERIFY_DECREMENT_QUEUE_DRAIN_MS`) iterates queued entries when `isRedisAvailable()` is true again, runs DECR per entry, and removes successful entries from the queue.
+- The drainer breaks on first DECR exception to avoid amplifying Redis pressure during a partial recovery; entries behind the failure stay queued for the next cycle.
+- The queue has a depth cap (default 1000 entries). Overflow drops the new entry and emits a single-fire `accreditation.verify.decrement_queue_overflow` warn so the operator gets one log line per outage rather than one per dropped entry.
+- The drainer timer uses `unref()` so a process shutdown is not held open by the recovery loop; queued entries are abandoned on shutdown (the 24h Redis TTL is the final backstop).
+
+**Process restart abandons the queue.** This is acceptable because (a) the 24h TTL guarantees eventual recovery without operator intervention, and (b) the manual-reset runbook below provides a faster lever when the wait is unacceptable. Single-instance deployment posture (per project policy) makes restart-induced loss the natural recovery story — there is no peer process to drain on behalf of the dead one.
+
+When extending this pattern to a new counter or write-class, the convention is to colocate the queue + drainer in `lib/`, expose the counter's key-derivation function from the route (rather than duplicating the template literal across the route, the queue, and admin/test sites), and gate the drainer start at `index.ts` boot so the cycle interval is observable in the startup log.
+
+## Manual reset runbook
+
+When the auto-recovery cannot converge — sustained Redis outage that exceeds the queue depth cap, an inflation predating the drainer's process lifetime (e.g., before a deploy that introduced the queue), or a class the drainer cannot retry — the operator-driven lever is `POST /api/admin/accreditation/reset-broadcast-counter` (contract at `agents/docs/api-contracts/accreditation.md`). Only the on-chain account named by `config.hiveAdminAccount` can authenticate.
+
+Runbook:
+
+1. Triage the alert. A `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` for a single user is typically real client retry pressure, not inflation; check for a correlated `accreditation.verify.broadcast_decrement_redis_unavailable` warn or a `decrement_queue_overflow` warn to confirm the inflation class.
+2. Resolve the underlying Redis health issue first. Resetting the counter against an unhealthy Redis is incomplete — fresh `/verify` attempts will re-inflate it.
+3. Wait one drainer cycle (default 30s). The auto-recovery converges most flap classes without operator intervention.
+4. If the counter is still inflated, hit `POST /api/admin/accreditation/reset-broadcast-counter` with `{ "token": "<the affected verification token>" }` signed by the admin account. The endpoint returns the `prior_value` at the moment of the atomic GETDEL (may be a small positive number if concurrent `/verify` traffic re-inflated between the reset and the response — expected, not a reset failure).
+5. Cross-reference the resulting `accreditation.admin.reset_broadcast_counter` audit log entry (carries `admin_username`, `token_hash`, and `prior_value`) against the inflation-class warn from step 1 to close the incident.
+6. The endpoint emits 503 `Retry-After: 30` if Redis is itself unavailable at reset time, and 500 `INTERNAL_ERROR` if GETDEL rejects mid-flight; both are operator-retriable.
+
+Routes that adopt this primitive in the future should publish a parallel runbook entry here; the prefix-table entry in `auth-structured-log-shape-2026-04-29.md` for `admin.ts` groups all such admin operator surfaces under the `accreditation.admin.*` log namespace.
+
 ## Related
 
 - `agents/docs/solutions/conventions/chain-primitive-proxy-prefer-deletion-2026-04-28.md` — **scope predecessor.** Before designing reconciliation logic for a DB table that mirrors a chain primitive, audit whether the table earns its keep at all. If the chain handles the failure mode the table was meant to defend against, drop the table — the reconcile-design options below (A.1-A.4) become moot for that path. This doc applies once the audit has confirmed the DB write is wanted.

@@ -54,6 +54,7 @@ The `<file>` segment is the route file name (snake_case for `event`, kebab-case 
 - `backend/src/routes/signup-verify.ts` → `signup_verify.<endpoint>` (event), `signup-verify.<endpoint>` (route)
 - `backend/src/routes/settings.ts` → `settings.<endpoint>`
 - `backend/src/routes/orcid.ts` → `orcid.<endpoint>`
+- `backend/src/routes/admin.ts` → `accreditation.admin.<endpoint>` (this file holds admin-scoped operations on accreditation state — counter reset, future per-token inspect, etc. The `accreditation.admin.` prefix groups them with the rest of the accreditation domain on operator dashboards rather than carving a top-level `admin.` namespace. If a future `admin.ts` ever holds non-accreditation operator surfaces, those would use a different prefix.)
 
 The auth.ts examples below illustrate the shape; the same rules apply to every other file with its own prefix substituted.
 
