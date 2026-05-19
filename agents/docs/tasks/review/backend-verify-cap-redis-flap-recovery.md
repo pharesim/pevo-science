@@ -294,9 +294,9 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ---
 
-## Backend re-review signal (2026-05-19, commit SHA 60789ae)
+## Backend re-review signal (2026-05-19, commit SHA `a678463`)
 
-All 7 round-2 hold items landed in a single bundled commit (`60789ae`):
+All 7 round-2 hold items landed in a single bundled commit (`a678463`):
 
 - **Item 1.** `broadcastAttemptsKey` is now `export`ed from `backend/src/routes/accreditation.ts` and imported in `backend/src/routes/admin.ts`; the duplicate definition is gone.
 - **Item 2.** All 8 new log events renamed to canonical dotted-path form (`accreditation.verify.decrement_queue_{drain,retry_failed,overflow,drain_threw}`, `accreditation.admin.reset_broadcast_counter{,_forbidden,_redis_unavailable,_failed}`). Test assertions in `tests/lib/pending-decrement-queue.test.ts` and `tests/routes/admin.test.ts` updated to pin the renamed discriminators.
