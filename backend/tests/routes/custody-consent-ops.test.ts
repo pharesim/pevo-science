@@ -69,6 +69,7 @@ import request from 'supertest';
 import argon2 from 'argon2';
 import jwt from 'jsonwebtoken';
 import { MockBroadcastTimeoutError } from '../support/broadcast-mocks.js';
+import { fetchSettledAuditRowsWith } from '../support/audit-log-poll-settle.js';
 
 /** Local hex-SHA-256 helper for asserting `custody_audit_log.user_agent`
  *  contents. Mirrors `hashUserAgentForAudit` from custody.ts so a divergence
@@ -464,23 +465,21 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(res.status).toBe(200);
       expect(res.body.data.tx_id).toBe('consent-op-tx-id');
 
-      // Audit-log fire-and-forget; poll briefly for the row.
+      // Audit-log fire-and-forget; poll + settle for the row. The 100ms settle
+      // window catches an in-flight double-INSERT mutation before the count
+      // assertion below.
       const pool = getAppPool()!;
-      const sql = `SELECT operation_type, auth_mechanism, fresh_auth_outcome, session_id, user_agent
-                   FROM custody_audit_log WHERE username = $1`;
-      const start = Date.now();
-      let rows: Array<{
+      const rows = await fetchSettledAuditRowsWith<{
         operation_type: string;
         auth_mechanism: string | null;
         fresh_auth_outcome: string | null;
         session_id: string | null;
         user_agent: string | null;
-      }> = [];
-      while (Date.now() - start < 1500) {
-        const r = await pool.query(sql, [ALICE]);
-        if (r.rows.length >= 1) { rows = r.rows; break; }
-        await new Promise((r) => setTimeout(r, 25));
-      }
+      }>({
+        pool,
+        username: ALICE,
+        columns: 'operation_type, auth_mechanism, fresh_auth_outcome, session_id, user_agent',
+      });
       expect(rows.length).toBe(1);
       expect(rows[0].auth_mechanism).toBe('password');
       expect(rows[0].fresh_auth_outcome).toBe('verified');
@@ -515,20 +514,16 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(res.status).toBe(200);
 
       const pool = getAppPool()!;
-      const sql = `SELECT auth_mechanism, fresh_auth_outcome, session_id, user_agent
-                   FROM custody_audit_log WHERE username = $1`;
-      const start = Date.now();
-      let rows: Array<{
+      const rows = await fetchSettledAuditRowsWith<{
         auth_mechanism: string | null;
         fresh_auth_outcome: string | null;
         session_id: string | null;
         user_agent: string | null;
-      }> = [];
-      while (Date.now() - start < 1500) {
-        const r = await pool.query(sql, [ALICE]);
-        if (r.rows.length >= 1) { rows = r.rows; break; }
-        await new Promise((r) => setTimeout(r, 25));
-      }
+      }>({
+        pool,
+        username: ALICE,
+        columns: 'auth_mechanism, fresh_auth_outcome, session_id, user_agent',
+      });
       expect(rows.length).toBe(1);
       expect(rows[0].auth_mechanism).toBe('password');
       expect(rows[0].fresh_auth_outcome).toBe('verified');
@@ -558,14 +553,11 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(res.status).toBe(200);
 
       const pool = getAppPool()!;
-      const sql = `SELECT user_agent FROM custody_audit_log WHERE username = $1`;
-      const start = Date.now();
-      let rows: Array<{ user_agent: string | null }> = [];
-      while (Date.now() - start < 1500) {
-        const r = await pool.query(sql, [ALICE]);
-        if (r.rows.length >= 1) { rows = r.rows; break; }
-        await new Promise((r) => setTimeout(r, 25));
-      }
+      const rows = await fetchSettledAuditRowsWith<{ user_agent: string | null }>({
+        pool,
+        username: ALICE,
+        columns: 'user_agent',
+      });
       expect(rows.length).toBe(1);
       expect(rows[0].user_agent).toBeNull();
     });
@@ -608,15 +600,16 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(r2.status).toBe(200);
 
       const pool = getAppPool()!;
-      const sql = `SELECT operation_type, user_agent FROM custody_audit_log
-                   WHERE username = $1 ORDER BY created_at ASC`;
-      const start = Date.now();
-      let rows: Array<{ operation_type: string; user_agent: string | null }> = [];
-      while (Date.now() - start < 1500) {
-        const r = await pool.query(sql, [ALICE]);
-        if (r.rows.length >= 2) { rows = r.rows; break; }
-        await new Promise((r) => setTimeout(r, 25));
-      }
+      const rows = await fetchSettledAuditRowsWith<{
+        operation_type: string;
+        user_agent: string | null;
+      }>({
+        pool,
+        username: ALICE,
+        columns: 'operation_type, user_agent',
+        minRows: 2,
+        orderBy: 'created_at ASC',
+      });
       expect(rows.length).toBe(2);
       expect(rows[0].user_agent).toBe(sha256Hex(UA));
       expect(rows[1].user_agent).toBe(sha256Hex(UA));
@@ -661,15 +654,16 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(r2.status).toBe(200);
 
       const pool = getAppPool()!;
-      const sql = `SELECT operation_type, user_agent FROM custody_audit_log
-                   WHERE username = $1 ORDER BY created_at ASC`;
-      const start = Date.now();
-      let rows: Array<{ operation_type: string; user_agent: string | null }> = [];
-      while (Date.now() - start < 1500) {
-        const r = await pool.query(sql, [ALICE]);
-        if (r.rows.length >= 2) { rows = r.rows; break; }
-        await new Promise((r) => setTimeout(r, 25));
-      }
+      const rows = await fetchSettledAuditRowsWith<{
+        operation_type: string;
+        user_agent: string | null;
+      }>({
+        pool,
+        username: ALICE,
+        columns: 'operation_type, user_agent',
+        minRows: 2,
+        orderBy: 'created_at ASC',
+      });
       expect(rows.length).toBe(2);
       expect(rows[0].user_agent).toBe(sha256Hex(UA_A));
       expect(rows[1].user_agent).toBe(sha256Hex(UA_B));
