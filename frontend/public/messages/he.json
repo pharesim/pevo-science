@@ -109,7 +109,9 @@
       "reviews": "ביקורות",
       "citations": "ציטוטים",
       "accreditation": "הסמכה"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "פרסום מאמר",
@@ -391,7 +393,8 @@
     "postComment": "פרסום תגובה",
     "posting": "מפרסם...",
     "connectToComment": "התחברו כדי להצטרף לדיון.",
-    "postFailed": "פרסום התגובה נכשל"
+    "postFailed": "פרסום התגובה נכשל",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "פרסום מדעי פתוח והערכה אינטראקטיבית על רשומה פתוחה וקבועה. ללא מטרות רווח, רישיון AGPL-3.0, ניתן לשכפול.",

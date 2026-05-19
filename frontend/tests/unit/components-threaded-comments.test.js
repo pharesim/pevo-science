@@ -86,7 +86,51 @@ describe('threadedComments', () => {
       const comp = createComponent({ paperAuthor: 'x', paperPermlink: 'y' });
       await comp.loadComments();
       expect(comp.error).toBe('comments.error');
+      expect(comp.errorRetriable).toBe(false);
       expect(comp.comments).toEqual([]);
+    });
+
+    it('flags errorRetriable on 503 SERVICE_UNAVAILABLE + details.retriable', async () => {
+      const err = Object.assign(new Error('Service Unavailable'), {
+        code: 'SERVICE_UNAVAILABLE',
+        details: { retriable: true },
+      });
+      mockFetchPaperComments.mockRejectedValueOnce(err);
+      const comp = createComponent({ paperAuthor: 'x', paperPermlink: 'y' });
+      await comp.loadComments();
+      expect(comp.errorRetriable).toBe(true);
+      expect(comp.error).toBe('comments.serviceUnavailable');
+      expect(comp.comments).toEqual([]);
+    });
+
+    it('does not flag errorRetriable when SERVICE_UNAVAILABLE lacks the retriable hint', async () => {
+      const err = Object.assign(new Error('Service Unavailable'), {
+        code: 'SERVICE_UNAVAILABLE',
+        details: {},
+      });
+      mockFetchPaperComments.mockRejectedValueOnce(err);
+      const comp = createComponent({ paperAuthor: 'x', paperPermlink: 'y' });
+      await comp.loadComments();
+      expect(comp.errorRetriable).toBe(false);
+      expect(comp.error).toBe('comments.error');
+    });
+
+    it('clears errorRetriable on a subsequent successful retry', async () => {
+      const err = Object.assign(new Error('Service Unavailable'), {
+        code: 'SERVICE_UNAVAILABLE',
+        details: { retriable: true },
+      });
+      mockFetchPaperComments.mockRejectedValueOnce(err);
+      mockFetchPaperComments.mockResolvedValueOnce({
+        data: [{ author: 'a', permlink: 'p1', body: 'hi' }],
+      });
+      const comp = createComponent({ paperAuthor: 'x', paperPermlink: 'y' });
+      await comp.loadComments();
+      expect(comp.errorRetriable).toBe(true);
+      await comp.loadComments();
+      expect(comp.errorRetriable).toBe(false);
+      expect(comp.error).toBeNull();
+      expect(comp.totalCount).toBe(1);
     });
   });
 

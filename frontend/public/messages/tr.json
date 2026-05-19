@@ -109,7 +109,9 @@
       "reviews": "Değerlendirmeler",
       "citations": "Atıflar",
       "accreditation": "Akreditasyon"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "Makale Yayınla",
@@ -391,7 +393,8 @@
     "postComment": "Yorum Gönder",
     "posting": "Gönderiliyor...",
     "connectToComment": "Tartışmaya katılmak için giriş yapın.",
-    "postFailed": "Yorum gönderilemedi"
+    "postFailed": "Yorum gönderilemedi",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "Kalıcı ve açık bir kayıt üzerinde açık bilimsel yayın ve etkileşimli değerlendirme. Kâr amacı gütmeyen, AGPL-3.0 lisanslı, çatallanabilir.",

@@ -109,7 +109,9 @@
       "reviews": "评审",
       "citations": "引用",
       "accreditation": "认证"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "发表论文",
@@ -391,7 +393,8 @@
     "postComment": "发表评论",
     "posting": "发布中...",
     "connectToComment": "请登录后参与讨论。",
-    "postFailed": "评论发布失败"
+    "postFailed": "评论发布失败",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "基于永久公共记录的开放科学出版与互动评审平台。非营利，AGPL-3.0 许可证，可分叉。",

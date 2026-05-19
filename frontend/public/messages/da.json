@@ -109,7 +109,9 @@
       "reviews": "Anmeldelser",
       "citations": "Citationer",
       "accreditation": "Akkreditering"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "Publicer en artikel",
@@ -391,7 +393,8 @@
     "postComment": "Send kommentar",
     "posting": "Sender...",
     "connectToComment": "Log ind for at deltage i diskussionen.",
-    "postFailed": "Kunne ikke sende kommentar"
+    "postFailed": "Kunne ikke sende kommentar",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "Åben videnskabelig publicering og interaktiv evaluering på en permanent, åben protokol. Non-profit, AGPL-3.0-licens, forkbar.",

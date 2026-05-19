@@ -109,7 +109,9 @@
       "reviews": "Recenze",
       "citations": "Citace",
       "accreditation": "Akreditace"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "Publikovat článek",
@@ -391,7 +393,8 @@
     "postComment": "Odeslat komentář",
     "posting": "Odesílání...",
     "connectToComment": "Přihlaste se a zapojte se do diskuze.",
-    "postFailed": "Nepodařilo se odeslat komentář"
+    "postFailed": "Nepodařilo se odeslat komentář",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "Otevřené vědecké publikování a interaktivní hodnocení na trvalém, otevřeném záznamu. Neziskové, s licencí AGPL-3.0, forkovatelné.",

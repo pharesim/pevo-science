@@ -109,7 +109,9 @@
       "reviews": "Beoordelingen",
       "citations": "Citaties",
       "accreditation": "Accreditatie"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "Publiceer een artikel",
@@ -391,7 +393,8 @@
     "postComment": "Opmerking plaatsen",
     "posting": "Plaatsen...",
     "connectToComment": "Meld u aan om deel te nemen aan de discussie.",
-    "postFailed": "Opmerking plaatsen mislukt"
+    "postFailed": "Opmerking plaatsen mislukt",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "Open wetenschappelijke publicatie en interactieve evaluatie op een permanent, open register. Non-profit, AGPL-3.0-gelicentieerd, forkbaar.",

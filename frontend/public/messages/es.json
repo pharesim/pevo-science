@@ -109,7 +109,9 @@
       "reviews": "Revisiones",
       "citations": "Citas",
       "accreditation": "Acreditación"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "Publicar un artículo",
@@ -391,7 +393,8 @@
     "postComment": "Publicar comentario",
     "posting": "Publicando...",
     "connectToComment": "Inicie sesión para participar en la discusión.",
-    "postFailed": "Error al publicar el comentario"
+    "postFailed": "Error al publicar el comentario",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "Publicación científica abierta y evaluación interactiva en un registro permanente y abierto. Sin fines de lucro, licencia AGPL-3.0, bifurcable.",

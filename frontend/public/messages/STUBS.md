@@ -1223,3 +1223,53 @@ pt: settings.emailVerificationSent
 sv: settings.emailVerificationSent
 tr: settings.emailVerificationSent
 zh: settings.emailVerificationSent
+
+### Added 2026-05-20 (UI-HAF-OUTAGE-503-RETRY-AFFORDANCE)
+
+ar: profile.papersUnavailable
+cs: profile.papersUnavailable
+da: profile.papersUnavailable
+de: profile.papersUnavailable
+es: profile.papersUnavailable
+fa: profile.papersUnavailable
+fr: profile.papersUnavailable
+he: profile.papersUnavailable
+it: profile.papersUnavailable
+nl: profile.papersUnavailable
+pl: profile.papersUnavailable
+pt: profile.papersUnavailable
+sv: profile.papersUnavailable
+tr: profile.papersUnavailable
+zh: profile.papersUnavailable
+
+ar: profile.reviewsUnavailable
+cs: profile.reviewsUnavailable
+da: profile.reviewsUnavailable
+de: profile.reviewsUnavailable
+es: profile.reviewsUnavailable
+fa: profile.reviewsUnavailable
+fr: profile.reviewsUnavailable
+he: profile.reviewsUnavailable
+it: profile.reviewsUnavailable
+nl: profile.reviewsUnavailable
+pl: profile.reviewsUnavailable
+pt: profile.reviewsUnavailable
+sv: profile.reviewsUnavailable
+tr: profile.reviewsUnavailable
+zh: profile.reviewsUnavailable
+
+ar: comments.serviceUnavailable
+cs: comments.serviceUnavailable
+da: comments.serviceUnavailable
+de: comments.serviceUnavailable
+es: comments.serviceUnavailable
+fa: comments.serviceUnavailable
+fr: comments.serviceUnavailable
+he: comments.serviceUnavailable
+it: comments.serviceUnavailable
+nl: comments.serviceUnavailable
+pl: comments.serviceUnavailable
+pt: comments.serviceUnavailable
+sv: comments.serviceUnavailable
+tr: comments.serviceUnavailable
+zh: comments.serviceUnavailable

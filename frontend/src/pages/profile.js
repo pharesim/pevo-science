@@ -266,9 +266,15 @@ const template = `
                       </template>
                     </div>
                   </template>
-                  <template x-if="userPapers.length === 0">
+                  <template x-if="userPapers.length === 0 && !papersRetriable">
                     <div class="card text-center py-8">
                       <p class="text-ink-muted" x-text="$t('profile.noPapers')"></p>
+                    </div>
+                  </template>
+                  <template x-if="papersRetriable">
+                    <div class="card text-center py-8" data-testid="profile-papers-retry">
+                      <p class="text-ink-muted mb-3" x-text="$t('profile.papersUnavailable')"></p>
+                      <button type="button" @click="loadProfile()" class="btn-primary text-sm" x-text="$t('common.retry')"></button>
                     </div>
                   </template>
                 </div>
@@ -323,9 +329,15 @@ const template = `
                       </template>
                     </div>
                   </template>
-                  <template x-if="!reviewsLoading && reviewsLoaded && userReviews.length === 0">
+                  <template x-if="!reviewsLoading && reviewsLoaded && userReviews.length === 0 && !reviewsRetriable">
                     <div class="card text-center py-8">
                       <p class="text-ink-muted" x-text="$t('profile.noReviews')"></p>
+                    </div>
+                  </template>
+                  <template x-if="!reviewsLoading && reviewsRetriable">
+                    <div class="card text-center py-8" data-testid="profile-reviews-retry">
+                      <p class="text-ink-muted mb-3" x-text="$t('profile.reviewsUnavailable')"></p>
+                      <button type="button" @click="loadReviews()" class="btn-primary text-sm" x-text="$t('common.retry')"></button>
                     </div>
                   </template>
                 </div>
@@ -349,6 +361,11 @@ export function initProfilePage() {
     activeTab: 'publications',
     loading: true,
     error: null,
+    // Discriminates 503 SERVICE_UNAVAILABLE + details.retriable from the
+    // legitimate "no papers / no reviews" empty-state render. Set true by
+    // the per-sub-fetch catch arm; cleared at the top of each (re)load.
+    papersRetriable: false,
+    reviewsRetriable: false,
 
     truncateText,
     formatDate,
@@ -365,10 +382,16 @@ export function initProfilePage() {
       const username = this.username;
       this.loading = true;
       this.error = null;
+      this.papersRetriable = false;
       try {
         const [profileRes, papersRes] = await Promise.all([
           fetchProfile(username),
-          fetchProfilePapers(username).catch(() => ({ data: [] })),
+          fetchProfilePapers(username).catch((err) => {
+            if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+              this.papersRetriable = true;
+            }
+            return { data: [] };
+          }),
         ]);
         if (this.username !== username) return;
         this.profile = profileRes.data;
@@ -414,6 +437,7 @@ export function initProfilePage() {
     async loadReviews() {
       const username = this.username;
       this.reviewsLoading = true;
+      this.reviewsRetriable = false;
       try {
         const res = await fetchProfileReviews(username, { sort: this.reviewSort });
         if (this.username !== username) return;
@@ -423,6 +447,9 @@ export function initProfilePage() {
         if (this.username !== username) return;
         this.userReviews = [];
         this.reviewsLoaded = true;
+        if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+          this.reviewsRetriable = true;
+        }
       } finally {
         this.reviewsLoading = false;
       }

@@ -107,6 +107,9 @@ export function initThreadedComments() {
     comments: [],
     loading: true,
     error: null,
+    // Discriminator on 503 SERVICE_UNAVAILABLE + details.retriable so the
+    // template can render a Retry button instead of a generic error string.
+    errorRetriable: false,
     totalCount: 0,
     collapsed: {},
     replyOpen: {},
@@ -120,12 +123,18 @@ export function initThreadedComments() {
     async loadComments() {
       this.loading = true;
       this.error = null;
+      this.errorRetriable = false;
       try {
         const res = await fetchPaperComments(this.paperAuthor, this.paperPermlink);
         this.comments = res.data || [];
         this.totalCount = countComments(this.comments);
-      } catch {
-        this.error = this.$t('comments.error');
+      } catch (err) {
+        if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+          this.error = this.$t('comments.serviceUnavailable');
+          this.errorRetriable = true;
+        } else {
+          this.error = this.$t('comments.error');
+        }
         this.comments = [];
       } finally {
         this.loading = false;

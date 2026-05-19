@@ -109,7 +109,9 @@
       "reviews": "المراجعات",
       "citations": "الاستشهادات",
       "accreditation": "الاعتماد"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "نشر بحث",
@@ -391,7 +393,8 @@
     "postComment": "نشر التعليق",
     "posting": "جارٍ النشر...",
     "connectToComment": "سجّل الدخول للمشاركة في النقاش.",
-    "postFailed": "فشل نشر التعليق"
+    "postFailed": "فشل نشر التعليق",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "نشر علمي مفتوح وتقييم تفاعلي على سجل عام دائم. غير ربحي، مرخّص بموجب AGPL-3.0، قابل للتفريع.",

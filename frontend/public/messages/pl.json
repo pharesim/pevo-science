@@ -109,7 +109,9 @@
       "reviews": "Recenzje",
       "citations": "Cytowania",
       "accreditation": "Akredytacja"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "Opublikuj pracę",
@@ -391,7 +393,8 @@
     "postComment": "Opublikuj komentarz",
     "posting": "Publikowanie...",
     "connectToComment": "Zaloguj się, aby dołączyć do dyskusji.",
-    "postFailed": "Nie udało się opublikować komentarza"
+    "postFailed": "Nie udało się opublikować komentarza",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "Otwarta publikacja naukowa i interaktywna ocena w trwałym, otwartym rejestrze. Non-profit, licencja AGPL-3.0, z możliwością forku.",

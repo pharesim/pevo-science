@@ -638,6 +638,9 @@ const template = `
                             <p x-show="loading" class="text-xs text-ink-muted" x-text="$t('comments.loading')"></p>
                             <!-- Error -->
                             <p x-show="error" class="text-xs text-pevo-crimson" x-text="error"></p>
+                            <button x-show="errorRetriable" type="button" @click="loadComments()"
+                                    class="btn-primary text-xs mt-2" data-testid="comments-retry"
+                                    x-text="$t('common.retry')"></button>
                             <!-- Comment count -->
                             <p x-show="!loading && totalCount === 0" class="text-xs text-ink-muted" x-text="$t('review.noComments')"></p>
                             <p x-show="!loading && totalCount > 0" class="text-xs text-ink-muted mb-2" x-text="$t('review.commentsToggle', { count: totalCount })"></p>
@@ -692,6 +695,9 @@ const template = `
 
               <!-- Error -->
               <p x-show="error" class="text-sm text-pevo-crimson" x-text="error"></p>
+              <button x-show="errorRetriable" type="button" @click="loadComments()"
+                      class="btn-primary text-sm mt-2" data-testid="discussion-retry"
+                      x-text="$t('common.retry')"></button>
 
               <!-- Top-level comment composer -->
               <template x-if="$store.auth.isConnected">

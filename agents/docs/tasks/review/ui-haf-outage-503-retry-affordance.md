@@ -48,3 +48,31 @@ For `fetchReview`, ensure the future review-detail page consumer handles 503 ret
 - `agents/docs/tasks/pending/backend-haf-outage-translation-audit-across-routes.md` (currently held; the backend contract this task consumes). On archive, the reference shifts to `tasks-archive.md`.
 - `frontend/src/components/accreditation-verify.js` — the established `err?.details?.retriable` pattern.
 - `agents/docs/api-contracts/profiles.md`, `reviews.md`, `papers.md` — architect-updated in the same review pass to enumerate 503 SERVICE_UNAVAILABLE for these routes.
+
+## UI completion signal (2026-05-20)
+
+### Wiring summary
+
+| Route | SPA call site | Wiring landed |
+|---|---|---|
+| `GET /api/profile/:username/papers` | `frontend/src/pages/profile.js` `loadProfile` | Discriminating catch on the `fetchProfilePapers` sub-fetch sets `papersRetriable` when `err.code === 'SERVICE_UNAVAILABLE' && err.details?.retriable === true`. Template adds a retry card (`data-testid="profile-papers-retry"`) gated on `papersRetriable`, distinct from the existing `noPapers` empty state. |
+| `GET /api/profile/:username/reviews` | `frontend/src/pages/profile.js` `loadReviews` | Same shape: `reviewsRetriable` flag + retry card (`data-testid="profile-reviews-retry"`), kept separate from the legitimate `noReviews` empty state. |
+| `GET /api/papers/:author/:permlink/comments` | `frontend/src/components/threaded-comments.js` `loadComments` | `errorRetriable` flag set on the same discriminator; consumers (`frontend/src/pages/paper-detail.js` review-thread mount + top-level discussion mount) now render a `common.retry` button via `x-show="errorRetriable"`. `comments.serviceUnavailable` copy distinguishes the transient case from the generic `comments.error`. |
+| `GET /api/reviews/:author/:permlink` | `fetchReview` in `frontend/src/api.js` | Zero call sites today; inline JSDoc-style note on the helper points future consumers at the established pattern + the threaded-comments wiring. |
+
+### Tests
+
+Component-tier (vitest) per the "E2E or component" acceptance:
+
+- `frontend/tests/unit/components-threaded-comments.test.js` — 4 new tests covering the discriminator (retriable flag, fallback to generic on non-retriable, no-flag on missing `details.retriable`, clear-on-retry).
+- `frontend/tests/unit/pages-profile.test.js` — 6 new tests across `loadProfile`/`loadReviews` covering the same shape (flag on 503 retriable, no-flag on plain failure, clear-on-retry).
+
+Full unit suite: 1221 tests passing (62 files).
+
+### i18n
+
+- New keys in `frontend/public/messages/en.json`: `profile.papersUnavailable`, `profile.reviewsUnavailable`, `comments.serviceUnavailable`.
+- Stubbed in all 15 non-English locale files (English text inline per the stub convention).
+- `frontend/public/messages/STUBS.md` carries a fresh `### Added 2026-05-20 (UI-HAF-OUTAGE-503-RETRY-AFFORDANCE)` sweep header.
+
+Retry buttons reuse the existing `common.retry` key (no new copy needed).

@@ -140,6 +140,87 @@ describe('profilePage', () => {
     });
   });
 
+  describe('loadProfile 503 retry affordance', () => {
+    function serviceUnavailableErr() {
+      return Object.assign(new Error('Service Unavailable'), {
+        code: 'SERVICE_UNAVAILABLE',
+        details: { retriable: true },
+      });
+    }
+
+    it('flags papersRetriable when fetchProfilePapers throws 503 retriable', async () => {
+      fetchProfile.mockResolvedValue({ data: { username: 'alice' } });
+      fetchProfilePapers.mockRejectedValue(serviceUnavailableErr());
+      const comp = createComponent();
+      await comp.loadProfile();
+      expect(comp.papersRetriable).toBe(true);
+      expect(comp.userPapers).toEqual([]);
+      // The profile-level error path is NOT triggered; the discriminating
+      // catch on the papers sub-fetch absorbs the 503 and surfaces it via
+      // the retry banner instead.
+      expect(comp.error).toBeNull();
+    });
+
+    it('does not flag papersRetriable for plain network/error failures', async () => {
+      fetchProfile.mockResolvedValue({ data: { username: 'alice' } });
+      fetchProfilePapers.mockRejectedValue(new Error('Network'));
+      const comp = createComponent();
+      await comp.loadProfile();
+      expect(comp.papersRetriable).toBe(false);
+      expect(comp.userPapers).toEqual([]);
+    });
+
+    it('clears papersRetriable on a successful retry', async () => {
+      fetchProfile.mockResolvedValue({ data: { username: 'alice' } });
+      fetchProfilePapers
+        .mockRejectedValueOnce(serviceUnavailableErr())
+        .mockResolvedValueOnce({ data: [{ author: 'alice', permlink: 'p1' }] });
+      const comp = createComponent();
+      await comp.loadProfile();
+      expect(comp.papersRetriable).toBe(true);
+      await comp.loadProfile();
+      expect(comp.papersRetriable).toBe(false);
+      expect(comp.userPapers).toHaveLength(1);
+    });
+  });
+
+  describe('loadReviews 503 retry affordance', () => {
+    function serviceUnavailableErr() {
+      return Object.assign(new Error('Service Unavailable'), {
+        code: 'SERVICE_UNAVAILABLE',
+        details: { retriable: true },
+      });
+    }
+
+    it('flags reviewsRetriable when fetchProfileReviews throws 503 retriable', async () => {
+      fetchProfileReviews.mockRejectedValue(serviceUnavailableErr());
+      const comp = createComponent();
+      await comp.loadReviews();
+      expect(comp.reviewsRetriable).toBe(true);
+      expect(comp.userReviews).toEqual([]);
+      expect(comp.reviewsLoaded).toBe(true);
+    });
+
+    it('does not flag reviewsRetriable for plain failures', async () => {
+      fetchProfileReviews.mockRejectedValue(new Error('Network'));
+      const comp = createComponent();
+      await comp.loadReviews();
+      expect(comp.reviewsRetriable).toBe(false);
+    });
+
+    it('clears reviewsRetriable on a successful retry', async () => {
+      fetchProfileReviews
+        .mockRejectedValueOnce(serviceUnavailableErr())
+        .mockResolvedValueOnce({ data: [{ author: 'alice', permlink: 'r1', paper: { title: 't' } }] });
+      const comp = createComponent();
+      await comp.loadReviews();
+      expect(comp.reviewsRetriable).toBe(true);
+      await comp.loadReviews();
+      expect(comp.reviewsRetriable).toBe(false);
+      expect(comp.userReviews).toHaveLength(1);
+    });
+  });
+
   // UI-ERR-MESSAGE-SANITIZE-PAPER-DETAIL-SURVIVORS: the profile.loadProfile
   // catch block was sanitized in commit 0ee5bfe to bind a generic localized
   // key instead of err?.message. Mirrors the pages-paper-detail.test.js

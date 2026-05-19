@@ -109,7 +109,9 @@
       "reviews": "Granskningar",
       "citations": "Citeringar",
       "accreditation": "Ackreditering"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "Publicera en artikel",
@@ -391,7 +393,8 @@
     "postComment": "Publicera kommentar",
     "posting": "Publicerar...",
     "connectToComment": "Logga in för att delta i diskussionen.",
-    "postFailed": "Kunde inte publicera kommentar"
+    "postFailed": "Kunde inte publicera kommentar",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "Öppen vetenskaplig publicering och interaktiv granskning på ett permanent, öppet register. Icke-vinstdrivande, AGPL-3.0-licensierad, förgreningsbar.",

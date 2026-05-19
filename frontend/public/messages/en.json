@@ -95,6 +95,8 @@
     "tabReviews": "Reviews",
     "noPapers": "No papers published yet.",
     "noReviews": "No reviews written yet.",
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment.",
     "anonymousReview": "Anonymous review",
     "rating": {
       "methodology": "Methodology",
@@ -384,6 +386,7 @@
     "titleWithCount": "Discussion ({count})",
     "loading": "Loading discussion...",
     "error": "Unable to load discussion.",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment.",
     "noComments": "No discussion yet. Be the first to comment on this paper.",
     "reply": "Reply",
     "replyTo": "Reply to @{author}...",

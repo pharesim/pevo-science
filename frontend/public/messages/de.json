@@ -109,7 +109,9 @@
       "reviews": "Gutachten",
       "citations": "Zitierungen",
       "accreditation": "Akkreditierung"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "Publikation veröffentlichen",
@@ -391,7 +393,8 @@
     "postComment": "Kommentar veröffentlichen",
     "posting": "Wird veröffentlicht...",
     "connectToComment": "Melden Sie sich an, um an der Diskussion teilzunehmen.",
-    "postFailed": "Kommentar konnte nicht veröffentlicht werden"
+    "postFailed": "Kommentar konnte nicht veröffentlicht werden",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "Offene wissenschaftliche Publikation und interaktive Begutachtung auf einem dauerhaften, öffentlichen Register. Gemeinnützig, AGPL-3.0-lizenziert, forkbar.",

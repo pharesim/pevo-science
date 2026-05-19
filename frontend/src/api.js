@@ -192,6 +192,13 @@ export function fetchAccreditations(params = {}) {
 
 // ─── Reviews ─────────────────────────────────────────────────────
 
+// Backend translates HAF outages to `503 SERVICE_UNAVAILABLE` with
+// `details.retriable: true`; consumers MUST distinguish that case from
+// 404 / 200-empty and surface a retry affordance, not a generic error
+// or empty state. See the established pattern in
+// `frontend/src/components/threaded-comments.js#loadComments`. No SPA
+// call sites today; this comment is the forward contract for when the
+// review-detail page lands.
 export function fetchReview(author, permlink) {
   return request(`/reviews/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}`);
 }

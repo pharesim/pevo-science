@@ -109,7 +109,9 @@
       "reviews": "بررسی‌ها",
       "citations": "استنادها",
       "accreditation": "اعتبارسنجی"
-    }
+    },
+    "papersUnavailable": "Papers are temporarily unavailable. Please retry in a moment.",
+    "reviewsUnavailable": "Reviews are temporarily unavailable. Please retry in a moment."
   },
   "publish": {
     "title": "انتشار مقاله",
@@ -391,7 +393,8 @@
     "postComment": "ارسال نظر",
     "posting": "در حال ارسال...",
     "connectToComment": "برای شرکت در بحث وارد شوید.",
-    "postFailed": "ارسال نظر ناموفق بود"
+    "postFailed": "ارسال نظر ناموفق بود",
+    "serviceUnavailable": "Discussion is temporarily unavailable. Please retry in a moment."
   },
   "footer": {
     "description": "انتشار علمی آزاد و ارزیابی تعاملی بر بستری دائمی و باز. غیرانتفاعی، تحت مجوز AGPL-3.0، قابل انشعاب.",
