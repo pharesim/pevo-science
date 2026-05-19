@@ -1,13 +1,17 @@
 /**
- * Tests for `src/lib/flush-and-exit.ts` — the boot-fatal watchdog helper.
+ * Tests for `flushAndExit` — the boot-fatal flush+watchdog helper in
+ * `src/lib/flush-and-exit.ts`.
  *
- * Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
- * pino's `flush(cb)` callback can fail to fire (back-pressured stdout,
- * wedged worker thread). Round-3 wrapped boot-fatal sites in
- * `logger.flush(() => process.exit(1))` but offered no fallback if the
- * callback never fired — `process.exit(1)` would never be reached and the
- * boot would hang indefinitely with the misconfigured runtime alive.
- * Round-4 adds a 2s `setTimeout` watchdog around the flush.
+ * `flushAndExit` is the canonical exit path for fatal logging sites:
+ * the boot-fatal validation chain in `src/index.ts` (the `validateConfig()`
+ * try/catch plus the `uncaughtException` / `unhandledRejection` handlers)
+ * and the async `.catch` on `SENTINEL_ARGON2_HASH_PROMISE` in
+ * `src/routes/auth.ts`. The helper schedules a 2s `setTimeout` watchdog,
+ * then calls `logger.flush(cb)`. Whichever fires first triggers
+ * `process.exit(1)`. The watchdog exists because pino's `flush` callback
+ * can fail to fire (back-pressured stdout, wedged transport worker, drain
+ * failure) — without it, a misconfigured-or-wedged runtime would keep
+ * running indefinitely after a fatal log.
  *
  * Mocking justification (per `agents/docs/solutions/conventions/test-mock-
  * carve-out-clause-c-2026-05-04.md`): exercising the real flush-then-exit
@@ -29,7 +33,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { logger } from '../../src/logger.js';
 import { flushAndExit } from '../../src/lib/flush-and-exit.js';
 
-describe('flushAndExit — boot-fatal flush+exit watchdog (round-4 hold #1)', () => {
+describe('flushAndExit — boot-fatal flush+exit watchdog', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
   let originalExit: typeof process.exit;
 

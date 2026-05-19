@@ -122,3 +122,34 @@ Maintainability reviewer surfaced one item on the SURROUNDING (pre-existing) con
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-19, working tree)
+
+Cleanup of round-N qualifiers and task-slug citations in `backend/tests/lib/flush-and-exit.test.ts`'s describe label and header docblock landed. The previous docblock anchored on the originating task slug + round numbers (`Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT)`, `Round-3 wrapped boot-fatal sites...`, `Round-4 adds a 2s setTimeout watchdog...`); the describe label suffixed `(round-4 hold #1)`. Both are coordination-state anchors that rot when the originating task archives off the bottom of `tasks-archive.md`. The rewrite anchors on stable symbols only: the `flushAndExit` helper name and the two production call-site contexts (the boot-fatal validation chain in `src/index.ts` and the async `.catch` on `SENTINEL_ARGON2_HASH_PROMISE` in `src/routes/auth.ts`).
+
+**Describe label — before:**
+
+> *`'flushAndExit — boot-fatal flush+exit watchdog (round-4 hold #1)'`*
+
+**Describe label — after:**
+
+> *`'flushAndExit — boot-fatal flush+exit watchdog'`*
+
+**Header docblock — before (first paragraph):**
+
+> *"Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT): pino's `flush(cb)` callback can fail to fire (back-pressured stdout, wedged worker thread). Round-3 wrapped boot-fatal sites in `logger.flush(() => process.exit(1))` but offered no fallback if the callback never fired — `process.exit(1)` would never be reached and the boot would hang indefinitely with the misconfigured runtime alive. Round-4 adds a 2s `setTimeout` watchdog around the flush."*
+
+**Header docblock — after (first paragraph):**
+
+> *"`flushAndExit` is the canonical exit path for fatal logging sites: the boot-fatal validation chain in `src/index.ts` (the `validateConfig()` try/catch plus the `uncaughtException` / `unhandledRejection` handlers) and the async `.catch` on `SENTINEL_ARGON2_HASH_PROMISE` in `src/routes/auth.ts`. The helper schedules a 2s `setTimeout` watchdog, then calls `logger.flush(cb)`. Whichever fires first triggers `process.exit(1)`. The watchdog exists because pino's `flush` callback can fail to fire (back-pressured stdout, wedged transport worker, drain failure) — without it, a misconfigured-or-wedged runtime would keep running indefinitely after a fatal log."*
+
+The mocking-justification paragraph that cites `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` is unchanged — that's a stable convention reference, not a task-coordination anchor. No new task slugs, round numbers, line numbers, or commit SHAs were introduced in the replacement prose.
+
+**Verification gates:**
+- `npx tsc --noEmit` from `backend/`: clean (zero output, exit 0).
+- `npm run lint` from `backend/`: clean (zero errors, zero new warnings).
+- `npx vitest run tests/lib/flush-and-exit.test.ts` from `backend/`: 1 file passed, 2 passed / 0 failed.
+
+Task file remains in `tasks/pending/` here; parent agent will `git mv` to `tasks/review/` per the worktree-fanout protocol.
