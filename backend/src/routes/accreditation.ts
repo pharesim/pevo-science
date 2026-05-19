@@ -778,12 +778,17 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
           },
           'accreditation.verify existing-accreditation gate hit — returning prior tx_id without re-broadcasting',
         );
-        await deleteTokenBestEffort(
+        // Grace-period completion record on the gate-hit branch (parity with
+        // the fresh-broadcast success path). Without this, an AbortError-
+        // after-success retry on the same token falls through to the 400
+        // BAD_REQUEST cascade because the pending row has been cleared.
+        // Recording the gate-hit `tx_id` here lets the retry's
+        // `readAccreditationCompletion` return the identical 200 envelope.
+        await recordAccreditationCompletionBestEffort(
           token,
           pending.hive_username,
+          existingForUser.tx_id,
           pending.email,
-          'accreditation.verify.existing_accreditation_hit_token_cleanup_failed',
-          'accreditation.verify existing-accreditation gate token cleanup failed — orphan TTLs out',
         );
         return sendOk(res, {
           message: 'Accreditation confirmed',
@@ -877,12 +882,17 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
           );
           return;
         }
-        await deleteTokenBestEffort(
+        // Grace-period completion record on the per-token idempotency-hit
+        // branch (parity with the fresh-broadcast success path and the
+        // gate-hit branch above). The pending row is cleared by the
+        // pipeline inside `recordAccreditationCompletion`, so a retry on
+        // the same token reads the completion record and returns the
+        // identical 200 envelope instead of cascading to 400 BAD_REQUEST.
+        await recordAccreditationCompletionBestEffort(
           token,
           pending.hive_username,
+          existing.tx_id,
           pending.email,
-          'accreditation.verify.idempotency_hit_token_cleanup_failed',
-          'accreditation.verify idempotency-hit token cleanup failed — orphan TTLs out',
         );
         return sendOk(res, {
           message: 'Accreditation confirmed',

@@ -344,23 +344,27 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     }
   });
 
-  it('token cleanup failure on hit — 200 envelope unaffected + token_cleanup_failed warn (F20)', async () => {
+  it('token cleanup failure on hit — 200 envelope unaffected + completion_record_failed_post_success warn', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
     const username = 'idemverifyclean';
     await seedPendingAccreditation(token, username);
 
-    // Gate miss, then per-token idempotency hit. Exercises the per-token
-    // branch's `idempotency_hit_token_cleanup_failed` warn — the gate's
-    // sibling warn has its own coverage below.
+    // Gate miss, then per-token idempotency hit. The per-token hit branch
+    // writes the grace-period completion record via
+    // `recordAccreditationCompletionBestEffort`; a Redis flap inside the
+    // helper surfaces the unified `completion_record_failed_post_success`
+    // warn instead of the prior branch-specific cleanup warn.
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
     hafQueryMock.mockResolvedValueOnce({
       rows: [{ trx_id: 'tx-prior-cleanup', block_num: 50001 }],
     });
 
-    // Stub `redis.del` to throw exactly once so the hit-path deleteToken
-    // throws inside the best-effort wrapper. Subsequent del calls work
+    // Stub `redis.del` to throw exactly once. The helper's MULTI pipeline
+    // does not touch `redis.del` directly, but the subsequent
+    // `deleteBroadcastAttempts` call does — that throw propagates out and
+    // is caught by the best-effort wrapper. Subsequent del calls work
     // normally so afterEach cleanup can still run.
     const redisAny = redis as unknown as {
       del: (...args: unknown[]) => Promise<number>;
@@ -382,9 +386,9 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
       });
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
-        return ctx?.event === 'accreditation.verify.idempotency_hit_token_cleanup_failed';
+        return ctx?.event === 'accreditation.verify.completion_record_failed_post_success';
       });
-      expect(matchingCall, 'expected idempotency_hit_token_cleanup_failed warn').toBeDefined();
+      expect(matchingCall, 'expected completion_record_failed_post_success warn').toBeDefined();
     } finally {
       warnSpy.mockRestore();
       // Restore real del so afterEach cleanup works.
@@ -623,7 +627,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     expect(finalRes.body.error?.code).toBe('ACCREDITATION_GATE_UNAVAILABLE');
   });
 
-  it('gate-hit token cleanup failure — 200 envelope unaffected + existing_accreditation_hit_token_cleanup_failed warn', async () => {
+  it('gate-hit token cleanup failure — 200 envelope unaffected + completion_record_failed_post_success warn', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
@@ -634,9 +638,12 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
       rows: [{ trx_id: 'tx-gate-cleanup-prior', block_num: 60000, action: 'accredit' }],
     });
 
-    // Stub `redis.del` to throw exactly once so the gate-path deleteToken
-    // throws inside the best-effort wrapper. Subsequent del calls work
-    // normally so afterEach cleanup still runs.
+    // The gate-hit branch writes the grace-period completion record via
+    // `recordAccreditationCompletionBestEffort`. Stub `redis.del` to throw
+    // exactly once so the post-pipeline `deleteBroadcastAttempts` call
+    // throws inside the best-effort wrapper; the unified
+    // `completion_record_failed_post_success` warn fires. Subsequent del
+    // calls work normally so afterEach cleanup still runs.
     const redisAny = redis as unknown as {
       del: (...args: unknown[]) => Promise<number>;
     };
@@ -657,9 +664,9 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
       });
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
-        return ctx?.event === 'accreditation.verify.existing_accreditation_hit_token_cleanup_failed';
+        return ctx?.event === 'accreditation.verify.completion_record_failed_post_success';
       });
-      expect(matchingCall, 'expected existing_accreditation_hit_token_cleanup_failed warn').toBeDefined();
+      expect(matchingCall, 'expected completion_record_failed_post_success warn').toBeDefined();
     } finally {
       warnSpy.mockRestore();
       redisAny.del = originalDel as unknown as typeof redisAny.del;
@@ -908,5 +915,125 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     const stored = await redis.get(`${config.appTag}:accreditation-completed:${digest}`);
     expect(stored).not.toBeNull();
     expect(JSON.parse(stored as string).tx_id).toBe('tx-fresh-id-only');
+  });
+
+  it('retried /verify after existing-accreditation gate-hit returns cached 200 envelope, broadcast not invoked', async () => {
+    // The gate-hit branch returns 200 outcome:'already_accredited' with the
+    // prior on-chain tx_id. An AbortError-after-success retry on the same
+    // token must surface the same 200 envelope rather than cascading to
+    // 400 BAD_REQUEST. The gate-hit branch writes the grace-period
+    // completion record with the gate's tx_id; the read site on retry
+    // returns the canonical 3-field success envelope.
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-grace-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gracegatehitretry';
+    await seedPendingAccreditation(token, username);
+
+    // First flight: gate hit.
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-gate-grace-prior', block_num: 70000, action: 'accredit' }],
+    });
+
+    const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+    expect(firstRes.status).toBe(200);
+    expect(firstRes.body.data).toMatchObject({
+      message: 'Accreditation confirmed',
+      username,
+      tx_id: 'tx-gate-grace-prior',
+      outcome: 'already_accredited',
+    });
+    // Broadcast never fires on the gate-hit branch.
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+
+    // Grace-period record landed with the gate's tx_id; pending row gone.
+    expect(await tokenExists(token)).toBe(false);
+    const digest = crypto.createHash('sha256').update(token).digest('hex');
+    const stored = await redis.get(`${config.appTag}:accreditation-completed:${digest}`);
+    expect(stored).not.toBeNull();
+    expect(JSON.parse(stored as string)).toEqual({
+      username,
+      tx_id: 'tx-gate-grace-prior',
+    });
+
+    // Second flight: retry. Reads the grace-period record and returns the
+    // canonical 200 envelope. The HAF gate query must NOT fire — the
+    // record short-circuits before any HAF/broadcast work. (No additional
+    // `mockResolvedValueOnce` set here: if the route reached the gate on
+    // retry, supertest would surface a no-more-mocks rejection.)
+    const broadcastCallsBefore = broadcastJsonMock.mock.calls.length;
+    const hafCallsBefore = hafQueryMock.mock.calls.length;
+    const retryRes = await request(app).post('/api/accreditation/verify').send({ token });
+
+    expect(retryRes.status).toBe(200);
+    expect(retryRes.body.data).toMatchObject({
+      message: 'Accreditation confirmed',
+      username,
+      tx_id: 'tx-gate-grace-prior',
+    });
+    // The retry's envelope omits the `outcome` field by design — the
+    // cached read returns the canonical 3-field success shape, which is
+    // what the SPA's success-state handler renders without branching.
+    expect(retryRes.body.data.outcome).toBeUndefined();
+    expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBefore);
+    expect(hafQueryMock.mock.calls.length).toBe(hafCallsBefore);
+  });
+
+  it('retried /verify after per-token idempotency-hit returns cached 200 envelope, broadcast not invoked', async () => {
+    // The per-token idempotency-hit branch returns 200 outcome:'already_landed'
+    // with the prior broadcast's tx_id (recovered from HAF via
+    // `lookupAccreditationBroadcastIdempotency`). An AbortError-after-success
+    // retry on the same token must surface the same 200 envelope rather
+    // than cascading to 400 BAD_REQUEST. The idem-hit branch writes the
+    // grace-period completion record with the recovered tx_id.
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-grace-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'graceidemhitretry';
+    await seedPendingAccreditation(token, username);
+
+    // First flight: gate miss + per-token idempotency hit.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-idem-grace-prior', block_num: 80000 }],
+    });
+
+    const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+    expect(firstRes.status).toBe(200);
+    expect(firstRes.body.data).toMatchObject({
+      message: 'Accreditation confirmed',
+      username,
+      tx_id: 'tx-idem-grace-prior',
+      outcome: 'already_landed',
+    });
+    // Broadcast never fires on the idempotency-hit branch.
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+
+    // Grace-period record landed with the idempotency-recovered tx_id;
+    // pending row gone.
+    expect(await tokenExists(token)).toBe(false);
+    const digest = crypto.createHash('sha256').update(token).digest('hex');
+    const stored = await redis.get(`${config.appTag}:accreditation-completed:${digest}`);
+    expect(stored).not.toBeNull();
+    expect(JSON.parse(stored as string)).toEqual({
+      username,
+      tx_id: 'tx-idem-grace-prior',
+    });
+
+    // Second flight: retry. Reads the grace-period record and returns the
+    // canonical 200 envelope. Neither HAF nor the broadcast fires.
+    const broadcastCallsBefore = broadcastJsonMock.mock.calls.length;
+    const hafCallsBefore = hafQueryMock.mock.calls.length;
+    const retryRes = await request(app).post('/api/accreditation/verify').send({ token });
+
+    expect(retryRes.status).toBe(200);
+    expect(retryRes.body.data).toMatchObject({
+      message: 'Accreditation confirmed',
+      username,
+      tx_id: 'tx-idem-grace-prior',
+    });
+    expect(retryRes.body.data.outcome).toBeUndefined();
+    expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBefore);
+    expect(hafQueryMock.mock.calls.length).toBe(hafCallsBefore);
   });
 });
