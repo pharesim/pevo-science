@@ -204,3 +204,39 @@ Re-read the diff against the three failure modes in root CLAUDE.md "Comment anch
 - `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **45/52 pass**. Seven failures observed; all reproduced on `git stash` (HEAD pre-edit) state, so not introduced by this commit. Failures are environment-related (empty `SMTP_HOST` in this worktree's `.env` produces 500s in `/api/accreditation/request` SMTP-throw and SMTP-not-configured specs, and 4xx-refund / limiter specs depend on those upstream outcomes) plus the documented `pre-INCR redis.eval rejection surfaces 503` 502-vs-503 flake. None are caused by this task's edits.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` on the round-2 commit confirms all 7 hold items landed cleanly: the broadened acceptance grep returns zero real rot (the 4 substring matches are durable `probe-{before,after,then}-INCR` behavioral phrases), the self-audit clause holds, and the commit subject conforms. However, the cluster-review verification pass surfaced 4 in-scope partial-strip stubs in `backend/tests/routes/accreditation.test.ts`. All four predate the round-2 commit (introduced by the round-1 sweep, present in `87c975e^`), but they live in this task's named scope and are the same failure-mode class as round-1 hold items 1-5 (a citation noun was stripped, leaving a grammatically dangling determiner or orphan single letter). The round-2 acceptance grep didn't catch them because it targets coordination-state tokens (round-N, slugs, F-labels) and not the grammatical residuals those strips leave behind.
+
+### Items
+
+1. **`backend/tests/routes/accreditation.test.ts` ~L884** — `// Mirrors the staging (seed + broadcast-throws-timeout) but exercises the degraded-return branch instead of the throw branch.` `Mirrors the staging` has no antecedent. A noun (likely a phrase that named the prior throws-branch spec sharing the same setup) was stripped. **Fix:** rewrite with a stable behavioral anchor naming what is mirrored. Two viable shapes: (a) `Same seed + broadcast-throws-timeout setup as the throws-branch spec above, but exercises the degraded-return branch.` or (b) name the helper-return value that distinguishes the two branches (`enqueued_for_drain` for this spec vs. the catch-around-decrement throw exercised by the prior spec).
+
+2. **`backend/tests/routes/accreditation.test.ts` ~L863** — `// pattern (c switched to a 64-hex token to make the redaction assertion load-bearing).` Orphan single-letter `c` inside the parenthetical (same orphan-letter shape as round-1 hold items 3-4). **Fix:** drop the orphan or replace with a behavioral antecedent. E.g., `(this spec uses a 64-hex token so the pino-redact assertion is load-bearing — the afterEach 'accred-cap-*' prefix wouldn't match the redact regex)`.
+
+3. **`backend/tests/routes/accreditation.test.ts` ~L913** — `// The new site-specific warn fires with the discriminator + structured fields.` The qualifier before `discriminator` was stripped. **Fix:** name the discriminator concretely. The asserted event at L919 is `accreditation.verify.timeout_decrement_degraded`; a natural anchor is `The new site-specific timeout_decrement_degraded warn fires with the event discriminator and structured fields.` (anchoring on the actual event-name string the assertion checks).
+
+4. **`backend/tests/routes/accreditation.test.ts` ~L1116** — `// Mirrors the b decrement spec.` Orphan single-letter `b` (same shape as round-1 hold items 2-4). **Fix:** name the mirrored sibling spec by stable symbol — the `it('decrementBroadcastAttempts emits Redis-unavailable warn ...')` block at ~L1057. Rewrite as e.g. `Mirrors the decrementBroadcastAttempts Redis-unavailable warn spec above.`
+
+### Why these matter
+
+The round-1 hold caught the orphan-prefix shape in it-titles (items 1-5). The round-2 acceptance was scoped to plus-lines for orphan single-letter prefixes, `+#N:` heads, dangling prepositions, and bare possessives — but the eyeball pass was scoped to *plus-lines only*, and these 4 sites weren't in the plus-lines. So they survived round-1, weren't in the round-1 hold-block enumeration, and weren't audited at round-2.
+
+The broader recurring class: a sweep that strips a citation noun can leave a grammatically-broken determiner + dangling tail (`the staging`, `the discriminator`, `the b decrement spec`). The acceptance grep (regex-driven, looking for ROT tokens) doesn't catch this — it requires a holistic comment-by-comment re-read of the file.
+
+### Acceptance for re-review
+
+- All 4 cited sites rewritten with stable-symbol anchors that survive line drift and don't introduce new orphan prefixes, dangling determiners, or bare possessives.
+- Holistic re-read of the WHOLE comment surface in `backend/tests/routes/accreditation.test.ts` (not just the 4 cited sites) to surface any other partial-strip residuals of the same class. Report each additional site found in the re-review signal block and either fix or note as deliberate.
+- Self-audit per `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` over the new diff: no new orphan prefixes, dangling determiners, partial-strip stubs, round-N markers, slug citations, line-number anchors, SHA references, or date anchors.
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env-var overrides per CLAUDE.md "Running Tests". The pre-existing failure set (SMTP-not-configured environment failures + pre-INCR redis.eval 502-vs-503 flake) may continue to fail; not regressions.
+
+### Out of scope
+
+- 2 file:line anchors at `backend/tests/routes/accreditation.test.ts` ~L326 (cites `lib/broadcast-error.ts:399`) and ~L1445 (cites `accreditation.ts:901`). These violate `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` but predate this task series and were not in the round-1 hold's item-6 enumerated site list — they belong to a sibling sweep cycle.
+- The same dangling-determiner / orphan-letter class in OTHER files. Per the round-1 task scope, this sweep is bounded to the 3 named files; a wider sweep is a separate task if it becomes worth scoping.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
