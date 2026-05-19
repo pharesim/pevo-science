@@ -77,3 +77,34 @@ Pre-existing rot that survived the round-3 sweep of sibling sites (round-3 sweep
 - Sibling sweep task: `agents/docs/tasks/pending/backend-comment-anchor-rot-sweep-accreditation-ts.md` (same shape, different files)
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-19) — HELD PENDING FIXES
+
+`/ce-code-review` of the round-1 implementation commit found the diff itself clean across correctness, testing, and project-standards (acceptance grep + self-audit clause). Two small prose-quality findings in the diff plus a parallel pre-existing rot class the sweep's grep did not target — line-number anchors in 4 non-diff sites of the same files this task touched.
+
+### Items
+
+1. **`backend/tests/lib/fresh-auth.test.ts` ~L100** — the module-scope `redisAvailable` comment rewrite dropped the verb "hoist". The opening line previously read `Round-5 hold #8: hoist the "Redis present?" check to module scope so it.skipIf can read it at registration time.` and now reads `Module-scope redisAvailable capture lets it.skipIf(...) evaluate the "Redis present?" predicate at test-registration time.` The Implementation note below preserves the timing rationale, but the opening line lost the explicit signal that the module-scope placement is a deliberate move (vs. an incidental choice). **Fix:** prepend `Hoisted to module scope:` (or equivalent intentional-design phrasing) to the opening line so a future reader sees the design decision before the consequence.
+
+2. **`backend/tests/lib/fresh-auth.test.ts` L33** — file-header docblock section heading `Concurrent dual-consume race (2026-05-16):` uses a calendar date as the section anchor. A date carries no behavioral signal and grows stale as context. **Fix:** replace `(2026-05-16)` with a behavioral qualifier (e.g., `— shared-lock-domain invariant:`) or drop the parenthetical entirely so the heading is just `Concurrent dual-consume race:`.
+
+3. **Pre-existing line-number anchors in non-diff sites of the touched files (4 sites — parallel to the sibling accreditation-ts task's item 6):**
+   - `backend/tests/routes/review-parity-invariant.test.ts` L106 cites `papers.ts:2201-2216`.
+   - `backend/tests/routes/review-parity-invariant.test.ts` L121 cites `reputation.ts:562-585`.
+   - `backend/tests/routes/settings-email-fresh-auth.test.ts` L647 cites `orcid.test.ts:207-209`.
+   - `backend/tests/routes/settings-email-fresh-auth.test.ts` L725 cites `orcid.test.ts:251-277`.
+
+   Same rot class as the sibling task's item 6 — the round-1 acceptance grep targeted only round-N / slug / `F[0-9]+ ` shapes, not `\w+\.ts:\d+` (file:line citations). These violate `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` regardless of whether the original grep was scoped to catch them.
+
+   **Fix:** extend the grep target to include `\w+\.ts:\d+` (file:line citation form) and sweep these 4 sites. Rewrite each to anchor on the stable function / CTE label / route handler symbol the cited code defines. E.g., `papers.ts:2201-2216` → cite the specific CTE label or exported function name the line range covers; `orcid.test.ts:207-209` → describe what the cited test block asserts. Lines drift with every edit; symbols do not.
+
+### Acceptance for re-review
+
+- Items 1 and 2 land as a focused diff over the two named surfaces.
+- Item 3 grep extension (`\w+\.ts:\d+`) returns zero hits across the three task-scope files modulo durable backticked doc-path citations; the 4 named sites are rewritten with stable-symbol anchors.
+- Self-audit per `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` over the new diff: no new line-number anchors, slugs, round-N markers, SHAs, or partial-strip stubs in the replacement prose.
+- `npx vitest run tests/lib/fresh-auth.test.ts tests/routes/settings-email-fresh-auth.test.ts tests/routes/review-parity-invariant.test.ts` continues to pass (63 passed | 1 skipped; the skip is pre-existing).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

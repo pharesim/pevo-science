@@ -111,3 +111,43 @@ Replacement prose was spot-checked against the rot patterns. No new task-slug ci
 - `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **51/52 pass**. The single failure (`pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE with {retriable:true}` — expected 503, received 502) is a documented pre-existing flake — verified via `git stash`: the failure reproduces on a clean tree at the same SHA before this commit's edits. The flake was previously flagged in the round-2 signal block of `backend-verify-post-success-retry-idempotency`. Not caused by this task's changes.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Architect re-review (2026-05-19) — HELD PENDING FIXES
+
+`/ce-code-review` of the round-1 implementation commit surfaced 7 self-audit-clause violations + adjacent in-scope pre-existing rot the acceptance grep missed. Items 1-5 carry cross-reviewer corroboration (correctness + testing + project-standards). Items 6-7 are in-scope per this task's stated file list.
+
+The acceptance grep returns clean, but the *spirit* of the convention — and the explicit self-audit clause per `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` — was violated by partial-strip residuals (round-N prefix stripped, coordination-state stub remained) and grep-pattern evasion (case-sensitive grep + `F[0-9]+ ` requiring trailing space let several sites through). Land the fixes and `git mv` back to `tasks/review/` for re-review.
+
+### Items
+
+1. **`backend/tests/routes/accreditation.test.ts` ~L694** — `it('clears the attempt counter on terminal (502) broadcast failure (sequential-flood scope per )', ...)`. The `round-3 hold #8` qualifier was stripped but the bridging `per )` was left dangling, leaving a grammatically broken title. **Fix:** drop the trailing `(sequential-flood scope per )` clause entirely, or rewrite to a self-contained behavioral parenthetical that survives without the round-N referent.
+
+2. **`backend/tests/routes/accreditation.test.ts` ~L868** — `it('+#2: 504 timeout + Redis-unavailable mid-request ...', ...)`. The original was `round-4 hold #1+#2:` and only `round-4 hold #1` was stripped, leaving `+#2:` as a meaningless leading token. **Fix:** drop the `+#2:` prefix; the rest of the title already describes the scenario.
+
+3. **`backend/tests/routes/accreditation.test.ts` ~L1055** — `it('b: decrementBroadcastAttempts emits Redis-unavailable warn ...', ...)`. The original was `round-4 hold #3b:` and only the round-N portion was stripped, leaving a bare letter prefix. **Fix:** drop the `b:` prefix.
+
+4. **`backend/tests/routes/accreditation.test.ts` ~L1099** — `it('c (Reliability-R2): incrementBroadcastAttempts emits Redis-unavailable warn ...', ...)`. Same shape as item 3, plus `Reliability-R2` is itself a coordination-cluster slug. **Fix:** drop the entire `c (Reliability-R2): ` prefix.
+
+5. **`backend/tests/routes/accreditation.test.ts` ~L1097** — `// Symmetric to 's decrement-side warn.` — the original `round-3 hold #10's` was stripped, leaving a bare possessive `'s` with no antecedent. **Fix:** give the comment a stable referent, e.g., `// Symmetric to incrementBroadcastAttempts's decrement-side warn.` (or rewrite the symmetry claim to name both sides directly without the possessive shorthand).
+
+6. **Pre-existing rot in-scope per this task's file list — 5 sites the acceptance grep missed:**
+   - `backend/src/routes/accreditation.ts` L810: `Round-2's revoke-handling fix` — case-sensitive grep miss (`round[- ]?[0-9]` was case-sensitive).
+   - `backend/src/routes/accreditation.ts` L915: `F22:` — `F[0-9]+ ` required a trailing space; `F22:` (with colon) escaped.
+   - `backend/src/routes/accreditation.ts` L928: `F10:` — same shape.
+   - `backend/src/routes/accreditation.ts` L1049: `F24:` — same shape.
+   - `backend/tests/routes/accreditation-idempotency.test.ts` L518: `Round-3 (architect α-disposition, 2026-05-16)` — case-sensitive miss + date anchor.
+
+   **Fix:** broaden the acceptance grep to case-insensitive and include `F[0-9]+[: ]` (digit followed by colon OR space), then sweep these 5 sites. The F-numbered labels carry load-bearing rationale in the surrounding prose — the LABEL is the rot, not the explanation. Preserve the rationale and rewrite the label as a stable-symbol or behavioral anchor. "Architect disposition α, YYYY-MM-DD" phrases carry no behavioral signal; replace with the substantive rationale the disposition encoded.
+
+7. **`backend/tests/routes/accreditation-idempotency.test.ts` header** — `is filed as a separate integration-test task` is a dangling forward reference; no such task exists in `pending/`, `blocked/`, `review/`, or the archive. **Fix:** describe the missing coverage directly, e.g., `HAF integration coverage for findAccreditationBroadcastByIdempotencyKey, findCustodyBroadcastByIdempotencyKey, and findExistingAccreditation against a live HAF pool is not asserted here.` Drop the "is filed as" framing entirely so no forward reference remains.
+
+### Acceptance for re-review
+
+- Broadened grep (case-insensitive + `F[0-9]+[: ]`) across the three named files: zero hits, modulo durable backticked doc-path citations.
+- Eyeball pass over plus-lines for items 1-5 confirms no orphan single-letter prefixes (`'a:'`, `'b:'`, `'c:'`), no `+#N:` or `#N:` heads, no dangling prepositions (`per )`, `to )`, `for )`, `in )`), and no bare possessives (`'s ` with no antecedent).
+- Self-audit per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` against the new diff: replacement prose introduces no new round-N markers, no slug citations, no line-number anchors, no SHA references, and no partial-strip stubs.
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env-var overrides per CLAUDE.md "Running Tests". The pre-existing 1/52 flake (redis.eval pre-INCR 502-vs-503) may continue to fail; not a regression.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
