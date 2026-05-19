@@ -276,3 +276,47 @@ When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-3 archite
 Items 1-3 touch only `backend/src/lib/fresh-auth.ts` and `backend/tests/lib/fresh-auth.test.ts`. Implementer's call whether one commit or two.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-19, commit SHA c6c8f15)
+
+All three round-3 hold items landed in a single commit. Touched files: `backend/src/lib/fresh-auth.ts` (item 2 new export + item 3 signature widening) and `backend/tests/lib/fresh-auth.test.ts` (item 1 rot-anchor strip + item 2 new identity test).
+
+### Item 1 (P1) — residual rot anchors stripped
+
+- `// Acceptance per task §4:` → rewritten to a behavioral acceptance statement covering both Redis-up GETDEL atomicity and Redis-stubbed in-process-lock conditions, applied across both helpers and their two-variant-per-helper coverage. No task-section reference remains.
+- `(See Option B docblock in \`lib/fresh-auth.ts\`.)` → rewritten to anchor on the stable `inFlightConsumes` docblock symbol, which is the surface where the loser-reason rationale lives post-round-2.
+- Audit-own-replacement check: the rewrites use only stable symbols (`inFlightConsumes`, `consumeFreshAuthToken`, `consumeSessionFreshAuthToken`), describe behavior in invariant terms, and contain no SHAs, line numbers, slug citations, or round numbers.
+
+### Item 2 (P2) — shared-lock-domain Set-identity anchor
+
+- Added `_getInFlightConsumesSetReferenceForTests(): ReadonlySet<string>` to `backend/src/lib/fresh-auth.ts`. The docblock notes the architect-described microtask-FIFO failure mode that wire-shape assertions cannot catch and explains why reference equality is the only mutation-killing anchor for the shared-lock-domain invariant.
+- Added one test `'shared-lock-domain invariant: both helpers consult the same inFlightConsumes Set (identity anchor)'` in the same describe block, ahead of the existing wire-shape cross-helper test. Spies on `.has` of the Set returned by the new export, runs `consumeFreshAuthToken` then `consumeSessionFreshAuthToken`, and asserts call counts on the spied Set increment for BOTH helper invocations.
+- Mutation kill: a per-helper-Set split (renaming `inFlightConsumes` → `inFlightConsumesByConsentHelper` and adding `inFlightConsumesBySessionHelper`) would route the session helper's `.has` to a sibling Set; the spy on the exported Set would see zero call delta after the session helper runs, failing `sessionHelperCalls > 0`.
+- Runs unconditionally (no `skipIf`) — closes the secondary gap from the hold block where the existing Redis-stubbed cross-helper test was gated on `redisAvailable`.
+- Existing wire-shape cross-helper test (`'cross-helper Redis-stubbed Promise.all → exactly one winner (shared-lock-domain invariant)'`) retained as nice-to-have coverage per the hold block's "can remain alongside" allowance.
+
+### Item 3 (P2) — `_setMemStoreEntryForTests` signature widened
+
+- Parameter type changed from `entry: unknown` → `entry: StoredEntry | object`. JSDoc note explains the deliberate-misuse contract: test callers may pass structurally invalid objects (the existing caller plants a circular-reference fixture that fails `JSON.stringify`) to exercise throw-on-stringify paths inside the consume helper.
+- The internal cast to `StoredEntry` is retained — load-bearing for the `memStore` Map shape — but the wider parameter type signals to future callers that the cast is from a known-broader-with-test-purpose type rather than from bare `unknown`. No eslint-disable annotation needed at the call site.
+
+### Items dismissed at architect triage — no action
+
+All three architect-listed dismissals confirmed not in scope:
+- T-1 cross-helper test no-Redis companion: closed by item 2's no-skipIf identity test.
+- adversarial unbounded set growth: speculative under Redis-hang + retry; default-recommend dismiss per `feedback_dismiss_preemptive_test_hardening`.
+- adversarial P3 observability nit on lock-held vs consumed-token wire indistinguishability: below actionable bar.
+
+### Verification
+
+- `npm run typecheck` clean (both src and tests).
+- `npm run lint` clean.
+- `npx vitest run tests/lib/fresh-auth.test.ts` → 39/39 passed (was 38/38 round-2; +1 for new identity test).
+- New identity test verified running (not silently skipped) via `--reporter=verbose`.
+- Full backend suite NOT run in this worktree — targeted gates only per parent instructions.
+
+### Architect-zone notes
+
+None. The three fixes are fully contained to `backend/src/lib/fresh-auth.ts` and `backend/tests/lib/fresh-auth.test.ts`. No contract updates, no schema changes, no sibling-helper edits.
