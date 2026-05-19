@@ -291,3 +291,30 @@ When items 1-7 land, `git mv` this file back to `tasks/review/`. Round-2 archite
 Items 1-7 touch a mix of `backend/src/routes/admin.ts`, `backend/src/routes/accreditation.ts`, `backend/src/lib/pending-decrement-queue.ts`, `backend/src/config.ts`, and the three test files. Implementer's call whether one bundled commit, two (`code-shape + comment-anchor` + `tests`), or three; the zone-audit hook will be satisfied as long as all paths are under `backend/`.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-19, commit SHA 60789ae)
+
+All 7 round-2 hold items landed in a single bundled commit (`60789ae`):
+
+- **Item 1.** `broadcastAttemptsKey` is now `export`ed from `backend/src/routes/accreditation.ts` and imported in `backend/src/routes/admin.ts`; the duplicate definition is gone.
+- **Item 2.** All 8 new log events renamed to canonical dotted-path form (`accreditation.verify.decrement_queue_{drain,retry_failed,overflow,drain_threw}`, `accreditation.admin.reset_broadcast_counter{,_forbidden,_redis_unavailable,_failed}`). Test assertions in `tests/lib/pending-decrement-queue.test.ts` and `tests/routes/admin.test.ts` updated to pin the renamed discriminators.
+- **Item 3.** Task-slug citations + the one round-number reference removed from all 6+ sites: `backend/src/lib/pending-decrement-queue.ts` header, `backend/src/config.ts` knob comment, three comment blocks in `backend/src/routes/accreditation.ts` (catch block, Redis-unavailable branch, attemptId declaration), `backend/src/routes/admin.ts` file header, `backend/tests/lib/pending-decrement-queue.test.ts` header, `backend/tests/routes/accreditation.test.ts` describe block (and its "Round-3 hold #10" sub-comment), `backend/tests/routes/admin.test.ts` header. Each replaced with behavioral anchors (route handlers, invariants, stable symbols).
+- **Item 4.** New 500-branch spec added to `tests/routes/admin.test.ts`: stubs `redis.getdel` to reject, asserts `INTERNAL_ERROR` envelope + the renamed `accreditation.admin.reset_broadcast_counter_failed` discriminator.
+- **Item 5.** `tests/routes/admin.test.ts` header extended with explicit clause (a) cryptographic-bypass acknowledgement + focus justification, and clause (c) names the real-path companion at `backend/tests/middleware/verifyHiveSignature-authmethod.test.ts`.
+- **Item 6.** `redis.get(key)` + `redis.del(key)` replaced with atomic `redis.getdel(key)` in the admin reset route. ioredis 5.10.1 exposes `getdel` directly (verified against `node_modules/ioredis/built/utils/RedisCommander.d.ts`).
+- **Item 7.** `res.set('Retry-After', '30')` added on the admin reset 503 branch; the 503 spec asserts `res.headers['retry-after']` is `'30'`.
+
+Convention-enforcing-fix audit (per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`): the rewritten comments and test descriptions across item 3 anchor on behavioral semantics, route handler paths, and stable symbols. No line numbers, no SHAs, no task slugs, no round-N markers in the replacement prose. Spot-checked each of the 8 affected files.
+
+The `[TODO Architect]` markers in this task file for `agents/docs/api-contracts/accreditation.md` (admin endpoint contract row) and `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` (manual-reset runbook section) remain from round 1 — architect-zone.
+
+### Verification
+
+- `npm run typecheck` (backend): clean.
+- `npm run lint` (backend): clean.
+- `npx vitest run tests/routes/admin.test.ts tests/lib/pending-decrement-queue.test.ts`: 16/16 pass.
+- `npx vitest run tests/routes/accreditation.test.ts`: 26 pass, 7 fail. All 7 failures pre-exist on `main` with this commit reverted — they are unrelated to this work (free-email-provider 500, yahoo 500, round-4 hold #2 503-vs-502 already flagged in parent instructions, two SMTP-shape `BE-LOG-SHAPE-CONVERGENCE` specs, two `BE-ACCRED-REQ-LIMITER` specs). All 14 `BE-VERIFY-BROADCAST-ATTEMPTS-CAP` specs including the three flap-recovery specs from round 1 pass.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
