@@ -807,17 +807,16 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         });
       }
     } catch (gateErr) {
-      // Round-2's revoke-handling fix (the gate now considers latest of
-      // ('accredit','revoke')) reshaped what fallthrough means here: a
-      // catch-and-degrade would let a fresh broadcast OVERRIDE a chain-
+      // The gate considers the latest of ('accredit','revoke'), so a
+      // catch-and-degrade here would let a fresh broadcast OVERRIDE a chain-
       // recorded revoke during HAF outage, not just permit a bounded
       // duplicate accredit. Under PEvO's operator-only-reversible revoke
-      // semantic (architect disposition α, 2026-05-16), that override is a
-      // structural gap, not an accepted bounded class. So when the gate
-      // query throws we surface 503 SERVICE_UNAVAILABLE and preserve the
-      // token (no deleteTokenBestEffort) so the user can retry once HAF
-      // recovers. The rate-limit counter is not incremented either: this
-      // path short-circuits before the pre-INCR slot claim.
+      // semantic, that override is a structural gap, not an accepted bounded
+      // class. So when the gate query throws we surface 503
+      // SERVICE_UNAVAILABLE and preserve the token (no deleteTokenBestEffort)
+      // so the user can retry once HAF recovers. The rate-limit counter is
+      // not incremented either: this path short-circuits before the pre-INCR
+      // slot claim.
       logger.warn(
         {
           event: 'accreditation.verify.existing_accreditation_gate_unavailable',
@@ -912,7 +911,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         });
       }
     } catch (lookupErr) {
-      // F22: inlined from the prior `logIdempotencySkip` helper.
+      // Inlined from the prior `logIdempotencySkip` helper.
       logger.warn(
         {
           event: 'accreditation.verify.idempotency_lookup_failed',
@@ -925,12 +924,12 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       );
     }
   } else {
-    // F10: event renamed from `idempotency_haf_unavailable` to
-    // `idempotency_haf_unconfigured` because `isHafConfigured()` tests
-    // configuration presence, not live reachability. The prior name led
-    // operators to mis-read this branch as an outage signal; the new name
-    // makes the config-only semantics explicit. `_lookup_failed` (above)
-    // remains the real-outage discriminator.
+    // Event name `idempotency_haf_unconfigured` reflects that
+    // `isHafConfigured()` tests configuration presence, not live
+    // reachability. An earlier `_unavailable` name led operators to mis-read
+    // this branch as an outage signal; the current name makes the
+    // config-only semantics explicit. `_lookup_failed` (above) remains the
+    // real-outage discriminator.
     logger.warn(
       {
         event: 'accreditation.verify.idempotency_haf_unconfigured',
@@ -1046,7 +1045,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     );
   }
 
-  // F24: `embedIdempotencyKey` (the generic bundle scanner used by custody
+  // `embedIdempotencyKey` (the generic bundle scanner used by custody
   // /broadcast) is INTENTIONALLY not used here. The accreditation op is a
   // single known-shape `custom_json` constructed inline — splicing
   // `idempotency_key` directly into the payload literal is clearer than

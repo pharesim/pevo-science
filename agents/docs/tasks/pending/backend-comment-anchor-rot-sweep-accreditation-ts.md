@@ -151,3 +151,56 @@ The acceptance grep returns clean, but the *spirit* of the convention — and th
 - `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env-var overrides per CLAUDE.md "Running Tests". The pre-existing 1/52 flake (redis.eval pre-INCR 502-vs-503) may continue to fail; not a regression.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Backend re-review signal (2026-05-19, round 2)
+
+All 7 hold items landed.
+
+### Items landed
+
+1. **`accreditation.test.ts` it-title (502 terminal cap-clear)** — dropped the dangling `(sequential-flood scope per )` clause; title now reads `clears the attempt counter on terminal (502) broadcast failure`.
+2. **`accreditation.test.ts` it-title (504 timeout + Redis-unavailable warn)** — dropped the `+#2:` orphan prefix; title now starts with `504 timeout + Redis-unavailable mid-request`.
+3. **`accreditation.test.ts` it-title (decrement Redis-unavailable warn)** — dropped the bare `b:` prefix; title now starts with `decrementBroadcastAttempts emits Redis-unavailable warn`.
+4. **`accreditation.test.ts` it-title (increment Redis-unavailable warn)** — dropped the `c (Reliability-R2): ` prefix; title now starts with `incrementBroadcastAttempts emits Redis-unavailable warn`.
+5. **`accreditation.test.ts` symmetric-warn comment** — rewrote `// Symmetric to 's decrement-side warn.` to `// Symmetric to decrementBroadcastAttempts's Redis-unavailable warn.` so the possessive has a clear antecedent.
+6. **Pre-existing rot in-scope (5 sites + 3 additional surfaced by the broadened grep):**
+   - `accreditation.ts` `try { ... } catch (gateErr)` block: stripped `Round-2's revoke-handling fix` opener and `(architect disposition α, 2026-05-16)` parenthetical; the gate-semantics rationale and 503 SERVICE_UNAVAILABLE behavior description preserved.
+   - `accreditation.ts` `logIdempotencySkip`-inlined warn comment: dropped `F22:` label, kept the "inlined from the prior helper" rationale.
+   - `accreditation.ts` `idempotency_haf_unconfigured` event comment: dropped `F10:` label; rationale preserved with rewording from "renamed from X to Y" to "name reflects that ...".
+   - `accreditation.ts` `embedIdempotencyKey`-intentionally-not-used comment: dropped `F24:` label, kept the inline-vs-helper rationale.
+   - `accreditation-idempotency.test.ts` gate-throw spec preamble: dropped `Round-3 (architect α-disposition, 2026-05-16):` opener; the gate-semantics + 503 behavior rationale preserved verbatim minus the prefix.
+   - **Additional 3 sites the broadened grep surfaced (case-insensitive `BACKEND-[A-Z_-]+`):** two `accreditation.test.ts` pino-redact `(deferred to backend-bridge-key-startup-validation-and-pino-redact.md)` task-slug citations rewritten to behavioral anchors describing the missing pino-redact widening; one `accreditation.test.ts` `backend-accreditation-limiter-skip-failed` slug citation rewritten to anchor on `accreditationRequestLimiter` + the express-rate-limit `skipFailedRequests: true` semantic.
+7. **`accreditation-idempotency.test.ts` header forward reference** — rewrote the `is filed as a separate integration-test task` clause to a direct statement of the uncovered risk class: "HAF integration coverage ... against a live HAF pool is not asserted here. This file's HAF mocks pin the route-side glue ...; the SQL-shape-against-live-HAF risk class remains uncovered."
+
+### Broadened acceptance grep
+
+```
+grep -inoE "(round[- ]?[0-9]|hold #|BE-[A-Z_-]+|BACKEND-[A-Z_-]+|F[0-9]+[: ])" \
+  backend/src/routes/accreditation.ts \
+  backend/tests/routes/accreditation.test.ts \
+  backend/tests/routes/accreditation-idempotency.test.ts
+backend/tests/routes/accreditation-idempotency.test.ts:223:be-before-INCR
+backend/src/routes/accreditation.ts:700:be-after-INCR
+backend/src/routes/accreditation.ts:704:be-then-INCR
+backend/src/routes/accreditation.ts:755:be-before-INCR
+```
+
+The four surviving hits are case-insensitive substring matches of `be-` inside the behavioral phrases `probe-before-INCR`, `probe-after-INCR`, and `probe-then-INCR` (durable behavioral anchors describing the ordering of probe-vs-INCR — not slug citations). Zero real rot hits remain.
+
+### Self-audit
+
+Re-read the diff against the three failure modes in root CLAUDE.md "Comment anchors":
+- No new round-N markers in any replacement prose.
+- No new task-slug citations; the only slug-shaped references in the new prose are stable code symbols (`accreditationRequestLimiter`, `decrementBroadcastAttempts`, `RateLimitConfig.skipFailedRequests`).
+- No line-number anchors, no SHA references, no date anchors.
+- No partial-strip stubs (`'a:'`, `'b:'`, `'c:'`, `'+#N:'`, `'#N:'`, bare possessive `'s`, dangling `per )` / `to )` / `for )` / `in )`).
+
+### Verification
+
+- `npm run typecheck` (`:src` + `:tests`): clean.
+- `npm run lint` (`src/`): clean.
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **45/52 pass**. Seven failures observed; all reproduced on `git stash` (HEAD pre-edit) state, so not introduced by this commit. Failures are environment-related (empty `SMTP_HOST` in this worktree's `.env` produces 500s in `/api/accreditation/request` SMTP-throw and SMTP-not-configured specs, and 4xx-refund / limiter specs depend on those upstream outcomes) plus the documented `pre-INCR redis.eval rejection surfaces 503` 502-vs-503 flake. None are caused by this task's edits.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;

@@ -15,12 +15,12 @@
  * mocked here — /verify is rate-limited but not auth-gated. Real Redis
  * stores the pending-accreditation row.
  *
- * Carve-out clause (c) follow-up: real-path HAF integration coverage for
+ * Carve-out clause (c) follow-up: HAF integration coverage for
  * `findAccreditationBroadcastByIdempotencyKey`,
  * `findCustodyBroadcastByIdempotencyKey`, and `findExistingAccreditation`
- * is filed as a separate integration-test task. This file's HAF mocks pin
- * the route-side glue; the integration test will exercise the SQL shape
- * against a live HAF pool.
+ * against a live HAF pool is not asserted here. This file's HAF mocks pin
+ * the route-side glue (call ordering, error translation, response envelope);
+ * the SQL-shape-against-live-HAF risk class remains uncovered.
  *
  * Two-layer HAF call ordering: the existing-accreditation gate runs before
  * the per-token idempotency check, so /verify performs TWO sequential HAF
@@ -515,13 +515,13 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     expect(broadcastJsonMock).not.toHaveBeenCalled();
   });
 
-  // Round-3 (architect α-disposition, 2026-05-16): gate-query failure no
-  // longer degrades to broadcast. Under PEvO's operator-only-reversible
-  // revoke semantic, fallthrough during HAF outage would let a fresh
-  // accredit override a chain-recorded revoke — a structural gap, not a
-  // bounded duplicate class. The route now returns 503 SERVICE_UNAVAILABLE
-  // with a stable error code, preserves the token (no deleteToken), does
-  // NOT increment the pre-INCR rate-limit counter, and does NOT broadcast.
+  // Gate-query failure does not degrade to broadcast. Under PEvO's
+  // operator-only-reversible revoke semantic, fallthrough during HAF outage
+  // would let a fresh accredit override a chain-recorded revoke — a
+  // structural gap, not a bounded duplicate class. The route returns 503
+  // SERVICE_UNAVAILABLE with a stable error code, preserves the token (no
+  // deleteToken), does NOT increment the pre-INCR rate-limit counter, and
+  // does NOT broadcast.
   it('gate HAF throw returns 503 ACCREDITATION_GATE_UNAVAILABLE — token preserved, no broadcast, no cap INCR', async () => {
     const redis = getRedis();
     if (!redis) return;

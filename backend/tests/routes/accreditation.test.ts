@@ -381,8 +381,9 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
     // 64-hex token leaks into the operator log via the `err` field. The
     // negative-regex assertion below pins this exposure: the spec WILL FAIL
     // RED against current production code until pino's redact configuration
-    // is widened (deferred to backend-bridge-key-startup-validation-and-pino-redact.md).
-    // The intentional red here is the forcing function for that deferred work.
+    // is widened to scrub `err.command.args` on ioredis ReplyError-shaped
+    // rejections. The intentional red here is the forcing function for that
+    // deferred pino-redact widening.
     const delSpy = vi.spyOn(redis, 'del').mockRejectedValueOnce(
       Object.assign(new Error('Redis evicted to read-only'), {
         command: { name: 'del', args: [tokenKey] },
@@ -691,7 +692,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     expect(await broadcastAttemptCount(token)).toBe(0);
   });
 
-  it('clears the attempt counter on terminal (502) broadcast failure (sequential-flood scope per )', async () => {
+  it('clears the attempt counter on terminal (502) broadcast failure', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
@@ -813,9 +814,10 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // `<appTag>:pending_accred_broadcast_attempts:<64-hex token>`. pino
     // default redact does NOT scrub `err.command.args`, so the raw token
     // leaks via `err`. The negative-regex assertion below pins this
-    // exposure: the spec WILL FAIL RED until pino redact is widened
-    // (deferred to backend-bridge-key-startup-validation-and-pino-redact.md).
-    // The intentional red is the forcing function for that deferred work.
+    // exposure: the spec WILL FAIL RED until pino redact is widened to
+    // scrub `err.command.args` on ioredis ReplyError-shaped rejections.
+    // The intentional red is the forcing function for that deferred
+    // pino-redact widening.
     const decrSpy = vi.spyOn(redis, 'decr').mockRejectedValueOnce(
       Object.assign(new Error('redis flap on compensating decrement'), {
         command: { name: 'decr', args: [counterKey] },
@@ -865,7 +867,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     }
   });
 
-  it('+#2: 504 timeout + Redis-unavailable mid-request → route emits `timeout_decrement_degraded` warn with discriminator fields', async () => {
+  it('504 timeout + Redis-unavailable mid-request → route emits `timeout_decrement_degraded` warn with discriminator fields', async () => {
     // Pins the route-level consumer of the discriminator
     // (`DecrementBroadcastAttemptsResult`). The helper returns
     // `'enqueued_for_drain'` when Redis was configured at INCR time but
@@ -1052,7 +1054,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     }
   });
 
-  it('b: decrementBroadcastAttempts emits Redis-unavailable warn and returns without touching in-memory map or redis.decr when isRedisAvailable() returns false mid-request', async () => {
+  it('decrementBroadcastAttempts emits Redis-unavailable warn and returns without touching in-memory map or redis.decr when isRedisAvailable() returns false mid-request', async () => {
     // A structured warn fires when Redis was reachable at INCR time but
     // `isRedisAvailable()` returns false at DECR time. Without a direct
     // spec, a mutation that drops the warn silently degrades cap
@@ -1096,8 +1098,8 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     }
   });
 
-  it('c (Reliability-R2): incrementBroadcastAttempts emits Redis-unavailable warn when isRedisAvailable() returns false mid-request and falls through to in-memory fallback', async () => {
-    // Symmetric to 's decrement-side warn. Without an
+  it('incrementBroadcastAttempts emits Redis-unavailable warn when isRedisAvailable() returns false mid-request and falls through to in-memory fallback', async () => {
+    // Symmetric to decrementBroadcastAttempts's Redis-unavailable warn. Without an
     // increment-side warn, operators see the decrement-unavailable warn
     // alone and cannot tell whether cap enforcement was active at INCR
     // time or had already degraded to the in-memory fallback. The new
@@ -1651,8 +1653,10 @@ describe('accred-req limiter refunds slot on transient SMTP failure', () => {
           email: `${username}@harvard.edu`,
         });
       // Without skipFailedRequests this would be 429. The 200 is the
-      // load-bearing assertion against the slot-burn cascade documented in
-      // backend-accreditation-limiter-skip-failed.
+      // load-bearing assertion that the express-rate-limit
+      // `skipFailedRequests: true` setting on `accreditationRequestLimiter`
+      // refunds the slot when the upstream returns non-2xx, so a transient
+      // SMTP failure does not burn the user's per-IP slot.
       expect(successRes.status).toBe(200);
     } finally {
       transportSpy.mockRestore();
