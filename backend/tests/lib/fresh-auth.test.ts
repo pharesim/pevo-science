@@ -79,6 +79,7 @@ import {
   isFreshAuthMechanism,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
+  _getInFlightConsumesSetReferenceForTests,
   _getInFlightConsumesSizeForTests,
   _resetFreshAuthMemStoreForTests,
   _restartCleanupForTests,
@@ -588,13 +589,14 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
   // `Set<string>` of in-flight tokens guarded by a synchronous `has` → `add`
   // critical section before any awaits.
   //
-  // Acceptance per task §4:
-  //   - With Redis available: Promise.all two concurrent consumes for the
-  //     same token; assert exactly one returns valid.
-  //   - With Redis stubbed to throw (forced memStore fallback): Promise.all
-  //     two concurrent consumes for the same token; assert exactly one
-  //     returns valid.
-  // Applied to BOTH consume helpers.
+  // Acceptance: both helpers must serialize concurrent dual-consume to
+  // exactly one winner under both Redis-up GETDEL atomicity and Redis-
+  // stubbed in-process-lock conditions. Two variants per helper exercise
+  // each tier independently — the Redis-up variant validates that the
+  // lock layers cleanly with Redis GETDEL without false-rejecting valid
+  // sequential consumes; the Redis-stubbed variant forces both consumes
+  // onto the memStore fallback path where the lock is the only thing
+  // closing the race.
 
   it.skipIf(!redisAvailable)('consumeFreshAuthToken Redis-up: Promise.all dual consume → exactly one winner', async () => {
     const issued = await issueFreshAuthToken('race-alice', 'password', T);
@@ -607,8 +609,8 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     const losers = [a, b].filter((r) => !r.valid);
     expect(losers).toHaveLength(1);
     // Loser is reported as `expired` — same wire shape as a stale replay,
-    // no new reason code on the union. (See Option B docblock in
-    // `lib/fresh-auth.ts`.)
+    // no new reason code on the union. The `inFlightConsumes` docblock in
+    // `lib/fresh-auth.ts` explains the loser-reason rationale.
     if (!losers[0].valid) {
       expect(losers[0].reason).toBe('expired');
     }
@@ -746,6 +748,40 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       expect(_getInFlightConsumesSizeForTests()).toBe(0);
     } finally {
       getdelSpy?.mockRestore();
+    }
+  });
+
+  it('shared-lock-domain invariant: both helpers consult the same inFlightConsumes Set (identity anchor)', async () => {
+    // Structural identity anchor for the shared-lock-domain design — pins
+    // that `consumeFreshAuthToken` and `consumeSessionFreshAuthToken` both
+    // call `.has` / `.add` on the SAME `Set<string>` instance. A mutation
+    // that splits the lock into per-helper Sets (e.g.,
+    // `inFlightConsumesByConsentHelper` + `inFlightConsumesBySessionHelper`)
+    // would cause one of the two helpers' invocations to bypass the spied
+    // Set, failing the "both helpers touched this Set" assertion.
+    //
+    // Independent of microtask ordering and Redis availability — runs in
+    // every environment (no skipIf) because the assertion examines only
+    // the lock-set call surface, not the Redis fallback path. The wire-
+    // shape cross-helper test below complements this with end-to-end
+    // coverage when Redis is available.
+    const sharedSet = _getInFlightConsumesSetReferenceForTests();
+    const hasSpy = vi.spyOn(sharedSet, 'has');
+    try {
+      const issuedA = await issueFreshAuthToken('lock-identity-a', 'password', T);
+      await consumeFreshAuthToken(issuedA.token, 'lock-identity-a', TH);
+      const consentHelperCalls = hasSpy.mock.calls.length;
+      expect(consentHelperCalls).toBeGreaterThan(0);
+
+      const issuedB = await issueSessionFreshAuthToken('lock-identity-b', 'password');
+      await consumeSessionFreshAuthToken(issuedB.token, 'lock-identity-b');
+      const sessionHelperCalls = hasSpy.mock.calls.length - consentHelperCalls;
+      // Mutation kill: a per-helper Set split would route the session
+      // helper's `has` check to a sibling Set; sessionHelperCalls would
+      // stay at 0 even though the helper ran.
+      expect(sessionHelperCalls).toBeGreaterThan(0);
+    } finally {
+      hasSpy.mockRestore();
     }
   });
 

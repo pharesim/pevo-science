@@ -865,14 +865,38 @@ export function _getInFlightConsumesSizeForTests(): number {
   return inFlightConsumes.size;
 }
 
+/** Test-only hook: returns the live `inFlightConsumes` Set reference so
+ *  tests can pin the shared-lock-domain invariant by identity. Both
+ *  `consumeFreshAuthToken` and `consumeSessionFreshAuthToken` MUST consult
+ *  the same Set instance — a mutation that splits the lock into per-helper
+ *  Sets would regress the cross-kind dual-consume race protection. Wire-
+ *  shape assertions can't catch that mutation because JS microtask FIFO
+ *  ordering serializes the first-resolving helper's `get` -> `delete`
+ *  chain before the second's `catch` runs on Redis-down, so the second
+ *  helper sees an empty memStore and returns `expired` regardless of
+ *  whether the lock domain is shared or split. Reference equality is the
+ *  only mutation-killing anchor. Read-only by convention — tests must not
+ *  mutate the returned Set. */
+export function _getInFlightConsumesSetReferenceForTests(): ReadonlySet<string> {
+  return inFlightConsumes;
+}
+
 /** Test-only hook: plants a memStore entry directly so tests can exercise
  *  the memStore-fallback path with controlled entry contents. Used by the
  *  lock-cleanup test to plant a circular-reference entry that throws on
  *  `JSON.stringify` inside the locked critical section, forcing the
- *  consume helper through its `finally` block. */
+ *  consume helper through its `finally` block.
+ *
+ *  The parameter type is `StoredEntry | object` rather than `StoredEntry`
+ *  because callers may deliberately plant structurally invalid objects
+ *  (e.g., a circular-reference object that fails `JSON.stringify`) to
+ *  trigger throw-on-stringify paths inside the consume helper. The widened
+ *  type signals that misuse is intentional; the internal cast to
+ *  `StoredEntry` is load-bearing for the memStore Map shape but does not
+ *  reflect a runtime guarantee about the planted value. */
 export function _setMemStoreEntryForTests(
   token: string,
-  entry: unknown,
+  entry: StoredEntry | object,
   expiresAt: number,
 ): void {
   memStore.set(token, { entry: entry as StoredEntry, expiresAt });
