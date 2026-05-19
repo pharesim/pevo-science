@@ -186,7 +186,7 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
       // invariant (no jwt.sign call mints before INSERT). The local guard
       // makes the invariant load-bearing here so a future feature minting
       // a transient JWT before INSERT cannot silently bypass the gate.
-      if (req.hiveAuthMethod === 'jwt') {
+      if (isJwtPath) {
         return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
       }
     } else if (isJwtPath) {
@@ -208,13 +208,14 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
           },
           'settings.email change-email rejected — fresh-auth proof invalid',
         );
-        // Mirror the sibling mapping at custody.ts:372-377: binding
-        // violations (token issued for a different user / target / kind)
-        // → 403; "no valid proof present" outcomes → 401. The SPA error-
-        // router branches on status code (401 → re-login, 403 → wrong-
-        // account/wrong-proof), so all three routes that consume the
-        // fresh-auth primitive must emit the same signal for the same
-        // class of failure.
+        // Mirror the sibling mapping in the `custody.broadcast`
+        // consent-path `consumeFreshAuthToken` result handler in
+        // `custody.ts`: binding violations (token issued for a different
+        // user / target / kind) → 403; "no valid proof present" outcomes
+        // → 401. The SPA error-router branches on status code (401 →
+        // re-login, 403 → wrong-account/wrong-proof), so all three routes
+        // that consume the fresh-auth primitive must emit the same signal
+        // for the same class of failure.
         const status =
           result.reason === 'username_mismatch' ||
           result.reason === 'target_mismatch' ||
@@ -341,7 +342,7 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
         await pool.query('DELETE FROM accounts WHERE username = $1 AND verify_token = $2', [username, token]);
       } else {
         const prior = existing[0];
-        await pool.query(
+        const restoreResult = await pool.query(
           `UPDATE accounts
              SET pending_email = $1,
                  pending_email_token = $2,
@@ -349,6 +350,23 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
              WHERE username = $4 AND pending_email_token = $5`,
           [prior.pending_email, prior.pending_email_token, prior.pending_email_expires_at, username, token],
         );
+        // Observability: distinguish "rolled back successfully" from
+        // "raced — a concurrent change-email request already overwrote the
+        // row so this restore's token-scoped WHERE no-op'd." Operators
+        // responding to an SMTP-outage incident otherwise can't tell the
+        // two cases apart from the single smtp_send_failed warn above.
+        // Fires only on the race path — normal SMTP-fail emits one warn.
+        if (restoreResult.rowCount === 0) {
+          logger.warn(
+            {
+              event: 'settings.email_post.smtp_fail_restore_raced',
+              route: 'settings.email-post',
+              email_hash: hashEmailForLogs(email),
+              username,
+            },
+            'SMTP-fail restore skipped — concurrent change-email request already overwrote pending_email',
+          );
+        }
       }
       // Fall through to the uniform 200 below — do NOT return 500.
     }
@@ -633,13 +651,15 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
         },
         'set-password rejected — fresh-auth proof invalid',
       );
-      // Mirror the canonical mapping at custody.ts:397-402 + the sibling
-      // change-email handler at settings.ts:230-235: binding violations
-      // (token issued for a different user / target / kind) → 403; "no
-      // valid proof present" outcomes → 401. The SPA error-router branches
-      // on status code (401 → re-login, 403 → wrong-account/wrong-proof),
-      // so every route that consumes the fresh-auth primitive must emit
-      // the same signal for the same class of failure.
+      // Mirror the canonical mapping in the `custody.broadcast`
+      // consent-path `consumeFreshAuthToken` result handler in `custody.ts`
+      // and the sibling change-email handler at `POST /api/settings/email`:
+      // binding violations (token issued for a different user / target /
+      // kind) → 403; "no valid proof present" outcomes → 401. The SPA
+      // error-router branches on status code (401 → re-login, 403 →
+      // wrong-account/wrong-proof), so every route that consumes the
+      // fresh-auth primitive must emit the same signal for the same class
+      // of failure.
       const status =
         proofResult.reason === 'username_mismatch' ||
         proofResult.reason === 'target_mismatch' ||

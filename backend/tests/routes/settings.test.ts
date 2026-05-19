@@ -388,8 +388,9 @@ describe('settings.email_post.smtp_send_failed log shape', () => {
         .spyOn(nodemailer, 'createTransport')
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValue({ sendMail: sendMailSpy } as any);
-      // Round-2 item 4: SMTP-fail emits at `warn` (not `error`) per Option A
-      // of timing-equalization-smtp-failure-mode-oracle-2026-04-22.md.
+      // SMTP-fail emits at `warn` (not `error`) per Option A of the
+      // status-code-oracle convention documented at
+      // `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`.
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(
         () => undefined as unknown as void,
       );
@@ -402,10 +403,10 @@ describe('settings.email_post.smtp_send_failed log shape', () => {
           .post('/api/settings/email')
           .set('X-Hive-Username', username)
           .send({ email });
-        // Round-2 item 4: SMTP-fail returns uniform 200 (not 500) so a
-        // JWT-only attacker cannot read identity registration state from
-        // the 500-vs-200 differential. The DB row is rolled back so the
-        // user has no pending state without a verify link.
+        // SMTP-fail returns uniform 200 (not 500) so a JWT-only attacker
+        // cannot read identity registration state from the 500-vs-200
+        // differential. The DB row is rolled back so the user has no
+        // pending state without a verify link.
         expect(res.status).toBe(200);
 
         const fields = findEvent(warnSpy as never, 'settings.email_post.smtp_send_failed');
@@ -418,9 +419,10 @@ describe('settings.email_post.smtp_send_failed log shape', () => {
         // CNPD: email_hash, NOT plaintext email.
         expect(typeof fields!.email_hash).toBe('string');
         expect(fields).not.toHaveProperty('email');
-        // Round-1 hold-fix item 1: err MUST be the Error instance, not its
-        // .message string. Pino's err serializer fires only when err is an
-        // Error instance.
+        // `err` MUST be the Error instance, not its `.message` string.
+        // Pino's err serializer fires only when err is an Error instance;
+        // a regression to passing `err.message` would emit a string in the
+        // log without the stack/cause fields the serializer adds.
         expect(fields!.err).toBeInstanceOf(Error);
 
         // Cleanup the seeded row written before the SMTP failure rolled it back.

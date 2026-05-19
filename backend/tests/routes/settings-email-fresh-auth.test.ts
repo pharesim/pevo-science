@@ -110,6 +110,7 @@ const {
   setPasswordFreshAuthTarget,
 } = await import('../../src/lib/fresh-auth.js');
 const { clearRateLimitKeys } = await import('../support/redis-helpers.js');
+const { logger } = await import('../../src/logger.js');
 
 const app = createApp();
 
@@ -790,20 +791,18 @@ describe.skipIf(!dbReachable)(
 );
 
 // ────────────────────────────────────────────────────────────────────
-// BACKEND-CHANGE-EMAIL-MINT-PATH-AND-FOLLOWUPS — round-2 item 3:
-// Change-flow SMTP-fail snapshot-restore coverage.
+// Change-flow SMTP-fail: prior pending_email triple is restored (not
+// nulled), and the response status is 200 (not 500). Differential test
+// — the Add-flow SMTP-fail spec lives in `settings.test.ts` under
+// `settings.email_post.smtp_send_failed log shape` and covers the
+// no-existing-row INSERT-then-DELETE branch; this spec covers the
+// existing-row UPDATE-then-restore branch.
 //
-// Pins the round-1 item 7 behavior (restore prior pending_email triple
-// instead of nulling) AND the round-2 item 4 status-code change (200 on
-// SMTP fail, not 500). Without this test, reverting either change passes
-// every existing assertion silently — the prior smtp-fail coverage at
-// settings.test.ts:376 exercises the Add-flow branch (no existing row),
-// not the Change-flow snapshot-restore branch.
-//
-// The round-2 item 2 token-scoping (`AND pending_email_token = <just-written>`)
-// is asserted indirectly: this single-request scenario must restore the
-// prior values, which only happens when the WHERE-scoping matches THIS
-// request's just-written row state.
+// The restore UPDATE's WHERE-clause scoping by the just-written token
+// (`AND pending_email_token = <just-written>`) is asserted indirectly:
+// the single-request scenario below must restore the prior values, which
+// only happens when the WHERE-scoping matches THIS request's just-written
+// row state.
 // ────────────────────────────────────────────────────────────────────
 
 describe.skipIf(!dbReachable)(
@@ -876,13 +875,14 @@ describe.skipIf(!dbReachable)(
         .set('X-Hive-Username', STATE_A_USER)
         .send({ email: NEW_EMAIL_B, fresh_auth_proof: secondProof.token });
 
-      // Round-2 item 4: SMTP-fail returns uniform 200 per Option A. The
-      // body is the same as a successful send so a JWT-only attacker can't
-      // read identity-registration state from the status-code differential.
+      // SMTP-fail returns uniform 200 per Option A of the status-code
+      // oracle convention. The body is the same as a successful send so a
+      // JWT-only attacker can't read identity-registration state from the
+      // status-code differential.
       expect(secondRes.status).toBe(200);
 
-      // Round-1 item 7 + round-2 item 2: pending_email/token/expires_at
-      // restored to the prior values. NOT the new email (no working verify
+      // pending_email/token/expires_at restored to the prior snapshot via
+      // the SMTP-fail rollback path. NOT the new email (no working verify
       // link was sent for it) and NOT NULL (which would destroy the prior
       // valid 24h verify link still in the user's inbox).
       const { rows: afterRows } = await pool.query<{
@@ -895,6 +895,223 @@ describe.skipIf(!dbReachable)(
       expect(afterRows[0].pending_email).toBe(priorPendingEmail);
       expect(afterRows[0].pending_email_token).toBe(priorPendingToken);
       expect(afterRows[0].pending_email).not.toBe(NEW_EMAIL_B);
+    });
+  },
+);
+
+// ────────────────────────────────────────────────────────────────────
+// Account-existence enumeration oracle closure: a JWT-bearing request
+// with no `fresh_auth_proof` must return uniform 401 FRESH_AUTH_REQUIRED
+// regardless of whether the candidate `new_email` is registered to
+// another account. Without the handler reorder that fires the fresh-auth
+// consume BEFORE the duplicate-email SELECT, a JWT-only attacker could
+// read registration state from the 409-vs-401 status differential. This
+// spec pins the load-bearing ordering — a regression reverting the
+// reorder would surface 409 for a registered-email probe.
+// ────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)(
+  'POST /api/settings/email — JWT-no-proof returns uniform 401 (closes 401-vs-409 oracle)',
+  () => {
+    beforeAll(async () => {
+      await cleanupAll();
+      await seedStates();
+      await clearRateLimitKeys(['settings-write', 'settings-read']);
+    });
+
+    beforeEach(async () => {
+      _resetFreshAuthMemStoreForTests();
+      await clearRateLimitKeys(['settings-write', 'settings-read']);
+      if (!dbReachable) return;
+      const pool = getAppPool()!;
+      await pool.query(
+        `UPDATE accounts SET pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL
+         WHERE username IN ($1, $2, $3, $4)`,
+        [STATE_A_USER, STATE_B_USER, STATE_C_USER, OTHER_USER],
+      ).catch(() => {});
+    });
+
+    afterAll(async () => {
+      await cleanupAll();
+    });
+
+    it('JWT, no proof, new_email IS registered to ANOTHER account → 401 (not 409)', async () => {
+      // OTHER_EMAIL is registered to OTHER_USER. A JWT-bearing STATE_A_USER
+      // probes that address with no proof. The fresh-auth gate must fire
+      // BEFORE the duplicate-email SELECT, so the response is 401
+      // FRESH_AUTH_REQUIRED — the same response a probe for an unregistered
+      // email returns. Without the handler reorder, this returns 409
+      // DUPLICATE and leaks that OTHER_EMAIL is registered.
+      const res = await request(app)
+        .post('/api/settings/email')
+        .set('Authorization', bearerFor(STATE_A_USER))
+        .set('X-Hive-Username', STATE_A_USER)
+        .send({ email: OTHER_EMAIL });
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(res.body.error.details?.reason).toBe('missing');
+    });
+
+    it('JWT, no proof, new_email is UNREGISTERED → 401 (uniformity companion)', async () => {
+      // Same envelope shape as the registered-email probe above; the
+      // status code and error code must match so an attacker can't
+      // distinguish the two cases via response inspection.
+      const unregistered = `unregistered_probe_${RUN_ID}@example.com`;
+      const res = await request(app)
+        .post('/api/settings/email')
+        .set('Authorization', bearerFor(STATE_A_USER))
+        .set('X-Hive-Username', STATE_A_USER)
+        .send({ email: unregistered });
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(res.body.error.details?.reason).toBe('missing');
+    });
+  },
+);
+
+// ────────────────────────────────────────────────────────────────────
+// Concurrent-overwrite WHERE-scope direct test: simulate a concurrent
+// change-email request landing between this request's UPDATE and its
+// SMTP-fail restore by mutating the row from inside the sendMail mock.
+// The restore UPDATE's `AND pending_email_token = <just-written>` clause
+// must no-op (no row matches the just-written token any more), preserving
+// the concurrent winner's state. A mutation dropping the scope clause
+// would let this request's restore clobber the concurrent winner.
+// ────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)(
+  'POST /api/settings/email — SMTP-fail restore no-ops when concurrent request already overwrote',
+  () => {
+    beforeAll(async () => {
+      await cleanupAll();
+      await seedStates();
+      await clearRateLimitKeys(['settings-write', 'settings-read']);
+    });
+
+    beforeEach(async () => {
+      _resetFreshAuthMemStoreForTests();
+      await clearRateLimitKeys(['settings-write', 'settings-read']);
+      if (!dbReachable) return;
+      const pool = getAppPool()!;
+      await pool.query(
+        `UPDATE accounts SET pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL
+         WHERE username IN ($1, $2, $3, $4)`,
+        [STATE_A_USER, STATE_B_USER, STATE_C_USER, OTHER_USER],
+      ).catch(() => {});
+    });
+
+    afterAll(async () => {
+      await cleanupAll();
+    });
+
+    it('concurrent overwrite mid-flight → restore no-ops, concurrent winner state survives', async () => {
+      // Concurrent winner state: simulate request "C" landing between
+      // request "B"'s UPDATE and its sendMail call by mutating the row
+      // from inside the sendMail rejection callback. The mutation writes
+      // NEW_EMAIL_C + TOKEN_C, which means request B's restore (scoped
+      // by ITS just-written token) finds no matching row.
+      const NEW_EMAIL_C_LOCAL = `setting_email_concurrent_${RUN_ID}@example.com`;
+      const TOKEN_C = 'concurrent_winner_token_' + RUN_ID.toString(16);
+      const EXPIRES_C = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      const proof = await issueFreshAuthToken(
+        STATE_A_USER,
+        'password',
+        changeEmailFreshAuthTarget(STATE_A_USER),
+      );
+
+      smtpMock.sendMail.mockImplementationOnce(async () => {
+        const pool = getAppPool()!;
+        await pool.query(
+          `UPDATE accounts
+             SET pending_email = $1,
+                 pending_email_token = $2,
+                 pending_email_expires_at = $3
+             WHERE username = $4`,
+          [NEW_EMAIL_C_LOCAL, TOKEN_C, EXPIRES_C, STATE_A_USER],
+        );
+        throw new Error('SMTP fail after concurrent overwrite');
+      });
+
+      const res = await request(app)
+        .post('/api/settings/email')
+        .set('Authorization', bearerFor(STATE_A_USER))
+        .set('X-Hive-Username', STATE_A_USER)
+        .send({ email: NEW_EMAIL_B, fresh_auth_proof: proof.token });
+      expect(res.status).toBe(200);
+
+      // The concurrent winner's state survives: the restore UPDATE's
+      // WHERE-clause did not match (its token-scope referenced request
+      // B's just-written token, not TOKEN_C).
+      const pool = getAppPool()!;
+      const { rows } = await pool.query<{
+        pending_email: string | null;
+        pending_email_token: string | null;
+      }>(
+        'SELECT pending_email, pending_email_token FROM accounts WHERE username = $1',
+        [STATE_A_USER],
+      );
+      expect(rows[0].pending_email).toBe(NEW_EMAIL_C_LOCAL);
+      expect(rows[0].pending_email_token).toBe(TOKEN_C);
+    });
+
+    it('concurrent overwrite mid-flight → smtp_fail_restore_raced warn fires (distinct from smtp_send_failed)', async () => {
+      // Observability pin: when the restore UPDATE no-ops (race path),
+      // the route emits a second warn with a distinct event discriminator
+      // so operators can distinguish "rolled back" from "raced and
+      // skipped." The base smtp_send_failed warn fires on every SMTP
+      // failure; this companion fires only on the race path.
+      const NEW_EMAIL_C_LOCAL = `setting_email_concurrent_obs_${RUN_ID}@example.com`;
+      const TOKEN_C = 'concurrent_obs_token_' + RUN_ID.toString(16);
+      const EXPIRES_C = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      const proof = await issueFreshAuthToken(
+        STATE_A_USER,
+        'password',
+        changeEmailFreshAuthTarget(STATE_A_USER),
+      );
+
+      smtpMock.sendMail.mockImplementationOnce(async () => {
+        const pool = getAppPool()!;
+        await pool.query(
+          `UPDATE accounts
+             SET pending_email = $1,
+                 pending_email_token = $2,
+                 pending_email_expires_at = $3
+             WHERE username = $4`,
+          [NEW_EMAIL_C_LOCAL, TOKEN_C, EXPIRES_C, STATE_A_USER],
+        );
+        throw new Error('SMTP fail with raced-restore observability');
+      });
+
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(
+        () => undefined as unknown as void,
+      );
+
+      try {
+        const res = await request(app)
+          .post('/api/settings/email')
+          .set('Authorization', bearerFor(STATE_A_USER))
+          .set('X-Hive-Username', STATE_A_USER)
+          .send({ email: NEW_EMAIL_B, fresh_auth_proof: proof.token });
+        expect(res.status).toBe(200);
+
+        // Both warn emissions present:
+        //   1. settings.email_post.smtp_send_failed (always on SMTP fail)
+        //   2. settings.email_post.smtp_fail_restore_raced (only on race)
+        const events = warnSpy.mock.calls
+          .map((call) => {
+            const [obj] = call;
+            return obj && typeof obj === 'object'
+              ? (obj as { event?: string }).event
+              : undefined;
+          })
+          .filter(Boolean);
+        expect(events).toContain('settings.email_post.smtp_send_failed');
+        expect(events).toContain('settings.email_post.smtp_fail_restore_raced');
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   },
 );
