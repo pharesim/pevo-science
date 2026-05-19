@@ -59,3 +59,36 @@ This task is blocked until any in-flight worktree work on `backend/tests/routes/
 ## Priority rationale
 
 P3 because the existing `beforeEach` reset at the consent-ops describe-block already neutralizes the active three-condition retry-poisoning trigger. The 100ms settle gap is defense-in-depth against a hypothetical future double-INSERT mutation — important enough to close (the convention catalog should not carry known unrepaired siblings as a quiet permanent debt), but not urgent against in-flight work. Worth bundling with any future task that touches consent-ops or the shared support/ directory.
+
+## Backend implementation signal (2026-05-19, parent merge of worktree-agent-a5948b9afa8f81f05; commits 7403151 + 89da9c4)
+
+All 7 acceptance items landed, plus a deliberate signature deviation worth surfacing for review.
+
+**Sites landed:**
+
+- `backend/tests/support/audit-log-poll-settle.ts` (new) — exports `fetchSettledAuditRows(pool, username, operationType)` with the canonical signature, AND a flexible companion `fetchSettledAuditRowsWith<TRow>({ pool, username, columns, minRows?, orderBy? })` documented in the file header. Both share the identical 1500ms-poll / 25ms-interval / 100ms-settle invariant — only the row-shape and predicate vary.
+- `backend/tests/routes/recover.test.ts` — module-local declaration removed; both call sites now import `fetchSettledAuditRows` from the shared location and continue to pass `(pool, TEST_USER, 'recovery_failure' | 'account_recovery')` unchanged.
+- `backend/tests/routes/custody-consent-ops.test.ts` — all 5 inline poll-loop sites migrated to `fetchSettledAuditRowsWith<TRow>(...)`. The 5 sites previously polled by hand: per-call SELECT shapes vary (one selects 5 columns including `operation_type / auth_mechanism / fresh_auth_outcome / session_id / user_agent`; one selects 5 different columns; one selects `user_agent` only; two need `minRows: 2` filtering on two distinct operation types in a single username scope with `ORDER BY created_at ASC`). The `beforeEach` reset at the describe-block stays in place; load-bearing for the three-condition retry-poisoning trigger.
+
+**Signature deviation (architect please flag if not acceptable):**
+
+The task's goal #1 prescribes "the exported function signature stays the same as the current module-local form". Sites 3, 4, and 5 in `custody-consent-ops.test.ts` do not fit `(pool, username, operationType)` — they filter by username only (sites 4 and 5 expect rows from two distinct operation types in one poll), use varied column lists, and 2 of them need `minRows: 2` with `ORDER BY created_at ASC` to assert the second-INSERT settled. The implementer resolved this by:
+
+- Keeping `fetchSettledAuditRows(pool, username, operationType)` unchanged (recover.test.ts uses it as-is — its existing behavior is preserved).
+- Exporting `fetchSettledAuditRowsWith<TRow>({ pool, username, columns, minRows?, orderBy? })` in the same file, sharing the identical poll + settle invariant via internal delegation.
+
+The convergence-sweep concern — divergent helpers solving the same problem under different names — is satisfied: both live in one file and share the invariant explicitly. The acceptance #7 exemption clause ("any test fixture that genuinely needs a different poll shape with documented reasoning") covers this, though the exemption was prescribed for unmigrated sites rather than for a co-located companion. If the architect prefers the strict-uniform-signature reading instead, the next round can collapse `fetchSettledAuditRows` into `fetchSettledAuditRowsWith` with a defaulting `columns: ['operation_type', 'user_agent']` and migrate the 2 recover.test.ts call sites to the new shape — happy to do that in a follow-up round if held.
+
+**Convergence-sweep grep (acceptance #7):**
+
+```
+rg -n 'fetchSettledAuditRows|poll.*audit|audit.*settle|custody_audit_log.*poll' backend/tests/
+```
+
+Returns only: the shared helper file (with its docblocks and exports), 5 `fetchSettledAuditRowsWith` call sites in custody-consent-ops.test.ts, 2 `fetchSettledAuditRows` call sites in recover.test.ts. Zero divergent helpers.
+
+**Verification gates:**
+
+- `cd backend && npx tsc --noEmit -p tests/tsconfig.json` — clean.
+- `cd backend && npm run lint` — clean.
+- Parent serialized run: `npx vitest run tests/routes/recover.test.ts tests/routes/custody-consent-ops.test.ts tests/routes/citations-lateral-guard-canary.test.ts tests/notification-queries-lateral-guard-canary.test.ts` — **66/66 passed** against real Postgres + Redis (4 test files, includes the sibling jsonb-lateral canaries co-merged in the same fan-out wave).
