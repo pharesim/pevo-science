@@ -2,8 +2,7 @@
  * Display ↔ reputation parity invariant test (real HAF + synthetic-VALUES
  * fallback).
  *
- * Acceptance criterion #4 of
- * `backend-review-validity-gate-and-display-reputation-parity.md`:
+ * Invariant pinned: for any comment `c`,
  *
  *   c surfaces as a review on the paper-detail page
  *     ⟺ c contributes to the paper's `review_count` / `avg_rating`
@@ -35,16 +34,16 @@
  * `getHafPool()`. The real-HAF arm exercises the invariant against the
  * live corpus when a passing-reviews paper exists.
  *
- * **Synthetic-VALUES fallback (BACKEND-SELF-REVIEW-EXCLUSION round-1 hold
- * #7).** Carve-out clause-(c) justified: a fresh HAF node or a test
- * environment with no qualifying papers leaves task canaries 1-3 (self
- * by author / by co-author / third-party control) tested only at the
- * helper level via `hafsql.test.ts`. A synthetic-VALUES fallback runs
- * against real Postgres (no mocking) and substitutes VALUES() rows for
- * `${T.comments}` so the predicate-Set equality is exercised even with
- * zero qualifying real rows. The fallback is additive — the real-HAF
- * arm still runs when a qualifying paper is present, and a regression in
- * the predicate is caught by either arm.
+ * **Synthetic-VALUES fallback.** Carve-out clause-(c) justified: a fresh
+ * HAF node or a test environment with no qualifying papers leaves the
+ * self-by-author / self-by-co-author / third-party-control canaries
+ * tested only at the helper level via `hafsql.test.ts`. A
+ * synthetic-VALUES fallback runs against real Postgres (no mocking) and
+ * substitutes VALUES() rows for `${T.comments}` so the predicate-Set
+ * equality is exercised even with zero qualifying real rows. The
+ * fallback is additive — the real-HAF arm still runs when a qualifying
+ * paper is present, and a regression in the predicate is caught by
+ * either arm.
  */
 import { describe, it, expect } from 'vitest';
 import { getPool, isHafConfigured } from '../../src/db.js';
@@ -154,13 +153,13 @@ describe('review parity invariant: display set === paper_reviews CTE set', () =>
 });
 
 describe('review parity invariant: synthetic-VALUES fallback (Postgres-side)', () => {
-  // Per BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #7: when the live HAF
-  // corpus has no qualifying paper (fresh node, dev env, or a CI shard
-  // that points at an empty HAF), the real-HAF arm above skips, leaving
-  // the parity invariant unexercised at integration level. This block
-  // substitutes synthetic VALUES() rows for `${T.comments}` and runs the
-  // same predicate semantics against real Postgres so a regression in
-  // the predicate equivalence is caught even on an empty corpus.
+  // When the live HAF corpus has no qualifying paper (fresh node, dev
+  // env, or a CI shard that points at an empty HAF), the real-HAF arm
+  // above skips, leaving the parity invariant unexercised at integration
+  // level. This block substitutes synthetic VALUES() rows for
+  // `${T.comments}` and runs the same predicate semantics against real
+  // Postgres so a regression in the predicate equivalence is caught even
+  // on an empty corpus.
   //
   // Skips only if no Postgres pool is reachable (carve-out: Postgres is
   // the real path; the only mock is the rowset substitution). Does NOT

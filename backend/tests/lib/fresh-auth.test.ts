@@ -1,38 +1,34 @@
 /**
  * Library-level unit tests for `lib/fresh-auth.ts`.
  *
- * Round-4 hold of `backend-coauthor-trust-model`:
- *  - Item 17: TTL-expiry path in the in-memory fallback store. Round 3
- *    shipped the guard at line 190 (`cached.expiresAt > Date.now()`) but
- *    no test exercised it; mutating the guard out would not be caught.
+ * Properties under test:
+ *  - TTL-expiry on in-memory fallback. The `cached.expiresAt > Date.now()`
+ *    guard inside `consumeFreshAuthToken`'s memStore branch must return
+ *    `'expired'` past the TTL; a mutation that drops the guard must fail.
  *    A fake-timer test advances `Date.now()` past the TTL and asserts
  *    `consume` returns `'expired'`.
- *  - Item 3: Redis-issuance success + memStore backup write. Round 3's
- *    issuance path stored the token only in Redis on the happy path; if
- *    Redis flapped between issue and consume, the consume side fell
- *    through to memStore.get(token) → empty → spurious 'expired'. The
- *    round-4 fix writes to memStore as a backup whenever Redis-issuance
- *    succeeds. Test pins the recovery semantic by simulating a
- *    Redis.getdel throw on consume after a Redis-issuance success.
- *
- * Round-5 hold of `backend-coauthor-trust-model`:
- *  - Item 1: memStore-fallback compensating Redis.del. The pre-fix dual-tier
- *    deletion was asymmetric: only the Redis-success leg deleted the
- *    memStore backup; the memStore-fallback leg did NOT issue a paired
+ *  - Redis-issuance success + memStore backup write. The issuance path
+ *    writes to memStore as a backup whenever Redis-issuance succeeds, so
+ *    a Redis flap between issue and consume falls through cleanly via
+ *    memStore.get(token) rather than spuriously returning `'expired'`.
+ *    Test pins the recovery semantic by simulating a Redis.getdel throw
+ *    on consume after a Redis-issuance success.
+ *  - memStore-fallback compensating Redis.del. The dual-tier deletion is
+ *    symmetric: the memStore-fallback success leg issues a paired
  *    `redis.del` of the canonical entry, so a Redis flap mid-getdel that
- *    didn't actually delete the entry left the canonical Redis copy alive,
- *    admitting a same-process replay once Redis recovered within the TTL.
- *    Test pins the compensating del.
- *  - Item 3: per-op target binding. The round-4 proof bound only to
- *    `(token, username)`. A compromised SPA could swap action/paper between
- *    the user's auth ceremony and the consume side under the 5-min TTL.
- *    Round-5 binds the proof to a SHA-256 of `(action, root_author,
- *    root_permlink)`; tests pin (a) target X / target Y → mismatch,
- *    (b) target X / target X → valid, (c) consume without target →
- *    closed-default reject.
- *  - Item 8: replace silent `if (!redis) return;` early-bail with
- *    `it.skipIf(...)` so the absence of Redis is visibly reported by the
- *    runner instead of silently passing the assertion-free body.
+ *    didn't actually delete the entry cannot leave the canonical Redis
+ *    copy alive to admit a same-process replay once Redis recovered
+ *    within the TTL. Test pins the compensating del.
+ *  - Per-op target binding. The proof binds to a SHA-256 of
+ *    `(action, root_author, root_permlink)`, not just `(token, username)`,
+ *    so a compromised SPA cannot swap action/paper between the user's
+ *    auth ceremony and the consume side under the 5-min TTL. Tests pin
+ *    (a) target X / target Y → mismatch, (b) target X / target X → valid,
+ *    (c) consume without target → closed-default reject.
+ *  - Redis-absence visibility. `it.skipIf(...)` replaces silent
+ *    `if (!redis) return;` early-bails so the absence of Redis is visibly
+ *    reported by the runner instead of silently passing an assertion-free
+ *    body.
  *
  * Concurrent dual-consume race (2026-05-16):
  *  - Concurrent dual-consume tests for both `consumeFreshAuthToken` and
@@ -101,10 +97,10 @@ const T: FreshAuthTarget = {
 };
 const TH = computeFreshAuthTargetHash(T);
 
-// Round-5 hold #8: hoist the "Redis present?" check to module scope so
-// it.skipIf can read it at registration time. A flat module-scoped check
-// (rather than a per-test inline early-return) makes Redis absence
-// visible in the runner output as a `skipped` count.
+// Module-scope `redisAvailable` capture lets `it.skipIf(...)` evaluate
+// the "Redis present?" predicate at test-registration time. A flat
+// module-scoped check (rather than a per-test inline early-return) makes
+// Redis absence visible in the runner output as a `skipped` count.
 //
 // Implementation note: `getRedis()` returns the redis instance before
 // its `connect()` promise resolves; the global `setup.ts`'s beforeAll
@@ -149,7 +145,7 @@ describe('CONSENT_OP_ACTIONS — wire predicate', () => {
   });
 });
 
-describe('isFreshAuthMechanism — type guard (round-4 hold #8)', () => {
+describe('isFreshAuthMechanism — type guard', () => {
   it('admits the two declared mechanisms', () => {
     expect(isFreshAuthMechanism('password')).toBe(true);
     expect(isFreshAuthMechanism('orcid')).toBe(true);
@@ -164,7 +160,7 @@ describe('isFreshAuthMechanism — type guard (round-4 hold #8)', () => {
   });
 });
 
-describe('computeFreshAuthTargetHash — content hash (round-5 hold #3)', () => {
+describe('computeFreshAuthTargetHash — content hash', () => {
   it('produces a 64-char lowercase hex digest', () => {
     const hash = computeFreshAuthTargetHash(T);
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
@@ -207,15 +203,14 @@ describe('computeFreshAuthTargetHash — content hash (round-5 hold #3)', () => 
   });
 });
 
-describe('TTL-expiry on in-memory fallback (round-4 hold #17)', () => {
+describe('TTL-expiry on in-memory fallback', () => {
   // The TTL-guard test scenario only fires on the in-memory fallback
   // path. When Redis is available, Redis's own server-side EX TTL is
   // authoritative and the in-memory `cached.expiresAt > Date.now()`
-  // guard is bypassed. Round-4 hold #17's mutation-kill is specifically
-  // about the in-memory guard at consume time, so these tests force the
-  // Redis-down-on-consume path via a spy: issuance writes the memStore
-  // backup; consume sees Redis unavailable and falls through to memStore
-  // where the TTL guard fires.
+  // guard is bypassed. The mutation-kill targets the in-memory guard at
+  // consume time, so these tests force the Redis-down-on-consume path
+  // via a spy: issuance writes the memStore backup; consume sees Redis
+  // unavailable and falls through to memStore where the TTL guard fires.
 
   it('returns valid before the TTL boundary on the memStore fallback', async () => {
     // Force fake timers BEFORE issuance so the memStore-backup expiresAt
@@ -227,8 +222,8 @@ describe('TTL-expiry on in-memory fallback (round-4 hold #17)', () => {
     const issued = await issueFreshAuthToken('alice', 'password', T);
 
     // Force Redis-down on consume so the path exercises the in-memory
-    // TTL guard (the round-4 fix writes a memStore backup at issuance,
-    // so the entry is recoverable from memStore).
+    // TTL guard (memStore backup is written at issuance, so the entry
+    // is recoverable from memStore).
     const redis = getRedis();
     const spy = redis && isRedisAvailable()
       ? vi.spyOn(redis, 'getdel').mockRejectedValue(new Error('forced flap for TTL test'))
@@ -280,15 +275,15 @@ describe('TTL-expiry on in-memory fallback (round-4 hold #17)', () => {
   });
 });
 
-describe('Redis-flap recovery via memStore backup (round-4 hold #3)', () => {
-  // Round-5 hold #8: it.skipIf replaces the silent `if (!redis) return;`
-  // bail-out so a Redis-less CI surface explicitly reports these as
-  // skipped instead of silently passing an assertion-free body.
+describe('Redis-flap recovery via memStore backup', () => {
+  // `it.skipIf` replaces the silent `if (!redis) return;` bail-out so a
+  // Redis-less CI surface explicitly reports these as skipped instead of
+  // silently passing an assertion-free body.
   it.skipIf(!redisAvailable)('Redis-issuance success + Redis.getdel throws on consume → memStore backup recovers the token', async () => {
     // Under fake Redis-flap shape: issue against a healthy Redis, then
-    // make `redis.getdel` throw on consume. The pre-fix path returned
-    // `'expired'`; the round-4 fix writes a backup to memStore on
-    // issuance success and recovers via the fallback.
+    // make `redis.getdel` throw on consume. Issuance writes a backup to
+    // memStore on Redis-issuance success; consume recovers via the
+    // fallback rather than returning `'expired'`.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('carol', 'password', T);
     // Force the consume-side getdel to throw. Single-call mock: the
@@ -318,8 +313,8 @@ describe('Redis-flap recovery via memStore backup (round-4 hold #3)', () => {
     expect(first.valid).toBe(true);
 
     // Now simulate Redis flapping out and check that the memStore copy
-    // is gone (the round-4 fix deletes the backup after a successful
-    // Redis GETDEL).
+    // is gone (a successful Redis GETDEL deletes the memStore backup,
+    // so the symmetric-deletion pin holds).
     const getdelSpy = vi.spyOn(redis, 'getdel').mockResolvedValueOnce(null);
     try {
       const replay = await consumeFreshAuthToken(issued.token, 'dave', TH);
@@ -333,15 +328,16 @@ describe('Redis-flap recovery via memStore backup (round-4 hold #3)', () => {
   });
 });
 
-describe('Symmetric dual-tier deletion (round-5 hold #1)', () => {
+describe('Symmetric dual-tier deletion', () => {
   // The pre-fix asymmetric variant deleted memStore on the Redis-success
   // leg but did not issue a compensating `redis.del` on the
   // memStore-fallback leg. A Redis blip mid-getdel that threw BEFORE
   // Redis actually deleted the entry left the canonical Redis copy alive
   // — the user's consume succeeded via memStore, but a same-process
   // replay within the TTL hit Redis getdel and returned valid AGAIN.
-  // Round-5 fix: the memStore-fallback success path issues a best-effort
-  // `redis.del` of the canonical entry to close the replay window.
+  // The symmetric design: the memStore-fallback success path issues a
+  // best-effort `redis.del` of the canonical entry to close the replay
+  // window.
   it.skipIf(!redisAvailable)('memStore-fallback success path issues a compensating redis.del so a subsequent Redis-recovered consume cannot replay', async () => {
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('eve', 'password', T);
@@ -363,13 +359,13 @@ describe('Symmetric dual-tier deletion (round-5 hold #1)', () => {
 
     // Step 2: Redis is "recovered" (default behavior, no spy). A second
     // consume with the same token must return `expired` because:
-    //   (a) memStore was deleted at the start of the fallback path (so
-    //       the round-4 fallback path itself burns the memStore copy),
-    //   (b) the round-5 compensating redis.del cleared the canonical
-    //       Redis entry so the Redis branch returns nil → 'expired'.
+    //   (a) memStore was deleted at the start of the fallback path (the
+    //       fallback path itself burns the memStore copy),
+    //   (b) the compensating redis.del cleared the canonical Redis entry
+    //       so the Redis branch returns nil → 'expired'.
     // A pre-fix variant (no compensating del) would have left the Redis
     // entry alive: this second consume's Redis.getdel would have
-    // returned the entry → the round-5 narrowing would have parsed it →
+    // returned the entry → the narrowing would have parsed it →
     // returned `valid: true` → DOUBLE-CONSUME. The test fails on that
     // mutation.
     const replay = await consumeFreshAuthToken(issued.token, 'eve', TH);
@@ -403,7 +399,7 @@ describe('Symmetric dual-tier deletion (round-5 hold #1)', () => {
   });
 });
 
-describe('Per-op target binding (round-5 hold #3)', () => {
+describe('Per-op target binding', () => {
   it('issue with target X, consume with target X (same hash) → valid', async () => {
     const issued = await issueFreshAuthToken('grace', 'password', T);
     const result = await consumeFreshAuthToken(issued.token, 'grace', TH);
@@ -496,9 +492,9 @@ describe('Per-op target binding (round-5 hold #3)', () => {
   });
 });
 
-// ─── BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — session-kind primitives ───
+// ─── session-kind primitives — issue + consume + cross-kind acceptance ───
 
-describe('BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — session-kind issue / consume', () => {
+describe('session-kind issue / consume — issueSessionFreshAuthToken + consumeSessionFreshAuthToken', () => {
   beforeEach(() => {
     _resetFreshAuthMemStoreForTests();
   });

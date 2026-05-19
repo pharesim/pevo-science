@@ -1,6 +1,7 @@
 /**
- * BACKEND-SETTINGS-EMAIL-REAUTH-FRESH-AUTH — pin the JWT-path fresh-auth gate
- * on POST /api/settings/email (change-email branch).
+ * Pin the JWT-path fresh-auth gate on POST /api/settings/email's
+ * change-email branch: body-proof required, bound to user + target,
+ * single-use, mechanism-correct.
  *
  * Threat the gate closes (per ARCHITECTURE.md § 6.5 invariant #1): a stolen
  * JWT must not be a one-step takeover. Without the gate, an attacker swaps
@@ -498,9 +499,8 @@ describe.skipIf(!dbReachable)('POST /api/settings/email — Keychain path skips 
     // MOCK_VERIFY_SIGNATURE extracts username from X-Hive-Username and
     // proceeds. With no Bearer header it sets req.hiveAuthMethod = 'signature'
     // (mirroring the real middleware), and the route's isJwtPath discriminator
-    // sees 'signature', so the body-proof gate is skipped. Acceptance
-    // criterion #5: Keychain-signature-authenticated requests do NOT require
-    // a body proof.
+    // sees 'signature', so the body-proof gate is skipped:
+    // Keychain-signature-authenticated requests do NOT require a body proof.
     const res = await request(app)
       .post('/api/settings/email')
       .set('X-Hive-Username', STATE_A_USER)
@@ -606,8 +606,11 @@ describe.skipIf(!dbReachable)(
 );
 
 // ────────────────────────────────────────────────────────────────────
-// BACKEND-CHANGE-EMAIL-MINT-PATH-AND-FOLLOWUPS — end-to-end mint→consume
-// round-trips through both newly-widened mint surfaces.
+// End-to-end mint→consume happy path: a `change_email`-action proof
+// minted by /api/orcid/start or /api/custody/fresh-auth round-trips
+// through /api/settings/email, the SMTP send fires, the verify_token
+// row lands, and the `/verify-email` consume commits
+// `email = pending_email`.
 //
 // The other describes in this file mint proofs by calling
 // `issueFreshAuthToken` directly (bypassing the route's auth + validation)
