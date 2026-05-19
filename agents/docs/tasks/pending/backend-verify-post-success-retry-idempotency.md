@@ -335,3 +335,47 @@ The spec lands the architect's three acceptance clauses as-prescribed; the devia
 - `npx vitest run tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **19/19 pass** — 16 pre-existing grace-period and sibling specs + 3 grace-period idempotency specs from round-1 + the new pipeline-rejection spec from round-3.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Architect re-review (2026-05-19, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `ccfc614` (7 reviewers — correctness on Opus; testing, maintainability, project-standards, kieran-typescript, reliability, learnings on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 3 round-3 hold items land in intent: the orphaned `deleteTokenBestEffort` JSDoc is moved to its function, `recordAccreditationCompletionBestEffort` JSDoc is rewritten as a contract description, and the pipeline-rejection inner-catch spec is in place with carve-out clause (a) justified and clause (c) companion named.
+
+The deviation flagged by the backend's round-3 signal (adding the `isRedisAvailable` flap precondition on the retry leg) is correct — accepted. Without it, the spec's retry leg would re-broadcast because the pipeline-rejection leaves the Redis-side pending row intact (the `del` was inside the rejected MULTI). The flap models the realistic sustained-Redis-down scenario where the in-memory fallback actually wins.
+
+Two items held — both surfaced by `/ce-code-review`, one structural at the test stub site and one in the round-3-introduced JSDoc itself.
+
+### Items held (must fix before archive)
+
+**1. (P2, conf 75, kieran-typescript) Nested-object `redis.multi` stub at `backend/tests/routes/accreditation-idempotency.test.ts` cannot satisfy `ChainableCommander`; future chain growth silently passes against incomplete coverage.** The new spec's MULTI stub is shaped as `{ set: () => ({ del: () => ({ exec: () => Promise.reject(...) }) }) } as unknown as ReturnType<typeof redis.multi>`. The `as unknown as` cast erases the type checker for the entire stub value. If a future change to `recordAccreditationCompletion` extends the pipeline (e.g., adds `.expire(...)` or `.set(...)` for a second key), the stub's plain nested object has no matching method, the cast suppresses the type error, and the spec passes against an incomplete code path — the inner-catch is exercised but the future step it should also wrap is not. The mutation hazard is invisible to typechecking, lint, and existing tests.
+
+  Suggested fix: replace with a self-referential pipeline stub cast to `ChainableCommander` from `ioredis`:
+  ```ts
+  import type { ChainableCommander } from 'ioredis';
+  const fakePipeline = {
+    set(..._args: unknown[]) { return this as unknown as ChainableCommander; },
+    del(..._args: unknown[]) { return this as unknown as ChainableCommander; },
+    exec: () => Promise.reject(new Error('pipeline boom')),
+  } as unknown as ChainableCommander;
+  const multiSpy = vi.spyOn(redis, 'multi').mockReturnValueOnce(fakePipeline);
+  ```
+  Keeps the `unknown` escape contained to stub construction; any future pipeline step that lands without a corresponding fake method requires either a typed extension to the stub or a different test approach, surfacing the gap at the spec rather than silently passing.
+
+**2. (P3, conf 75, reliability) New `recordAccreditationCompletionBestEffort` JSDoc claims "The 24h Redis TTL on completion records is the backstop." but the TTL backstop does not apply to the pipeline-rejection class the docblock describes immediately above.** Under pipeline rejection, the completion record was never written — the MULTI failed end-to-end — so there IS no Redis-side completion record for the 24h TTL to expire. The actual backstops for that class are the in-memory fallback record (flap-resilient within process lifetime) and the HAF gate / per-token idempotency check (for the healthy-Redis retry case where the orphan pending row survives). The 24h TTL backstop only applies when the pipeline succeeded but a subsequent best-effort step throws. A future reader using the docblock to reason about pipeline-rejection recovery is given an inaccurate mental model.
+
+  Suggested fix: replace the single sentence "The 24h Redis TTL on completion records is the backstop." in the `recordAccreditationCompletionBestEffort` JSDoc with: "The in-memory fallback record is the backstop for the pipeline-rejection class (flap-resilient within the process lifetime); the HAF gate and per-token idempotency check are the backstops for a healthy-Redis retry. The 24h Redis TTL backstop applies only when the pipeline succeeded." Same paragraph; replacement is one sentence for three.
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
+
+### Items dismissed during architect triage
+
+- (maintainability) New spec's `warnSpy.mockImplementation(() => logger)` differs from sibling specs' `() => undefined as never` — both forms work; stylistic inconsistency below the actionable bar.
+- (maintainability) Dual same-module import (`import { getRedis }` + `import * as redisModule from '../../src/redis.js'`) — the `vi.spyOn(redisModule, 'isRedisAvailable')` call requires the namespace import; both forms are used; consolidation is a style call, not a defect.
+- (kieran-typescript P3 conf 50) Dual same-module import — same finding; suppressed at anchor 50.
+- (project-standards residual) `isRedisAvailable` not enumerated in the carve-out's permitted mock-target list — intent covers it (the function lives in the same `redis.js` module as `getRedis` which IS enumerated); test's clause (a) comment justifies the spy. Would only bite if the carve-out list tightens mechanically later; not a current standards violation.
+- (correctness / kieran-typescript residual) First-flight pipeline rejection leaves Redis-side orphan pending row; healthy-Redis retry would re-broadcast — covered by HAF gate / per-token idempotency dedup. Architect note for round-4: the backend's signal proposed two alternatives (add a separate `deleteToken(token)` fallback to the inner catch; document the flap precondition in the convention doc). The first alternative is a reliability improvement worth considering separately, but is OUT OF SCOPE for round-4 — this hold block is JSDoc-only + test-stub-shape. The current architecture (HAF + idempotency dedup as the healthy-Redis-retry backstop) is sufficient at PEvO single-instance scale. If a real production incident surfaces a duplicate broadcast traced to this exact sequence, file as a new task at that time.
+- (project-standards / reliability testing gap) Outer-catch in `recordAccreditationCompletionBestEffort` not exercised by the new spec — preemptive hardening per `feedback_dismiss_preemptive_test_hardening`; the outer catch covers in-memory-write-throw and unexpected-helper-exception classes that are structurally rare at PEvO scale.
+- (reliability testing gap) No spec combines pipeline-rejection + healthy-Redis retry + HAF gate hit — sibling grace-period specs cover the HAF-mock infrastructure, and the architecturally accepted residual (above) covers the failure mode.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
