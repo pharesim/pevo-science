@@ -779,9 +779,11 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
     // implied an alerting backend exists) to honest "please contact
     // support" copy.
     expect(res.body.error.message).toMatch(/contact support/i);
-    // Token already cleaned up before the seed-bonus throw — the chain op
-    // landed, so the token has done its job. The post_broadcast catch branch
-    // does NOT delete it again.
+    // Token cleaned up by the post_broadcast catch branch — the seed-
+    // bonus throw fires BEFORE the completion-record write, so the
+    // catch branch deletes the pending row best-effort. A retry on
+    // the same token surfaces 400 BAD_REQUEST rather than masking the
+    // 502's operator-actionable signal under a cached grace-period 200.
     expect(await tokenExists(token)).toBe(false);
     // Internal error message MUST NOT leak into the user-facing payload.
     const bodyStr = JSON.stringify(res.body);
@@ -904,6 +906,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
 
     const digest = crypto.createHash('sha256').update(token).digest('hex');
     const stored = await redis.get(`${config.appTag}:accreditation-completed:${digest}`);
+    expect(stored).not.toBeNull();
     expect(JSON.parse(stored as string).tx_id).toBe('tx-fresh-id-only');
   });
 });

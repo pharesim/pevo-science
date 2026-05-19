@@ -307,6 +307,18 @@ async function deleteToken(token: string): Promise<void> {
 // the truncated `hashTokenForLogs` form) so the record cannot be mined
 // from log lines. 24h TTL matches the original token TTL — symmetric
 // window covers any retry the user is likely to attempt on the same day.
+//
+// Revoke-after-broadcast trade-off: the record carries only {username,
+// tx_id} and does NOT re-verify current chain state on retry. A user
+// revoked between the original successful broadcast and the retry
+// receives a cached "Accreditation confirmed" 200, even though their on-
+// chain accreditation has been revoked. This is the accepted trade-off
+// for the idempotency-record approach: re-running the existing-
+// accreditation gate on every retry would re-introduce HAF-dependency
+// (and a 503 ACCREDITATION_GATE_UNAVAILABLE failure mode) on the
+// idempotent retry path. WoT-revoke is an operator-only-reversible
+// action and the window where a revoke lands within 24h of a successful
+// broadcast is narrow at PEvO scale.
 const ACCREDITATION_COMPLETED_TTL_SECONDS = 24 * 60 * 60;
 
 interface AccreditationCompletionRecord {
@@ -314,6 +326,20 @@ interface AccreditationCompletionRecord {
   tx_id: string;
 }
 
+// Key strategy asymmetry: Redis side hashes the token via sha256 (full
+// digest) so the key cannot be mined from MONITOR/slow-log output or
+// any operator log surface that might one day enumerate keys. In-memory
+// side keys on the raw token string because process memory already
+// exposes the token (the pending-row store next door, `memoryTokens`,
+// also keys raw), so hashing inside the process buys nothing while
+// adding indirection. The asymmetry is intentional and load-bearing:
+// any future refactor unifying the stores would change the threat model
+// for the Redis side. Restart drops this Map — the in-memory fallback
+// is flap-resilience for the single-process lifetime, not a sustained
+// Redis-less deployment mode. Restart-induced loss is the accepted
+// trade-off (a restart within the 24h grace-period window recreates
+// the original AbortError-after-success cascade for tokens whose
+// completion record lived only in memory).
 const memoryAccreditationCompletions = new Map<
   string,
   { record: AccreditationCompletionRecord; expires_at: number }
@@ -338,6 +364,14 @@ function accreditationCompletedKey(token: string): string {
  * is sequential after the pipeline — its lifetime is bounded by the
  * token TTL, so a brief lingering counter between pipeline and counter
  * delete is harmless.
+ *
+ * Pipeline-rejection class (Redis-down mid-pipeline, connection drop,
+ * ioredis internal error) is caught locally — the in-memory writes that
+ * follow MUST execute even when the Redis pipeline throws, so a Redis-
+ * present-but-pipeline-rejects scenario still gets the in-memory grace-
+ * period record. Without the inner catch, the function would reject and
+ * the outer best-effort wrapper would warn and skip the in-memory writes
+ * entirely, breaking the flap-resilience contract.
  */
 async function recordAccreditationCompletion(
   token: string,
@@ -348,11 +382,24 @@ async function recordAccreditationCompletion(
   const serialized = JSON.stringify(payload);
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
-    await redis
-      .multi()
-      .set(accreditationCompletedKey(token), serialized, 'EX', ACCREDITATION_COMPLETED_TTL_SECONDS)
-      .del(`${config.appTag}:pending_accred:${token}`)
-      .exec();
+    try {
+      await redis
+        .multi()
+        .set(accreditationCompletedKey(token), serialized, 'EX', ACCREDITATION_COMPLETED_TTL_SECONDS)
+        .del(`${config.appTag}:pending_accred:${token}`)
+        .exec();
+    } catch (pipelineErr) {
+      logger.warn(
+        {
+          event: 'accreditation.verify.completion_record_pipeline_failed',
+          route: 'accreditation.verify',
+          username,
+          token_hash: hashTokenForLogs(token),
+          err: pipelineErr instanceof Error ? pipelineErr : new Error(String(pipelineErr)),
+        },
+        'accreditation.verify completion-record Redis pipeline failed — falling through to in-memory fallback',
+      );
+    }
   }
   memoryAccreditationCompletions.set(token, {
     record: payload,
@@ -371,7 +418,24 @@ async function readAccreditationCompletion(
       const raw = await redis.get(accreditationCompletedKey(token));
       if (raw) {
         try {
-          return JSON.parse(raw) as AccreditationCompletionRecord;
+          const parsed: unknown = JSON.parse(raw);
+          if (
+            typeof parsed !== 'object' ||
+            parsed === null ||
+            typeof (parsed as { username?: unknown }).username !== 'string' ||
+            typeof (parsed as { tx_id?: unknown }).tx_id !== 'string'
+          ) {
+            logger.warn(
+              {
+                event: 'accreditation.verify.completion_record_invalid_shape',
+                route: 'accreditation.verify',
+                token_hash: hashTokenForLogs(token),
+              },
+              'accreditation.verify completion record shape invalid — falling through to 400',
+            );
+            return null;
+          }
+          return parsed as AccreditationCompletionRecord;
         } catch {
           return null;
         }
@@ -404,6 +468,43 @@ async function readAccreditationCompletion(
  * prefix the event with the calling route (`accreditation.request.*` vs
  * `accreditation.verify.*`) — log search keys on that.
  */
+/**
+ * Best-effort wrapper around `recordAccreditationCompletion` used on the
+ * /verify broadcast-success path AFTER `seedAccreditationBonus` succeeds.
+ * Mirrors `deleteTokenBestEffort`'s shape because the same response-
+ * ordering hazard applies: the 200 envelope has not been written yet,
+ * but a propagating Redis error on the completion-record write must not
+ * reach Express's async-error handler over the in-flight 200 (closes
+ * the response-ordering class documented at `helper-extraction-express5-
+ * response-ordering-2026-04-28.md`). The internal pipeline-rejection
+ * catch in `recordAccreditationCompletion` handles the Redis-down-mid-
+ * pipeline class; this outer wrapper catches any other failure mode
+ * (e.g., the in-memory writes themselves throwing, or unexpected
+ * exceptions from the helper).
+ */
+async function recordAccreditationCompletionBestEffort(
+  token: string,
+  username: string,
+  txId: string,
+  email: string,
+): Promise<void> {
+  try {
+    await recordAccreditationCompletion(token, username, txId);
+  } catch (recordErr) {
+    logger.warn(
+      {
+        event: 'accreditation.verify.completion_record_failed_post_success',
+        route: 'accreditation.verify',
+        username,
+        email_hash: hashEmailForLogs(email),
+        token_hash: hashTokenForLogs(token),
+        err: recordErr instanceof Error ? recordErr : new Error(String(recordErr)),
+      },
+      'accreditation.verify completion record + token cleanup failed on broadcast success — orphan TTLs out',
+    );
+  }
+}
+
 async function deleteTokenBestEffort(
   token: string,
   username: string,
@@ -429,10 +530,19 @@ async function deleteTokenBestEffort(
 }
 
 async function cleanupExpiredTokens(): Promise<void> {
-  // Redis handles TTL automatically; just clean in-memory map
+  // Redis handles TTL automatically; just clean in-memory maps.
   const now = new Date();
   for (const [t, p] of memoryTokens) {
     if (now > p.expires_at) memoryTokens.delete(t);
+  }
+  // Grace-period completion records are lazily evicted on access in
+  // `readAccreditationCompletion`, but under normal Redis-up operation
+  // those reads never hit the in-memory branch — entries would
+  // accumulate until process restart. Sweep here for parity with the
+  // sibling `memoryTokens` cleanup.
+  const nowMs = Date.now();
+  for (const [t, c] of memoryAccreditationCompletions) {
+    if (nowMs > c.expires_at) memoryAccreditationCompletions.delete(t);
   }
 }
 
@@ -549,6 +659,13 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // New". The completion record returns the same envelope shape the
     // original fresh-success flight would have emitted, so the SPA's
     // existing success-state handler renders without branching.
+    //
+    // The record is NOT re-verified against current chain state — a
+    // revoke landing between the original broadcast and the retry
+    // returns the cached 200. Accepted trade-off (see the
+    // `memoryAccreditationCompletions` declaration block for the full
+    // rationale: re-running the gate would re-introduce HAF dependency
+    // on the idempotent retry path).
     const completion = await readAccreditationCompletion(token);
     if (completion) {
       return sendOk(res, {
@@ -938,30 +1055,6 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       key,
     );
 
-    // Atomic completion-record write + pending-token delete on the
-    // broadcast-success path. Replaces the prior plain `deleteToken`
-    // call so the AbortError-after-success cascade closes: a retry on
-    // the same token finds the completion record and returns the
-    // identical 200 envelope. Wrapped in best-effort try/catch for the
-    // same reason the prior deleteToken was — a Redis hiccup post-
-    // success must NOT propagate to Express's async-error handler over
-    // the in-flight 200 envelope (closes the response-ordering class
-    // documented at `helper-extraction-express5-response-ordering-2026-04-28.md`).
-    try {
-      await recordAccreditationCompletion(token, pending.hive_username, result.id);
-    } catch (cleanupErr) {
-      logger.warn(
-        {
-          event: 'accreditation.verify.completion_record_failed_post_success',
-          route: 'accreditation.verify',
-          username: pending.hive_username,
-          email_hash: hashEmailForLogs(pending.email),
-          token_hash: hashTokenForLogs(token),
-          err: cleanupErr instanceof Error ? cleanupErr : new Error(String(cleanupErr)),
-        },
-        'accreditation.verify completion record + token cleanup failed on broadcast success — orphan TTLs out',
-      );
-    }
     // Wrap seedAccreditationBonus in PostBroadcastWriteError discipline (the
     // pattern documented at `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` and
     // adopted by ORCID's handleAccredit / handleLink). The chain op landed by
@@ -978,11 +1071,38 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // support" until alerting actually fires). The permanent class is
     // operator-actionable and the next batch cycle will NOT self-heal a
     // shape regression in `getReputationWeights()` output.
+    //
+    // Seed must run BEFORE the completion record is written. A
+    // PostBroadcastWriteError on the seed-bonus throw surfaces 502
+    // POST_BROADCAST_OPERATOR_REQUIRED to the user; if the completion
+    // record were written first, the user's retry would find the
+    // record and receive a cached 200 — silently masking the 502's
+    // operator-actionable signal. The retry-finds-400 outcome on a
+    // seed-permanent-throw is the correct UX: first call surfaces 502
+    // (operator pager), the retry surfaces 400 (token consumed), and
+    // the user reports the inconsistency rather than seeing it
+    // smoothed over.
     try {
       await seedAccreditationBonus(pending.hive_username);
     } catch (seedErr) {
       throw new PostBroadcastWriteError(result.id, seedErr, 'reputation_seed', 'permanent');
     }
+
+    // Atomic completion-record write + pending-token delete on the
+    // broadcast-success path. Replaces the prior plain `deleteToken`
+    // call so the AbortError-after-success cascade closes: a retry on
+    // the same token finds the completion record and returns the
+    // identical 200 envelope. Wrapped in best-effort because a Redis
+    // hiccup post-success must NOT propagate to Express's async-error
+    // handler over the in-flight 200 envelope (closes the response-
+    // ordering class documented at `helper-extraction-express5-
+    // response-ordering-2026-04-28.md`).
+    await recordAccreditationCompletionBestEffort(
+      token,
+      pending.hive_username,
+      result.id,
+      pending.email,
+    );
 
     sendOk(res, {
       message: 'Accreditation confirmed',
@@ -1085,13 +1205,17 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         );
       }
     }
-    // outcome === 'post_broadcast' (PostBroadcastWriteError): no cleanup
-    // required here. The chain op already landed and `deleteToken` already
-    // ran on the success path BEFORE the seed-bonus throw, so the token is
-    // gone. The user has been told the chain op is confirmed
-    // (`details.outcome:'confirmed'`, `details.tx_id`).
+    // outcome === 'post_broadcast' (PostBroadcastWriteError): the chain
+    // op landed but the seed-bonus throw fired BEFORE the completion
+    // record + token-delete pair ran, so the pending token is still
+    // alive at this point. Clean it up best-effort so a retry surfaces
+    // 400 BAD_REQUEST (no pending row, no completion record) rather
+    // than masking the 502's operator-actionable signal under a cached
+    // grace-period 200. The 502 has already been written via
+    // `handleBroadcastError`; the cleanup is wrapped best-effort to
+    // avoid the headers-sent ordering hazard.
     //
-    // Round-2 F3: this branch ONLY fires on PERMANENT seed-bonus errors
+    // This branch ONLY fires on PERMANENT seed-bonus errors
     // (TypeError/SyntaxError/RangeError rethrown from
     // `seedAccreditationBonus` per `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`).
     // Transient cascade errors stay swallowed inside the cascade fn. The
@@ -1100,6 +1224,15 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // next reputation batch cycle (the next cycle re-derives from
     // `getReputationWeights()` which is the source of the shape regression
     // that caused the rethrow). Operator action required.
+    else if (outcome === 'post_broadcast') {
+      await deleteTokenBestEffort(
+        token,
+        pending.hive_username,
+        pending.email,
+        'accreditation.verify.post_broadcast_token_cleanup_failed',
+        'accreditation.verify token cleanup failed after post-broadcast write error — orphan TTLs out',
+      );
+    }
   }
 });
 
