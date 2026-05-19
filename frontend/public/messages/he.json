@@ -1063,7 +1063,7 @@
     "emailAdd": "הוספת דוא\"ל",
     "emailChange": "שינוי דוא\"ל",
     "emailSendVerification": "שליחת הודעת אימות",
-    "emailVerificationSent": "הודעת אימות נשלחה. בדקו את תיבת הדואר הנכנס.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "הדוא\"ל אומת בהצלחה.",
     "emailDelete": "מחיקת דוא\"ל",
     "emailDeleteConfirm": "מחיקת הנתונים שלי",

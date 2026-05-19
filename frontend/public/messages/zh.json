@@ -1063,7 +1063,7 @@
     "emailAdd": "添加邮箱",
     "emailChange": "更改邮箱",
     "emailSendVerification": "发送验证邮件",
-    "emailVerificationSent": "验证邮件已发送，请查收收件箱。",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "邮箱验证成功。",
     "emailDelete": "删除邮箱",
     "emailDeleteConfirm": "删除我的数据",

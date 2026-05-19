@@ -1067,7 +1067,7 @@
     "emailAdd": "E-posta ekle",
     "emailChange": "E-postayı değiştir",
     "emailSendVerification": "Doğrulama e-postası gönder",
-    "emailVerificationSent": "Doğrulama e-postası gönderildi. Gelen kutunuzu kontrol edin.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "E-posta başarıyla doğrulandı.",
     "emailDelete": "E-postayı sil",
     "emailDeleteConfirm": "Verilerimi sil",

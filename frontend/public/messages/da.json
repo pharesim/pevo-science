@@ -1063,7 +1063,7 @@
     "emailAdd": "Tilføj e-mail",
     "emailChange": "Skift e-mail",
     "emailSendVerification": "Send bekræftelsesmail",
-    "emailVerificationSent": "Bekræftelsesmail sendt. Tjek din indbakke.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "E-mailadressen er bekræftet.",
     "emailDelete": "Slet e-mail",
     "emailDeleteConfirm": "Slet mine data",

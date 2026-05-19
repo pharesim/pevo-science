@@ -1063,7 +1063,7 @@
     "emailAdd": "افزودن ایمیل",
     "emailChange": "تغییر ایمیل",
     "emailSendVerification": "ارسال ایمیل تأیید",
-    "emailVerificationSent": "ایمیل تأیید ارسال شد. صندوق ورودی خود را بررسی کنید.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "ایمیل با موفقیت تأیید شد.",
     "emailDelete": "حذف ایمیل",
     "emailDeleteConfirm": "حذف اطلاعات من",

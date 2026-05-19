@@ -1198,3 +1198,28 @@ pt: verify.networkUnavailable
 sv: verify.networkUnavailable
 tr: verify.networkUnavailable
 zh: verify.networkUnavailable
+
+### Updated 2026-05-19 (UI-SETTINGS-EMAIL-SMTP-FAIL-COPY-SOFT-HINT)
+
+English value of `settings.emailVerificationSent` was softened to add a retry
+hint after the backend's Option-A SMTP-fail 200 path (the success toast now
+fires identically for genuine success and SMTP failure, so users need an
+in-UI nudge to retry if no email arrives). The prior translations covered
+only the first sentence ("Verification email sent. Check your inbox.") and
+no longer convey the full message; retranslation is needed.
+
+ar: settings.emailVerificationSent
+cs: settings.emailVerificationSent
+da: settings.emailVerificationSent
+de: settings.emailVerificationSent
+es: settings.emailVerificationSent
+fa: settings.emailVerificationSent
+fr: settings.emailVerificationSent
+he: settings.emailVerificationSent
+it: settings.emailVerificationSent
+nl: settings.emailVerificationSent
+pl: settings.emailVerificationSent
+pt: settings.emailVerificationSent
+sv: settings.emailVerificationSent
+tr: settings.emailVerificationSent
+zh: settings.emailVerificationSent

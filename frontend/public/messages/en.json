@@ -1084,7 +1084,7 @@
     "emailAdd": "Add email",
     "emailChange": "Change email",
     "emailSendVerification": "Send verification email",
-    "emailVerificationSent": "Verification email sent. Check your inbox.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "Email verified successfully.",
     "emailDelete": "Delete email",
     "emailDeleteConfirm": "Delete my data",

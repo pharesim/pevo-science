@@ -1063,7 +1063,7 @@
     "emailAdd": "إضافة بريد إلكتروني",
     "emailChange": "تغيير البريد الإلكتروني",
     "emailSendVerification": "إرسال رسالة التحقق",
-    "emailVerificationSent": "تم إرسال رسالة التحقق. تحقق من صندوق الوارد.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "تم التحقق من البريد الإلكتروني بنجاح.",
     "emailDelete": "حذف البريد الإلكتروني",
     "emailDeleteConfirm": "حذف بياناتي",

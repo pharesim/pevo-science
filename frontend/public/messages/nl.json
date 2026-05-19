@@ -1067,7 +1067,7 @@
     "emailAdd": "E-mailadres toevoegen",
     "emailChange": "E-mailadres wijzigen",
     "emailSendVerification": "Verificatie-e-mail versturen",
-    "emailVerificationSent": "Verificatie-e-mail verstuurd. Controleer je inbox.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "E-mailadres succesvol geverifieerd.",
     "emailDelete": "E-mailadres verwijderen",
     "emailDeleteConfirm": "Mijn gegevens verwijderen",

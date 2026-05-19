@@ -1063,7 +1063,7 @@
     "emailAdd": "Přidat e-mail",
     "emailChange": "Změnit e-mail",
     "emailSendVerification": "Odeslat ověřovací e-mail",
-    "emailVerificationSent": "Ověřovací e-mail odeslán. Zkontrolujte svou schránku.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "E-mailová adresa byla úspěšně ověřena.",
     "emailDelete": "Smazat e-mail",
     "emailDeleteConfirm": "Smazat moje údaje",

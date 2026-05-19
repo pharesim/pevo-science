@@ -1063,7 +1063,7 @@
     "emailAdd": "Lägg till e-post",
     "emailChange": "Ändra e-post",
     "emailSendVerification": "Skicka verifieringsmail",
-    "emailVerificationSent": "Verifieringsmail skickat. Kontrollera din inkorg.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "E-postadressen har verifierats.",
     "emailDelete": "Ta bort e-post",
     "emailDeleteConfirm": "Ta bort mina uppgifter",

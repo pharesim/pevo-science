@@ -1063,7 +1063,7 @@
     "emailAdd": "E-Mail hinzufügen",
     "emailChange": "E-Mail ändern",
     "emailSendVerification": "Bestätigungs-E-Mail senden",
-    "emailVerificationSent": "Bestätigungs-E-Mail gesendet. Prüfen Sie Ihren Posteingang.",
+    "emailVerificationSent": "Verification email sent. Check your inbox; if nothing arrives in a few minutes, try again.",
     "emailVerified_success": "E-Mail erfolgreich bestätigt.",
     "emailDelete": "E-Mail löschen",
     "emailDeleteConfirm": "Meine Daten löschen",
