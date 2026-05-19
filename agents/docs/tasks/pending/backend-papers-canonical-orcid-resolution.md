@@ -297,3 +297,109 @@ The follow-up task `backend-profile-papers-supersession-parity` (created at roun
 The round-1 "Scalar coercion divergence for malformed `authors[{hive: 42, orcid: true}]`" awareness item noted: "If a hive-normalization helper is extracted per item 1 option (b), consider extending it to reject non-string hive shapes at the same boundary." The new `canonicalHiveKey` does exactly that — its `typeof hive !== 'string'` early-return rejects non-string shapes uniformly across all JS paths, returning `null` (which falls through to case-1 "no hive → no verified ORCID"). The unit test pins this behavior on `42` and `{ hive: 'alice' }` inputs.
 
 The round-1 "`applyAuthorSupersession` spread keeps `affiliation` in fallback paths (api-contract P3/75)" awareness item: still latent. The Item 4 fallback-branch canaries surface `orcid_verified`/`orcid_discrepancy` correctly, but they don't run against a list-endpoint JS fallback (the list endpoint has no JS fallback today). If a future change routes the list through a JS fallback, the `applyAuthorSupersession` spread would surface the `affiliation` field; that's the same risk the round-1 P3 noted, addressed at that future site.
+
+---
+
+## Architect re-review round-2 (2026-05-19) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `37a49a1` dispatched 10 reviewers (correctness opus + adversarial opus + security opus + testing/maintainability/project-standards/performance/api-contract/kieran-typescript sonnet + ce-learnings-researcher sonnet; `ce-agent-native-reviewer` skipped per root CLAUDE.md). 22 findings surfaced across this task and the sibling `backend-profile-papers-supersession-parity` round-1 review (combined triage; cluster-level findings split per task). 7 main items held below for this task plus 2 passing items plus architect-side deferrals.
+
+### Items to address
+
+**1. (P1 cross-reviewer sec+adv, anchor 100) SQL TRIM vs JS `.trim()` asymmetry — round-2 hold item 1 NOT fully closed**
+
+**Where:**
+- `backend/src/hafsql.ts:830` — `LEFT JOIN active_accreditations aa ON aa.account = LOWER(TRIM(a.elem ->> 'hive'))`
+- `backend/src/lib/author-supersession.ts` — `canonicalHiveKey` JSDoc claims "LOWER(TRIM(...)) is the parity-symmetric operator on `.trim().toLowerCase()`"
+
+**Why:** PostgreSQL `TRIM(text)` with no character-set arg strips ONLY U+0020 (space). Empirically verified against the running `pevo-postgres-1`: `TRIM(E'\tAlice\n')` returns `\tAlice\n` unchanged. JS `String.prototype.trim()` strips ECMA-262 WhiteSpace + LineTerminator (tab, LF, CR, NBSP, BOM, U+2028/2029, etc.). A broadcaster posting `{hive: '\tBob'}` produces split-brain across surfaces: JS-path /api/profile + chain-detail surface `orcid_verified` + `orcid_discrepancy=true`; SQL-path /api/papers + single-link detail emit `orcid_verified=null` and no discrepancy. The vouched-co-author spoof channel the round-1 hold prescribed to close is still open via non-space whitespace.
+
+**Fix:** Two candidate shapes for the implementer's choice:
+- **(a) Reject malformed at the boundary.** Hive consensus restricts accounts to `[a-z0-9.\-]`. Tighten the hive-account normalizer to return `null` on any input containing characters outside that set after trim+lowercase. Add an SQL guard via regex: `LOWER(TRIM(a.elem ->> 'hive')) ~ '^[a-z0-9.\-]+$'` (or rewrite the JOIN to compare against a regex-validated subexpression). Broadcaster-malformed metadata never silently matches a real account. Strongest fix.
+- **(b) Widen SQL TRIM to match JS .trim().** Replace `LOWER(TRIM(a.elem ->> 'hive'))` with `LOWER(REGEXP_REPLACE(a.elem ->> 'hive', '^[\s ﻿]+|[\s ﻿]+$', '', 'g'))` so both ends strip the broader Unicode whitespace set. Mechanically symmetric; less defensive than (a).
+
+Whichever shape, add a parity test that runs `'\tbob'`, `' bob'`, `'bob\n'`, and `'Alice'` through BOTH paths and asserts identical `(orcid_verified, orcid_discrepancy)` output. Mutation kill: dropping the normalization at either side fails the parity test red.
+
+**2. (P1 adv, anchor 75) Hive-account normalizer not adopted at all lookup sites in `papers.ts`**
+
+**Where:**
+- `backend/src/routes/papers.ts:814` (`fetchPapersFromHaf` row builder): `accredited_authors: pevoAuthors.filter(a => a.hive && allAccredited.has(a.hive)).map(a => a.hive!)` — raw key lookup, no canonicalization.
+- `backend/src/routes/papers.ts:1207` (non-chain detail branch): `detail.accredited_authors = detailAuthors.filter((a) => typeof a.hive === 'string' && accreditedAccountSet.has(a.hive as string)).map((a) => (a.hive as string).trim().toLowerCase())` — `.filter()` uses raw lookup; `.map()` uses the old inline pattern instead of the wrapper.
+
+**Why:** Round-2 extracted the canonical-hive-key wrapper and adopted it at three planned sites (`computeSupersession`, `buildCumulativeAuthorsForChain`, SQL JOIN), but these two sibling sites in the same file do hive-account lookups against an accredited set without canonicalization. Concrete cascade: mixed-case `authors[i].hive = 'Alice'` on a chain paper produces `orcid_verified='0000-...'` (supersession correctly resolved) AND `accredited_authors=[]` (raw lookup misses lowercase set) in the SAME response row. Same-response-row split-brain across `orcid_verified` and `accredited_authors` fields.
+
+This is the wrapping-primitive exhaustive call-site audit pattern from `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` — once a canonical wrapper exists, every direct caller of the underlying pattern is a structural drift risk.
+
+**Fix:** At both sites, replace raw `.hive` lookups with the renamed wrapper (per item 6 below). Run `grep -nE '\.hive\b' backend/src/routes/papers.ts backend/src/hafsql.ts` and re-disposition every site against the wrapper.
+
+Companion test: chain paper with `authors[{hive: 'Alice'}]`, alice in accreditation set; assert `orcid_verified` populated AND `accredited_authors` includes `'alice'` in the same response row, across list AND detail surfaces.
+
+**3. (P1 cross-reviewer maint+test+std, anchor 100) Comment-anchor violations in test source — coordination context**
+
+**Where:** `backend/tests/routes/papers-canonical-orcid-resolution.test.ts`
+- Section comment block embedding "Round-2 hold-block items 1-4 canaries", "Item 1 (P1)", "Item 2 (P2)", "Item 3 (P2)", "Item 4 (P2)"
+- Four `describe()` labels of the form `'supersession round-2 hold — item N (<behavioral text>)'`
+
+**Why:** Root CLAUDE.md "Comment anchors" — do not embed task slugs, round numbers, or hold-item references in production or test code. The describe labels are forever; they appear in CI output for the lifetime of the regression test.
+
+**Fix:**
+- Replace the section comment with one anchored on behavior: `// Canaries for hive-key normalization parity, empty-string orcid parity, affiliation parameterization, and fallback-branch supersession.`
+- Strip the `supersession round-2 hold — item N (...)` prefix from each `describe()` label, keeping the behavioral parenthesized content (e.g., `describe('hive-key normalization parity across the wrapper, computeSupersession, applyAuthorSupersession, and SQL JOIN', ...)`).
+
+**4. (P2 cross-reviewer sec+adv, anchor 100) Whitespace-only chain orcid bypasses NULLIF**
+
+**Where:** `backend/src/hafsql.ts` (SQL `NULLIF((a.elem ->> 'orcid'), '')`) + `backend/src/lib/author-supersession.ts` `computeSupersession` (JS `chainOrcid.length > 0` check)
+
+**Why:** Round-2 hold item 2 closed the byte-exact empty case (`''`) for parity. A broadcaster posting `{hive: 'alice', orcid: ' '}` (single space) bypasses both filters: SQL `NULLIF(' ', '')` returns `' '` (non-null) → discrepancy guard fires → `orcid_discrepancy=true`. JS `chainOrcid.length > 0 → true` → `claimed = ' '` → discrepancy check fires → `orcid_discrepancy=true`. Parity-consistent but both wrong — surfaces a false-positive discrepancy audit signal against an accredited author who didn't actually claim anything substantive.
+
+**Fix:** Tighten both gates to treat any-whitespace-only as no-claim:
+- SQL: `NULLIF(BTRIM(a.elem ->> 'orcid'), '') IS NOT NULL` (BTRIM strips ASCII whitespace).
+- JS: `typeof chainOrcid === 'string' && chainOrcid.trim().length > 0 ? chainOrcid.trim() : null` in `computeSupersession`.
+
+Companion test: `computeSupersession('alice', ' ', orcidMap)` → `orcid_discrepancy: false`. SQL canary: both list+detail fragments contain the BTRIM (or chosen normalization).
+
+**5. (P2 test, anchor 75) Item 3 behavior canary is redundant with the SQL canary**
+
+**Where:** `backend/tests/routes/papers-canonical-orcid-resolution.test.ts` — the item-3 "list response authors[i] lacks affiliation key" behavior canary
+
+**Why:** Test mocks SQL row without `affiliation`, then asserts the response `authors[i]` lacks `affiliation`. Code path: `fetchPapersFromHaf` passes the SQL column verbatim — affiliation can only appear in the response if the SQL row contained it. The counterfactual (revert `includeAffiliation: false` → `true` at the call site) doesn't change what the mocked test reads. The test passes vacuously. The SQL-shape canary (the first item-3 test) is the real kill switch.
+
+**Fix:** Delete the redundant behavior canary and tighten the SQL canary's comment to explain it's the affiliation contract kill switch.
+
+**6. (P2 maint, anchor 75) `canonicalHiveKey` name implies a non-null key — rename**
+
+**Where:** `backend/src/lib/author-supersession.ts` exported function
+
+**Why:** Signature returns `string | null`. The word "key" connotes a non-null map key. Round-3 is adding new call sites (items 1+2 above); natural moment to settle on a clearer name.
+
+**Fix:** Rename to `normalizeHiveAccount(hive: unknown): string | null` (or `toCanonicalHive`) across the lib, all call sites in `papers.ts` (including the new sites from items 1+2), `helpers.ts` if imported there, and tests. Update the JSDoc accordingly.
+
+**7. (P2 maint, anchor 75) hafsql.ts JSDoc parenthetical file-path is already stale**
+
+**Where:** `backend/src/hafsql.ts` — JSDoc on `authorsWithSupersessionSelect`: "Matches the JS-side normalization in `canonicalHiveKey` (see `backend/src/routes/papers.ts`); the parity is the contract."
+
+**Why:** Task 2 (commit `d41da25`, already on main) moved the helpers from `routes/papers.ts` to `backend/src/lib/author-supersession.ts`. The parenthetical pointer is wrong as-of HEAD.
+
+**Fix:** Drop the parenthetical file-path supplement. JSDoc becomes: "Matches the JS-side normalization in `<renamed-helper>`; the parity is the contract." The function-name anchor alone is stable.
+
+### Passing items (small fixes alongside the above)
+
+**8.** `rows: [] as any[]` in `vi.hoisted` mock initializer at `papers-canonical-orcid-resolution.test.ts` → `rows: [] as unknown[]`.
+**9.** Unused `params: unknown[]` parameter in the `stageVersionRoute` mock → `_params` per underscore-prefix convention used elsewhere in the same file.
+
+### Architect-side contract-doc deferrals (land at round-3 archive, no implementer action)
+
+The following contract-doc edits in `agents/docs/api-contracts/papers.md` will land alongside the round-3 archive, after the implementer's round-3 emit-shape behavior is settled. Deferred from this hold because the round-3 fix for item 1 may change the emit semantics for `authors[i].hive` (if option (a) rejection-at-boundary is chosen, malformed inputs emit as null; if option (b), verbatim emit continues):
+
+- `authors[i].hive` field note: clarify whether the emitted value is verbatim chain-broadcast or normalized at the emit boundary, and that consumers MUST compare case-insensitively against Hive account names (chain consensus restricts real accounts to `[a-z0-9.-]`).
+- `authors[i].orcid` field note: clarify that the field MAY be empty/whitespace strings if the broadcaster typed blank/whitespace; consumers should treat as equivalent to null for display.
+
+### Dismissed at triage (no action)
+
+- (T1 kt-01) Transitional exports from `routes/papers.ts` already closed at HEAD by `d41da25` (task 2 landed the lib migration). Not actionable.
+- (T1 sec-3) Round-2 parity tests use only ASCII-space inputs — implicit by item 1's non-space whitespace parity test addition.
+- (T1 kt-04, kt-05) Pre-existing redundant casts at the `preOverrideChainOrcid` capture site and `computeSupersession` hive parameter type asymmetry. Pre-existing, not introduced by round-2.
+
+### Re-review signal
+
+When items 1-9 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `37a49a1`. Items 1+2 share the wrapper/parity scope and should land together with the parity test (item 1) and the call-site audit grep (item 2). Item 4 is the orcid analog; item 6 is the rename. Items 3, 5, 7, 8, 9 are mechanical cleanups that bundle naturally alongside the substantive edits.

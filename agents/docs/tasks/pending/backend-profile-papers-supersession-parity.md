@@ -104,3 +104,116 @@ Mocked-pool per the CLAUDE.md "Running Tests" carve-out — file header document
 ### Re-review signal
 
 Move task to `tasks/review/`; the architect's review pass scopes `/ce-code-review` to the commit shipping this work. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires.
+
+---
+
+## Architect re-review round-1 (2026-05-19) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `d41da25` dispatched 10 reviewers (correctness opus + adversarial opus + security opus + testing/maintainability/project-standards/performance/api-contract/kieran-typescript sonnet + ce-learnings-researcher sonnet; `ce-agent-native-reviewer` skipped per root CLAUDE.md). 22 findings surfaced across this task and the sibling `backend-papers-canonical-orcid-resolution` round-2 review (combined triage; cluster-level findings split per task). 6 main items held below for this task plus 1 passing item plus 1 architect-side action already landed.
+
+### Items to address
+
+**1. (P1 cross-reviewer maint+test+std, anchor 100) Comment-anchor violations in test source**
+
+**Where:** `backend/tests/routes/profile-papers-supersession.test.ts`
+- File-header docstring embedding two task slugs (`BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION`, `BACKEND-PROFILE-PAPERS-SUPERSESSION-PARITY`) and a `Round-1 of` qualifier
+- Inline docblock for the `userPapersRow` helper cites `routes/profile.ts:283` — line-number anchor; the line already drifted (line 283 is the count query's `baseParams` argument, not the column list the docblock claims to mirror)
+
+**Why:** Root CLAUDE.md "Comment anchors" — do not embed task slugs, line numbers, or round-number qualifiers in production or test code.
+
+**Fix:**
+- Rewrite the header docstring on behavioral anchors only. Drop both slug citations and the `Round-1 of` qualifier. Example: "The SQL-projection in `authorsWithSupersessionSelect` runs on /api/papers but the profile endpoint assembles rows via `fetchUserPapersFromHaf` → `toPaperSummary`; this file pins the JS-side supersession wiring on /api/profile/:username/papers."
+- Replace `matching routes/profile.ts:283` with a stable-symbol reference: `mirrors the columns selected by fetchUserPapersFromHaf's data query (author, permlink, title, body, json_metadata, created)`.
+
+**2. (P1 kt, anchor 90) `PaperAuthor` type missing supersession fields; resolves the `as unknown as PaperSummary['authors']` cast and the affiliation type-vs-runtime drift**
+
+**Where:**
+- `backend/src/types/domain.ts` — `PaperAuthor` declares `{ name, hive?, orcid?, affiliation? }` only
+- `backend/src/helpers.ts` — `as unknown as PaperSummary['authors']` double-cast at the `toPaperSummary` boundary
+
+**Why:** Runtime HTTP response shape now permanently diverges from declared `PaperSummary.authors: PaperAuthor[]`. Consumers reading `summary.authors[i].orcid_verified` get TS errors or have to use `any`. Sibling drift: `PaperAuthor` still declares `affiliation?` even though `toPaperSummary` strips it from PaperSummary (so `summary.authors[i].affiliation` is "always undefined at runtime, optional in type"). Both gaps resolve together.
+
+**Fix:** Two acceptable shapes for the implementer's choice:
+- (a) Extend `PaperAuthor` with `orcid_verified?: string | null` and `orcid_discrepancy?: boolean`. Leave `affiliation?` on `PaperAuthor`; accept that `PaperSummary.authors[i].affiliation` is type-optional / runtime-always-undefined (mild drift, defensible).
+- (b) Split into `PaperSummaryAuthor` (no affiliation, optional supersession fields) and `PaperDetailAuthor` (with affiliation, optional supersession fields). Stricter, more boilerplate.
+
+Either way, remove the `as unknown as PaperSummary['authors']` cast at the `toPaperSummary` boundary; verify `tsc --strict` clean. One-shot grep for other `as unknown as PaperSummary` / `as unknown as PaperDetail` casts in `backend/src/` to verify the same drift doesn't exist elsewhere.
+
+**3. (P1 cross-reviewer corr+adv, anchor 75) HAF outage on /api/profile/:username/papers returns 500 not 503-retriable; coupled with mislabeled test**
+
+**Where:**
+- `backend/src/routes/profile.ts` — inside the `hafCache.getOrSet` miss callback for `/api/profile/:username/papers`. `getAccreditedOrcidsByAccount()` is called without try/catch; `HafQueryError` propagates → 500 INTERNAL_ERROR.
+- `backend/tests/routes/profile-papers-supersession.test.ts` — the test labeled "degraded HAF / no pool" stages `stage([...], [])` (empty-result path), not the throw path. Masks the regression from coverage.
+
+**Why:** Pre-task-2, the route absorbed HAF failures inside `fetchUserPapersFromHaf`'s try/catch and returned `{ rows: [], total: 0 }` as 200 — degraded but reachable. Post-task-2 commit regresses partial-HAF degradation to 500 instead of the 503-retriable sibling routes emit (e.g., `/api/papers/:author/:permlink` translates via `HafQueryError`). The mislabeled test let this slip through.
+
+**Fix:** Wrap `getAccreditedOrcidsByAccount()` in try/catch matching the sibling-route pattern; translate the throw to `HafQueryError` so the central error middleware emits 503 retriable. Then rewrite the mislabeled test to stage the actual throw path:
+```ts
+getPoolMock.mockImplementation((sql) => {
+  if (sql.includes('active_accreditations')) throw new HafQueryError(/* ... */);
+  return /* user_papers result */;
+});
+```
+Assert 503 with `retriable: true` per central error middleware behavior. Keep a separate test (rename) for the legitimate-empty-accreditation-set path (`active_accreditations` returns `[]`, route serves papers without supersession).
+
+**4. (P2 adv, anchor 80) `applyAuthorSupersession` JS spread leaks broadcaster-controlled extra fields**
+
+**Where:** `backend/src/lib/author-supersession.ts` — `return { ...entry, ...supersession };`
+
+**Why:** SQL-side `authorsWithSupersessionSelect` projects through enumerated `jsonb_build_object` keys (drops broadcaster keys outside the schema). JS-side spread-merges the entire chain entry. A broadcaster posting `authors: [{hive: 'alice', orcid: '0000-...', evil_field: 'payload'}]` produces /api/papers response with `evil_field` dropped, but /api/profile/:username/papers + chain-detail responses retain `evil_field`. Cross-surface response-shape drift; broadcaster-controlled response keys on a public endpoint.
+
+**Fix:** Replace the spread with an explicit projection that pins the JS-side output shape to the SQL-side enumerated key set:
+```ts
+return {
+  name: entry.name,
+  hive: entry.hive,
+  orcid: entry.orcid,
+  affiliation: entry.affiliation,   // PaperDetail consumers want this; toPaperSummary strips later for PaperSummary
+  ...supersession,
+};
+```
+Companion test: stage `authors: [{hive: 'alice', evil_field: 'payload'}]` and assert response `authors[0]` has no `evil_field` key across list, chain-detail, non-chain-detail, profile, `?version=N`, and `metadata_restored` surfaces.
+
+**5. (P2 cross-reviewer corr+maint, anchor 78-100) `toPaperSummary` optional `orcidMap?` is a permanent backward hatch; making it required closes JSDoc/code mismatch**
+
+**Where:**
+- `backend/src/helpers.ts` — `toPaperSummary` signature + JSDoc claim of "raw passthrough when orcidMap absent" — body always strips affiliation regardless of `orcidMap` presence
+
+**Why:** Today there is exactly one production caller (`profile.ts`) and it always passes the map. The optional parameter creates a permanent dead branch in the body, and the JSDoc's "raw passthrough" claim is provably false (affiliation strip is unconditional). Making `orcidMap` required deletes the dead branch and resolves the docstring/code mismatch in one move.
+
+**Fix:**
+- Change `orcidMap?` to required `orcidMap: Map<string, string | null>`.
+- Audit `toPaperSummary` call sites: `grep -rn 'toPaperSummary(' backend/src/`. Any caller without an accreditation context either gets a `new Map()` (pure fixture) or surfaces as a real call-site gap.
+- Remove the JSDoc claim about absent-orcidMap behavior; describe what the function actually does (always strips affiliation; applies supersession via the passed map).
+
+If the call-site audit surfaces 3+ non-supersession callers, consider splitting into `toPaperSummary(post, meta)` and `toPaperSummaryWithSupersession(post, meta, orcidMap)` instead. Implementer's call.
+
+**6. (P2 perf, anchor 75) Cache-TTL comment vs actual TTL mismatch**
+
+**Where:** `backend/src/routes/profile.ts` — comment inside `hafCache.getOrSet` callback reads "cache the projected result for 30 min"; `hafCache.getOrSet` is called with no explicit `ttlMs` → 30-second default (`hafCache = new QueryCache(30_000)`).
+
+**Why:** Comment promises 30-minute staleness alignment with the architect's papers.md "30-min cache-staleness note for supersession fields." Actual behavior is 30 seconds. Future maintainer could "fix" the comment by changing the TTL to 30 minutes, materially increasing observed revocation lag.
+
+**Fix:** Update the comment to accurately describe behavior: "30-second response cache; cold-cache requests fetch the 10-min-cached accreditation map. Net supersession staleness window: up to ~10 minutes from a revocation event." The architect-side `profiles.md` update already landed (see "Architect-side contract-doc updates" below) describes the actual ~10-minute window for this surface.
+
+### Passing items (small fixes alongside the above)
+
+**7.** `rows: [] as any[]` in `vi.hoisted` mock initializer at `profile-papers-supersession.test.ts` → `rows: [] as unknown[]`.
+
+### Architect-side contract-doc updates already landed (no implementer action)
+
+- `agents/docs/api-contracts/profiles.md` — added field notes for `authors[i].orcid` / `authors[i].orcid_verified` / `authors[i].orcid_discrepancy` on `/api/profile/:username/papers` (cross-referencing papers.md as the canonical PaperSummary supersession SSoT), affiliation-strip note, cache-staleness note describing the actual ~10-minute window for this surface, and a head-only authors caveat documenting the cross-surface authors-set drift with `/api/papers/:author/:permlink` (cumulative-union not yet applied here; tracked separately).
+
+### Findings noted-for-awareness (dismiss-as-noted; document here, no code action)
+
+- **Profile-papers head-only authors vs detail cumulative-union (adv+api-contract P3/70-75):** Pre-existing cross-surface drift — profile lists head broadcaster's authors only; paper detail walks the continuation chain and applies cumulative-union. Same paper viewed on profile vs detail may have a different `authors[]` set, not just different supersession projections. Already tracked by `backend-cumulative-union-listing-surfaces-parity` (currently in `tasks/review/` as design-proposal awaiting architect ratification). No action on this hold.
+- **Clause (c) real-path companion claim wording (test P2/75):** Header cites `papers.test.ts` as real-path companion; `papers.test.ts` is structurally a valid clause (c) companion per the carve-out doc's "different mutation class" principle (it exercises the integrated route through real HAF), even though it doesn't assert on supersession fields specifically. Prose is loose but discipline is intact. Per `feedback_dismiss_preemptive_test_hardening`.
+
+### Dismissed at triage (no action)
+
+- (T2 kt-4) `entry as Record<string, unknown>` cast inside `applyAuthorSupersession` — safe per preceding null+object guard; documentation observation only.
+- (T2 adversarial-5) Cache TTL skew across surfaces — anchor 60, below the confidence gate. The architect's `profiles.md` cache-staleness note acknowledges per-surface variance.
+
+### Re-review signal
+
+When items 1-7 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `d41da25`. Items 2 (PaperAuthor type) + 4 (JS spread shape) + 5 (orcidMap required) share helper/type-system scope and could land as a single commit; item 3 (HAF outage) is the route-correctness item with the test rewrite; items 1, 6, 7 are documentation/test cleanups.
