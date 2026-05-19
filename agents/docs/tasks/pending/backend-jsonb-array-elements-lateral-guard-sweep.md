@@ -177,3 +177,45 @@ Round-1 hold items 1-3 landed in a single header-only commit on the two canary t
 
 - Header-only edits; no test body specs, no production code, no task-file hold-block edits.
 - Worker subagent in worktree `worktree-agent-a1cfdf4c8b511ac21` produced the commit; parent cherry-picked onto main.
+
+---
+
+## Architect re-review (2026-05-19) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` on commit `f1f5410` with 6 personas (correctness on Opus; testing, maintainability, project-standards, kieran-typescript, learnings on Sonnet; `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md). The three round-1 hold items landed verbatim: stable-symbol audit table, canonical-home + cross-reference, dropped round-N qualifiers. Self-violation audit passes — no new line-numbers, slug citations, SHAs, or round-N markers in the rewritten text. User-triaged 2026-05-19; one substantive item held below; reliability/maintainability soft observations recorded under "dismissed."
+
+### Items held (must fix before archive)
+
+1. **(P3 testing, cross-reviewer anchor 75)** Audit-table dispositions for `citing_papers` CTE and `authorsWithSupersessionSelect` are stale. The canonical-home audit table in `backend/tests/routes/citations-lateral-guard-canary.test.ts` marks both as:
+
+   ```
+   - reputation.ts `citing_papers` CTE CROSS JOIN LATERAL
+       → OUT OF SCOPE here; the cycle-cascade `citing_papers` CTE is
+         fixed separately alongside the reputation-cycle cascade audit.
+   - hafsql.ts `authorsWithSupersessionSelect`
+       → OUT OF SCOPE here; the cycle-cascade `authorsWithSupersession`
+         helper is fixed separately alongside the reputation-cycle
+         cascade audit.
+   ```
+
+   Verified false against HEAD: the SQL at `reputation.ts` `citing_papers` CTE (in the `CROSS JOIN LATERAL` clause) and `hafsql.ts` `authorsWithSupersessionSelect` (in the `jsonb_array_elements(... WITH ORDINALITY)` SRF argument) both already use the canonical CASE-WHEN-at-SRF-arg form: `CASE WHEN jsonb_typeof(...) = 'array' THEN ... ELSE '[]'::jsonb END`. The fixes landed via the cycle-cascade sibling task (since archived). The audit-table commentary was never re-synced when the cycle-cascade fixes archived, leaving the canonical home telling maintainers these sites are pending when they're actually correct.
+
+   Fix: re-sync both entries to the `already correct` disposition (matching the existing `excludeSelfReviewWhere` and `paper_resolved_votes NOT EXISTS` entries' form). Suggested shape:
+
+   ```
+   - reputation.ts `citing_papers` CTE CROSS JOIN LATERAL
+       → already correct (CASE-WHEN at SRF arg).
+   - hafsql.ts `authorsWithSupersessionSelect`
+       → already correct (CASE-WHEN at SRF arg).
+   ```
+
+   The sibling cross-reference at `backend/tests/notification-queries-lateral-guard-canary.test.ts` is just a pointer to the canonical home, so it inherits the fix without separate edit.
+
+### Items dismissed during architect triage (recorded for transparency)
+
+- (P3 kieran-typescript / maintainability, anchor 50) Two audit-table anchors (`paper_resolved_votes`, `citing_papers`) cite SQL CTE labels that are invisible to the type system — a rename in the production SQL template literal would silently stale the docblock entry. Dismissed: CTE label names are stable across the recent reputation/hafsql churn, and the test bodies themselves embed these labels in their own SQL strings, so a rename surfaces as a test-breakage signal even if the docblock anchor goes stale. Below confidence gate for action.
+- (P3 project-standards, informational) "reputation-cycle cascade audit" used as the behavioral anchor for the two stale entries reads as a semantic label for in-progress work rather than a stable exported symbol. Subsumed by item 1's resolution — both entries flip to `already correct` and the dangling forward-reference disappears.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect re-review scopes `/ce-code-review` to commits since `f1f5410`. Anchor: 2 audit-table-entry edits in a single test file's docblock; single commit reasonable.
