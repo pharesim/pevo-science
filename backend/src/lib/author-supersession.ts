@@ -43,8 +43,31 @@ const HIVE_ACCOUNT_RE = /^[a-z0-9.-]+$/;
  *  `String.prototype.trim()` covers (tab, LF, CR, NBSP, BOM, U+2028/2029,
  *  etc.). Using the broader JS trim here would create cross-surface drift:
  *  `'\tbob'` would normalize to `bob` in JS but stay `\tbob` in SQL. */
-function trimAsciiSpace(s: string): string {
+export function trimAsciiSpace(s: string): string {
   return s.replace(/^ +| +$/g, '');
+}
+
+/**
+ * Strip leading/trailing ASCII C-whitespace (space, tab, LF, CR, vertical
+ * tab, form feed) from a string. Matches PostgreSQL's
+ * `BTRIM(text, E' \t\n\r\x0B\f')` semantics exactly — the same charset
+ * the SQL-side `authorsWithSupersessionSelect` projection and the
+ * `authorshipClaimsCteBody` ORCID auto-accept arm reference via
+ * `CHAIN_ORCID_BTRIM_CHARSET` in `hafsql.ts`. Used at JS sites that
+ * compare a chain-supplied ORCID claim against a chain-validated ORCID
+ * (e.g. the server-override + audit emission path in `papers.ts`).
+ *
+ * Distinct from `trimAsciiSpace` (U+0020 only) and JS
+ * `String.prototype.trim()` (full ECMA-262 WhiteSpace). The asymmetry
+ * with `.trim()` on extended Unicode whitespace (NBSP / BOM /
+ * U+2028 / U+2029) is the known residual gap documented on
+ * `authorsWithSupersessionSelect`; this helper deliberately matches
+ * SQL semantics so the raw-compare audit path and the SQL supersession
+ * path produce the same discrepancy verdict.
+ */
+export function trimAsciiCWhitespace(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/^[ \t\n\r\x0B\f]+|[ \t\n\r\x0B\f]+$/g, '');
 }
 
 /**
@@ -111,12 +134,29 @@ export function normalizeHiveAccount(hive: unknown): string | null {
  *
  * Parity contract with the SQL side `authorsWithSupersessionSelect`:
  * both the no-claim guard and the equality compare apply a stripper to
- * the chain `orcid`. SQL uses `BTRIM(..., E' \t\n\r\v\f')` (explicit
- * ASCII C-whitespace charset). JS uses `String.prototype.trim()` (full
- * ECMA-262 WhiteSpace set). The two paths agree on ASCII C-whitespace
- * padding (the realistic publish-form copy-paste failure mode) and
- * diverge only on exotic Unicode whitespace (NBSP, BOM, U+2028,
- * U+2029, etc.), which is not a known broadcaster input shape on PEvO.
+ * the chain `orcid`. SQL uses `BTRIM(..., E' \t\n\r\x0B\f')` (explicit
+ * ASCII C-whitespace charset, centralized as
+ * `CHAIN_ORCID_BTRIM_CHARSET` in `hafsql.ts` — `\x0B` is the canonical
+ * PostgreSQL hex escape for vertical-tab; PostgreSQL escape-string
+ * syntax does not recognize `\v`, so the literal `E'\v'` would parse
+ * as a literal `v` byte 0x76). JS uses `String.prototype.trim()` (full
+ * ECMA-262 WhiteSpace set).
+ *
+ * The two paths agree on ASCII C-whitespace padding (space, tab, LF,
+ * CR, vertical-tab, form-feed). They diverge on the following
+ * extended-Unicode-whitespace code points — JS `.trim()` strips them;
+ * SQL BTRIM with the ASCII C-whitespace charset does NOT:
+ *   - NBSP    (U+00A0, no-break space)
+ *   - BOM     (U+FEFF, byte-order mark / zero-width no-break space)
+ *   - U+2028  (line separator)
+ *   - U+2029  (paragraph separator)
+ * A `{orcid: ' <attested>'}` payload from an accredited account
+ * therefore surfaces `orcid_discrepancy=false` on this JS-projected
+ * surface and `orcid_discrepancy=true` on the SQL-projected surfaces.
+ * The residual gap is accepted (these code points are not a known
+ * broadcaster input shape on PEvO); see
+ * `agents/docs/solutions/conventions/sql-trim-vs-js-trim-whitespace-character-set-asymmetry-2026-05-19.md`.
+ *
  * Both sides MUST apply the same stripper at both the no-claim guard
  * AND the equality compare — pairing a stripped value at one site with
  * the raw value at the other reintroduces the cross-site split for

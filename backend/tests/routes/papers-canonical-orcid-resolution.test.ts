@@ -3,7 +3,11 @@
  *
  * Pins the supersession projection (`orcid_verified`, `orcid_discrepancy`) on
  * both the list (`GET /api/papers`) and detail (`GET /api/papers/:author/:permlink`)
- * endpoints, covering the four cases enumerated in the task body and the
+ * endpoints, covering the four supersession outcome cases (no hive, hive
+ * unaccredited, hive accredited with no attested ORCID, hive accredited with
+ * attestation differing from chain claim) and the four whitespace-padding
+ * inputs (tab-prefixed, space-prefixed, lf-suffixed, unpadded) for
+ * `authorsWithSupersessionSelect` and `computeSupersession`, matching the
  * canonical SQL pattern in `agents/docs/hive-schemas.md` § 1.1.
  *
  * Per CLAUDE.md "Running Tests" carve-out:
@@ -518,10 +522,13 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
     expect(sqls.length).toBeGreaterThan(0);
     for (const sql of sqls) {
       // NULLIF no-claim guard wraps BTRIM with the explicit ASCII C-whitespace charset.
-      expect(sql).toMatch(/NULLIF\(BTRIM\(a\.elem ->> 'orcid', E' \\t\\n\\r\\v\\f'\), ''\)/);
+      // Vertical-tab uses the `\x0B` Postgres hex escape rather than `\v` —
+      // PostgreSQL E-string parsing does not recognize `\v` and silently
+      // passes the literal `v` byte (0x76) instead of vertical-tab (0x0B).
+      expect(sql).toMatch(/NULLIF\(BTRIM\(a\.elem ->> 'orcid', E' \\t\\n\\r\\x0B\\f'\), ''\)/);
       // Equality compare uses the SAME charset — drift between the two
       // sites reintroduces a `{orcid: '\t<attested>'}` cross-site split.
-      expect(sql).toMatch(/aa\.orcid <> BTRIM\(a\.elem ->> 'orcid', E' \\t\\n\\r\\v\\f'\)/);
+      expect(sql).toMatch(/aa\.orcid <> BTRIM\(a\.elem ->> 'orcid', E' \\t\\n\\r\\x0B\\f'\)/);
     }
   });
 
@@ -547,11 +554,18 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
   // ──────────────────────────────────────────────
 
   const ATTESTED = '0000-0001-2345-6789';
+  // VT = vertical-tab (U+000B). Listed explicitly because the canonical
+  // failure mode this charset addresses is exactly the SQL E-string
+  // misparse of `\v` as literal `v` byte (0x76) instead of VT byte (0x0B);
+  // the JS test below treats VT as a real-world copy-paste padding shape.
+  const VT = '\x0B';
   const PARITY_MATRIX: Array<{ label: string; raw: string }> = [
     { label: 'tab-prefixed', raw: '\t' + ATTESTED },
     { label: 'space-prefixed', raw: ' ' + ATTESTED },
     { label: 'lf-suffixed', raw: ATTESTED + '\n' },
     { label: 'unpadded', raw: ATTESTED },
+    { label: 'vt-prefixed', raw: VT + ATTESTED },
+    { label: 'vt-suffixed', raw: ATTESTED + VT },
   ];
 
   for (const { label, raw } of PARITY_MATRIX) {
@@ -565,7 +579,10 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
       // Mutation-kill: replace chainOrcid.trim() at the equality compare
       // with the raw chainOrcid → '\t<attested>' !== '<attested>' →
       // discrepancy=true on the tab-prefixed and lf-suffixed inputs →
-      // test fails red.
+      // test fails red. The VT inputs additionally close the regression
+      // where the SQL charset literal carried `\v` (mis-parsed as the
+      // literal `v` byte) and the SQL/JS surfaces would split-brain on
+      // VT-padded claims.
       const orcidMap = new Map<string, string | null>([['alice', ATTESTED]]);
       const result = computeSupersession('alice', raw, orcidMap);
       expect(result.orcid_verified).toBe(ATTESTED);
@@ -576,17 +593,39 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
     });
   }
 
+  // Inverse-asymmetry regression: a leading literal `v` (0x76) is NOT a
+  // whitespace character. JS `.trim()` leaves it in place, so the chain
+  // claim differs from the attested value and discrepancy=true. The SQL
+  // BTRIM with the post-fix `\x0B` charset behaves the same way (`v` is
+  // not in the charset). Pre-fix, SQL BTRIM with the broken `\v` charset
+  // would strip the literal `v` (it WAS the charset byte 0x76) and
+  // surface discrepancy=false on SQL only — a fresh cross-site split in
+  // the inverse direction. This test pins the post-fix JS behavior; the
+  // real-Postgres canary below pins the post-fix SQL behavior.
+  it('parity: JS computeSupersession on leading literal `v` → discrepancy=true (charset does NOT strip non-whitespace alphabet)', () => {
+    const orcidMap = new Map<string, string | null>([['alice', ATTESTED]]);
+    const raw = 'v' + ATTESTED;
+    const result = computeSupersession('alice', raw, orcidMap);
+    expect(result.orcid_verified).toBe(ATTESTED);
+    expect(result.orcid_discrepancy).toBe(true);
+  });
+
   it('parity: SQL fragment carries BTRIM-with-charset at both NULLIF and `<>` sites for both list and detail', async () => {
     // SQL-shape canary for the parity matrix: the emitted projection text
     // must apply the same explicit ASCII C-whitespace BTRIM at both the
     // no-claim guard and the equality compare. PostgreSQL evaluates
-    // `BTRIM(text, E' \t\n\r\v\f')` on the matrix inputs as
+    // `BTRIM(text, E' \t\n\r\x0B\f')` on the matrix inputs as
     //   `BTRIM('\t<attested>', ...)`   → '<attested>'
     //   `BTRIM(' <attested>',  ...)`   → '<attested>'
     //   `BTRIM('<attested>\n', ...)`   → '<attested>'
     //   `BTRIM('<attested>',   ...)`   → '<attested>'
     // so `aa.orcid <> BTRIM(...)` is false on all four (when aa.orcid is
     // the attested canonical value), matching the JS side.
+    //
+    // Vertical-tab is encoded as `\x0B` — PostgreSQL does not recognize
+    // `\v` and silently parses it as a literal `v` (0x76) instead of
+    // vertical-tab (0x0B); the targeted real-Postgres canary below
+    // exercises the byte-level behavior directly.
     //
     // This canary pins the emitted SQL text. The route's response
     // correctness when the projection returns the post-BTRIM result is
@@ -609,12 +648,13 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
     for (const sql of sqls) {
       // Exact-literal containment is the mutation kill — any drift in the
       // charset literal (missing one character, omitting the E'' Postgres
-      // escape-string prefix, dropping a quote) fails the canary red.
-      expect(sql).toContain("BTRIM(a.elem ->> 'orcid', E' \\t\\n\\r\\v\\f')");
+      // escape-string prefix, dropping a quote, regressing `\x0B` back
+      // to `\v`) fails the canary red.
+      expect(sql).toContain("BTRIM(a.elem ->> 'orcid', E' \\t\\n\\r\\x0B\\f')");
       // The matched-text must appear at BOTH the NULLIF and `<>` sites —
       // the previous canary regex pins the per-site shape; this canary
       // pins the per-site shared literal cardinality.
-      const matches = sql.match(/BTRIM\(a\.elem ->> 'orcid', E' \\t\\n\\r\\v\\f'\)/g);
+      const matches = sql.match(/BTRIM\(a\.elem ->> 'orcid', E' \\t\\n\\r\\x0B\\f'\)/g);
       expect(matches).not.toBeNull();
       expect(matches!.length).toBeGreaterThanOrEqual(2);
     }

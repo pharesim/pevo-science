@@ -49,6 +49,39 @@ export const T = {
   balances: 'hafsql.balances',
 } as const;
 
+// ─── BTRIM whitespace charset (chain orcid normalization) ─────────
+
+/**
+ * PostgreSQL `BTRIM(text, chars)` charset for stripping ASCII C-whitespace
+ * from broadcaster-controlled chain `orcid` values. Used at every SQL site
+ * that compares a chain-supplied ORCID against a chain-validated canonical
+ * ORCID (the JS-side mirror is `String.prototype.trim()` in
+ * `computeSupersession`).
+ *
+ * The bytes are: space (0x20), tab (0x09), LF (0x0A), CR (0x0D),
+ * vertical-tab (0x0B), form-feed (0x0C). PostgreSQL escape-string syntax
+ * does NOT recognize `\v`; `E'\v'` is silently parsed as a literal `v`
+ * (0x76) — drop the backslash, pass the next character through. The
+ * `\x0B` form is the canonical PostgreSQL hex escape for vertical-tab.
+ * (Verified empirically:
+ *   `SELECT encode((E' \t\n\r\v\f')::bytea, 'hex')` → `20090a0d760c`
+ *   `SELECT encode((E' \t\n\r\x0B\f')::bytea, 'hex')` → `20090a0d0b0c`.)
+ *
+ * The escaped `\\x0B` form below is the JS-source representation: the
+ * template-literal interpolation produces the four-character PostgreSQL
+ * sequence `\x0B` in the emitted SQL, which the SQL parser then resolves
+ * to byte 0x0B per its hex-escape rules. A bare `\x0B` in the template
+ * would be the JS hex escape (the actual 0x0B byte in the SQL string),
+ * which works on the wire but is harder to read in the captured-SQL
+ * test canaries; the escaped form keeps SQL-string introspection
+ * symmetric with how a human would write the literal in psql.
+ *
+ * Drift between SQL sites would reintroduce the cross-surface split for
+ * whitespace-padded chain orcid claims — every BTRIM call against a
+ * chain-supplied orcid MUST reference this constant.
+ */
+export const CHAIN_ORCID_BTRIM_CHARSET = " \\t\\n\\r\\x0B\\f";
+
 // ─── Common CTEs ──────────────────────────────────────────────────
 
 /**
@@ -642,6 +675,17 @@ export function authorshipClaimsCteBody(
             AND ap.block_num > cb.block_num
         ) THEN 'accepted'
         WHEN cb.author_index IS NOT NULL AND EXISTS (
+          -- ORCID auto-accept arm: the broadcaster-controlled chain ORCID
+          -- claim is compared against the on-chain accredited ORCID after
+          -- normalizing both sides for ASCII C-whitespace padding. The
+          -- BTRIM charset matches \`authorsWithSupersessionSelect\`'s
+          -- supersession projection and the JS-side
+          -- \`computeSupersession\`'s \`chainOrcid.trim()\` so the four
+          -- surfaces (list/detail SQL, chain JS, profile JS) agree on
+          -- whitespace-padded claims. Drift between this site and the
+          -- supersession projection would reintroduce the cross-site
+          -- split — both sites MUST reference the same
+          -- \`CHAIN_ORCID_BTRIM_CHARSET\` constant.
           SELECT 1 FROM ${T.comments} c
           JOIN active_accreditations aa ON aa.account = cb.claimer
           WHERE c.author = cb.paper_author
@@ -651,7 +695,7 @@ export function authorshipClaimsCteBody(
               (c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'orcid') IS NOT NULL
               AND aa.orcid IS NOT NULL
               AND aa.orcid != ''
-              AND (c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'orcid') = aa.orcid
+              AND aa.orcid = BTRIM(c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}')
             )
         ) THEN 'accepted'
         WHEN cb.author_index IS NOT NULL AND EXISTS (
@@ -820,14 +864,19 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
  * not name a real account. Matches the JS-side normalization in
  * `normalizeHiveAccount`; the parity is the contract.
  *
- * Chain orcid is wrapped in `BTRIM(..., E' \t\n\r\v\f')` (PostgreSQL
- * `BTRIM` with an explicit ASCII C-whitespace character set: space, tab,
- * LF, CR, VT, FF) at BOTH the `NULLIF(..., '')` no-claim guard and the
- * `aa.orcid <> ...` equality check. Default `BTRIM(text)` (no charset
- * argument) strips only U+0020, exactly like `TRIM(text)` — pairing it
- * with the JS-side `chainOrcid.trim()` would create the same SQL/JS
- * whitespace-character-set asymmetry the hive-account path closes via
- * the regex guard. JS `String.prototype.trim()` strips the full ECMA-262
+ * Chain orcid is wrapped in `BTRIM(..., E'${CHAIN_ORCID_BTRIM_CHARSET}')`
+ * (PostgreSQL `BTRIM` with an explicit ASCII C-whitespace character
+ * set: space, tab, LF, CR, vertical-tab, form-feed) at BOTH the
+ * `NULLIF(..., '')` no-claim guard and the `aa.orcid <> ...` equality
+ * check. The charset literal is centralized in
+ * `CHAIN_ORCID_BTRIM_CHARSET` (top of this module) so drift between
+ * sibling sites is compile-visible — see also the
+ * `authorshipClaimsCteBody` ORCID-equality arm, which references the
+ * same constant. Default `BTRIM(text)` (no charset argument) strips
+ * only U+0020, exactly like `TRIM(text)` — pairing it with the JS-side
+ * `chainOrcid.trim()` would create the same SQL/JS whitespace-
+ * character-set asymmetry the hive-account path closes via the regex
+ * guard. JS `String.prototype.trim()` strips the full ECMA-262
  * WhiteSpace set (tab, LF, CR, NBSP, BOM, U+2028/2029, etc.). The
  * explicit-charset `BTRIM` widens the SQL side to match JS for the
  * common ASCII C-whitespace cases — a broadcaster posting
@@ -835,24 +884,39 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
  * ORCID equals the trimmed value resolves to "no discrepancy" on the
  * SQL list/detail surfaces and the JS chain-detail / `?version=N` /
  * `metadata_restored` / `/api/profile/:username/papers` surfaces alike.
- * NBSP / U+2028 / U+2029 remain asymmetric (JS `.trim()` strips them;
- * this `BTRIM` does not); the trade-off is acceptable because
- * ASCII-space-only padding is the realistic copy-paste-from-ORCID-page
- * failure mode and exotic Unicode whitespace is not a known
- * broadcaster input shape on PEvO. Both NULLIF and `<>` sites MUST use
- * the SAME wrapper — drift between them would reintroduce the
- * `{orcid: '\t<attested>'}` cross-site split: one site would collapse
- * the claim to "absent", the other would compare against the raw
- * `'\t<attested>'`.
+ *
+ * **Known residual asymmetry on extended Unicode whitespace.** The
+ * BTRIM charset above intentionally covers only ASCII C-whitespace.
+ * JS `.trim()` additionally strips the following code points; SQL
+ * BTRIM does NOT:
+ *   - NBSP    (U+00A0, no-break space)
+ *   - BOM     (U+FEFF, byte-order mark / zero-width no-break space)
+ *   - U+2028  (line separator)
+ *   - U+2029  (paragraph separator)
+ * A broadcaster posting `{orcid: ' <attested>'}` for an
+ * accredited account therefore surfaces `orcid_discrepancy=false` on
+ * the JS-projected surfaces and `orcid_discrepancy=true` on the
+ * SQL-projected surfaces. The trade-off is acceptable: ASCII-space-only
+ * padding is the realistic copy-paste-from-ORCID-page failure mode;
+ * exotic Unicode whitespace is not a known broadcaster input shape on
+ * PEvO. See
+ * `agents/docs/solutions/conventions/sql-trim-vs-js-trim-whitespace-character-set-asymmetry-2026-05-19.md`
+ * for the convention; closing the residual gap is a separate task if it
+ * ever surfaces as a real-world issue.
+ *
+ * Both NULLIF and `<>` sites MUST use the SAME charset — drift between
+ * them would reintroduce the `{orcid: '\t<attested>'}` cross-site
+ * split: one site would collapse the claim to "absent", the other
+ * would compare against the raw `'\t<attested>'`. The
+ * `CHAIN_ORCID_BTRIM_CHARSET` constant is the mechanical guard.
  *
  * Parity contract: the JS-side `computeSupersession` uses
  * `chainOrcid.trim()` (broad ECMA-262 whitespace). The two paths
- * converge on ASCII C-whitespace padding (the common case); the JSDoc
- * on `computeSupersession` documents the residual extended-Unicode
- * whitespace asymmetry. Without this widening, `{orcid: ' '}` (single
- * space) would surface a false-positive discrepancy via the SQL path
- * even on the unwrapped form, because the equality compare runs on
- * the raw value.
+ * converge on ASCII C-whitespace padding (the common case) and diverge
+ * only on the extended Unicode set enumerated above. Without this
+ * widening, `{orcid: ' '}` (single space) would surface a
+ * false-positive discrepancy via the SQL path even on the unwrapped
+ * form, because the equality compare runs on the raw value.
  *
  * @param commentAlias - SQL alias for the post row (e.g., 'c', 'p').
  * @param appTagParam - bind-param placeholder for `config.appTag` (e.g., '$3').
@@ -884,8 +948,8 @@ export function authorsWithSupersessionSelect(
         ${affiliationField}'orcid_verified',    aa.orcid,
         'orcid_discrepancy', CASE
                                WHEN aa.orcid IS NOT NULL
-                                AND NULLIF(BTRIM(a.elem ->> 'orcid', E' \\t\\n\\r\\v\\f'), '') IS NOT NULL
-                                AND aa.orcid <> BTRIM(a.elem ->> 'orcid', E' \\t\\n\\r\\v\\f')
+                                AND NULLIF(BTRIM(a.elem ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}'), '') IS NOT NULL
+                                AND aa.orcid <> BTRIM(a.elem ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}')
                                THEN true
                                ELSE false
                              END

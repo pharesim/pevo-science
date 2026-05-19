@@ -29,6 +29,7 @@ import {
   normalizeHiveAccount,
   computeSupersession,
   applyAuthorSupersession,
+  trimAsciiCWhitespace,
 } from '../lib/author-supersession.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
@@ -427,7 +428,26 @@ function buildCumulativeAuthorsForChain(
     // active. Branch selection: `accreditedAccounts.has(hive)` for the
     // active arm; `accreditationOrcidStatus.get(hive)?.status === 'revoked'`
     // for the revoked arm.
+    //
+    // Normalize the chain claim for comparison via `trimAsciiCWhitespace`
+    // so the audit-emit + override path stays in lockstep with the SQL
+    // supersession projection (`authorsWithSupersessionSelect` BTRIM with
+    // `CHAIN_ORCID_BTRIM_CHARSET`) and the JS supersession helper
+    // (`computeSupersession`'s `chainOrcid.trim()`). Without the strip,
+    // `{orcid: '\t<attested>'}` would emit `orcid_claim_mismatch` here
+    // while `orcid_discrepancy=false` on the same response — three
+    // cross-site interpretations of the same payload. The raw value
+    // still goes into the audit event's `claimedOrcid` field for
+    // forensic visibility; only the equality compare consults the
+    // normalized form.
     const claimedOrcid = preOverrideChainOrcid;
+    const claimedOrcidNormalized = claimedOrcid !== null ? trimAsciiCWhitespace(claimedOrcid) : null;
+    // After trim, all-whitespace claims collapse to ''; treat as
+    // "no claim" to mirror `computeSupersession`'s `length > 0` guard
+    // and the SQL NULLIF.
+    const claimedOrcidForCompare = claimedOrcidNormalized && claimedOrcidNormalized.length > 0
+      ? claimedOrcidNormalized
+      : null;
     const statusEntry = accreditationOrcidStatus.get(hive);
 
     if (accreditedAccounts.has(hive)) {
@@ -443,10 +463,13 @@ function buildCumulativeAuthorsForChain(
       //       user's silence IS the authority)
       //   (e) accreditedOrcid null, no claim        → no-op
       if (accreditedOrcid) {
-        if (claimedOrcid && claimedOrcid !== accreditedOrcid) {
+        if (claimedOrcidForCompare && claimedOrcidForCompare !== accreditedOrcid) {
           // Case (b): broadcaster's claim disagrees with the on-chain
           // accredited ORCID. Audit emission consolidated via
           // `emitOrcidClaimMismatchAudit`; server-override stays inline.
+          // Audit event carries the raw `claimedOrcid` so operators see
+          // the as-broadcast value; comparison uses the normalized form
+          // for SQL/JS supersession parity.
           emitOrcidClaimMismatchAudit(
             {
               status: 'active',
@@ -461,12 +484,13 @@ function buildCumulativeAuthorsForChain(
             auditedKeys,
           );
           out.orcid = accreditedOrcid;
-        } else if (!claimedOrcid) {
-          // Prefill: accredited carries an ORCID, the chain-claim doesn't.
+        } else if (!claimedOrcidForCompare) {
+          // Prefill: accredited carries an ORCID, the chain-claim is
+          // absent or whitespace-only.
           out.orcid = accreditedOrcid;
         }
-        // else: claimedOrcid === accreditedOrcid — pass through unchanged.
-      } else if (claimedOrcid) {
+        // else: claimedOrcidForCompare === accreditedOrcid — pass through unchanged.
+      } else if (claimedOrcidForCompare) {
         // Case (d): accredited target with no on-chain ORCID + broadcaster
         // claim present. Suppress the claim (set to null) and emit audit
         // event so operators see the spoof attempt. Categorically an
@@ -498,7 +522,7 @@ function buildCumulativeAuthorsForChain(
       // actor has no authoritative ORCID standing anymore); the audit
       // fires on mismatch for triage visibility.
       const lastAttestedOrcid = statusEntry.orcid;
-      if (lastAttestedOrcid && claimedOrcid && claimedOrcid !== lastAttestedOrcid) {
+      if (lastAttestedOrcid && claimedOrcidForCompare && claimedOrcidForCompare !== lastAttestedOrcid) {
         emitOrcidClaimMismatchAudit(
           {
             status: 'revoked',
