@@ -318,3 +318,47 @@ The `[TODO Architect]` markers in this task file for `agents/docs/api-contracts/
 - `npx vitest run tests/routes/accreditation.test.ts`: 26 pass, 7 fail. All 7 failures pre-exist on `main` with this commit reverted — they are unrelated to this work (free-email-provider 500, yahoo 500, round-4 hold #2 503-vs-502 already flagged in parent instructions, two SMTP-shape `BE-LOG-SHAPE-CONVERGENCE` specs, two `BE-ACCRED-REQ-LIMITER` specs). All 14 `BE-VERIFY-BROADCAST-ATTEMPTS-CAP` specs including the three flap-recovery specs from round 1 pass.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-19, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `a678463` (the 7-item round-2 hold-block fixes — 11 reviewers, `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 7 hold items land in intent: `broadcastAttemptsKey` is exported and consumed via import in `admin.ts`, the 8 log events are renamed to the canonical dotted-path form with test assertions following suit, the convention-enforcing-fix self-audit on the sweep sites checks out, the 500-branch spec is added to `admin.test.ts`, the carve-out clauses (a)+(c) are documented, `redis.getdel` replaces the GET+DEL pair, and `Retry-After: 30` is set on the 503 branch with a test assertion.
+
+Two items missed by the self-audit and one missed by item 1's deduplication intent warrant a small round-3 pass.
+
+### Items held (must fix before archive)
+
+**1. (P2, conf 100, correctness + learnings-researcher) Item 2's event rename left 4 comment cross-references citing the OLD flat-underscore names.** Three pre-existing comments at `backend/src/routes/accreditation.ts:124, 209, 223` and one `+`-line comment introduced by this commit itself at line 243 still reference the old names. Direct verification:
+
+  ```
+  L124: // `accred_verify_broadcast_decrement_redis_unavailable` warn: when ...
+        (actual emit: accreditation.verify.broadcast_decrement_redis_unavailable)
+  L209: // `accred_verify_broadcast_decrement_failed` warn (the route's ...
+        (actual emit: accreditation.verify.broadcast_decrement_failed)
+  L223: same as L209
+  L243: same as L209 — this is a +line introduced by a678463
+  ```
+
+  The implementer's signal block claims "Spot-checked each of the 8 affected files" — the spot-check missed adjacent comment cross-references in the same file. Per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the rename should have caught these too (and the `+`-line at L243 is the exact failure mode that doc was written for: introducing a NEW citation in the same fix that was removing them).
+
+  Suggested fix: replace each bare flat-underscore event name in the four comment sites with the dotted-path form. Mechanical search-and-replace on the specific bare names; the surrounding prose stays.
+
+**2. (P3, conf 75, correctness residual) `backend/tests/lib/pending-decrement-queue.test.ts:23-25` still has a local `counterKey` helper that duplicates the `broadcastAttemptsKey` template literal, even though item 1 exported the canonical function for cross-route consumption.** `admin.test.ts` correctly imports `broadcastAttemptsKey` from `../src/routes/accreditation.js` and uses it directly; the queue test was missed. Today the strings are identical so no drift exists, but the single-source-of-truth intent of item 1 is only partially achieved while this duplicate remains.
+
+  Suggested fix: at the top of `pending-decrement-queue.test.ts`, replace the local `counterKey` helper with an import: `import { broadcastAttemptsKey } from '../../src/routes/accreditation.js'`. Update the 1-2 call sites (currently calling `counterKey(token)`) to call `broadcastAttemptsKey(token)`. One-line import change + a small rename at call sites.
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+### Items dismissed during architect triage
+
+- (adversarial adv-1) Operator audit-trail race on the admin reset 200 envelope's `prior_value` vs concurrent `/verify` INCR — landed as a documentation note in the architect-zone admin endpoint contract row. The race is irreducible without an admin-only token lock, which adds complexity disproportionate to the harm.
+- (adversarial adv-2) `redis.getdel` requires Redis 6.2+ — PEvO ships Redis 7-alpine; the dependency floor is already higher. The 500 path covers the deployment-config-mismatch failure mode for AGPL forks that hit it.
+- (adversarial adv-3) `decrementBroadcastAttempts` returns `'enqueued_for_drain'` even on queue overflow drops — failure mode requires sustained Redis outage AND queue depth ≥ cap (1000 entries) at PEvO single-instance scale; single-fire overflow warn still fires separately. Below the actionable bar.
+- (testing T2 / maintainability M1) 503 admin warn discriminator `accreditation.admin.reset_broadcast_counter_redis_unavailable` not test-pinned — the 503 branch's behavioral contract (status, code, retriable, Retry-After: 30, counter unchanged) is fully covered; the warn event is observability-layer. Preemptive hardening per `feedback_dismiss_preemptive_test_hardening`.
+
+### [TODO Architect] — landed at architect-zone cluster commit
+
+- `agents/docs/api-contracts/accreditation.md` — `POST /api/admin/accreditation/reset-broadcast-counter` contract row landed in the architect-zone cluster commit.
+- `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — "Auto-recovery: in-process pending-decrement queue" + "Manual reset runbook" sections landed.
+- `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` — `admin.ts` prefix added to the per-file prefix table.
