@@ -805,11 +805,39 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
  * not name a real account. Matches the JS-side normalization in
  * `normalizeHiveAccount`; the parity is the contract.
  *
- * Chain orcid is wrapped in `NULLIF(BTRIM(...), '')` so empty AND
- * whitespace-only broadcast values are normalized to "no claim", matching
- * the JS-side `computeSupersession` semantics. `BTRIM` (not `TRIM`) strips
- * ASCII whitespace from both ends; without it, `{orcid: ' '}` (single
- * space) would surface a false-positive discrepancy.
+ * Chain orcid is wrapped in `BTRIM(..., E' \t\n\r\v\f')` (PostgreSQL
+ * `BTRIM` with an explicit ASCII C-whitespace character set: space, tab,
+ * LF, CR, VT, FF) at BOTH the `NULLIF(..., '')` no-claim guard and the
+ * `aa.orcid <> ...` equality check. Default `BTRIM(text)` (no charset
+ * argument) strips only U+0020, exactly like `TRIM(text)` — pairing it
+ * with the JS-side `chainOrcid.trim()` would create the same SQL/JS
+ * whitespace-character-set asymmetry the hive-account path closes via
+ * the regex guard. JS `String.prototype.trim()` strips the full ECMA-262
+ * WhiteSpace set (tab, LF, CR, NBSP, BOM, U+2028/2029, etc.). The
+ * explicit-charset `BTRIM` widens the SQL side to match JS for the
+ * common ASCII C-whitespace cases — a broadcaster posting
+ * `{orcid: '\tATTESTED'}` for an accredited account whose attested
+ * ORCID equals the trimmed value resolves to "no discrepancy" on the
+ * SQL list/detail surfaces and the JS chain-detail / `?version=N` /
+ * `metadata_restored` / `/api/profile/:username/papers` surfaces alike.
+ * NBSP / U+2028 / U+2029 remain asymmetric (JS `.trim()` strips them;
+ * this `BTRIM` does not); the trade-off is acceptable because
+ * ASCII-space-only padding is the realistic copy-paste-from-ORCID-page
+ * failure mode and exotic Unicode whitespace is not a known
+ * broadcaster input shape on PEvO. Both NULLIF and `<>` sites MUST use
+ * the SAME wrapper — drift between them would reintroduce the
+ * `{orcid: '\t<attested>'}` cross-site split: one site would collapse
+ * the claim to "absent", the other would compare against the raw
+ * `'\t<attested>'`.
+ *
+ * Parity contract: the JS-side `computeSupersession` uses
+ * `chainOrcid.trim()` (broad ECMA-262 whitespace). The two paths
+ * converge on ASCII C-whitespace padding (the common case); the JSDoc
+ * on `computeSupersession` documents the residual extended-Unicode
+ * whitespace asymmetry. Without this widening, `{orcid: ' '}` (single
+ * space) would surface a false-positive discrepancy via the SQL path
+ * even on the unwrapped form, because the equality compare runs on
+ * the raw value.
  *
  * @param commentAlias - SQL alias for the post row (e.g., 'c', 'p').
  * @param appTagParam - bind-param placeholder for `config.appTag` (e.g., '$3').
@@ -841,8 +869,8 @@ export function authorsWithSupersessionSelect(
         ${affiliationField}'orcid_verified',    aa.orcid,
         'orcid_discrepancy', CASE
                                WHEN aa.orcid IS NOT NULL
-                                AND NULLIF(BTRIM(a.elem ->> 'orcid'), '') IS NOT NULL
-                                AND aa.orcid <> BTRIM(a.elem ->> 'orcid')
+                                AND NULLIF(BTRIM(a.elem ->> 'orcid', E' \\t\\n\\r\\v\\f'), '') IS NOT NULL
+                                AND aa.orcid <> BTRIM(a.elem ->> 'orcid', E' \\t\\n\\r\\v\\f')
                                THEN true
                                ELSE false
                              END

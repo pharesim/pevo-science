@@ -100,10 +100,27 @@ export function normalizeHiveAccount(hive: unknown): string | null {
  * `orcidMap` lookup — see the helper's docstring for why. Callers MAY
  * pre-canonicalize; doing so again is idempotent.
  *
- * The chain `orcid` is whitespace-trimmed before the empty-check. A
- * broadcaster posting `{orcid: ' '}` (whitespace-only) is treated as "no
- * claim" rather than "I claim a whitespace ORCID" — matches the SQL-side
- * `NULLIF(BTRIM(...), '')` guard.
+ * The chain `orcid` is whitespace-trimmed via `String.prototype.trim()`
+ * before both the empty-check AND the equality compare against the
+ * attested value. A broadcaster posting `{orcid: ' '}` (whitespace-only)
+ * is treated as "no claim" rather than "I claim a whitespace ORCID",
+ * and a broadcaster posting `{orcid: '\t<attested>'}` for an accredited
+ * account whose attested ORCID equals the trimmed value is treated as
+ * "no discrepancy" rather than a whitespace-character-set-induced
+ * false-positive discrepancy badge.
+ *
+ * Parity contract with the SQL side `authorsWithSupersessionSelect`:
+ * both the no-claim guard and the equality compare apply a stripper to
+ * the chain `orcid`. SQL uses `BTRIM(..., E' \t\n\r\v\f')` (explicit
+ * ASCII C-whitespace charset). JS uses `String.prototype.trim()` (full
+ * ECMA-262 WhiteSpace set). The two paths agree on ASCII C-whitespace
+ * padding (the realistic publish-form copy-paste failure mode) and
+ * diverge only on exotic Unicode whitespace (NBSP, BOM, U+2028,
+ * U+2029, etc.), which is not a known broadcaster input shape on PEvO.
+ * Both sides MUST apply the same stripper at both the no-claim guard
+ * AND the equality compare — pairing a stripped value at one site with
+ * the raw value at the other reintroduces the cross-site split for
+ * whitespace-padded claims.
  *
  * @param hive - the author entry's hive username; canonicalized
  *   internally via `normalizeHiveAccount`. `orcidMap` keys are exact

@@ -498,10 +498,14 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
     expect(out[0].orcid_discrepancy).toBe(false);
   });
 
-  it('SQL CASE wraps chain orcid in NULLIF(BTRIM(...), \'\') so empty AND whitespace-only are rejected', async () => {
-    // Mutation-kill: revert BTRIM → SQL accepts ' ' (whitespace-only) chain
-    // orcid as a comparable value → false-positive discrepancy. Both list and
-    // detail SQL must use NULLIF(BTRIM(...), '') for the chain orcid comparison.
+  it('SQL CASE wraps chain orcid in NULLIF(BTRIM(..., charset), \'\') AND aa.orcid <> BTRIM(..., charset)', async () => {
+    // Mutation-kill: revert the explicit ASCII C-whitespace charset on either
+    // wrapper → SQL accepts '\t<attested>' (tab-prefixed) chain orcid as a
+    // comparable value via the no-charset BTRIM (U+0020-only) → cross-surface
+    // split-brain against JS chainOrcid.trim() which strips the tab. Both list
+    // and detail SQL must use the SAME explicit charset at BOTH the NULLIF
+    // no-claim guard and the `<>` equality compare; drift between the two
+    // sites also reintroduces the split.
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
@@ -513,7 +517,106 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
     const sqls = capturedSqls.filter((s) => s.includes('orcid_discrepancy'));
     expect(sqls.length).toBeGreaterThan(0);
     for (const sql of sqls) {
-      expect(sql).toMatch(/NULLIF\(BTRIM\(a\.elem ->> 'orcid'\), ''\)/);
+      // NULLIF no-claim guard wraps BTRIM with the explicit ASCII C-whitespace charset.
+      expect(sql).toMatch(/NULLIF\(BTRIM\(a\.elem ->> 'orcid', E' \\t\\n\\r\\v\\f'\), ''\)/);
+      // Equality compare uses the SAME charset — drift between the two
+      // sites reintroduces a `{orcid: '\t<attested>'}` cross-site split.
+      expect(sql).toMatch(/aa\.orcid <> BTRIM\(a\.elem ->> 'orcid', E' \\t\\n\\r\\v\\f'\)/);
+    }
+  });
+
+  // ──────────────────────────────────────────────
+  // Chain-orcid whitespace-character-set parity matrix between SQL BTRIM
+  // (with explicit ASCII C-whitespace charset) and JS String.prototype.trim
+  // (full ECMA-262 WhiteSpace set). Mirrors the hive-account normalization
+  // matrix above; the failure mode this kills is a broadcaster posting
+  // `{orcid: '\t<attested>'}` against an accredited account, where the
+  // pre-fix SQL BTRIM(text) (U+0020-only) leaves the tab in place and the
+  // `<>` equality surfaces orcid_discrepancy=true on list/detail endpoints,
+  // while JS chainOrcid.trim() strips the tab and surfaces
+  // orcid_discrepancy=false on profile/`?version=N`/metadata_restored/
+  // chain-detail endpoints. Same paper, two different badge states across
+  // surfaces.
+  //
+  // The 4-input matrix exercises the published convention's mutation-kill
+  // discriminators: ASCII-space-only padding (` <attested>`) agrees across
+  // both paths under any reasonable stripper; tab/LF padding is the
+  // character-set asymmetry the explicit charset closes; the unpadded
+  // baseline pins that the matrix doesn't false-positive on canonical
+  // input.
+  // ──────────────────────────────────────────────
+
+  const ATTESTED = '0000-0001-2345-6789';
+  const PARITY_MATRIX: Array<{ label: string; raw: string }> = [
+    { label: 'tab-prefixed', raw: '\t' + ATTESTED },
+    { label: 'space-prefixed', raw: ' ' + ATTESTED },
+    { label: 'lf-suffixed', raw: ATTESTED + '\n' },
+    { label: 'unpadded', raw: ATTESTED },
+  ];
+
+  for (const { label, raw } of PARITY_MATRIX) {
+    it(`parity: JS computeSupersession on ${JSON.stringify(raw)} (${label}) → discrepancy=false against accredited match`, () => {
+      // JS path: computeSupersession + applyAuthorSupersession both run
+      // chainOrcid.trim() before the empty-check and equality compare. The
+      // attested value (orcidMap entry) is the trimmed canonical form; the
+      // raw chain value carries whitespace padding. Discrepancy must
+      // collapse to false on every matrix input.
+      //
+      // Mutation-kill: replace chainOrcid.trim() at the equality compare
+      // with the raw chainOrcid → '\t<attested>' !== '<attested>' →
+      // discrepancy=true on the tab-prefixed and lf-suffixed inputs →
+      // test fails red.
+      const orcidMap = new Map<string, string | null>([['alice', ATTESTED]]);
+      const result = computeSupersession('alice', raw, orcidMap);
+      expect(result.orcid_verified).toBe(ATTESTED);
+      expect(result.orcid_discrepancy).toBe(false);
+      const projected = applyAuthorSupersession([{ hive: 'alice', orcid: raw }], orcidMap);
+      expect(projected[0].orcid_verified).toBe(ATTESTED);
+      expect(projected[0].orcid_discrepancy).toBe(false);
+    });
+  }
+
+  it('parity: SQL fragment carries BTRIM-with-charset at both NULLIF and `<>` sites for both list and detail', async () => {
+    // SQL-shape canary for the parity matrix: the emitted projection text
+    // must apply the same explicit ASCII C-whitespace BTRIM at both the
+    // no-claim guard and the equality compare. PostgreSQL evaluates
+    // `BTRIM(text, E' \t\n\r\v\f')` on the matrix inputs as
+    //   `BTRIM('\t<attested>', ...)`   → '<attested>'
+    //   `BTRIM(' <attested>',  ...)`   → '<attested>'
+    //   `BTRIM('<attested>\n', ...)`   → '<attested>'
+    //   `BTRIM('<attested>',   ...)`   → '<attested>'
+    // so `aa.orcid <> BTRIM(...)` is false on all four (when aa.orcid is
+    // the attested canonical value), matching the JS side.
+    //
+    // This canary pins the emitted SQL text. The route's response
+    // correctness when the projection returns the post-BTRIM result is
+    // covered by the per-case detail/list suites above (which seed
+    // `authors_with_supersession` directly through the mocked pool).
+    const capturedSqls: string[] = [];
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      capturedSqls.push(sql);
+      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
+      return { rows: [] };
+    });
+    await request(app).get('/api/papers?limit=1');
+    await request(app).get('/api/papers/alice/p1');
+    const sqls = capturedSqls.filter((s) => s.includes('orcid_discrepancy') && s.includes('authors_with_supersession'));
+    // Both the list data SELECT and the detail SELECT carry
+    // `authors_with_supersession` + `orcid_discrepancy`. At least two
+    // distinct SQLs are expected; assert at least one fired and pin the
+    // BTRIM-with-charset literal on every one.
+    expect(sqls.length).toBeGreaterThanOrEqual(2);
+    for (const sql of sqls) {
+      // Exact-literal containment is the mutation kill — any drift in the
+      // charset literal (missing one character, omitting the E'' Postgres
+      // escape-string prefix, dropping a quote) fails the canary red.
+      expect(sql).toContain("BTRIM(a.elem ->> 'orcid', E' \\t\\n\\r\\v\\f')");
+      // The matched-text must appear at BOTH the NULLIF and `<>` sites —
+      // the previous canary regex pins the per-site shape; this canary
+      // pins the per-site shared literal cardinality.
+      const matches = sql.match(/BTRIM\(a\.elem ->> 'orcid', E' \\t\\n\\r\\v\\f'\)/g);
+      expect(matches).not.toBeNull();
+      expect(matches!.length).toBeGreaterThanOrEqual(2);
     }
   });
 });
