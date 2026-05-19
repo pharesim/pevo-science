@@ -92,3 +92,33 @@ Returns only: the shared helper file (with its docblocks and exports), 5 `fetchS
 - `cd backend && npx tsc --noEmit -p tests/tsconfig.json` — clean.
 - `cd backend && npm run lint` — clean.
 - Parent serialized run: `npx vitest run tests/routes/recover.test.ts tests/routes/custody-consent-ops.test.ts tests/routes/citations-lateral-guard-canary.test.ts tests/notification-queries-lateral-guard-canary.test.ts` — **66/66 passed** against real Postgres + Redis (4 test files, includes the sibling jsonb-lateral canaries co-merged in the same fan-out wave).
+
+---
+
+## Architect re-review (2026-05-19) — HELD PENDING FIXES (round 1)
+
+`/ce-code-review` on commits `7403151..89da9c4` with 6 personas (correctness on Opus; testing, maintainability, project-standards, kieran-typescript, learnings on Sonnet; `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md). Migration is mechanically sound and a **net improvement** to mutation-kill defense — testing reviewer verified via `git show 7403151~1` that the 5 prior hand-rolled poll loops in `custody-consent-ops.test.ts` had **no** 100ms settle window and would race past an in-flight second INSERT; the new helper closes that gap on all 5 sites. `beforeEach` reset at the outer describe block confirmed load-bearing for every retry attempt. Convergence-sweep grep clean. Verification gates clean (`tsc`, lint, 66/66 vitest). User-triaged 2026-05-19; 3 items held; signature-deviation question resolved (keep dual publics + extract private helper).
+
+### Items held (must fix before archive)
+
+1. **(P1 maintainability, anchor 100)** Task-slug + round-number citation in `backend/tests/routes/custody-consent-ops.test.ts` JSDoc opening (`Round-3 of BACKEND-COAUTHOR-TRUST-MODEL`). Per root `CLAUDE.md` "Comment anchors" + `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`: coordination-context anchors (round numbers, role-prefixed task slugs) rot when the parent task archives and the 250-line `tasks-archive.md` trim drops the cited entry.
+
+   Fix: replace the opening with a purely behavioral anchor describing what the suite covers and why the consent-op endpoints (`author_accept` / `author_resign`) require a fresh-auth gate. Suggested replacement: `Custody consent-op endpoints (author_accept / author_resign) behind a fresh-auth gate.` Drop the `Round-3` prefix and the `BACKEND-COAUTHOR-TRUST-MODEL` slug entirely.
+
+2. **(P1 maintainability + kieran-typescript cross-reviewer, anchor 100)** Phantom generic `TRow` in `fetchSettledAuditRowsWith<TRow>` at `backend/tests/support/audit-log-poll-settle.ts`. TypeScript resolves `TRow` from the caller's annotation alone — the `columns: string` argument is not bound to `TRow` at compile time, so a caller writing `columns: 'auth_mechanism'` with `TRow = { user_agent: string }` compiles clean and fails only at assertion time. The generic looks like a type-safety guarantee and provides none.
+
+   Fix: add an explicit JSDoc note on `fetchSettledAuditRowsWith` documenting that `TRow` is caller-asserted and TypeScript cannot verify column-to-type alignment at compile time. Keep the generic (call-site ergonomics are valuable). The JSDoc warning is the resolution — it removes the false-confidence framing without churning call sites.
+
+3. **(P2 maintainability, anchor 75)** Poll-and-settle while-loop body duplicated verbatim across `fetchSettledAuditRows` (canonical) and `fetchSettledAuditRowsWith` (companion) in `backend/tests/support/audit-log-poll-settle.ts`. Shared `POLL_BUDGET_MS` / `POLL_INTERVAL_MS` / `SETTLE_MS` constants absorb most drift; what remains is the loop *shape* (~15 lines twice). Closes the implementer's flagged signature-deviation question in the same edit.
+
+   Fix: extract a private `pollAndSettle<TRow>(pool, sql, params, minRows): Promise<TRow[]>` helper that holds the loop. Both exported publics shrink to "build SQL + params, await `pollAndSettle`, return". Architect explicitly accepts the dual-export shape (`fetchSettledAuditRows` keeps its `(pool, username, operationType)` signature; `fetchSettledAuditRowsWith` keeps its options-bag shape) — single-export collapse rejected because the two publics' different filter semantics (`(username, operation_type)` vs username-only) make a unified signature awkward and would churn the 2 `recover.test.ts` call sites for no net gain.
+
+### Items dismissed during architect triage (recorded for transparency)
+
+- **(P2 kieran-typescript KT-2, anchor 75)** `PoolLike<TRow>` declares `params: unknown[]` where `pg.Pool.query` accepts `QueryConfigValues<I> = any[]`. Structural check passes today via bivariant method checking; the latent gap would only surface under tightened strictness or a covariant arrow-property pool wrapper. Dismissed per `feedback_dismiss_preemptive_test_hardening`: no active break, theoretical-only failure mode, default-recommend dismiss for preemptive hardening.
+- **(P2 maintainability M4, anchor 50)** `fetchSettledAuditRowsWith` `With` suffix opaque at import site. Below confidence gate; stylistic-judgment territory; file-header docblock compensates for readers starting at the top.
+- **(P3 correctness/testing residual risks, anchors 25–50)** No isolated unit test on the helper itself, hard-coded column strings creating schema-rename brittleness, no-settle-on-budget-exhaustion path. Coverage exists via the 5 integration call sites; schema-rename produces detectable postgres errors; budget-exhausted-no-settle is intentional design. All below gate.
+
+### Re-review signal
+
+When items 1–3 land, `git mv` this file back to `tasks/review/`. Round-2 architect re-review scopes `/ce-code-review` to commits since the round-1 hold commit. Anchor: single backend commit reasonable — header rewrite in `custody-consent-ops.test.ts`, JSDoc + private helper + delegation refactor in `audit-log-poll-settle.ts`. Targeted vitest re-run on `recover.test.ts` + `custody-consent-ops.test.ts` to confirm the `pollAndSettle` extraction preserves behavior.
