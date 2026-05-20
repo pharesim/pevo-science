@@ -1165,9 +1165,15 @@ export function initPaperDetailPage() {
           }
         }
       } finally {
-        if (this.author === author && this.permlink === permlink) {
-          this.citeLoading = false;
-        }
+        // Reset unconditionally. The captured `author`/`permlink` closures on
+        // `fetchCitationExport` and the download filename already prevent the
+        // tab-switch corrupt-download race; guarding `citeLoading = false`
+        // on identity additionally would leak the loading state across
+        // /paper/A -> /paper/B navigation (the same paperDetailPage instance
+        // persists because page-mount.js re-renders Alpine only on route NAME
+        // change, not param change), permanently disabling paper B's citation
+        // buttons until full reload.
+        this.citeLoading = false;
       }
     },
 

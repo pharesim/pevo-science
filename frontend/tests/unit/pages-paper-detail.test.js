@@ -971,5 +971,40 @@ describe('paperDetailPage', () => {
         vi.useRealTimers();
       }
     });
+
+    it('handleCitationExport: tab-switch race -> citeLoading resets to false on paper B', async () => {
+      // page-mount.js re-renders Alpine on route NAME change, not param
+      // change, so the same paperDetailPage instance persists across
+      // /paper/A -> /paper/B. If `citeLoading` reset is guarded on paper
+      // identity, the post-bail finally leaves citeLoading=true and paper
+      // B's format buttons + dropdown toggle (all bind :disabled="citeLoading")
+      // are permanently disabled until full reload. This positive-path pin
+      // asserts the unconditional reset so the regression cannot resurface.
+      fetchCitationExport
+        .mockReset()
+        .mockRejectedValueOnce(svcUnavailable())
+        .mockResolvedValueOnce({ content: 'A-citation' });
+      try {
+        vi.useFakeTimers();
+        mockStores.router.params = { author: 'alice', permlink: 'paper-a' };
+        const comp = createComponent();
+        const p = comp.handleCitationExport('apa');
+        // Halfway into the first backoff (1500ms) — citeLoading is true.
+        await vi.advanceTimersByTimeAsync(800);
+        expect(comp.citeLoading).toBe(true);
+        // User navigates to paper B mid-backoff — router params flip, so
+        // comp.author / comp.permlink (getters off mockStores.router.params)
+        // diverge from the closures captured at handler entry.
+        mockStores.router.params = { author: 'bob', permlink: 'paper-b' };
+        // Finish out the backoff window; the retry-arm identity guard bails.
+        await vi.advanceTimersByTimeAsync(800);
+        await p;
+        // citeLoading MUST be false despite the identity divergence — paper
+        // B's citation buttons would otherwise be permanently disabled.
+        expect(comp.citeLoading).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
