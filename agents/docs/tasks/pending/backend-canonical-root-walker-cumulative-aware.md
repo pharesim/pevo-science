@@ -161,3 +161,78 @@ Unblock action for architect: (a) add a ratification block to `backend-cumulativ
 
 **Unblocked 2026-05-20 (architect).** Both gate conditions are satisfied: (a) the ratification block landed at commit `b5a0f924` ("architect(tasks): ratify Option 4 on backend-cumulative-union-listing-surfaces-parity + mv review → pending"); (b) the `resolveChainCumulativeAuthors` helper is in code at `backend/src/routes/papers.ts:619` and consumed by listing (`papers.ts:936`), profile (`profile.ts:404`), and detail (`papers.ts:1318`). Backend agent picks this up at next startup. Note: the sibling task `backend-cumulative-union-listing-surfaces-parity` is currently in `tasks/review/` (architect not yet reviewed), but per the original block text only the helper's presence in code was load-bearing for step 2 of Alternative 3, not the sibling's full archive.
 
+---
+
+## Backend re-review signal (2026-05-20)
+
+### Implementation summary
+
+`findCanonicalRoot` in `backend/src/routes/papers.ts` rewritten to Alternative 3 (forward-walker delegation). The function signature stays the same (`async function findCanonicalRoot(author, permlink, memo?, signal?): Promise<ChainLink | null>`); only the body changes. The previous per-hop `fetchHeadAuthorizedAuthors` gate inside the backward walk is removed; verification is now delegated to the existing forward walker `resolveContinuationChain`.
+
+Function shape:
+
+1. **Leaf-coord normalisation.** `leafAuthorKey = author.toLowerCase().trim()` (same for permlink). Used as the cache key, as bind parameters for the initial SQL probe, and as the membership-check key. Hive consensus stores identifiers in lowercased ascii, so a mixed-case URL still finds the correct HAF row.
+2. **Cache check.** `hafCache.get<CanonicalRootCacheEntry>('canonical-root:<leafAuthorKey>:<leafPermlinkKey>')`. Cache entries wrap both positive (`{ root: { author, permlink } }`) and negative (`{ root: null }`) cases so the cache layer's skip-on-null rule does not drop the not-a-continuation case.
+3. **Step 1 — Backward unconstrained walk.** Retains: initial-probe `validPevoPaperWhere` SQL filter + `isPevoAnyPaper` JS re-check (so type-spoofed leaves are still rejected before any hops), cycle detection via per-call `Set<string>` keyed on `${author}/${permlink}`, depth cap at `CANONICAL_ROOT_MAX_HOPS = 10`. Removes the per-hop author-consent gate. Cycle hit emits `canonical_root_walker_cycle_detected`.
+4. **Step 2 — Forward verify.** `resolveContinuationChain(currentAuthor, currentPermlink, memo, signal)` returns the canonical chain from the candidate root.
+5. **Step 3 — Membership check (fail-CLOSED).** `forwardChain.some(link => link.author.toLowerCase().trim() === leafAuthorKey && link.permlink.toLowerCase().trim() === leafPermlinkKey)`. If member, return `forwardChain[0]` as canonical root. If not, emit `canonical_root_walker_membership_failed` and return `null` (route handler falls through to using the original leaf coords — same shape as the previous `unauthorized_hop` fall-through).
+6. **Step 4 — Cache.** `hafCache.set(cacheKey, { root: resolved }, CHAIN_CUMULATIVE_AUTHORS_TTL_MS)`. TTL = 30 min, reusing the existing `CHAIN_CUMULATIVE_AUTHORS_TTL_MS` constant so both canonical-root and chain-authors caches drift on the same window.
+
+Call sites unchanged: `findCanonicalRoot` is called once at the GET `/api/papers/:author/:permlink` route handler. The wall-clock budget signal threading and the per-request `headAuthorsMemo` continue to work identically.
+
+### Pin 1 canary (mixed-case URL)
+
+Test: `pin 1 — mixed-case leaf URL: /api/papers/Carol/V3 resolves to alice/p1`. Asserts that `/api/papers/Carol/V3` resolves to `alice/p1` (same as `/api/papers/carol/v3`). Pass.
+
+Plus the `cache key shape: same key for lowercase + mixed-case URLs (no divergent cache entries)` canary verifies the cache entry is keyed under the normalised lowercase coords and is identical regardless of URL case. Pass.
+
+### Pin 2 canary (cycle-detect event)
+
+Test: `pin 2 — 2-node mutual cycle emits canonical_root_walker_cycle_detected on backward walk`. Asserts that a 2-node cycle (`alice/v1 ↔ bob/v1`) triggers the `canonical_root_walker_cycle_detected` event during the backward walk AND does NOT emit `canonical_root_walker_depth_exceeded` (cycle detection short-circuits before depth-cap fires). Pass.
+
+The forward walker's own visited-Set primitive is still in place at `resolveContinuationChain` (verified by `git log` — unchanged in this commit) and continues to emit `continuation_chain_cycle_detected` on its own cycle hits during step 2.
+
+### Reproducer chain canary
+
+Test: `reproducer chain: /api/papers/carol/v3 resolves to alice/p1 via forward-walker delegation`. Setup:
+
+- `alice/p1.pevo.authors = [alice, bob, carol]`
+- `bob/v2.pevo.authors = [bob]` (drops alice + carol)
+- `bob/v2.pevo.continues = alice/p1`
+- `carol/v3.pevo.authors = [carol]`
+- `carol/v3.pevo.continues = bob/v2`
+
+Forward walker from alice/p1 admits the full `[alice/p1, bob/v2, carol/v3]` chain via cumulative-union (root's contribution dominates). The OLD strict backward walker rejected the carol→bob hop because carol ∉ bob's `pevo.authors[]`, producing divergent cache shapes between `/api/papers/alice/p1` and `/api/papers/carol/v3`. The NEW Alternative-3 walker correctly resolves both URLs to alice/p1.
+
+Assertion: `expect(detail.author).toBe('alice'); expect(detail.permlink).toBe('p1')`. Pass.
+
+### Cache key shape (verbatim)
+
+```
+${config.appTag}:cache:canonical-root:<leafAuthorKey>:<leafPermlinkKey>
+```
+
+Where `leafAuthorKey = (author ?? '').toLowerCase().trim()` and `leafPermlinkKey = (permlink ?? '').toLowerCase().trim()`. The `hafCache` class prefixes all keys with `${config.appTag}:cache:`; the key passed to `hafCache.get`/`hafCache.set` is `canonical-root:<leafAuthorKey>:<leafPermlinkKey>`. TTL = `CHAIN_CUMULATIVE_AUTHORS_TTL_MS` = 1_800_000 ms (30 min).
+
+### Scoped vitest pass output
+
+```
+$ npx vitest run tests/routes/papers-canonical-root-walker.test.ts \
+                 tests/routes/continuation-author-gate.test.ts \
+                 tests/routes/papers-canonical-orcid-resolution.test.ts
+
+ Test Files  3 passed (3)
+      Tests  86 passed (86)
+   Duration  2.98s
+```
+
+Broken out by file (separate run):
+
+- `papers-canonical-root-walker.test.ts` — 5/5 pass (reproducer, pin 1 URL, pin 1 cache-key, pin 2 cycle-detect, fail-CLOSED).
+- `continuation-author-gate.test.ts` — pass (forward walker behaviour unchanged).
+- `papers-canonical-orcid-resolution.test.ts` — pass (supersession projection unchanged).
+
+### Known follow-up (out of scope for this commit)
+
+`tests/routes/canonical-root-walker.test.ts` (the older walker canary file) contains 8 tests tightly coupled to the previous per-hop-gate behaviour: they assert `canonical_root_walker_unauthorized_hop` events and bridge-paper backward-walk shapes that no longer fire under Alternative 3. These tests will need to be adapted to the new event vocabulary (`canonical_root_walker_membership_failed`) and the new two-phase shape; that adaptation was not in this task's scoped acceptance. The architect's hold block explicitly scoped the test runs to the three files above and did not require updating `canonical-root-walker.test.ts`.
+

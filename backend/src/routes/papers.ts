@@ -1876,25 +1876,24 @@ async function resolveContinuationChain(
 /**
  * Maximum hops the backward canonical-root walker is allowed to take.
  *
- * `findCanonicalRoot` walks attacker-controlled `pevo.continues` pointers,
- * one SQL query per hop. Without a cap, an attacker can post a chain of
- * 51+ continuation posts and induce that many DB queries per request to
- * the deepest one — a per-request DoS amplifier. The PEvO-realistic
+ * The walker walks attacker-controlled `pevo.continues` pointers, one SQL
+ * query per hop. Without a cap, an attacker can post a chain of 51+
+ * continuation posts and induce that many DB queries per request to the
+ * deepest one — a per-request DoS amplifier. The PEvO-realistic
  * version-chain depth is in the low single digits; 10 is a generous
- * ceiling that absorbs unusual edit cadences without giving an attacker
- * a 50× amplification factor. Beyond the cap the walker stops at the
- * current node and emits a structured warn so operators can detect
- * attack patterns.
+ * ceiling that absorbs unusual edit cadences without giving an attacker a
+ * 50× amplification factor. Beyond the cap the walker stops at the current
+ * node and emits a structured warn so operators can detect attack patterns.
  *
- * Per-request worst-case latency under degraded HAF: 10 hops × 2
- * sequential SQL queries (auth-check + parent-continues) × 30s
- * statement_timeout (`db.ts:22`) = up to 600s (10 min) per request
- * before the depth cap exits. The depth cap is the attacker-amplifier
- * defense; the wall-clock budget threaded via `signal?: AbortSignal`
- * (and the route-handler `config.hafWalkerWallClockMs`-bounded
- * `AbortController`) bounds the degraded-HAF tail independently of hop
- * count. Both signals coexist because a long legitimate chain under
- * fast HAF is depth-bounded but not wall-clock-pressured. See
+ * Per-request worst-case latency under degraded HAF: 10 hops × 1
+ * sequential SQL query × 30s statement_timeout = up to 300s (5 min) per
+ * request before the depth cap exits. The depth cap is the
+ * attacker-amplifier defense; the wall-clock budget threaded via
+ * `signal?: AbortSignal` (and the route-handler
+ * `config.hafWalkerWallClockMs`-bounded `AbortController`) bounds the
+ * degraded-HAF tail independently of hop count. Both signals coexist
+ * because a long legitimate chain under fast HAF is depth-bounded but not
+ * wall-clock-pressured. See
  * `verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`.
  */
 const CANONICAL_ROOT_MAX_HOPS = 10;
@@ -1910,28 +1909,78 @@ type CanonicalRootBailReason =
   | 'cont_columns_invalid';
 
 /**
+ * Cached canonical-root lookup payload. Encodes both the positive ("this
+ * leaf resolves to root R") and negative ("this leaf is not a
+ * continuation") cases in a single object shape so the cache layer's
+ * skip-on-null rule (see `cache.ts`'s `getOrSet` docblock) does not
+ * silently drop the negative-case entry — instead we cache the wrapper
+ * object and read `.root` to recover the original `ChainLink | null`
+ * return shape.
+ */
+interface CanonicalRootCacheEntry {
+  root: ChainLink | null;
+}
+
+/**
  * Walk backward from a continuation post to find the canonical (root) post.
  * Returns null if the given post is not a continuation.
  *
- * **Author-consent gate (BACKEND-CANONICAL-ROOT-WALKER-AUTHOR-GATE).**
- * At every backward hop, the walker enforces: the post we are walking FROM
- * (the child claiming a `continues` predecessor) must be authored by an
- * account that the predecessor's `pevo.authors[]` (or bridge-paper Option b)
- * authorizes as a continuator. This mirrors the forward gate in
- * `resolveContinuationChain`. Without the gate, an attacker can post
- * `attacker/fake-paper` with `pevo.continues = {alice, paper-v1}` and
- * `/api/papers/attacker/fake-paper` would resolve back to alice's content,
- * giving the attacker URL the appearance of alice's paper — a phishing
- * pretext. The gate breaks the chain at the first unauthorized hop and
- * returns the *child* of that hop as the canonical root, so the URL
- * displays only the attacker's own content.
+ * **Two-phase forward-walker delegation.** The previous
+ * implementation enforced a strict per-hop author-consent gate during the
+ * backward walk, which produced a different canonical root from the
+ * forward walker's cumulative-union admit-set in chains where an
+ * intermediate author dropped a prior chain author from their own
+ * `pevo.authors[]`. This split caused cache-data inconsistency between
+ * detail-surface requests entering at different points of the same chain.
  *
- * **Depth cap.** Hard-bounded at `CANONICAL_ROOT_MAX_HOPS` (see constant
- * above) to prevent attacker-induced DoS amplification.
+ * The current shape resolves the canonical root by delegating to the
+ * forward walker, which is the SSoT for "what chain a leaf belongs to":
  *
- * **Per-request memo.** Optionally accepts a `HeadAuthorsMemo` so the
- * forward and backward walkers in the same request share the per-post
- * `(author, permlink)` metadata fetch.
+ *   1. **Backward unconstrained walk.** Walk `pevo.continues` pointers
+ *      from `(author, permlink)` backward to find a candidate root `R`
+ *      (the topmost ancestor with no `continues`). No per-hop
+ *      author-consent gate on this pass — purely structural. Cycle
+ *      detection (visited-Set keyed on `${author}/${permlink}`) and the
+ *      `CANONICAL_ROOT_MAX_HOPS` depth cap are retained as DoS
+ *      defenses. Emits `canonical_root_walker_cycle_detected` on cycle
+ *      hit (consistent event vocabulary with the forward walker's
+ *      `continuation_chain_cycle_detected`).
+ *
+ *   2. **Forward verify.** Call `resolveContinuationChain(R.author,
+ *      R.permlink, memo, signal)` — the cumulative-aware forward walker.
+ *      The resulting chain is exactly the set of posts the forward
+ *      walker admits.
+ *
+ *   3. **Membership check (fail-CLOSED).** Test whether `(author,
+ *      permlink)` is in the resulting chain using the SAME key shape as
+ *      the forward walker's admit-set: `normalizeHiveAccount`-style
+ *      lowercased + trimmed `(author, permlink)`. If yes, return `R` as
+ *      canonical root. If not, the leaf is outside the forward walker's
+ *      cumulative admit-set (attacker-injected continuation that breaks
+ *      the cumulative gate); fail-CLOSED to `(author, permlink)` itself
+ *      so the URL displays only the leaf's own content, never the
+ *      attacker-pointed predecessor's. Mirrors the original
+ *      unauthorized-hop fall-through shape: same security property,
+ *      enforced by the forward walker's cumulative gate rather than a
+ *      duplicated backward gate.
+ *
+ *   4. **Cache.** Store the resolved `(leaf → root | null)` mapping in
+ *      Redis at `${appTag}:cache:canonical-root:<leaf-author>:<leaf-permlink>`
+ *      (cache class adds the `${appTag}:cache:` prefix). TTL matches
+ *      `CHAIN_CUMULATIVE_AUTHORS_TTL_MS` (30 min) so the canonical-root
+ *      cache and the cumulative-authors cache drift on the same window
+ *      and post-edit staleness closes uniformly across the chain
+ *      caching surface.
+ *
+ * **Depth cap.** Hard-bounded at `CANONICAL_ROOT_MAX_HOPS` to prevent
+ * attacker-induced DoS amplification on the backward walk.
+ *
+ * **Per-request memo.** Threads `HeadAuthorsMemo` into the forward
+ * verify step so the per-`(author, permlink)` metadata fetched here is
+ * shared with the request's other walker calls (the detail-surface
+ * `resolveContinuationChain` / `reconstructVersionsFromHaf` / forward
+ * walk for `fetchPaperDetailFromHaf`). Without the shared memo, the
+ * forward verify would refetch metadata the detail surface also needs.
  */
 async function findCanonicalRoot(
   author: string,
@@ -1949,7 +1998,7 @@ async function findCanonicalRoot(
     //     (see pino-spy-level-filter-ordering-trap-2026-05-07.md).
     // The CanonicalRootBailReason type alias is the single source of truth
     // for which reasons exist; pick the level per-reason against this rule.
-    // Peer walker events (unauthorized_hop, depth_exceeded, walker_error)
+    // Peer walker events (depth_exceeded, cycle_detected, walker_error)
     // follow the same rule, similarly graduated by frequency vs severity.
     logger.warn(
       {
@@ -1960,6 +2009,48 @@ async function findCanonicalRoot(
       'canonical-root walker bailed: HAF pool unavailable',
     );
     return null;
+  }
+
+  // Membership-check + SQL-probe key shape — lowercased + trimmed
+  // `(author, permlink)` matches the forward walker's admit-set
+  // construction in `extractAuthorizedContinuationAuthors` (which
+  // canonicalises author values via `normalizeHiveAccount`). Hive
+  // consensus restricts both account names and permlinks to lowercase
+  // ascii + a small symbol set, so the HAF rows always carry lowercased
+  // identifiers — the only way mixed-case can enter is through the route
+  // param. The leaf-coord normalisation here serves three coupled
+  // purposes:
+  //
+  //   1. The cache key uses the normalised shape so different-case URLs
+  //      for the same chain hit the same cache entry — closing the
+  //      cache-data inconsistency window between entry URLs.
+  //   2. The SQL probes below pass the normalised coords as bind
+  //      parameters, so a mixed-case URL still finds the corresponding
+  //      HAF row (whose `c.author`/`c.permlink` values are lowercased).
+  //   3. The step-3 membership check normalises both sides of the
+  //      comparison so an uppercase URL still matches the lowercased
+  //      chain entry.
+  //
+  // Without normalisation, `/api/papers/Carol/V3` would fail-CLOSE to
+  // itself even when the underlying chain entry `carol/v3` is a
+  // legitimate chain member — a soft-fail (URL serves the leaf as
+  // standalone instead of the chain root) but still a parity bug
+  // between entry URLs.
+  const leafAuthorKey = (author ?? '').toLowerCase().trim();
+  const leafPermlinkKey = (permlink ?? '').toLowerCase().trim();
+
+  // Cache check: see if we've already resolved this leaf's canonical root
+  // within the TTL window. The cache key uses the normalised leaf coords
+  // so different-case URLs for the same chain hit the same cache entry —
+  // closing the cache-data inconsistency window the previous strict
+  // backward gate produced. Cache values are wrapped in
+  // `CanonicalRootCacheEntry` so the negative case (`root: null`) is
+  // cacheable (the cache layer's `getOrSet` drops `null` resolutions, so
+  // we use raw `get`/`set` here instead).
+  const cacheKey = `canonical-root:${leafAuthorKey}:${leafPermlinkKey}`;
+  const cached = await hafCache.get<CanonicalRootCacheEntry>(cacheKey);
+  if (cached !== undefined) {
+    return cached.root;
   }
 
   // Capture entry time so wall-clock-exceeded warns carry the elapsed
@@ -1974,7 +2065,10 @@ async function findCanonicalRoot(
   // matches the existing "not a continuation post" return shape, so
   // callers handle abort identically to a benign no-result. Walker-level
   // wall-clock warn is emitted at the abort site so operators see a
-  // discriminating event tag rather than just a silent return.
+  // discriminating event tag rather than just a silent return. The
+  // result is NOT cached — a wall-clock-aborted resolution carries no
+  // verified semantics, and caching it would lock in a degraded result
+  // for the next 30 min.
   if (signal?.aborted) {
     logger.warn(
       {
@@ -1991,23 +2085,27 @@ async function findCanonicalRoot(
   }
 
   try {
-    // Check if this post has a 'continues' field. We also need the post's
-    // own author + metadata so the next-hop gate can verify "child author
-    // is in predecessor's authorized-authors set" AND so we can re-check
-    // the START's `pevo.type` is a valid paper class JS-side.
-    //
-    // Type-spoof on START gate: a vouched co-author Bob (in alice/v1's
-    // pevo.authors[]) could otherwise post `bob/spoof-review` with
-    // `pevo.type = 'review'` AND `pevo.continues = {alice, v1}`. Without
-    // a type filter on this initial probe, the URL `/api/papers/bob/spoof-review`
-    // would walk back through the gate (alice's authorized set includes
-    // bob → admits) and surface alice/v1 as canonical, rendering alice's
-    // paper content under bob's URL. The convention is "every gate
-    // enforces author + type identity together" (see
-    // `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`).
-    // SQL-side filter via `validPevoPaperWhere(source: 'all')` is the
-    // primary gate; the JS-side `isPevoAnyPaper` re-check below is
-    // defense in depth.
+    // ──────────────────────────────────────────────────────────────────
+    // STEP 1 — Backward unconstrained walk.
+    // ──────────────────────────────────────────────────────────────────
+    // Walk `pevo.continues` pointers from the leaf backward to find a
+    // candidate root R (the topmost ancestor whose own post has no
+    // `continues` pointer). No per-hop author-consent gate on this pass —
+    // the forward verify in step 2 is the gate. The walk does retain:
+    //   - Initial probe with `validPevoPaperWhere` SQL filter +
+    //     `isPevoAnyPaper` JS re-check, so a type-spoofed leaf
+    //     (e.g. pevo.type='review' with `continues={...}`) is rejected
+    //     before any backward hops. Without this gate a vouched co-author
+    //     could post a review-typed comment with `pevo.continues={...}` and
+    //     the URL would surface the paper's content under the review's
+    //     URL.
+    //   - Cycle detection via per-call `Set<string>` keyed on
+    //     `${author}/${permlink}` (consistent with the forward walker's
+    //     primitive). Cycle hit emits
+    //     `canonical_root_walker_cycle_detected` and stops the walk at
+    //     the cycle node.
+    //   - Depth cap at `CANONICAL_ROOT_MAX_HOPS` to bound the DoS
+    //     amplifier surface area on the backward path.
     const startTypeFilter = validPevoPaperWhere({
       commentAlias: 'c',
       appTagParam: '$3',
@@ -2023,21 +2121,18 @@ async function findCanonicalRoot(
          AND c.parent_author = '' AND c.parent_permlink = $3
          AND c.json_metadata -> $3 -> 'continues' IS NOT NULL
          AND ${startTypeFilter}`,
-      [author, permlink, config.appTag, config.hiveBridgeAccount],
+      [leafAuthorKey, leafPermlinkKey, config.appTag, config.hiveBridgeAccount],
     );
 
     if (result.rows.length === 0) {
-      // Either the post does not exist, has no `continues` pointer, or the
-      // SQL-side `validPevoPaperWhere` filter rejected it (e.g. type-spoof:
-      // pevo.type='review' on a post claiming to continue a paper). Tagged
-      // `sql_filter_or_missing` so a layer-pinning canary can pin the SQL
-      // filter as the kill mechanism.
+      // Either the post does not exist, has no `continues` pointer, or
+      // the SQL-side `validPevoPaperWhere` filter rejected it (e.g.
+      // type-spoof: pevo.type='review' on a post claiming to continue a
+      // paper). Tagged `sql_filter_or_missing` so a layer-pinning canary
+      // can pin the SQL filter as the kill mechanism.
       //
       // Emitted at debug because this fires on every 404 lookup of a
       // non-PEvO post. Production observability requires `LOG_LEVEL=debug`.
-      // The canary spy in `canonical-root-walker.test.ts` intercepts at
-      // the logger-object boundary, BEFORE pino's level filter, so canary
-      // green does NOT imply this event is visible at `LOG_LEVEL=info`.
       // See `agents/docs/solutions/conventions/pino-spy-level-filter-ordering-trap-2026-05-07.md`.
       const reason: CanonicalRootBailReason = 'sql_filter_or_missing';
       logger.debug(
@@ -2049,6 +2144,10 @@ async function findCanonicalRoot(
         },
         'canonical-root walker rejected START: SQL filter rejected or no row',
       );
+      // Negative cache: the leaf is not a continuation post. Re-checking
+      // on every request would be wasteful for the common case
+      // (single-link papers, ~95% of corpus).
+      await hafCache.set(cacheKey, { root: null }, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
       return null;
     }
 
@@ -2060,10 +2159,6 @@ async function findCanonicalRoot(
     const startRow = result.rows[0] as Record<string, unknown>;
     const startMeta = parseMeta(startRow.json_metadata);
     if (typeof startRow.author !== 'string' || !isPevoAnyPaper(startMeta, startRow.author)) {
-      // SQL filter let this row through but the JS-side identity-pinned
-      // re-check rejected it. Tagged `js_is_pevo_any_paper` so a layer-
-      // pinning canary can pin the JS check as the kill mechanism.
-      // Level: warn (per discipline comment at the no_pool branch above).
       const reason: CanonicalRootBailReason = 'js_is_pevo_any_paper';
       logger.warn(
         {
@@ -2074,19 +2169,18 @@ async function findCanonicalRoot(
         },
         'canonical-root walker rejected START: JS isPevoAnyPaper re-check failed',
       );
+      // Negative cache (same rationale as the sql_filter_or_missing
+      // branch above).
+      await hafCache.set(cacheKey, { root: null }, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
       return null;
     }
 
     // Type-narrow the cont_author / cont_permlink columns. HAF could in
     // principle return NULL columns; bare `as string` would silently
     // coerce undefined/null and let downstream identity checks evaluate
-    // against a non-string. Round-2 hold item 3 of the FORWARD walker
-    // task explicitly forbade `as` casts on the security path; mirror
-    // the migrated pattern at `fetchHeadAuthorizedAuthors`.
+    // against a non-string. Mirrors the forward walker's typed-narrow
+    // discipline at `fetchHeadAuthorizedAuthors`.
     if (typeof startRow.cont_author !== 'string' || typeof startRow.cont_permlink !== 'string') {
-      // Level: warn (per discipline comment at the no_pool branch above).
-      // The IS NOT NULL SQL guard should prevent reaching this branch in
-      // practice; if we do, it's a HAF data-integrity surprise worth alerting.
       const reason: CanonicalRootBailReason = 'cont_columns_invalid';
       logger.warn(
         {
@@ -2097,41 +2191,39 @@ async function findCanonicalRoot(
         },
         'canonical-root walker rejected START: cont_author/cont_permlink not string',
       );
+      await hafCache.set(cacheKey, { root: null }, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
       return null;
     }
 
-    // The hop being considered is FROM `(childAuthor, childPermlink)` TO
-    // `(currentAuthor, currentPermlink)` (the predecessor). To accept the
-    // hop, `childAuthor` must be in the predecessor's authorized-authors
-    // set (per `extractAuthorizedContinuationAuthors`).
-    let childAuthor: string = author;
-    let childPermlink: string = permlink;
+    // Tracks the deepest verified backward-walk node — initially the
+    // post directly pointed at by the leaf's `continues` field, advanced
+    // on each accepted hop.
     let currentAuthor: string = startRow.cont_author;
     let currentPermlink: string = startRow.cont_permlink;
 
     // Per-walker-call visited set for cycle detection. Keys match the
     // `memoKey` shape so cycle short-circuit happens at O(N_unique_nodes)
     // instead of O(CANONICAL_ROOT_MAX_HOPS) on attacker-posted cycles
-    // (mutually authorized co-authors like A → B → A). Seeded with the
-    // START (the leaf the walker is descending from) AND the initial
-    // predecessor (the first node `cont_author/cont_permlink` resolves
-    // to), because both are nodes the walker has touched before the
-    // loop. Without seeding both, a 2-cycle A → B → A burns 2-3 SQL
-    // queries before detection; with both seeded, it short-circuits at
-    // the first advancement. The depth cap is the attacker-amplifier
-    // backstop; cycle detection is the structural short-circuit on top.
+    // (mutually authorized co-authors broadcast continuations covering
+    // each other: A → B → A). Seeded with the leaf (the node the walker
+    // is descending from) AND the initial predecessor (the first node
+    // `cont_author/cont_permlink` resolves to), because both are nodes
+    // the walker has touched before the loop. Without seeding both, a
+    // 2-cycle A → B → A burns 2-3 SQL queries before detection; with
+    // both seeded, it short-circuits at the first advancement. The
+    // depth cap is the attacker-amplifier backstop; cycle detection is
+    // the structural short-circuit on top.
     const visited = new Set<string>([
       memoKey(author, permlink),
       memoKey(currentAuthor, currentPermlink),
     ]);
 
+    // Backward-walk depth cap loop. The loop runs at most
+    // `CANONICAL_ROOT_MAX_HOPS` iterations; on each iteration it either
+    // finds the root (no further continues pointer) or advances one hop
+    // further back. The depth cap is the DoS-amplifier defense; the
+    // structural cycle short-circuit lives inside the loop.
     for (let i = 0; i < CANONICAL_ROOT_MAX_HOPS; i++) {
-      // Wall-clock budget check at each iteration boundary. When BOTH the
-      // depth cap and the wall-clock budget would fire on the same
-      // request, the wall-clock signal takes priority (operator-actionable
-      // degraded-HAF signal vs the depth cap's attacker-amplifier signal)
-      // because we check the budget BEFORE the depth-cap exit condition
-      // at line `i < CANONICAL_ROOT_MAX_HOPS`. See task acceptance section 3.
       if (signal?.aborted) {
         logger.warn(
           {
@@ -2144,60 +2236,14 @@ async function findCanonicalRoot(
           },
           'canonical-root walker aborted: wall-clock budget exceeded mid-walk',
         );
-        // SECURITY: fail-CLOSED to the verified CHILD coords, not the
-        // attacker-controlled `currentAuthor/currentPermlink` (which were
-        // sourced from `pevo.continues` without passing the
-        // `fetchHeadAuthorizedAuthors` author-consent gate below). At iter-0
-        // `(childAuthor, childPermlink) === (author, permlink)` from the
-        // route params, so the URL safely surfaces the attacker's own
-        // content. At iter-N>0 the child is the previous iteration's
-        // verified predecessor. Mirrors the `unauthorized_hop` rejection
-        // shape at line ~1670. See task BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET
-        // round-2 hold item 1.
-        return { author: childAuthor, permlink: childPermlink };
+        // Wall-clock abort — step 2 forward verify cannot proceed. Skip
+        // it and fall through to a fail-CLOSED return of the original
+        // leaf coords. The result is NOT cached (per the same rationale
+        // as the pre-walk abort branch above).
+        return null;
       }
 
-      // Author-consent gate on the current hop: fetch the predecessor's
-      // (current's) authorized-authors set. If `childAuthor` is not in it,
-      // the chain is broken at this hop — return the CHILD as canonical
-      // (the unauthorized predecessor pointer is rejected).
-      const authorizedAuthors = await fetchHeadAuthorizedAuthors(
-        pool,
-        currentAuthor,
-        currentPermlink,
-        memo,
-        signal,
-      );
-      if (!authorizedAuthors || !authorizedAuthors.has(childAuthor)) {
-        logger.warn(
-          {
-            event: 'canonical_root_walker_unauthorized_hop',
-            hopIndex: i,
-            childAuthor,
-            childPermlink,
-            predecessorAuthor: currentAuthor,
-            predecessorPermlink: currentPermlink,
-          },
-          'canonical-root walker rejected hop: child author not in predecessor\'s authorized-authors set',
-        );
-        return { author: childAuthor, permlink: childPermlink };
-      }
-
-      // Hop accepted. Look up the predecessor's own continues pointer to
-      // see if the walk continues another step.
-      //
-      // SQL-side `'continues' IS NOT NULL` filter mirrors the initial
-      // probe's discipline: the SQL is the SSoT for "this post has a
-      // continues pointer", not the JS-side `!cont_author` post-check.
-      // Without this predicate, the loop-continuation probe and the
-      // initial probe drift on the same semantic property — the kind of
-      // asymmetry adversarial review flagged at the canonical-walker
-      // round-2 triage (2026-05-06). Loop semantics are safe: the
-      // `(currentAuthor, currentPermlink)` state is tracked OUTSIDE the
-      // SQL result (advanced at the END of each iteration from
-      // `parentRow.cont_author`/`cont_permlink`), so the 0-row case here
-      // correctly returns the predecessor accumulated so far, identical
-      // to the previous `!parentRow.cont_author` JS bail.
+      // Probe the current node's continues pointer.
       const parentResult = await pool.query(
         `SELECT c.json_metadata -> $3 -> 'continues' ->> 'author' AS cont_author,
                 c.json_metadata -> $3 -> 'continues' ->> 'permlink' AS cont_permlink
@@ -2209,69 +2255,152 @@ async function findCanonicalRoot(
       );
 
       if (parentResult.rows.length === 0 || !parentResult.rows[0].cont_author) {
-        // currentAuthor/currentPermlink is the root.
-        return { author: currentAuthor, permlink: currentPermlink };
+        // currentAuthor/currentPermlink is the candidate root R for
+        // step 2's forward verify.
+        break;
       }
 
-      // Type-narrow: HAF could in principle return NULL cont_author /
-      // cont_permlink. Bare `as string` would silently coerce; bail
-      // explicitly (fail-closed: return current as the deepest verified
-      // root rather than walking with an undefined identity).
       const parentRow = parentResult.rows[0] as Record<string, unknown>;
       if (typeof parentRow.cont_author !== 'string' || typeof parentRow.cont_permlink !== 'string') {
-        return { author: currentAuthor, permlink: currentPermlink };
+        // HAF data-integrity surprise; treat current as the candidate
+        // root (fail-closed: do not advance with an undefined identity).
+        break;
       }
 
-      childAuthor = currentAuthor;
-      childPermlink = currentPermlink;
       currentAuthor = parentRow.cont_author;
       currentPermlink = parentRow.cont_permlink;
 
-      // Cycle detection: revisiting an already-touched `(author, permlink)`
-      // node means the continuation-pointer graph contains a cycle (A → B →
-      // A → ... — possible when both authors are mutually in each other's
-      // `pevo.authors[]`). Stop the walk at the cycle node and return it as
-      // canonical, emitting a discriminating event so operators can
-      // distinguish "legitimate deep chain" (depth_exceeded) from
-      // "attacker-posted cycle" (cycle_detected). Without this short-circuit
-      // the walker runs to `CANONICAL_ROOT_MAX_HOPS = 10` on any cycle.
       const visitedKey = memoKey(currentAuthor, currentPermlink);
       if (visited.has(visitedKey)) {
         logger.warn(
           {
             event: 'canonical_root_walker_cycle_detected',
-            childAuthor,
-            childPermlink,
+            startAuthor: author,
+            startPermlink: permlink,
             cycleAuthor: currentAuthor,
             cyclePermlink: currentPermlink,
             hopIndex: i,
           },
           'canonical-root walker detected cycle in continuation pointers',
         );
-        return { author: currentAuthor, permlink: currentPermlink };
+        // Cycle hit — break out and let step 2 forward verify decide
+        // whether the cycle node admits the leaf. Forward walker's own
+        // cycle detection will catch the cycle on the verify pass too;
+        // both halves emit their own discriminating event.
+        break;
       }
       visited.add(visitedKey);
+
+      // Continue the walk only if the depth budget remains. On the
+      // final iteration we hit this point and fall through to the
+      // depth-cap warn below.
+      if (i === CANONICAL_ROOT_MAX_HOPS - 1) {
+        logger.warn(
+          {
+            event: 'canonical_root_walker_depth_exceeded',
+            startAuthor: author,
+            startPermlink: permlink,
+            stopAuthor: currentAuthor,
+            stopPermlink: currentPermlink,
+            maxHops: CANONICAL_ROOT_MAX_HOPS,
+          },
+          'canonical-root walker exceeded depth cap; stopping walk',
+        );
+        break;
+      }
     }
 
-    // Depth cap exceeded: stop walking and return the deepest verified
-    // node as canonical. Emit a structured warn so operators can detect
-    // attacker-induced amplification patterns.
-    logger.warn(
-      {
-        // Note: `hopIndex` is intentionally omitted on this event because it
-        // would always equal `maxHops` by construction (the cap is what
-        // triggered the warn). `hopIndex` retains its meaningful
-        // varying-value role on `canonical_root_walker_unauthorized_hop`.
-        event: 'canonical_root_walker_depth_exceeded',
-        startAuthor: author,
-        startPermlink: permlink,
-        stopAuthor: currentAuthor,
-        stopPermlink: currentPermlink,
-        maxHops: CANONICAL_ROOT_MAX_HOPS,
-      },
-      'canonical-root walker exceeded depth cap; stopping walk',
+    // ──────────────────────────────────────────────────────────────────
+    // STEP 2 — Forward verify.
+    // ──────────────────────────────────────────────────────────────────
+    // Resolve the chain that the candidate root admits via the
+    // cumulative-aware forward walker. This is the SSoT for "what chain
+    // a leaf belongs to"; any divergence between forward and backward
+    // walker semantics dissolves by construction because the backward
+    // walker no longer maintains its own admit-set. Threads the shared
+    // `HeadAuthorsMemo` so per-`(author, permlink)` metadata fetched
+    // here is reused by the request's subsequent detail-surface walker
+    // calls.
+    if (signal?.aborted) {
+      logger.warn(
+        {
+          event: 'canonical_root_walker_wall_clock_exceeded',
+          startAuthor: author,
+          startPermlink: permlink,
+          hopIndex: CANONICAL_ROOT_MAX_HOPS,
+          elapsedMs: Date.now() - startedAt,
+          budgetMs: config.hafWalkerWallClockMs,
+        },
+        'canonical-root walker aborted: wall-clock budget exceeded before forward verify',
+      );
+      return null;
+    }
+    const forwardChain = await resolveContinuationChain(
+      currentAuthor,
+      currentPermlink,
+      memo,
+      signal,
     );
-    return { author: currentAuthor, permlink: currentPermlink };
+
+    // ──────────────────────────────────────────────────────────────────
+    // STEP 3 — Membership check (fail-CLOSED).
+    // ──────────────────────────────────────────────────────────────────
+    // The forward chain entries carry `c.author` / `c.permlink` straight
+    // from HAF, which Hive consensus stores in normalised form
+    // (lowercase ascii, no whitespace). Apply the same normalisation to
+    // the leaf coords (which arrive from the route params and may carry
+    // uppercase chars or surrounding whitespace) so a mixed-case URL
+    // hits a lowercased chain entry. Without this, a
+    // `/api/papers/Carol/V3` URL would fail-CLOSE to itself even when
+    // carol/v3 is a legitimate member of the chain.
+    const isMember = forwardChain.some((link) =>
+      link.author.toLowerCase().trim() === leafAuthorKey &&
+      link.permlink.toLowerCase().trim() === leafPermlinkKey,
+    );
+
+    let resolved: ChainLink | null;
+    if (isMember && forwardChain.length > 0) {
+      // The leaf belongs to the forward walker's admit-set. The chain's
+      // first entry is the canonical root by construction
+      // (`resolveContinuationChain` walks from root to head).
+      resolved = { author: forwardChain[0].author, permlink: forwardChain[0].permlink };
+    } else {
+      // Fail-CLOSED: the leaf is outside the forward walker's admit-set
+      // (attacker-injected continuation pointer, or a cumulative-gate
+      // rejection). Surface the leaf's own content at its URL, never
+      // the attacker-pointed predecessor's. The same security property
+      // the previous per-hop backward gate enforced, now enforced via
+      // the forward walker's cumulative gate.
+      logger.warn(
+        {
+          event: 'canonical_root_walker_membership_failed',
+          startAuthor: author,
+          startPermlink: permlink,
+          candidateRootAuthor: currentAuthor,
+          candidateRootPermlink: currentPermlink,
+          forwardChainLength: forwardChain.length,
+        },
+        'canonical-root walker rejected leaf: not in forward verify chain (fail-CLOSED)',
+      );
+      // Return null rather than `{author, permlink}` because the route
+      // handler treats a null return identically (uses the original
+      // leaf coords). Mirrors the previous "not a continuation post"
+      // sentinel.
+      resolved = null;
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // STEP 4 — Cache.
+    // ──────────────────────────────────────────────────────────────────
+    // Stable for the 30-min TTL window. Continuation pointers can be
+    // edited within Hive's 7-day edit window, which can shift the
+    // forward walker's resolution; matching the cumulative-authors
+    // cache TTL (`CHAIN_CUMULATIVE_AUTHORS_TTL_MS`) means both caches
+    // drift on the same window and post-edit staleness closes
+    // uniformly. The membership-failed branch is also cached so a
+    // repeated attacker-URL request does not re-walk on each hit.
+    await hafCache.set(cacheKey, { root: resolved }, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
+    return resolved;
   } catch (err) {
     logger.error(
       {
