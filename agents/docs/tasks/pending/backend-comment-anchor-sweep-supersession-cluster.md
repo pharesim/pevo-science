@@ -224,3 +224,32 @@ Output: empty (grep exit code 1, no matches). Clean.
   Result: Test Files 4 passed (4); Tests 137 passed (137).
 
 No behavioral changes — pure comment edits only. The vitest scope was the hold-block-specified four files; full-suite was not run per the task constraints.
+
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` on round-3 commit `12d2ae1c` confirms all 2 architect-cited hold items (L625 section banner + 11 `Acceptance #N:` prefix strips) + 6 audit-surfaced holistic sites landed cleanly. Broadened acceptance grep returns zero real rot. Independent broadened-grep on the committed file is empty across all enumerated rot classes; testing reviewer verified the L1195 three-canary claim (canaries at L1203/L1251/L1297 for empty-string/numeric/object), the L2055 named-assertion pair (`status-503` + `wallClockEvents.length>0` at L2069/L2074), and the L2229 describe-block citation (verbatim at L292).
+
+However, the cluster-review's correctness persona surfaced 2 behavioral-accuracy imprecisions introduced BY the round-3 banner expansion itself. The architect's round-2→round-3 hold prescribed a minimal banner anchored on the cumulative-union invariant ("Cumulative-union display canaries — verify detail.authors[] is the running union of every hive ever named across the chain, in first-occurrence order."). The implementer expanded it to enumerate four resolution rules; two of the four drift from the actual supersession semantics. Per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the convention-enforcing sweep's own added prose is in scope — added-line accuracy is part of the self-audit obligation, not just rot-pattern absence.
+
+### Items
+
+1. **`backend/tests/routes/continuation-author-gate.test.ts` ~L625-630** — the banner's `fallback to most-recent third-party claim` qualifier drifts from the actual fallback semantics. The supersession fallback in `applyAuthorSupersession` and `buildCumulativeAuthorsForChain` is to ANY non-self-claim, which includes co-author claims (one co-author can claim another co-author's name/ORCID), not just third-party (non-author) claims. **Fix:** rewrite the qualifier to match the code, e.g., `fallback to most-recent non-self claim` (verify against `applyAuthorSupersession`'s precedence logic in `backend/src/lib/author-supersession.ts` before choosing the exact phrasing).
+
+2. **`backend/tests/routes/continuation-author-gate.test.ts` ~L628-629** — the banner's `server-overridden ORCID for accredited hives` clause is missing the `whose claim differs` qualifier. The matching-claim canary at L902 explicitly asserts NO override fires when the accredited hive's claimed ORCID already equals the accredited value (case 1 of the four-branch lattice per `accredited-orcid-is-optional-not-edge-case-2026-05-16.md`). **Fix:** add the discriminating qualifier, e.g., `server-overridden ORCID for accredited hives whose claim differs from the attestation`.
+
+### Acceptance for re-review
+
+- Both banner clauses rewritten to match the code's actual supersession semantics. Re-read against `applyAuthorSupersession` in `backend/src/lib/author-supersession.ts` and the matching/mismatching canaries' assertions to verify accuracy.
+- Self-audit per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`: the new replacement prose must not introduce round-N markers, slug citations, line-number anchors, SHA refs, date anchors, partial-strip stubs, orphan single-letter prefixes, dangling determiners, bare possessives, dangling prepositions, OR relative positional anchors. The broader rule applied here: when expanding an architect-prescribed minimal anchor into a fuller description, every clause must be behaviorally accurate against the code at the cited test site, not roughly directional.
+- Consider whether the simpler architect-prescribed minimal banner shape is preferable to the expanded form. A 5-clause banner enumerating resolution rules is more useful for future readers IF every clause is accurate; if accuracy can't be guaranteed without reading the implementation each time, the minimal shape is more durable.
+- No need to re-run scoped vitest (comment-only edits).
+
+### Out of scope (dismissed at architect triage)
+
+- Pre-existing `whole-entry rule #2` / `rule #2` dangling pointers at L855/L868/L897 — not in the broadened-grep enumeration; expanding scope mid-archive would be drift. Candidate for a future sweep if `rule #N` ever becomes an enumerated rot class.
+- `slow-HAF wall-clock canary` descriptive label at L1969-1975 — behavioral anchors are convention-compliant per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`; the verbatim-it-title shape would be stronger but is not mandated.
+- Pre-existing date anchor `2026-05-04` at L473 — out of scope per the maintainability persona's default-dismiss residual_risk.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
