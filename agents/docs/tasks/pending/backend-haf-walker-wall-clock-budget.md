@@ -482,3 +482,41 @@ Factored a `parseHafWalkerBudget(env: string | undefined): number` helper out of
 (a) Helper uses `Number(env)` + `Number.isFinite(parsed) && parsed > 0` → fallback 3000. Fixes the `'1e3' → 1` and `'1.5' → 1` truncation cases the architect called out under item 3(a). (b) Rewrote the comment block at `backend/src/config.ts:133-143`: the prior wording claimed `Math.max(1, …)` rescued literal `0`, but `0 || 3000 = 3000` so the `||` fallback was actually what caught zero — `Math.max` only floored negative values. The new comment notes both `setTimeout(fn, 0)` and `setTimeout(fn, NaN)` coerce to immediate-fire, so the `> 0` floor is load-bearing for zero/negative/non-finite inputs alike.
 
 Scoped vitest (`tests/lib/haf-walker-budget-env-parse.test.ts` + `tests/routes/canonical-root-walker.test.ts` + `tests/routes/continuation-author-gate.test.ts` + `tests/routes/retract.test.ts`): 88 specs green. `npx tsc --noEmit` + `npm run lint` clean.
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-3 commit `94bf294` with 7 reviewer personas (correctness on Opus; testing, maintainability, project-standards, learnings-researcher, api-contract, kieran-typescript at Sonnet; adversarial skipped per architect scope on the small 309-LOC diff; `ce-agent-native-reviewer` skipped per project CLAUDE.md). All 3 round-3 hold items landed structurally and against intent. One item holds for round-4; one carry-forward followup; several items dismissed at triage.
+
+### Item to address (round-4 hold)
+
+**1. (P3, anchor 75, cross-reviewer testing T2 + correctness testing_gap + kieran-typescript TG-1) `parseHafWalkerBudget` unit test missing the `'1e3'` and `'1.5'` cases.** `backend/tests/lib/haf-walker-budget-env-parse.test.ts`. The 7-case matrix (`unset, empty, 'disabled', '0', '-1', '5000', '3000ms'`) covers the architect-prescribed fallback inputs but doesn't include the two inputs that motivated the `parseInt` → `Number` switch: `'1e3'` (parseInt → 1, Number → 1000) and `'1.5'` (parseInt → 1, Number → 1.5). Reverting `Number(env)` back to `parseInt(env, 10)` leaves all 7 specs green because `parseInt('5000', 10) === Number('5000')` — the parseInt-vs-Number behavioral difference has no mutation-kill in the current test set.
+
+   Fix: add two cases at the bottom of the test file:
+   ```ts
+   it('returns 1000 for scientific notation (Number, not parseInt → 1)', () => {
+     expect(parseHafWalkerBudget('1e3')).toBe(1000);
+   });
+   it('returns 1.5 for fractional ms (Number, not parseInt → 1)', () => {
+     expect(parseHafWalkerBudget('1.5')).toBe(1.5);
+   });
+   ```
+   ~6 LOC. Each pins the helper's intent against the specific motivating regression class.
+
+### Items dismissed during architect triage
+
+- **(api-contract AC-1 papers.md missing 503 for paper-detail/enrichment/cite/retract + AC-2 common.md 503-table refresh)** Resolved in architect-zone commit `66b213ac` in the same review session.
+- **(api-contract AC-3 informational, two distinct 503 triggers on same routes — walker-budget vs HafQueryError-translation)** Addressed in commit `66b213ac` — the new papers.md Errors sections explicitly enumerate both triggers per route and note "consumers cannot distinguish them via the envelope and need not".
+- **(maintainability M1 docblock cites two test file paths)** Per user triage: dismiss. File-path anchors are stable enough; the concrete pointer is useful for future readers.
+- **(correctness residual: `'1.5'` survives `> 0` floor producing sub-ms budget)** Operator misconfiguration; setTimeout floors to 1ms per HTML spec; effectively immediate-fire. Not a realistic threat.
+- **(learnings-researcher: pg `statement_timeout` disclosure on hafWalkerWallClockMs knob)** Real concern flagged by the `pg-abortcontroller-budget-bounded-by-statement-timeout-2026-05-16.md` convention — but the knob docblock at `config.ts` and `.env.example` already document the budget + statement_timeout sum (verified added in round-2 item 3). The learnings-researcher's reminder applies; no new work needed in round-4.
+- **(maintainability R3 pre-existing parseInt knobs in config.ts use the safe `|| 'hardcoded-default'` form, not actionable)** Confirmed by reviewer; no migration needed.
+- **(reliability/learnings RR-1 budget + statement_timeout disclosure already landed in round-2)** Re-flagged by learnings-researcher; verified the docblock and `.env.example` already capture it.
+
+### Architect followups (no implementer action — already resolved this review session)
+
+- **A1 + A2.** papers.md + common.md doc updates landed in commit `66b213ac`.
+- **A3.** Pre-existing residuals in `config.ts:132` (task-slug `BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET`) and `papers.ts:2138-2139` (triple-rot comment) flagged by maintainability as candidates for archive-time sweep. Not bundled into this round-4 (not introduced by this commit, and the focus-trim principle applies). Architect notes for a future comment-anchor sweep task if/when the area is touched.
+
+### Re-review signal
+
+When item 1 lands in a single round-4 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Diff is ~6 LOC; round-4 should converge clean.
