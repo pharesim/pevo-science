@@ -169,3 +169,38 @@ Acceptance item 4 — `agents/docs/api-contracts/papers.md` § POST /api/papers/
 - **Cross-route extension of `skipFailedRequests` to `registerLimiter`** (bridge.ts). Different threat model (byIp NAT-shared lockout vs byAccount user lockout); filing a follow-up if the architect wants it widened.
 - **Slot accounting on rate limiter for partial degradation** (some routes emit 503 + retriable from the LOCK_HELD path, distinct from HAF-503). Not actionable without a per-code refund API, which is wider middleware scope.
 - **Per-request `Retry-After` header on the new 503 paths** (Option C). The task spec listed it as a possible Option C backup; not pursued — the SPA already self-bounds retries via `details.retriable` + its own attempt cap, and adding header tuning per-route is wider than the slot-burn close.
+
+---
+
+## Architect re-review (2026-05-20, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `a5589588` with 6 reviewer personas (correctness on Opus; testing, maintainability, project-standards on Sonnet; security on Opus; reliability on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md; kieran-typescript / adversarial / learnings skipped at architect scope on the config-flip + 207-line test-file diff). Implementation lands structurally clean: `skipFailedRequests: true` on `retractLimiter` with a stable-symbol-anchored 11-line WHY comment, two canaries (slot-burn-on-failure + abuse-rate-bound), and a cross-route audit table that correctly identifies `retractLimiter` as the only `byAccount` long-window limiter with a route-side `retriable: true` emit not already on `skipFailedRequests`. Middleware semantics verified against `backend/src/middleware/rateLimit.ts` (4xx and 5xx refund, dual-listener once-guard, 429 early-return bypasses listener registration so no double-refund). Per-route 4xx-refund threat-model analysis defensible (verified-signature gate ensures attacker can only probe their own paper set on 422/404).
+
+Cluster-wide findings: 5 findings surfaced across the 6 personas, 2 dismissed at architect triage, 1 filed as new follow-up task, 2 held for round-2.
+
+### Items dismissed during architect triage
+
+- **(project-standards P3 conf 55)** `vi.hoisted` block comments use "below" relative anchor on lines 38 + 41. Verified — the "below" describes JS ES-module evaluation-order semantics about ES imports in the same file (a language-spec invariant), not coordination state or file-position drift. The same-day clause broadening enumerated positional anchors as a rot class, but the rot concern is anchors that go stale on edit; ES import hoisting cannot move. Strict-reading the convention here over-applies it.
+- **(testing P3 conf 60)** Success-path HAF mock uses SQL substring matching (`sql.includes('parent_author') && includes('parent_permlink')...`) which also incidentally matches `fetchHeadAuthorizedAuthors`. Both failure modes are loud (mock pattern stops matching → 404 response → 200 assertion fails red with a misleading-but-visible symptom; mock pattern matches extra queries → semantic confusion with paper-shaped rows). Per `feedback_dismiss_preemptive_test_hardening`: loud-fail mutation hazards default to dismiss.
+
+### Items filed as new follow-up tasks (not in this task's round-2 scope)
+
+- **(reliability P2 conf 75 + security residual + audit-table-flagged)** `registerLimiter` (`bridge.ts:149`, byIp/10/1hr) emits retriable LOCK_HELD 409 + HAF-503 with SPA auto-retry on `details.retriable`; corporate-NAT cascade cost (3 users × 4 calls = 12 > 10 cap → full NAT 1hr lockout). Implementer's audit-table dismissal cited "different threat model" but the cascade shape (byIp + long window + retriable emit + SPA auto-retry) matches /retract's. `accreditationVerifyLimiter` (60s byIp) already uses `skipFailedRequests`, so the byIp + skipFailedRequests pattern IS in the codebase. Filed as new task `backend-register-rate-limit-byip-skipfailed.md` in `tasks/pending/`.
+
+### Items held (must fix before archive)
+
+**1. (P2, anchor 85, testing + project-standards) Test header docstring's clause-(c) citation is factually wrong — claims `retract.test.ts` exercises real `verifyHiveSignature` against /retract, but `retract.test.ts:29-31` also mocks the middleware via `MOCK_VERIFY_SIGNATURE`.** `backend/tests/routes/retract-rate-limit-skip-failed.test.ts:17-25`. Header text reads "the existing `retract.test.ts` integration suite exercises the full `verifyHiveSignature` + `fetchPaperDetailFromHaf` + broadcast path against signed requests with the real Hive RPC mocked at `broadcastJsonWithTimeout`." Verified false: `papers-haf-error-vs-not-found.test.ts` (the other /retract-touching test) ALSO mocks `verifyHiveSignature`. No test in `backend/tests/routes/` exercises the real signature middleware against POST /api/papers/:author/:permlink/retract. Real-path crypto coverage exists at the corpus level via `sign-request.ts` users (`auth.test.ts`, `bridge-haf-lag-locks.test.ts`, `claims.test.ts`) — those run the real `verifyHiveSignature` on /api/auth + /api/bridge + /api/claims with signed requests, so the middleware itself is real-path-covered at the corpus level, just not co-located on /retract.
+
+   Per the carve-out's clause-(c) refinement in root CLAUDE.md, "the same risk class is covered by a real-path test elsewhere, OR a follow-up task is filed to add such coverage" — the risk class here is "rate-limiter slot accounting under HAF-503 conditions", and the rate-limiter middleware itself is real-path-tested at the corpus level. So the corpus-level coverage satisfies clause (c); only the per-file citation is incorrect.
+
+   Fix: rewrite the header's clause-(c) paragraph to acknowledge corpus-level real-path coverage of the `verifyHiveSignature` middleware via the `sign-request.ts` users (e.g., `auth.test.ts`, `bridge-haf-lag-locks.test.ts`, `claims.test.ts`) and the rate-limiter middleware via `tests/middleware/rateLimit.test.ts`, rather than naming `retract.test.ts` (which mocks the middleware itself). The clause-(c) intent is satisfied at the corpus level; the carve-out is for focus, not for skipping auth verification entirely from the codebase. No new test is required by this hold item.
+
+### Architect followups (no implementer action)
+
+- **A1.** `agents/docs/api-contracts/papers.md` § POST /api/papers/:author/:permlink/retract `SERVICE_UNAVAILABLE` entry — update to reflect `skipFailedRequests: true` semantics (failed retries no longer consume slots; retriable 503 budget is now per-success rather than per-attempt). Implementer flagged via `[TODO Architect]`; architect handles at archive time.
+
+### Re-review signal
+
+When item 1 lands in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
