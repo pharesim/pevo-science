@@ -93,3 +93,46 @@ Out of scope for this hold cycle:
 - Negative-case tests for the strict `=== true` discriminator (backend contract is fixed; theoretical hardening).
 - `loadProfile` retry re-fetching `fetchProfile` when only papers failed (residual risk noted; same-HAF-backend means partial failure is rare).
 - `comment-posted` window-listener permlink filter at `paper-detail.js` outer mounts (pre-existing; out of this task's scope).
+
+## UI re-review signal (2026-05-20, commit 9186f491)
+
+All three round-1 hold items landed in `9186f491`. Diff scoped to:
+- `frontend/src/pages/profile.js`
+- `frontend/src/components/threaded-comments.js`
+- `frontend/tests/unit/pages-profile.test.js`
+- `frontend/tests/unit/components-threaded-comments.test.js`
+
+### Item 1 — `loadProfile` stale-call guard
+
+The `fetchProfilePapers(...).catch(...)` lambda now writes to a local `papersRetriable` variable. After the post-`Promise.all` `if (this.username !== username) return` guard, `this.papersRetriable = papersRetriable` lands the (possibly-true) discriminator on the current instance only when the username has not changed mid-flight. The top-of-function `this.papersRetriable = false` reset is removed; the success path's explicit assignment from the local (false on no-503, true on 503-retriable) replaces it. `loadReviews`'s existing guard-then-mutate order was kept as the reference shape.
+
+### Item 2 — template guards + success-path clear
+
+Retry-card templates tightened:
+- `<template x-if="papersRetriable && userPapers.length === 0">`
+- `<template x-if="!reviewsLoading && reviewsRetriable && userReviews.length === 0">`
+
+A populated list and the retry card can no longer co-render. The `noPapers`/`noReviews` templates already gated on `!retriable` and remain unchanged.
+
+Success-path flag clears:
+- `loadProfile`: `this.papersRetriable = papersRetriable` (false on success, true only when the 503-retriable catch captured it).
+- `loadReviews`: `this.reviewsRetriable = false` on the post-success branch (also written from the catch with the discriminating ternary). The top-of-function reset for `reviewsRetriable` is removed; the path-explicit writes replace it.
+
+### Item 3 — synchronous-in-flight guards
+
+`loadReviews` gets `if (this.reviewsLoading) return;` as the first synchronous statement before any await — `reviewsLoading` is initialized false in the factory so the first call passes the guard. `loadComments` cannot reuse `loading` (initialized true to drive the skeleton render before `init()` runs), so a separate `_loadInFlight` flag is added, also reset in `finally`. Both guards collapse rapid retry-button clicks and the `comment-posted` window-listener race; a stale-rejecting fetch can no longer clobber a successful retry's data because the second fetch is dropped before dispatch.
+
+### Test coverage
+
+- `pages-profile.test.js`:
+  - "does not set papersRetriable when username changes between fetch start and 503 rejection" — pins the stale-call guard. The mock for `fetchProfilePapers` mutates `mockStores.router.params.username` mid-flight, then rejects with 503 retriable. Without the local-capture refactor, this test fails (the catch sets `this.papersRetriable = true` on what is now the new username's instance).
+  - "drops a concurrent loadReviews() while one is in-flight" — pins the synchronous-in-flight guard. Mocked fetch never resolves until explicitly; second invocation must not dispatch a second fetch.
+  - "clears reviewsRetriable explicitly on the success path" — pins the success-path clear. Pre-sets `this.reviewsRetriable = true` and asserts a successful fetch clears it.
+- `components-threaded-comments.test.js`:
+  - "drops a concurrent loadComments() while one is in-flight" — pins the `_loadInFlight` guard. Same shape as the loadReviews test.
+
+Full unit suite: 1225 passing (62 files), +4 from the 1221 baseline.
+
+### i18n
+
+No new keys; no STUBS.md entry. Item 2's template tightening reused existing `papersRetriable`/`reviewsRetriable` flags + the existing `profile.papersUnavailable` / `profile.reviewsUnavailable` / `comments.serviceUnavailable` keys landed in round 1.
