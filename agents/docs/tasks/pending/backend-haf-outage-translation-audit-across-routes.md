@@ -297,3 +297,38 @@ Result is non-null at this site in practice. Used `result!.rows` and `result!.to
 Scoped vitest (`tests/routes/haf-outage-translation-canaries.test.ts` + `tests/routes/profile-papers-supersession.test.ts` + `tests/routes/papers-haf-error-vs-not-found.test.ts`): 28 specs green (canary file: 9 specs including the new 57P03 case). Sibling `tests/routes/comments.test.ts` 6 specs green on retry (the first run hit the pre-existing real-HAF testnet ECONNRESET flake documented in the round-2 signal block).
 
 `npm run typecheck` shows the pre-existing `tests/support/argon2-error-mocks.ts:178` failure — `dbStubFactory` missing `isRetriableHafError` — which is task `backend-fetch-paper-detail-haf-error-vs-not-found` round-2 hold item 2 (architect-prescribed for that task's round-2 commit). Not in this task's scope. `npm run lint` clean for this change (preexisting `seed-phrase.ts` / `author-supersession.ts` warnings unchanged).
+
+---
+
+## Architect re-review (2026-05-20, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-3 commit `44f7c0b1` with 4 reviewer personas (correctness on Opus; kieran-typescript, reliability, project-standards on Sonnet; testing / maintainability / security / adversarial / learnings skipped at architect scope on the 93/22 LOC prescription-following hold-fix diff; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 5 round-3 hold items land structurally per architect prescription: `isRetriableHafError` extended with `57P03` + `53300` with docstring rationale; signature retyped from `(err: unknown)` to `(err: HafQueryError)` with body simplification (drops inner `instanceof` re-check + unchecked `as { code?: unknown }` cast); `details.retriable` absence assertion added to the 42601 deterministic-pg canary; `as ErrorOptions` cast dropped from `HafQueryError` constructor; dead `sendOk(res, [], …)` else-branch removed from `comments.ts` with `result!.rows` non-null assertion + a stable-symbol-anchored comment block citing `paperExistsInHaf` as the preflight invariant.
+
+Cross-task with task 4's round-2 review on `backend-fetch-paper-detail-haf-error-vs-not-found` (commit `33ceef04`): both tasks touch the `isRetriableHafError` retriable set. The round-3 extension added 57P03 + 53300 but did not address 57P01 (admin_shutdown). Surfaced as a cross-task reliability residual (anchor 75) — filed as a new follow-up task `backend-isretriable-haf-add-57p01-and-53300-coverage.md`, NOT bundled into this task's round-4 scope.
+
+Cluster-wide findings: 3 findings surfaced, 2 dismissed at architect triage, 1 held for round-4.
+
+### Items dismissed during architect triage
+
+- **(kieran-typescript P3 conf 45)** `result!.rows` / `result!.total` non-null assertions in `comments.ts:227` are runtime-safe per the verified preflight chain (paperExistsInHaf → fetcher throw → cache skip-on-null). A `if (!result) throw new Error('unreachable')` type guard would convert the structural invariant into runtime narrowing without `!`, OR the helper return type could be tightened to non-nullable by removing the defense-in-depth `if (!pool) return null` short-circuit. Both alternatives valid; current shape passes typecheck and the inline comment block already documents the invariant. Reviewer self-rated conf 45 (below threshold). Dismiss as borderline taste.
+- **(reliability P3 conf 80)** Missing 53300 (too_many_connections) canary symmetric to the 57P03 canary added in round-3. The hold prescription asked for one canary (57P03); the discriminator added two codes. A regression dropping 53300 alone is not currently caught by any canary. Per `feedback_dismiss_preemptive_test_hardening`: 53300 firing on Mahdi's HAF is unobserved; discriminator extension followed the hold prescription literally. Dismiss as preemptive hardening unless folded into the new follow-up task. (Architect bundled this into the 57P01 follow-up task's scope as the parity-sweep companion.)
+
+### Items filed as new follow-up tasks (not in this task's round-4 scope)
+
+- **(reliability P3 anchor 75 cross-task)** `57P01` (admin_shutdown) absent — same finding cross-corroborated on task 4 round-2 review. The shutdown side of the HAF restart cycle is uncovered: a graceful HAF restart catching an in-flight query mid-shutdown returns 500 INTERNAL_ERROR (non-retriable) until the connection drops to 08006 (covered by `08*`). Asymmetric coverage between 57P03 (startup) and the absent 57P01 (shutdown). Filed as new task `backend-isretriable-haf-add-57p01-and-53300-coverage.md` in `tasks/pending/`, bundled with the 53300 canary parity-sweep + the 3-mock-copy parity update across `papers-haf-error-vs-not-found.test.ts`, `haf-outage-translation-canaries.test.ts`, and `argon2-error-mocks.ts`.
+
+### Items held (must fix before archive)
+
+**1. (P2, anchor 90, project-standards) Round-number anchor "round-3 hold extension" introduced in the new 57P03 canary's it-block comment violates the docblock-anchor convention.** `backend/tests/routes/haf-outage-translation-canaries.test.ts` (around line 395 — the new 57P03 canary's comment, NOT a line-number citation but a textual anchor to coordination state). Comment text reads:
+
+   > "Pins the **round-3 hold extension** of `isRetriableHafError` to include 57P03 (Postgres startup / PITR / standby promotion windows) as retriable."
+
+   Root CLAUDE.md § Comment anchors explicitly enumerates round numbers as belonging in commit messages and task files, not production or test source: "Coordination context — round numbers, hold items, task slugs, SHAs — belongs in commit messages and task files, not in production or test source." Reinforced by `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` which enumerates "round numbers (\"round-3 hold item 2\")" as a rot class. This task's round-3 was itself a convention-enforcing fix (removing the dead else-branch in comments.ts per round-3 item 5); per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the round-3 fix's NEW comment text was supposed to be audited against the anchor conventions in the same edit. Introducing a new round-number anchor in the same commit is exactly the self-audit failure the convention exists to prevent.
+
+   Fix: drop the phrase "the round-3 hold extension of" — the comment can read "Pins `isRetriableHafError`'s 57P03 classification (Postgres startup / PITR / standby promotion windows) as retriable." The behavioral anchor (`isRetriableHafError` + SQLSTATE code + operational semantics) is already in the second clause and is stable. Single-line edit; ~1 LOC.
+
+### Re-review signal
+
+When item 1 lands in a single round-4 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
