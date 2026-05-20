@@ -91,3 +91,11 @@ A separate sibling task (`ui-bridge-register-mid-broadcast-lookup-gate`) is bein
 The bug round-1 hold item 1 was filed to fix — stale `duplicateExisting` from a prior DUPLICATE leaking into the next identifier's lookup result — has zero direct regression test. The two round-2 tests cover the prescribed pins for round-1 hold item 2 (destroy-during-backoff + partial-details fall-through); they do not cover the `handleLookup` three-field reset at the user-visible failure path. A regression that re-inlined the Try-again handler back to `step = 'idle'` without including the `duplicateExisting` clear, or that trimmed the `handleLookup` entry reset from three fields to two, would land silently — the existing suite would still pass green. The bug Item 1 fixes is currently regression-protected only by manual diff inspection.
 
 Fix: add one vitest case driving the canonical bug scenario end-to-end. Seed `comp.duplicateExisting = { author: 'A', permlink: 'X' }` and `comp.step = 'error'` (the partial-details DUPLICATE test added in round-2 gives a working setup pattern for landing in this state); change `comp.identifier` to a different value; call `comp.handleLookup()` and await; assert `comp.duplicateExisting === null` AND `comp.step === 'idle'` AND `comp.errorMessage === ''`. The full three-field reset is the load-bearing claim; an assertion missing one field would mask a partial-reset regression. Approximately 15-20 lines.
+
+---
+
+## UI re-review signal (2026-05-20, working tree)
+
+Round-3 hold item 1 landed. New vitest case `clears duplicateExisting, step, and errorMessage when looking up a new identifier after a prior DUPLICATE error` added at the end of the `handleLookup` describe block in `frontend/tests/unit/pages-bridge.test.js`. Seeds the post-DUPLICATE state (`duplicateExisting = {author, permlink}`, `step = 'error'`, `errorMessage = 'Already registered'`), sets a different identifier, mocks the lookup + check resolves, awaits `handleLookup()`, and asserts all three fields cleared. A regression that trimmed the entry reset to two of three fields or re-inlined the Try-again handler without the `duplicateExisting` clear would now turn this red.
+
+Test result: 44/44 pass in `pages-bridge.test.js` (was 43/43 before).

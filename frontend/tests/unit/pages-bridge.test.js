@@ -266,6 +266,28 @@ describe('bridgePage', () => {
       await comp.handleLookup();
       expect(lookupDuringFetch).toBeNull();
     });
+
+    it('clears duplicateExisting, step, and errorMessage when looking up a new identifier after a prior DUPLICATE error', async () => {
+      const comp = createComponent();
+      // Seed the post-DUPLICATE state: a prior /register call returned 409
+      // DUPLICATE for identifier A, leaving the component with the duplicate
+      // card visible and step in 'error'.
+      comp.duplicateExisting = { author: 'someone', permlink: 'paper-a' };
+      comp.step = 'error';
+      comp.errorMessage = 'Already registered';
+      // User types a different identifier B and clicks Lookup.
+      comp.identifier = '10.5678/different-paper';
+      mockFetchBridgeLookup.mockResolvedValue({ data: { title: 'Different Paper' } });
+      mockFetchBridgeCheck.mockResolvedValue({ data: { exists: false } });
+      await comp.handleLookup();
+      // All three error-context fields must clear so the resolved lookup
+      // renders against a clean state. A regression that drops any one of
+      // the three would leave a stale field visible to the user during the
+      // window between lookup-success and the next user action.
+      expect(comp.duplicateExisting).toBeNull();
+      expect(comp.step).toBe('idle');
+      expect(comp.errorMessage).toBe('');
+    });
   });
 
   describe('handleRegister', () => {
