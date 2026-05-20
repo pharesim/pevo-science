@@ -72,3 +72,57 @@ After landing, architect updates `agents/docs/api-contracts/bridge.md` § POST /
 - `frontend/src/pages/bridge.js` — SPA auto-retry logic on `LOCK_HELD` 409 (per `ui-bridge-register-lock-held-ux` archive).
 - `agents/docs/api-contracts/bridge.md` — contract doc to update at archive time.
 - Originating audit table: `backend-retract-rate-limit-haf-503-burn` task signal block (Cross-route audit and bundled remediation section).
+
+## Backend completion signal (2026-05-20)
+
+**Acceptance #1 — `registerLimiter` declaration update.**
+The declaration in `backend/src/routes/bridge.ts` now uses the multi-line struct form with `skipFailedRequests: true`:
+
+```ts
+const registerLimiter = rateLimit({
+  name: 'bridge-register',
+  windowMs: 3_600_000,
+  max: 10,
+  keyFn: byIp,
+  skipFailedRequests: true,
+});
+```
+
+Multi-line shape matches the `accreditationVerifyLimiter` byIp precedent.
+
+**Acceptance #2 — WHY-comment threat-model coverage.**
+The comment block above the declaration covers:
+- The two retriable-true error shapes emitted by /register (409 LOCK_HELD + 503 SERVICE_UNAVAILABLE) and the SPA auto-retry cascade they trigger.
+- Why 4xx refund is safe on this byIp route: every 4xx path short-circuits BEFORE the HAF query and the broadcast (the expensive work guarded by the limiter), so probing only costs Redis-rate-limit ops with no chain/HAF side effects.
+- Why successful 2xx still consumes a slot: the per-IP abuse cap on successful broadcasts is preserved.
+- Cross-reference to `RateLimitConfig.skipFailedRequests` JSDoc and the `accreditationVerifyLimiter` byIp precedent in `accreditation.ts`.
+
+No task-slug, round-number, line-number, or SHA references in the comment — anchored on stable symbols (`registerLimiter`, `accreditationVerifyLimiter`, `RateLimitConfig.skipFailedRequests`) per the comment-anchor convention.
+
+**Acceptance #3 — Canary tests added.**
+New file: `backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts`. Mirror of the `bridge-haf-lag-locks.test.ts` mocked-pool + FakeRedis shape. Three canaries under `describe('registerLimiter slot-refund on retriable error paths (skipFailedRequests=true)')`:
+
+1. **HAF-503 cascade canary** — 10 sequential 503 SERVICE_UNAVAILABLE responses do NOT exhaust the per-IP 10/hour budget; 11th request under healthy HAF returns 200. Pins slot refund on the HAF-throw catch arm.
+2. **LOCK_HELD cascade canary** — 10 sequential 409 LOCK_HELD responses (under slow-broadcast gate) do NOT exhaust the per-IP budget; 11th request after lock release is NOT 429. Pins slot refund on the SETNX-already-held branch.
+3. **Per-IP abuse cap canary** — 10 successful 200s from the same IP exhaust the budget; 11th returns 429 RATE_LIMITED. Pins that the slot accounting is preserved on the success path.
+
+Each canary uses a distinct simulated client IP via `X-Forwarded-For` (`trust proxy = 1` in `app.ts` derives `req.ip` from the first-in-chain value) so the in-memory limiter `memStore` doesn't leak slot counts across specs.
+
+Test file header documents the carve-out per `CLAUDE.md` clauses (a) / (b) / (c). The `verifyHiveSignature` middleware is NOT mocked — requests are signed end-to-end via the shared `support/sign-request.ts` helper. Clause (c) real-path companion: `backend/tests/middleware/rateLimit.test.ts` exercises the slot-refund mechanics against live Redis.
+
+**Mutation-kill verification:** removed `skipFailedRequests: true` from the `registerLimiter` declaration and re-ran the canaries. Canary 1 RED-failed (`expected 429 to be 200` on the 11th success; the 10th 503 also flipped to `expected 429 to be 503`). Canary 2 RED-failed (`expected 429 to be 409` on the 10th LOCK_HELD attempt). Canary 3 still passed (success-path slot consumption is independent of the skipFailedRequests flag). Restored `skipFailedRequests: true` and re-ran; 3/3 pass.
+
+**Acceptance #4 — Verification.**
+
+- `npm run typecheck` — pre-existing error in `tests/support/argon2-error-mocks.ts:178` (unrelated, present on stash-removed working tree). No new errors in touched files (`backend/src/routes/bridge.ts`, `backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts`).
+- `npx eslint src/routes/bridge.ts tests/routes/bridge-register-rate-limit-skip-failed.test.ts` — clean.
+- Scoped vitest: `npx vitest run tests/routes/bridge-register-rate-limit-skip-failed.test.ts` — 3 tests passed.
+
+**Acceptance #5 — `[TODO Architect]` doc note.**
+`[TODO Architect]` Update `agents/docs/api-contracts/bridge.md` § POST /api/bridge/register Errors with the rate-limit interaction note: clients that retry on `details.retriable` (409 LOCK_HELD and 503 SERVICE_UNAVAILABLE) should bound their own retry attempts. The rate limiter refunds the slot on 4xx/5xx so SPA-driven retries do not burn the per-IP 10/hour budget, but the per-IP successful-broadcast cap is still enforced. Mirrors the convention already noted on `accreditationVerifyLimiter` for `/api/accreditation/verify`. Architect handles the contract edit at archive time per the backend agent's API-contract boundary rule.
+
+**Cross-reference.**
+This task was filed by `backend-retract-rate-limit-haf-503-burn` round-2 architect review as the byIp parity-sweep extension. The parent task covers the byAccount precedent on `retractLimiter`; this task is the byIp companion. Both share the `RateLimitConfig.skipFailedRequests` primitive and the same threat-model contract (4xx refund safe IFF the 4xx surface short-circuits before expensive work).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
