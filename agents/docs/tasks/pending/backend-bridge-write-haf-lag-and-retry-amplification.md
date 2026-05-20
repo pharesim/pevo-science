@@ -350,3 +350,31 @@ When item 1 lands in a single round-4 commit, `git mv` this file back to `tasks/
 Round-4 item 1 landed. `backend/src/routes/bridge.ts:281` (inside `checkExistingBridge`'s HAF-failure `logger.warn`) — message string trimmed from `'Bridge HAF query failed; route field carries fail-open vs. fail-closed disposition'` to `'Bridge HAF query failed'`. The structured-field meta-explanation now lives only in the inline comment block at `bridge.ts:276-280`; structured `event` and `route` fields continue to carry the fail-open vs. fail-closed disposition for operator dashboards.
 
 Scoped vitest (`bridge-haf-lag-locks.test.ts` + `bridge.test.ts` + `bridge-paper-author-gate.test.ts`): 33 specs green. `npx tsc --noEmit` + `npm run lint` clean.
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-4 commit `fda790f` with a minimal persona fleet (correctness on Opus; project-standards, maintainability at Sonnet) appropriate to the ~1 LOC string-trim scope. The round-4 message-string change landed against intent; all checked invariants (structured `event`+`route` fields still emitted, no test assertions on the old message text, rationale preserved in the inline comment block at `bridge.ts:276-280`) confirmed clean.
+
+Maintainability surfaced one item that is a convention-enforcing-fix gap from round-4 itself: the inline comment block round-4 trimmed FROM also contains a round-number citation that should have been swept during the same edit.
+
+### Item to address (round-5 hold)
+
+**1. (P3, anchor 100, maintainability + correctness residual) Round-number citation `Round-3 hold item #4:` in `bridge.ts:276` comment block.** The inline comment above the trimmed warn-message at `bridge.ts:276-280` opens with `Round-3 hold item #4:`. Per CLAUDE.md "Comment anchors" + `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, round-number citations rot when the task archives (imminent — this task is on the archive path after round-5 clean). The behavioral substance that follows (`this path fires from /register (fail-closed → 503) AND /check (fail-open → 200) so the human-readable message stays disposition-neutral...`) is correctly anchored on route handler paths and structured-field rationale — only the `Round-3 hold item #4:` prefix is rot.
+
+   Convention-enforcing-fix per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`: round-4 was itself a convention-enforcing fix (trimming a message because the structured-field rationale belongs in code comments, not log text). The same edit should have audited the comment above for similar rot — exactly the failure mode the convention exists to prevent.
+
+   Fix: drop the `Round-3 hold item #4: ` prefix (3 words including trailing space). Behavioral framing below is preserved unchanged. ~1 LOC delta.
+
+### Items dismissed during architect triage
+
+- **(project-standards: comment block content unchanged this round; emdash + staging + Co-Authored-By + zone all clean)** Verified.
+
+### Architect followups (no implementer action — already resolved or carry-forward)
+
+- **A1.** `/ce-compound` candidate for "deliberately remove a defaulted optional to force explicit-labeling at every call site" pattern. Architect discretion at archive.
+- **A2/A3.** "Read-then-write races on HAF-backed routes" + "Redis advisory lock with Lua CAS release on per-acquisition nonce" convention docs already exist; no new work needed.
+- Pre-existing architect-zone followups from round-2/3/4 stand.
+
+### Re-review signal
+
+When item 1 lands in a single round-5 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Diff is ~1 LOC (3 words removed); round-5 should converge clean and the task archives.
