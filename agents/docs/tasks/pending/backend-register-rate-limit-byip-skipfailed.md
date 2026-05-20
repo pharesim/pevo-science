@@ -126,3 +126,46 @@ This task was filed by `backend-retract-rate-limit-haf-503-burn` round-2 archite
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-1 commit `c656fe39` with 9 reviewer personas (correctness on Opus; testing, maintainability, project-standards on Sonnet; security on Opus; reliability on Sonnet; adversarial on Opus; kieran-typescript on Sonnet; learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Production change (`skipFailedRequests: true` on `registerLimiter` + 14-line WHY comment) and 3 canaries (HAF-503 cascade, LOCK_HELD cascade, abuse-cap-preserved) land structurally; canary mutation-kill verified by the implementer. However, cluster review surfaced a P1 cross-reviewer-corroborated security/correctness defect on middleware composition and a paired P1 behavioral-accuracy defect on the WHY comment.
+
+Cluster-wide findings: 5 findings surfaced across 9 personas; 1 dismissed at architect verification (TCP-abort `writableEnded` gate — verified present at `rateLimit.ts:188`); 1 dismissed at architect triage (LOCK_HELD canary soft-assertion); 3 held for round-2; cross-cutting concerns folded into items below.
+
+### Items to address (bundle into one round-2 commit)
+
+**1. (P1, anchor 100, cross-reviewer security + adversarial + learnings) `registerLimiter` mounted BEFORE `verifyHiveSignature` in the route chain creates a CPU/Hive-RPC amplification surface under `skipFailedRequests: true`.** `backend/src/routes/bridge.ts:373` — current shape: `router.post('/register', registerLimiter, verifyHiveSignature, ...)`. The limiter increments the slot up-front; downstream 4xx responses (missing field 400, unaccredited 403, unresolvable identifier 400, validation 422) refund the slot via `res.on('finish')` / `res.on('close')`. So an attacker with any valid Hive signing key can spray POST `/api/bridge/register` with `{identifier:'x', discipline:''}` from one IP: each request returns 400 BAD_REQUEST after `verifyHiveSignature` runs (Redis replay-check + `hiveClient.database.getAccounts` Hive RPC call + ECDSA recovery). The slot refunds. Attacker pays nothing; server pays per-request ECDSA recovery + Hive RPC network call. Unbounded amplification. The `rateLimit.ts` `RateLimitConfig.skipFailedRequests` JSDoc explicitly warns against this composition. Sibling route `/api/accreditations/verify` in `backend/src/routes/accreditation.ts` mounts `verifyHiveSignature` + `validate(...)` BEFORE the limiter — the correct pattern this commit diverges from.
+
+   Fix shape A (architect-prescribed): reorder middleware to `verifyHiveSignature → validateRegisterBody → registerLimiter → handler`, matching the `accreditation.ts` sibling precedent. Extract body-shape validation (identifier present/non-empty, discipline present/non-empty) into a `validateRegisterBody` middleware so body-validation 400s also short-circuit before the limiter. Closes the CPU/RPC amplification surface fully. Estimated ~5 LOC of route-mount change + ~10 LOC `validateRegisterBody` extraction. (Fix shape B — documented carve-out acceptance — is allowed by the JSDoc's escape clause but architect-recommended shape A given the sibling precedent and the unbounded amplification surface.)
+
+**2. (P1, anchor 100, cross-reviewer correctness + reliability + project-standards) WHY comment is factually wrong on multiple 4xx paths.** `backend/src/routes/bridge.ts:159-163`. Comment claims: *"4xx refund is safe here because every 4xx path short-circuits BEFORE the HAF query and the broadcast (the expensive work guarded by the limiter per the API contract), so probing only costs Redis-rate-limit ops with no chain/HAF side effects."* Verified false on at least 4 paths in the actual handler:
+
+   - `403 NOT_ACCREDITED` fires AFTER `getAccreditedSet([username])` HAF query (`bridge.ts:391`)
+   - `400 unresolvable identifier` fires AFTER `resolveToCanonical(identifier)` external arXiv/Crossref HTTP fetch (`bridge.ts:410`)
+   - `400 no preprint` fires AFTER `lookupPreprint(identifier)` external HTTP fetch (`bridge.ts:433`)
+   - `409 DUPLICATE` fires AFTER the HAF `checkExistingBridge` query
+
+   Per `agents/docs/solutions/conventions/comment-sweep-expansion-must-audit-added-clause-behavioral-accuracy-2026-05-20.md` — every clause added by a sweep edit must be verifiable against the cited code. The false claim, if left, propagates the wrong threat model to future maintainers.
+
+   Fix: bundle the rewrite with item 1's outcome. After the middleware reorder lands, body-validation 400s and auth 401s no longer reach the limiter. The surviving 4xx paths that DO refund are `403 NOT_ACCREDITED` (post-`getAccreditedSet`), `400 unresolvable` (post-`resolveToCanonical`), `400 no preprint` (post-`lookupPreprint`), and `409 DUPLICATE` (post-`checkExistingBridge`). Rewrite the WHY comment to enumerate these explicitly and justify why each is cheap-enough-to-accept (PEvO single-instance scale; external resolvers have their own rate caps; HAF check is a single cheap lookup; broadcast is the truly expensive boundary and stays bounded by the success-path 10/hour cap). Anchor on stable symbols (function names + route handler stage), no positional anchors, no slug citations, no SHAs.
+
+**3. (P2, anchor 75, project-standards) Clause (c) companion citation in test header names "the SKIP_FAILED describe block" in `rateLimit.test.ts`, which does not exist as a named `describe` block.** `backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts:40-41`. The skipFailedRequests coverage lives in `it()` blocks under the single outer `describe('rateLimit middleware')`, separated only by a comment header `// ─── skipFailedRequests + atomic Lua check ...`. Coverage is substantively present (clause (c) satisfied at the risk-class level); only the citation is structurally inaccurate. Per `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` test-file header docstrings are in scope for stable-symbol anchoring; the comment-header text (`skipFailedRequests + atomic Lua check`) IS such a symbol, just not a `describe`.
+
+   Fix: replace "the SKIP_FAILED describe block" with the grep-findable form, e.g., *"the `skipFailedRequests + atomic Lua check` section in `tests/middleware/rateLimit.test.ts`"* or *"the `skipFailedRequests` it-blocks in `tests/middleware/rateLimit.test.ts`"*. ~1 LOC.
+
+### Items dismissed during architect triage
+
+- **(adversarial P2 conf 85 TCP-abort `writableEnded` gate)** Verified at architect-time read: `backend/src/middleware/rateLimit.ts:188` already contains `if (res.statusCode < 400 && res.writableEnded) return;` per the `deferred-refund-gate-must-check-writableEnded-not-just-statusCode-2026-05-17.md` convention. The comment block at lines 176-180 explicitly explains the `writableEnded` half's role in catching pre-status TCP-aborts. The broadcast-lands-then-abort scenario does NOT silently refund the slot — `writableEnded` is false at that point, so the gate fails and the refund proceeds (which is the intended behavior for an abort that did NOT complete the response cleanly). False alarm at the reviewer layer; gate is structurally correct.
+- **(testing soft-assertion P3)** LOCK_HELD canary terminal `expect(followUpRes.status).not.toBe(429)` is intentionally scoped per the implementer's documented rationale (line 392-398). Tightening to `.toBe(200)` would couple the canary to broadcast-success behavior, expanding the SUT beyond rate-limit accounting. Below action threshold.
+
+### Architect followups (no implementer action)
+
+- **A1.** `agents/docs/api-contracts/bridge.md` § POST /api/bridge/register Errors — update to reflect `skipFailedRequests: true` semantics per implementer's `[TODO Architect]`. Architect handles at archive time after round-2 lands.
+
+### Re-review signal
+
+When items 1-3 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Item 1 is the load-bearing fix; items 2-3 are mechanical text rewrites that follow from item 1's outcome.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
