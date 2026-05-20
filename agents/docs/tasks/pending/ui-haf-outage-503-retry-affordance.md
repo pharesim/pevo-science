@@ -76,3 +76,20 @@ Full unit suite: 1221 tests passing (62 files).
 - `frontend/public/messages/STUBS.md` carries a fresh `### Added 2026-05-20 (UI-HAF-OUTAGE-503-RETRY-AFFORDANCE)` sweep header.
 
 Retry buttons reuse the existing `common.retry` key (no new copy needed).
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES:
+
+The wiring shape is right and the test coverage is appropriate for the discriminator. Three flag-lifecycle issues need to land before archive. Surfaced by `/ce-code-review` (correctness, julik-frontend-races, and maintainability concurred on item 1; correctness flagged item 2; correctness and julik concurred on item 3).
+
+1. **Move the `papersRetriable` mutation behind the stale-call guard in `loadProfile`.** The current shape sets `this.papersRetriable = true` from inside the `fetchProfilePapers().catch()` lambda, which executes synchronously as part of the rejection chain — before the post-`Promise.all` `if (this.username !== username) return` guard runs. A stale 503 from an in-flight fetch on the prior profile lands the flag on the new profile's component (the page-mount reuses the same Alpine `x-data` instance across param changes). The result is a briefly-visible retry card belonging to the previous username. The fix is to either capture a local boolean inside the catch lambda and assign `this.papersRetriable = local` after the existing username guard, OR re-check `this.username !== username` inside the lambda before mutating. Either shape matches `loadReviews`'s guard-then-mutate order, which is correct as-is.
+
+2. **Tighten the retry-card template guards so retry-card and populated-list cannot co-render.** The retry-card templates use `x-if="papersRetriable"` / `x-if="reviewsRetriable"` with no list-length disjunction; the list templates have no `!retriable` disjunction; and `papersRetriable`/`reviewsRetriable` are only cleared at the top of each (re)load, never on the success path. Tighten the retry-card `x-if` to `papersRetriable && userPapers.length === 0` (and the reviews equivalent), AND clear the flag on the success path of each loader, so a successful retry returns the user to a clean populated/empty state without depending on the next call's top-of-function reset.
+
+3. **Add a synchronous in-flight guard at the top of `loadComments`, and prevent stale-catch data clobber in `loadReviews`.** The retry `@click` handlers added in this commit make concurrent `loadComments()` invocations newly reachable (two retry buttons + the existing `comment-posted` window listener can trigger overlapping fetches). A tight double-click can also let a stale 503-rejecting fetch's catch clobber a successful retry's data — fetch B resolves, populates state, then fetch A rejects and the catch sets `userReviews = []` + `reviewsRetriable = true`, defeating the retry. Add `if (this.loading) return;` (or `if (this.reviewsLoading) return;`) as the first statement before any `await` in both `loadComments` and `loadReviews`, per `agents/docs/solutions/conventions/synchronous-flag-before-await-idempotency-guard-2026-05-16.md`. If you prefer a per-call ticket counter over the in-flight guard, that's also acceptable — the invariant is "only the most recent call's catch may mutate state."
+
+Out of scope for this hold cycle:
+- STUBS.md sweep-header format (precedent across 25 prior entries; convention-conformant as written).
+- `fetchReview` JSDoc cross-file reference shape (file-path-with-symbol-fragment is acceptable for a cross-file JSDoc).
+- Negative-case tests for the strict `=== true` discriminator (backend contract is fixed; theoretical hardening).
+- `loadProfile` retry re-fetching `fetchProfile` when only papers failed (residual risk noted; same-HAF-backend means partial failure is rare).
+- `comment-posted` window-listener permlink filter at `paper-detail.js` outer mounts (pre-existing; out of this task's scope).
