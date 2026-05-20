@@ -40,11 +40,16 @@ let pool: pg.Pool | null = null;
  * refactors don't silently collapse the per-route message strings.
  */
 export class HafQueryError extends Error {
-  public readonly operation: string;
+  // `operation` is a constructor argument that composes the message
+  // (`HAF query failed: ${operation}`) but is NOT stored as a field —
+  // the message string carries it, and Error.cause carries the
+  // underlying pg error. Operation labels (e.g. 'fetchPaperDetailFromHaf',
+  // 'paperExistsInHaf') are pure log-correlation hints; route handlers
+  // never branch on operation, only on `instanceof HafQueryError` and
+  // `isRetriableHafError`.
   constructor(operation: string, options?: ErrorOptions) {
     super(`HAF query failed: ${operation}`, options);
     this.name = 'HafQueryError';
-    this.operation = operation;
   }
 }
 

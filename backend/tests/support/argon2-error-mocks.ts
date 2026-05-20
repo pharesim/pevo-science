@@ -180,18 +180,26 @@ export const dbStubFactory: () => typeof import('../../src/db.js') = () => {
   // against it (route handlers translating to 503) still see a class
   // satisfying the import surface.
   class HafQueryError extends Error {
-    public readonly operation: string;
-    constructor(operation: string, options?: { cause?: unknown }) {
-      super(`HAF query failed: ${operation}`, options as ErrorOptions);
+    constructor(operation: string, options?: ErrorOptions) {
+      super(`HAF query failed: ${operation}`, options);
       this.name = 'HafQueryError';
-      this.operation = operation;
     }
   }
+  // Mirror `isRetriableHafError` from `src/db.ts`. Argon-error tests
+  // never invoke this code path (the stub's `getPool` returns null so no
+  // HAF query fires), but its presence satisfies the full module
+  // surface required by `typeof import('../../src/db.js')`.
+  const isRetriableHafError = (err: HafQueryError): boolean => {
+    const code = (err.cause as { code?: unknown } | null | undefined)?.code;
+    if (typeof code !== 'string') return true;
+    return code.startsWith('08') || code === '57014' || code === '57P03' || code === '53300';
+  };
   return {
     getPool: () => null,
     isHafConfigured: () => false,
     closeHafPool: async () => {},
     HafQueryError,
+    isRetriableHafError,
   };
 };
 

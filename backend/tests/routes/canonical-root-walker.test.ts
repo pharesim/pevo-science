@@ -583,12 +583,17 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
     try {
       const res = await request(app).get(`/api/papers/alice/v${N}`);
-      // Round-2 item 4 (P2 reliability): walker-aborted requests surface as
-      // 503 SERVICE_UNAVAILABLE so HTTP-status-only monitors catch degraded
-      // HAF independently of the warn log. Pre-round-2 the route returned
-      // 200 with possibly-incorrect cached data; the abort wasn't visible
-      // at the HTTP layer.
+      // Walker-aborted requests surface as 503 SERVICE_UNAVAILABLE so
+      // HTTP-status-only monitors catch degraded HAF independently of
+      // the warn log. The pre-fix shape returned 200 with possibly-
+      // incorrect cached data; the abort wasn't visible at the HTTP
+      // layer.
       expect(res.status).toBe(503);
+      // details.retriable: true is the wire signal the SPA's HAF-503
+      // retry loop keys on. A regression dropping the 5th sendError
+      // argument would emit a non-retriable 503 and the SPA would
+      // surface a non-actionable error message to the user.
+      expect(res.body.error.details?.retriable).toBe(true);
 
       const wallClockEvents = warnSpy.mock.calls
         .map((c) => c[0] as { event?: string; hopIndex?: number; elapsedMs?: number } | undefined)

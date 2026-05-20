@@ -71,12 +71,21 @@ const { hafQueryMock, getPoolMock, broadcastJsonMock } = vi.hoisted(() => ({
 // shape (operation + cause) so the mocked-throw test exercises the same
 // `instanceof` gate the real path uses.
 class HafQueryError extends Error {
-  public readonly operation: string;
-  constructor(operation: string, options?: { cause?: unknown }) {
-    super(`HAF query failed: ${operation}`, options as ErrorOptions);
+  constructor(operation: string, options?: ErrorOptions) {
+    super(`HAF query failed: ${operation}`, options);
     this.name = 'HafQueryError';
-    this.operation = operation;
   }
+}
+
+// Test-only copy of `isRetriableHafError` — must stay structurally
+// identical to the production implementation in `backend/src/db.ts`.
+// The 4 papers.ts catch arms gate on
+// `instanceof HafQueryError && isRetriableHafError(err)`, so the mock
+// must expose both for the discriminator to fire correctly.
+function isRetriableHafError(err: HafQueryError): boolean {
+  const code = (err.cause as { code?: unknown } | null | undefined)?.code;
+  if (typeof code !== 'string') return true;
+  return code.startsWith('08') || code === '57014' || code === '57P03' || code === '53300';
 }
 
 vi.mock('../../src/db.js', () => ({
@@ -84,6 +93,7 @@ vi.mock('../../src/db.js', () => ({
   isHafConfigured: () => getPoolMock() !== null,
   closeHafPool: async () => { /* no-op */ },
   HafQueryError,
+  isRetriableHafError,
 }));
 
 vi.mock('../../src/hive.js', () => ({
@@ -255,5 +265,68 @@ describe('GET /api/papers/:author/:permlink/cite — HAF-error vs not-found', ()
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+});
+
+// ──────────────────────────────────────────────
+// Deterministic pg-error (42601 syntax error) → 500 INTERNAL_ERROR.
+//
+// Cause-discriminated retriable gate (`isRetriableHafError`) ensures that
+// deploy-time pg errors do NOT emit `503 retriable: true`. Without this
+// discrimination the SPA's retry loop would hammer a dead query until the
+// cap on every paper-detail route. The bare-Error specs above seed
+// connection-class failures (no pg code → defaults to retriable); these
+// specs seed `code: '42601'` so the discriminator classifies as 500.
+// ──────────────────────────────────────────────
+
+describe('HafQueryError with deterministic pg error code → 500 (not 503 retriable)', () => {
+  function pgSyntaxError(): Error & { code: string } {
+    const err = new Error('syntax error at or near "SELEKT"') as Error & { code: string };
+    err.code = '42601';
+    return err;
+  }
+
+  it('primary GET — syntax error (42601) falls through to 500 INTERNAL_ERROR (no retriable)', async () => {
+    hafQueryMock.mockRejectedValue(pgSyntaxError());
+
+    const res = await request(app).get('/api/papers/alice/paper-x');
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+    expect(res.body.error.details?.retriable).not.toBe(true);
+  });
+
+  it('/enrichment — syntax error (42601) falls through to 500 INTERNAL_ERROR (no retriable)', async () => {
+    hafQueryMock.mockRejectedValue(pgSyntaxError());
+
+    const res = await request(app).get('/api/papers/alice/paper-x/enrichment');
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+    expect(res.body.error.details?.retriable).not.toBe(true);
+  });
+
+  it('/retract — syntax error (42601) falls through to 500 INTERNAL_ERROR (no retriable + no broadcast)', async () => {
+    hafQueryMock.mockRejectedValue(pgSyntaxError());
+
+    const res = await request(app)
+      .post('/api/papers/alice/paper-x/retract')
+      .set('X-Hive-Username', 'alice')
+      .send({ reason: 'Data fabrication' });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+    expect(res.body.error.details?.retriable).not.toBe(true);
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('/cite — syntax error (42601) falls through to 500 INTERNAL_ERROR (no retriable)', async () => {
+    hafQueryMock.mockRejectedValue(pgSyntaxError());
+
+    const res = await request(app).get('/api/papers/alice/paper-x/cite?format=bibtex');
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+    expect(res.body.error.details?.retriable).not.toBe(true);
   });
 });

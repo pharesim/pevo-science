@@ -200,3 +200,54 @@ Commit SHA: pending (this file lands in the same commit).
 
 When items 1-7 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Items 1+2 are the security/correctness-critical ones; 3+7 are pure-comment rot; 4 is test-assertion additive; 5+6 are mechanical-source refactors.
 
+---
+
+## Backend re-review signal (2026-05-20, round-2 hold-fixes)
+
+All seven round-2 hold items landed in this commit. Scoped vitest 137/137 green; full `npm run typecheck` clean (the pre-existing dbStubFactory failure is now resolved by item 2).
+
+### Item 1 — Cause-discriminated retriable gate at 4 papers.ts catch arms + 4 new deterministic-pg canaries
+
+`backend/src/routes/papers.ts` — added `isRetriableHafError` to the `db.js` import; updated all 4 catch arms (primary GET, /enrichment, /retract, /cite) to gate on `instanceof HafQueryError && isRetriableHafError(err)`. Mirrors the shape already in `comments.ts`, `reviews.ts`, and `profile.ts`. Inline comment explains the threat model (deterministic pg failures must fall through to 500 so SPA retry loop doesn't hammer dead queries).
+
+`backend/tests/routes/papers-haf-error-vs-not-found.test.ts` — added 4 deterministic-pg canaries (one per route) seeding a `code: '42601'` (syntax error) pg-shaped error. Each asserts `status: 500`, `code: 'INTERNAL_ERROR'`, and `details?.retriable !== true`. The /retract canary additionally asserts `broadcastJsonMock` was NOT called. Mutation-kill: a regression to bare `instanceof HafQueryError` (no cause discrimination) emits 503 retriable on these pg-coded errors and fails red on every canary.
+
+The existing bare-Error 503 canaries above (which seed `new Error('connection refused')` with no pg code) continue to pass because the discriminator defaults to retriable when `code` is not a string.
+
+### Item 2 — `isRetriableHafError` added to `dbStubFactory`
+
+`backend/tests/support/argon2-error-mocks.ts` — `dbStubFactory` now exports `isRetriableHafError` matching the production behavioral shape (handles the full `08*` / 57014 / 57P03 / 53300 retriable set already extended by round-3 of `backend-haf-outage-translation-audit-across-routes`). Resolves the pre-existing `tsc --noEmit -p tests/tsconfig.json` failure (`Property 'isRetriableHafError' is missing in type ...`).
+
+### Item 3 — Drop task-slug citations from `papers.ts` catch comments
+
+`backend/src/routes/papers.ts:~1469-1473` (fetchPaperDetailFromHaf catch) and `:~2974-2977` (fetchEnrichmentFromHaf catch) — removed the `See \`backend-fetch-paper-detail-haf-error-vs-not-found.md\`` line from both. Behavioral framing above the dropped citation ("Tag the error class so the route layer can translate to `503 SERVICE_UNAVAILABLE`") is preserved unchanged; the slug is the only rot.
+
+### Item 4 — `details.retriable === true` assertions on walker-abort 503 specs
+
+Three test files updated with one assertion each (after the existing `expect(res.status).toBe(503)`):
+- `backend/tests/routes/canonical-root-walker.test.ts` (wall-clock budget canary)
+- `backend/tests/routes/retract.test.ts` (/retract wall-clock abort canary)
+- `backend/tests/routes/continuation-author-gate.test.ts` (forward walker wall-clock canary)
+
+Each new assertion is `expect(res.body.error.details?.retriable).toBe(true)`. Mutation-kill: a regression dropping the 5th `sendError` argument silently emits a non-retriable 503; the new assertions catch it.
+
+### Item 5 — Drop dead `operation` field from `HafQueryError`
+
+`backend/src/db.ts` — removed `public readonly operation: string;` field and the `this.operation = operation;` assignment. Constructor still takes `operation: string` as an argument; it now composes the message at construction time (`HAF query failed: ${operation}`) but isn't stored as a field. The 8 production instantiation sites (`papers.ts` × 2, `profile.ts` × 4, `reviews.ts`, `comments.ts` × 2) are unchanged — they pass the operation label and the class shape from outside is identical. Added a comment block explaining the "argument-only, not field" choice. Mirrored in the 3 test-only HafQueryError shape copies (`tests/support/argon2-error-mocks.ts`, `tests/routes/papers-haf-error-vs-not-found.test.ts`, `tests/routes/haf-outage-translation-canaries.test.ts`).
+
+### Item 6 — Per-route error messages on /retract and /cite
+
+`backend/src/routes/papers.ts` — /retract message now reads "Retraction temporarily unavailable. Please retry shortly." and /cite reads "Citation export temporarily unavailable. Please retry shortly." Primary GET keeps "Paper detail temporarily unavailable..." and /enrichment keeps "Paper enrichment temporarily unavailable...". Delivers the `HafQueryError` docstring's "per-route message control" rationale that the prior copy-paste messages undermined.
+
+### Item 7 — Stale mutation-kill comment in papers-canonical-orcid-resolution.test.ts
+
+`backend/tests/routes/papers-canonical-orcid-resolution.test.ts:178-183` — comment updated from "fetchPaperDetailFromHaf returns null → route returns 404" to "fetchPaperDetailFromHaf throws HafQueryError → route returns 503 SERVICE_UNAVAILABLE". Pure-comment edit; no assertion change.
+
+### Verification
+
+Scoped vitest (6 files): `papers-haf-error-vs-not-found.test.ts` + `haf-outage-translation-canaries.test.ts` + `canonical-root-walker.test.ts` + `continuation-author-gate.test.ts` + `retract.test.ts` + `papers-canonical-orcid-resolution.test.ts` — 137 specs green.
+
+Broader sweep (reviews + profile + papers + cite + profile-papers-supersession): 40 passed, 1 skipped, 1 pre-existing flake. The flake is `cite.test.ts > returns citation in all formats when paper exists` returning 503 instead of 200 — this is the testnet real-HAF walker-budget trip already documented in this task's round-1 signal block ("`cite.test.ts` doesn't have that bump" referring to `papers.test.ts`'s 60s budget override). The flake fires from the post-try `walkerAbort.signal.aborted` check, NOT from the HafQueryError catch arm this round modified. Verified by inspection: the 503 the test observes is from the walker-budget event, not from my `instanceof HafQueryError && isRetriableHafError(err)` gate (which would emit 503 with the per-route "Citation export..." message; the budget path emits "HAF walker budget exceeded; please retry").
+
+`npm run typecheck`: clean (both src and tests). `npm run lint`: clean for this change (preexisting `seed-phrase.ts` / `author-supersession.ts` warnings unchanged).
+

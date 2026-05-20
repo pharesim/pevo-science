@@ -177,10 +177,11 @@ describe('GET /api/papers/:author/:permlink — ORCID supersession projection', 
   it('SQL query composes authorsWithSupersessionSelect + active_accreditations CTE', async () => {
     // Mutation-kill: drop the `WITH ${detailCte.sql}` wrap from the paper
     // SELECT → query reference to `active_accreditations` becomes
-    // undefined → query throws → fetchPaperDetailFromHaf returns null →
-    // route returns 404. Below the query-shape inspection ensures the
-    // CTE-with-projection composition is in the emitted SQL even when
-    // the mocked pool happens to return rows.
+    // undefined → query throws → fetchPaperDetailFromHaf throws
+    // HafQueryError → route returns 503 SERVICE_UNAVAILABLE. Below the
+    // query-shape inspection ensures the CTE-with-projection composition
+    // is in the emitted SQL even when the mocked pool happens to return
+    // rows.
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);

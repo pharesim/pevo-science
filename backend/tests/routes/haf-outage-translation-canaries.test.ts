@@ -75,11 +75,9 @@ const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
 // test exercises the same `instanceof` + cause-discrimination gate the
 // real path uses.
 class HafQueryError extends Error {
-  public readonly operation: string;
   constructor(operation: string, options?: ErrorOptions) {
     super(`HAF query failed: ${operation}`, options);
     this.name = 'HafQueryError';
-    this.operation = operation;
   }
 }
 

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
-import { getPool, HafQueryError } from '../db.js';
+import { getPool, HafQueryError, isRetriableHafError } from '../db.js';
 import { broadcastJsonWithTimeout } from '../hive.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 import { config } from '../config.js';
@@ -1470,8 +1470,7 @@ async function fetchPaperDetailFromHaf(
     // `503 SERVICE_UNAVAILABLE` with `details.retriable: true`. Pre-fix,
     // this catch returned `null` and the route handler treated `null` as
     // `404 NOT_FOUND`, making HAF outage indistinguishable from
-    // "paper does not exist" to clients. See
-    // `backend-fetch-paper-detail-haf-error-vs-not-found.md`.
+    // "paper does not exist" to clients.
     logger.error({ err }, 'HAF paper detail query failed');
     throw new HafQueryError('fetchPaperDetailFromHaf', { cause: err });
   }
@@ -2691,7 +2690,11 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
     if (cached) return sendOk(res, cached);
     sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   } catch (err) {
-    if (err instanceof HafQueryError) {
+    if (err instanceof HafQueryError && isRetriableHafError(err)) {
+      // Cause-discriminated retriable envelope. Deterministic pg failures
+      // (syntax error, permission error, data-type mismatch) fall through
+      // to the central 500 handler so the SPA's retry-on-503-retriable
+      // loop doesn't hammer a dead query.
       return sendError(
         res,
         503,
@@ -2970,8 +2973,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     // Loud-fail on HAF query failure so the route handler can translate
     // to `503 SERVICE_UNAVAILABLE` with `details.retriable: true` rather
     // than the pre-fix `null → 404` collapse that masked outage as
-    // "paper not found". See
-    // `backend-fetch-paper-detail-haf-error-vs-not-found.md`.
+    // "paper not found".
     logger.error({ err }, 'HAF enrichment query failed');
     throw new HafQueryError('fetchEnrichmentFromHaf', { cause: err });
   }
@@ -3002,7 +3004,11 @@ router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) 
     if (!cached) return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
     sendOk(res, cached);
   } catch (err) {
-    if (err instanceof HafQueryError) {
+    if (err instanceof HafQueryError && isRetriableHafError(err)) {
+      // Cause-discriminated retriable envelope. Deterministic pg failures
+      // (syntax error, permission error, data-type mismatch) fall through
+      // to the central 500 handler so the SPA's retry-on-503-retriable
+      // loop doesn't hammer a dead query.
       return sendError(
         res,
         503,
@@ -3092,12 +3098,14 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
   try {
     detail = await fetchPaperDetailFromHaf(author, permlink, undefined, walkerAbort.signal) as Record<string, unknown> | null;
   } catch (err) {
-    if (err instanceof HafQueryError) {
+    if (err instanceof HafQueryError && isRetriableHafError(err)) {
+      // Cause-discriminated retriable envelope. Deterministic pg failures
+      // fall through to the central 500 handler.
       return sendError(
         res,
         503,
         'SERVICE_UNAVAILABLE',
-        'Paper detail temporarily unavailable. Please retry shortly.',
+        'Retraction temporarily unavailable. Please retry shortly.',
         { retriable: true },
       );
     }
@@ -3272,12 +3280,14 @@ router.get('/:author/:permlink/cite', async (req: Request, res: Response) => {
   try {
     detail = await fetchPaperDetailFromHaf(author, permlink, undefined, walkerAbort.signal) as Record<string, unknown> | null;
   } catch (err) {
-    if (err instanceof HafQueryError) {
+    if (err instanceof HafQueryError && isRetriableHafError(err)) {
+      // Cause-discriminated retriable envelope. Deterministic pg failures
+      // fall through to the central 500 handler.
       return sendError(
         res,
         503,
         'SERVICE_UNAVAILABLE',
-        'Paper detail temporarily unavailable. Please retry shortly.',
+        'Citation export temporarily unavailable. Please retry shortly.',
         { retriable: true },
       );
     }

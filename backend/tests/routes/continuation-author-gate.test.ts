@@ -1926,6 +1926,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       // so HTTP-status monitors catch degraded HAF. Pre-fix, walker-aborts
       // returned 200 with possibly-stale or partial-chain data.
       expect(res.status).toBe(503);
+      // details.retriable: true is the wire signal the SPA's HAF-503
+      // retry loop keys on. Mutation-kill against a regression dropping
+      // the 5th sendError argument.
+      expect(res.body.error.details?.retriable).toBe(true);
 
       const wallClockEvents = warnSpy.mock.calls
         .map((c) => c[0] as { event?: string; hopIndex?: number; elapsedMs?: number } | undefined)

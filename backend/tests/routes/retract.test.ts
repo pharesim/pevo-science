@@ -368,6 +368,10 @@ describe('POST /api/papers/:author/:permlink/retract — wall-clock budget (roun
         .send({ reason: 'Degraded HAF abort canary' });
 
       expect(res.status).toBe(503);
+      // details.retriable: true is the wire signal the SPA's HAF-503
+      // retry loop keys on. Mutation-kill against a regression dropping
+      // the 5th sendError argument.
+      expect(res.body.error.details?.retriable).toBe(true);
       // No broadcast happens on abort — the abort path returns BEFORE
       // the authorization check + broadcast.
       expect(broadcastJsonMock).not.toHaveBeenCalled();
