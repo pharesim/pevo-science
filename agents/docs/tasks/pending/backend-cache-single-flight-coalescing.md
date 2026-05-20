@@ -117,3 +117,48 @@ No new config knob. Class docblock + `getOrSet` JSDoc carry the coalescing seman
 - `npx tsc --noEmit` from `backend/`: clean.
 - `npm run lint` from `backend/`: clean.
 - Scoped vitest (`tests/lib/cache.test.ts` + `tests/cache.test.ts` + `tests/routes/papers-enrichment-parity-gate.test.ts`): 16/16 pass (10 existing root-level cache, 4 new single-flight unit specs, 2 enrichment-parity-gate including the new canary).
+
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-1 commit `623bee26` with 9 reviewer personas (correctness on Opus; performance, reliability, testing, maintainability, project-standards, kieran-typescript on Sonnet; adversarial on Opus; learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Single-flight `inflight` map lands structurally in `QueryCache.getOrSet`; 4 unit specs + integration canary all pass. Cluster review surfaced one P1 adversarial correctness defect (invalidation race), one P2 TOCTOU window under Redis backend, and one P2 citation rot. One follow-up task filed for the `getOrSetSWR` parity gap.
+
+Cluster-wide findings: 6 findings (12 sub-points) surfaced across the persona fleet; 3 dismissed at architect triage (IIFE ordering readability, discriminated-union poisoning audit pre-existing, wire-shape mutation-blind test preemptive); 1 filed as new follow-up task (`getOrSetSWR` cold-path); 3 held for round-2.
+
+### Items to address (bundle into one round-2 commit)
+
+**1. (P1, anchor 100, adversarial) `invalidate()` / `invalidatePrefix()` / `clearVolatile()` / `clear()` do not consult `this.inflight`, so a single-flight fetcher resolves AFTER an invalidation runs and writes its pre-invalidation snapshot back via `this.set`, silently undoing the flush.** `backend/src/cache.ts` (the four invalidation methods + `getOrSet`'s success-path `this.set` call). Scenario:
+
+   1. Concurrent readers A, B, C trigger a single-flight fetcher F for key K. F is in flight against HAF.
+   2. A paper-edit mutation calls `hafCache.invalidate(K)` (e.g., from `papers.ts:3187-3194`). The cache is cleared.
+   3. F resolves with its pre-invalidation snapshot. F's promise body executes `if (data !== null && data !== undefined) await this.set(key, data, ttlMs, stable)`. The pre-invalidation snapshot is now in the cache under key K with full TTL (up to 30 min for `stable: true` entries like paper detail; 2 min for claim-accept entries).
+   4. All readers A, B, C receive the pre-invalidation snapshot from F's resolution. Subsequent readers cache-hit on the stale snapshot for the remaining TTL.
+
+   Pre-fix behavior: each concurrent reader did its own fetch. At most one fetcher's snapshot would race with the invalidate; later readers' fetchers fired AFTER the invalidate and picked up fresh data. Single-flight amplifies the existing race from per-fetcher to per-key-wave (one stale write outlives many readers).
+
+   Fix shape B (architect-prescribed): epoch counter. Add `private epoch = 0` to `QueryCache`. `invalidate*`/`clear*` methods bump `this.epoch`. `getOrSet`'s fetcher promise captures the epoch at start (`const capturedEpoch = this.epoch`); on resolution, skip the `cache.set` write if `capturedEpoch !== this.epoch`. In-flight callers still receive the resolved value (so the request that triggered the fetcher gets data), but the cache stays cold so the next caller picks up fresh post-invalidation data. ~15 LOC of additional logic. Unit spec: invalidate-during-flight test asserting cache.get returns undefined after invalidate-then-fetcher-resolves sequence. Worst-case repros at `papers.ts:3187-3194` (paper edit) and `claims.ts:229/325/359` (claim accept/revoke) — both `stable: true` entries with multi-minute TTL pins.
+
+**2. (P2, anchor 75, correctness) TOCTOU window between `await this.get(key)` and the inflight check degrades single-flight from "one fetcher" to "few fetchers" under Redis backend.** `backend/src/cache.ts:93-101`. Two concurrent callers both `await this.get(key)` (Redis network roundtrip ~1-5ms in production), both miss, both find `inflight.get` empty (because neither has reached `inflight.set` yet), both create separate fetcher promises. The second `inflight.set` silently overwrites the first; both fetchers run. Correctness preserved (both return data); the single-flight invariant degrades from "eliminates duplication" to "reduces duplication." Unit spec #1 doesn't catch this because vi.fn() with setTimeout(50) registers inflight synchronously before the first awaited tick.
+
+   Fix shape C (architect-prescribed): docblock honesty. Update the class-level docblock and `getOrSet` JSDoc to honestly frame what the primitive does: *"eliminates duplication within an event-loop tick; reduces duplication under Redis backend during concurrent cache-miss probes."* ~3 LOC comment update. (Alternative Fix A — synchronous in-memory `peek()` probe before async `get()` — would tighten the window but adds ~10 LOC of state-management complexity; not pursued.) The current behavior is still a major improvement over pre-fix N-way amplification; the fix is to set correct expectations in the docblock, not to chase the asymptote.
+
+**3. (P2, anchor 90, project-standards) Clause-(c) companion citation in test header is factually wrong — quoted test name doesn't match any describe or it block.** `backend/tests/lib/cache.test.ts:13-19`. Header cites *"the integration canary in `papers-enrichment-parity-gate.test.ts` (`'single-flight: 3 concurrent /enrichment calls collapse to 1 HAF fetcher'`)"*. The quoted string does NOT match any describe or it block in that file. Actual describe: `'GET /api/papers/:author/:permlink/enrichment — single-flight coalescing canary'`. Actual it: `'3 concurrent requests for the same (author, permlink) issue HAF queries only ONCE (mutation-kill: remove single-flight → 3x SQL volume)'`. Per `comment-sweep-expansion-must-audit-added-clause-behavioral-accuracy-2026-05-20.md` and `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`. Same shape as the project-standards finding on `backend-register-rate-limit-byip-skipfailed` (round-2 hold item 3).
+
+   Fix: replace the quoted parenthetical with the actual describe-block name. ~1 LOC.
+
+### Items dismissed during architect triage
+
+- **(maintainability P3, conf 75 IIFE-then-inflight.set ordering readability)** Current shape is structurally correct under Node's single-threaded execution (no `await` between IIFE construction and `inflight.set`). Sibling pattern (`revalidating.add` before `await fn()`) is valid alternative. Per `synchronous-flag-before-await-idempotency-guard-2026-05-16.md` both shapes are acceptable. Below action threshold.
+- **(learnings-flagged informational discriminated-union poisoning audit)** Pre-existing cross-cutting concern per `caching-wrapper-discriminated-union-poisoning-2026-05-11.md`; not introduced or worsened by this commit. Per memory `feedback_dismiss_preemptive_test_hardening`, audit-driven preemptive sweeps default to dismiss unless an observed call-site issue exists.
+- **(learnings-flagged informational wire-shape mutation-blind test)** The mutation it pins (`inflight` Map removed but fetcher synchronously cached) is highly contrived; no sensible refactor produces it. Per memory `feedback_dismiss_preemptive_test_hardening`, preemptive test-hardening dismissable.
+
+### Items filed as new follow-up tasks (not in this task's round-2 scope)
+
+- **(P3, anchor 75, cross-reviewer correctness + performance + reliability + maintainability + learnings)** `getOrSetSWR` cold-path has no single-flight protection. Filed as new task `backend-cache-single-flight-coalescing-swr-cold-path.md` in `tasks/pending/`. The class-level docblock added by round-1 raises the expectation that coalescing is a property of the class, which is currently not delivered on `getOrSetSWR`. Different state machine (stale/fresh/revalidating) deserves its own scope and tests.
+
+### Re-review signal
+
+When items 1-3 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Item 1 is the load-bearing correctness fix; items 2-3 are mechanical text rewrites.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
