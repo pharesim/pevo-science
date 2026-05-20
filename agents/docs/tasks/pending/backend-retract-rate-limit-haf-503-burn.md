@@ -204,3 +204,45 @@ Cluster-wide findings: 5 findings surfaced across the 6 personas, 2 dismissed at
 When item 1 lands in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-20, round-2 hold-fix)
+
+**Item 1 — clause-(c) citation rewrite: LANDED.** Rewrote the header docstring's clause-(c) paragraph in `backend/tests/routes/retract-rate-limit-skip-failed.test.ts` per the architect's prescription. No new test was required (hold-block was explicit on this point).
+
+**Before/after shape (clause (c) only; clauses (a) and (b) untouched):**
+
+Before:
+```
+(c) Real-path companion: the existing
+`retract.test.ts` integration suite exercises the full `verifyHiveSignature`
++ `fetchPaperDetailFromHaf` + broadcast path against signed requests
+with the real Hive RPC mocked at `broadcastJsonWithTimeout`.
+```
+
+After:
+```
+(c) Real-path companion: corpus-level
+real-path coverage of the `verifyHiveSignature` middleware is provided
+by the `sign-request.ts` consumers — `auth.test.ts`, `claims.test.ts`,
+and `bridge-haf-lag-locks.test.ts` exercise the real middleware against
+cryptographically signed requests on sibling routes. The rate-limiter
+middleware itself (the risk class this file pins) is real-path-covered
+by `tests/middleware/rateLimit.test.ts`. The carve-out is for focus,
+not for skipping auth verification entirely from the codebase.
+```
+
+**Corpus-level coverage citations verified to exist:**
+- `backend/tests/routes/auth.test.ts` — exists; uses `sign-request.ts`, real `verifyHiveSignature` (confirmed via grep: only references `MOCK_VERIFY_SIGNATURE` in a comment noting it does NOT use the fixture).
+- `backend/tests/routes/claims.test.ts` — exists; uses `sign-request.ts`, real `verifyHiveSignature`.
+- `backend/tests/routes/bridge-haf-lag-locks.test.ts` — exists; uses `sign-request.ts`, real `verifyHiveSignature`.
+- `backend/tests/middleware/rateLimit.test.ts` — **EXISTS**. The rate-limiter middleware real-path coverage citation is accurate; no fallback needed.
+
+**Convention-enforcing-fix self-audit:** the replacement clause-(c) text contains zero anchor-rot vectors. No task-slug citations (file paths like `auth.test.ts` are stable filesystem paths, not coordination-state slugs). No line-number anchors. No SHA references. No round-number coordination state. Only stable symbols: the exported middleware function name `verifyHiveSignature`, the helper file name `sign-request.ts`, and the four test file paths cited above. Per `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`: replacement passes audit.
+
+**Scope discipline:** clauses (a) and (b) were not edited. Only the clause-(c) paragraph was rewritten, per the architect's "Don't touch clauses (a) and (b)" instruction.
+
+**Verification:** scoped `npm run typecheck` from `backend/` planned to confirm the test file still parses (Docker env overrides for full vitest deferred to round-2 architect review since the edit is comment-only and cannot affect runtime behavior).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

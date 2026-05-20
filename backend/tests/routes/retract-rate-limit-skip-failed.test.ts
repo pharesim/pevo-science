@@ -19,10 +19,14 @@
  * impractical, and exercising HAF outage against real testnet is non-
  * deterministic. (b) Auth focus is rate-limiter behavior, not signature
  * cryptography — the MOCK_VERIFY_SIGNATURE fixture preserves the
- * username-extraction behavior. (c) Real-path companion: the existing
- * `retract.test.ts` integration suite exercises the full `verifyHiveSignature`
- * + `fetchPaperDetailFromHaf` + broadcast path against signed requests
- * with the real Hive RPC mocked at `broadcastJsonWithTimeout`.
+ * username-extraction behavior. (c) Real-path companion: corpus-level
+ * real-path coverage of the `verifyHiveSignature` middleware is provided
+ * by the `sign-request.ts` consumers — `auth.test.ts`, `claims.test.ts`,
+ * and `bridge-haf-lag-locks.test.ts` exercise the real middleware against
+ * cryptographically signed requests on sibling routes. The rate-limiter
+ * middleware itself (the risk class this file pins) is real-path-covered
+ * by `tests/middleware/rateLimit.test.ts`. The carve-out is for focus,
+ * not for skipping auth verification entirely from the codebase.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
