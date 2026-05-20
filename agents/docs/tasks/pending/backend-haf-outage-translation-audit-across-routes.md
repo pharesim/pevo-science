@@ -211,3 +211,52 @@ Tests       27 passed (27)
 
 - Held-item #2 prescription mentions "verified SPA-side max-attempts cap rationale" as an alternative to discrimination. Chose discrimination per the prescription's "default to discrimination — it's the right contract". The new `isRetriableHafError` helper plus the deterministic-pg canary close the symmetric concern at the backend layer; SPA-side cap is separately enforced by the `ui-haf-outage-503-retry-affordance` task.
 - Test file's `vi.mock('../../src/db.js')` now also exports `isRetriableHafError` matching the production shape. Kept as an inline test-only copy (structurally identical to the production helper) because the test mocks the whole `db.js` module — pulling the real implementation would defeat the mock isolation.
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-2 commit `d6a1eff` with 9 reviewer personas (correctness on Opus; testing, maintainability, project-standards, learnings-researcher, api-contract, reliability, kieran-typescript at Sonnet; adversarial on Opus; `ce-agent-native-reviewer` skipped per project CLAUDE.md). All 6 round-2 hold items landed structurally and against intent: `comments.ts` listing translation closes the preflight/listing composition asymmetry; `isRetriableHafError` cause-discrimination is correctly applied to the 4 enumerated routes; SQL-fragment discriminators verified unique per helper; Promise.all enrichment canary exercises the previously-unreachable wrap branch; intentional-swallow rationale comments land at all 5 sites; deterministic-pg canary pins the cause-discrimination gate. 5 items hold for round-3; several findings dismissed at triage (rationale below).
+
+The api-contract reviewer surfaced one P1 doc divergence (`papers.md` `/comments` still documented the OLD swallow-to-empty contract). Architect resolved this in-place during the review session in commit `66b213ac` (papers.md + common.md 503-retriable note refresh). NOT a hold item; closed at review time.
+
+### Items to address (bundle into one round-3 commit)
+
+**1. (P2, anchor 75, cross-reviewer correctness + reliability) `isRetriableHafError` missing transient pg codes `57P03` and `53300`.** `backend/src/db.ts:78-90`. Helper classifies `08*` (connection class) + `57014` (statement_timeout) as retriable. Two additional pg codes are absent: `57P03` (`cannot_connect_now`, emitted during Postgres startup / point-in-time recovery / standby promotion — realistic during HAF maintenance windows) and `53300` (`too_many_connections`, pg-level admission reject when the server's own `max_connections` is hit, distinct from PEvO's pool cap). Both are legitimately transient per the helper's docstring intent. Under current impl they fall through to 500 INTERNAL_ERROR; SPA sees hard failure with no retry affordance during exactly the scenarios retry would succeed quickly.
+
+   Fix: extend the discriminator: `code.startsWith('08') || code === '57014' || code === '57P03' || code === '53300'`. Update the test-local copy in `haf-outage-translation-canaries.test.ts` to match. Add one canary case for `57P03` asserting 503 retriable (mirror the `42601` canary shape but assert the opposite outcome).
+
+**2. (P2, anchor 75, cross-reviewer kieran-typescript KT-1 + maintainability M1) `isRetriableHafError` parameter should be typed `HafQueryError`, not `unknown`.** `backend/src/db.ts:78` (signature) and `:80` (internal re-check). Every call site guards with `err instanceof HafQueryError && isRetriableHafError(err)` — the outer guard pre-narrows `err` to `HafQueryError` BEFORE the call. Inside the helper, line 80 then re-runs `instanceof HafQueryError` to decide whether to read `err.cause`, duplicating the narrow the caller just performed. The non-`HafQueryError` branch carries an unchecked cast `(underlying as { code?: unknown } | null | undefined)?.code`. The `unknown` signature also creates a silent misclassification trap: a future caller that skips the outer guard and passes a plain `Error` silently returns true (retriable, since no `.cause.code` matches the default).
+
+   Fix: change signature to `isRetriableHafError(err: HafQueryError): boolean`. Body simplifies to direct `err.cause` access; the internal instanceof and the unchecked cast both delete. Caller call sites are unchanged (TS narrows `err` to `HafQueryError` inside the `&&` short-circuit). Update the test-local copy to match.
+
+**3. (P2, anchor 90, cross-reviewer testing T1 + learnings-researcher + api-contract + kieran-typescript) Deterministic-pg canary missing `details.retriable` absence assertion.** `backend/tests/routes/haf-outage-translation-canaries.test.ts` (the `42601 → 500` canary added in round-2 item 7). Asserts `status: 500` and `error.code: INTERNAL_ERROR` but does not assert that `res.body.error.details?.retriable` is not `true`. A mutation that emits 500 with `{ retriable: true }` in `details` (e.g., a catch arm passing the wrong details to the central error handler) passes the canary; SPA retry loop would fire on syntax errors. The canary's stated intent is to pin that the SPA retry does not fire on deterministic errors; the absence of `retriable: true` is load-bearing for that property.
+
+   Fix: add `expect(res.body.error.details?.retriable).not.toBe(true);` after the status + code assertions in the deterministic-pg canary. ~1 LOC.
+
+**4. (P3, anchor 75, kieran-typescript KT-3 carry-forward from round-1) `HafQueryError` constructor `as ErrorOptions` cast is unnecessary.** `backend/src/db.ts` (HafQueryError constructor). The constructor declares `options?: { cause?: unknown }` and passes it as `super(message, options as ErrorOptions)`. Since `lib.es2022.error.d.ts` defines `ErrorOptions` as `{ cause?: unknown }`, the shapes are structurally identical. The cast silences any future divergence rather than letting the compiler catch it.
+
+   Fix: type the parameter directly as `options?: ErrorOptions`, drop the `as` assertion. ~2 LOC.
+
+**5. (P3, anchor 95, reliability R3) Dead `sendOk(res, [], ...)` fallback in `comments.ts:223-227`.** Pre-round-2, `fetchCommentsFromHaf` returned null on failure, exercising the null-guard `if (result) { sendOk rows } else sendOk([], ...)`. Round-2 item 1 changed the helper to throw `HafQueryError` on failure, which propagates through `hafCache.getOrSet` (try/finally clears in-flight slot and re-throws). The `sendOk(res, [], ...)` branch is now structurally unreachable via the failure path. Future-reader confusion risk: the else-branch looks like documented degraded-mode behavior; it's actually dead. Convention-enforcing-fix per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`: the round-2 contract change should have audited and removed the now-dead branch.
+
+   Fix: remove the dead else-branch. The route's response shape is now `result.rows` always (the throw path no longer reaches the response handler, the new route-layer catch translates to 503).
+
+### Items dismissed during architect triage
+
+- **(api-contract AC-1 papers.md /comments contract divergence)** Resolved in architect-zone commit `66b213ac` in the same review session. Not a hold item.
+- **(api-contract AC-2 503→500 narrowing undocumented for other routes + AC-3 details.retriable absent-not-false asymmetry + AC-4 isRetriableHafError classification table)** Folded into architect-zone commit `66b213ac` (common.md 503-retriable note refresh now names HafQueryError + retriable pg cause as an emitter class and explicitly states "absence of details.retriable means no retry guidance").
+- **(adversarial /comments retry-amplifier, /retract rate-limit burn, JS-bug misclassification)** /retract rate-limit cascade filed as new `backend-retract-rate-limit-haf-503-burn` task in `tasks/pending/`. Other amplifier concerns acknowledged as residual; per project memory `feedback_pevo_logging_minimal` and `project_single_instance_only`, not currently actionable.
+- **(testing brittleness of SQL-fragment discriminators, paperExistsInHaf negative-lookahead vulnerability)** Per project memory `feedback_dismiss_preemptive_test_hardening` — hypothetical SQL refactor; current discriminators verified unique against production SQL.
+- **(testing test-local `isRetriableHafError` copy drift)** Acknowledged residual; bundled implicitly into items 1+2 (both touch the helper and the test-local copy must follow). Future addition of a real-vs-mock parity test deferred.
+- **(maintainability M2 4× catch arm extraction `rethrowOrSend503` helper)** Per-route message control argument from the docstring still holds; revisit at the next growth point. Below the action threshold.
+- **(project-standards two cross-file solutions-doc citations in test file headers, conf 20)** Below confidence gate.
+- **(reliability/learnings pg statement_timeout disclosure on hafWalkerWallClockMs knob)** Walker-task territory (94bf294), not d6a1eff. Acknowledged as architect followup for the walker docs (separately tracked).
+
+### Architect followups (no implementer action — already landed in this review session)
+
+- **A1.** `papers.md` 503 SERVICE_UNAVAILABLE enumeration for `/comments` + all 4 paper-detail-class routes — landed in commit `66b213ac`.
+- **A2.** `common.md` 503-retriable note refresh enumerating new emitter classes — landed in commit `66b213ac`.
+- **A3 (carry forward).** [TODO Architect] from round-1 signal — the convention doc `haf-error-translation-pattern.md` via `/ce-compound`. Still deferred; the architect will invoke `/ce-compound` after this task archives clean, scoping the audit catalog + remediation pattern + helper contract asymmetry (`getAccreditedSet` display-fed safe-fail vs `getAllAccreditedAccounts` batch-fed loud-fail).
+
+### Re-review signal
+
+When items 1-5 land in a single round-3 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only. Items 1+2 are db.ts shape changes (~15 LOC + test-copy updates); 3 is a 1-line assertion addition; 4 is a 2-line type-signature cleanup; 5 is a small dead-code removal in comments.ts.
