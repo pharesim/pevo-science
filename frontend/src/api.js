@@ -22,6 +22,25 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * Predicate: did this error originate from a retriable 503 response?
+ *
+ * Backends signal "transient failure with no chain/token side-effect; safe to
+ * retry" by pairing `error.code === 'SERVICE_UNAVAILABLE'` with
+ * `error.details.retriable === true` on the response envelope. See
+ * `agents/docs/api-contracts/common.md` § "Note on `503 SERVICE_UNAVAILABLE`
+ * and `details.retriable`" for the authoritative enumeration of emitter routes.
+ *
+ * Centralizing the predicate here keeps the envelope shape negotiable: a
+ * future shift (e.g. `details.recoverable`, `details.retry_after_ms`) updates
+ * one site instead of every retry-loop and banner.
+ *
+ * Null/undefined/missing-`details`/non-matching-`code` all return `false`.
+ */
+export function isRetriable503(err) {
+  return err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true;
+}
+
 // Parse `Retry-After` response header as seconds. Returns `null` when absent
 // or unparseable. Only the delta-seconds form is supported; HTTP-date form
 // is rare in our API and not worth the parse cost.

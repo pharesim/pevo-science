@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchProfile, fetchProfilePapers, fetchProfileReviews } from '../api.js';
+import { fetchProfile, fetchProfilePapers, fetchProfileReviews, isRetriable503 } from '../api.js';
 import { truncateText, formatDate } from '../components/paper-card.js';
 import { titleCaseDiscipline } from '../lib/discipline-display.js';
 import { canonicalOrcid, shouldShowDiscrepancyIndicator } from '../lib/authors.js';
@@ -421,7 +421,7 @@ export function initProfilePage() {
         const [profileRes, papersRes] = await Promise.all([
           fetchProfile(username),
           fetchProfilePapers(username).catch((err) => {
-            if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+            if (isRetriable503(err)) {
               papersRetriable = true;
             }
             return { data: [] };
@@ -486,9 +486,7 @@ export function initProfilePage() {
         if (this.username !== username) return;
         this.userReviews = [];
         this.reviewsLoaded = true;
-        this.reviewsRetriable = (
-          err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true
-        );
+        this.reviewsRetriable = isRetriable503(err);
       } finally {
         this.reviewsLoading = false;
       }

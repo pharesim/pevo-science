@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPaperComments } from '../api.js';
+import { fetchPaperComments, isRetriable503 } from '../api.js';
 import { renderMarkdown } from './markdown-renderer.js';
 
 function formatTimeAgo(iso, t) {
@@ -139,7 +139,7 @@ export function initThreadedComments() {
         this.comments = res.data || [];
         this.totalCount = countComments(this.comments);
       } catch (err) {
-        if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+        if (isRetriable503(err)) {
           this.error = this.$t('comments.serviceUnavailable');
           this.errorRetriable = true;
         } else {

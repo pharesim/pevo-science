@@ -17,6 +17,7 @@ import {
   fetchDisciplines,
   completeOrcid,
   setPassword,
+  isRetriable503,
 } from '../../src/api.js';
 
 // Helper: build a mock Response-like object for fetch.
@@ -51,6 +52,51 @@ describe('ApiRequestError', () => {
   it('defaults data to null when not provided', () => {
     const err = new ApiRequestError('FOO', 'bad');
     expect(err.data).toBeNull();
+  });
+});
+
+describe('isRetriable503', () => {
+  it('returns true when code is SERVICE_UNAVAILABLE and details.retriable is true', () => {
+    expect(isRetriable503({ code: 'SERVICE_UNAVAILABLE', details: { retriable: true } })).toBe(true);
+  });
+
+  it('also matches on a real ApiRequestError instance with retriable: true', () => {
+    const err = new ApiRequestError('SERVICE_UNAVAILABLE', 'busy', null, { retriable: true });
+    expect(isRetriable503(err)).toBe(true);
+  });
+
+  it('returns false when details.retriable is false', () => {
+    expect(isRetriable503({ code: 'SERVICE_UNAVAILABLE', details: { retriable: false } })).toBe(false);
+  });
+
+  it('returns false on a non-503 error code even if details.retriable is true', () => {
+    expect(isRetriable503({ code: 'NOT_FOUND', details: { retriable: true } })).toBe(false);
+  });
+
+  it('returns false when code is SERVICE_UNAVAILABLE but details is missing', () => {
+    expect(isRetriable503({ code: 'SERVICE_UNAVAILABLE' })).toBe(false);
+  });
+
+  it('returns false when code is SERVICE_UNAVAILABLE but details.retriable is undefined', () => {
+    expect(isRetriable503({ code: 'SERVICE_UNAVAILABLE', details: {} })).toBe(false);
+  });
+
+  it('returns false when details.retriable is a truthy non-boolean (e.g. "true" string)', () => {
+    // Strict `=== true` guards against accidental coercion bugs on the envelope.
+    expect(isRetriable503({ code: 'SERVICE_UNAVAILABLE', details: { retriable: 'true' } })).toBe(false);
+    expect(isRetriable503({ code: 'SERVICE_UNAVAILABLE', details: { retriable: 1 } })).toBe(false);
+  });
+
+  it('returns false on null', () => {
+    expect(isRetriable503(null)).toBe(false);
+  });
+
+  it('returns false on undefined', () => {
+    expect(isRetriable503(undefined)).toBe(false);
+  });
+
+  it('returns false on an empty object', () => {
+    expect(isRetriable503({})).toBe(false);
   });
 });
 

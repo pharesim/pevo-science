@@ -8,6 +8,10 @@ vi.mock('../../src/api.js', () => ({
   claimAuthorship: vi.fn(),
   approveAuthorshipClaim: vi.fn(),
   revokeAuthorshipClaim: vi.fn(),
+  // Pure predicate; mirror the real implementation rather than stub it,
+  // so existing retriable-503 branch assertions keep exercising the real
+  // shape of the envelope check.
+  isRetriable503: (err) => err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true,
 }));
 
 vi.mock('../../src/signer.js', () => ({

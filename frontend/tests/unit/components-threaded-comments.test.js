@@ -4,6 +4,10 @@ const mockFetchPaperComments = vi.fn();
 
 vi.mock('../../src/api.js', () => ({
   fetchPaperComments: (...args) => mockFetchPaperComments(...args),
+  // Pure predicate; mirror the real implementation rather than stub it,
+  // so existing retriable-503 branch assertions keep exercising the real
+  // shape of the envelope check.
+  isRetriable503: (err) => err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true,
 }));
 
 vi.mock('../../src/components/markdown-renderer.js', () => ({

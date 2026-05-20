@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim } from '../api.js';
+import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim, isRetriable503 } from '../api.js';
 import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
 import { getAppTag } from '../config.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
@@ -876,8 +876,7 @@ export function initPaperDetailPage() {
             continue;
           }
           if (
-            err?.code === 'SERVICE_UNAVAILABLE'
-            && err?.details?.retriable === true
+            isRetriable503(err)
             && serviceUnavailableAttempt < serviceUnavailableRetryDelaysMs.length
           ) {
             await new Promise((resolve) => setTimeout(resolve, serviceUnavailableRetryDelaysMs[serviceUnavailableAttempt]));
@@ -892,7 +891,7 @@ export function initPaperDetailPage() {
           // generic key; raw err -> console.warn.
           if (err?.code === 'NOT_FOUND') {
             this.error = this.$t('paperDetail.notFoundTitle');
-          } else if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+          } else if (isRetriable503(err)) {
             this.error = this.$t('paperDetail.serviceUnavailableTitle');
             this.errorIs503 = true;
           } else {
@@ -924,7 +923,7 @@ export function initPaperDetailPage() {
         this.scrollToHashReview();
       } catch (err) {
         if (this.author !== author || this.permlink !== permlink) return;
-        if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+        if (isRetriable503(err)) {
           // Recognized transient failure surfaces via the enrichmentRetriable
           // banner; no log line — the user already has a UI affordance and
           // a HAF outage would otherwise multiply this warn per claim
@@ -1130,8 +1129,7 @@ export function initPaperDetailPage() {
             break;
           } catch (err) {
             if (
-              err?.code === 'SERVICE_UNAVAILABLE'
-              && err?.details?.retriable === true
+              isRetriable503(err)
               && serviceUnavailableAttempt < serviceUnavailableRetryDelaysMs.length
             ) {
               await new Promise((resolve) => setTimeout(resolve, serviceUnavailableRetryDelaysMs[serviceUnavailableAttempt]));
@@ -1144,7 +1142,7 @@ export function initPaperDetailPage() {
             // retry the action shortly. 400 (bad format) and 404 (paper not
             // found, generator dispatch failed) fall through to the generic
             // sanitized branch.
-            if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+            if (isRetriable503(err)) {
               this.$store.toast.show(this.$t('citation.serviceUnavailable'), 'error');
             } else {
               console.warn('[paper detail citation export]', err);
@@ -1180,7 +1178,7 @@ export function initPaperDetailPage() {
         // The retract dialog stays open on error so the user can re-click
         // "Confirm Retraction" themselves; the toast distinguishes the
         // transient failure from a permanent one.
-        if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+        if (isRetriable503(err)) {
           this.$store.toast.show(this.$t('retraction.serviceUnavailable'), 'error');
         } else {
           console.warn('[paper detail retract]', err);
