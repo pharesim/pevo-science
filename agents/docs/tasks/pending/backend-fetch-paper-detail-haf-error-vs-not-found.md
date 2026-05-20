@@ -150,3 +150,53 @@ Out-of-scope items (Retry-After header, accreditation-helper CTE refactor, profi
 
 Commit SHA: pending (this file lands in the same commit).
 
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-1 commit `b427a70` with 9 reviewer personas (correctness on Opus; testing, maintainability, project-standards, learnings-researcher, api-contract, reliability, kieran-typescript at Sonnet; adversarial on Opus; `ce-agent-native-reviewer` skipped per project CLAUDE.md). HafQueryError class, fetcher re-throw, 4 route discriminators, accreditation.ts docstring rewrites, and 8 mocked-pool specs all land structurally correctly. Cross-task review with `d6a1eff` (haf-outage-translation-audit round-2, same review session) surfaced the highest-priority finding: the `isRetriableHafError` cause-discriminator that landed in `db.ts` as part of `d6a1eff` is applied to its 4 routes (comments, profile-papers, profile-reviews, single-review) but NOT to the 4 routes touched here.
+
+[TODO Architect] item (4) — `papers.md` 503 enumeration — landed in architect-zone commit `66b213ac` as part of the same review session. Implementer signal's [TODO] is resolved.
+
+### Items to address (bundle into one round-2 commit)
+
+**1. (P1, anchor 100, 6-reviewer cross-corroboration: correctness + maintainability + reliability + adversarial + kieran-typescript + learnings-researcher) `papers.ts` catch arms skip `isRetriableHafError` discrimination — deterministic pg failures emit 503 retriable, inducing SPA retry storm on dead queries.** `backend/src/routes/papers.ts:2694` (primary GET), `:3005` (/enrichment), `:3095` (/retract), `:3275` (/cite). Each site reads `if (err instanceof HafQueryError) { return sendError(res, 503, ..., { retriable: true }) } throw err;` — bare instanceof, no cause-code discrimination. The sibling routes touched by `d6a1eff` (`comments.ts:229`, `profile.ts:447`, `profile.ts:636`, `reviews.ts:159`) all gate on `instanceof HafQueryError && isRetriableHafError(err)`, falling through deterministic pg codes (`42601` syntax, `42501` permission, `22P02` type) to the central 500 handler. A deploy-time SQL bug in `fetchPaperDetailFromHaf` / `fetchEnrichmentFromHaf` throws → wrapped in `HafQueryError` → all 4 routes emit `503 retriable:true` → SPA retry loop hammers the dead query until its cap.
+
+   Fix: import `isRetriableHafError` from `'../db.js'` alongside `HafQueryError`, then change each of the four `if (err instanceof HafQueryError)` guards to `if (err instanceof HafQueryError && isRetriableHafError(err))`. Mirror the comment shape from `reviews.ts:159` so future maintainers know why the conjunction exists.
+
+   **Add deterministic-pg canary coverage:** the existing `papers-haf-error-vs-not-found.test.ts` mocks throw bare `new Error('connection refused')` with no pg `code` field, so `isRetriableHafError` defaults to retriable and the canaries pass either way. Add 4 new specs (one per route) seeding a pg-shaped error with `code: '42601'` and asserting the response is `500 INTERNAL_ERROR` (status 500 + code INTERNAL_ERROR + `details.retriable !== true`), mutation-killing a regression that classifies all `HafQueryError`s as retriable.
+
+**2. (P1, anchor 85, kieran-typescript KT-002) `dbStubFactory` stub missing `isRetriableHafError` — diverges from `typeof import('../../src/db.js')` surface.** `backend/tests/support/argon2-error-mocks.ts` `dbStubFactory`. The stub is typed `() => typeof import('../../src/db.js')`. Production `db.ts` exports `HafQueryError`, `isRetriableHafError`, `getPool`, `isHafConfigured`, `closeHafPool`. The updated `dbStubFactory` (from this task) adds `HafQueryError` but omits `isRetriableHafError`. Any test using `dbStubFactory` that later exercises a route (`reviews`, `comments`, `profile`, OR — post round-2 of THIS task — `papers`) calling `isRetriableHafError(err)` receives `undefined` at runtime and the call throws, silently bypassing the 503 branch.
+
+   Fix: add `isRetriableHafError` to the `dbStubFactory` return object. Match the production helper's behavioral shape (or import the real implementation if the surrounding test mock pattern permits).
+
+**3. (P2, anchor 100, cross-reviewer project-standards + maintainability + learnings-researcher) Task-slug comment anchors in 2 catch-block comments.** `backend/src/routes/papers.ts:1474` (in `fetchPaperDetailFromHaf` catch) and `:2974` (in `fetchEnrichmentFromHaf` catch). Both comments end with `See \`backend-fetch-paper-detail-haf-error-vs-not-found.md\``. CLAUDE.md "Comment anchors" + `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` explicitly prohibit task-slug citations in production/test code (the slug archives into `tasks-archive.md` which trims at 250 lines, becoming a dead pointer). The behavioral framing above each `See` line is already the correct stable anchor; drop the slug citation entirely. Convention-enforcing-fix per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`: the replacement text MUST also not violate any anchor convention.
+
+**4. (P2, anchor 90, cross-reviewer testing + learnings-researcher + api-contract + kieran-typescript) `details.retriable: true` not asserted on walker-abort 503 specs.** `backend/tests/routes/canonical-root-walker.test.ts:591`, `backend/tests/routes/retract.test.ts:370`, `backend/tests/routes/continuation-author-gate.test.ts:1928`. Existing walker-abort 503 specs assert `res.status === 503` only — none inspects `res.body.error.details?.retriable`. A regression dropping the 5th `sendError` arg from `{ retriable: true }` silently passes every existing spec. (This is implementer's own flagged gap from the 94bf294 round-3 signal block; the assertion is one expression per site.) Implementer choice: land in this task's round-2 (touches walker-task test files, but co-located with the canary additions for item 1) OR land in 94bf294 round-4. Architect-recommended: land here so the cross-task review's hold blocks converge.
+
+   Fix: add `expect(res.body.error.details?.retriable).toBe(true);` to each existing walker-abort 503 spec assertion block. ~6 LOC across 3 files.
+
+**5. (P3, anchor 85, maintainability M3) `HafQueryError.operation` field dead — exported public surface with no readers.** `backend/src/db.ts`. The `operation: string` field is declared `public readonly` and exported but nothing in the codebase reads it. Content duplicates `err.message` (which already reads `'HAF query failed: <operation>'`). `Error.cause` earns its place (read by `isRetriableHafError`, walked by pino's serializer). `operation` is YAGNI-prune candidate per project bias.
+
+   Fix: remove the `operation` constructor parameter and field. Adjust the `HafQueryError` instantiations at the 2 fetcher catch sites accordingly (the message construction will need a small refactor to embed the operation name in the message string at construction time, OR keep operation as a constructor argument that ONLY composes the message and is not stored).
+
+**6. (P3, anchor 75, maintainability M4) `/retract` and `/cite` catch arms reuse primary-detail message string verbatim — undermines documented per-route rationale.** `backend/src/routes/papers.ts:3094` (/retract) and `:3274` (/cite). Both emit `"Paper detail temporarily unavailable. Please retry shortly."` — identical to the primary detail GET. The `db.ts` `HafQueryError` docstring's stated rationale for keeping the discriminator per-route is "per-route message control"; for 2 of 4 handlers, that rationale isn't delivered.
+
+   Fix: change `/retract` message to `"Retraction temporarily unavailable. Please retry shortly."` and `/cite` to `"Citation export temporarily unavailable. Please retry shortly."`. ~2 LOC.
+
+**7. (P3, anchor 100, correctness finding #2) Stale mutation-kill comment in `papers-canonical-orcid-resolution.test.ts:178-183`.** Comment still describes the pre-fix path: `query throws → fetchPaperDetailFromHaf returns null → route returns 404`. Actual post-fix path is `query throws → fetchPaperDetailFromHaf throws HafQueryError → route returns 503 SERVICE_UNAVAILABLE`. Pure-comment update; no assertion change required.
+
+### Items dismissed during architect triage
+
+- **(api-contract AC-2 SPA loadPaper UX regression, P2 conf 75)** Filed as a new `ui-paper-detail-retriable-503-handling` task in `tasks/pending/` per cluster triage. Out-of-scope for this backend task; the sibling `ui-haf-outage-503-retry-affordance` task in `tasks/pending/` covers profile.js + threaded-comments.js but explicitly does NOT cover `paper-detail.js`.
+- **(adversarial /retract rate-limit burn cascade, P2 conf 80)** Filed as new `backend-retract-rate-limit-haf-503-burn` task in `tasks/pending/` per cluster triage. Cross-route audit (publish, reviews, etc.) included in that task's scope; deliberately not bundled into this round-2 because skipFailed-vs-refund design question is a deliberate threat-model choice.
+- **(kieran-typescript KT-003 `as ErrorOptions` cast in HafQueryError constructor, P2 conf 75)** Triaged into the d6a1eff round-3 hold (same `db.ts` file as #5/#7 items there). Not bundled here.
+- **(test-only `HafQueryError` and `isRetriableHafError` mock-copy drift)** Acknowledged residual risk across multiple reviewers. Not actionable absent observed real-vs-mock divergence; addressed structurally by the dbStubFactory completeness fix (item 2).
+- **(testing T-01 enrichment 404 spec tests pre-existing pool === null path)** Genuine code path, spec is non-vacuous; reviewer self-recommended accept per `feedback_dismiss_preemptive_test_hardening`.
+
+### Architect followups (no implementer action)
+
+- [TODO Architect] item (4) — already landed in architect-zone commit `66b213ac` (papers.md + common.md 503-retriable note refresh). Architect closed this in the same review session.
+
+### Re-review signal
+
+When items 1-7 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Items 1+2 are the security/correctness-critical ones; 3+7 are pure-comment rot; 4 is test-assertion additive; 5+6 are mechanical-source refactors.
+
