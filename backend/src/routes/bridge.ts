@@ -24,7 +24,7 @@ import {
 } from '../bridge.js';
 
 // ──────────────────────────────────────────────
-// BE-BRIDGE-WRITE-HAF-LAG — read-then-write race protection
+// Bridge read-then-write race protection
 //
 // /register follows a read-then-write pattern (HAF duplicate lookup, then
 // broadcast). Without serialization, two concurrent calls for the same
@@ -36,14 +36,15 @@ import {
 //   * Lua-CAS release on the per-acquisition nonce so a stale lock from a
 //     different request can't be released by accident.
 //
-// Lock TTL of 35s is the same default the ORCID lock uses: above the 30s
+// Lock TTL of 35s is the same default the ORCID lock uses: exceeds the 30s
 // broadcast timeout (DEFAULT_BROADCAST_TIMEOUT_MS in hive.ts) so a slow
-// broadcast does not lose its lock mid-flight. We do NOT extend the TTL on
-// BroadcastTimeoutError here (unlike orcid's A.1) — bridge writes carry a
-// deterministic permlink under a single bridge account, and the 502/504
-// envelope already includes verify_before_retry so the client knows not to
-// retry blindly. If duplicate-broadcast-after-timeout becomes a measured
-// problem, port the A.1 lock-TTL extension separately.
+// broadcast does not lose its lock mid-flight. The TTL is NOT extended on
+// BroadcastTimeoutError here (unlike the ORCID lock's timeout-extension
+// path) — bridge writes carry a deterministic permlink under a single
+// bridge account, and the 502/504 envelope already includes
+// verify_before_retry so the client knows not to retry blindly. If
+// duplicate-broadcast-after-timeout becomes a measured problem, port the
+// ORCID lock-TTL extension behavior separately.
 const BRIDGE_LOCK_TTL_SECONDS = 35;
 const BRIDGE_LOCK_NONCE_RE = /^[0-9a-f]{32}$/;
 const BRIDGE_RELEASE_LOCK_LUA = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`;
@@ -93,8 +94,8 @@ async function acquireBridgeLock(lockKey: string): Promise<BridgeLockState> {
 
 // Lua CAS returns 1 when the stored nonce matched and DEL fired, 0 when the
 // key was absent or held a different nonce (TTL expired and a sibling
-// re-acquired). Round-2 hold item #7: surface the 0-return as a structured
-// warn so operators see TTL-exceeded cascades (the broadcast outlasted the
+// re-acquired). The 0-return is surfaced as a structured warn so operators
+// can detect TTL-exceeded broadcast cascades (the broadcast outlasted the
 // lock TTL — likely under load, slow Hive node, or external API stall). The
 // `wallClockMs` field lets the dashboard correlate against
 // BRIDGE_LOCK_TTL_SECONDS without rebuilding the timeline from logs.
@@ -201,19 +202,20 @@ type BridgeCheckResult =
 
 async function checkExistingBridge(
   identifier: string,
-  // Round-3 hold item #3: required (not optional). Both callers always pass
-  // the result of `resolveToCanonical`, and a required positional precedes the
-  // required `callerLabel` below, so the parameter list parses cleanly under
+  // Required (not optional). Both callers always pass the result of
+  // `resolveToCanonical`, and this required positional precedes the required
+  // `callerLabel` parameter, so the parameter list parses cleanly under
   // strict TS. Defensive null-handling stays in place via the `??` fallback.
   resolvedParsed: { type: 'arxiv' | 'doi'; id: string } | null,
-  // Round-2 hold item #4: thread the caller label so the HAF-failure warn log
-  // emits route: 'bridge.check' when called from /check and route:
+  // Caller label threads into the HAF-failure warn log so it emits
+  // route: 'bridge.check' when called from /check and route:
   // 'bridge.register' when called from /register. Without this, the
   // route-keyed operator-dashboard filter on `route: 'bridge.register'`
-  // false-alerts on every /check HAF blip. Round-3 hold item #3: no default
-  // value — the literal-union forces every new call site to pick a label
-  // explicitly so a future caller can't silently inherit 'bridge.register'
-  // and reintroduce the false-alert this parameter was added to prevent.
+  // false-alerts on every /check HAF blip. The literal-union type is
+  // required with no default — that forces every new call site to pick a
+  // label explicitly so a future caller can't silently inherit
+  // 'bridge.register' and reintroduce the false-alert this parameter was
+  // added to prevent.
   callerLabel: 'bridge.register' | 'bridge.check',
 ): Promise<BridgeCheckResult> {
   const parsed = resolvedParsed ?? parseIdentifier(identifier);
@@ -265,11 +267,11 @@ async function checkExistingBridge(
       }
     }
   } catch (err) {
-    // BE-BRIDGE-WRITE-HAF-LAG fail-closed signal. The /register route handler
-    // converts this to 503 + {retriable: true} so a HAF outage can't license a
-    // duplicate broadcast. /check (read-only) preserves the prior fail-open
-    // behavior by mapping the signal back to {exists: false}. The event field
-    // is parameterized on callerLabel so operator dashboards filtering on
+    // Fail-closed signal for /register. The route handler converts this to
+    // 503 + {retriable: true} so a HAF outage can't license a duplicate
+    // broadcast. /check (read-only) preserves the prior fail-open behavior
+    // by mapping the signal back to {exists: false}. The event field is
+    // parameterized on callerLabel so operator dashboards filtering on
     // `route: 'bridge.register'` don't false-alert on /check HAF blips.
     logger.warn(
       { err, identifier, permlink, event: `${callerLabel}.haf_check_failed`, route: callerLabel },
@@ -298,13 +300,13 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier — try pasting a DOI or arXiv ID directly');
     }
 
-    // Round-2 hold item #2: resolve checkExistingBridge OUTSIDE getOrSet so
-    // the haf_unavailable sentinel never lands in the 30s cache. QueryCache
-    // caches any non-null object; the prior `hafCache.getOrSet(...,
-    // checkExistingBridge, 30_000)` poisoned subsequent /check calls with
-    // `{exists: false}` for up to 30s after HAF recovered in 1-2s. We now
-    // probe the cache for the ok shape only and write through only the ok
-    // shape; haf_unavailable bypasses the cache entirely.
+    // Resolve checkExistingBridge OUTSIDE getOrSet so the haf_unavailable
+    // sentinel never lands in the 30s cache. QueryCache caches any non-null
+    // object; the prior `hafCache.getOrSet(..., checkExistingBridge, 30_000)`
+    // poisoned subsequent /check calls with `{exists: false}` for up to 30s
+    // after HAF recovered in 1-2s. The cache is now probed for the ok shape
+    // only and writes through only the ok shape; haf_unavailable bypasses
+    // the cache entirely.
     const cacheKey = `bridge-check:${parsed.type}:${parsed.id}`;
     type OkShape = Extract<BridgeCheckResult, { status: 'ok' }>;
     let result: BridgeCheckResult;
@@ -321,9 +323,9 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
     // exists=false (the legacy shape) so the UI doesn't pop a 503 banner on
     // every preprint-resolve. The fail-closed policy is intentionally only on
     // /register where the consequence of a bad answer is a duplicate
-    // broadcast. Round-2 hold item #3: assertNever guards the discriminated
-    // union so a future 3rd variant compiles into a build error rather than
-    // silently falling through to the ok branch.
+    // broadcast. The `assertNever` call guards the `BridgeCheckResult`
+    // discriminated union so a future 3rd variant compiles into a build
+    // error rather than silently falling through to the ok branch.
     if (result.status === 'haf_unavailable') {
       sendOk(res, { exists: false, author: null, permlink: null, title: null, created: null });
     } else if (result.status === 'ok') {
@@ -385,13 +387,14 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier — try pasting a DOI or arXiv ID directly');
   }
 
-  // Round-2 hold item #6: hoist lookupPreprint OUT of the lock critical
-  // section. CrossRef (15s timeout) + PubMed (15s) + DOI scrape (10s) on top
-  // of the broadcast (~30s) can push wall-clock past the 35s lock TTL,
-  // causing the lock to expire mid-flight and a sibling to re-acquire under
-  // a new nonce. The lookup is a pure external metadata fetch with no chain
-  // state, so it does not need lock protection; after the hoist the in-lock
-  // wall-clock is HAF query (~100ms) + broadcast (~30s), comfortably under
+  // `lookupPreprint` is intentionally invoked OUTSIDE the per-permlink lock
+  // critical section. CrossRef (15s timeout) + PubMed (15s) + DOI scrape
+  // (10s) on top of the broadcast (~30s) would push wall-clock past the 35s
+  // lock TTL, causing the lock to expire mid-flight and a sibling to
+  // re-acquire under a new nonce. The lookup is a pure external metadata
+  // fetch with no chain state, so it does not need lock protection; keeping
+  // it out of the critical section bounds the in-lock wall-clock to HAF
+  // query (~100ms) + broadcast (~30s), comfortably under
   // BRIDGE_LOCK_TTL_SECONDS.
   let meta;
   try {
@@ -407,21 +410,22 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     return sendError(res, 400, 'BAD_REQUEST', 'No preprint found for the given identifier');
   }
 
-  // BE-BRIDGE-WRITE-HAF-LAG: claim the per-permlink lock BEFORE the HAF
-  // duplicate-check so two concurrent /register calls for the same identifier
-  // serialize on Redis (loser gets 409 LOCK_HELD). The lock spans the entire
-  // read-then-broadcast window and is released in finally on every exit
-  // path. On Redis outage we degrade to the unlocked path (the prior shape)
-  // so a Redis flap can't 503 every registration.
+  // Claim the per-permlink lock BEFORE the HAF duplicate-check so two
+  // concurrent /register calls for the same identifier serialize on Redis
+  // (loser gets 409 LOCK_HELD). The lock spans the entire read-then-broadcast
+  // window and is released in finally on every exit path. On Redis outage
+  // the handler degrades to the unlocked path so a Redis flap can't 503
+  // every registration.
   const permlink = bridgePermlink(parsed);
   const lockKey = bridgeRegisterLockKey(permlink);
   const lockState = await acquireBridgeLock(lockKey);
   if (lockState.state === 'held') {
-    // Round-2 hold item #1: 409 LOCK_HELD (NOT DUPLICATE). Discriminates
-    // from the existing-duplicate 409 below so SPA / integrators can switch
-    // on err.code without parsing the message string. LOCK_HELD is
-    // retriable (the other request will land on chain and the next attempt
-    // will hit the DUPLICATE path); existing-duplicate is terminal.
+    // 409 LOCK_HELD (NOT DUPLICATE). Discriminates from the existing-
+    // duplicate 409 emitted on `BridgeCheckResult.exists === true` so SPA /
+    // integrators can switch on err.code without parsing the message string.
+    // LOCK_HELD is retriable (the other request will land on chain and the
+    // next attempt will hit the DUPLICATE path); existing-duplicate is
+    // terminal.
     return sendError(
       res,
       409,
@@ -455,8 +459,8 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
         );
       }
     } else {
-      // Round-2 hold item #3: exhaustiveness guard on BridgeCheckResult so a
-      // future variant becomes a compile error instead of silently falling
+      // `assertNever` is the exhaustiveness guard on `BridgeCheckResult` so
+      // a future variant becomes a compile error instead of silently falling
       // through to broadcast.
       return assertNever(existing);
     }
@@ -476,21 +480,21 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
       permlink,
     );
 
-    // Per-attempt audit-log signal (BACKEND-BROADCAST-ATTEMPT-HELPER-
-    // EXTRACTION). Same pattern as `custody.broadcast.attempt` — fires on
-    // EVERY broadcast attempt (success/failure/timeout) so operators can
-    // correlate retry-amplification. The shared `makeLogBroadcastAttempt`
-    // factory enforces level-dispatch + spread-after-literal symmetry with
-    // the custody site; only the event-label literal differs.
+    // Per-attempt audit-log signal. Same pattern as
+    // `custody.broadcast.attempt` — fires on EVERY broadcast attempt
+    // (success/failure/timeout) so operators can correlate
+    // retry-amplification. The shared `makeLogBroadcastAttempt` factory
+    // enforces level-dispatch + spread-after-literal symmetry with the
+    // custody site; only the event-label literal differs.
     //
     // `attempt_n` is INTENTIONALLY OMITTED here, same rationale as the
-    // custody site. The idempotency layer landed (HAF dedup + tx_id replay
-    // short-circuit), but that arc did NOT add a per-attempt counter. A
-    // hardcoded `attempt_n: 1` would silently report "no retries" to
-    // dashboards keyed on the field for retry-amplification alerts, masking
-    // the very signal the alert exists to surface. The slot stays absent
-    // until a per-key counter mechanism exists; alerts fire on missing-field
-    // rather than reading a constant 1 as ground truth.
+    // custody site. The idempotency layer (HAF dedup + tx_id replay
+    // short-circuit) does NOT include a per-attempt counter. A hardcoded
+    // `attempt_n: 1` would silently report "no retries" to dashboards keyed
+    // on the field for retry-amplification alerts, masking the very signal
+    // the alert exists to surface. The slot stays absent until a per-key
+    // counter mechanism exists; alerts fire on missing-field rather than
+    // reading a constant 1 as ground truth.
     const op_types = ['comment', 'comment_options'];
     const op_count = op_types.length;
     const logBroadcastAttempt = makeLogBroadcastAttempt(
@@ -507,17 +511,14 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     );
 
     try {
-      // Use the boot-cached parsed key. `assertBridgeKeyConfigured` above
-      // already returned 503 if the WIF env var is unset, so the cache is
-      // guaranteed populated when we reach here. Round-3 hold #6
-      // (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT) replaced
-      // the prior non-null assertion `getCachedBridgePostingKey()!` with
-      // the `getRequiredBridgePostingKey()` accessor that throws a
-      // structured `BridgeKeyCacheUnpopulated` error if the cache is null.
-      // The throw is unreachable on the happy path; it surfaces as a
-      // recognizable shape (instead of a silent `null!.toString()`
-      // TypeError) if a future change ever desyncs the cache from the
-      // config-truthiness check.
+      // Use the boot-cached parsed key. `assertBridgeKeyConfigured` already
+      // returned 503 earlier in the handler if the WIF env var is unset, so
+      // the cache is guaranteed populated when we reach here. The
+      // `getRequiredBridgePostingKey()` accessor throws a structured
+      // `BridgeKeyCacheUnpopulated` error if the cache is null. The throw is
+      // unreachable on the happy path; it surfaces as a recognizable shape
+      // (instead of a silent `null!.toString()` TypeError) if a future
+      // change ever desyncs the cache from the config-truthiness check.
       const key = getRequiredBridgePostingKey();
       const result = await broadcastSendOperationsWithTimeout(
         [
