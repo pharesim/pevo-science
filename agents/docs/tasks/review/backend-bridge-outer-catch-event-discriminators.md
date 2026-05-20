@@ -54,7 +54,7 @@ The pre-existing `bridge.ts` file already discriminated four sites with `event:`
 | Broadcast rejection (502 BROADCAST_FAILED) | inner broadcast catch → `handleBroadcastError` | helper | error | `broadcast_failed` | pre-existing (from `lib/broadcast-error.ts`) |
 | Post-broadcast write-failure (cascade throw — bridge route has no post-broadcast DB cascade, so this class is unreachable for `/register`; documented for parity with orcid.ts) | n/a in bridge | n/a | error | `post_broadcast_write_failed` | n/a for bridge (orcid surface only) |
 | **`BridgeKeyCacheUnpopulated` (key-cache desync, pre-broadcast SYNC throw at `getRequiredBridgePostingKey()`)** | inner broadcast catch, precursor log before `handleBroadcastError` delegation | `/register` broadcast catch | error | `bridge.register.bridge_key_cache_unpopulated` | **NEW** |
-| **Outer-catch fallthrough — pre-broadcast SYNC throws inside the lock-acquired body** (`buildBridgeBody` / `buildBridgeMetadata` rejecting malformed metadata, `assertNever` firing on a future `BridgeCheckResult` variant drift, or any other throw escaping `checkExistingBridge`'s internal HAF catch) | new outer catch on the lock-acquired `try { ... } finally { ... }` | `/register` outer catch | error | `bridge.register.pre_broadcast_internal_error` | **NEW** |
+| **Outer-catch fallthrough — unexpected throws inside the lock-acquired body** (in current code only pre-broadcast sync throws reach this point: `buildBridgeBody` / `buildBridgeMetadata` rejecting malformed metadata, `assertNever` firing on a future `BridgeCheckResult` variant drift, or any other throw escaping `checkExistingBridge`'s internal HAF catch — the inner broadcast catch absorbs all broadcast-class throws). The coarse `.internal_error` tier matches the structural scope of the catch (full lock-acquired body) per the event-label-granularity-tier convention. | new outer catch on the lock-acquired `try { ... } finally { ... }` | `/register` outer catch | error | `bridge.register.internal_error` | **NEW** |
 | Lock release CAS no-op (TTL expired or sibling re-acquired) | `releaseBridgeLock` Lua-CAS branch | helper | warn | `bridge.lock.release_no_op` | pre-existing |
 | Lock release Redis throw | `releaseBridgeLock` catch | helper | warn | `bridge.lock.release_failed` | pre-existing |
 
@@ -67,12 +67,12 @@ The new event tags align with the established orcid.ts taxonomy:
 | orcid.ts call site (anchor) | bridge.ts equivalent | Pattern aligned |
 |---|---|---|
 | `event:'orcid.binding_lock.contention_held'` (warn) at SETNX-loser site `withOrcidBindingLock` | `event:'bridge.register.lock_contention_held'` (warn) at `lockState.state === 'held'` branch | Real-time contention signal on the 409 wire outcome; warn-level (not error — the wire shape is the normal retry-friendly response, not an operator-paging incident) |
-| `event:'orcid.callback.failed'` (error) at outer-catch fallthrough of the OAuth callback dispatch | `event:'bridge.register.pre_broadcast_internal_error'` (error) at outer-catch on the lock-acquired body | Route-specific outer-catch discriminator; emits 500 INTERNAL_ERROR with the same wire shape Express's default `middleware/errorHandler.ts` would have emitted, but with a route-discriminated `event:` field |
+| `event:'orcid.callback.failed'` (error) at outer-catch fallthrough of the OAuth callback dispatch | `event:'bridge.register.internal_error'` (error) at outer-catch on the lock-acquired body | Route-specific outer-catch discriminator; emits 500 INTERNAL_ERROR with the same wire shape Express's default `middleware/errorHandler.ts` would have emitted, but with a route-discriminated `event:` field. Same coarse `.internal_error` / `.failed` tier on both sides — the structural scope of each catch is broad (full handler body), and the convention forbids specific qualifiers on broad catches. |
 | `event:'orcid.callback.token_exchange_failed'` (error) at pre-broadcast external-service throw | `event:'bridge.register.bridge_key_cache_unpopulated'` (error) precursor on the broadcast catch path | Pre-broadcast SYNC-throw discriminator; emits BEFORE delegating to the downstream broadcast-error helper so dashboards can filter on the precise failure class without parsing the helper's fall-through `event:'broadcast_failed'` |
 | `event:'orcid.callback.provider_timeout'` (error) at external-provider timeout discriminator BEFORE generic outer-catch | `event:'bridge.register.haf_check_failed'` (warn) at HAF duplicate-check throw (existing) | External-dependency-specific discriminator emitted ahead of the generic fallthrough |
 | `event:'broadcast_timeout'` / `'broadcast_failed'` / `'post_broadcast_write_failed'` (from shared `lib/broadcast-error.ts`) | same shared helper | Both routes funnel broadcast-class throws through the shared helper — no per-route divergence on the broadcast taxonomy |
 
-The `pre_broadcast_internal_error` outer-catch is the route-level analogue of orcid.ts's `orcid.callback.failed` generic-fallthrough catch: a strictly narrower discriminator than what the default `errorHandler.ts` would emit (which is event-less). It preserves the wire shape (500 INTERNAL_ERROR) so operator dashboards see a route-keyed event without any HTTP-response observable change.
+The `bridge.register.internal_error` outer-catch is the route-level analogue of orcid.ts's `orcid.callback.failed` generic-fallthrough catch: a strictly narrower discriminator than what the default `errorHandler.ts` would emit (which is event-less). It preserves the wire shape (500 INTERNAL_ERROR) so operator dashboards see a route-keyed event without any HTTP-response observable change.
 
 ### Scoped vitest pass output
 
@@ -92,13 +92,15 @@ Result:
 Three new specs landed (one in `bridge-haf-lag-locks.test.ts`, two in `bridge.test.ts`):
 
 - `bridge-haf-lag-locks.test.ts`: extended the existing two-concurrent-`/register` spec to assert the new `bridge.register.lock_contention_held` warn fires with route / identifier / username / permlink context.
-- `bridge.test.ts` (under the `BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS` describe block): new spec for `bridge.register.pre_broadcast_internal_error` (forced via a `buildBridgeBody` mock-throw); new spec for `bridge.register.bridge_key_cache_unpopulated` (forced by mocking `broadcastSendOperationsWithTimeout` to throw `BridgeKeyCacheUnpopulated`). Both specs pin the wire shape (500 INTERNAL_ERROR; 502 BROADCAST_FAILED) so a future refactor that changes the response status is a separate, intentional behavioral change.
+- `bridge.test.ts` (under the `BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS` describe block): new spec for `bridge.register.internal_error` (forced via a `buildBridgeBody` mock-throw); new spec for `bridge.register.bridge_key_cache_unpopulated` (forced by mocking `broadcastSendOperationsWithTimeout` to throw `BridgeKeyCacheUnpopulated`). Both specs pin the wire shape (500 INTERNAL_ERROR; 502 BROADCAST_FAILED) so a future refactor that changes the response status is a separate, intentional behavioral change.
 
 ### Behavioral-changes audit
 
 - Same HTTP status codes for every covered failure class (`200`, `400`, `403`, `409 LOCK_HELD`, `409 DUPLICATE`, `502 BROADCAST_FAILED`, `503 SERVICE_UNAVAILABLE`, `504 BROADCAST_TIMEOUT`, `500 INTERNAL_ERROR`).
 - Same broadcasts (no change to `broadcastSendOperationsWithTimeout` call site or operation list).
 - Only log-structure changes: three new structured `event:` discriminators emitted alongside (not in place of) any existing log entry. The `BridgeKeyCacheUnpopulated` discriminator is a PRECURSOR log; the helper's downstream `event:'broadcast_failed'` entry still fires (operator dashboards filter on the precursor, the downstream entry stays as redundant context).
+- `error.message` on the new outer-catch path changes from `'Internal server error'` (Express default via `middleware/errorHandler.ts`) to `'Failed to register bridge paper'`, matching the route-specific message convention established by `orcid.ts`'s `orcid.callback.failed` outer-catch. Status (`500`), code (`'INTERNAL_ERROR'`), and envelope shape (`{status:'error',error:{code,message}}`) are identical; the SPA switches on `code`, so client-visible impact is zero. Code stays as-is — the route-specific message is the established convention, not a deviation.
+- `/register` pre-broadcast sync throws no longer route through `middleware/errorHandler.ts`'s message-keyed `'Unhandled error'` log; the count migrates to the new route-discriminated `event:'bridge.register.internal_error'` bucket. Operator dashboards keyed on the backend-wide `'Unhandled error'` counter will see the `/register` share drop accordingly. Intentional — this is the discrimination the new event tag exists to provide.
 
 ## Architect re-review (2026-05-20) — HELD PENDING FIXES
 
@@ -144,3 +146,33 @@ Three new specs landed (one in `bridge-haf-lag-locks.test.ts`, two in `bridge.te
 ### Scope of the re-review pass on the held set
 
 After landing the five items above, mv this task back to `tasks/review/`. The re-review pass will be scoped to the new commits since this hold block; the prior review of the outer-catch implementation does not need re-running.
+
+## Backend re-review signal (2026-05-20, round 1 fixes)
+
+All five hold-block items landed. Itemized correspondence:
+
+- **Item 1** — Extended the `bridge.test.ts` JSDoc file header with a dedicated `buildBridgeBody` carve-out justification paragraph (clause a): names the failure class the mock isolates (outer-catch event-discriminator spec), explains why the real-handler-throw path is impractical (would require crafting a malformed-input fixture that survives `parseIdentifier` and `lookupPreprint` validation but trips body construction — indirect and brittle), and notes the mock defaults to the real implementation so unrelated specs are unaffected. The header also makes explicit that `verifyHiveSignature` stays real so this file's auth focus is preserved.
+- **Item 2** — Same file header block cites `backend/tests/routes/bridge-haf-lag-locks.test.ts` as the clause-(c) real-path companion (signed-request integration against the real `verifyHiveSignature` middleware covering broadcast-side and lock-side mutation classes). The companion satisfies the clause-c criterion of exercising the integrated path with real infrastructure so a different mutation class is caught.
+- **Item 3** — Renamed `bridge.register.pre_broadcast_internal_error` → `bridge.register.internal_error` in:
+  - `backend/src/routes/bridge.ts` outer-catch event literal + the surrounding comment block (added a paragraph justifying the coarse `.internal_error` tier as the structural-scope match per the event-label-granularity-tier convention).
+  - `backend/tests/routes/bridge.test.ts` spec name, assertion target, error message, and the surrounding describe-block comment (added the convention justification inline).
+  - Both signal-block tables above (failure-class taxonomy row and the orcid.ts cross-reference row).
+  - The "Three new specs landed" bullet list above.
+  - The "outer-catch is the route-level analogue of orcid.ts's…" paragraph below the cross-reference table.
+- **Item 4** — Appended an `error.message` bullet to the "Behavioral-changes audit" section: the new outer-catch path emits `'Failed to register bridge paper'` instead of the Express default `'Internal server error'`. Status, code, and envelope shape stay identical; SPA switches on `code`, so client-visible impact is zero. Per the orcid.ts precedent on `orcid.callback.failed`, the route-specific message is the established convention.
+- **Item 5** — Appended an `'Unhandled error'` log-routing bullet to the same audit section: `/register` pre-broadcast sync throws no longer route through `middleware/errorHandler.ts`'s message-keyed `'Unhandled error'` log; the count migrates to the new route-discriminated `event:'bridge.register.internal_error'` bucket — intentional, this is the discrimination the new event tag provides.
+
+### Scoped vitest pass output (re-run after Item 3 rename)
+
+```
+npx vitest run tests/routes/bridge.test.ts tests/routes/bridge-haf-lag-locks.test.ts tests/routes/bridge-paper-author-gate.test.ts
+```
+
+```
+ Test Files  3 passed (3)
+      Tests  35 passed (35)
+```
+
+Test count identical to the prior signal block — the rename touched only event-tag string literals on the same specs, no spec additions or removals. The spec previously asserting `bridge.register.pre_broadcast_internal_error` now asserts `bridge.register.internal_error` and passes; no other spec referenced the old literal.
+
+Backend typecheck (`npm run typecheck`, both src and tests passes) and lint (`npm run lint`) clean on the modified files. The single pre-existing lint warning (`backend/src/lib/author-supersession.ts:69` unused eslint-disable directive) is unrelated to this task.

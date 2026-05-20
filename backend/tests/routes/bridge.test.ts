@@ -14,6 +14,30 @@
  * Seeding an accreditation row means broadcasting an `issue_accreditation`
  * custom_json on Hive and waiting for HAF to index it. That's impractical
  * per-test when we only care about exercising the 503 misconfig guard.
+ *
+ * Justification for the `buildBridgeBody` mock (per root CLAUDE.md carve-out
+ * clause a): the outer-catch event-discriminator spec needs `buildBridgeBody`
+ * to throw a synthetic exception inside the lock-acquired body so the new
+ * route-level outer try/catch is reached. Forcing the throw from a real
+ * handler call would require crafting a malformed-input fixture that
+ * survives the upstream `parseIdentifier` and `lookupPreprint` validation
+ * but trips body construction — an indirect, brittle path that couples the
+ * spec to internal validation order. Mocking the helper as a thin
+ * pass-through (defaults to the real implementation; only the one spec
+ * overrides it with `mockImplementationOnce`) is the deterministic surface
+ * for that single failure class. The mock does NOT replace
+ * `verifyHiveSignature` — requests are signed end-to-end against the real
+ * middleware, so this file's auth focus is preserved.
+ *
+ * Real-path companion (carve-out clause c) for the `buildBridgeBody` mock:
+ * `backend/tests/routes/bridge-haf-lag-locks.test.ts` — it exercises the
+ * integrated `/register` path with real Hive-signed requests against the
+ * real `verifyHiveSignature` middleware, covering broadcast-side and
+ * lock-side mutation classes (concurrent SETNX contention, HAF-503
+ * fail-closed, lock TTL self-cleanup) under deterministic conditions. The
+ * companion satisfies the clause-c criterion of exercising the integrated
+ * path with real infrastructure so a different mutation class is caught;
+ * it does not assert the same thing the mocked outer-catch spec asserts.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -582,12 +606,15 @@ describe('BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS — catch-block log sh
     expect(ctx.err).toBeInstanceOf(Error);
   });
 
-  // Outer-catch / pre-broadcast SYNC throw discriminator. Forces buildBridgeBody
-  // (re-exported via the bridge module mock as a thin pass-through) to throw,
-  // exercising the new outer try/catch that emits
-  // event:'bridge.register.pre_broadcast_internal_error' instead of letting the
-  // throw default to middleware/errorHandler.ts's event-less 500.
-  it('POST /api/bridge/register: buildBridgeBody throw → event:bridge.register.pre_broadcast_internal_error with route, identifier, username, permlink', async () => {
+  // Outer-catch discriminator. Forces buildBridgeBody (re-exported via the
+  // bridge module mock as a thin pass-through) to throw, exercising the new
+  // outer try/catch that emits event:'bridge.register.internal_error'
+  // instead of letting the throw default to middleware/errorHandler.ts's
+  // event-less 500. The tag uses the coarse `.internal_error` tier per the
+  // event-label-granularity-tier convention — the catch wraps the full
+  // lock-acquired body, so a specific pre-broadcast qualifier would
+  // misclassify on any future refactor that narrows the inner-catch scope.
+  it('POST /api/bridge/register: buildBridgeBody throw → event:bridge.register.internal_error with route, identifier, username, permlink', async () => {
     (bridgeMod.buildBridgeBody as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
       throw new Error('synthetic body-construction failure');
     });
@@ -600,9 +627,9 @@ describe('BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS — catch-block log sh
 
     const matchingCall = errorSpy.mock.calls.find((call: unknown[]) => {
       const ctx = call[0] as Record<string, unknown> | undefined;
-      return ctx?.event === 'bridge.register.pre_broadcast_internal_error';
+      return ctx?.event === 'bridge.register.internal_error';
     });
-    expect(matchingCall, 'expected error log with event=bridge.register.pre_broadcast_internal_error').toBeDefined();
+    expect(matchingCall, 'expected error log with event=bridge.register.internal_error').toBeDefined();
     const ctx = matchingCall![0] as Record<string, unknown>;
     expect(ctx.route).toBe('bridge.register');
     expect(ctx.identifier).toBe('2301.12345');

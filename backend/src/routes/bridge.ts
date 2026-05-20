@@ -639,15 +639,17 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
       });
     }
   } catch (err) {
-    // Outer-catch for pre-broadcast SYNC throws inside the lock-acquired
-    // body: `buildBridgeBody` / `buildBridgeMetadata` rejecting malformed
-    // metadata, `assertNever` firing on a discriminated-union drift, or any
-    // other unexpected throw that escapes `checkExistingBridge`'s internal
-    // HAF catch. Without this catch, Express 5 routes the async rejection
-    // to `middleware/errorHandler.ts`, which emits an `event:`-less 500 —
-    // operator dashboards lose the route discriminator. Tagging it here as
-    // `bridge.register.pre_broadcast_internal_error` distinguishes this
-    // class from:
+    // Outer-catch for unexpected throws inside the lock-acquired body. In
+    // current code the inner broadcast catch absorbs all broadcast-class
+    // throws, so the failure classes that actually reach here are the
+    // pre-broadcast sync ones (`buildBridgeBody` / `buildBridgeMetadata`
+    // rejecting malformed metadata, `assertNever` firing on a discriminated-
+    // union drift, or any other unexpected throw that escapes
+    // `checkExistingBridge`'s internal HAF catch). Without this catch,
+    // Express 5 routes the async rejection to `middleware/errorHandler.ts`,
+    // which emits an `event:`-less 500 — operator dashboards lose the route
+    // discriminator. Tagging it here as `bridge.register.internal_error`
+    // distinguishes this class from:
     //   * broadcast timeout / rejection (handled by `handleBroadcastError`
     //     with `event:'broadcast_timeout'` / `'broadcast_failed'`)
     //   * key-cache desync at the broadcast site (precursor
@@ -657,11 +659,17 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     //     `checkExistingBridge` with `event:'bridge.register.haf_check_failed'`)
     //   * identifier resolution / metadata fetch throw before the lock
     //     (separate inner catches above with their own event tags)
-    // The wire shape (500 INTERNAL_ERROR) matches what the default
-    // `errorHandler` would have emitted — no behavioral change, just a
-    // route-specific event discriminator. Mirrors the
-    // `event:'orcid.callback.failed'` outer-catch in routes/orcid.ts which
-    // serves the same purpose for the ORCID OAuth callback dispatch.
+    // The tag uses the coarse `.internal_error` tier rather than a
+    // specific qualifier because the structural scope of this catch is
+    // broad (the full lock-acquired body, including the inner broadcast
+    // try/catch). A specific qualifier would silently misclassify if a
+    // future refactor narrows the inner-catch coverage. The wire shape
+    // (500 INTERNAL_ERROR) matches what the default `errorHandler` would
+    // have emitted; `error.message` is the route-specific
+    // 'Failed to register bridge paper' per the orcid.ts precedent.
+    // Mirrors the `event:'orcid.callback.failed'` outer-catch in
+    // routes/orcid.ts which serves the same purpose for the ORCID OAuth
+    // callback dispatch (same coarse tier on the same structural scope).
     logger.error(
       {
         err,
@@ -669,9 +677,9 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
         identifier,
         username,
         permlink,
-        event: 'bridge.register.pre_broadcast_internal_error',
+        event: 'bridge.register.internal_error',
       },
-      'bridge /register pre-broadcast unexpected throw — defaulted to 500',
+      'bridge /register unexpected throw — defaulted to 500',
     );
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to register bridge paper');
   } finally {
