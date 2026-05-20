@@ -298,3 +298,37 @@ Re-read the diff against all rot patterns in root CLAUDE.md "Comment anchors":
 - `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **50/52 pass**. The 2 failures (`concurrent retries claim slots atomically — exactly cap broadcasts fire under cap+1 parallel /verify calls`, expected counter 4 received 2; `pre-INCR redis.eval rejection surfaces 503` 502-vs-503 flake) both reproduce on `git stash` (HEAD pre-edit) state, so neither is introduced by this commit. The 503-vs-502 flake is the previously-documented pre-existing failure; the concurrent-broadcast counter shortfall is environment-load-dependent (only `cap` of the cap+1 parallel /verify supertests claimed their pre-INCR slot within the 5s polling window).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` on round-3 commit `71b449b2` confirms the 4 architect-cited partial-strip residuals + 4 holistically-surfaced sites all landed cleanly. Self-audit grep returns zero real rot. However, the cluster-review's maintainability-persona pass surfaced 2 new "above" relative positional anchors introduced by the round-3 sweep itself. **These anchors were prescribed verbatim by the round-2 hold-block's suggested fixes** — making this a hold-block-must-not-contradict-convention-docs incident (per `agents/docs/solutions/conventions/hold-block-must-not-contradict-convention-docs-2026-04-22.md`): the previous hold's prescriptions contradicted the docblock-anchor convention at `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`, which prohibits relative positional anchors because they silently drift on test insertion.
+
+The self-audit clause at `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` was just broadened (this round-4 hold-block lands alongside that doc edit) to explicitly enumerate `above`/`below`/`next test`/`previous test`/relative positional anchors as in-scope rot. The broadened acceptance grep below applies the broadened enumeration.
+
+### Items
+
+1. **`backend/tests/routes/accreditation.test.ts` ~L884-887** — the `Same seed + broadcast-throws-timeout setup as the throws-branch spec above, but exercises the `enqueued_for_drain` degraded-return branch instead of the catch-around-decrement throw branch.` comment. The "above" relative anchor drifts on test insertion. The trailing clause already names the differentiating branch by behavior (`catch-around-decrement throw branch`) — that named branch is the stable anchor. **Fix:** rewrite to drop "above" and let the named-branch antecedent carry, e.g., `Same seed + broadcast-throws-timeout setup as the catch-around-decrement throw-branch sibling spec, but exercises the `enqueued_for_drain` degraded-return branch.` (one named anchor, no relative positional language).
+
+2. **`backend/tests/routes/accreditation.test.ts` ~L1117-1119** — the `Mirrors the decrementBroadcastAttempts Redis-unavailable warn spec above.` comment. Same class. The it-title at L1059 (`decrementBroadcastAttempts emits Redis-unavailable warn and returns without touching in-memory map or redis.decr when isRedisAvailable() returns false mid-request`) is a stable identifier — anchor on the it-title or on the behavioral pattern (isRedisAvailable() mock driving the Redis-unavailable warn path) rather than position. **Fix:** rewrite to e.g., `Mirrors the `decrementBroadcastAttempts emits Redis-unavailable warn` sibling spec — the same isRedisAvailable() mock pattern driving the Redis-unavailable warn path, applied to the increment-side helper.`
+
+### Acceptance for re-review
+
+- **Broadened acceptance grep (verbatim in signal block, not prose-claimed):**
+  ```
+  grep -inoE "(round[- ]?[0-9]|hold #|BE-[A-Z_-]+|BACKEND-[A-Z_-]+|F[0-9]+[: ]|\babove\b|\bbelow\b|\bnext test\b|\bprevious test\b)" \
+    backend/src/routes/accreditation.ts \
+    backend/tests/routes/accreditation.test.ts \
+    backend/tests/routes/accreditation-idempotency.test.ts
+  ```
+  Acceptable surviving hits: durable `probe-{before,after,then}-INCR` substring matches of `be-`, and `\babove\b` hits only when they appear inside string-literal log-message content or other operator-visible discriminator strings (not in code comments). Every `above`/`below` hit in a comment must be replaced with a named-symbol anchor (it-title, branch name, helper symbol, or behavioral antecedent) — the verbatim grep output in the signal block lets the architect verify this directly without re-running the grep at intake.
+- **Eyeball-pass scope expansion**: re-read the file's comment surface for any other relative positional anchors (`above`, `below`, `next test`, `previous test`, `the spec just above`, `see also above`, etc.) in comments. The round-3 holistic re-read caught partial-strip residuals (orphan letters, dangling determiners) but did not look for relative positional anchors because the round-3 hold-block's enumeration didn't include them. The round-4 re-read scope is broadened to include them per the broadened self-audit-clause enumeration.
+- **Self-audit per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` (broadened)**: the suggested-fix replacements must not themselves introduce new round-N markers, slug citations, line-number anchors, SHA refs, date anchors, partial-strip stubs, orphan single-letter prefixes, dangling determiners, bare possessives, dangling prepositions, OR relative positional anchors.
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides per CLAUDE.md "Running Tests". The pre-existing failure set (SMTP environment, pre-INCR redis.eval 502-vs-503 flake, concurrent-broadcast counter shortfall) may continue to fail; not regressions.
+
+### Out of scope (already declared in task scope)
+
+- The 2 pre-existing line-number anchors at `backend/tests/routes/accreditation.test.ts` ~L326 (`lib/broadcast-error.ts:399`) and ~L1448 (`accreditation.ts:901`). These violate `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` but are noted as out-of-scope in this task's existing "Out of scope" carve-out (they belong to a sibling sweep cycle).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
