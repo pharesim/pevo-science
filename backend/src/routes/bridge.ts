@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import crypto from 'crypto';
 import { getRequiredBridgePostingKey, BridgeKeyCacheUnpopulated } from '../startup-checks.js';
 import { getPool, isHafConfigured } from '../db.js';
@@ -150,20 +150,43 @@ const lookupLimiter = rateLimit({ name: 'bridge-lookup', windowMs: 60_000, max: 
 // Consume-on-success-only: `/register` emits TWO retriable-true error shapes
 // (409 LOCK_HELD when a sibling request holds the per-permlink lock; 503
 // SERVICE_UNAVAILABLE when the HAF duplicate-check throws under transient
-// outage) plus the usual 4xx surface (400 bad identifier, 403 not
-// accredited, 400 unresolvable, 409 DUPLICATE existing). Without this flag,
-// a SPA auto-retry loop on `details.retriable` burns the per-IP 10/hour
-// budget during a single LOCK_HELD cascade or HAF outage event; the
-// originating IP then 429s legitimate registrations for the remainder of
-// the rolling window. Per `RateLimitConfig.skipFailedRequests` JSDoc the
-// refund branch keys on ANY `res.statusCode >= 400` (4xx AND 5xx). 4xx
-// refund is safe here because every 4xx path short-circuits BEFORE the
-// HAF query and the broadcast (the expensive work guarded by the limiter
-// per the API contract), so probing only costs Redis-rate-limit ops with
-// no chain/HAF side effects. Successful 2xx still consumes a slot so the
-// per-IP abuse cap on successful broadcasts is preserved. Mirrors the
-// `accreditationVerifyLimiter` byIp + skipFailedRequests precedent in
-// `accreditation.ts`.
+// outage). Without this flag, a SPA auto-retry loop on `details.retriable`
+// burns the per-IP 10/hour budget during a single LOCK_HELD cascade or HAF
+// outage event; the originating IP then 429s legitimate registrations for
+// the remainder of the rolling window. Per `RateLimitConfig.skipFailedRequests`
+// JSDoc the refund branch keys on ANY `res.statusCode >= 400` (4xx AND 5xx).
+//
+// Mounted AFTER `verifyHiveSignature` + `validateRegisterBody` on the route
+// chain so that body-malformed 400s and unsigned/invalid-signature 401s
+// never reach the limiter (and therefore never refund a slot). That guard
+// closes a CPU/Hive-RPC amplification surface: with the limiter mounted
+// first, an attacker spraying malformed bodies from a single IP would
+// trigger one ECDSA recovery + one `hiveClient.database.getAccounts` RPC
+// call per probe (because `verifyHiveSignature` runs before any 4xx
+// short-circuit), and `skipFailedRequests` would refund every slot. The
+// reorder matches the `accreditationVerifyLimiter` sibling precedent in
+// `accreditation.ts` (validate-then-limit).
+//
+// The surviving 4xx/5xx slot-refund paths under the new order are all
+// downstream of the limiter:
+//   - 403 NOT_ACCREDITED  — fires AFTER `getAccreditedSet([username])`
+//   - 400 BAD_REQUEST     — "Could not resolve identifier" fires AFTER
+//                            `resolveToCanonical` (arXiv/Crossref HTTP)
+//   - 400 BAD_REQUEST     — "No preprint found" fires AFTER
+//                            `lookupPreprint` (CrossRef/PubMed HTTP)
+//   - 409 LOCK_HELD       — fires AFTER per-permlink SETNX (Redis)
+//   - 409 DUPLICATE       — fires AFTER `checkExistingBridge` (HAF SELECT)
+//   - 503 SERVICE_UNAVAILABLE / 500 INTERNAL_ERROR — fail-closed on HAF
+//                            outage / resolver throw
+//
+// Each of these is cheap enough to accept on the refund path at PEvO
+// single-instance scale: external resolvers (`resolveToCanonical`,
+// `lookupPreprint`) have their own per-host rate caps and timeouts; the
+// HAF duplicate-check is a single indexed lookup; per-permlink SETNX is a
+// one-shot Redis op. The truly expensive boundary is the Hive broadcast,
+// which only ever runs on the success path and stays bounded by the
+// per-IP 10/hour success cap that `skipFailedRequests` preserves
+// (successful 2xx still consumes a slot).
 const registerLimiter = rateLimit({
   name: 'bridge-register',
   windowMs: 3_600_000,
@@ -171,6 +194,26 @@ const registerLimiter = rateLimit({
   keyFn: byIp,
   skipFailedRequests: true,
 });
+
+// Body-shape validation extracted to a middleware so that malformed-body 400s
+// short-circuit BEFORE `registerLimiter`. With the limiter ahead of body
+// validation, every malformed-body probe would still run `verifyHiveSignature`
+// (ECDSA recovery + one `getAccounts` RPC) per attempt and refund the slot
+// under `skipFailedRequests` — an unbounded CPU/RPC amplification surface.
+// The handler still re-derives the typed fields from `req.body`; this
+// middleware only gates the required-field presence + non-empty-string shape.
+function validateRegisterBody(req: Request, res: Response, next: NextFunction): void {
+  const body = req.body as { identifier?: unknown; discipline?: unknown };
+  if (!body.identifier || typeof body.identifier !== 'string' || body.identifier.trim().length === 0) {
+    sendError(res, 400, 'BAD_REQUEST', 'Field "identifier" is required');
+    return;
+  }
+  if (!body.discipline || typeof body.discipline !== 'string' || body.discipline.trim().length === 0) {
+    sendError(res, 400, 'BAD_REQUEST', 'Field "discipline" is required');
+    return;
+  }
+  next();
+}
 
 // ──────────────────────────────────────────────
 // GET /api/bridge/lookup?identifier=...
@@ -370,22 +413,19 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
 // POST /api/bridge/register
 // ──────────────────────────────────────────────
 
-router.post('/register', registerLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
+router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimiter, async (req: Request, res: Response) => {
   const username = req.hiveUsername!;
+  // `validateRegisterBody` middleware has already gated identifier + discipline
+  // presence + non-empty-string shape; re-derive the typed fields here for
+  // the handler's remaining work. The non-null assertions are sound because
+  // the middleware short-circuited any request that would have left these
+  // unset; TypeScript can't see that across the middleware boundary.
   const { identifier, discipline, keywords, language } = req.body as {
-    identifier?: string;
-    discipline?: string;
+    identifier: string;
+    discipline: string;
     keywords?: string[];
     language?: string;
   };
-
-  if (!identifier || typeof identifier !== 'string' || identifier.trim().length === 0) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Field "identifier" is required');
-  }
-
-  if (!discipline || typeof discipline !== 'string' || discipline.trim().length === 0) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Field "discipline" is required');
-  }
 
   // Verify accreditation
   const accreditedSet = await getAccreditedSet([username]);

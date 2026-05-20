@@ -37,14 +37,15 @@
  *       because every spec issues an authenticated /register call.
  *   (c) Real-path companion: the rate-limit primitive's slot-refund
  *       semantics have real-Redis coverage in
- *       `backend/tests/middleware/rateLimit.test.ts` (the SKIP_FAILED
- *       describe block exercising INCR-then-DECR-on-statusCode>=400
- *       against the live Redis container resolved via `getRedis()`
- *       against `REDIS_URL`). That suite is the canonical home for the
- *       rateLimit middleware refund mechanics; this file pins the route-
- *       level wiring (that `registerLimiter` opts in, and that the
- *       refund branch fires on the two retriable error envelopes the
- *       route emits).
+ *       `backend/tests/middleware/rateLimit.test.ts` (the
+ *       `skipFailedRequests + atomic Lua check` section under the single
+ *       outer `describe('rateLimit middleware')`, exercising
+ *       INCR-then-DECR-on-statusCode>=400 against the live Redis
+ *       container resolved via `getRedis()` against `REDIS_URL`). That
+ *       suite is the canonical home for the rateLimit middleware refund
+ *       mechanics; this file pins the route-level wiring (that
+ *       `registerLimiter` opts in, and that the refund branch fires on
+ *       the two retriable error envelopes the route emits).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';

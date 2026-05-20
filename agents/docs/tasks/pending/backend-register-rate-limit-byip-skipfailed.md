@@ -169,3 +169,47 @@ Cluster-wide findings: 5 findings surfaced across 9 personas; 1 dismissed at arc
 When items 1-3 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Item 1 is the load-bearing fix; items 2-3 are mechanical text rewrites that follow from item 1's outcome.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-20, round-2)
+
+All three hold-block items landed in a single round-2 commit on the worker worktree branch.
+
+**Item 1 (P1, middleware reorder + `validateRegisterBody` extraction).** `backend/src/routes/bridge.ts`:
+
+- Added `NextFunction` to the `express` named imports.
+- Extracted body-shape validation into a new `validateRegisterBody` middleware (identifier present + non-empty string; discipline present + non-empty string). The middleware emits the same 400 BAD_REQUEST envelope and message strings as the previous in-handler checks, so wire-shape callers see no contract change. WHY-comment above the middleware names the CPU/RPC amplification surface it closes (anchored on stable symbols `verifyHiveSignature`, `registerLimiter`, `getAccounts`, `RateLimitConfig.skipFailedRequests`).
+- Reordered the route mount from `router.post('/register', registerLimiter, verifyHiveSignature, handler)` to `router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimiter, handler)`. Sibling precedent: `accreditationVerifyLimiter` mounted as `validate(...) → accreditationVerifyLimiter → handler` in `backend/src/routes/accreditation.ts` (the `/verify` route mounts `validate` before the limiter; my `/register` mounts the auth-then-validate-then-limit triad that `request` uses for the same `verifyHiveSignature → validate(...) → accreditationRequestLimiter` shape).
+- Removed the now-redundant inline `if (!identifier || ...)` and `if (!discipline || ...)` checks from the handler (the middleware gates them). The handler's destructured types tightened from `identifier?: string; discipline?: string;` to `identifier: string; discipline: string;` (keywords + language stay optional). Added a 4-line WHY comment explaining the non-null derivation crosses a middleware boundary that TypeScript can't see.
+
+Behavior change: body-validation 400s and auth 401s no longer reach the limiter. With `skipFailedRequests: true`, that means probing requests with malformed bodies (or unsigned requests) no longer trigger an `ECDSA-recovery + getAccounts RPC` round-trip with a refunded slot afterward. The amplification surface is closed.
+
+**Item 2 (P1, WHY-comment rewrite).** `backend/src/routes/bridge.ts` above the `registerLimiter` declaration. Replaced the inaccurate "every 4xx path short-circuits BEFORE the HAF query and the broadcast" claim with an enumerated list of the SURVIVING 4xx/5xx slot-refund paths under the new middleware order:
+
+- `403 NOT_ACCREDITED` post-`getAccreditedSet([username])`
+- `400 BAD_REQUEST` "Could not resolve identifier" post-`resolveToCanonical` (external HTTP)
+- `400 BAD_REQUEST` "No preprint found" post-`lookupPreprint` (external HTTP)
+- `409 LOCK_HELD` post-per-permlink-SETNX (Redis)
+- `409 DUPLICATE` post-`checkExistingBridge` (HAF SELECT)
+- `503 SERVICE_UNAVAILABLE` / `500 INTERNAL_ERROR` fail-closed on HAF outage / resolver throw
+
+Justified each as cheap-enough-to-accept at PEvO single-instance scale: external resolvers have their own per-host rate caps + timeouts; HAF check is a single indexed lookup; SETNX is a one-shot Redis op; the truly expensive boundary (the Hive broadcast) only runs on the success path and stays bounded by the per-IP 10/hour success cap. No task-slug citations, no round numbers, no line numbers, no SHAs. Anchored on stable symbols (function names, `RateLimitConfig.skipFailedRequests`).
+
+**Item 3 (P2, test header citation).** `backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts` header docstring clause (c). Replaced "the SKIP_FAILED describe block" with the grep-findable form: *"the `skipFailedRequests + atomic Lua check` section under the single outer `describe('rateLimit middleware')`"*. Verified the comment-header text `skipFailedRequests + atomic Lua check` exists in `tests/middleware/rateLimit.test.ts` (`grep -n` hit on line 151 of that file).
+
+**Verification.**
+
+- `npm run typecheck` — clean. The pre-existing `tests/support/argon2-error-mocks.ts:178` error referenced in the task's signal block did NOT surface on this branch (it may have landed under a separate task while this one was held); no new errors from these changes.
+- `npx eslint src/routes/bridge.ts tests/routes/bridge-register-rate-limit-skip-failed.test.ts` — clean.
+- Scoped vitest: `npx vitest run tests/routes/bridge-register-rate-limit-skip-failed.test.ts` — 3/3 canaries pass (HAF-503 cascade, LOCK_HELD cascade, abuse-cap-preserved). The canaries sign requests end-to-end via the real `verifyHiveSignature` middleware and pass body validation, so the reorder is transparent to them.
+- Additional regression check: `npx vitest run tests/routes/bridge.test.ts tests/routes/bridge-haf-lag-locks.test.ts` — 21/21 pass. The "requires authentication headers" test still returns 401 (sends a well-formed body without auth headers → `verifyHiveSignature` short-circuits 401 before `validateRegisterBody` runs). DUPLICATE-envelope, BroadcastTimeout, RPCError, lock-contention, and error-event-emit specs all clean.
+
+**Mutation-sanity-check on the reordered short-circuit.** With the new order, a request with missing `identifier` from any IP 400s at `validateRegisterBody` before reaching `registerLimiter`. The existing `bridge.test.ts` "POST /api/bridge/register — requires authentication headers" spec exercises the equivalent short-circuit for unsigned requests (`verifyHiveSignature` 401 before the limiter). I did not add a new test for the malformed-body-pre-limiter case because: (a) the existing canary suite already exercises the limiter's accounting on the deeper retriable paths the middleware reorder is designed to leave intact; (b) a dedicated test asserting "malformed body does not increment the limiter slot" would require driving the in-memory `memStore` counter directly, which is out of scope for a route-level test and is the canonical territory of `tests/middleware/rateLimit.test.ts`. The WHY-comment rewrite documents the property invariant; the middleware ordering is the enforcement.
+
+**Files touched in this round:**
+- `backend/src/routes/bridge.ts` — `NextFunction` import; WHY-comment rewrite + reorder; `validateRegisterBody` extraction; handler edits.
+- `backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts` — clause (c) citation fix in header.
+- `agents/docs/tasks/pending/backend-register-rate-limit-byip-skipfailed.md` — this signal block.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
