@@ -332,3 +332,88 @@ The self-audit clause at `agents/docs/solutions/conventions/convention-enforcing
 - The 2 pre-existing line-number anchors at `backend/tests/routes/accreditation.test.ts` ~L326 (`lib/broadcast-error.ts:399`) and ~L1448 (`accreditation.ts:901`). These violate `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` but are noted as out-of-scope in this task's existing "Out of scope" carve-out (they belong to a sibling sweep cycle).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Backend re-review signal (2026-05-20, round 4)
+
+Both architect-cited items landed, plus a holistic re-read of all three named files surfaced 21 additional relative-positional anchors and 2 F-label residuals beyond the architect's enumeration.
+
+### Architect-cited items (1-2)
+
+1. **`accreditation.test.ts` ~L884-887 (`Same seed + broadcast-throws-timeout setup as the throws-branch spec above ...`)** — rewrote to `Same seed + broadcast-throws-timeout setup as the catch-around-decrement throw-branch sibling spec, but exercises the \`enqueued_for_drain\` degraded-return branch.` The "above" anchor dropped; the named "catch-around-decrement throw-branch" antecedent carries the relationship.
+
+2. **`accreditation.test.ts` ~L1117-1119 (`Mirrors the decrementBroadcastAttempts Redis-unavailable warn spec above.`)** — rewrote to `Mirrors the \`decrementBroadcastAttempts emits Redis-unavailable warn\` sibling spec — the same isRedisAvailable() mock pattern driving the Redis-unavailable warn path, applied to the increment-side helper.` Anchored on the sibling it-title (stable identifier) + the behavioral pattern.
+
+### Holistic re-read findings (sites beyond items 1-2)
+
+The broadened acceptance grep surfaced relative-positional anchors across all three named files. Each rewritten to a stable-symbol or behavioral anchor:
+
+**`backend/src/routes/accreditation.ts` (7 sites):**
+- L56 `Mirrors the accreditationRequestLimiter shape above` → dropped `above`; the symbol name is the anchor.
+- L869 `(further down)` in the idempotency-hit seedAccreditationBonus comment → anchored on `broadcastJsonWithTimeout` call.
+- L896 `the gate-hit branch above` → anchored on the `existing_accreditation_hit` event name.
+- L931 ``_lookup_failed` (above)`` → expanded to the full event name `accreditation.verify.idempotency_lookup_failed`.
+- L954 `deleteToken (see \`deleteToken\` below)` → dropped the redundant "(see ... below)" — the symbol name is the anchor.
+- L966 `the broadcast try below` → anchored on `broadcastJsonWithTimeout`.
+- L1210 `see sibling timeout branch above for the plaintext-leak threat model` → inlined the threat-model rationale and anchored on the `broadcast_decrement_failed` sibling event.
+
+**`backend/tests/routes/accreditation.test.ts` (10 sites):**
+- L365 `redaction-negative assertion below (\`not.toMatch(/[0-9a-f]{64}/)\`)` → moved the regex inline as the assertion's stable identifier.
+- L382 `negative-regex assertion below pins this exposure` → anchored on the `not.toMatch(/[0-9a-f]{64}/)` regex.
+- L401 `the spy assertions below on the cleanup-failure log shape` → anchored on `loggerErrorSpy` call-shape assertions on the `token_cleanup_failed` event.
+- L422 `the spy assertions below carry the real signal` → same rewrite class.
+- L455 `the positive assertion above` → anchored on `(b) positive toHaveBeenCalledWith` assertion (the (b) labels the local sub-assertion list, which is stable).
+- L493 `The 504 BROADCAST_TIMEOUT envelope (above)` → dropped `(above)`; the BROADCAST_TIMEOUT error code is the anchor.
+- L791 / L816 (per-token broadcast-attempts cap describe spec) `negative-regex assertion below` → anchored on `not.toMatch(/[0-9a-f]{64}/)` regex.
+- L1271 `see the spec below` → anchored on the `accreditation.cleanup.failed: periodic cleanup catch path emits canonical error log shape` sibling spec it-title.
+- L1276 `(justified at the file header above)` → replaced with a doc-path reference (`test-mock-carve-out-clause-c-2026-05-04.md`); the carve-out convention IS the durable justification.
+
+**`backend/tests/routes/accreditation-idempotency.test.ts` (4 sites + 2 F-label residuals):**
+- L28 `Tests below chain ... preamble where needed` → rewrote to `Specs that target the per-token idempotency layer chain ... first to satisfy the gate preamble.` Drops the positional anchor; the per-token-layer description carries the antecedent.
+- L65 `(F19's HAF-unconfigured spec)` → rewrote to `(the HAF-unconfigured idempotency-degraded spec)`. The F-label `F19` is a coordination-cluster slug; the behavioral description survives.
+- L220 `Hoisting the probe above the INCR closes this` → rewrote to `The probe-before-INCR ordering closes this`. Anchored on the `probe-before-INCR` durable phrasing.
+- L289 `it('HAF lookup throw degrades gracefully ... (F9)', ...)` → dropped the `(F9)` coordination-tag suffix from the it-title.
+- L299 `the gate's \`existing_accreditation_lookup_failed\` warn, which is covered in a separate spec below` → rewrote to `the gate's \`existing_accreditation_gate_unavailable\` warn, which is covered by the gate-HAF-outage 503 spec.` Note: also corrected the event name — the actual gate emits `existing_accreditation_gate_unavailable`, not `existing_accreditation_lookup_failed` (which does not exist as a production event).
+- L1049 `the happy-path grace-period specs above this one` → rewrote to name both sibling specs by it-title: ``grace-period miss with no pending token`` and ``grace-period record carries the broadcast tx_id``.
+
+### Broadened acceptance grep (verbatim)
+
+```
+$ grep -inoE "(round[- ]?[0-9]|hold #|BE-[A-Z_-]+|BACKEND-[A-Z_-]+|F[0-9]+[: ]|\babove\b|\bbelow\b|\bnext test\b|\bprevious test\b)" \
+    backend/src/routes/accreditation.ts \
+    backend/tests/routes/accreditation.test.ts \
+    backend/tests/routes/accreditation-idempotency.test.ts
+backend/tests/routes/accreditation-idempotency.test.ts:221:be-before-INCR
+backend/tests/routes/accreditation-idempotency.test.ts:224:be-before-INCR
+backend/src/routes/accreditation.ts:700:be-after-INCR
+backend/src/routes/accreditation.ts:704:be-then-INCR
+backend/src/routes/accreditation.ts:755:be-before-INCR
+```
+
+All 5 surviving hits are durable `probe-{before,after,then}-INCR` substring matches of `be-` (behavioral phrases describing the probe-vs-INCR ordering). Zero real rot remains.
+
+Supplemental F-label sweep using `\bF[0-9]+\b` (broader than the acceptance pattern, catching `F19's` and `F9)` shapes the acceptance grep missed):
+
+```
+$ grep -nE "\bF[0-9]+\b" backend/src/routes/accreditation.ts backend/tests/routes/accreditation.test.ts backend/tests/routes/accreditation-idempotency.test.ts
+(empty)
+```
+
+### Self-audit per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` (broadened)
+
+Re-read the diff against all enumerated rot classes in the broadened self-audit clause:
+
+- **No new round-N markers** in any replacement prose.
+- **No new task-slug citations**; the only slug-shaped references in the new prose are stable code symbols (`broadcastJsonWithTimeout`, `loggerErrorSpy`, `decrementBroadcastAttempts`, `accreditationRequestLimiter`, `existing_accreditation_hit`, `existing_accreditation_gate_unavailable`, `broadcast_decrement_failed`, `token_cleanup_failed`, `accreditation.verify.idempotency_lookup_failed`, `not.toMatch(/[0-9a-f]{64}/)`) or durable solution-doc paths (`test-mock-carve-out-clause-c-2026-05-04.md`).
+- **No line-number anchors, SHA references, or date anchors** in the replacements.
+- **No partial-strip stubs, orphan single-letter prefixes, dangling determiners, bare possessives, dangling prepositions.** Every new sentence stands alone grammatically with stable-symbol or behavioral antecedents.
+- **No new relative positional anchors** (`above`/`below`/`next test`/`previous test`/`the spec just above`/`see also above`). The only word "above" or "below" in the new prose is absent — explicitly verified by re-running the broadened grep against the diff's `+` lines.
+
+### Verification
+
+- `npm run typecheck` (`:src` + `:tests`): clean. No errors introduced.
+- `npm run lint` (`src/`): one pre-existing unused-eslint-disable warning in `lib/author-supersession.ts:69` (not introduced by this commit; same warning noted in round-3 signal).
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **45/52 pass** (7 failures). All 7 failures reproduce on `git stash` (HEAD pre-edit) state — verified by stash + re-run: **44/52 pass** on stash (8 failures, one extra SMTP-cascade flake). The failure set is the previously-documented pre-existing class: empty `SMTP_HOST` in this worktree's `.env` produces 500s in `/api/accreditation/request` SMTP-throw and SMTP-not-configured specs and 4xx-refund / limiter specs that depend on those upstream outcomes; the `pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE` 502-vs-503 flake; the `rejects free email providers` and `rejects yahoo email` specs depend on the SMTP path. None caused by this task's edits.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;

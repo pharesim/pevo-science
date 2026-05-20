@@ -25,9 +25,9 @@
  * Two-layer HAF call ordering: the existing-accreditation gate runs before
  * the per-token idempotency check, so /verify performs TWO sequential HAF
  * queries when both layers fire (gate miss flows into per-token
- * idempotency check). Tests below chain
- * `hafQueryMock.mockResolvedValueOnce({rows: []})` for the gate
- * preamble where needed.
+ * idempotency check). Specs that target the per-token idempotency layer
+ * chain `hafQueryMock.mockResolvedValueOnce({rows: []})` first to satisfy
+ * the gate preamble.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -62,7 +62,8 @@ vi.mock('../../src/hive.js', () => ({
 const { hafQueryMock, hafConfiguredFlag } = vi.hoisted(() => ({
   hafQueryMock: vi.fn(),
   // Mutable container lets individual tests flip configuration presence
-  // (F19's HAF-unconfigured spec) without re-mocking the module.
+  // (the HAF-unconfigured idempotency-degraded spec) without re-mocking
+  // the module.
   hafConfiguredFlag: { value: true },
 }));
 
@@ -217,7 +218,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
   // concurrent retries through both branches: retry N returns 502
   // BROADCAST_ATTEMPT_LIMIT_EXCEEDED on cap exhaustion while retry N+1
   // returns 200 outcome:'already_landed' for the same logical op once the
-  // chain row indexed. Hoisting the probe above the INCR closes this: an
+  // chain row indexed. The probe-before-INCR ordering closes this: an
   // idempotency hit always returns 200 (no cap consumed), regardless of
   // the counter's current value.
   it('idempotency hit returns 200 even when broadcast-attempts counter is at cap (probe-before-INCR ordering)', async () => {
@@ -286,7 +287,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     expect(seedBonusMock).toHaveBeenCalledWith(username);
   });
 
-  it('HAF lookup throw degrades gracefully — broadcast still fires + lookup_failed warn emitted (F9)', async () => {
+  it('HAF lookup throw degrades gracefully — broadcast still fires + lookup_failed warn emitted', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
@@ -295,8 +296,8 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
 
     // Gate miss; per-token idempotency lookup throws — exercises the existing
     // `idempotency_lookup_failed` warn discrimination (not the gate's
-    // `existing_accreditation_lookup_failed` warn, which is covered in a
-    // separate spec below).
+    // `existing_accreditation_gate_unavailable` warn, which is covered by
+    // the gate-HAF-outage 503 spec).
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
     hafQueryMock.mockRejectedValueOnce(new Error('haf connection drop'));
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
@@ -1045,11 +1046,12 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     // Redis-down-mid-pipeline rejection class on `redis.multi().exec()` is
     // impractical to exercise per-test against real Redis (the connection
     // would have to be physically broken between INCR-pre-DECR and the
-    // MULTI dispatch). Clause (c) real-path companion: the happy-path
-    // grace-period specs above this one exercise the live `redis.multi`
-    // chain against the real client. This spec stubs `redis.multi` once
-    // to drive the inner-catch path; the broadcast and HAF mocks stay as
-    // in the sibling grace-period specs.
+    // MULTI dispatch). Clause (c) real-path companion: the
+    // `grace-period miss with no pending token` and `grace-period record
+    // carries the broadcast tx_id` sibling specs exercise the live
+    // `redis.multi` chain against the real client. This spec stubs
+    // `redis.multi` once to drive the inner-catch path; the broadcast
+    // and HAF mocks stay as in the sibling grace-period specs.
     //
     // Retry leg context: pipeline rejection leaves the Redis-side pending
     // row intact (the row's `del` was inside the rejected MULTI), so a

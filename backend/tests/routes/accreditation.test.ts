@@ -362,7 +362,7 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
     const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
     if (limitKeys.length > 0) await redis.del(...limitKeys);
 
-    // The redaction-negative assertion below (`not.toMatch(/[0-9a-f]{64}/)`)
+    // The redaction-negative `not.toMatch(/[0-9a-f]{64}/)` assertion
     // requires a 64-hex token to be load-bearing — a short-tail mock token
     // (like `accred-timeout-<16-hex>`) makes the regex vacuous by
     // construction. A regression that drops `hashTokenForLogs` and logs
@@ -379,11 +379,12 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
     // pending_accred operations is `<appTag>:pending_accred:<64-hex token>`.
     // pino default redact does NOT scrub `err.command.args`, so the raw
     // 64-hex token leaks into the operator log via the `err` field. The
-    // negative-regex assertion below pins this exposure: the spec WILL FAIL
-    // RED against current production code until pino's redact configuration
-    // is widened to scrub `err.command.args` on ioredis ReplyError-shaped
-    // rejections. The intentional red here is the forcing function for that
-    // deferred pino-redact widening.
+    // `not.toMatch(/[0-9a-f]{64}/)` negative-regex assertion pins this
+    // exposure: the spec WILL FAIL RED against current production code
+    // until pino's redact configuration is widened to scrub
+    // `err.command.args` on ioredis ReplyError-shaped rejections. The
+    // intentional red here is the forcing function for that deferred
+    // pino-redact widening.
     const delSpy = vi.spyOn(redis, 'del').mockRejectedValueOnce(
       Object.assign(new Error('Redis evicted to read-only'), {
         command: { name: 'del', args: [tokenKey] },
@@ -398,8 +399,9 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
     // Mutation-sensitivity: asserting only (a) the 502 envelope and that
     // redis.del was called would NOT catch a regression that deletes the
     // local try/catch (the rejection would still surface as 502 via
-    // supertest's first-response semantics). The spy assertions below on
-    // the cleanup-failure log shape are the real mutation guards. Per
+    // supertest's first-response semantics). The `loggerErrorSpy` call-shape
+    // assertions on the `token_cleanup_failed` event are the real mutation
+    // guards. Per
     // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md
     // and agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md.
     const loggerErrorSpy = vi.spyOn(logger, 'error');
@@ -419,7 +421,8 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
       // would have attempted to write 500 over the already-sent 502, throwing
       // ERR_HTTP_HEADERS_SENT into the request-error pipeline. supertest
       // surfaces only the first response written, so a 502 here is necessary
-      // but not sufficient — the spy assertions below carry the real signal.
+      // but not sufficient — the `loggerErrorSpy` call-shape assertions on
+      // the `token_cleanup_failed` event carry the real signal.
       expect(res.status).toBe(502);
       expect(res.body.error.code).toBe('BROADCAST_FAILED');
       expect(res.body.error.details).toEqual({ retriable: false });
@@ -452,11 +455,11 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
 
       // (d) No raw 64-hex token substring in the logger.error payload.
       // `expect.objectContaining({token_hash})` ignores EXTRA fields
-      // (`err`, `err.command.args`, etc.) so the positive assertion above
-      // is mutation-insensitive against an ioredis-shaped error whose
-      // `command.args` carries the raw key. This negative assertion catches
-      // the leak. INTENTIONAL RED until pino redact covers
-      // `err.command.args` (deferred follow-up).
+      // (`err`, `err.command.args`, etc.) so the (b) positive
+      // `toHaveBeenCalledWith` assertion is mutation-insensitive against an
+      // ioredis-shaped error whose `command.args` carries the raw key.
+      // This negative assertion catches the leak. INTENTIONAL RED until
+      // pino redact covers `err.command.args` (deferred follow-up).
       //
       // Some logger.error call args are circular (handleBroadcastError logs
       // include `res` / `req` objects that close cycles), so we serialize
@@ -490,7 +493,7 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
 // ──────────────────────────────────────────────
 // Per-token broadcast-attempts cap.
 //
-// The 504 BROADCAST_TIMEOUT envelope (above) deliberately preserves the token
+// The 504 BROADCAST_TIMEOUT envelope deliberately preserves the token
 // so the legitimate caller can verify chain state and retry. That survival
 // window is also a retry-amplification axis: each retry enqueues a fresh
 // broadcast at the dhive layer, and Hive does not deduplicate identical
@@ -787,9 +790,10 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     // 64-hex token (matches production `crypto.randomBytes(32).toString('hex')`
-    // shape) so the negative-regex `not.toMatch(/[0-9a-f]{64}/)` assertion
-    // below is load-bearing — a 16-hex stub token would coincidentally never
-    // match the 64-hex pattern and the assertion would pass by construction.
+    // shape) so the spec's `not.toMatch(/[0-9a-f]{64}/)` negative-regex
+    // assertion is load-bearing — a 16-hex stub token would coincidentally
+    // never match the 64-hex pattern and the assertion would pass by
+    // construction.
     const token = crypto.randomBytes(32).toString('hex');
     const counterKey = broadcastAttemptsKey(token);
     // Seed the pending row directly via the helper (writes to the
@@ -813,11 +817,11 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // `args` array carries the raw Redis key, which for the cap counter is
     // `<appTag>:pending_accred_broadcast_attempts:<64-hex token>`. pino
     // default redact does NOT scrub `err.command.args`, so the raw token
-    // leaks via `err`. The negative-regex assertion below pins this
-    // exposure: the spec WILL FAIL RED until pino redact is widened to
-    // scrub `err.command.args` on ioredis ReplyError-shaped rejections.
-    // The intentional red is the forcing function for that deferred
-    // pino-redact widening.
+    // leaks via `err`. The `not.toMatch(/[0-9a-f]{64}/)` negative-regex
+    // assertion pins this exposure: the spec WILL FAIL RED until pino
+    // redact is widened to scrub `err.command.args` on ioredis ReplyError-
+    // shaped rejections. The intentional red is the forcing function for
+    // that deferred pino-redact widening.
     const decrSpy = vi.spyOn(redis, 'decr').mockRejectedValueOnce(
       Object.assign(new Error('redis flap on compensating decrement'), {
         command: { name: 'decr', args: [counterKey] },
@@ -882,9 +886,9 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // once the broadcast site is reached, so getToken/incrementBroadcast
     // see Redis available (real seed path), the broadcast throws timeout,
     // and the compensating decrement observes Redis unavailable. Same
-    // seed + broadcast-throws-timeout setup as the throws-branch spec
-    // above, but exercises the `enqueued_for_drain` degraded-return branch
-    // instead of the catch-around-decrement throw branch.
+    // seed + broadcast-throws-timeout setup as the catch-around-decrement
+    // throw-branch sibling spec, but exercises the `enqueued_for_drain`
+    // degraded-return branch.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
@@ -1115,8 +1119,9 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // before reaching the pre-INCR site. A unit-style call against the helper
     // is the only way to drive the in-memory-fallback warn path
     // deterministically without monkey-patching the entire module's view
-    // of Redis. Mirrors the decrementBroadcastAttempts Redis-unavailable
-    // warn spec above.
+    // of Redis. Mirrors the `decrementBroadcastAttempts emits Redis-unavailable
+    // warn` sibling spec — the same isRedisAvailable() mock pattern driving
+    // the Redis-unavailable warn path, applied to the increment-side helper.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = crypto.randomBytes(32).toString('hex');
@@ -1267,13 +1272,15 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
 //       cleanup catch path fires from a `setInterval` callback whose
 //       cleanupExpiredTokens helper is module-private with no test seam;
 //       driving it requires capturing the callback at module-load time via
-//       a setInterval spy (see the spec below).
+//       a setInterval spy (see the `accreditation.cleanup.failed: periodic
+//       cleanup catch path emits canonical error log shape` spec).
 //   (b) Mock targets per spec: `nodemailer.createTransport` (SMTP-failure
 //       paths), `redis.del` (token cleanup), `globalThis.setInterval` for
 //       the periodic-cleanup callback capture. `verifyHiveSignature` is
-//       mocked at the file level via `MOCK_VERIFY_SIGNATURE` (justified at
-//       the file header above). The logger is spied (not mocked) so the
-//       production format string still runs.
+//       mocked at the file level via `MOCK_VERIFY_SIGNATURE` per
+//       `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`.
+//       The logger is spied (not mocked) so the production format string
+//       still runs.
 //   (c) Real-path companion: the broadcast-error 502 path has real-Redis
 //       coverage in the sibling specs (`non-timeout broadcast error → 502
 //       BROADCAST_FAILED with retriable=false`); SMTP-failure handling has

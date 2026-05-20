@@ -53,8 +53,8 @@ const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24
 // acceptable here because `BAD_REQUEST` is the only client-error path on
 // /verify and it short-circuits BEFORE any expensive work (HAF probes,
 // broadcast), so probing only costs Redis-rate-limit ops with no chain
-// side effects. Mirrors the `accreditationRequestLimiter` shape above
-// and `upgradeLimiter` in `custody.ts`.
+// side effects. Mirrors the `accreditationRequestLimiter` shape and
+// `upgradeLimiter` in `custody.ts`.
 const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp, skipFailedRequests: true });
 
 const router = Router();
@@ -866,7 +866,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         // throws stay swallowed inside the cascade fn so this branch never
         // sees them. The branch handles the error envelope locally rather
         // than re-throwing because the success-path catch is scoped to the
-        // broadcast call (further down) — re-throwing would propagate to
+        // `broadcastJsonWithTimeout` call — re-throwing would propagate to
         // the Express async-error handler instead of producing the
         // discriminated envelope.
         try {
@@ -893,7 +893,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         }
         // Grace-period completion record on the per-token idempotency-hit
         // branch (parity with the fresh-broadcast success path and the
-        // gate-hit branch above). The pending row is cleared by the
+        // `existing_accreditation_hit` gate-hit branch). The pending row is cleared by the
         // pipeline inside `recordAccreditationCompletion`, so a retry on
         // the same token reads the completion record and returns the
         // identical 200 envelope instead of cascading to 400 BAD_REQUEST.
@@ -928,8 +928,8 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // `isHafConfigured()` tests configuration presence, not live
     // reachability. An earlier `_unavailable` name led operators to mis-read
     // this branch as an outage signal; the current name makes the
-    // config-only semantics explicit. `_lookup_failed` (above) remains the
-    // real-outage discriminator.
+    // config-only semantics explicit. `accreditation.verify.idempotency_lookup_failed`
+    // remains the real-outage discriminator.
     logger.warn(
       {
         event: 'accreditation.verify.idempotency_haf_unconfigured',
@@ -950,8 +950,8 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   // even under concurrent retries on the same token.
   //
   // Structural scope: the cap is a CONCURRENCY-BURST defense, not a
-  // sequential-flood defense. Because deleteToken (see `deleteToken`
-  // below) drops both the pending row AND the counter side-key, and the
+  // sequential-flood defense. Because `deleteToken` drops both the
+  // pending row AND the counter side-key, and the
   // catch-block 'failure' branch calls deleteToken on the first 502, the
   // sequential-retry case ends after one definitive failure and cannot
   // accumulate the counter. The cap engages on the parallel-retry case:
@@ -963,8 +963,8 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   // permanently consume slots — only definitive 502 BROADCAST_FAILED
   // outcomes count toward the cap.
   //
-  // The pre-INCR call sits OUTSIDE the broadcast try below, so a
-  // `redis.eval` rejection (OOM, Lua error, connection drop) would
+  // The pre-INCR call sits OUTSIDE the `broadcastJsonWithTimeout` try,
+  // so a `redis.eval` rejection (OOM, Lua error, connection drop) would
   // propagate to Express 5's async handler → 500 INTERNAL_ERROR with no
   // retry guidance, asymmetric to the broadcast site's 502/504 envelope
   // discipline. The local try/catch returns 503 SERVICE_UNAVAILABLE with
@@ -1206,8 +1206,11 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       } catch (deleteErr) {
         // Include `token_hash` (12-hex sha256 prefix) in the structured
         // fields so operators can correlate the orphan against Redis state
-        // during the 24h TTL window. Hashed, NOT plaintext (see sibling
-        // timeout branch above for the plaintext-leak threat model).
+        // during the 24h TTL window. Hashed, NOT plaintext (the token is
+        // the SOLE credential at /api/accreditation/verify, so logging the
+        // raw value would let anyone with operator-log read access replay
+        // the verification — same threat model as the
+        // `broadcast_decrement_failed` sibling timeout-branch warn).
         // Per agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md
         // ("Survivor log fields for orphan resources").
         logger.error(
