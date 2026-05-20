@@ -392,11 +392,10 @@ describe('HafQueryError with deterministic pg error code → 500 (not 503 retria
   });
 
   it('cannot_connect_now (57P03) on the reviews single-doc fetch is classified as 503 retriable', async () => {
-    // Pins the round-3 hold extension of `isRetriableHafError` to include
-    // 57P03 (Postgres startup / PITR / standby promotion windows) as
-    // retriable. The mirror-shape of the 42601 canary above ensures the
-    // discriminator distinguishes deterministic-pg from transient-pg on
-    // exactly the same call path.
+    // Pins `isRetriableHafError`'s 57P03 classification (Postgres startup /
+    // PITR / standby promotion windows) as retriable. The mirror-shape of
+    // the 42601 canary above ensures the discriminator distinguishes
+    // deterministic-pg from transient-pg on exactly the same call path.
     hafQueryMock.mockImplementation(async (sql: string) => {
       if (sql.includes('c.body, c.json_metadata') && sql.includes('paper_title')) {
         const err = new Error('the database system is starting up') as Error & { code: string };

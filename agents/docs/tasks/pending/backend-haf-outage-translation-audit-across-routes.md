@@ -332,3 +332,49 @@ Cluster-wide findings: 3 findings surfaced, 2 dismissed at architect triage, 1 h
 When item 1 lands in a single round-4 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-20, round-4 hold-fix)
+
+### Per-item landed change
+
+**1. Round-number anchor dropped from the 57P03 canary's it-block comment in `backend/tests/routes/haf-outage-translation-canaries.test.ts`.** Edit is scoped to the comment block above the `cannot_connect_now (57P03) on the reviews single-doc fetch is classified as 503 retriable` it-block.
+
+Before:
+
+> // Pins the round-3 hold extension of `isRetriableHafError` to include
+> // 57P03 (Postgres startup / PITR / standby promotion windows) as
+> // retriable. The mirror-shape of the 42601 canary above ensures the
+> // discriminator distinguishes deterministic-pg from transient-pg on
+> // exactly the same call path.
+
+After:
+
+> // Pins `isRetriableHafError`'s 57P03 classification (Postgres startup /
+> // PITR / standby promotion windows) as retriable. The mirror-shape of
+> // the 42601 canary above ensures the discriminator distinguishes
+> // deterministic-pg from transient-pg on exactly the same call path.
+
+The "round-3 hold extension of" phrase is removed; the remaining sentence preserves the architect-prescribed behavioral framing (`isRetriableHafError` function name + `57P03` SQLSTATE code + operational semantics: Postgres startup / PITR / standby promotion). The "mirror-shape of the 42601 canary above" sentence is retained as-is — it anchors on a stable sibling-canary behavioral relationship, not on coordination state.
+
+### Self-audit (convention-enforcing-fix)
+
+Per `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, verified the replacement text introduces no new anchor-rot:
+
+- No task slug (no `backend-*`, `ui-*`, etc.).
+- No round-number reference (no "round-N", no "hold item N").
+- No line-number anchor (no `file.ts:N`, no `~N`).
+- No commit SHA.
+- Anchors are stable symbols: function name `isRetriableHafError`, SQLSTATE code `57P03`, SQLSTATE code `42601` (sibling canary), behavioral semantics (Postgres startup / PITR / standby promotion / deterministic-pg vs transient-pg).
+
+Cross-checked the entire `haf-outage-translation-canaries.test.ts` for any other lingering round-number references with `grep -n 'round-'` → zero matches.
+
+### Tests
+
+Scoped vitest on `tests/routes/haf-outage-translation-canaries.test.ts`: 10 specs green (including the 57P03 canary, the 42601 deterministic-pg canary, the four route translation canaries, the enrichment Promise.all wrap canary, the two 404-preserved canaries).
+
+```
+Test Files  1 passed (1)
+Tests       10 passed (10)
+```
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
