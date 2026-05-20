@@ -53,6 +53,7 @@ The implementer-side mirror: when writing the fix, after purging the cited sites
 - Reviewing a fix that purges:
   - Task-slug citations (the canonical instance — see [[task-slug-citations-in-comments-go-stale-on-archive-2026-05-15]]).
   - Round-N markers (`round-3`, `round-6`, `Item 1`).
+  - Line-number anchors, commit-SHA references, date anchors, and **relative positional anchors** (`above`, `below`, `next test`, `previous test`, `the spec just above`) — see [[docblock-anchor-stable-symbols-not-line-numbers-2026-05-15]]. These rot the same way coordination-state anchors do: a fix that strips a citation noun and leaves `Mirrors the X spec above` has substituted one rot class (the stripped slug) for another (the relative anchor that drifts on test insertion). The self-violation audit must grep for these alongside `round-\d` and slug patterns.
   - WHAT-commentary (per PEvO CLAUDE.md "Don't explain WHAT the code does").
   - "Current task / fix / callers" comments (per PEvO CLAUDE.md "Don't reference the current task, fix, or callers").
   - Deprecated flags or transitional shims.
