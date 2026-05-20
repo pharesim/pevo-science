@@ -157,7 +157,9 @@ Single paper with full content and reviews.
 - `canonical_author` / `canonical_permlink` — for continuation posts, points to the root paper. For non-continuation papers, equals the paper's own author/permlink.
 - `head_author` / `head_permlink` — points to the latest version in a continuation chain. For non-continuation papers, equals the paper's own author/permlink.
 
-**Errors:** `NOT_FOUND` if paper does not exist or is not a PEvO paper.
+**Errors:**
+- `NOT_FOUND` if paper does not exist or is not a PEvO paper.
+- `SERVICE_UNAVAILABLE` (503). Transient HAF failure on the paper-detail fetcher (`fetchPaperDetailFromHaf`), OR walker wall-clock budget exceeded on canonical-root resolution (`hafWalkerWallClockMs` elapsed before the walker completed). `details.retriable: true`. Two distinct triggers share this envelope (a wrapped `HafQueryError` from any pg failure in the fetcher chain, and an AbortController fire from the walker budget); consumers cannot distinguish them via the envelope and need not (both warrant the same retry). Sibling route to the other 503-retriable HAF-outage emitters; see the cross-cutting note in [common.md § Error envelope](common.md).
 
 ---
 
@@ -219,7 +221,9 @@ Lazy-loaded enrichment data for a paper (votes, reviews). Separated from the mai
 - `reviews[].addressed_by_version` — version number of a paper revision that explicitly addresses this review, or `null`.
 - `authorship_claims[]` — list of non-revoked authorship claims on this paper. `status` is `accepted` (auto-accepted via ORCID/hive username match, or manually approved) or `pending`. Revoked claims are excluded.
 
-**Errors:** `NOT_FOUND` if paper does not exist.
+**Errors:**
+- `NOT_FOUND` if paper does not exist. (Today only reachable when the HAF pool is unconfigured: `fetchEnrichmentFromHaf` always returns a non-null envelope on empty result sets, so 0-rows alone does not produce a route-level 404.)
+- `SERVICE_UNAVAILABLE` (503). Transient HAF failure on the enrichment fetcher (`fetchEnrichmentFromHaf`), OR walker wall-clock budget exceeded on canonical-root resolution. `details.retriable: true`. Same two-trigger shape as `GET /:author/:permlink`.
 
 ---
 
@@ -392,7 +396,7 @@ Discussion comments on a paper (threaded). Returns a flat list of all comments; 
 
 **Errors:**
 - `NOT_FOUND` — paper does not exist (preflight `paperExistsInHaf` returned no rows).
-- `SERVICE_UNAVAILABLE` (503) — transient HAF failure on the preflight existence check. `details.retriable: true`. Distinguished from `NOT_FOUND` so consumers can surface a retry affordance for outages instead of treating them as "paper does not exist." The comments-listing arm (`fetchCommentsFromHaf`) retains its swallow-to-empty contract on its own outage; consumers MUST treat `200` with `data: []` as either "no comments yet" OR "comments-listing query failed silently" — the discriminator is whether `paperExistsInHaf` succeeded (it did, since a 200 was returned at all). Sibling route to the other 503-retriable HAF-outage emitters; see the cross-cutting note in [common.md § Error envelope](common.md).
+- `SERVICE_UNAVAILABLE` (503). Transient HAF failure on either the preflight existence check (`paperExistsInHaf`) OR the comments-listing query (`fetchCommentsFromHaf`). `details.retriable: true`. Distinguished from `NOT_FOUND` (paper does not exist) and from `200` with `data: []` (paper exists, has no comments). Consumers MUST render a retry affordance rather than treating this as an empty comment section. Sibling route to the other 503-retriable HAF-outage emitters; see the cross-cutting note in [common.md § Error envelope](common.md).
 
 ---
 
@@ -420,6 +424,7 @@ For `apa` format, the `content` field contains the formatted APA string. For `bi
 **Errors:**
 - `BAD_REQUEST` — missing or invalid `format`
 - `NOT_FOUND` — paper does not exist
+- `SERVICE_UNAVAILABLE` (503). Transient HAF failure on the paper-detail fetcher (`fetchPaperDetailFromHaf`) before citation rendering, OR walker wall-clock budget exceeded. `details.retriable: true`. Same two-trigger shape as `GET /:author/:permlink`. No partial citation body is emitted on this path.
 
 ---
 
@@ -453,6 +458,7 @@ Retract a paper. The backend broadcasts a `retract_paper` custom_json to Hive.
 - `FORBIDDEN` — user is neither the paper author, `pevo.admin`, nor (for bridge papers) the registerer or an original author listed in `pevo.authors[].hive`
 - `NOT_FOUND` — paper does not exist
 - `VALIDATION_ERROR` (422) — paper is already retracted
+- `SERVICE_UNAVAILABLE` (503). Transient HAF failure on the paper-detail fetcher (`fetchPaperDetailFromHaf`) during the retract authorization check, OR walker wall-clock budget exceeded on canonical-root resolution. `details.retriable: true`. Same two-trigger shape as `GET /:author/:permlink`. Broadcast is structurally gated behind the HAF lookup and does NOT fire on this path. Note: clients that retry on `details.retriable` should be aware that `retractLimiter` (5/hour/account) may consume slots per attempt; see the rate-limit interaction guidance once tracked work on slot-burn semantics lands.
 - `BROADCAST_FAILED` (502) — Hive chain rejected the retract broadcast. `details.retriable: false`.
 - `BROADCAST_TIMEOUT` (504) — Backend aborted the broadcast at 30s. Outcome uncertain. `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: 30000`. Retraction is idempotent at the chain layer; retry is safe after verifying the op did not land.
 
