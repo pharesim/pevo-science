@@ -49,6 +49,9 @@
     "notFoundTitle": "Artículo no encontrado",
     "errorLoadingTitle": "Error al cargar el artículo",
     "notFoundDescription": "No se pudo encontrar el artículo @{author}/{permlink}.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Mostrar artículo completo",
     "collapseBody": "Contraer",
     "noReviewsYet": "Aún no hay revisiones."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "Cita APA copiada al portapapeles.",
     "downloadStarted": "Descarga del archivo de cita iniciada.",
     "exportFailed": "Error al exportar la cita.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "Citar en su artículo",
     "addedToCollection": "Añadido a la colección de citas.",
     "alreadyInCollection": "Este artículo ya está en su colección de citas."
@@ -675,7 +679,8 @@
     "confirmRetract": "Confirmar retractación",
     "retracting": "Retractando...",
     "success": "El artículo ha sido retractado exitosamente.",
-    "failed": "Error al retractar el artículo."
+    "failed": "Error al retractar el artículo.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Registrar preimpresión",

@@ -49,6 +49,9 @@
     "notFoundTitle": "Článek nenalezen",
     "errorLoadingTitle": "Chyba při načítání článku",
     "notFoundDescription": "Článek @{author}/{permlink} nebyl nalezen.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Zobrazit celý článek",
     "collapseBody": "Sbalit",
     "noReviewsYet": "Zatím žádné recenze."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "Citace APA zkopírována do schránky.",
     "downloadStarted": "Stahování souboru citace zahájeno.",
     "exportFailed": "Nepodařilo se exportovat citaci.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "Citovat ve vašem článku",
     "addedToCollection": "Přidáno do kolekce citací.",
     "alreadyInCollection": "Tento článek je již ve vaší kolekci citací."
@@ -675,7 +679,8 @@
     "confirmRetract": "Potvrdit stažení",
     "retracting": "Stahování...",
     "success": "Článek byl úspěšně stažen.",
-    "failed": "Nepodařilo se stáhnout článek."
+    "failed": "Nepodařilo se stáhnout článek.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Registrovat preprint",

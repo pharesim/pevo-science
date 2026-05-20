@@ -1273,3 +1273,85 @@ pt: comments.serviceUnavailable
 sv: comments.serviceUnavailable
 tr: comments.serviceUnavailable
 zh: comments.serviceUnavailable
+
+### Added 2026-05-20 (UI-PAPER-DETAIL-RETRIABLE-503-HANDLING)
+
+ar: paperDetail.serviceUnavailableTitle
+cs: paperDetail.serviceUnavailableTitle
+da: paperDetail.serviceUnavailableTitle
+de: paperDetail.serviceUnavailableTitle
+es: paperDetail.serviceUnavailableTitle
+fa: paperDetail.serviceUnavailableTitle
+fr: paperDetail.serviceUnavailableTitle
+he: paperDetail.serviceUnavailableTitle
+it: paperDetail.serviceUnavailableTitle
+nl: paperDetail.serviceUnavailableTitle
+pl: paperDetail.serviceUnavailableTitle
+pt: paperDetail.serviceUnavailableTitle
+sv: paperDetail.serviceUnavailableTitle
+tr: paperDetail.serviceUnavailableTitle
+zh: paperDetail.serviceUnavailableTitle
+
+ar: paperDetail.serviceUnavailableMessage
+cs: paperDetail.serviceUnavailableMessage
+da: paperDetail.serviceUnavailableMessage
+de: paperDetail.serviceUnavailableMessage
+es: paperDetail.serviceUnavailableMessage
+fa: paperDetail.serviceUnavailableMessage
+fr: paperDetail.serviceUnavailableMessage
+he: paperDetail.serviceUnavailableMessage
+it: paperDetail.serviceUnavailableMessage
+nl: paperDetail.serviceUnavailableMessage
+pl: paperDetail.serviceUnavailableMessage
+pt: paperDetail.serviceUnavailableMessage
+sv: paperDetail.serviceUnavailableMessage
+tr: paperDetail.serviceUnavailableMessage
+zh: paperDetail.serviceUnavailableMessage
+
+ar: paperDetail.enrichmentUnavailable
+cs: paperDetail.enrichmentUnavailable
+da: paperDetail.enrichmentUnavailable
+de: paperDetail.enrichmentUnavailable
+es: paperDetail.enrichmentUnavailable
+fa: paperDetail.enrichmentUnavailable
+fr: paperDetail.enrichmentUnavailable
+he: paperDetail.enrichmentUnavailable
+it: paperDetail.enrichmentUnavailable
+nl: paperDetail.enrichmentUnavailable
+pl: paperDetail.enrichmentUnavailable
+pt: paperDetail.enrichmentUnavailable
+sv: paperDetail.enrichmentUnavailable
+tr: paperDetail.enrichmentUnavailable
+zh: paperDetail.enrichmentUnavailable
+
+ar: citation.serviceUnavailable
+cs: citation.serviceUnavailable
+da: citation.serviceUnavailable
+de: citation.serviceUnavailable
+es: citation.serviceUnavailable
+fa: citation.serviceUnavailable
+fr: citation.serviceUnavailable
+he: citation.serviceUnavailable
+it: citation.serviceUnavailable
+nl: citation.serviceUnavailable
+pl: citation.serviceUnavailable
+pt: citation.serviceUnavailable
+sv: citation.serviceUnavailable
+tr: citation.serviceUnavailable
+zh: citation.serviceUnavailable
+
+ar: retraction.serviceUnavailable
+cs: retraction.serviceUnavailable
+da: retraction.serviceUnavailable
+de: retraction.serviceUnavailable
+es: retraction.serviceUnavailable
+fa: retraction.serviceUnavailable
+fr: retraction.serviceUnavailable
+he: retraction.serviceUnavailable
+it: retraction.serviceUnavailable
+nl: retraction.serviceUnavailable
+pl: retraction.serviceUnavailable
+pt: retraction.serviceUnavailable
+sv: retraction.serviceUnavailable
+tr: retraction.serviceUnavailable
+zh: retraction.serviceUnavailable

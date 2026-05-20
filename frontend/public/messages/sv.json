@@ -49,6 +49,9 @@
     "notFoundTitle": "Artikeln hittades inte",
     "errorLoadingTitle": "Fel vid laddning av artikel",
     "notFoundDescription": "Artikeln @{author}/{permlink} kunde inte hittas.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Visa hela artikeln",
     "collapseBody": "Dölj",
     "noReviewsYet": "Inga granskningar ännu."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "APA-citering kopierad till urklipp.",
     "downloadStarted": "Nedladdning av citeringsfil startad.",
     "exportFailed": "Kunde inte exportera citering.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "Citera i din artikel",
     "addedToCollection": "Tillagd i citeringssamlingen.",
     "alreadyInCollection": "Denna artikel finns redan i din citeringssamling."
@@ -675,7 +679,8 @@
     "confirmRetract": "Bekräfta tillbakadragande",
     "retracting": "Drar tillbaka...",
     "success": "Artikeln har dragits tillbaka.",
-    "failed": "Kunde inte dra tillbaka artikeln."
+    "failed": "Kunde inte dra tillbaka artikeln.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Registrera förhandsutskrift",

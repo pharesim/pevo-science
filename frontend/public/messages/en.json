@@ -49,6 +49,9 @@
     "notFoundTitle": "Paper Not Found",
     "errorLoadingTitle": "Error Loading Paper",
     "notFoundDescription": "The paper @{author}/{permlink} could not be found.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Show full paper",
     "collapseBody": "Collapse",
     "noReviewsYet": "No reviews yet."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "APA citation copied to clipboard.",
     "downloadStarted": "Citation file download started.",
     "exportFailed": "Failed to export citation.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "Cite in your paper",
     "addedToCollection": "Added to citation collection.",
     "alreadyInCollection": "This paper is already in your citation collection."
@@ -679,7 +683,8 @@
     "confirmRetract": "Confirm Retraction",
     "retracting": "Retracting...",
     "success": "Paper has been retracted successfully.",
-    "failed": "Failed to retract paper."
+    "failed": "Failed to retract paper.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Register Preprint",

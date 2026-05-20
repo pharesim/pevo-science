@@ -49,6 +49,9 @@
     "notFoundTitle": "Artigo Nao Encontrado",
     "errorLoadingTitle": "Erro ao Carregar Artigo",
     "notFoundDescription": "O artigo @{author}/{permlink} nao foi encontrado.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Mostrar artigo completo",
     "collapseBody": "Recolher",
     "noReviewsYet": "Nenhuma revisão ainda."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "Citacao APA copiada para a area de transferencia.",
     "downloadStarted": "Download do arquivo de citacao iniciado.",
     "exportFailed": "Falha ao exportar citacao.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "Citar no seu artigo",
     "addedToCollection": "Adicionado à coleção de citações.",
     "alreadyInCollection": "Este artigo já está na sua coleção de citações."
@@ -675,7 +679,8 @@
     "confirmRetract": "Confirmar Retratacao",
     "retracting": "Retratando...",
     "success": "Artigo retratado com sucesso.",
-    "failed": "Falha ao retratar artigo."
+    "failed": "Falha ao retratar artigo.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Registrar Preprint",

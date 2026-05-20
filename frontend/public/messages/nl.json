@@ -49,6 +49,9 @@
     "notFoundTitle": "Publicatie niet gevonden",
     "errorLoadingTitle": "Fout bij laden publicatie",
     "notFoundDescription": "De publicatie @{author}/{permlink} kon niet worden gevonden.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Volledig artikel tonen",
     "collapseBody": "Inklappen",
     "noReviewsYet": "Nog geen reviews."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "APA-citatie gekopieerd naar klembord.",
     "downloadStarted": "Citatiebestand downloaden gestart.",
     "exportFailed": "Citatie exporteren mislukt.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "Citeren in uw artikel",
     "addedToCollection": "Toegevoegd aan citatiecollectie.",
     "alreadyInCollection": "Dit artikel staat al in uw citatiecollectie."
@@ -679,7 +683,8 @@
     "confirmRetract": "Intrekking bevestigen",
     "retracting": "Intrekken...",
     "success": "Artikel is succesvol ingetrokken.",
-    "failed": "Artikel intrekken mislukt."
+    "failed": "Artikel intrekken mislukt.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Preprint registreren",

@@ -49,6 +49,9 @@
     "notFoundTitle": "המאמר לא נמצא",
     "errorLoadingTitle": "שגיאה בטעינת המאמר",
     "notFoundDescription": "המאמר @{author}/{permlink} לא נמצא.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "הצג מאמר מלא",
     "collapseBody": "כווץ",
     "noReviewsYet": "אין ביקורות עדיין."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "ציטוט APA הועתק ללוח.",
     "downloadStarted": "הורדת קובץ הציטוט החלה.",
     "exportFailed": "ייצוא הציטוט נכשל.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "צטט במאמר שלך",
     "addedToCollection": "נוסף לאוסף הציטוטים.",
     "alreadyInCollection": "מאמר זה כבר באוסף הציטוטים שלך."
@@ -675,7 +679,8 @@
     "confirmRetract": "אישור הסרה",
     "retracting": "מסיר...",
     "success": "המאמר הוסר בהצלחה.",
-    "failed": "הסרת המאמר נכשלה."
+    "failed": "הסרת המאמר נכשלה.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "רישום טרום-פרסום",

@@ -49,6 +49,9 @@
     "notFoundTitle": "Makale Bulunamadı",
     "errorLoadingTitle": "Makale Yüklenirken Hata",
     "notFoundDescription": "@{author}/{permlink} makalesi bulunamadı.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Tam makaleyi göster",
     "collapseBody": "Daralt",
     "noReviewsYet": "Henüz değerlendirme yok."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "APA atıfı panoya kopyalandı.",
     "downloadStarted": "Atıf dosyası indirme başladı.",
     "exportFailed": "Atıf dışa aktarılamadı.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "Makalenizde atıf yapın",
     "addedToCollection": "Atıf koleksiyonuna eklendi.",
     "alreadyInCollection": "Bu makale zaten atıf koleksiyonunuzda."
@@ -679,7 +683,8 @@
     "confirmRetract": "Geri Çekmeyi Onayla",
     "retracting": "Geri çekiliyor...",
     "success": "Makale başarıyla geri çekildi.",
-    "failed": "Makale geri çekilemedi."
+    "failed": "Makale geri çekilemedi.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Ön Baskı Kaydet",

@@ -47,6 +47,7 @@ import Alpine from 'alpinejs';
 import { initPaperDetailPage } from '../../src/pages/paper-detail.js';
 import {
   fetchPaper,
+  fetchPaperEnrichment,
   fetchCitationExport,
   retractPaper,
   claimAuthorship,
@@ -743,6 +744,113 @@ describe('paperDetailPage', () => {
       expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(err);
+    });
+  });
+
+  // Retriable SERVICE_UNAVAILABLE handling for the four paper-detail HAF-outage
+  // sites: loadPaper auto-retry + dedicated title/message, loadEnrichment hint,
+  // handleRetract manual-only retry (no auto-loop, per backend retract-limiter
+  // burn concern), handleCitationExport bounded auto-retry on a read-only path.
+  describe('SERVICE_UNAVAILABLE retriable handling', () => {
+    let warnSpy;
+
+    function svcUnavailable() {
+      const err = new Error('temporary');
+      err.code = 'SERVICE_UNAVAILABLE';
+      err.details = { retriable: true };
+      return err;
+    }
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    it('loadPaper retriable 503: auto-retries, then sets errorIs503 + dedicated title', async () => {
+      fetchPaper.mockRejectedValue(svcUnavailable());
+      try {
+        vi.useFakeTimers();
+        const comp = createComponent();
+        const p = comp.loadPaper();
+        // Three 2000ms retry windows.
+        await vi.advanceTimersByTimeAsync(6000);
+        await p;
+        expect(comp.error).toBe('paperDetail.serviceUnavailableTitle');
+        expect(comp.errorIs503).toBe(true);
+        // Semantic-code carve-out: 503 retriable does not enter the generic
+        // sanitized branch, so console.warn must not be called for this case.
+        expect(warnSpy).not.toHaveBeenCalled();
+        // 1 initial + 3 retries.
+        expect(fetchPaper).toHaveBeenCalledTimes(4);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('loadPaper retriable 503 then success: errorIs503 stays false, paper loads', async () => {
+      fetchPaper
+        .mockRejectedValueOnce(svcUnavailable())
+        .mockResolvedValueOnce({ data: { author: 'alice', permlink: 'my-paper', title: 'Test' } });
+      // Enrichment fire-and-forget; let it fail noisily but not block.
+      fetchPaperEnrichment.mockRejectedValue(new Error('enrichment unrelated'));
+      try {
+        vi.useFakeTimers();
+        const comp = createComponent();
+        const p = comp.loadPaper();
+        // One retry window.
+        await vi.advanceTimersByTimeAsync(2000);
+        await p;
+        expect(comp.error).toBe(null);
+        expect(comp.errorIs503).toBe(false);
+        expect(comp.paper.title).toBe('Test');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('loadEnrichment retriable 503: sets enrichmentRetriable=true', async () => {
+      fetchPaperEnrichment.mockRejectedValue(svcUnavailable());
+      const comp = createComponent();
+      comp.paper = { author: 'alice', permlink: 'my-paper' };
+      await comp.loadEnrichment();
+      expect(comp.enrichmentRetriable).toBe(true);
+    });
+
+    it('loadEnrichment non-503 error: enrichmentRetriable stays false', async () => {
+      fetchPaperEnrichment.mockRejectedValue(new Error('boom'));
+      const comp = createComponent();
+      comp.paper = { author: 'alice', permlink: 'my-paper' };
+      await comp.loadEnrichment();
+      expect(comp.enrichmentRetriable).toBe(false);
+    });
+
+    it('handleRetract retriable 503: dedicated toast, no auto-retry (limiter-burn protection)', async () => {
+      retractPaper.mockRejectedValue(svcUnavailable());
+      const comp = createComponent();
+      comp.retractReason = 'My reason';
+      await comp.handleRetract();
+      expect(mockStores.toast.show).toHaveBeenCalledWith('retraction.serviceUnavailable', 'error');
+      // 503 retriable does not enter the generic sanitized branch.
+      expect(warnSpy).not.toHaveBeenCalled();
+      // Manual-only retry: a single retract call per user click.
+      expect(retractPaper).toHaveBeenCalledTimes(1);
+    });
+
+    it('handleCitationExport retriable 503: auto-retries twice, then dedicated toast', async () => {
+      fetchCitationExport.mockRejectedValue(svcUnavailable());
+      try {
+        vi.useFakeTimers();
+        const comp = createComponent();
+        const p = comp.handleCitationExport('bibtex');
+        // Backoff is [1500, 2500] -> advance 4000ms total.
+        await vi.advanceTimersByTimeAsync(4000);
+        await p;
+        expect(mockStores.toast.show).toHaveBeenCalledWith('citation.serviceUnavailable', 'error');
+        expect(warnSpy).not.toHaveBeenCalled();
+        // 1 initial + 2 retries.
+        expect(fetchCitationExport).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

@@ -26,9 +26,9 @@ const template = `
         <template x-if="!loading && error">
           <div class="card text-center py-12">
             <h1 class="text-2xl font-bold text-ink mb-2" x-text="error"></h1>
-            <p class="text-ink-muted mb-4" x-text="$t('paperDetail.notFoundDescription', { author: author, permlink: permlink })"></p>
+            <p class="text-ink-muted mb-4" x-text="errorIs503 ? $t('paperDetail.serviceUnavailableMessage') : $t('paperDetail.notFoundDescription', { author: author, permlink: permlink })"></p>
             <div class="flex justify-center gap-3">
-              <button @click="loadPaper()" class="btn-secondary" x-text="$t('common.retry')"></button>
+              <button @click="loadPaper()" class="btn-secondary" data-testid="paper-detail-retry" x-text="$t('common.retry')"></button>
               <a :href="$lp('/')" @click.prevent="navigate('/')" class="btn-primary no-underline" x-text="$t('common.backToPapers')"></a>
             </div>
           </div>
@@ -509,6 +509,17 @@ const template = `
               </section>
             </template>
 
+            <!-- Enrichment-unavailable hint: shown when the lazy enrichment
+                 fetch returned a retriable 503. Distinct from the empty-data
+                 state — reviews/votes/claims may exist but were unreachable. -->
+            <template x-if="enrichmentRetriable">
+              <div class="mt-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                <p class="text-sm text-amber-800" x-text="$t('paperDetail.enrichmentUnavailable')"></p>
+                <button type="button" class="btn-secondary text-xs" data-testid="enrichment-retry"
+                        @click="loadEnrichment()" x-text="$t('common.retry')"></button>
+              </div>
+            </template>
+
             <!-- Reviews section -->
             <section class="mt-8">
               <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
@@ -738,7 +749,16 @@ export function initPaperDetailPage() {
     paper: null,
     loading: true,
     error: null,
+    // Set true alongside `error` when the failure was a retriable 503 from
+    // the backend HAF-outage translator. The template swaps the description
+    // copy so the user sees "temporarily unavailable" instead of the
+    // not-found phrasing while still surfacing the same retry button.
+    errorIs503: false,
     enrichmentLoaded: false,
+    // Set true when the enrichment fetch fails with a retriable 503. Drives
+    // a small "Enrichment temporarily unavailable" hint above the reviews
+    // section; cleared at the top of each (re)load.
+    enrichmentRetriable: false,
 
     // Citation export
     citeOpen: false,
@@ -788,9 +808,16 @@ export function initPaperDetailPage() {
       const permlink = this.permlink;
       this.loading = true;
       this.error = null;
+      this.errorIs503 = false;
       // Retry on NOT_FOUND to cover the HAF indexing window right after a publish/bridge.
       const notFoundRetryDelaysMs = [2000, 2000, 2000];
-      let attempt = 0;
+      // Retry on retriable SERVICE_UNAVAILABLE (backend HAF-outage translator)
+      // since the backend's `details.retriable: true` flag is an explicit invite
+      // to retry. Same shape as the NOT_FOUND loop; kept as a separate constant
+      // so future tuning of either window stays independent.
+      const serviceUnavailableRetryDelaysMs = [2000, 2000, 2000];
+      let notFoundAttempt = 0;
+      let serviceUnavailableAttempt = 0;
       while (true) {
         try {
           const res = await fetchPaper(author, permlink);
@@ -802,16 +829,32 @@ export function initPaperDetailPage() {
           break;
         } catch (err) {
           if (this.author !== author || this.permlink !== permlink) return;
-          if (err?.code === 'NOT_FOUND' && attempt < notFoundRetryDelaysMs.length) {
-            await new Promise((resolve) => setTimeout(resolve, notFoundRetryDelaysMs[attempt]));
+          if (err?.code === 'NOT_FOUND' && notFoundAttempt < notFoundRetryDelaysMs.length) {
+            await new Promise((resolve) => setTimeout(resolve, notFoundRetryDelaysMs[notFoundAttempt]));
             if (this.author !== author || this.permlink !== permlink) return;
-            attempt++;
+            notFoundAttempt++;
             continue;
           }
-          // Semantic-code carve-out: NOT_FOUND renders a dedicated localized title.
-          // Every other caught error is sanitized to a generic key; raw err -> console.warn.
+          if (
+            err?.code === 'SERVICE_UNAVAILABLE'
+            && err?.details?.retriable === true
+            && serviceUnavailableAttempt < serviceUnavailableRetryDelaysMs.length
+          ) {
+            await new Promise((resolve) => setTimeout(resolve, serviceUnavailableRetryDelaysMs[serviceUnavailableAttempt]));
+            if (this.author !== author || this.permlink !== permlink) return;
+            serviceUnavailableAttempt++;
+            continue;
+          }
+          // Semantic-code carve-out: NOT_FOUND renders a dedicated localized title;
+          // SERVICE_UNAVAILABLE retriable surfaces a transient-failure title plus
+          // a description that reads "temporarily unavailable" rather than the
+          // not-found phrasing. Every other caught error is sanitized to a
+          // generic key; raw err -> console.warn.
           if (err?.code === 'NOT_FOUND') {
             this.error = this.$t('paperDetail.notFoundTitle');
+          } else if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+            this.error = this.$t('paperDetail.serviceUnavailableTitle');
+            this.errorIs503 = true;
           } else {
             console.warn('[paper detail load]', err);
             this.error = this.$t('paperDetail.errorLoadingTitle');
@@ -826,6 +869,7 @@ export function initPaperDetailPage() {
       if (!this.paper) return;
       const author = this.author;
       const permlink = this.permlink;
+      this.enrichmentRetriable = false;
       try {
         const res = await fetchPaperEnrichment(author, permlink);
         if (this.author !== author || this.permlink !== permlink) return;
@@ -838,8 +882,12 @@ export function initPaperDetailPage() {
         this.enrichmentLoaded = true;
         // Scroll to review if URL has a hash fragment
         this.scrollToHashReview();
-      } catch {
-        console.warn('Paper enrichment failed');
+      } catch (err) {
+        if (this.author !== author || this.permlink !== permlink) return;
+        if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+          this.enrichmentRetriable = true;
+        }
+        console.warn('Paper enrichment failed', err);
       }
     },
 
@@ -983,28 +1031,58 @@ export function initPaperDetailPage() {
     // Citation export
     async handleCitationExport(format) {
       this.citeLoading = true;
+      // Read-only path; the backend's `/cite` endpoint has no rate-limiter
+      // slot concern, so a small auto-retry on retriable SERVICE_UNAVAILABLE
+      // is safe and saves the user a manual round-trip during a transient
+      // HAF blip. Backoff stays bounded to avoid pinning the citation
+      // dropdown's loading state on a long outage.
+      const serviceUnavailableRetryDelaysMs = [1500, 2500];
+      let serviceUnavailableAttempt = 0;
       try {
-        const data = await fetchCitationExport(this.author, this.permlink, format);
-        if (format === 'apa') {
-          await navigator.clipboard.writeText(data.content);
-          this.$store.toast.show(this.$t('citation.copiedToClipboard'), 'success');
-        } else {
-          const ext = format === 'bibtex' ? 'bib' : 'ris';
-          const mimeType = format === 'bibtex' ? 'application/x-bibtex' : 'application/x-research-info-systems';
-          const blob = new Blob([data.content], { type: mimeType });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `${this.permlink}.${ext}`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-          this.$store.toast.show(this.$t('citation.downloadStarted'), 'success');
+        while (true) {
+          try {
+            const data = await fetchCitationExport(this.author, this.permlink, format);
+            if (format === 'apa') {
+              await navigator.clipboard.writeText(data.content);
+              this.$store.toast.show(this.$t('citation.copiedToClipboard'), 'success');
+            } else {
+              const ext = format === 'bibtex' ? 'bib' : 'ris';
+              const mimeType = format === 'bibtex' ? 'application/x-bibtex' : 'application/x-research-info-systems';
+              const blob = new Blob([data.content], { type: mimeType });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `${this.permlink}.${ext}`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              this.$store.toast.show(this.$t('citation.downloadStarted'), 'success');
+            }
+            break;
+          } catch (err) {
+            if (
+              err?.code === 'SERVICE_UNAVAILABLE'
+              && err?.details?.retriable === true
+              && serviceUnavailableAttempt < serviceUnavailableRetryDelaysMs.length
+            ) {
+              await new Promise((resolve) => setTimeout(resolve, serviceUnavailableRetryDelaysMs[serviceUnavailableAttempt]));
+              serviceUnavailableAttempt++;
+              continue;
+            }
+            // Retriable 503 surfaces a distinct toast so the user knows to
+            // retry the action shortly. 400 (bad format) and 404 (paper not
+            // found, generator dispatch failed) fall through to the generic
+            // sanitized branch.
+            if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+              this.$store.toast.show(this.$t('citation.serviceUnavailable'), 'error');
+            } else {
+              console.warn('[paper detail citation export]', err);
+              this.$store.toast.show(this.$t('citation.exportFailed'), 'error');
+            }
+            break;
+          }
         }
-      } catch (err) {
-        console.warn('[paper detail citation export]', err);
-        this.$store.toast.show(this.$t('citation.exportFailed'), 'error');
       } finally {
         this.citeLoading = false;
         this.citeOpen = false;
@@ -1024,8 +1102,18 @@ export function initPaperDetailPage() {
         const res = await fetchPaper(this.author, this.permlink);
         this.paper = res.data;
       } catch (err) {
-        console.warn('[paper detail retract]', err);
-        this.$store.toast.show(this.$t('retraction.failed'), 'error');
+        // Manual retry only on retriable SERVICE_UNAVAILABLE: the backend's
+        // retract rate limiter currently consumes a slot per attempt, so an
+        // auto-retry loop here would amplify the user's daily retract budget.
+        // The retract dialog stays open on error so the user can re-click
+        // "Confirm Retraction" themselves; the toast distinguishes the
+        // transient failure from a permanent one.
+        if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+          this.$store.toast.show(this.$t('retraction.serviceUnavailable'), 'error');
+        } else {
+          console.warn('[paper detail retract]', err);
+          this.$store.toast.show(this.$t('retraction.failed'), 'error');
+        }
       } finally {
         this.retractLoading = false;
       }

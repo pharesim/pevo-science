@@ -49,6 +49,9 @@
     "notFoundTitle": "Article introuvable",
     "errorLoadingTitle": "Erreur lors du chargement de l'article",
     "notFoundDescription": "L'article @{author}/{permlink} est introuvable.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Afficher l'article complet",
     "collapseBody": "Réduire",
     "noReviewsYet": "Pas encore d'évaluations."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "Citation APA copiée dans le presse-papiers.",
     "downloadStarted": "Téléchargement du fichier de citation commencé.",
     "exportFailed": "Impossible d'exporter la citation.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "Citer dans votre article",
     "addedToCollection": "Ajouté à la collection de citations.",
     "alreadyInCollection": "Cet article est déjà dans votre collection de citations."
@@ -675,7 +679,8 @@
     "confirmRetract": "Confirmer la rétractation",
     "retracting": "Rétractation en cours...",
     "success": "L'article a été rétracté avec succès.",
-    "failed": "Impossible de rétracter l'article."
+    "failed": "Impossible de rétracter l'article.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Enregistrer une prépublication",

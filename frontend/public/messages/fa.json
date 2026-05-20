@@ -49,6 +49,9 @@
     "notFoundTitle": "مقاله یافت نشد",
     "errorLoadingTitle": "خطا در بارگذاری مقاله",
     "notFoundDescription": "مقاله @{author}/{permlink} یافت نشد.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "نمایش مقاله کامل",
     "collapseBody": "جمع کردن",
     "noReviewsYet": "هنوز بررسی‌ای وجود ندارد."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "استناد APA در کلیپ‌بورد کپی شد.",
     "downloadStarted": "دانلود فایل استناد شروع شد.",
     "exportFailed": "خروجی استناد ناموفق بود.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "ارجاع در مقاله شما",
     "addedToCollection": "به مجموعه ارجاعات اضافه شد.",
     "alreadyInCollection": "این مقاله قبلاً در مجموعه ارجاعات شما وجود دارد."
@@ -675,7 +679,8 @@
     "confirmRetract": "تایید بازپس‌گیری",
     "retracting": "در حال بازپس‌گیری...",
     "success": "مقاله با موفقیت بازپس‌گرفته شد.",
-    "failed": "بازپس‌گیری مقاله ناموفق بود."
+    "failed": "بازپس‌گیری مقاله ناموفق بود.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "ثبت پیش‌چاپ",

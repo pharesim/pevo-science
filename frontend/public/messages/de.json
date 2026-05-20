@@ -49,6 +49,9 @@
     "notFoundTitle": "Publikation nicht gefunden",
     "errorLoadingTitle": "Fehler beim Laden der Publikation",
     "notFoundDescription": "Die Publikation @{author}/{permlink} konnte nicht gefunden werden.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Vollständigen Artikel anzeigen",
     "collapseBody": "Einklappen",
     "noReviewsYet": "Noch keine Begutachtungen vorhanden."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "APA-Zitation in die Zwischenablage kopiert.",
     "downloadStarted": "Download der Zitationsdatei gestartet.",
     "exportFailed": "Export der Zitation fehlgeschlagen.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "In Ihrem Artikel zitieren",
     "addedToCollection": "Zur Zitierungssammlung hinzugefügt.",
     "alreadyInCollection": "Dieser Artikel ist bereits in Ihrer Zitierungssammlung."
@@ -675,7 +679,8 @@
     "confirmRetract": "Zurückziehung bestätigen",
     "retracting": "Wird zurückgezogen...",
     "success": "Publikation wurde erfolgreich zurückgezogen.",
-    "failed": "Zurückziehung der Publikation fehlgeschlagen."
+    "failed": "Zurückziehung der Publikation fehlgeschlagen.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Preprint registrieren",

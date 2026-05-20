@@ -49,6 +49,9 @@
     "notFoundTitle": "البحث غير موجود",
     "errorLoadingTitle": "خطأ في تحميل البحث",
     "notFoundDescription": "تعذّر العثور على البحث @{author}/{permlink}.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "عرض المقال كاملاً",
     "collapseBody": "طي",
     "noReviewsYet": "لا توجد مراجعات بعد."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "تم نسخ استشهاد APA إلى الحافظة.",
     "downloadStarted": "بدأ تحميل ملف الاستشهاد.",
     "exportFailed": "فشل تصدير الاستشهاد.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "استشهد في ورقتك",
     "addedToCollection": "تمت الإضافة إلى مجموعة الاستشهادات.",
     "alreadyInCollection": "هذه الورقة موجودة بالفعل في مجموعة الاستشهادات الخاصة بك."
@@ -675,7 +679,8 @@
     "confirmRetract": "تأكيد السحب",
     "retracting": "جارٍ السحب...",
     "success": "تم سحب البحث بنجاح.",
-    "failed": "فشل سحب البحث."
+    "failed": "فشل سحب البحث.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "تسجيل مسودة منشورة",

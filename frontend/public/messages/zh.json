@@ -49,6 +49,9 @@
     "notFoundTitle": "论文未找到",
     "errorLoadingTitle": "论文加载出错",
     "notFoundDescription": "未找到论文 @{author}/{permlink}。",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "显示全文",
     "collapseBody": "收起",
     "noReviewsYet": "暂无评审。"
@@ -659,6 +662,7 @@
     "copiedToClipboard": "APA 引用格式已复制到剪贴板。",
     "downloadStarted": "引用文件下载已开始。",
     "exportFailed": "引用导出失败。",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "在您的论文中引用",
     "addedToCollection": "已添加到引用集合。",
     "alreadyInCollection": "该论文已在您的引用集合中。"
@@ -675,7 +679,8 @@
     "confirmRetract": "确认撤回",
     "retracting": "撤回中...",
     "success": "论文已成功撤回。",
-    "failed": "论文撤回失败。"
+    "failed": "论文撤回失败。",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "注册预印本",

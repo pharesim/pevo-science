@@ -49,6 +49,9 @@
     "notFoundTitle": "Artikel ikke fundet",
     "errorLoadingTitle": "Fejl ved indlæsning af artikel",
     "notFoundDescription": "Artiklen @{author}/{permlink} kunne ikke findes.",
+    "serviceUnavailableTitle": "Paper Temporarily Unavailable",
+    "serviceUnavailableMessage": "We could not load this paper right now. Please retry in a moment.",
+    "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Vis hele artiklen",
     "collapseBody": "Skjul",
     "noReviewsYet": "Ingen anmeldelser endnu."
@@ -659,6 +662,7 @@
     "copiedToClipboard": "APA-citation kopieret til udklipsholder.",
     "downloadStarted": "Download af citationsfil startet.",
     "exportFailed": "Kunne ikke eksportere citation.",
+    "serviceUnavailable": "Citation export is temporarily unavailable. Please retry in a moment.",
     "addToCollection": "Citér i din artikel",
     "addedToCollection": "Tilføjet til citationssamling.",
     "alreadyInCollection": "Denne artikel er allerede i din citationssamling."
@@ -675,7 +679,8 @@
     "confirmRetract": "Bekræft tilbagetrækning",
     "retracting": "Trækker tilbage...",
     "success": "Artiklen er blevet trukket tilbage.",
-    "failed": "Kunne ikke trække artiklen tilbage."
+    "failed": "Kunne ikke trække artiklen tilbage.",
+    "serviceUnavailable": "Retraction is temporarily unavailable. Please retry in a moment."
   },
   "bridge": {
     "navLabel": "Registrer preprint",
