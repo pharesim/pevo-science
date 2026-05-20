@@ -520,3 +520,16 @@ Scoped vitest (`tests/lib/haf-walker-budget-env-parse.test.ts` + `tests/routes/c
 ### Re-review signal
 
 When item 1 lands in a single round-4 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Diff is ~6 LOC; round-4 should converge clean.
+
+---
+
+## Backend re-review signal (2026-05-20, round-4 hold-fix)
+
+Round-4 item 1 landed. `backend/tests/lib/haf-walker-budget-env-parse.test.ts` — added two cases at the bottom of the file:
+
+1. `'1e3'` → 1000 (scientific notation; `Number('1e3') === 1000` vs `parseInt('1e3', 10) === 1`).
+2. `'1.5'` → 1.5 (fractional ms; `Number('1.5') === 1.5` vs `parseInt('1.5', 10) === 1`).
+
+Both pin the parseInt → Number migration motivation directly: reverting `parseHafWalkerBudget`'s `Number(env)` back to `parseInt(env, 10)` now fails red on these two cases (assertions `.toBe(1000)` and `.toBe(1.5)` would observe `1` in both cases). Per-test comment cross-references the regression class.
+
+Scoped vitest (`tests/lib/haf-walker-budget-env-parse.test.ts`): 9 specs green (7 prior + 2 new). The pre-existing typecheck failure at `tests/support/argon2-error-mocks.ts:178` (`isRetriableHafError` missing from `dbStubFactory`) carries forward as documented round-2 hold item 2 of `backend-fetch-paper-detail-haf-error-vs-not-found` and round-3 hold item 1 of `backend-haf-outage-translation-audit-across-routes` — unrelated to this 6-LOC test addition.

@@ -52,4 +52,17 @@ describe('parseHafWalkerBudget', () => {
     // env value and the runtime config.
     expect(parseHafWalkerBudget('3000ms')).toBe(3000);
   });
+
+  it('returns 1000 for scientific notation "1e3" (Number, not parseInt → 1)', () => {
+    // parseInt('1e3', 10) === 1 (stops at 'e'); Number('1e3') === 1000.
+    // Pins the parseInt → Number migration: a regression reverting the
+    // helper would silently yield 1ms, immediate-fire on every request.
+    expect(parseHafWalkerBudget('1e3')).toBe(1000);
+  });
+
+  it('returns 1.5 for fractional ms "1.5" (Number, not parseInt → 1)', () => {
+    // parseInt('1.5', 10) === 1; Number('1.5') === 1.5. Same regression
+    // class as '1e3' — pins the helper against silent truncation.
+    expect(parseHafWalkerBudget('1.5')).toBe(1.5);
+  });
 });
