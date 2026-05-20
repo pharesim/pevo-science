@@ -912,10 +912,9 @@ describe('paperDetailPage', () => {
       try {
         vi.useFakeTimers();
         const comp = createComponent();
-        // Seed sentinel values BEFORE calling loadPaper. `loadPaper()`
-        // resets `error = null` / `errorIs503 = false` at entry, so the
-        // sentinels are immediately overwritten on the synchronous prologue
-        // — they cover the post-await branch only. A regression where the
+        // Seed sentinel values AFTER calling `loadPaper()` so the synchronous
+        // prologue (`error = null` / `errorIs503 = false`) runs first and the
+        // sentinels survive into the post-await branch. A regression where the
         // `_mounted` guard fails would re-enter the error-display branch on
         // the next iteration and overwrite both fields with the localized
         // 503 strings; sentinel survival proves the guard short-circuited.
