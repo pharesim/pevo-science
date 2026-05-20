@@ -168,3 +168,15 @@ Round-2's Item 3 wrapped the `citeLoading = false` reset in `handleCitationExpor
 The captured `author`/`permlink` closures on `fetchCitationExport(author, permlink, format)` and on the download filename already prevent Item 3's targeted race (corrupt-download with mismatched filename/content). The conditional reset in finally adds nothing to that defense and introduces a new permanent-disabled-state failure mode. Cross-reviewer corroboration: surfaced by correctness, julik-frontend-races, reliability, and adversarial independently.
 
 Fix: revert the finally to unconditional `this.citeLoading = false` (drop the identity-guarded if-wrap; the captured closures alone are sufficient for Item 3's intent). Add a positive-path vitest case asserting `citeLoading === false` after a tab-switch race — mock `mockStores.router.params` flip mid-backoff (the round-2 `handleCitationExport: paper-identity changes mid-backoff` test gives a working setup pattern), assert post-bail `citeLoading === false`, and as a bonus assert the paper-B citation buttons would be re-enabled by re-checking `comp.citeLoading` after the divergence.
+
+---
+
+## UI re-review signal (2026-05-20, commit 4c760ef6)
+
+Round-3 fix landed in commit `4c760ef6`. Single architect hold item addressed:
+
+- **Item 1 (citeLoading state-leak on paper-to-paper navigation).** `handleCitationExport`'s `finally` block reverted to unconditional `this.citeLoading = false`. The identity-guarded if-wrap (`if (this.author === author && this.permlink === permlink)`) is gone. Inline comment anchors the rationale on the stable invariant: the captured `author`/`permlink` closures on `fetchCitationExport` and the download filename already prevent Item 3's corrupt-download race; the conditional reset added nothing to that defense and leaked `citeLoading` across the persistent `paperDetailPage` instance because page-mount.js re-renders Alpine only on route name change, not param change.
+
+New positive-path vitest case `handleCitationExport: tab-switch race -> citeLoading resets to false on paper B` added directly after the existing `paper-identity changes mid-backoff` test. Reuses the same fake-timers + `mockStores.router.params` mid-backoff flip setup. Asserts `comp.citeLoading === false` after the divergence, which would fail under the prior identity-guarded finally (paper B's citation buttons would otherwise be permanently disabled).
+
+Test result: 79/79 pass in `pages-paper-detail.test.js` (was 77/77 before round-3 — the round-2 four added cases + the round-3 one positive-path pin land the new total). Full E2E run deferred per the docker-stack test-up/test-down requirement.
