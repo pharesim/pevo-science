@@ -48,8 +48,8 @@ const template = `
               <label for="bridge-id" class="block text-sm font-semibold text-ink mb-2" x-text="$t('bridge.identifierLabel')"></label>
               <div class="flex gap-3">
                 <input id="bridge-id" type="text" class="select-control flex-1" :placeholder="$t('bridge.identifierPlaceholder')"
-                       x-model="identifier" @keydown.enter="handleLookup()" :disabled="lookingUp" />
-                <button class="btn-primary text-sm whitespace-nowrap" @click="handleLookup()" :disabled="lookingUp || !identifier.trim()"
+                       x-model="identifier" @keydown.enter="handleLookup()" :disabled="lookingUp || step === 'registering'" />
+                <button class="btn-primary text-sm whitespace-nowrap" @click="handleLookup()" :disabled="lookingUp || !identifier.trim() || step === 'registering'"
                         x-text="lookingUp ? $t('bridge.lookingUp') : $t('bridge.lookupButton')"></button>
               </div>
               <template x-if="lookupError">
@@ -297,6 +297,12 @@ export function initBridgePage() {
 
     async handleLookup() {
       if (!this.identifier.trim()) return;
+      // Defense-in-depth alongside the template :disabled gate. handleLookup
+      // resets `step` and `duplicateExisting` at entry, which would mask an
+      // in-flight register broadcast — the broadcast snapshot already
+      // captured the original identifier, so a mid-flight lookup against a
+      // different identifier creates a wrong-paper landing on redirect.
+      if (this.step === 'registering') return;
       this.lookingUp = true;
       this.lookupError = '';
       this.lookup = null;

@@ -288,6 +288,29 @@ describe('bridgePage', () => {
       expect(comp.step).toBe('idle');
       expect(comp.errorMessage).toBe('');
     });
+
+    it('bails without firing lookup while a register broadcast is in flight', async () => {
+      const comp = createComponent();
+      comp.identifier = '10.1234/paper-a';
+      comp.discipline = 'Physics';
+      // Drive handleRegister to the in-flight 'registering' state via a
+      // never-resolving registerBridgePaper. step transitions synchronously
+      // before the first await, so the gate can observe it.
+      mockRegisterBridgePaper.mockImplementation(() => new Promise(() => {}));
+      void comp.handleRegister();
+      expect(comp.step).toBe('registering');
+      // User types a different identifier and attempts a Lookup mid-broadcast.
+      comp.identifier = '10.5678/paper-b';
+      await comp.handleLookup();
+      // The gate must bail before the lookup fetches fire. Without the bail,
+      // handleLookup's entry resets (step = 'idle', duplicateExisting = null)
+      // would mask the in-flight register state from the visible UI and the
+      // user would land on paper A after the original broadcast resolves
+      // while seeing paper B's preview.
+      expect(mockFetchBridgeLookup).not.toHaveBeenCalled();
+      expect(mockFetchBridgeCheck).not.toHaveBeenCalled();
+      expect(comp.step).toBe('registering');
+    });
   });
 
   describe('handleRegister', () => {

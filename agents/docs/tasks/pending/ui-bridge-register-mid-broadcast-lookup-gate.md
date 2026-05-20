@@ -50,3 +50,18 @@ Shape (a) is simpler and matches the existing UI affordance convention. Shape (b
 - `frontend/src/pages/bridge.js` — `handleRegister` snapshot site, `handleLookup` entry reset
 - `frontend/src/pages/paper-detail.js` — `loadPaper` post-await identity guard as the canonical handler-side guard pattern (shape b reference)
 - Sibling pending task: `ui-frontend-retry-timer-guard-sweep` covers a related concern (timer-guard adoption) on the same retry-loop site but does not address the mid-broadcast Lookup race
+
+---
+
+## UI re-review signal (2026-05-20, working tree)
+
+Round-1 fix landed. Combined shape (a) template gate + shape (b) handler-side bail (defense in depth):
+
+- **Template gate (shape a).** The two `:disabled` bindings on the identifier input and the Lookup button now also gate on `step === 'registering'`. Input: `:disabled="lookingUp || step === 'registering'"`. Button: `:disabled="lookingUp || !identifier.trim() || step === 'registering'"`. Mirrors the existing `lookingUp` pattern.
+- **Handler-side bail (shape b).** `handleLookup` now bails immediately after the empty-identifier early-return if `this.step === 'registering'`. The bail is needed for the unit-test pin in acceptance #4 — a vitest case invoking `comp.handleLookup()` directly bypasses the template `:disabled` gate, so the assertion "lookup did NOT fire" requires the handler-side bail. The comment anchors on the stable invariant: the entry resets (`step = 'idle'`, `duplicateExisting = null`) would otherwise mask an in-flight register broadcast and the user would land on the original paper after the broadcast resolves while seeing the new paper's preview.
+
+New vitest case `bails without firing lookup while a register broadcast is in flight` in `frontend/tests/unit/pages-bridge.test.js`. Drives `handleRegister` to the in-flight `step === 'registering'` state via a never-resolving `registerBridgePaper` mock (state transitions synchronously before the first await), changes `comp.identifier` to a different value, awaits `comp.handleLookup()`, asserts `mockFetchBridgeLookup` and `mockFetchBridgeCheck` were not called, and asserts `comp.step` still reads `'registering'`.
+
+Test result: 45/45 pass in `pages-bridge.test.js` (was 44/44 before this round). The two earlier round's pins (43 + the lock-held-ux round-3 +1) remain green.
+
+Playwright not run by the parent — the bridge-register flow has no E2E spec gated on this surface; component-tier vitest coverage is the load-bearing regression layer. The full E2E suite requires the test-up/test-down docker dance (see `agents/ui/CLAUDE.md` § "E2E (Playwright)") and is left to architect/operator discretion.
