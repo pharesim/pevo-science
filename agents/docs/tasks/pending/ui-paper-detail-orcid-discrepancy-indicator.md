@@ -139,3 +139,17 @@ Round-2 fixes landed in commit `7a55cca7`. All seven architect hold items addres
 Dead-code cleanup: `hasOrcidDiscrepancy` removed from the three render-site x-data exposures (no template binds to it anymore); the helper remains exported from `lib/authors.js` for unit-test access and internal use by `shouldShowDiscrepancyIndicator`.
 
 Test result: 184/184 pass across affected vitest files (lib-authors, components-paper-card, components-paper-feed, pages-profile, pages-paper-detail, i18n). New E2E specs verified via `playwright test --list`; full E2E run deferred (requires test-up/test-down docker dance per `agents/ui/CLAUDE.md` § "E2E (Playwright)").
+
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` fan-out (8 reviewers, full persona set minus `ce-agent-native-reviewer` per PEvO policy) on the round-2 implementation surfaced 1 item that blocks archive. Six of seven round-1 hold items landed correctly — case-b suppression via `shouldShowDiscrepancyIndicator`, ORCID format validation via `validOrcidOrNull`, the helper unit tests, the case-b paper-detail E2E regression pin, the JSDoc truthy-`||` semantics alignment, and the i18n consolidation into the shared `orcid.*` namespace are all sound. The item below is a defect in the new list-card E2E spec for the profile-inline surface (round-1 hold item 3 coverage).
+
+### Item 1 — profile inline E2E xpath cannot match the real DOM
+
+The new `paper-list-orcid-discrepancy.spec.js` for the profile-inline-publications surface scopes assertions to a single publication row via `xpath=ancestor::div[contains(@class, "card") or contains(@class, "bg-")][1]`. But `frontend/src/pages/profile.js` wraps each publication in `<article class="card">`, not `<div>`. The `ancestor::div` axis filters on element name `div`, so the `<article>` row wrapper is skipped; the higher `<div>` ancestors carry neither `card` nor `bg-` classes. `discrepantRow` therefore resolves to zero/wrong scope — likely the outer profile-header card, which is the SAME scope for both rows. The discrepant-row `toHaveCount(1)` assertion either fails outright in CI, or the matching-row `toHaveCount(0)` assertion passes vacuously because both rows resolve to an empty (or identical) parent scope. Round-1 hold item 3's claimed list-card surface coverage is not actually pinned on the profile-inline surface — the regression pin does not fire.
+
+The paper-feed half of the same file uses the right pattern: `page.locator('article.card').filter({ hasText: '...' })`. The profile half forks to a brittle xpath without that anchor. Cross-reviewer corroboration: surfaced by correctness, testing, julik-frontend-races, and adversarial independently.
+
+Fix: replace the xpath ancestor lookup with the same `article.card` filter pattern the paper-feed half uses, or `ancestor::article[contains(@class, "card")][1]` if you want to preserve the ancestor-style structure. Run the spec once via the playwright test-up/test-down docker dance to verify it passes in CI (currently it cannot resolve to a valid row scope).
