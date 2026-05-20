@@ -273,11 +273,11 @@ async function checkExistingBridge(
     // `route: 'bridge.register'` don't false-alert on /check HAF blips.
     logger.warn(
       { err, identifier, permlink, event: `${callerLabel}.haf_check_failed`, route: callerLabel },
-      // Round-3 hold item #4: route field carries the fail-open vs.
-      // fail-closed disposition; this path fires from /register (fail-closed
-      // → 503) AND /check (fail-open → 200) so the human-readable message
-      // stays disposition-neutral. Operator dashboards key on structured
-      // fields, not message text.
+      // route field carries the fail-open vs. fail-closed disposition;
+      // this path fires from /register (fail-closed → 503) AND /check
+      // (fail-open → 200) so the human-readable message stays
+      // disposition-neutral. Operator dashboards key on structured fields,
+      // not message text.
       'Bridge HAF query failed',
     );
     return { status: 'haf_unavailable' };

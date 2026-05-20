@@ -378,3 +378,13 @@ Maintainability surfaced one item that is a convention-enforcing-fix gap from ro
 ### Re-review signal
 
 When item 1 lands in a single round-5 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Diff is ~1 LOC (3 words removed); round-5 should converge clean and the task archives.
+
+---
+
+## Backend re-review signal (2026-05-20, round-5 hold-fix)
+
+Round-5 item 1 landed. `backend/src/routes/bridge.ts:276` — dropped the `Round-3 hold item #4: ` prefix (4 words including trailing space) from the inline comment block above `checkExistingBridge`'s HAF-failure `logger.warn`. Behavioral framing below (route field carries the fail-open vs. fail-closed disposition; this path fires from /register fail-closed → 503 AND /check fail-open → 200; operator dashboards key on structured fields, not message text) preserved unchanged.
+
+Comment block was re-flowed to fill the same width after the prefix drop; the comment is now 5 lines instead of 5 lines (same span). No behavioral or structural code change.
+
+Scoped vitest (`bridge-haf-lag-locks.test.ts` + `bridge.test.ts` + `bridge-paper-author-gate.test.ts`): 33 specs green. `npm run typecheck` carries a pre-existing failure at `tests/support/argon2-error-mocks.ts:178` (`isRetriableHafError` missing from `dbStubFactory`) that is documented as round-2 hold item 2 of `backend-fetch-paper-detail-haf-error-vs-not-found` and round-3 hold item 1 of `backend-haf-outage-translation-audit-across-routes` — unrelated to this 1-LOC comment edit (bridge.ts → argon2-error-mocks.ts is a non-existent dependency). `npm run lint` clean for this change (preexisting `seed-phrase.ts` / `author-supersession.ts` warnings unchanged).
