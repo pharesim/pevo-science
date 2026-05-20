@@ -625,9 +625,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   // Cumulative-union display canaries — verify detail.authors[] is the
   // running union of every hive ever named across the chain, in
   // first-occurrence order. Sub-fields resolve via most-recent self-claim
-  // (with fallback to most-recent third-party claim); ORCID is server-
-  // overridden for accredited hives. Drops are silently retained by
-  // construction (the union only grows).
+  // (with fallback to most-recent non-self claim); ORCID is server-
+  // overridden for accredited hives whose claim differs from the
+  // attestation. Drops are silently retained by construction (the union
+  // only grows).
   // ────────────────────────────────────────────────────────────────
 
   /** SQL pattern matchers for accreditation lookups. */

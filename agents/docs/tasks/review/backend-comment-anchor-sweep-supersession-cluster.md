@@ -253,3 +253,30 @@ However, the cluster-review's correctness persona surfaced 2 behavioral-accuracy
 - Pre-existing date anchor `2026-05-04` at L473 — out of scope per the maintainability persona's default-dismiss residual_risk.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-20, round 4)
+
+Round-4 hold items 1-2 landed. Single banner edit at the cumulative-union display canaries section.
+
+### Per-item summary
+
+1. **Fallback qualifier — "third-party claim" → "non-self claim".** Re-read `buildCumulativeAuthorsForChain`'s docblock in `backend/src/routes/papers.ts` (the cumulative-union sub-field resolution rules): "per-hive sub-fields (`name`, `affiliation`, etc.) resolve to the most-recent self-claim ... or, absent a self-claim, the most-recent claim across the chain." The fallback ranges over every chain post's claim about the hive, which includes co-author claims (one co-author can claim another co-author's name/affiliation), not just non-author claims. "Third-party" implied non-author and drifted from the actual semantics. Rewrote to "non-self claim" — matches the code's "absent a self-claim" framing exactly and preserves the dichotomy with "self-claim" in the preceding clause.
+
+2. **ORCID override qualifier — added "whose claim differs from the attestation".** Re-read the same `buildCumulativeAuthorsForChain` docblock: "ORCID is server-overridden for accredited hives whose claimed ORCID disagrees with the on-chain accredited ORCID." The matching-claim canary at `it('ORCID passes through unchanged when claim matches accreditation (no mismatch event)')` asserts the no-override path: an accredited hive whose chain-claimed ORCID equals the attestation passes through unchanged (case 1 of the four-branch override lattice). The unqualified "accredited hives" framing collapsed the override-vs-pass-through distinction. Rewrote to "accredited hives whose claim differs from the attestation" — preserves the discriminator the canary asserts.
+
+### Self-audit (added lines only)
+
+`git diff --no-color backend/tests/routes/continuation-author-gate.test.ts | grep '^+' | grep -v '^+++'` produced 4 added lines:
+
+```
++  // (with fallback to most-recent non-self claim); ORCID is server-
++  // overridden for accredited hives whose claim differs from the
++  // attestation. Drops are silently retained by construction (the union
++  // only grows).
+```
+
+Broadened rot grep on the added lines (`round-\d`, `hold #`, all-caps slugs, `acceptance #`, `backend-*.md`, `above`, `below`, `next test`, `previous test`, 7+ hex SHA, date anchors `2026-\d\d-\d\d`, line-number anchors `\.ts:\d+`/`\.js:\d+`): zero hits across all classes. No partial-strip stubs, orphan single-letter prefixes, dangling determiners, bare possessives, or dangling prepositions introduced — the replacement clauses are well-formed.
+
+### Verification
+
+Per the hold block's "No need to re-run scoped vitest (comment-only edits)" — skipped. The edit is comment-only at a section-banner site with no test runtime behavior. The architect-prescribed expanded form is preserved (5-clause banner enumerating resolution rules); the two banner clauses now anchor on behavior the cited code's own docblocks state explicitly, so accuracy holds against future changes without per-read re-verification against the implementation.
