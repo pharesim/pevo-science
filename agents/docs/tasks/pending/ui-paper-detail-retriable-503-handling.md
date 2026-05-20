@@ -154,3 +154,17 @@ Round-2 fixes landed in commit `6b05c157`. All six architect hold items addresse
 - **Item 6 (enrichment retry :disabled).** New `enrichmentRetrying` state + `retryEnrichment()` wrapper around `loadEnrichment`. The retry button binds `:disabled="enrichmentRetrying"` and `@click="retryEnrichment()"`. The wrapper sets the flag synchronously at entry, clears it in `finally`; a re-entrant call sees the flag and bails (`if (this.enrichmentRetrying) return;`).
 
 Test result: 77/77 pass in `pages-paper-detail.test.js` (was 73/73 before). Four new vitest cases: recognized 503 carve-out, unrecognized-error warn fallback, `retryEnrichment` in-flight guard, citation tab-switch identity guard. Full E2E run deferred per the docker-stack test-up/test-down requirement.
+
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` fan-out (8 reviewers, full persona set minus `ce-agent-native-reviewer` per PEvO policy) on the round-2 implementation surfaced 1 item that blocks archive. All six round-1 hold items landed correctly — the citation dropdown disable, the enrichment refresh-vs-stale gating, the retract comment rewrite anchored on the destructive-write-op invariant, and the new vitest pins are sound. Item below is a behavioral regression introduced by the round-2 fix itself.
+
+### Item 1 — `citeLoading` state-leak across paper-to-paper navigation
+
+Round-2's Item 3 wrapped the `citeLoading = false` reset in `handleCitationExport`'s finally with a paper-identity guard: `if (this.author === author && this.permlink === permlink) { this.citeLoading = false; }`. But `page-mount.js` re-renders Alpine components only on route NAME change, not param change. The same `paperDetailPage` instance persists across `/paper/A` to `/paper/B` navigation. Concrete sequence: user clicks APA on paper A, 503 retriable, 1500ms backoff sleep begins, user navigates to paper B mid-backoff, the post-await identity guard inside the retry loop bails correctly (no second fetch, no wrong-paper download), then the finally fires, the identity check fails, `citeLoading` stays true. Paper B's three format buttons and the dropdown toggle all bind `:disabled="citeLoading"` at the citation dropdown template — they are now permanently disabled until a full reload.
+
+The captured `author`/`permlink` closures on `fetchCitationExport(author, permlink, format)` and on the download filename already prevent Item 3's targeted race (corrupt-download with mismatched filename/content). The conditional reset in finally adds nothing to that defense and introduces a new permanent-disabled-state failure mode. Cross-reviewer corroboration: surfaced by correctness, julik-frontend-races, reliability, and adversarial independently.
+
+Fix: revert the finally to unconditional `this.citeLoading = false` (drop the identity-guarded if-wrap; the captured closures alone are sufficient for Item 3's intent). Add a positive-path vitest case asserting `citeLoading === false` after a tab-switch race — mock `mockStores.router.params` flip mid-backoff (the round-2 `handleCitationExport: paper-identity changes mid-backoff` test gives a working setup pattern), assert post-bail `citeLoading === false`, and as a bonus assert the paper-B citation buttons would be re-enabled by re-checking `comp.citeLoading` after the divergence.
