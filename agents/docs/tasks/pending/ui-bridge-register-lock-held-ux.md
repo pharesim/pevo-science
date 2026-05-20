@@ -77,3 +77,17 @@ Round-2 fixes landed in commit `3062f827`. Both architect hold items addressed:
 Test result: 43/43 pass in `pages-bridge.test.js` (was 41/41 before).
 
 Playwright not run by the parent — the bridge-register flow has no E2E spec gated on this surface; component-tier vitest coverage is the load-bearing regression layer. The full E2E suite requires the test-up/test-down docker dance (see `agents/ui/CLAUDE.md` § "E2E (Playwright)") and is left to architect/operator discretion.
+
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` fan-out (8 reviewers, full persona set minus `ce-agent-native-reviewer` per PEvO policy) on the round-2 implementation surfaced 1 item that blocks archive. Both round-1 hold items landed correctly — `handleLookup` / `handleRegister` / `resetRegisterError()` state-reset hygiene is sound at the three call sites, and the two new vitest pins (destroy-during-LOCK_HELD-backoff + DUPLICATE with partial err.details) correctly assert the post-await `_mounted` guard and the partial-details fall-through. The item below is a behavior-test gap on the user-visible bug that motivated round-1 hold item 1 itself.
+
+A separate sibling task (`ui-bridge-register-mid-broadcast-lookup-gate`) is being filed under `tasks/pending/` for a pre-existing race that round-2 worsened (handleLookup mid-broadcast unmasks `step === 'registering'` and lets the user land on a different paper than they expected). That's a separate concern from the test-gap below and is not held here.
+
+### Item 1 — handleLookup post-DUPLICATE state-reset has no behavior test
+
+The bug round-1 hold item 1 was filed to fix — stale `duplicateExisting` from a prior DUPLICATE leaking into the next identifier's lookup result — has zero direct regression test. The two round-2 tests cover the prescribed pins for round-1 hold item 2 (destroy-during-backoff + partial-details fall-through); they do not cover the `handleLookup` three-field reset at the user-visible failure path. A regression that re-inlined the Try-again handler back to `step = 'idle'` without including the `duplicateExisting` clear, or that trimmed the `handleLookup` entry reset from three fields to two, would land silently — the existing suite would still pass green. The bug Item 1 fixes is currently regression-protected only by manual diff inspection.
+
+Fix: add one vitest case driving the canonical bug scenario end-to-end. Seed `comp.duplicateExisting = { author: 'A', permlink: 'X' }` and `comp.step = 'error'` (the partial-details DUPLICATE test added in round-2 gives a working setup pattern for landing in this state); change `comp.identifier` to a different value; call `comp.handleLookup()` and await; assert `comp.duplicateExisting === null` AND `comp.step === 'idle'` AND `comp.errorMessage === ''`. The full three-field reset is the load-bearing claim; an assertion missing one field would mask a partial-reset regression. Approximately 15-20 lines.
