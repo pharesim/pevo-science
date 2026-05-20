@@ -154,3 +154,48 @@ test('paper-detail: canonical ORCID renders verified value; discrepancy indicato
   await expect(daveRow.getByTestId('orcid-link')).toHaveCount(0);
   await expect(daveRow.getByTestId('orcid-discrepancy-indicator')).toHaveCount(0);
 });
+
+test('paper-detail: case-b (chain == verified after server-side override, flag still true) suppresses the indicator', async ({
+  page,
+}) => {
+  // Per api-contracts/papers.md PaperDetail/PaperSummary caveat, when an
+  // accredited author's chain-broadcast ORCID differs from their
+  // accreditation-attested ORCID, the backend overrides
+  //   out.orcid := orcid_verified
+  // but keeps `orcid_discrepancy: true` (reflecting the pre-override
+  // comparison). The wire shape arriving at the UI is therefore
+  //   {orcid: X, orcid_verified: X, orcid_discrepancy: true}.
+  // Rendering the discrepancy indicator at this point would surface a
+  // "Claimed: X • Verified: X" tooltip — semantically self-contradictory.
+  // The helper `shouldShowDiscrepancyIndicator` suppresses the indicator
+  // when the values are equal; this spec is the regression pin.
+  const authors = [
+    {
+      name: 'Eve Reconciled',
+      hive: 'eve',
+      orcid: '0000-0001-9999-9999',
+      orcid_verified: '0000-0001-9999-9999',
+      orcid_discrepancy: true,
+      affiliation: 'Reconciled University',
+    },
+  ];
+
+  const paper = buildPaperWithAuthors(authors);
+  await installPaperMocks(page, { paper });
+
+  await page.goto(`/en/paper/${paper.author}/${paper.permlink}`);
+  await page.waitForSelector('[x-data="paperDetailPage"]');
+  await expect(page.locator('h1, h2').filter({ hasText: paper.title })).toBeVisible();
+
+  const eveRow = page
+    .locator('[x-data="paperDetailPage"] .flex.flex-wrap.items-center.gap-x-3.gap-y-2 > span')
+    .filter({ hasText: 'Eve Reconciled' });
+
+  // Link still renders with the canonical value.
+  await expect(eveRow.getByTestId('orcid-link')).toHaveAttribute(
+    'href',
+    'https://orcid.org/0000-0001-9999-9999',
+  );
+  // But the indicator is suppressed because chain == verified.
+  await expect(eveRow.getByTestId('orcid-discrepancy-indicator')).toHaveCount(0);
+});

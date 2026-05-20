@@ -50,18 +50,18 @@ export const paperCardTemplate = `
               <a :href="'https://orcid.org/' + canonicalOrcid(a)" target="_blank" rel="noopener noreferrer"
                  class="inline-flex items-center"
                  :title="canonicalOrcid(a)"
-                 :aria-label="$t('paperCard.orcidAriaLabel', { id: canonicalOrcid(a) })"
+                 :aria-label="$t('orcid.linkAriaLabel', { id: canonicalOrcid(a) })"
                  data-testid="orcid-link">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" class="h-3 w-3 shrink-0" aria-hidden="true">
                   <circle cx="128" cy="128" r="128" fill="#A6CE39"/>
                   <path fill="#fff" d="M86.3 186.2H70.9V79.1h15.4v107.1zM78.6 56.8c-5.7 0-10.3 4.6-10.3 10.3s4.6 10.3 10.3 10.3 10.3-4.6 10.3-10.3-4.6-10.3-10.3-10.3zM108.9 79.1h41.6c39.6 0 57 28.3 57 53.6 0 27.5-21.5 53.6-56.8 53.6h-41.8V79.1zm15.4 93.3h24.5c34.9 0 42.9-26.5 42.9-39.7 0-21.5-13.7-39.7-43.7-39.7h-23.7v79.4z"/>
                 </svg>
               </a>
-              <template x-if="hasOrcidDiscrepancy(a)">
+              <template x-if="shouldShowDiscrepancyIndicator(a)">
                 <button type="button"
                         class="inline-flex items-center text-amber-500 hover:text-amber-600 focus:outline-none focus:ring-2 focus:ring-amber-300 rounded"
-                        :title="$t('paperCard.orcidDiscrepancyTitle', { claimed: a.orcid, verified: a.orcid_verified })"
-                        :aria-label="$t('paperCard.orcidDiscrepancyAriaLabel')"
+                        :title="$t('orcid.discrepancyTitle', { claimed: a.orcid, verified: a.orcid_verified })"
+                        :aria-label="$t('orcid.discrepancyAriaLabel', { claimed: a.orcid, verified: a.orcid_verified })"
                         data-testid="orcid-discrepancy-indicator">
                   <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                     <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />

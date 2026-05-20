@@ -33,10 +33,7 @@
     "noPapersFound": "لم يتم العثور على أبحاث مطابقة لمعاييرك."
   },
   "paperCard": {
-    "pdf": "PDF",
-    "orcidAriaLabel": "ORCID {id}",
-    "orcidDiscrepancyTitle": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
-    "orcidDiscrepancyAriaLabel": "ORCID claim differs from verified ORCID"
+    "pdf": "PDF"
   },
   "paperDetail": {
     "updated": "تم التحديث {date}",
@@ -57,10 +54,7 @@
     "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "عرض المقال كاملاً",
     "collapseBody": "طي",
-    "noReviewsYet": "لا توجد مراجعات بعد.",
-    "orcidLinkAriaLabel": "ORCID {id}",
-    "orcidDiscrepancyTooltip": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
-    "orcidDiscrepancyAriaLabel": "ORCID claim {claimed} differs from verified ORCID {verified}"
+    "noReviewsYet": "لا توجد مراجعات بعد."
   },
   "filters": {
     "discipline": "التخصص",
@@ -658,7 +652,10 @@
     "broadcastPending": "Broadcast is pending. Verify your ORCID linkage in Settings before retrying.",
     "postBroadcastFailedConfirmed": "Your ORCID is linked. Some account details may take a moment to sync. Verify your linkage in Settings before retrying.",
     "postBroadcastOperatorRequired": "Your ORCID is linked. A follow-up step needs manual attention. Please contact support if your linkage does not appear in Settings shortly.",
-    "reauthSuccess": "Re-authenticated. Please retry your action."
+    "reauthSuccess": "Re-authenticated. Please retry your action.",
+    "linkAriaLabel": "ORCID {id}",
+    "discrepancyTitle": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
+    "discrepancyAriaLabel": "ORCID claim {claimed} differs from verified ORCID {verified}"
   },
   "citation": {
     "citeButton": "استشهاد",
