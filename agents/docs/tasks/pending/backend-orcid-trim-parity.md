@@ -96,3 +96,30 @@ Verified empirically against the running Postgres at architect-context review ti
 5. **`backend/tests/routes/papers-canonical-orcid-resolution.test.ts:6-7`** — test file header cites "the four cases enumerated in the task body". The task file archives into `tasks-archive.md` and trims at 250 lines; the phrase becomes a dead pointer. Per `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, rewrite the anchor to enumerate the cases by name + helper symbol — e.g., "covering the four whitespace-padding cases (tab-prefixed, space-prefixed, lf-suffixed, unpadded) for `authorsWithSupersessionSelect` and `computeSupersession`."
 
 6. **JSDoc gap-documentation** — while updating the JSDoc on `computeSupersession` (JS) and `authorsWithSupersessionSelect` (SQL) for the #1 fix, enumerate the exact remaining whitespace-class gaps post-fix: NBSP (U+00A0), BOM (U+FEFF), U+2028, U+2029. JS `.trim()` strips these; SQL BTRIM does not. The task body's "acceptable residual" stance survives unchanged; the JSDoc just makes the gap explicit so a future re-review doesn't re-flag it. Anchor on the stable convention — `agents/docs/solutions/conventions/sql-trim-vs-js-trim-whitespace-character-set-asymmetry-2026-05-19.md`.
+
+## Backend re-review signal (2026-05-20, commit a4ab008):
+
+All 6 hold items landed in a single backend commit. Per-item summary:
+
+1. **`hafsql.ts` BTRIM charset fix.** Replaced `E' \t\n\r\v\f'` with `E' \t\n\r\x0B\f'` at the supersession projection's NULLIF no-claim guard AND `<>` equality check via the new `CHAIN_ORCID_BTRIM_CHARSET` constant (see item 3). Both sites interpolate the same constant, so charset drift is compile-visible. Real-Postgres verification matches the architect's empirical claim (`20090a0d760c` pre-fix, `20090a0d0b0c` post-fix).
+
+2. **Sibling-site BTRIM widening.**
+   - `hafsql.ts` `authorshipClaimsCteBody` ORCID auto-accept arm — now uses `aa.orcid = BTRIM(<chain orcid expression>, E'${CHAIN_ORCID_BTRIM_CHARSET}')` instead of raw `=`. Inline comment cross-references the supersession projection's parity contract.
+   - `routes/papers.ts` chain server-override + audit-emission path — new `claimedOrcidForCompare` derived via `trimAsciiCWhitespace(claimedOrcid)` (the JS sibling of the SQL charset), with collapse-to-null on all-whitespace claims to mirror the SQL `NULLIF`. All four equality compares (case b active-mismatch, case c prefill check, case d suppression, revoked-arm mismatch) now use the normalized form. The audit event still carries the raw `claimedOrcid` for forensic visibility; only the equality compare and override-decision consult the normalized form. Cumulative-orcid-audit tests (5/5) confirm the audit emission shape is unchanged.
+
+3. **BTRIM charset constant.** New module-level export `CHAIN_ORCID_BTRIM_CHARSET = " \\t\\n\\r\\x0B\\f"` in `backend/src/hafsql.ts` (placed under the `T` tables block, top of the module). Referenced at three SQL sites (supersession NULLIF, supersession `<>`, authorshipClaims ORCID-equality) plus the JS sibling helper `trimAsciiCWhitespace` in `lib/author-supersession.ts`. JSDoc on the constant calls out the `\v`-vs-`\x0B` Postgres parse trap and includes the empirical verification recipe.
+
+4. **Real-Postgres byte-level canary.** New test file `backend/tests/hafsql-btrim-charset-real-postgres.test.ts` (3 tests, 3/3 pass against `pevo-postgres-1`). Three assertions: (a) every charset byte (space/tab/LF/CR/VT/FF) gets stripped on real Postgres; (b) the literal alphabet letter `v` does NOT get stripped post-fix (i.e., the charset is byte 0x0B, not 0x76); (c) the charset hex-decodes to `20090a0d0b0c`. The mocked-pool SQL-shape canary cannot distinguish `E'\v'` from `E'\x0B'` because both produce identical captured SQL text; only real Postgres exposes the parse-time difference. Skip-if-no-Postgres guard mirrors the `idempotency-real-haf` pattern. Also extended the JS parity matrix in `papers-canonical-orcid-resolution.test.ts` with two VT inputs (vt-prefixed, vt-suffixed) and an inverse-asymmetry regression test (leading literal `v` → discrepancy=true) so the post-fix surface is locked from now on.
+
+5. **Test file header anchor.** Rewrote `papers-canonical-orcid-resolution.test.ts` lines 4-11 to enumerate the four supersession outcome cases by behavior (no hive, hive unaccredited, hive accredited with no attested ORCID, hive accredited with attestation differing from chain claim) AND the four whitespace-padding inputs (tab-prefixed, space-prefixed, lf-suffixed, unpadded) plus the helper symbols (`authorsWithSupersessionSelect`, `computeSupersession`). No task-slug or task-body redirect remains.
+
+6. **JSDoc gap documentation.** Both `computeSupersession` (JS, `lib/author-supersession.ts`) and `authorsWithSupersessionSelect` (SQL, `hafsql.ts`) now enumerate the residual extended-Unicode-whitespace asymmetry explicitly: NBSP (U+00A0), BOM (U+FEFF), U+2028 (line separator), U+2029 (paragraph separator). JS `.trim()` strips these; SQL BTRIM with the ASCII C-whitespace charset does not. Both JSDocs cross-reference `agents/docs/solutions/conventions/sql-trim-vs-js-trim-whitespace-character-set-asymmetry-2026-05-19.md`. The `\v`-vs-`\x0B` Postgres parse trap is called out inline on the SQL JSDoc and on the `CHAIN_ORCID_BTRIM_CHARSET` constant.
+
+**Tests run:**
+- `tests/hafsql-btrim-charset-real-postgres.test.ts` → 3/3 pass (real Postgres byte-level)
+- `tests/routes/papers-canonical-orcid-resolution.test.ts` `-t "parity"` → 18/18 pass (12 skipped via filter)
+- `tests/hafsql.test.ts` → 27/27 pass (2 skipped, pre-existing)
+- `tests/routes/papers-cumulative-orcid-audit.test.ts` → 5/5 pass (audit emission shape unchanged)
+- `npm run typecheck:src` → clean
+
+7 pre-existing failures on `papers-canonical-orcid-resolution.test.ts` (case 4b / `?version=N` / `metadata_restored` returning 503) are unrelated to this round — they reproduce identically at HEAD before my changes and look like transient HAF unavailability in the shared test infra.
