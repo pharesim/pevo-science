@@ -120,3 +120,46 @@ Hold-block items 1-4 landed in one commit. Per-item summary:
 
 No behavioral test changes (comment-only edits + a runtime widening from `{}` to `{orcid_verified: null, orcid_discrepancy: false}` for non-object author entries — the widened branch is not exercised by existing assertions, which only test object-shaped author entries).
 
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` on round-2 commit `9fdf48b0` confirms all 4 architect-cited hold-block items landed cleanly. The implementer's self-audit on the added lines is honest (zero hits on round-N, slug citations, line-number anchors, SHA refs, date anchors, relative positional anchors). However, the cluster-review's maintainability persona — applying the whole-file audit per this task's existing acceptance criterion #4 — surfaced 12 pre-existing coordination-state rot sites in `backend/tests/routes/continuation-author-gate.test.ts` that the round-1 whole-file audit did not enumerate AND that round-2 therefore did not address.
+
+These sites are in-scope per this task's existing acceptance criterion #4 ("Whole-file audit of the touched files — after rewriting cited sites, re-scan each touched file for additional rot the audit missed."). The same task-slug-citation convention at `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` applies: the cited task `backend-multi-author-cumulative-union.md` archived 2026-05-16; once it falls off the `tasks-archive.md` bottom (250-line cap), these citations become dead pointers, and the `Acceptance #N:` prefixes lose their referent entirely.
+
+### Items
+
+1. **`backend/tests/routes/continuation-author-gate.test.ts` ~L625** — section-banner comment cites an archived task slug:
+   ```
+   // ────────────────────────────────────────────────────────────────
+   // Cumulative-union display canaries
+   // (`backend-multi-author-cumulative-union.md` acceptance #9)
+   // ────────────────────────────────────────────────────────────────
+   ```
+   **Fix:** rewrite the banner to anchor on the behavioral invariant the section pins, dropping the slug+acceptance-number citation. Suggested shape: `// Cumulative-union display canaries — verify detail.authors[] is the running union of every hive ever named across the chain, in first-occurrence order.` (anchors on the cumulative-union invariant, which is the load-bearing semantic of every spec in the section).
+
+2. **`backend/tests/routes/continuation-author-gate.test.ts` 11 `Acceptance #N:` prefixes** at L715 #1, L731 #2, L758 #3, L782 #4, L800 #5, L850 #6, L898 #7, L922 #8, L1007 #9, L1045 #10, L1073 #12 (numbering skips #11, likely a deleted spec). Each prefix references the now-archived task's acceptance-criteria list and rots once that archive entry falls off `tasks-archive.md`. The behavioral description in each comment's body already stands alone — the `Acceptance #N:` prefix carries no remaining behavioral signal.
+   **Fix:** strip the `Acceptance #N:` prefix from each of the 11 comments; the surrounding text (e.g., `chain [root, bob/v2]. Root has [alice, bob]; bob/v2 adds carol. Display authors[] = [alice, bob, carol] in first-occurrence order.`) is self-contained and survives without the prefix.
+
+### Acceptance for re-review
+
+- **Broadened acceptance grep (verbatim in signal block, not prose-claimed):**
+  ```
+  grep -inoE "(round[- ]?[0-9]|hold #|BE-[A-Z_-]+|BACKEND-[A-Z_-]+|F[0-9]+[: ]|acceptance #|backend-[a-z0-9-]+\.md|\babove\b|\bbelow\b|\bnext test\b|\bprevious test\b)" \
+    backend/src/lib/author-supersession.ts \
+    backend/src/types/domain.ts \
+    backend/tests/helpers.test.ts \
+    backend/tests/routes/continuation-author-gate.test.ts
+  ```
+  Zero real rot hits expected. Acceptable surviving hits: durable backticked references to solution-doc paths (e.g., `cascade-fns-rethrow-permanent-errors-2026-05-16.md`), and any `\babove\b`/`\bbelow\b` substring matches inside string-literal log content or operator-visible discriminators (not in code comments). Every `backend-*.md`, `acceptance #`, `above`, `below` hit in a comment must be replaced with a behavioral anchor or stable-symbol reference.
+- **Whole-file audit scope expansion**: the round-1 whole-file audit's enumeration was incomplete (it caught the 5 sites in the original scope table but missed the section banner at L625 and 11 `Acceptance #N:` markers below it). The round-3 audit must extend to the full ~2000-line file and surface any other coordination-state markers, slug citations, or relative positional anchors of the same class. Report the full audit's findings verbatim in the round-3 signal block.
+- **Self-audit per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` (broadened)**: the suggested-fix replacements must not themselves introduce new round-N markers, slug citations, line-number anchors, SHA refs, date anchors, partial-strip stubs, orphan single-letter prefixes, dangling determiners, bare possessives, dangling prepositions, or relative positional anchors. The doc was just broadened to enumerate relative positional anchors explicitly.
+- `npx vitest run tests/routes/continuation-author-gate.test.ts tests/helpers.test.ts tests/routes/papers-canonical-orcid-resolution.test.ts tests/routes/profile-papers-supersession.test.ts` with Docker IP env-var overrides per CLAUDE.md "Running Tests". Comment-only edits should not change any test outcome.
+
+### Out of scope
+
+- Findings the cluster-review surfaced but the architect dismissed at triage: the JS/SQL surface key-presence divergence on non-object author entries (the widened JS branch emits 2 keys; SQL emits 5), the helpers.ts double-cast `name: undefined` exposure when the non-object branch fires, and the related missing test coverage for the widened branch. The widening as prescribed (supersession-key alignment) was delivered correctly; the broader full-shape SQL/JS alignment is realization-blocked by the same malformed-author-entry scenario and is not in scope for this comment-hygiene task.
+- The `orcid_verified` docblock's trailing `affiliation`-stripping note structural concern (single-reviewer, confidence 50, pre-dates this commit). Not part of this hold cycle.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
