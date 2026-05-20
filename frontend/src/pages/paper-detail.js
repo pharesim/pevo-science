@@ -5,6 +5,7 @@ import { getAppTag } from '../config.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
 import { titleCaseDiscipline } from '../lib/discipline-display.js';
+import { canonicalOrcid, hasOrcidDiscrepancy } from '../lib/authors.js';
 
 const template = `
       <div x-data="paperDetailPage" class="container-narrow py-8">
@@ -343,6 +344,32 @@ const template = `
                     </template>
                     <template x-if="a.affiliation && a.affiliation !== 'none'">
                       <span class="text-ink-muted" x-text="'(' + a.affiliation + ')'"></span>
+                    </template>
+                    <!-- ORCID (canonical display: verified else chain) + discrepancy indicator -->
+                    <template x-if="canonicalOrcid(a)">
+                      <span class="inline-flex items-center gap-1">
+                        <a :href="'https://orcid.org/' + canonicalOrcid(a)" target="_blank" rel="noopener noreferrer"
+                           class="inline-flex items-center gap-1 text-xs text-ink-muted hover:text-pevo-teal no-underline"
+                           :aria-label="$t('paperDetail.orcidLinkAriaLabel', { id: canonicalOrcid(a) })"
+                           data-testid="orcid-link">
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" class="h-3.5 w-3.5 shrink-0" aria-hidden="true">
+                            <circle cx="128" cy="128" r="128" fill="#A6CE39"/>
+                            <path fill="#fff" d="M86.3 186.2H70.9V79.1h15.4v107.1zM78.6 56.8c-5.7 0-10.3 4.6-10.3 10.3s4.6 10.3 10.3 10.3 10.3-4.6 10.3-10.3-4.6-10.3-10.3-10.3zM108.9 79.1h41.6c39.6 0 57 28.3 57 53.6 0 27.5-21.5 53.6-56.8 53.6h-41.8V79.1zm15.4 93.3h24.5c34.9 0 42.9-26.5 42.9-39.7 0-21.5-13.7-39.7-43.7-39.7h-23.7v79.4z"/>
+                          </svg>
+                          <span class="font-mono" x-text="canonicalOrcid(a)"></span>
+                        </a>
+                        <template x-if="hasOrcidDiscrepancy(a)">
+                          <button type="button"
+                                  class="inline-flex items-center text-amber-500 hover:text-amber-600 focus:outline-none focus:ring-2 focus:ring-amber-300 rounded"
+                                  :title="$t('paperDetail.orcidDiscrepancyTooltip', { claimed: a.orcid, verified: a.orcid_verified })"
+                                  :aria-label="$t('paperDetail.orcidDiscrepancyAriaLabel', { claimed: a.orcid, verified: a.orcid_verified })"
+                                  data-testid="orcid-discrepancy-indicator">
+                            <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                              <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+                            </svg>
+                          </button>
+                        </template>
+                      </span>
                     </template>
                     <!-- Claim status badge -->
                     <template x-if="enrichmentLoaded && claimStatusForSlot(idx) === 'accepted'">
@@ -790,6 +817,8 @@ export function initPaperDetailPage() {
 
     // Expose helper
     formatDate,
+    canonicalOrcid,
+    hasOrcidDiscrepancy,
 
     get author() {
       return this.$store.router.params.author;

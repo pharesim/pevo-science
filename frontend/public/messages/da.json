@@ -33,7 +33,10 @@
     "noPapersFound": "Ingen artikler fundet, der matcher dine kriterier."
   },
   "paperCard": {
-    "pdf": "PDF"
+    "pdf": "PDF",
+    "orcidAriaLabel": "ORCID {id}",
+    "orcidDiscrepancyTitle": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
+    "orcidDiscrepancyAriaLabel": "ORCID claim differs from verified ORCID"
   },
   "paperDetail": {
     "updated": "opdateret {date}",
@@ -54,7 +57,10 @@
     "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Vis hele artiklen",
     "collapseBody": "Skjul",
-    "noReviewsYet": "Ingen anmeldelser endnu."
+    "noReviewsYet": "Ingen anmeldelser endnu.",
+    "orcidLinkAriaLabel": "ORCID {id}",
+    "orcidDiscrepancyTooltip": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
+    "orcidDiscrepancyAriaLabel": "ORCID claim {claimed} differs from verified ORCID {verified}"
   },
   "filters": {
     "discipline": "Fagområde",

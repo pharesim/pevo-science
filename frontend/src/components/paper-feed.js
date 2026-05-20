@@ -7,6 +7,7 @@ import { localeStrippedPath } from '../lib/url-sync.js';
 import { createDisciplineFilter } from '../lib/discipline-filter.js';
 import { titleCaseDiscipline } from '../lib/discipline-display.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { canonicalOrcid, hasOrcidDiscrepancy } from '../lib/authors.js';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -116,6 +117,8 @@ export function initPaperFeed() {
     truncateText,
     formatDate,
     titleCaseDiscipline,
+    canonicalOrcid,
+    hasOrcidDiscrepancy,
 
     async init() {
       this._syncFromUrl();

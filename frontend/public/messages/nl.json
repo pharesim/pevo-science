@@ -33,7 +33,10 @@
     "noPapersFound": "Geen publicaties gevonden die aan uw criteria voldoen."
   },
   "paperCard": {
-    "pdf": "PDF"
+    "pdf": "PDF",
+    "orcidAriaLabel": "ORCID {id}",
+    "orcidDiscrepancyTitle": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
+    "orcidDiscrepancyAriaLabel": "ORCID claim differs from verified ORCID"
   },
   "paperDetail": {
     "updated": "bijgewerkt {date}",
@@ -54,7 +57,10 @@
     "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Volledig artikel tonen",
     "collapseBody": "Inklappen",
-    "noReviewsYet": "Nog geen reviews."
+    "noReviewsYet": "Nog geen reviews.",
+    "orcidLinkAriaLabel": "ORCID {id}",
+    "orcidDiscrepancyTooltip": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
+    "orcidDiscrepancyAriaLabel": "ORCID claim {claimed} differs from verified ORCID {verified}"
   },
   "filters": {
     "discipline": "Vakgebied",

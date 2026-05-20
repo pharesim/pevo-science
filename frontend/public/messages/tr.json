@@ -33,7 +33,10 @@
     "noPapersFound": "Kriterlerinize uygun makale bulunamadı."
   },
   "paperCard": {
-    "pdf": "PDF"
+    "pdf": "PDF",
+    "orcidAriaLabel": "ORCID {id}",
+    "orcidDiscrepancyTitle": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
+    "orcidDiscrepancyAriaLabel": "ORCID claim differs from verified ORCID"
   },
   "paperDetail": {
     "updated": "güncellendi {date}",
@@ -54,7 +57,10 @@
     "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Tam makaleyi göster",
     "collapseBody": "Daralt",
-    "noReviewsYet": "Henüz değerlendirme yok."
+    "noReviewsYet": "Henüz değerlendirme yok.",
+    "orcidLinkAriaLabel": "ORCID {id}",
+    "orcidDiscrepancyTooltip": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
+    "orcidDiscrepancyAriaLabel": "ORCID claim {claimed} differs from verified ORCID {verified}"
   },
   "filters": {
     "discipline": "Disiplin",

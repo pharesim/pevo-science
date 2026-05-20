@@ -33,7 +33,10 @@
     "noPapersFound": "Keine Publikationen gefunden, die Ihren Kriterien entsprechen."
   },
   "paperCard": {
-    "pdf": "PDF"
+    "pdf": "PDF",
+    "orcidAriaLabel": "ORCID {id}",
+    "orcidDiscrepancyTitle": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
+    "orcidDiscrepancyAriaLabel": "ORCID claim differs from verified ORCID"
   },
   "paperDetail": {
     "updated": "aktualisiert {date}",
@@ -54,7 +57,10 @@
     "enrichmentUnavailable": "Reviews and votes are temporarily unavailable. Please retry in a moment.",
     "showFullPaper": "Vollständigen Artikel anzeigen",
     "collapseBody": "Einklappen",
-    "noReviewsYet": "Noch keine Begutachtungen vorhanden."
+    "noReviewsYet": "Noch keine Begutachtungen vorhanden.",
+    "orcidLinkAriaLabel": "ORCID {id}",
+    "orcidDiscrepancyTooltip": "Claimed: {claimed} • Verified: {verified} (via PEvO accreditation)",
+    "orcidDiscrepancyAriaLabel": "ORCID claim {claimed} differs from verified ORCID {verified}"
   },
   "filters": {
     "discipline": "Fachgebiet",
