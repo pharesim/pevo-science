@@ -95,3 +95,47 @@ If E2E coverage is impractical, vitest unit tests against the `loadPaper()` / `l
 - `agents/docs/tasks/pending/backend-retract-rate-limit-haf-503-burn.md` — backend task that gates whether `/retract` 503 retries can be auto-loop or must stay manual-only (currently the latter until that task lands).
 - `frontend/src/lib/api.js:15-20` — `ApiError` already exposes `code` and `details` from response envelopes.
 - `frontend/src/pages/paper-detail.js:803-820` — `loadPaper()` retry-loop pattern to extend.
+
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` fan-out (8 reviewers, full persona set minus `ce-agent-native-reviewer` per PEvO policy) on the round-1 implementation surfaced 6 items that block archive. The four-site coverage, the per-site policy divergence (auto-retry for reads, manual-only for retract), and the unit-test scaffolding are sound. Items below are correctness, hygiene, and one user-visible race.
+
+A separate sweep task (`ui-frontend-retry-timer-guard-sweep`) is being filed to handle the timer-guard adoption gap that surfaced across this commit and the bridge.js commit — that's not held here because it crosses two implementer commits.
+
+### Item 1 — Citation dropdown + format buttons missing `:disabled` during 4s 503-retry window
+
+`handleCitationExport` now has bounded auto-retry (up to 2× with backoff = ~4s wall-time window). During that window, `citeOpen` stays `true` (only closes via `finally` at loop exit) and the three format buttons (APA / BibTeX / RIS) have no `:disabled` binding tied to in-flight state. Concrete scenario: user clicks APA → 503 retriable → 1500ms backoff starts; user clicks BibTeX during the backoff → second `handleCitationExport` flow fires concurrently; both flows complete; both write to clipboard (last-write-wins) and trigger downloads. Pre-diff race window was ~200ms (invisible); post-diff is ~4000ms (hittable).
+
+Fix: add `:disabled="citeLoading"` (or a sibling in-flight flag) to the three format buttons, set the flag synchronously at handler entry (before the first `await`), clear it in `finally`. Optionally close the dropdown synchronously at handler entry too.
+
+### Item 2 — handleRetract comment cites stale slot-burn rationale
+
+The `handleRetract` 503 catch comment says the backend retract limiter "currently consumes a slot per attempt" and justifies the manual-only retry policy on that basis. Sibling commit `a5589588` (which landed `backend-retract-rate-limit-haf-503-burn` shortly after this commit) added `skipFailedRequests:true` to `retractLimiter` — slots are now refunded on `>=400`. The cited rationale is no longer accurate.
+
+The manual-only choice is still correct (retract is a destructive write op; positive-confirmation UX is appropriate regardless of limiter behavior), so the policy stays. Reword the comment to anchor on the stable invariant (write-op user-confirmation, broadcast idempotency concerns) and drop the slot-burn citation. Per the root CLAUDE.md "Comment anchors" rule, comments should not cite sibling-module behavior that can change without notice.
+
+### Item 3 — `handleCitationExport` retry leaks paper identity on tab-switch
+
+`handleCitationExport`'s retry loop has no `this.author !== author || this.permlink !== permlink` paper-identity guard (unlike `loadPaper`, which carries this guard from the pre-existing NOT_FOUND retry pattern). Concrete scenario: user on paper A clicks APA → 503 retriable → backoff starts; user navigates to paper B mid-backoff; retry attempt fires against paper A's captured `author`/`permlink` closure values; download filename reads from `this.permlink` (now paper B) while content carries paper A's citation. User gets a download named for the current paper containing data for the prior paper.
+
+Fix: add the paper-identity guard inside `handleCitationExport`'s retry loop, matching the existing guard in `loadPaper`. Place it post-await on both the backoff sleep and the fetch promise.
+
+### Item 4 — `enrichmentRetriable` hint renders alongside stale-but-valid reviews data
+
+`loadEnrichment` is called from `handleClaimSlot` / `handleApproveClaim` / `handleRejectClaim` after the initial paper-detail load has already succeeded. If a re-fetch fails with 503 retriable, `enrichmentRetriable` is set true and the template renders "Reviews and votes are temporarily unavailable. [Retry]" above the reviews section while the prior reviews data from the initial load is still visible below. Copy says "unavailable"; visible state contradicts the copy.
+
+Fix: either (a) gate the hint on `!enrichmentLoaded` so it only shows on first-load failures, or (b) reword the hint to "Could not refresh reviews and votes. [Retry]" so it makes sense in both first-load-failed and refresh-failed cases. Implementer discretion.
+
+### Item 5 — `loadEnrichment` console.warn unconditional on recognized retriable-503
+
+`loadPaper`'s catch carries a semantic-code carve-out: recognized `NOT_FOUND` and recognized retriable-503 do NOT trigger `console.warn`; only unrecognized errors do. The carve-out exists to prune log noise during HAF outages. `loadEnrichment`'s catch fires `console.warn` on every error including the recognized retriable-503. During a HAF outage, every paper-detail page that triggers a claim mutation would emit a `loadEnrichment` warning per attempt per user.
+
+Fix: align `loadEnrichment`'s error handling with `loadPaper`'s carve-out — move the `console.warn` into an `else` branch so it fires only on unrecognized errors. This is not a request to add logs; it's a structural shift that prunes existing log emission on a known-and-handled condition, consistent with PEvO's logging-minimal policy.
+
+### Item 6 — Enrichment retry banner button missing `:disabled` guard
+
+The "Reviews and votes are temporarily unavailable. [Retry]" hint button has no `:disabled` binding tied to in-flight state. Rapid double-click produces concurrent `fetchPaperEnrichment` calls with last-write-wins on `paper.reviews`. Same shape as Item 1 (citation dropdown) but for the enrichment retry surface. Failure mode is milder than Item 1 (no duplicate side effects — both attempts hit a read endpoint), but still wasteful and produces brief UI flicker.
+
+Fix: add `:disabled` binding to the retry button tied to an `enrichmentRetrying` flag set synchronously at click-handler entry, cleared in `finally`. Mirror Item 1's fix shape.
