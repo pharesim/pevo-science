@@ -46,10 +46,25 @@
 // scope. The returned object holds component-instance state
 // (`_pendingTimers` Set, `_mounted` flag); hoisting a single return value
 // shared across multiple components would corrupt teardown state.
+//
+// `_sleep(ms)` is the Promise-shaped sibling of `_setTimer`. It returns a
+// `Promise<void>` that resolves either when the timer fires normally OR when
+// `_teardownTimers()` runs first. Callers MUST follow each `await this._sleep(N)`
+// with the same `if (!this._mounted) return;` (or analogous identity / state)
+// guard they already use for fetch/broadcast awaits — `_sleep` resolves on
+// teardown to drain the awaiting frame rather than leaving the promise
+// dangling, but the caller is still responsible for not mutating component
+// state after destroy. Resolve-on-teardown was chosen over reject because
+// every existing await site in PEvO is already guarded by `_mounted` (or
+// paper-identity) checks, so a reject path would require try/catch noise at
+// every call site for no semantic gain.
 export function createTimerGuard() {
   return {
     _mounted: true,
     _pendingTimers: new Set(),
+    // Resolver fns for pending `_sleep` calls, so `_teardownTimers()` can
+    // drain awaiting frames instead of leaving promises dangling forever.
+    _pendingSleepResolvers: new Set(),
 
     _setTimer(fn, ms) {
       const id = setTimeout(() => {
@@ -61,10 +76,27 @@ export function createTimerGuard() {
       return id;
     },
 
+    _sleep(ms) {
+      return new Promise((resolve) => {
+        const id = setTimeout(() => {
+          this._pendingTimers.delete(id);
+          this._pendingSleepResolvers.delete(resolve);
+          resolve();
+        }, ms);
+        this._pendingTimers.add(id);
+        this._pendingSleepResolvers.add(resolve);
+      });
+    },
+
     _teardownTimers() {
       this._mounted = false;
       for (const id of this._pendingTimers) clearTimeout(id);
       this._pendingTimers.clear();
+      // Drain awaiting frames so `_sleep` promises don't dangle past destroy.
+      // The caller's `if (!this._mounted) return;` guard short-circuits before
+      // any state mutation runs.
+      for (const resolve of this._pendingSleepResolvers) resolve();
+      this._pendingSleepResolvers.clear();
     },
   };
 }

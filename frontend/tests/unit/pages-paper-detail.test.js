@@ -901,6 +901,43 @@ describe('paperDetailPage', () => {
       expect(comp.enrichmentRetrying).toBe(false);
     });
 
+    it('loadPaper destroy() during retriable-503 backoff: no further fetch fires, no state mutation', async () => {
+      // Pins the post-await `_mounted` guard between the SERVICE_UNAVAILABLE
+      // backoff `_sleep` and the next `fetchPaper` attempt. With `_sleep`
+      // resolve-on-teardown semantics, the awaiting frame resumes after
+      // destroy(); the `_mounted` short-circuit is what prevents the retry
+      // from firing and from writing `error` / `errorIs503` on the torn-down
+      // component.
+      fetchPaper.mockRejectedValue(svcUnavailable());
+      try {
+        vi.useFakeTimers();
+        const comp = createComponent();
+        const p = comp.loadPaper();
+        // First retry window is 2000ms; advance partway in.
+        await vi.advanceTimersByTimeAsync(500);
+        expect(fetchPaper).toHaveBeenCalledTimes(1);
+
+        // Tear down mid-backoff.
+        comp.destroy();
+
+        // Drain remaining timers. `_sleep` resolves on teardown so the
+        // awaiting frame runs immediately, but the `_mounted` check
+        // short-circuits before the next attempt.
+        await vi.advanceTimersByTimeAsync(20000);
+        await p;
+
+        expect(fetchPaper).toHaveBeenCalledTimes(1);
+        // No state mutation past destroy: error stays null (set to null at
+        // loadPaper entry, never touched after teardown), errorIs503 stays
+        // false.
+        expect(comp.error).toBeNull();
+        expect(comp.errorIs503).toBe(false);
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('handleCitationExport: paper-identity changes mid-backoff -> retry abandoned, no download fires', async () => {
       // Tab-switch race: user clicks APA on paper A, 503 backoff starts,
       // user navigates to paper B, retry fetch must not fire against A's

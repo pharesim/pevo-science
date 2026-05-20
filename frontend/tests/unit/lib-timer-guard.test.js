@@ -98,4 +98,71 @@ describe('createTimerGuard', () => {
     expect(c._mounted).toBe(false);
     expect(c._pendingTimers.size).toBe(0);
   });
+
+  describe('_sleep', () => {
+    it('resolves when the timer fires normally', async () => {
+      const c = component();
+      const after = vi.fn();
+      const p = c._sleep(100).then(after);
+      expect(after).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(100);
+      await p;
+      expect(after).toHaveBeenCalledTimes(1);
+    });
+
+    it('removes its timer id from _pendingTimers when it fires', async () => {
+      const c = component();
+      const p = c._sleep(100);
+      expect(c._pendingTimers.size).toBe(1);
+      expect(c._pendingSleepResolvers.size).toBe(1);
+      await vi.advanceTimersByTimeAsync(100);
+      await p;
+      expect(c._pendingTimers.size).toBe(0);
+      expect(c._pendingSleepResolvers.size).toBe(0);
+    });
+
+    it('_teardownTimers resolves a pending sleep without firing its timer', async () => {
+      const c = component();
+      const after = vi.fn();
+      const p = c._sleep(5000).then(() => { after(); });
+      expect(after).not.toHaveBeenCalled();
+      // Teardown before the timer would have fired: the promise resolves,
+      // the awaiting frame runs, and the caller's `_mounted` guard takes
+      // over from there.
+      c._teardownTimers();
+      await p;
+      expect(after).toHaveBeenCalledTimes(1);
+      expect(c._mounted).toBe(false);
+      expect(c._pendingTimers.size).toBe(0);
+      expect(c._pendingSleepResolvers.size).toBe(0);
+    });
+
+    it('the awaiting frame can short-circuit on !_mounted after teardown', async () => {
+      // The contract: callers MUST guard post-await with `_mounted`. Pin it.
+      const c = component();
+      const mutated = vi.fn();
+      const flow = (async () => {
+        await c._sleep(5000);
+        if (!c._mounted) return;
+        mutated();
+      })();
+      c._teardownTimers();
+      await flow;
+      expect(mutated).not.toHaveBeenCalled();
+    });
+
+    it('multiple concurrent sleeps all resolve on teardown', async () => {
+      const c = component();
+      const resolved = [];
+      const p1 = c._sleep(1000).then(() => resolved.push('a'));
+      const p2 = c._sleep(2000).then(() => resolved.push('b'));
+      const p3 = c._sleep(3000).then(() => resolved.push('c'));
+      expect(c._pendingTimers.size).toBe(3);
+      expect(c._pendingSleepResolvers.size).toBe(3);
+      c._teardownTimers();
+      await Promise.all([p1, p2, p3]);
+      expect(resolved.length).toBe(3);
+      expect(c._pendingSleepResolvers.size).toBe(0);
+    });
+  });
 });

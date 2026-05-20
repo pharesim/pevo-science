@@ -368,7 +368,7 @@ export function initBridgePage() {
         } catch (err) {
           if (!this._mounted) return;
           if (err.code === 'LOCK_HELD' && lockHeldAttempt < lockHeldRetryDelaysMs.length) {
-            await new Promise((resolve) => setTimeout(resolve, lockHeldRetryDelaysMs[lockHeldAttempt]));
+            await this._sleep(lockHeldRetryDelaysMs[lockHeldAttempt]);
             if (!this._mounted) return;
             lockHeldAttempt++;
             continue;

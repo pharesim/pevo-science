@@ -6,6 +6,7 @@ import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
 import { titleCaseDiscipline } from '../lib/discipline-display.js';
 import { canonicalOrcid, shouldShowDiscrepancyIndicator } from '../lib/authors.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="paperDetailPage" class="container-narrow py-8">
@@ -777,6 +778,7 @@ export { template as paperDetailPageTemplate };
 
 export function initPaperDetailPage() {
   Alpine.data('paperDetailPage', () => ({
+    ...createTimerGuard(),
     titleCaseDiscipline,
     paper: null,
     loading: true,
@@ -843,6 +845,14 @@ export function initPaperDetailPage() {
       this.loadPaper();
     },
 
+    destroy() {
+      // Drain retry-loop _sleep promises and clear any pending timer ids.
+      // The post-await `if (!this._mounted) return;` guards in loadPaper /
+      // handleCitationExport keep state mutations from running after destroy;
+      // teardown here releases the closure references those timers hold.
+      this._teardownTimers();
+    },
+
     async loadPaper() {
       const author = this.author;
       const permlink = this.permlink;
@@ -870,7 +880,8 @@ export function initPaperDetailPage() {
         } catch (err) {
           if (this.author !== author || this.permlink !== permlink) return;
           if (err?.code === 'NOT_FOUND' && notFoundAttempt < notFoundRetryDelaysMs.length) {
-            await new Promise((resolve) => setTimeout(resolve, notFoundRetryDelaysMs[notFoundAttempt]));
+            await this._sleep(notFoundRetryDelaysMs[notFoundAttempt]);
+            if (!this._mounted) return;
             if (this.author !== author || this.permlink !== permlink) return;
             notFoundAttempt++;
             continue;
@@ -879,7 +890,8 @@ export function initPaperDetailPage() {
             isRetriable503(err)
             && serviceUnavailableAttempt < serviceUnavailableRetryDelaysMs.length
           ) {
-            await new Promise((resolve) => setTimeout(resolve, serviceUnavailableRetryDelaysMs[serviceUnavailableAttempt]));
+            await this._sleep(serviceUnavailableRetryDelaysMs[serviceUnavailableAttempt]);
+            if (!this._mounted) return;
             if (this.author !== author || this.permlink !== permlink) return;
             serviceUnavailableAttempt++;
             continue;
@@ -1132,7 +1144,8 @@ export function initPaperDetailPage() {
               isRetriable503(err)
               && serviceUnavailableAttempt < serviceUnavailableRetryDelaysMs.length
             ) {
-              await new Promise((resolve) => setTimeout(resolve, serviceUnavailableRetryDelaysMs[serviceUnavailableAttempt]));
+              await this._sleep(serviceUnavailableRetryDelaysMs[serviceUnavailableAttempt]);
+              if (!this._mounted) return;
               if (this.author !== author || this.permlink !== permlink) return;
               serviceUnavailableAttempt++;
               continue;
