@@ -75,6 +75,38 @@ interface RateLimitConfig {
    * The option is intended for one-shot ceremonies where failure is benign
    * (transient infrastructure error, malformed body from a hijacked session)
    * and the value at stake is operation success, not attempt-rate-limiting.
+   *
+   * **Layered pattern obligation (callers MUST adopt):** because failed
+   * requests do NOT consume slots, the limiter no longer bounds raw request
+   * rate from a JWT holder (stolen-JWT attacker or legitimate-but-buggy
+   * client) who can spray malformed/wrong-proof requests at the limiter's
+   * nominal cap indefinitely. Each spray still pays the FULL upstream cost:
+   * `verifyHiveSignature` ECDSA recovery (~5-10ms CPU), body parse, and the
+   * handler's own work (argon2.verify, Signature.recover, Hive RPC reads with
+   * up to 30s failover, etc). To bound that amplification, EVERY route that
+   * sets `skipFailedRequests: true` MUST place body-shape validation
+   * (missing fields, wrong types, length caps) BEFORE the limiter in the
+   * middleware chain — NOT after. The canonical shape is:
+   *
+   *   router.post('/x', verifyHiveSignature, validateXBodyShape, xLimiter, handler);
+   *
+   * NOT:
+   *
+   *   router.post('/x', verifyHiveSignature, xLimiter, handler);
+   *   // ...with body validation inside the handler — pays verifyHiveSignature
+   *   // + handler entry cost for every malformed-body spray request.
+   *
+   * Misuse direction: placing the limiter BEFORE body validation under
+   * `skipFailedRequests: true` produces a CPU-amplification surface where a
+   * JWT holder paying zero slots can drive sustained `verifyHiveSignature`
+   * load. The limiter's refund-on-failure semantic intentionally trades
+   * per-account rate-bounding for stolen-JWT-DoS-protection of the
+   * legitimate user's success slot; the body-validation-before-limiter
+   * pattern is the complementary defense that bounds the per-account CPU
+   * cost of failed sprays. Routes that cannot express their body-shape
+   * checks as a pre-limiter middleware (e.g., schemas that depend on
+   * database-resolved state) MUST file a follow-up to either restructure
+   * or accept the amplification surface explicitly.
    */
   skipFailedRequests?: boolean;
 }

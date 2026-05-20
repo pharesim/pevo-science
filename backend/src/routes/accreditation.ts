@@ -555,7 +555,14 @@ async function cleanupExpiredTokens(): Promise<void> {
 // POST /api/accreditation/request
 // ──────────────────────────────────────────────
 
-router.post('/request', verifyHiveSignature, accreditationRequestLimiter, validate(accreditationRequestSchema), async (
+// Body-validation BEFORE the limiter: see `RateLimitConfig.skipFailedRequests`
+// JSDoc's layered-pattern obligation. Malformed/empty bodies short-circuit
+// at the zod gate without paying the `verifyHiveSignature` ECDSA cost a
+// second time, the `storeToken` Redis write, or the SMTP send. The limiter
+// itself sits after auth (so `byAccount` keying has a verified username)
+// and after body validation (so VALIDATION_ERROR 400s don't pay the
+// downstream pre-handler cost).
+router.post('/request', verifyHiveSignature, validate(accreditationRequestSchema), accreditationRequestLimiter, async (
   req: Request<Record<string, string>, unknown, z.infer<typeof accreditationRequestSchema>>,
   res: Response,
 ) => {
@@ -649,7 +656,13 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
 // POST /api/accreditation/verify
 // ──────────────────────────────────────────────
 
-router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifySchema), async (
+// Body-validation BEFORE the limiter: see `RateLimitConfig.skipFailedRequests`
+// JSDoc's layered-pattern obligation. Malformed/empty bodies (missing
+// `token`, wrong type, length > 128) short-circuit at the zod gate without
+// pre-broadcast-attempt counter INCR, HAF lookups, or chain reads. The
+// limiter is IP-keyed and sits after body validation so the per-IP slot
+// is not consumed on shape-only rejections.
+router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyLimiter, async (
   req: Request<Record<string, string>, unknown, z.infer<typeof accreditationVerifySchema>>,
   res: Response,
 ) => {

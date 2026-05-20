@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
 import { PrivateKey, Signature, cryptoUtils } from '@hiveio/dhive';
@@ -92,6 +92,91 @@ const sessionAuthLimiter = rateLimit({
   keyFn: byAccount,
   skipFailedRequests: true,
 });
+
+// Body-shape validators that run BEFORE the per-account limiters above. The
+// `skipFailedRequests: true` flag on those limiters refunds the slot on any
+// 4xx/5xx response, which closes the legitimate-user-lockout DoS but opens
+// a CPU-amplification surface: a JWT holder can spray malformed bodies
+// indefinitely and each spray pays the full `verifyHiveSignature` ECDSA
+// recovery cost plus the handler's argon2.verify / Signature.recover /
+// Hive-RPC cost upstream of the limiter. Placing body-shape checks ahead of
+// the limiter shifts the malformed-body class to a 400 VALIDATION_ERROR
+// that does NOT pay the handler/auth cost. The verifyHiveSignature cost is
+// already paid (the JWT auth gate runs first by design so the username is
+// available for `byAccount` keying); the bound is on everything downstream
+// of auth. See `RateLimitConfig.skipFailedRequests` JSDoc for the layered
+// pattern obligation.
+
+/** Body-shape validator for POST /api/custody/upgrade. Asserts the proof
+ *  fields are present, well-typed, and within reasonable length caps. Runs
+ *  BEFORE `upgradeLimiter` so malformed bodies pay only auth + this check,
+ *  not the Signature.recover / Hive getAccounts / DB roundtrip the handler
+ *  performs. */
+function validateUpgradeBodyShape(req: Request, res: Response, next: NextFunction) {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const derivedPubkey = body.derived_pubkey;
+  const signedProof = body.signed_proof;
+  const signedAt = body.signed_at;
+  if (typeof derivedPubkey !== 'string' || derivedPubkey.length === 0 || derivedPubkey.length > 100) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'derived_pubkey is required');
+  }
+  if (typeof signedProof !== 'string' || signedProof.length === 0 || signedProof.length > 200) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'signed_proof is required');
+  }
+  if (typeof signedAt !== 'string' || signedAt.length === 0 || signedAt.length > 64) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'signed_at is required');
+  }
+  next();
+}
+
+/** Body-shape validator for POST /api/custody/fresh-auth. Asserts the
+ *  password is present and the action is one of the allowed values, with
+ *  action-conditional presence of root_author / root_permlink. Runs BEFORE
+ *  `freshAuthLimiter` so malformed bodies do not pay the argon2.verify cost
+ *  the handler performs. Length caps are conservative defaults aligned
+ *  with the route's existing 1mb body limit. */
+function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunction) {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const { password } = body;
+  if (typeof password !== 'string' || password.length === 0 || password.length > 4096) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
+  }
+  const action = body.action;
+  if (action === 'change_email') {
+    // No additional fields required; target is derived from authenticated
+    // username inside the handler.
+    return next();
+  }
+  if (action === 'author_accept' || action === 'author_resign') {
+    const rootAuthor = body.root_author;
+    const rootPermlink = body.root_permlink;
+    if (typeof rootAuthor !== 'string' || rootAuthor.length === 0 || rootAuthor.length > 64) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
+    }
+    if (typeof rootPermlink !== 'string' || rootPermlink.length === 0 || rootPermlink.length > 256) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
+    }
+    return next();
+  }
+  return sendError(
+    res,
+    400,
+    'VALIDATION_ERROR',
+    'action must be one of: author_accept, author_resign, change_email',
+  );
+}
+
+/** Body-shape validator for POST /api/custody/session-auth. Asserts the
+ *  password is present and well-typed. Runs BEFORE `sessionAuthLimiter` so
+ *  malformed bodies do not pay the argon2.verify cost. */
+function validateSessionAuthBodyShape(req: Request, res: Response, next: NextFunction) {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const { password } = body;
+  if (typeof password !== 'string' || password.length === 0 || password.length > 4096) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
+  }
+  next();
+}
 
 /** Stable session-id derived from the bearer JWT for audit-log correlation.
  *  SHA-256 of the raw token, truncated to 16 hex chars — opaque to the
@@ -743,7 +828,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
 // `routes/orcid.ts` under `mode: 'fresh_auth'` (parallel issuance flow that
 // completes a real OAuth round-trip).
 // ─────────────────────────────────────────────────────────────
-router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Request, res: Response) => {
+router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, freshAuthLimiter, async (req: Request, res: Response) => {
   const abortSignal = requestAbortSignal(req, res);
   const username = req.hiveUsername;
   const custody = req.hiveCustody;
@@ -879,7 +964,7 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
 // via `consumeSessionFreshAuthToken`). Kind isolation: the session-kind proof
 // is REJECTED on the consent-op surface with `details.reason: 'kind_mismatch'`.
 // ─────────────────────────────────────────────────────────────
-router.post('/session-auth', verifyHiveSignature, sessionAuthLimiter, async (req: Request, res: Response) => {
+router.post('/session-auth', verifyHiveSignature, validateSessionAuthBodyShape, sessionAuthLimiter, async (req: Request, res: Response) => {
   const abortSignal = requestAbortSignal(req, res);
   const username = req.hiveUsername;
   const custody = req.hiveCustody;
@@ -1028,7 +1113,7 @@ function timingSafePubkeyEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ba, bb);
 }
 
-router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request, res: Response) => {
+router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLimiter, async (req: Request, res: Response) => {
   const username = req.hiveUsername;
   const custody = req.hiveCustody;
 
