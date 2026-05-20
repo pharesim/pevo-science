@@ -171,7 +171,7 @@ const template = `
                 <template x-if="step === 'error' && !duplicateExisting">
                   <div>
                     <p class="text-sm text-pevo-crimson mb-2" x-text="errorMessage"></p>
-                    <button class="btn-secondary text-sm" @click="step = 'idle'" x-text="$t('common.tryAgain')"></button>
+                    <button class="btn-secondary text-sm" @click="resetRegisterError()" x-text="$t('common.tryAgain')"></button>
                   </div>
                 </template>
               </div>
@@ -249,6 +249,17 @@ export function initBridgePage() {
       this.disciplineSearch = '';
     },
 
+    // Reset to the pre-submit state after a register failure. The template's
+    // generic "Try again" button calls this; it must clear `duplicateExisting`
+    // alongside `step` so a subsequent error path that lands without a
+    // DUPLICATE discriminator does not inherit a stale link-block from the
+    // prior attempt.
+    resetRegisterError() {
+      this.step = 'idle';
+      this.errorMessage = '';
+      this.duplicateExisting = null;
+    },
+
     onDisciplineInput(e) {
       this.disciplineSearch = e.target.value;
       this.discipline = e.target.value.trim();
@@ -290,6 +301,14 @@ export function initBridgePage() {
       this.lookupError = '';
       this.lookup = null;
       this.check = null;
+      // Clear post-DUPLICATE residue: stale `duplicateExisting` from a prior
+      // failed register on identifier A must not point at A's existing paper
+      // once the user kicks off a new lookup for identifier B. `step` and
+      // `errorMessage` reset for the same reason — keep the error UI from
+      // leaking across lookups.
+      this.step = 'idle';
+      this.errorMessage = '';
+      this.duplicateExisting = null;
       try {
         const [lookupRes, checkRes] = await Promise.all([
           fetchBridgeLookup(this.identifier.trim()),
@@ -325,6 +344,7 @@ export function initBridgePage() {
 
       this.step = 'registering';
       this.duplicateExisting = null;
+      this.errorMessage = '';
       const keywords = this.keywordsText.split(',').map((k) => k.trim()).filter(Boolean);
       const payload = {
         identifier: this.identifier.trim(),

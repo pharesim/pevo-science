@@ -470,6 +470,68 @@ describe('bridgePage', () => {
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
       vi.useRealTimers();
     });
+
+    // Pins the post-await `_mounted` guard between the LOCK_HELD backoff
+    // sleep and the next `registerBridgePaper` attempt. If a future change
+    // moves or removes the guard, this test catches the regression: the
+    // backoff timer fires after destroy() and would otherwise reach the
+    // next `continue` (or, worse, mutate `step` / `errorMessage`) on a
+    // torn-down component.
+    it('destroy() during LOCK_HELD backoff stops further retries and state mutations', async () => {
+      vi.useFakeTimers();
+      const lockErr = new Error('Registration already in progress');
+      lockErr.code = 'LOCK_HELD';
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper.mockRejectedValue(lockErr);
+
+      const registerP = comp.handleRegister();
+      // Let the initial attempt reject and the first backoff sleep begin.
+      // First delay is 1500ms; advance 500ms so we're inside the window.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mockRegisterBridgePaper).toHaveBeenCalledTimes(1);
+
+      // Tear down mid-backoff.
+      comp.destroy();
+
+      // Advance well past the full retry budget. The sleep promise resolves
+      // and the post-await `_mounted` check must short-circuit before the
+      // next `registerBridgePaper` invocation.
+      await vi.advanceTimersByTimeAsync(20000);
+      await registerP;
+
+      expect(mockRegisterBridgePaper).toHaveBeenCalledTimes(1);
+      // No state mutation past destroy: step stays at 'registering' (set
+      // synchronously before the first await), errorMessage stays cleared.
+      expect(comp.step).toBe('registering');
+      expect(comp.errorMessage).toBe('');
+      expect(comp.duplicateExisting).toBeNull();
+      vi.useRealTimers();
+    });
+
+    // Partial-details fall-through: only one of existing_author /
+    // existing_permlink present. The `if (author && permlink)` gate must
+    // skip the duplicate-link block and surface the generic message,
+    // otherwise the template would render a broken link with the missing
+    // field as undefined.
+    it('DUPLICATE with only existing_author (no permlink) falls through to generic message', async () => {
+      const dupErr = new Error('Preprint already registered');
+      dupErr.code = 'DUPLICATE';
+      dupErr.details = { existing_author: 'someone' };
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper.mockRejectedValue(dupErr);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await comp.handleRegister();
+
+      expect(comp.step).toBe('error');
+      expect(comp.duplicateExisting).toBeNull();
+      expect(comp.errorMessage).toBe('common.registrationFailed');
+      warnSpy.mockRestore();
+    });
   });
 
   // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() catch
