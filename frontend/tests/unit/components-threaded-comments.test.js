@@ -132,6 +132,28 @@ describe('threadedComments', () => {
       expect(comp.error).toBeNull();
       expect(comp.totalCount).toBe(1);
     });
+
+    // Synchronous-flag-before-await: a second loadComments() invoked while
+    // the first is still in-flight must not dispatch a second fetch. The
+    // retry button + the comment-posted window listener make this race
+    // newly reachable (rapid retry-click, or a comment-posted event firing
+    // during an active retry fetch).
+    it('drops a concurrent loadComments() while one is in-flight', async () => {
+      let resolveFirst;
+      mockFetchPaperComments.mockImplementationOnce(
+        () => new Promise((resolve) => { resolveFirst = resolve; }),
+      );
+      const comp = createComponent({ paperAuthor: 'x', paperPermlink: 'y' });
+      const first = comp.loadComments();
+      const second = comp.loadComments();
+      // Initial mount's init() does not run in this test fixture, so the
+      // only fetches in-flight come from the two explicit calls.
+      expect(mockFetchPaperComments).toHaveBeenCalledTimes(1);
+      resolveFirst({ data: [{ author: 'a', permlink: 'p1', body: 'hi' }] });
+      await Promise.all([first, second]);
+      expect(comp.totalCount).toBe(1);
+      expect(comp.errorRetriable).toBe(false);
+    });
   });
 
   describe('toggleCollapse / toggleReply', () => {

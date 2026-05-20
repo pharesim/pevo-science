@@ -182,6 +182,26 @@ describe('profilePage', () => {
       expect(comp.papersRetriable).toBe(false);
       expect(comp.userPapers).toHaveLength(1);
     });
+
+    // A stale 503 from a prior profile's in-flight papers fetch must not
+    // land papersRetriable=true on the current component after the page-
+    // mount reuses the same Alpine x-data instance for a new username.
+    // The sub-fetch catch captures locally; the post-Promise.all stale-call
+    // guard skips the mutation when the username changed mid-flight.
+    it('does not set papersRetriable when username changes between fetch start and 503 rejection', async () => {
+      fetchProfile.mockResolvedValue({ data: { username: 'alice' } });
+      fetchProfilePapers.mockImplementation(() => {
+        // Mutate the param mid-flight to simulate a navigation to a new
+        // profile after this fetch was dispatched.
+        mockStores.router.params.username = 'carol';
+        return Promise.reject(serviceUnavailableErr());
+      });
+      const comp = createComponent();
+      await comp.loadProfile();
+      expect(comp.papersRetriable).toBe(false);
+      // restore for other tests
+      mockStores.router.params.username = 'alice';
+    });
   });
 
   describe('loadReviews 503 retry affordance', () => {
@@ -215,6 +235,39 @@ describe('profilePage', () => {
       const comp = createComponent();
       await comp.loadReviews();
       expect(comp.reviewsRetriable).toBe(true);
+      await comp.loadReviews();
+      expect(comp.reviewsRetriable).toBe(false);
+      expect(comp.userReviews).toHaveLength(1);
+    });
+
+    // Synchronous-flag-before-await: a second loadReviews() invoked while
+    // the first is still in-flight must not dispatch a second fetch.
+    // Without the guard, two concurrent fetches race and the loser's catch
+    // arm can clobber the winner's data + reset reviewsRetriable.
+    it('drops a concurrent loadReviews() while one is in-flight', async () => {
+      let resolveFirst;
+      fetchProfileReviews.mockImplementationOnce(
+        () => new Promise((resolve) => { resolveFirst = resolve; }),
+      );
+      const comp = createComponent();
+      const first = comp.loadReviews();
+      // Second invocation while first is awaiting — must be dropped before
+      // any second fetch is dispatched.
+      const second = comp.loadReviews();
+      expect(fetchProfileReviews).toHaveBeenCalledTimes(1);
+      resolveFirst({ data: [{ author: 'alice', permlink: 'r1', paper: { title: 't' } }] });
+      await Promise.all([first, second]);
+      expect(comp.userReviews).toHaveLength(1);
+      expect(comp.reviewsRetriable).toBe(false);
+    });
+
+    // Explicit clear on the success path so a successful retry returns to a
+    // clean state without depending on the next call's top-of-function reset.
+    it('clears reviewsRetriable explicitly on the success path', async () => {
+      fetchProfileReviews.mockResolvedValue({ data: [{ author: 'alice', permlink: 'r1', paper: { title: 't' } }] });
+      const comp = createComponent();
+      // Simulate a stale flag from a prior failed load.
+      comp.reviewsRetriable = true;
       await comp.loadReviews();
       expect(comp.reviewsRetriable).toBe(false);
       expect(comp.userReviews).toHaveLength(1);

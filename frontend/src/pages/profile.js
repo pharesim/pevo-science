@@ -271,7 +271,7 @@ const template = `
                       <p class="text-ink-muted" x-text="$t('profile.noPapers')"></p>
                     </div>
                   </template>
-                  <template x-if="papersRetriable">
+                  <template x-if="papersRetriable && userPapers.length === 0">
                     <div class="card text-center py-8" data-testid="profile-papers-retry">
                       <p class="text-ink-muted mb-3" x-text="$t('profile.papersUnavailable')"></p>
                       <button type="button" @click="loadProfile()" class="btn-primary text-sm" x-text="$t('common.retry')"></button>
@@ -334,7 +334,7 @@ const template = `
                       <p class="text-ink-muted" x-text="$t('profile.noReviews')"></p>
                     </div>
                   </template>
-                  <template x-if="!reviewsLoading && reviewsRetriable">
+                  <template x-if="!reviewsLoading && reviewsRetriable && userReviews.length === 0">
                     <div class="card text-center py-8" data-testid="profile-reviews-retry">
                       <p class="text-ink-muted mb-3" x-text="$t('profile.reviewsUnavailable')"></p>
                       <button type="button" @click="loadReviews()" class="btn-primary text-sm" x-text="$t('common.retry')"></button>
@@ -382,13 +382,18 @@ export function initProfilePage() {
       const username = this.username;
       this.loading = true;
       this.error = null;
-      this.papersRetriable = false;
+      // Capture the discriminator locally — assigning to this.papersRetriable
+      // from inside the sub-fetch catch would land on a stale Alpine instance
+      // when the page-mount is reused across username param changes (the
+      // catch runs synchronously in the rejection chain, before the post-
+      // Promise.all stale-call guard). Mutation happens after the guard.
+      let papersRetriable = false;
       try {
         const [profileRes, papersRes] = await Promise.all([
           fetchProfile(username),
           fetchProfilePapers(username).catch((err) => {
             if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
-              this.papersRetriable = true;
+              papersRetriable = true;
             }
             return { data: [] };
           }),
@@ -396,6 +401,7 @@ export function initProfilePage() {
         if (this.username !== username) return;
         this.profile = profileRes.data;
         this.userPapers = papersRes.data || [];
+        this.papersRetriable = papersRetriable;
         if (username) document.title = `${username} — PEvO`;
       } catch (err) {
         if (this.username !== username) return;
@@ -435,21 +441,25 @@ export function initProfilePage() {
     },
 
     async loadReviews() {
+      // Synchronous in-flight guard before the first await so concurrent
+      // re-entry (tab switch + retry-click race, rapid sort changes) cannot
+      // produce two overlapping fetches whose catch arms clobber each other.
+      if (this.reviewsLoading) return;
       const username = this.username;
       this.reviewsLoading = true;
-      this.reviewsRetriable = false;
       try {
         const res = await fetchProfileReviews(username, { sort: this.reviewSort });
         if (this.username !== username) return;
         this.userReviews = res.data || [];
         this.reviewsLoaded = true;
+        this.reviewsRetriable = false;
       } catch (err) {
         if (this.username !== username) return;
         this.userReviews = [];
         this.reviewsLoaded = true;
-        if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
-          this.reviewsRetriable = true;
-        }
+        this.reviewsRetriable = (
+          err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true
+        );
       } finally {
         this.reviewsLoading = false;
       }

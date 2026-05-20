@@ -110,6 +110,11 @@ export function initThreadedComments() {
     // Discriminator on 503 SERVICE_UNAVAILABLE + details.retriable so the
     // template can render a Retry button instead of a generic error string.
     errorRetriable: false,
+    // In-flight guard distinct from the user-visible `loading` flag, which
+    // starts true to drive the initial skeleton render. Using `loading` as
+    // the guard would block the first call from init() since it's already
+    // true at the entry-check.
+    _loadInFlight: false,
     totalCount: 0,
     collapsed: {},
     replyOpen: {},
@@ -121,6 +126,11 @@ export function initThreadedComments() {
     },
 
     async loadComments() {
+      // Synchronous in-flight guard before the first await so re-entry from
+      // retry-button clicks plus the `comment-posted` window listener cannot
+      // produce overlapping fetches whose catch arms clobber state.
+      if (this._loadInFlight) return;
+      this._loadInFlight = true;
       this.loading = true;
       this.error = null;
       this.errorRetriable = false;
@@ -138,6 +148,7 @@ export function initThreadedComments() {
         this.comments = [];
       } finally {
         this.loading = false;
+        this._loadInFlight = false;
       }
     },
 
