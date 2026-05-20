@@ -153,3 +153,9 @@ The new `paper-list-orcid-discrepancy.spec.js` for the profile-inline-publicatio
 The paper-feed half of the same file uses the right pattern: `page.locator('article.card').filter({ hasText: '...' })`. The profile half forks to a brittle xpath without that anchor. Cross-reviewer corroboration: surfaced by correctness, testing, julik-frontend-races, and adversarial independently.
 
 Fix: replace the xpath ancestor lookup with the same `article.card` filter pattern the paper-feed half uses, or `ancestor::article[contains(@class, "card")][1]` if you want to preserve the ancestor-style structure. Run the spec once via the playwright test-up/test-down docker dance to verify it passes in CI (currently it cannot resolve to a valid row scope).
+
+---
+
+## UI re-review signal (2026-05-20, commit <SHA>)
+
+Round-3 hold item 1 landed. The profile-inline half of `frontend/tests/e2e/paper-list-orcid-discrepancy.spec.js` now uses the same `page.locator('article.card').filter({ hasText: '...' })` anchor pattern the paper-feed half already uses, replacing the broken `xpath=ancestor::div[contains(@class, "card") or contains(@class, "bg-")][1]` lookup. The `<article class="card">` wrapper that profile.js renders for each publication row is now the explicit scope; `discrepantRow` and `matchingRow` resolve to disjoint, correct row scopes, so the discrepant-row `toHaveCount(1)` and matching-row `toHaveCount(0)` assertions fire on the real list-card DOM. The added inline comment notes that the selector deliberately mirrors the paper-feed half. Full Playwright E2E run deferred to parent serialization (per worktree protocol).

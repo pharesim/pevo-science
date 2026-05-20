@@ -208,14 +208,13 @@ test('profile inline publications list: discrepancy indicator on discrepant auth
   await expect(page.locator('h1, h2').filter({ hasText: 'Profile Test' }).first()).toBeVisible();
 
   // Wait for publications listing to populate. The profile-page Publications
-  // tab is the default; cards render from the mocked papers response.
-  const discrepantTitle = page.locator('text=Profile Paper With Discrepant Author').first();
-  const matchingTitle = page.locator('text=Profile Paper With Matching Author').first();
-  await expect(discrepantTitle).toBeVisible();
-  await expect(matchingTitle).toBeVisible();
-
-  const discrepantRow = discrepantTitle.locator('xpath=ancestor::div[contains(@class, "card") or contains(@class, "bg-")][1]');
-  const matchingRow = matchingTitle.locator('xpath=ancestor::div[contains(@class, "card") or contains(@class, "bg-")][1]');
+  // tab is the default; cards render from the mocked papers response. Each
+  // publication is wrapped in <article class="card"> by profile.js, so we
+  // anchor on that same selector (matches the paper-feed half above).
+  const discrepantRow = page.locator('article.card').filter({ hasText: 'Profile Paper With Discrepant Author' });
+  const matchingRow = page.locator('article.card').filter({ hasText: 'Profile Paper With Matching Author' });
+  await expect(discrepantRow).toBeVisible();
+  await expect(matchingRow).toBeVisible();
 
   await expect(discrepantRow.getByTestId('orcid-discrepancy-indicator')).toHaveCount(1);
   await expect(matchingRow.getByTestId('orcid-discrepancy-indicator')).toHaveCount(0);
