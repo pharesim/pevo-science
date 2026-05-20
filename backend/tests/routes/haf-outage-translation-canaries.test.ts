@@ -85,13 +85,15 @@ class HafQueryError extends Error {
 // identical to the production implementation in `backend/src/db.ts` (the
 // cross-surface parity invariant: production code discriminates on the
 // same shape these canaries pin). Retriable: connection-class pg codes
-// (`08*`), `57014` (statement_timeout), `57P03` (cannot_connect_now —
-// startup/PITR/standby-promotion), `53300` (too_many_connections), or
-// no code at all (generic JS Error from the network / pool layer).
+// (`08*`), `57014` (statement_timeout), `57P01` (admin_shutdown —
+// graceful shutdown) and `57P03` (cannot_connect_now —
+// startup/PITR/standby-promotion) as the two halves of the Postgres
+// restart cycle, `53300` (too_many_connections), or no code at all
+// (generic JS Error from the network / pool layer).
 function isRetriableHafError(err: HafQueryError): boolean {
   const code = (err.cause as { code?: unknown } | null | undefined)?.code;
   if (typeof code !== 'string') return true;
-  return code.startsWith('08') || code === '57014' || code === '57P03' || code === '53300';
+  return code.startsWith('08') || code === '57014' || code === '57P01' || code === '57P03' || code === '53300';
 }
 
 vi.mock('../../src/db.js', () => ({
@@ -400,6 +402,49 @@ describe('HafQueryError with deterministic pg error code → 500 (not 503 retria
       if (sql.includes('c.body, c.json_metadata') && sql.includes('paper_title')) {
         const err = new Error('the database system is starting up') as Error & { code: string };
         err.code = '57P03';
+        throw err;
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/reviews/alice/review-x');
+
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    expect(res.body.error.details?.retriable).toBe(true);
+  });
+
+  it('admin_shutdown (57P01) on the reviews single-doc fetch is classified as 503 retriable', async () => {
+    // Pins `isRetriableHafError`'s 57P01 classification (Postgres graceful
+    // shutdown windows) as retriable. Pairs with the 57P03 canary above as
+    // the two halves of the Postgres restart cycle: shutdown (57P01) and
+    // startup (57P03). A regression dropping 57P01 from the discriminator
+    // returns 500 INTERNAL_ERROR; this canary fails RED.
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('c.body, c.json_metadata') && sql.includes('paper_title')) {
+        const err = new Error('terminating connection due to administrator command') as Error & { code: string };
+        err.code = '57P01';
+        throw err;
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/reviews/alice/review-x');
+
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    expect(res.body.error.details?.retriable).toBe(true);
+  });
+
+  it('too_many_connections (53300) on the reviews single-doc fetch is classified as 503 retriable', async () => {
+    // Pins `isRetriableHafError`'s 53300 classification (pg-level admission
+    // reject when the server's own `max_connections` is hit, distinct from
+    // PEvO's pool cap) as retriable. A regression dropping 53300 from the
+    // discriminator returns 500 INTERNAL_ERROR; this canary fails RED.
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('c.body, c.json_metadata') && sql.includes('paper_title')) {
+        const err = new Error('too many connections for role "haf_user"') as Error & { code: string };
+        err.code = '53300';
         throw err;
       }
       return { rows: [] };

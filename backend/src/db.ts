@@ -76,6 +76,10 @@ export class HafQueryError extends Error {
  *     network blip, pool reset).
  *   - `57014` — `query_canceled` / statement_timeout. Transient under
  *     load even when the query itself is correct.
+ *   - `57P01` — `admin_shutdown`. Postgres graceful shutdown windows;
+ *     realistic during HAF maintenance. Pairs with `57P03` as the two
+ *     halves of the Postgres restart cycle: shutdown (`57P01`) and
+ *     startup (`57P03`) windows during HAF maintenance.
  *   - `57P03` — `cannot_connect_now` (Postgres startup, point-in-time
  *     recovery, standby promotion windows; realistic during HAF
  *     maintenance).
@@ -99,7 +103,7 @@ export function isRetriableHafError(err: HafQueryError): boolean {
     // intent in wrapping the throw as HafQueryError in the first place.
     return true;
   }
-  return code.startsWith('08') || code === '57014' || code === '57P03' || code === '53300';
+  return code.startsWith('08') || code === '57014' || code === '57P01' || code === '57P03' || code === '53300';
 }
 
 export function getPool(): pg.Pool | null {

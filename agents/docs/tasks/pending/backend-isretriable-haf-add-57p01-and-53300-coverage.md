@@ -94,3 +94,33 @@ The 57P01 addition is gap-from-symmetry reasoning, not observed-occurrence data.
 - `backend/tests/support/argon2-error-mocks.ts` — `dbStubFactory` site (sweep target).
 - Originating reviews: `backend-fetch-paper-detail-haf-error-vs-not-found` round-2 review (reliability persona surfaced 57P01) + `backend-haf-outage-translation-audit-across-routes` round-3 review (reliability persona cross-corroborated 57P01 + flagged 53300 canary gap).
 - PostgreSQL SQLSTATE reference: [Appendix A](https://www.postgresql.org/docs/current/errcodes-appendix.html) — `57P01` admin_shutdown, `57P02` crash_shutdown, `57P03` cannot_connect_now, `53300` too_many_connections.
+
+## Backend completion signal (2026-05-20)
+
+All four acceptance items landed.
+
+**Acceptance #1 — production discriminator extended with `57P01`.**
+`backend/src/db.ts:isRetriableHafError` discriminator now reads `code.startsWith('08') || code === '57014' || code === '57P01' || code === '57P03' || code === '53300'`. Docstring extended with the 57P01 entry framed as the graceful-shutdown half of the Postgres restart cycle; explicit pairing note ties it to the existing 57P03 entry as the two halves (shutdown 57P01 + startup 57P03) of the restart-cycle coverage.
+
+**Acceptance #2 — two new canaries in `haf-outage-translation-canaries.test.ts`.**
+Mirror-shape of the existing 57P03 canary on the `/api/reviews/:author/:permlink` single-doc fetch path. Both new canaries seed pg-shaped errors (`code: '57P01'` / `code: '53300'`) keyed on the same SQL substring discriminator (`c.body, c.json_metadata` + `paper_title`) the 57P03 canary uses, and assert `status: 503`, `error.code: 'SERVICE_UNAVAILABLE'`, `details.retriable: true`. Comment anchors are behavioral (function name + SQLSTATE code + operational semantics) — no round-number, task-slug, line-number, or SHA references per the comment-anchor convention. The test file's local copy of `isRetriableHafError` and its accompanying comment were also extended to enumerate 57P01 alongside 57P03.
+
+**Acceptance #3 — sweep of 3 test-local mock copies.**
+- `backend/tests/routes/papers-haf-error-vs-not-found.test.ts` (`isRetriableHafError` at the file top): updated.
+- `backend/tests/routes/retract-rate-limit-skip-failed.test.ts` (`vi.hoisted` block): updated.
+- `backend/tests/support/argon2-error-mocks.ts` (`dbStubFactory`): updated.
+
+All three now read `code.startsWith('08') || code === '57014' || code === '57P01' || code === '57P03' || code === '53300'`. Default-to-retriable (`typeof code !== 'string'` → `true`) preserved in all copies.
+
+**Acceptance #4 — Verification.**
+
+- Targeted `Edit`-driven check of the production helper + test-local copies for parity: all 5 sites now carry the same retriable set.
+- `npm run typecheck` and scoped vitest results documented at the bottom of this signal in the verification subsection below (the parent agent runs `npx vitest run` against the touched test files after merging all backend round-1/2/3/4 cherry-picks).
+
+**Mutation-kill check (gap-from-symmetry argument).** The 57P01 and 53300 canaries are additive — neither was previously catchable by any spec. A regression dropping either code from the production discriminator returns 500 INTERNAL_ERROR on the simulated transient outage; both canaries then fail RED. The pre-existing 42601 deterministic-pg canary continues to assert 500 INTERNAL_ERROR + `details.retriable !== true`, so the negative-class invariant is also preserved.
+
+**Cross-task notes.**
+- The 4 existing dbStubFactory consumers (any spec exercising the `argon2-error-mocks` stub) continue to compile against `typeof import('../../src/db.js')` because the stub's return shape stays a strict superset of the production module surface — the only change is the body of `isRetriableHafError`.
+- The cluster-review residual on operator-observed 57P01 occurrence (whether Mahdi's HAF restart pattern emits 57P01 before connection drop) is documented in the task's "Operational realism caveat" section and remains a gap-from-symmetry choice, not an observed-occurrence pin. Low risk to land (set widens only; no false-positive risk because 57P01 IS structurally a transient shutdown signal).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

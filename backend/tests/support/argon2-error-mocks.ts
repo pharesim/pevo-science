@@ -192,7 +192,7 @@ export const dbStubFactory: () => typeof import('../../src/db.js') = () => {
   const isRetriableHafError = (err: HafQueryError): boolean => {
     const code = (err.cause as { code?: unknown } | null | undefined)?.code;
     if (typeof code !== 'string') return true;
-    return code.startsWith('08') || code === '57014' || code === '57P03' || code === '53300';
+    return code.startsWith('08') || code === '57014' || code === '57P01' || code === '57P03' || code === '53300';
   };
   return {
     getPool: () => null,
