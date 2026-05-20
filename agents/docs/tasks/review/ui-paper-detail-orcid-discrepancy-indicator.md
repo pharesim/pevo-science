@@ -121,3 +121,21 @@ Fix: validate against the ORCID regex (`/^\d{4}-\d{4}-\d{4}-\d{3}[0-9X]$/`, the 
 Three pairs of i18n keys have effectively identical English values, duplicated across `paperCard.*` and `paperDetail.*` namespaces (orcid label / discrepancy title / discrepancy aria-label). `profile.js` correctly reuses `paperCard.*` because the inline listing is a paper-card surface; `paper-detail.js` forked into its own namespace. Translators receive 3 redundant strings × 16 locales = 48 redundant requests, and the new STUBS.md sweep records all 48.
 
 Fix: collapse to a single shared `orcid.*` namespace (or reuse `paperCard.*` from paper-detail.js — implementer discretion on naming). Update all three render sites' `$t(...)` references. Update STUBS.md to reflect the consolidated key set. Update `en.json` and the 15 locale stubs to drop the redundant keys.
+
+---
+
+## UI re-review signal (2026-05-20, commit 7a55cca7)
+
+Round-2 fixes landed in commit `7a55cca7`. All seven architect hold items addressed:
+
+- **Item 1 (case-b tooltip).** Chose option (a) — suppress the indicator entirely when chain ORCID equals verified ORCID. New `shouldShowDiscrepancyIndicator(author)` helper in `frontend/src/lib/authors.js` combines the wire-level `orcid_discrepancy === true` check with a `orcid !== orcid_verified` values-differ check. All three render sites (paper-detail.js byline, paper-card.js, profile.js inline) now gate on the new helper.
+- **Item 2 (helper unit tests).** New `frontend/tests/unit/lib-authors.test.js` (20 cases) exercises `canonicalOrcid` / `hasOrcidDiscrepancy` / `shouldShowDiscrepancyIndicator` across null, undefined, mismatched-type, format-invalid, junk-50-char-string, and case-b inputs. Includes the empty-string pin (`{orcid_verified: ''}` falls through to chain) tied to Item 6's chosen semantics.
+- **Item 3 (list-card surface coverage).** New E2E spec `frontend/tests/e2e/paper-list-orcid-discrepancy.spec.js` covers paper-feed (`/en/papers`) and profile inline publications listing (`/en/profile/<u>`). Each surface asserts one discrepant-author indicator-visible + one matching-author indicator-absent. Both routes are mocked at `/api/papers` and `/api/profile/<u>/papers` respectively.
+- **Item 4 (case-b E2E regression pin).** New fifth test case in `paper-detail-orcid-discrepancy.spec.js` mocks the case-b wire shape `{orcid: X, orcid_verified: X, orcid_discrepancy: true}` and asserts the indicator is absent. Would fail before Item 1's helper landed and passes after.
+- **Item 5 (junk-string trust-spoof).** `canonicalOrcid` extended to validate against the ORCID regex `/^\d{4}-\d{4}-\d{4}-\d{3}[0-9X]$/` (mirrors backend `ORCID_RE`). Implemented via a private `validOrcidOrNull(value)` helper in `lib/authors.js` (chosen over a sibling exported helper for tighter call-site coupling). Invalid values now fall through; junk strings can no longer render as green orcid.org links.
+- **Item 6 (JSDoc-vs-code semantics).** Picked truthy-`||` semantics and updated the docblock to match. The empty-string case (`{orcid_verified: ''}`) is now explicitly tested and pins the fall-through behavior; combined with Item 5's regex validation, the actual fall-through reason is "fails ORCID_RE" rather than "is falsy", but both paths converge on the same return value.
+- **Item 7 (i18n consolidation).** Both `paperCard.orcid*` and `paperDetail.orcid*` key sets collapse into a shared `orcid.*` namespace (`linkAriaLabel` / `discrepancyTitle` / `discrepancyAriaLabel`). The new aria-label uses the more-informative interpolated variant. `en.json` source updated; the 15 non-English locale files re-stubbed with the new keys via a node script; `STUBS.md` sweep entry rewritten to reflect the consolidated key set (90 lines → 45 lines).
+
+Dead-code cleanup: `hasOrcidDiscrepancy` removed from the three render-site x-data exposures (no template binds to it anymore); the helper remains exported from `lib/authors.js` for unit-test access and internal use by `shouldShowDiscrepancyIndicator`.
+
+Test result: 184/184 pass across affected vitest files (lib-authors, components-paper-card, components-paper-feed, pages-profile, pages-paper-detail, i18n). New E2E specs verified via `playwright test --list`; full E2E run deferred (requires test-up/test-down docker dance per `agents/ui/CLAUDE.md` § "E2E (Playwright)").

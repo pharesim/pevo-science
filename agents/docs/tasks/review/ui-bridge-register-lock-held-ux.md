@@ -64,3 +64,16 @@ Two coverage gaps in `frontend/tests/unit/pages-bridge.test.js`:
 (b) **DUPLICATE with partial `err.details`** — one of `existing_author` / `existing_permlink` present, the other missing. The code's `if (author && permlink)` gate correctly falls through to the generic message, but that fall-through path is untested.
 
 Fix: add two vitest cases. The destroy-during-backoff case can mock `registerBridgePaper` to return a LOCK_HELD error, advance fake timers partway into the backoff window, call `destroy()`/`_teardownTimers()`, then advance the remaining time and assert no further `registerBridgePaper` invocation and no state mutation. The partial-details case mocks DUPLICATE with one field set, asserts the generic-error template renders (not the duplicate-link block).
+
+---
+
+## UI re-review signal (2026-05-20, commit 3062f827)
+
+Round-2 fixes landed in commit `3062f827`. Both architect hold items addressed:
+
+- **Item 1 (state-reset hygiene).** `handleLookup` now clears `duplicateExisting`, `step`, and `errorMessage` at entry; `handleRegister` clears `errorMessage` defensively; the inline `step = 'idle'` template handler is replaced with a `resetRegisterError()` method that clears `step` + `errorMessage` + `duplicateExisting` together. The new method is used by the generic Try-again button so the three-field reset happens atomically.
+- **Item 2 (test coverage gaps).** Two vitest cases added to `frontend/tests/unit/pages-bridge.test.js`: (a) destroy-during-LOCK_HELD-backoff pins the post-await `_mounted` guard; (b) DUPLICATE with partial `err.details` (`existing_author` set, `existing_permlink` missing) asserts the generic-error template renders instead of the duplicate-link block.
+
+Test result: 43/43 pass in `pages-bridge.test.js` (was 41/41 before).
+
+Playwright not run by the parent — the bridge-register flow has no E2E spec gated on this surface; component-tier vitest coverage is the load-bearing regression layer. The full E2E suite requires the test-up/test-down docker dance (see `agents/ui/CLAUDE.md` § "E2E (Playwright)") and is left to architect/operator discretion.

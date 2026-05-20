@@ -139,3 +139,18 @@ Fix: align `loadEnrichment`'s error handling with `loadPaper`'s carve-out — mo
 The "Reviews and votes are temporarily unavailable. [Retry]" hint button has no `:disabled` binding tied to in-flight state. Rapid double-click produces concurrent `fetchPaperEnrichment` calls with last-write-wins on `paper.reviews`. Same shape as Item 1 (citation dropdown) but for the enrichment retry surface. Failure mode is milder than Item 1 (no duplicate side effects — both attempts hit a read endpoint), but still wasteful and produces brief UI flicker.
 
 Fix: add `:disabled` binding to the retry button tied to an `enrichmentRetrying` flag set synchronously at click-handler entry, cleared in `finally`. Mirror Item 1's fix shape.
+
+---
+
+## UI re-review signal (2026-05-20, commit 6b05c157)
+
+Round-2 fixes landed in commit `6b05c157`. All six architect hold items addressed:
+
+- **Item 1 (citation dropdown :disabled).** The three format buttons (APA / BibTeX / RIS) inside the citation dropdown now carry `:disabled="citeLoading"` with `disabled:opacity-50 disabled:cursor-not-allowed` styling. The dropdown also closes synchronously at `handleCitationExport` entry (`citeOpen = false`) so the visible UI matches the in-flight gate during the retry window.
+- **Item 2 (handleRetract comment).** The prior slot-burn citation removed; the rewritten comment anchors on the stable invariant — retract is a destructive, chain-visible write op so positive user confirmation per attempt is the correct posture regardless of how the backend limiter handles failures.
+- **Item 3 (paper-identity guard).** `handleCitationExport` now captures `author`/`permlink` at handler entry and uses the captured closures for both the `fetchCitationExport` call and the download filename. Post-await identity guards fire after each loop arm (post-fetch success, post-backoff sleep, post-fetch error). The `finally` block also guards the `citeLoading` reset so a stale completion does not flip the new paper's flag.
+- **Item 4 (enrichmentRetriable gating).** Chose option (a): template gates on `enrichmentRetriable && !enrichmentLoaded`. Refresh failures from claim-mutation flows are now silent (the still-visible reviews data isn't contradicted by the banner); first-load failures still surface the retry affordance.
+- **Item 5 (loadEnrichment console.warn carve-out).** `console.warn` moved into an `else` branch that fires only for unrecognized errors. Recognized retriable-503 surfaces via `enrichmentRetriable = true` without a log emission, aligning with `loadPaper`'s carve-out.
+- **Item 6 (enrichment retry :disabled).** New `enrichmentRetrying` state + `retryEnrichment()` wrapper around `loadEnrichment`. The retry button binds `:disabled="enrichmentRetrying"` and `@click="retryEnrichment()"`. The wrapper sets the flag synchronously at entry, clears it in `finally`; a re-entrant call sees the flag and bails (`if (this.enrichmentRetrying) return;`).
+
+Test result: 77/77 pass in `pages-paper-detail.test.js` (was 73/73 before). Four new vitest cases: recognized 503 carve-out, unrecognized-error warn fallback, `retryEnrichment` in-flight guard, citation tab-switch identity guard. Full E2E run deferred per the docker-stack test-up/test-down requirement.
