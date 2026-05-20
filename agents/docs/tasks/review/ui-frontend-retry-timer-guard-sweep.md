@@ -62,3 +62,13 @@ Implementer commit `9929497a` reviewed via `/ce-code-review` (7 reviewers: corre
 **Triage dismissals (recorded; no action required):**
 - NOT_FOUND destroy-mid-backoff test missing in `loadPaper`'s NOT_FOUND retry branch (new guard at `paper-detail.js:881-882`). Risk class is structurally identical to the SERVICE_UNAVAILABLE branch which is covered; dismissed per PEvO preemptive-test-hardening policy.
 - `_sleep` resolve-on-teardown rationale promotion to module header. The rationale is already documented inline at `frontend/src/lib/timer-guard.js:53-58` and the existing docblock IS the module header for `createTimerGuard()`.
+
+## UI re-review signal (2026-05-20, working tree)
+
+All three held items landed in this commit. Vitest pass: 80/80 in `frontend/tests/unit/pages-paper-detail.test.js`.
+
+1. **`handleCitationExport` destroy-mid-503-backoff test** — added under the `SERVICE_UNAVAILABLE retriable handling` describe block, immediately before the existing `paper-identity changes mid-backoff` test. Mirrors the `loadPaper` 503 destroy-test shape: mocks `fetchCitationExport` to reject with retriable 503, calls `handleCitationExport('apa')`, advances 500ms into the 1500ms first backoff, destroys, advances 20000ms, asserts `fetchCitationExport` called exactly once and `citeLoading === false`. The `citeLoading` assertion additionally pins the outer `try/finally` reset fires through the `_mounted` early-return path.
+
+2. **Vacuous 503 destroy-test assertions in `loadPaper`** — switched to string sentinels seeded AFTER the `comp.loadPaper()` call returns its promise (synchronous prologue resets to `null`/`false` first, then control returns at the first `await`). The architect's literal prescription said "seed before" with `errorIs503 = true`, but `loadPaper`'s entry prologue overwrites pre-seeded values immediately, and `true` is the same value the regression path would write to `errorIs503` (the post-retry-budget `else if (isRetriable503(err))` branch sets `errorIs503 = true`). String sentinels (`'sentinel-error'` / `'sentinel-503'`) seeded post-prologue catch both regression modes: sentinel survival proves the `_mounted` short-circuit fired; sentinel overwrite to a localized title string would fail both assertions. Comment in the test documents the sequencing reasoning so the next reader doesn't re-introduce the pre-loadPaper seeding.
+
+3. **`destroy()` comment anchor rot** — replaced the method-list enumeration ("guards in `loadPaper` / `handleCitationExport` ...") with invariant-anchored phrasing ("Post-await `if (!this._mounted) return;` guards in all retry loops prevent state mutation after destroy; teardown here releases the timer closure references those loops hold.") per root CLAUDE.md "Comment anchors".

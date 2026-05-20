@@ -912,7 +912,16 @@ describe('paperDetailPage', () => {
       try {
         vi.useFakeTimers();
         const comp = createComponent();
+        // Seed sentinel values BEFORE calling loadPaper. `loadPaper()`
+        // resets `error = null` / `errorIs503 = false` at entry, so the
+        // sentinels are immediately overwritten on the synchronous prologue
+        // — they cover the post-await branch only. A regression where the
+        // `_mounted` guard fails would re-enter the error-display branch on
+        // the next iteration and overwrite both fields with the localized
+        // 503 strings; sentinel survival proves the guard short-circuited.
         const p = comp.loadPaper();
+        comp.error = 'sentinel-error';
+        comp.errorIs503 = 'sentinel-503';
         // First retry window is 2000ms; advance partway in.
         await vi.advanceTimersByTimeAsync(500);
         expect(fetchPaper).toHaveBeenCalledTimes(1);
@@ -927,12 +936,50 @@ describe('paperDetailPage', () => {
         await p;
 
         expect(fetchPaper).toHaveBeenCalledTimes(1);
-        // No state mutation past destroy: error stays null (set to null at
-        // loadPaper entry, never touched after teardown), errorIs503 stays
-        // false.
-        expect(comp.error).toBeNull();
-        expect(comp.errorIs503).toBe(false);
+        // Sentinels survive: the post-await `_mounted` guard returned early,
+        // so neither the next retry attempt nor the post-budget error-display
+        // branch ran. A regression that overwrites these fields would surface
+        // here as a localized i18n key instead of the seeded sentinel.
+        expect(comp.error).toBe('sentinel-error');
+        expect(comp.errorIs503).toBe('sentinel-503');
         expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('handleCitationExport destroy() during retriable-503 backoff: no further fetch fires, citeLoading resets', async () => {
+      // Mirrors the loadPaper SERVICE_UNAVAILABLE destroy-test above for
+      // the citation-export retry loop. With `_sleep` resolve-on-teardown
+      // semantics, the awaiting frame resumes after destroy(); the
+      // post-await `_mounted` short-circuit prevents the retry from firing.
+      // citeLoading=false also pins that the outer try/finally runs during
+      // teardown — handleCitationExport's `finally { this.citeLoading = false; }`
+      // is the unconditional reset that prevents a stuck loading state on
+      // any teardown path.
+      fetchCitationExport.mockReset().mockRejectedValue(svcUnavailable());
+      try {
+        vi.useFakeTimers();
+        const comp = createComponent();
+        const p = comp.handleCitationExport('apa');
+        // First retry window is 1500ms; advance partway in.
+        await vi.advanceTimersByTimeAsync(500);
+        expect(fetchCitationExport).toHaveBeenCalledTimes(1);
+        expect(comp.citeLoading).toBe(true);
+
+        // Tear down mid-backoff.
+        comp.destroy();
+
+        // Drain remaining timers. `_sleep` resolves on teardown so the
+        // awaiting frame runs immediately, but the `_mounted` check
+        // short-circuits before the next attempt.
+        await vi.advanceTimersByTimeAsync(20000);
+        await p;
+
+        expect(fetchCitationExport).toHaveBeenCalledTimes(1);
+        // The outer try/finally fires on the early-return through `_mounted`,
+        // so citeLoading resets even though the loop bailed mid-backoff.
+        expect(comp.citeLoading).toBe(false);
       } finally {
         vi.useRealTimers();
       }

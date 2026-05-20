@@ -846,10 +846,9 @@ export function initPaperDetailPage() {
     },
 
     destroy() {
-      // Drain retry-loop _sleep promises and clear any pending timer ids.
-      // The post-await `if (!this._mounted) return;` guards in loadPaper /
-      // handleCitationExport keep state mutations from running after destroy;
-      // teardown here releases the closure references those timers hold.
+      // Post-await `if (!this._mounted) return;` guards in all retry loops
+      // prevent state mutation after destroy; teardown here releases the
+      // timer closure references those loops hold.
       this._teardownTimers();
     },
 
