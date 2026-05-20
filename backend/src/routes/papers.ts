@@ -717,7 +717,25 @@ async function computeChainCumulativeFromHaf(
   return buildChainCumulativeFromPosts(chainPosts, rootAuthor, rootPermlink, options);
 }
 
-const retractLimiter = rateLimit({ name: 'paper-retract', windowMs: 3_600_000, max: 5, keyFn: byAccount });
+// skipFailedRequests: a HAF outage emits 503 with `details.retriable: true`
+// and the SPA retries on it. Without `skipFailed`, each retry consumes one
+// of the legitimate user's 5 slots/hour, and a single outage event burns
+// the entire hour budget — when HAF recovers, the user is locked out of
+// retract until the rolling-window head ages out. The middleware refunds
+// the slot on every >= 400 response (4xx and 5xx). On /retract this is
+// safe: the 422 "already retracted" and 404 "paper not found" paths only
+// fire for a verified-signature request matching `username === URL author`,
+// so the per-account refund is bounded by the attacker's own paper set
+// (no unbounded probe surface). The 502 BROADCAST_FAILED and 504
+// BROADCAST_TIMEOUT paths carry `verify_before_retry: true` so the SPA
+// doesn't auto-retry on them.
+const retractLimiter = rateLimit({
+  name: 'paper-retract',
+  windowMs: 3_600_000,
+  max: 5,
+  keyFn: byAccount,
+  skipFailedRequests: true,
+});
 // ──────────────────────────────────────────────
 // HAF SQL implementation for paper listing
 // ──────────────────────────────────────────────
