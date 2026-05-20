@@ -147,7 +147,30 @@ export function assertBridgeKeyConfigured(res: Response): boolean {
 
 // Per-endpoint rate limiters (per API contract)
 const lookupLimiter = rateLimit({ name: 'bridge-lookup', windowMs: 60_000, max: 20, keyFn: byIp });
-const registerLimiter = rateLimit({ name: 'bridge-register', windowMs: 3_600_000, max: 10, keyFn: byIp });
+// Consume-on-success-only: `/register` emits TWO retriable-true error shapes
+// (409 LOCK_HELD when a sibling request holds the per-permlink lock; 503
+// SERVICE_UNAVAILABLE when the HAF duplicate-check throws under transient
+// outage) plus the usual 4xx surface (400 bad identifier, 403 not
+// accredited, 400 unresolvable, 409 DUPLICATE existing). Without this flag,
+// a SPA auto-retry loop on `details.retriable` burns the per-IP 10/hour
+// budget during a single LOCK_HELD cascade or HAF outage event; the
+// originating IP then 429s legitimate registrations for the remainder of
+// the rolling window. Per `RateLimitConfig.skipFailedRequests` JSDoc the
+// refund branch keys on ANY `res.statusCode >= 400` (4xx AND 5xx). 4xx
+// refund is safe here because every 4xx path short-circuits BEFORE the
+// HAF query and the broadcast (the expensive work guarded by the limiter
+// per the API contract), so probing only costs Redis-rate-limit ops with
+// no chain/HAF side effects. Successful 2xx still consumes a slot so the
+// per-IP abuse cap on successful broadcasts is preserved. Mirrors the
+// `accreditationVerifyLimiter` byIp + skipFailedRequests precedent in
+// `accreditation.ts`.
+const registerLimiter = rateLimit({
+  name: 'bridge-register',
+  windowMs: 3_600_000,
+  max: 10,
+  keyFn: byIp,
+  skipFailedRequests: true,
+});
 
 // ──────────────────────────────────────────────
 // GET /api/bridge/lookup?identifier=...
