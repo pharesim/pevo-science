@@ -220,11 +220,11 @@ router.get('/', async (req: Request, res: Response) => {
     const result = await hafCache.getOrSet(cacheKey, () =>
       fetchCommentsFromHaf(author, permlink, params),
     );
-    if (result) {
-      return sendOk(res, result.rows, { page: params.page, limit: params.limit, total: result.total });
-    }
-
-    sendOk(res, [], { page: params.page, limit: params.limit, total: 0 });
+    // result is non-null at this site: the paperExistsInHaf preflight
+    // above already 404s when getPool() is null, so fetchCommentsFromHaf's
+    // own null-pool short-circuit is structurally unreachable here. The
+    // failure path now throws HafQueryError (caught below).
+    sendOk(res, result!.rows, { page: params.page, limit: params.limit, total: result!.total });
   } catch (err) {
     if (err instanceof HafQueryError && isRetriableHafError(err)) {
       // Cause-discriminated retriable envelope. Deterministic pg failures

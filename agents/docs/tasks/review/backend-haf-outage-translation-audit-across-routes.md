@@ -260,3 +260,40 @@ The api-contract reviewer surfaced one P1 doc divergence (`papers.md` `/comments
 ### Re-review signal
 
 When items 1-5 land in a single round-3 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only. Items 1+2 are db.ts shape changes (~15 LOC + test-copy updates); 3 is a 1-line assertion addition; 4 is a 2-line type-signature cleanup; 5 is a small dead-code removal in comments.ts.
+
+---
+
+## Backend re-review signal (2026-05-20, round-3 hold-fixes)
+
+All five round-3 hold items landed.
+
+### Item 1 — Extend `isRetriableHafError` with `57P03` and `53300`
+
+`backend/src/db.ts` — discriminator now reads `code.startsWith('08') || code === '57014' || code === '57P03' || code === '53300'`. Docstring updated to enumerate both new codes with the operational rationale (`cannot_connect_now` during Postgres startup / PITR / standby promotion windows; `too_many_connections` for pg-level admission rejects distinct from PEvO's pool cap). Test-local copy in `backend/tests/routes/haf-outage-translation-canaries.test.ts` updated to match. New canary added at the bottom of the deterministic-pg describe block: a `57P03` throw on the reviews single-doc fetch asserts `503 SERVICE_UNAVAILABLE` with `details.retriable: true`. Mirror-shape of the `42601` canary; pins the discriminator's positive-class extension.
+
+### Item 2 — Retype `isRetriableHafError` parameter as `HafQueryError`
+
+`backend/src/db.ts:89` — signature changed from `(err: unknown): boolean` to `(err: HafQueryError): boolean`. Body simplifies: dropped the inner `instanceof HafQueryError` re-check (the caller's outer `&&` guard pre-narrows), dropped the unchecked `as` cast on `underlying`. Direct `(err.cause as { code?: unknown } | null | undefined)?.code` access. Caller call sites (`comments.ts:229`, `reviews.ts:159`, `profile.ts:447` + `:636`) are unchanged — TS narrows `err` to `HafQueryError` inside the `&&` short-circuit so the production call sites compile without edits. Verified by `grep` across `backend/src/`. Test-local copy in the canary test also updated to match the new shape.
+
+### Item 3 — `details.retriable` absence assertion on the 42601 deterministic-pg canary
+
+`backend/tests/routes/haf-outage-translation-canaries.test.ts` — added `expect(res.body.error.details?.retriable).not.toBe(true);` after the status + code assertions in the existing `42601 → 500 INTERNAL_ERROR` canary. Mutation-kill: a regression that emitted `500 INTERNAL_ERROR` with `{ retriable: true }` in `details` (e.g. a catch arm passing the wrong details to the central handler) would silently re-open the SPA retry loop on deterministic errors; now fails red.
+
+### Item 4 — Drop `as ErrorOptions` cast in `HafQueryError` constructor
+
+`backend/src/db.ts:42-49` — constructor parameter typed directly as `options?: ErrorOptions` (was `options?: { cause?: unknown }`); `super` call drops the `as ErrorOptions` assertion. Structurally identical to the prior shape per `lib.es2022.error.d.ts`'s `ErrorOptions = { cause?: unknown }` definition; the cleanup lets the compiler catch any future divergence rather than silencing it. Test-local copy in the canary test also updated to match.
+
+### Item 5 — Remove dead `sendOk(res, [], …)` else-branch in `comments.ts`
+
+`backend/src/routes/comments.ts` (GET handler body) — removed the `if (result) … else sendOk(res, [], …)` branch. The else-branch is structurally unreachable post-round-2 (item 1) because:
+- `paperExistsInHaf` preflight 404s before reaching `hafCache.getOrSet` when `getPool()` is null;
+- `fetchCommentsFromHaf`'s failure path now throws `HafQueryError` rather than returning null;
+- `hafCache.getOrSet` skips storing on null AND on rejection.
+
+Result is non-null at this site in practice. Used `result!.rows` and `result!.total` to satisfy TS's nullable inference (helper's `if (!pool) return null` short-circuit remains as defense-in-depth but isn't reachable from this route post-preflight). Added a brief comment block explaining the non-null assertion, anchored on the stable symbol `paperExistsInHaf` (not on line numbers) per the comment-anchor convention.
+
+### Tests + verification
+
+Scoped vitest (`tests/routes/haf-outage-translation-canaries.test.ts` + `tests/routes/profile-papers-supersession.test.ts` + `tests/routes/papers-haf-error-vs-not-found.test.ts`): 28 specs green (canary file: 9 specs including the new 57P03 case). Sibling `tests/routes/comments.test.ts` 6 specs green on retry (the first run hit the pre-existing real-HAF testnet ECONNRESET flake documented in the round-2 signal block).
+
+`npm run typecheck` shows the pre-existing `tests/support/argon2-error-mocks.ts:178` failure — `dbStubFactory` missing `isRetriableHafError` — which is task `backend-fetch-paper-detail-haf-error-vs-not-found` round-2 hold item 2 (architect-prescribed for that task's round-2 commit). Not in this task's scope. `npm run lint` clean for this change (preexisting `seed-phrase.ts` / `author-supersession.ts` warnings unchanged).

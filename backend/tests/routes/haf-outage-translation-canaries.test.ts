@@ -76,8 +76,8 @@ const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
 // real path uses.
 class HafQueryError extends Error {
   public readonly operation: string;
-  constructor(operation: string, options?: { cause?: unknown }) {
-    super(`HAF query failed: ${operation}`, options as ErrorOptions);
+  constructor(operation: string, options?: ErrorOptions) {
+    super(`HAF query failed: ${operation}`, options);
     this.name = 'HafQueryError';
     this.operation = operation;
   }
@@ -87,13 +87,13 @@ class HafQueryError extends Error {
 // identical to the production implementation in `backend/src/db.ts` (the
 // cross-surface parity invariant: production code discriminates on the
 // same shape these canaries pin). Retriable: connection-class pg codes
-// (`08*`), `57014` (statement_timeout), or no code at all (generic JS
-// Error from the network / pool layer).
-function isRetriableHafError(err: unknown): boolean {
-  const underlying = err instanceof HafQueryError ? (err.cause as { code?: unknown } | undefined) : err;
-  const code = (underlying as { code?: unknown } | null | undefined)?.code;
+// (`08*`), `57014` (statement_timeout), `57P03` (cannot_connect_now —
+// startup/PITR/standby-promotion), `53300` (too_many_connections), or
+// no code at all (generic JS Error from the network / pool layer).
+function isRetriableHafError(err: HafQueryError): boolean {
+  const code = (err.cause as { code?: unknown } | null | undefined)?.code;
   if (typeof code !== 'string') return true;
-  return code.startsWith('08') || code === '57014';
+  return code.startsWith('08') || code === '57014' || code === '57P03' || code === '53300';
 }
 
 vi.mock('../../src/db.js', () => ({
@@ -387,5 +387,31 @@ describe('HafQueryError with deterministic pg error code → 500 (not 503 retria
     // loop does not loop a dead query.
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('INTERNAL_ERROR');
+    // Mutation-kill the retriable-classification gate: a regression that
+    // emitted 500 INTERNAL_ERROR with { retriable: true } in details
+    // would silently re-open the SPA retry loop on deterministic errors.
+    expect(res.body.error.details?.retriable).not.toBe(true);
+  });
+
+  it('cannot_connect_now (57P03) on the reviews single-doc fetch is classified as 503 retriable', async () => {
+    // Pins the round-3 hold extension of `isRetriableHafError` to include
+    // 57P03 (Postgres startup / PITR / standby promotion windows) as
+    // retriable. The mirror-shape of the 42601 canary above ensures the
+    // discriminator distinguishes deterministic-pg from transient-pg on
+    // exactly the same call path.
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('c.body, c.json_metadata') && sql.includes('paper_title')) {
+        const err = new Error('the database system is starting up') as Error & { code: string };
+        err.code = '57P03';
+        throw err;
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/reviews/alice/review-x');
+
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    expect(res.body.error.details?.retriable).toBe(true);
   });
 });

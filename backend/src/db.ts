@@ -41,15 +41,20 @@ let pool: pg.Pool | null = null;
  */
 export class HafQueryError extends Error {
   public readonly operation: string;
-  constructor(operation: string, options?: { cause?: unknown }) {
-    super(`HAF query failed: ${operation}`, options as ErrorOptions);
+  constructor(operation: string, options?: ErrorOptions) {
+    super(`HAF query failed: ${operation}`, options);
     this.name = 'HafQueryError';
     this.operation = operation;
   }
 }
 
 /**
- * Classify a `HafQueryError` (or its underlying pg cause) as retriable.
+ * Classify a `HafQueryError`'s underlying pg cause as retriable.
+ *
+ * Parameter is typed `HafQueryError` (not `unknown`) because every call
+ * site gates with `err instanceof HafQueryError && isRetriableHafError(err)`;
+ * the outer guard narrows `err` before the call, and the literal-union
+ * type forces every new caller to perform the same narrowing.
  *
  * `HafQueryError` is symptom-based ("the HAF query failed"), not cause-
  * based. The pg `code` on the underlying cause discriminates transient
@@ -66,6 +71,12 @@ export class HafQueryError extends Error {
  *     network blip, pool reset).
  *   - `57014` — `query_canceled` / statement_timeout. Transient under
  *     load even when the query itself is correct.
+ *   - `57P03` — `cannot_connect_now` (Postgres startup, point-in-time
+ *     recovery, standby promotion windows; realistic during HAF
+ *     maintenance).
+ *   - `53300` — `too_many_connections` (pg-level admission reject when
+ *     the server's own `max_connections` is hit, distinct from PEvO's
+ *     pool cap).
  *   - No code at all — generic JS `Error` thrown from a non-pg layer
  *     (pool exhaustion before connection, network unreachable). Default
  *     to retriable: the helper's catch wrapped a transient failure that
@@ -75,18 +86,15 @@ export class HafQueryError extends Error {
  * errors (`42601`), permission errors (`42501`), data-type mismatches
  * (`22P02`), etc. These are not outages and don't recover on retry.
  */
-export function isRetriableHafError(err: unknown): boolean {
-  // Unwrap the HafQueryError if present; the pg code lives on the cause.
-  const underlying = err instanceof HafQueryError ? (err.cause as { code?: unknown } | undefined) : err;
-  const code = (underlying as { code?: unknown } | null | undefined)?.code;
+export function isRetriableHafError(err: HafQueryError): boolean {
+  const code = (err.cause as { code?: unknown } | null | undefined)?.code;
   if (typeof code !== 'string') {
     // No pg code: a generic JS Error from the pool / network layer.
     // Treat as retriable (transient outage signal), matching the helper's
     // intent in wrapping the throw as HafQueryError in the first place.
     return true;
   }
-  // PostgreSQL connection-exception class (08000..08P01) and query_canceled.
-  return code.startsWith('08') || code === '57014';
+  return code.startsWith('08') || code === '57014' || code === '57P03' || code === '53300';
 }
 
 export function getPool(): pg.Pool | null {
