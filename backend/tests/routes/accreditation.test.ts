@@ -93,8 +93,8 @@ vi.mock('../../src/hive.js', () => ({
 }));
 
 // Stub the existing-accreditation gate to always miss. Carve-out clause (a):
-// the gate's α-disposition (HAF-throw → 503 ACCREDITATION_GATE_UNAVAILABLE)
-// fires non-deterministically under the burst loads driven by the
+// the gate's HAF-throw branch (→ 503 ACCREDITATION_GATE_UNAVAILABLE) fires
+// non-deterministically under the burst loads driven by the
 // per-token broadcast-attempts cap specs (cap+2 sequential and cap+1 parallel
 // /verify calls), because the test HAF pool can flake on transient pool
 // pressure. The gate's own contract is exercised in the sibling file
@@ -626,7 +626,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // the token IS destroyed on the FIRST 502 to land — without that,
     // subsequent parallel calls that already pre-INCR'd would race
     // against a deleted token. The kit-staged behavior here exercises
-    // the pre-INCR atomic claim, which is what item 4 calls out).
+    // the pre-INCR atomic claim invariant).
     //
     // To make the assertion clean, hang every broadcast indefinitely
     // (resolve never): the route waits, supertest waits, Promise.all
@@ -671,7 +671,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
 
     // The other `cap` responses each invoked the broadcast — count is
     // exactly `cap`, regardless of whether they ultimately returned 200
-    // (success), 502 (some race), or 504 (rare). Item 4's load-bearing
+    // (success), 502 (some race), or 504 (rare). The load-bearing
     // assertion: "exactly cap broadcasts fire."
     expect(broadcastJsonMock).toHaveBeenCalledTimes(cap);
   });
@@ -860,8 +860,9 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
       decrSpy.mockRestore();
       loggerWarnSpy.mockRestore();
       // Explicit cleanup: token doesn't match the afterEach `accred-cap-*`
-      // pattern (c switched to a 64-hex token to make the
-      // redaction assertion load-bearing).
+      // pattern. This spec uses a 64-hex token so the pino-redact assertion
+      // is load-bearing; the `accred-cap-*` prefix wouldn't match the redact
+      // regex.
       await redis.del(broadcastAttemptsKey(token));
       await redis.del(`${config.appTag}:pending_accred:${token}`);
     }
@@ -880,9 +881,10 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // Drive shape: stateful `isRedisAvailable()` mock that flips to false
     // once the broadcast site is reached, so getToken/incrementBroadcast
     // see Redis available (real seed path), the broadcast throws timeout,
-    // and the compensating decrement observes Redis unavailable. Mirrors
-    // the staging (seed + broadcast-throws-timeout) but
-    // exercises the degraded-return branch instead of the throw branch.
+    // and the compensating decrement observes Redis unavailable. Same
+    // seed + broadcast-throws-timeout setup as the throws-branch spec
+    // above, but exercises the `enqueued_for_drain` degraded-return branch
+    // instead of the catch-around-decrement throw branch.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
@@ -910,10 +912,10 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
       expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
       // Broadcast was invoked exactly once before the timer fired.
       expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-      // The new site-specific warn fires with the 
-      // discriminator + structured fields. Mutation-sensitive call-shape
-      // assertion: dropping the event name, the route label, the
-      // attempt_id, or the token_hash would all fail this assertion.
+      // The new site-specific `timeout_decrement_degraded` warn fires with
+      // the event discriminator and structured fields. Mutation-sensitive
+      // call-shape assertion: dropping the event name, the route label,
+      // the attempt_id, or the token_hash would all fail this assertion.
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           event: 'accreditation.verify.timeout_decrement_degraded',
@@ -1082,8 +1084,8 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
       // `isRedisAvailable()` returned false → the function should NOT have
       // called `redis.decr` on the live client.
       expect(decrSpy).not.toHaveBeenCalled();
-      // Structured warn fires with the discriminator and
-      // a token_hash (NOT raw token).
+      // Structured warn fires with the `broadcast_decrement_redis_unavailable`
+      // event discriminator and a token_hash (NOT raw token).
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           event: 'accreditation.verify.broadcast_decrement_redis_unavailable',
@@ -1113,7 +1115,8 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // before reaching the pre-INCR site. A unit-style call against the helper
     // is the only way to drive the in-memory-fallback warn path
     // deterministically without monkey-patching the entire module's view
-    // of Redis. Mirrors the b decrement spec.
+    // of Redis. Mirrors the decrementBroadcastAttempts Redis-unavailable
+    // warn spec above.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = crypto.randomBytes(32).toString('hex');

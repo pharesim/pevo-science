@@ -240,3 +240,61 @@ The broader recurring class: a sweep that strips a citation noun can leave a gra
 - The same dangling-determiner / orphan-letter class in OTHER files. Per the round-1 task scope, this sweep is bounded to the 3 named files; a wider sweep is a separate task if it becomes worth scoping.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Backend re-review signal (2026-05-20, round 3)
+
+All 4 architect-cited hold items landed, plus 4 additional partial-strip residuals surfaced by the holistic re-read of the WHOLE comment surface in `accreditation.test.ts`.
+
+### Architect-cited items (1-4)
+
+1. **`accreditation.test.ts` ~L863** (orphan single-letter `c` inside parenthetical) — rewrote `(c switched to a 64-hex token to make the redaction assertion load-bearing)` to `This spec uses a 64-hex token so the pino-redact assertion is load-bearing; the \`accred-cap-*\` prefix wouldn't match the redact regex.` Orphan `c` removed; antecedent is now the spec itself.
+2. **`accreditation.test.ts` ~L884** (dangling determiner `Mirrors the staging`) — rewrote to `Same seed + broadcast-throws-timeout setup as the throws-branch spec above, but exercises the \`enqueued_for_drain\` degraded-return branch instead of the catch-around-decrement throw branch.` Both branches named by stable helper-return value.
+3. **`accreditation.test.ts` ~L913** (unnamed `the discriminator`) — rewrote to `The new site-specific \`timeout_decrement_degraded\` warn fires with the event discriminator and structured fields.` Discriminator anchored on the actual event-name string asserted at L919.
+4. **`accreditation.test.ts` ~L1116** (orphan single-letter `b` in `Mirrors the b decrement spec.`) — rewrote to `Mirrors the decrementBroadcastAttempts Redis-unavailable warn spec above.` Sibling named by stable code symbol.
+
+### Additional sites surfaced by the holistic re-read
+
+5. **`accreditation.test.ts` ~L96** — `the gate's α-disposition (HAF-throw → 503 ACCREDITATION_GATE_UNAVAILABLE)` carried a Greek-letter coordination-state label (architect dispositions). The behavioral content was already in the parenthetical; rewrote to `the gate's HAF-throw branch (→ 503 ACCREDITATION_GATE_UNAVAILABLE)`. The `α-disposition` label dropped; the branch noun preserves the antecedent.
+6. **`accreditation.test.ts` ~L629** — `the pre-INCR atomic claim, which is what item 4 calls out` carried a dead `item 4` pointer to a stripped hold-block enumeration. The invariant name was already in the sentence; rewrote to `the pre-INCR atomic claim invariant`. The dead pointer dropped.
+7. **`accreditation.test.ts` ~L674** — `Item 4's load-bearing assertion` carried the same `item 4` possessive pointer. Rewrote to `The load-bearing assertion`. Possessive dropped; the assertion's content is still quoted directly on the next line.
+8. **`accreditation.test.ts` ~L1087** — `Structured warn fires with the discriminator and a token_hash` had the same unnamed-discriminator shape as architect-cited item 3. Anchored the discriminator on the event-name string asserted at L1091: `Structured warn fires with the \`broadcast_decrement_redis_unavailable\` event discriminator and a token_hash (NOT raw token).`
+
+### Broadened acceptance grep
+
+```
+grep -inoE "(round[- ]?[0-9]|hold #|BE-[A-Z_-]+|BACKEND-[A-Z_-]+|F[0-9]+[: ])" \
+  backend/src/routes/accreditation.ts \
+  backend/tests/routes/accreditation.test.ts \
+  backend/tests/routes/accreditation-idempotency.test.ts
+backend/tests/routes/accreditation-idempotency.test.ts:223:be-before-INCR
+backend/src/routes/accreditation.ts:700:be-after-INCR
+backend/src/routes/accreditation.ts:704:be-then-INCR
+backend/src/routes/accreditation.ts:755:be-before-INCR
+```
+
+Same 4 surviving hits as round 2 — durable `probe-{before,after,then}-INCR` behavioral phrases (case-insensitive substring of `be-`, not slug citations). Zero real rot.
+
+### Holistic re-read coverage
+
+Read the entire ~1734-line comment surface in chunks. The 4 additional sites above (items 5-8) are the complete enumeration of partial-strip residuals found beyond the architect-cited four. Other candidate sites considered and dismissed as non-rot:
+
+- `// Pins the route-level consumer of the discriminator (\`DecrementBroadcastAttemptsResult\`).` at L872 — `the discriminator` has a clear antecedent in the parenthetical naming the TypeScript discriminated-union type. Grammatically complete; not a partial-strip.
+- `// still fires alongside the new site-specific one (the discriminator augments the helper warn, it does not replace it).` at L935 — `the discriminator` continues the same discourse as the surrounding paragraph naming the `timeout_decrement_degraded` discriminator. Antecedent clear from context.
+- `// Mirrors the sibling spec's discipline.` at L1396 — `the sibling spec` refers to the immediately preceding 502 BROADCAST_FAILED + deleteToken rejection spec (the only other site clearing the per-IP rate-limit window). Discipline is described in the sentence above. Vague but grammatically complete; not a partial-strip.
+
+### Self-audit per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`
+
+Re-read the diff against all rot patterns in root CLAUDE.md "Comment anchors":
+- No new round-N markers, slug citations, line-number anchors, SHA references, or date anchors in the replacements.
+- No new partial-strip stubs: every new sentence stands alone grammatically with stable-symbol or behavioral antecedents (`pre-INCR atomic claim invariant`, `throws-branch spec above`, `decrementBroadcastAttempts Redis-unavailable warn spec above`, `\`broadcast_decrement_redis_unavailable\` event discriminator`, `\`timeout_decrement_degraded\` warn`).
+- No new orphan single-letter prefixes, dangling determiners, bare possessives, or dangling prepositions.
+
+### Verification
+
+- `npm run typecheck`: a pre-existing failure in `tests/support/argon2-error-mocks.ts` (missing `isRetriableHafError` export shape) reproduces on stash; not introduced by this commit.
+- `npm run lint` (`src/`): one pre-existing unused-eslint-disable warning in `author-supersession.ts`; not introduced by this commit.
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/accreditation-idempotency.test.ts` with Docker IP env overrides: **50/52 pass**. The 2 failures (`concurrent retries claim slots atomically — exactly cap broadcasts fire under cap+1 parallel /verify calls`, expected counter 4 received 2; `pre-INCR redis.eval rejection surfaces 503` 502-vs-503 flake) both reproduce on `git stash` (HEAD pre-edit) state, so neither is introduced by this commit. The 503-vs-502 flake is the previously-documented pre-existing failure; the concurrent-broadcast counter shortfall is environment-load-dependent (only `cap` of the cap+1 parallel /verify supertests claimed their pre-INCR slot within the 5s polling window).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
