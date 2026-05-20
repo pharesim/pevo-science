@@ -42,3 +42,25 @@ Update the SPA's `/register` (bridge registration) flow to branch on the new err
 - `ui-haf-outage-503-retry-affordance` (archived 2026-05-20) — analogous SPA retry-card pattern.
 - `agents/docs/tasks-archive.md` — `backend-bridge-write-haf-lag-and-retry-amplification` archive entry references this followup.
 - Round-2 hold-block of `backend-bridge-write-haf-lag-and-retry-amplification` (2026-05-11) — original architect-zone followup prescription.
+
+---
+
+## Architect re-review (2026-05-20) — HELD PENDING FIXES
+
+`/ce-code-review` fan-out (8 reviewers, full persona set minus `ce-agent-native-reviewer` per PEvO policy) on the round-1 implementation surfaced 2 items that block archive. The auto-retry behavior and the DUPLICATE existing-paper link are otherwise sound; the rate-limit slot-burn risk surfaced by the review is being filed as a separate backend task rather than held here.
+
+### Item 1 — state-reset hygiene in handleRegister / handleLookup / generic Try-again
+
+After a DUPLICATE failure on identifier A, the user types identifier B and clicks Lookup; once the new lookup resolves and the form re-renders, the stale `duplicateExisting` card points to A's existing paper. The window between lookup-success and the next Register click shows a wrong-paper link to the user. Root cause: `handleLookup` does not clear `duplicateExisting`, `step`, or `errorMessage` at entry. Companion defensive gaps: `handleRegister` does not reset `errorMessage` at entry (visually masked today by the template's step-based gating, but defensively unclean); the generic "Try again" button resets `step` to `'idle'` without clearing `duplicateExisting`.
+
+Fix: clear `duplicateExisting`, `step` (where appropriate), and `errorMessage` at the entry of `handleLookup`, at the top of `handleRegister`, and on the Try-again click handler. Match the existing reset pattern already used at `handleRegister`'s `duplicateExisting = null` line.
+
+### Item 2 — test coverage gaps for two edge cases
+
+Two coverage gaps in `frontend/tests/unit/pages-bridge.test.js`:
+
+(a) **Component destroy during the LOCK_HELD backoff sleep** — the `await new Promise(resolve => setTimeout(resolve, delay))` site has no test pinning the "no further `registerBridgePaper` calls fire after destroy AND no state mutates after destroy" invariant. The post-await `_mounted` check is the load-bearing guard; a regression that moved or removed it would not turn anything red. This gap is also load-bearing for the forthcoming frontend retry/timer-guard sweep (separate pending task) — having the regression pin in place catches a subtle migration bug if the backoff primitive changes.
+
+(b) **DUPLICATE with partial `err.details`** — one of `existing_author` / `existing_permlink` present, the other missing. The code's `if (author && permlink)` gate correctly falls through to the generic message, but that fall-through path is untested.
+
+Fix: add two vitest cases. The destroy-during-backoff case can mock `registerBridgePaper` to return a LOCK_HELD error, advance fake timers partway into the backoff window, call `destroy()`/`_teardownTimers()`, then advance the remaining time and assert no further `registerBridgePaper` invocation and no state mutation. The partial-details case mocks DUPLICATE with one field set, asserts the generic-error template renders (not the duplicate-link block).
