@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import crypto from 'crypto';
-import { getRequiredBridgePostingKey } from '../startup-checks.js';
+import { getRequiredBridgePostingKey, BridgeKeyCacheUnpopulated } from '../startup-checks.js';
 import { getPool, isHafConfigured } from '../db.js';
 import { broadcastSendOperationsWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { config } from '../config.js';
@@ -420,12 +420,30 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
   const lockKey = bridgeRegisterLockKey(permlink);
   const lockState = await acquireBridgeLock(lockKey);
   if (lockState.state === 'held') {
-    // 409 LOCK_HELD (NOT DUPLICATE). Discriminates from the existing-
     // duplicate 409 emitted on `BridgeCheckResult.exists === true` so SPA /
     // integrators can switch on err.code without parsing the message string.
     // LOCK_HELD is retriable (the other request will land on chain and the
     // next attempt will hit the DUPLICATE path); existing-duplicate is
     // terminal.
+    //
+    // Operator-alert anchor: structured `event:'bridge.register.lock_
+    // contention_held'` so contention frequency is dashboard-keyable.
+    // Mirrors the `orcid.binding_lock.contention_held` warn at the
+    // analogous SETNX-loser site in routes/orcid.ts. Without this emission
+    // the 409 LOCK_HELD outcome would be invisible to log-based alerting
+    // (the contention is a real-time race signal distinct from the
+    // steady-state DUPLICATE outcome emitted on `exists === true`, which
+    // represents a registered preprint and is intentionally quiet).
+    logger.warn(
+      {
+        event: 'bridge.register.lock_contention_held',
+        route: 'bridge.register',
+        identifier,
+        permlink,
+        username,
+      },
+      'bridge /register lock contended; another request for this preprint is in progress',
+    );
     return sendError(
       res,
       409,
@@ -558,6 +576,32 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
         },
       });
     } catch (err) {
+      // Discriminate `BridgeKeyCacheUnpopulated` BEFORE delegating to
+      // `handleBroadcastError`. The throw originates from
+      // `getRequiredBridgePostingKey()` at the top of this try block (a
+      // pre-broadcast SYNC throw — the broadcast call never reached the
+      // network). The downstream `handleBroadcastError` falls this class
+      // through to its standard 502 BROADCAST_FAILED branch with
+      // `event:'broadcast_failed'`, which misclassifies "the chain
+      // rejected our broadcast" as "we never got to broadcast because our
+      // local key cache is empty". A precursor error-level log with the
+      // distinct event tag gives operator dashboards a discriminator
+      // without changing the wire shape (the 502 response stays — clause:
+      // no behavioral changes beyond log structure). Operators filter on
+      // the precursor; the broadcast_failed entry is redundant context.
+      if (err instanceof BridgeKeyCacheUnpopulated) {
+        logger.error(
+          {
+            err,
+            route: 'bridge.register',
+            identifier,
+            username,
+            permlink,
+            event: 'bridge.register.bridge_key_cache_unpopulated',
+          },
+          'bridge /register reached broadcast site with unpopulated key cache (operator-actionable misconfig)',
+        );
+      }
       // Pino-side per-attempt signal for the broadcast catch path. The
       // outcome label discriminates timeout vs. failure so dashboards can
       // separate the two without parsing the inner-helper's stable suffix.
@@ -571,6 +615,42 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
         routeLabel: 'bridge.register',
       });
     }
+  } catch (err) {
+    // Outer-catch for pre-broadcast SYNC throws inside the lock-acquired
+    // body: `buildBridgeBody` / `buildBridgeMetadata` rejecting malformed
+    // metadata, `assertNever` firing on a discriminated-union drift, or any
+    // other unexpected throw that escapes `checkExistingBridge`'s internal
+    // HAF catch. Without this catch, Express 5 routes the async rejection
+    // to `middleware/errorHandler.ts`, which emits an `event:`-less 500 —
+    // operator dashboards lose the route discriminator. Tagging it here as
+    // `bridge.register.pre_broadcast_internal_error` distinguishes this
+    // class from:
+    //   * broadcast timeout / rejection (handled by `handleBroadcastError`
+    //     with `event:'broadcast_timeout'` / `'broadcast_failed'`)
+    //   * key-cache desync at the broadcast site (precursor
+    //     `event:'bridge.register.bridge_key_cache_unpopulated'` emitted
+    //     inside the inner catch above)
+    //   * HAF unavailable on duplicate-check (warn from
+    //     `checkExistingBridge` with `event:'bridge.register.haf_check_failed'`)
+    //   * identifier resolution / metadata fetch throw before the lock
+    //     (separate inner catches above with their own event tags)
+    // The wire shape (500 INTERNAL_ERROR) matches what the default
+    // `errorHandler` would have emitted — no behavioral change, just a
+    // route-specific event discriminator. Mirrors the
+    // `event:'orcid.callback.failed'` outer-catch in routes/orcid.ts which
+    // serves the same purpose for the ORCID OAuth callback dispatch.
+    logger.error(
+      {
+        err,
+        route: 'bridge.register',
+        identifier,
+        username,
+        permlink,
+        event: 'bridge.register.pre_broadcast_internal_error',
+      },
+      'bridge /register pre-broadcast unexpected throw — defaulted to 500',
+    );
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to register bridge paper');
   } finally {
     if (lockState.state === 'acquired') {
       await releaseBridgeLock(lockKey, lockState.nonce, lockState.acquiredAtMs, 'bridge.register', permlink);

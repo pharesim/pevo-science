@@ -113,6 +113,12 @@ vi.mock('../../src/bridge.js', async () => {
       if (identifier === '2301.12345') return MOCK_META;
       return actual.lookupPreprint(identifier);
     }),
+    // Wrapped as a vi.fn() so the outer-catch event-discriminator spec can
+    // force a synthetic body-construction throw via mockImplementationOnce.
+    // Defaults to the real implementation so unrelated specs are unaffected.
+    buildBridgeBody: vi.fn().mockImplementation((...args: Parameters<typeof actual.buildBridgeBody>) =>
+      actual.buildBridgeBody(...args),
+    ),
   };
 });
 
@@ -574,6 +580,74 @@ describe('BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS — catch-block log sh
     expect(ctx.identifier).toBe('2301.12345');
     expect(ctx.username).toBe(ACCREDITED_CALLER);
     expect(ctx.err).toBeInstanceOf(Error);
+  });
+
+  // Outer-catch / pre-broadcast SYNC throw discriminator. Forces buildBridgeBody
+  // (re-exported via the bridge module mock as a thin pass-through) to throw,
+  // exercising the new outer try/catch that emits
+  // event:'bridge.register.pre_broadcast_internal_error' instead of letting the
+  // throw default to middleware/errorHandler.ts's event-less 500.
+  it('POST /api/bridge/register: buildBridgeBody throw → event:bridge.register.pre_broadcast_internal_error with route, identifier, username, permlink', async () => {
+    (bridgeMod.buildBridgeBody as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error('synthetic body-construction failure');
+    });
+    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
+      identifier: '2301.12345',
+      discipline: 'CS',
+    });
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+    const matchingCall = errorSpy.mock.calls.find((call: unknown[]) => {
+      const ctx = call[0] as Record<string, unknown> | undefined;
+      return ctx?.event === 'bridge.register.pre_broadcast_internal_error';
+    });
+    expect(matchingCall, 'expected error log with event=bridge.register.pre_broadcast_internal_error').toBeDefined();
+    const ctx = matchingCall![0] as Record<string, unknown>;
+    expect(ctx.route).toBe('bridge.register');
+    expect(ctx.identifier).toBe('2301.12345');
+    expect(ctx.username).toBe(ACCREDITED_CALLER);
+    // permlink is computed from the resolved identifier; just assert presence
+    // and string shape rather than the literal (regression on the derivation
+    // function would be caught by other specs).
+    expect(typeof ctx.permlink).toBe('string');
+    expect(ctx.err).toBeInstanceOf(Error);
+  });
+
+  // BridgeKeyCacheUnpopulated discriminator: when getRequiredBridgePostingKey
+  // throws because the cache desynced from the config-truthiness check, the
+  // route emits a precursor error log with the dedicated event tag BEFORE
+  // delegating to handleBroadcastError (which would otherwise tag this as
+  // event:'broadcast_failed' and misclassify a key-cache desync as a chain
+  // rejection). Wire shape stays 502 BROADCAST_FAILED — no behavioral change.
+  it('POST /api/bridge/register: BridgeKeyCacheUnpopulated → precursor event:bridge.register.bridge_key_cache_unpopulated, still 502 BROADCAST_FAILED', async () => {
+    const { BridgeKeyCacheUnpopulated } = await import('../../src/startup-checks.js');
+    sendOperations.mockImplementationOnce(() => {
+      throw new BridgeKeyCacheUnpopulated();
+    });
+    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
+      identifier: '2301.12345',
+      discipline: 'CS',
+    });
+    // Wire shape: the existing handleBroadcastError fall-through still emits
+    // 502 BROADCAST_FAILED. Pin the unchanged response so a future refactor
+    // that drops the fall-through (e.g., routing the cache-unpopulated class
+    // to its own 503 envelope) is a separate, intentional behavioral change.
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe('BROADCAST_FAILED');
+
+    const matchingCall = errorSpy.mock.calls.find((call: unknown[]) => {
+      const ctx = call[0] as Record<string, unknown> | undefined;
+      return ctx?.event === 'bridge.register.bridge_key_cache_unpopulated';
+    });
+    expect(matchingCall, 'expected precursor error log with event=bridge.register.bridge_key_cache_unpopulated').toBeDefined();
+    const ctx = matchingCall![0] as Record<string, unknown>;
+    expect(ctx.route).toBe('bridge.register');
+    expect(ctx.identifier).toBe('2301.12345');
+    expect(ctx.username).toBe(ACCREDITED_CALLER);
+    expect(typeof ctx.permlink).toBe('string');
+    expect(ctx.err).toBeInstanceOf(Error);
+    expect((ctx.err as Error).name).toBe('BridgeKeyCacheUnpopulated');
   });
 });
 

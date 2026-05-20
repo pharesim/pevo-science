@@ -339,7 +339,7 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
     accreditedSet.add(ACCREDITED);
   });
 
-  it('two concurrent /register for the same identifier: exactly ONE broadcast fires, the second returns 409 LOCK_HELD retriable, lock key released in finally', async () => {
+  it('two concurrent /register for the same identifier: exactly ONE broadcast fires, the second returns 409 LOCK_HELD retriable, lock key released in finally, contention warn-log fires', async () => {
     // Slow broadcast: A awaits this gate so it holds the lock until we
     // release. B reaches SETNX while A is still in the broadcast, hits the
     // lock-already-held branch, and 409s deterministically.
@@ -350,53 +350,80 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
       return { id: 'tx-winner' };
     };
 
-    const expectedLockKey = `${config.appTag}:bridge_register_lock:bridge-arxiv-2301-99999`;
-    const body = { identifier: '2301.99999', discipline: 'CS' };
+    // Capture the contention warn so the LOCK_HELD outcome's structured
+    // event tag is asserted alongside the wire shape. Operator dashboards
+    // key on event:'bridge.register.lock_contention_held' to count
+    // real-time contention separately from the steady-state DUPLICATE
+    // outcome. Mirrors the orcid.binding_lock.contention_held warn in the
+    // analogous SETNX-loser site in routes/orcid.ts.
+    const { logger } = await import('../../src/logger.js');
+    const warnSpy = vi.spyOn(logger, 'warn');
 
-    // Fire A; wait for A's SETNX to populate fakeRedis.store before firing B.
-    // This barrier replaces the prior `setTimeout(r, 5)` stagger — A is now
-    // the deterministic SETNX winner under any CI load.
-    const reqA = signedPost('/api/bridge/register', ACCREDITED, body);
-    await waitForLockAcquired(expectedLockKey);
+    try {
+      const expectedLockKey = `${config.appTag}:bridge_register_lock:bridge-arxiv-2301-99999`;
+      const body = { identifier: '2301.99999', discipline: 'CS' };
 
-    // Fire B; wait until B's SETNX has observed the held lock and been
-    // rejected. This second barrier replaces the prior `setTimeout(r, 20)`
-    // delay — without it A's broadcast (once we release the gate below) can
-    // complete and release the lock before B reaches SETNX, both broadcasts
-    // fire, and `toHaveBeenCalledTimes(1)` fails non-deterministically.
-    const reqB = signedPost('/api/bridge/register', ACCREDITED, body);
-    await waitForSetnxBlocked(expectedLockKey);
+      // Fire A; wait for A's SETNX to populate fakeRedis.store before firing B.
+      // This barrier replaces the prior `setTimeout(r, 5)` stagger — A is now
+      // the deterministic SETNX winner under any CI load.
+      const reqA = signedPost('/api/bridge/register', ACCREDITED, body);
+      await waitForLockAcquired(expectedLockKey);
 
-    // Both requests have now reached their deterministic state: A holds the
-    // lock and is parked on broadcastGate, B has been rejected at SETNX and
-    // is heading to its 409 response. Release the gate so A can broadcast,
-    // release the lock, and respond 200.
-    releaseBroadcast!();
+      // Fire B; wait until B's SETNX has observed the held lock and been
+      // rejected. This second barrier replaces the prior `setTimeout(r, 20)`
+      // delay — without it A's broadcast (once we release the gate below) can
+      // complete and release the lock before B reaches SETNX, both broadcasts
+      // fire, and `toHaveBeenCalledTimes(1)` fails non-deterministically.
+      const reqB = signedPost('/api/bridge/register', ACCREDITED, body);
+      await waitForSetnxBlocked(expectedLockKey);
 
-    const [resA, resB] = await Promise.all([reqA, reqB]);
+      // Both requests have now reached their deterministic state: A holds the
+      // lock and is parked on broadcastGate, B has been rejected at SETNX and
+      // is heading to its 409 response. Release the gate so A can broadcast,
+      // release the lock, and respond 200.
+      releaseBroadcast!();
 
-    // Exactly one broadcast must have fired.
-    expect(sendOperations).toHaveBeenCalledTimes(1);
+      const [resA, resB] = await Promise.all([reqA, reqB]);
 
-    // A is the deterministic winner: the barrier guarantees A acquired the
-    // SETNX before B was even issued. No winner-flip absorption needed.
-    expect(resA.status).toBe(200);
-    expect(resA.body.status).toBe('ok');
-    expect(resA.body.data.tx_id).toBe('tx-winner');
+      // Exactly one broadcast must have fired.
+      expect(sendOperations).toHaveBeenCalledTimes(1);
 
-    // Round-2 hold item #1: lock-held 409 carries `code: 'LOCK_HELD'`, NOT
-    // `code: 'DUPLICATE'`. The two 409 shapes share the HTTP status but
-    // differ on the error code so SPA/integrators can switch on
-    // err.code without parsing the message string.
-    expect(resB.status).toBe(409);
-    expect(resB.body.error.code).toBe('LOCK_HELD');
-    expect(resB.body.error.details).toEqual({ retriable: true });
+      // A is the deterministic winner: the barrier guarantees A acquired the
+      // SETNX before B was even issued. No winner-flip absorption needed.
+      expect(resA.status).toBe(200);
+      expect(resA.body.status).toBe('ok');
+      expect(resA.body.data.tx_id).toBe('tx-winner');
 
-    // Round-2 hold item #9: assert the lock key is absent from Redis after
-    // both requests resolve — catches early-return / missing-`state ===
-    // 'acquired'` regressions in the finally block. The winner's finally
-    // released the key under Lua CAS; the loser never acquired it.
-    expect(fakeRedis.store.has(expectedLockKey)).toBe(false);
+      // Round-2 hold item #1: lock-held 409 carries `code: 'LOCK_HELD'`, NOT
+      // `code: 'DUPLICATE'`. The two 409 shapes share the HTTP status but
+      // differ on the error code so SPA/integrators can switch on
+      // err.code without parsing the message string.
+      expect(resB.status).toBe(409);
+      expect(resB.body.error.code).toBe('LOCK_HELD');
+      expect(resB.body.error.details).toEqual({ retriable: true });
+
+      // Round-2 hold item #9: assert the lock key is absent from Redis after
+      // both requests resolve — catches early-return / missing-`state ===
+      // 'acquired'` regressions in the finally block. The winner's finally
+      // released the key under Lua CAS; the loser never acquired it.
+      expect(fakeRedis.store.has(expectedLockKey)).toBe(false);
+
+      // Structured event tag for the LOCK_HELD outcome. Find by event then
+      // assert route/identifier/username/permlink — circular-assertion guard:
+      // do NOT assert `event !== 'something-else'` on the filtered call.
+      const matchingCall = warnSpy.mock.calls.find((c) => {
+        const ctx = c[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'bridge.register.lock_contention_held';
+      });
+      expect(matchingCall, 'expected warn-log with event=bridge.register.lock_contention_held').toBeDefined();
+      const ctx = matchingCall![0] as Record<string, unknown>;
+      expect(ctx.route).toBe('bridge.register');
+      expect(ctx.identifier).toBe('2301.99999');
+      expect(ctx.username).toBe(ACCREDITED);
+      expect(ctx.permlink).toBe('bridge-arxiv-2301-99999');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
