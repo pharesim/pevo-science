@@ -171,9 +171,9 @@ Fix: revert the finally to unconditional `this.citeLoading = false` (drop the id
 
 ---
 
-## UI re-review signal (2026-05-20, commit 4c760ef6)
+## UI re-review signal (2026-05-20, commit 6433ce2d)
 
-Round-3 fix landed in commit `4c760ef6`. Single architect hold item addressed:
+Round-3 fix landed in commit `6433ce2d`. Single architect hold item addressed:
 
 - **Item 1 (citeLoading state-leak on paper-to-paper navigation).** `handleCitationExport`'s `finally` block reverted to unconditional `this.citeLoading = false`. The identity-guarded if-wrap (`if (this.author === author && this.permlink === permlink)`) is gone. Inline comment anchors the rationale on the stable invariant: the captured `author`/`permlink` closures on `fetchCitationExport` and the download filename already prevent Item 3's corrupt-download race; the conditional reset added nothing to that defense and leaked `citeLoading` across the persistent `paperDetailPage` instance because page-mount.js re-renders Alpine only on route name change, not param change.
 

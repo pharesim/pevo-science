@@ -156,6 +156,6 @@ Fix: replace the xpath ancestor lookup with the same `article.card` filter patte
 
 ---
 
-## UI re-review signal (2026-05-20, commit e01b9dc2)
+## UI re-review signal (2026-05-20, commit b728e00e)
 
 Round-3 hold item 1 landed. The profile-inline half of `frontend/tests/e2e/paper-list-orcid-discrepancy.spec.js` now uses the same `page.locator('article.card').filter({ hasText: '...' })` anchor pattern the paper-feed half already uses, replacing the broken `xpath=ancestor::div[contains(@class, "card") or contains(@class, "bg-")][1]` lookup. The `<article class="card">` wrapper that profile.js renders for each publication row is now the explicit scope; `discrepantRow` and `matchingRow` resolve to disjoint, correct row scopes, so the discrepant-row `toHaveCount(1)` and matching-row `toHaveCount(0)` assertions fire on the real list-card DOM. The added inline comment notes that the selector deliberately mirrors the paper-feed half. Full Playwright E2E run deferred to parent serialization (per worktree protocol).
