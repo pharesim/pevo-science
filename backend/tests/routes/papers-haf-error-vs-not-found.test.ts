@@ -1,5 +1,5 @@
 /**
- * Mocked-pool coverage for BACKEND-FETCH-PAPER-DETAIL-HAF-ERROR-VS-NOT-FOUND.
+ * Mocked-pool coverage for the HAF-error-vs-data-not-found distinction at /api/papers/:author/:permlink and sibling routes.
  *
  * Pins the discrimination between HAF-class outage (503 SERVICE_UNAVAILABLE
  * with `details.retriable: true`) and data-not-found (404 NOT_FOUND) at the

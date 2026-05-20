@@ -279,5 +279,15 @@ Cluster-wide findings: 3 findings surfaced, 1 dismissed at architect triage, 2 h
 
 When items 1-2 land in a single round-3 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
 
+---
+
+## Backend re-review signal (2026-05-20, round-3 hold-fixes)
+
+Both round-3 hold items landed in this round's commit:
+
+- **Item 1 (test-file header slug citation):** `backend/tests/routes/papers-haf-error-vs-not-found.test.ts` header line 2 rewritten from `* Mocked-pool coverage for BACKEND-FETCH-PAPER-DETAIL-HAF-ERROR-VS-NOT-FOUND.` to `* Mocked-pool coverage for the HAF-error-vs-data-not-found distinction at /api/papers/:author/:permlink and sibling routes.` per architect's prescribed shape. Stable behavioral anchor (route paths + the distinction the file exists to pin) replaces the uppercase task slug that would have rotted when this task archives.
+
+- **Item 2 (`cache.ts:73` line-number anchor):** `backend/src/routes/papers.ts` inside the `fetchPaperDetailFromHaf` cache-poisoning-defense comment block, the text `null-skip rule (\`cache.ts:73\`)` was replaced with `null-skip rule in \`hafCache.getOrSet\``. The actual null-skip behavior lives in `backend/src/cache.ts` inside `QueryCache.getOrSet` (exported as the module-level `hafCache` singleton), where the write-guard `if (data !== null && data !== undefined)` skips `set()` on null resolutions so the cache stays cold and the next caller retries against (hopefully recovered) HAF. The `cache.ts:73` citation was misanchored against an unrelated `logger.debug` line; the new symbol anchor names the public method that actually enforces the rule and survives any line shift inside `cache.ts`.
+
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 

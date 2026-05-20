@@ -1470,7 +1470,7 @@ async function fetchPaperDetailFromHaf(
     // object built from a partial chain has wrong `head_author` /
     // `head_permlink` / `versions[]`. Returning it would let `hafCache`
     // cache the bad shape for 30 min. Return null so the cache layer's
-    // null-skip rule (`cache.ts:73`) leaves the cache cold and the next
+    // null-skip rule in `hafCache.getOrSet` leaves the cache cold and the next
     // request retries against (hopefully recovered) HAF. The route handler
     // then surfaces 503 to the client via its own `signal.aborted` check.
     if (signal?.aborted) return null;
