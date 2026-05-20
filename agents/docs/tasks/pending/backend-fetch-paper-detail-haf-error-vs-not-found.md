@@ -251,3 +251,33 @@ Broader sweep (reviews + profile + papers + cite + profile-papers-supersession):
 
 `npm run typecheck`: clean (both src and tests). `npm run lint`: clean for this change (preexisting `seed-phrase.ts` / `author-supersession.ts` warnings unchanged).
 
+---
+
+## Architect re-review (2026-05-20, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-2 commit `33ceef04` with 5 reviewer personas (correctness on Opus; kieran-typescript, reliability, testing, project-standards on Sonnet; security / adversarial / learnings skipped at architect scope on the prescription-following hold-fix diff; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 7 round-2 hold items land structurally per architect prescription: 4 catch arms gain the `instanceof HafQueryError && isRetriableHafError(err)` conjunction at `papers.ts` (primary GET, /enrichment, /retract, /cite); 4 new pg-coded canaries (`code: '42601'`) at `papers-haf-error-vs-not-found.test.ts` assert 500 INTERNAL_ERROR + `details?.retriable !== true` with /retract canary additionally pinning `broadcastJsonMock` not-called; `isRetriableHafError` added to `dbStubFactory` matching production behavioral shape; 2 task-slug citations dropped from catch comments at `fetchPaperDetailFromHaf` + `fetchEnrichmentFromHaf`; 3 walker-abort 503 specs gain `details.retriable === true` assertions; `HafQueryError.operation` field removed (constructor still takes the arg for message composition); /retract and /cite gain per-route 503 messages ("Retraction temporarily unavailable" / "Citation export temporarily unavailable"); stale mutation-kill comment in `papers-canonical-orcid-resolution.test.ts` updated to the post-fix throw-path semantics.
+
+Cross-task with task 5's round-3 review on `backend-haf-outage-translation-audit-across-routes` (commit `44f7c0b1`): both tasks touch the `isRetriableHafError` retriable set. The task-5 round-3 extension added 57P03 + 53300 but did not address 57P01 (admin_shutdown). Surfaced as a cross-task reliability residual (anchor 75) — filed as a new follow-up task `backend-isretriable-haf-add-57p01-and-53300-coverage.md`, NOT bundled into this task's round-3 scope.
+
+Cluster-wide findings: 3 findings surfaced, 1 dismissed at architect triage, 2 held for round-3.
+
+### Items dismissed during architect triage
+
+- **(reliability P3 conf 50)** `57P01` (admin_shutdown) absent from retriable set — filed as new follow-up task `backend-isretriable-haf-add-57p01-and-53300-coverage.md` per cross-task triage. Not in this task's round-3 scope.
+
+### Items held (must fix before archive)
+
+**1. (P3, anchor 75, project-standards) Test-file header docstring opens with uppercase task-slug citation that will rot when this task archives.** `backend/tests/routes/papers-haf-error-vs-not-found.test.ts:2`. Header reads `* Mocked-pool coverage for BACKEND-FETCH-PAPER-DETAIL-HAF-ERROR-VS-NOT-FOUND.` The uppercase form is the same slug-citation shape that `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` enumerates as rot class — task archives into `tasks-archive.md` which trims at 250 lines, becoming a dead pointer. Introduced by round-1 commit `b427a700` (file creation), not modified by round-2 commit `33ceef04` — so technically pre-existing, but archiving this task with its own slug citation still in test source defeats the convention this task's round-2 item 3 just enforced (convention-enforcing-fix per the same-day broadened self-audit clause). The behavioral framing ("Mocked-pool coverage for HAF-error-vs-not-found distinction") is fully expressible without the slug.
+
+   Fix: drop the uppercase slug citation from the test-file header. Anchor on the stable behavioral subject (e.g., `* Mocked-pool coverage for the HAF-error-vs-data-not-found distinction at /api/papers/:author/:permlink and sibling routes.`). Single-line edit.
+
+**2. (P3, anchor 100, project-standards) Pre-existing line-number anchor `cache.ts:73` inside `fetchPaperDetailFromHaf` catch comment.** `backend/src/routes/papers.ts:1473`. Comment reads "// null-skip rule (`cache.ts:73`) leaves the cache cold and the next". Per `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`: raw line numbers are the warning sign — they rot when the referenced file is edited. Pre-existing in the codebase, not introduced by this task. Convention-enforcing-fix rule explicitly does NOT require sweeping pre-existing rot of a different class — so the implementer stayed in scope on round-2. But since this task's round-2 already swept slug-citation rot in the same comment block (item 3), bundling the adjacent line-number anchor cleanup here closes the related rot class in the same touchpoint.
+
+   Fix: read `backend/src/cache.ts:73` to identify the stable symbol at that location (likely a function name like `hafCache.getOrSet` or the null-handling guard). Substitute the `cache.ts:73` citation with the stable-symbol anchor. Example shape: `// null-skip rule (`hafCache.getOrSet` skips storing on null) leaves the cache cold and the next` — but the exact symbol depends on what's at cache.ts:73. Single-line edit.
+
+### Re-review signal
+
+When items 1-2 land in a single round-3 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
