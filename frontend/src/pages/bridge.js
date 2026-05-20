@@ -160,7 +160,15 @@ const template = `
                 <template x-if="step === 'success'">
                   <p class="text-sm text-pevo-green font-medium" x-text="$t('bridge.stepSuccess')"></p>
                 </template>
-                <template x-if="step === 'error'">
+                <template x-if="step === 'error' && duplicateExisting">
+                  <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+                    <p class="text-sm font-medium text-amber-800 mb-1" x-text="$t('bridge.duplicateWarning')"></p>
+                    <a :href="$lp('/paper/' + duplicateExisting.author + '/' + duplicateExisting.permlink)"
+                       @click.prevent="navigate('/paper/' + duplicateExisting.author + '/' + duplicateExisting.permlink)"
+                       class="text-sm text-pevo-teal hover:underline" x-text="$t('bridge.viewExisting')"></a>
+                  </div>
+                </template>
+                <template x-if="step === 'error' && !duplicateExisting">
                   <div>
                     <p class="text-sm text-pevo-crimson mb-2" x-text="errorMessage"></p>
                     <button class="btn-secondary text-sm" @click="step = 'idle'" x-text="$t('common.tryAgain')"></button>
@@ -193,6 +201,11 @@ export function initBridgePage() {
 
     step: 'idle',
     errorMessage: '',
+    // When step === 'error' and the failure was a DUPLICATE 409 from /register,
+    // this holds {author, permlink} of the pre-existing paper so the template
+    // renders a link to it (in lieu of the generic "Try again" button). Stays
+    // null on every other error path, including LOCK_HELD-after-retry.
+    duplicateExisting: null,
 
     navigate(path) { Alpine.store('router').navigate(path); },
 
@@ -298,41 +311,78 @@ export function initBridgePage() {
     async handleRegister() {
       if (!this.username || !this.discipline) return;
 
-      try {
-        this.step = 'registering';
-        const keywords = this.keywordsText.split(',').map((k) => k.trim()).filter(Boolean);
-        const res = await registerBridgePaper({
-          identifier: this.identifier.trim(),
-          discipline: this.discipline,
-          keywords: keywords.length > 0 ? keywords : undefined,
-          language: this.language.trim() || undefined,
-        });
+      // 409 LOCK_HELD on /api/bridge/register means a concurrent registration
+      // of the same preprint holds the Redis lock (35s TTL on the backend).
+      // We auto-retry transparently with short backoffs so users on the
+      // losing side of a benign race don't see an error UI for a condition
+      // that self-clears in seconds. Budget kept small (~7s wall-time) so
+      // the user isn't stuck waiting if the lock outlasts the budget; on
+      // exhaust we surface bridge.lockHeldRetry with the manual "Try again"
+      // path. The analogous transparent-retry pattern is in paper-detail.js
+      // loadPaper() for SERVICE_UNAVAILABLE with details.retriable.
+      const lockHeldRetryDelaysMs = [1500, 2500, 3500];
+      let lockHeldAttempt = 0;
 
-        if (!this._mounted) return;
-        this.step = 'success';
-        Alpine.store('toast').show(this.$t('bridge.stepSuccess'), 'success');
-        // Wait for the Hive block to be produced before redirecting. The paper detail
-        // page retries on NOT_FOUND to cover any remaining HAF indexing lag.
-        this._setTimer(() => {
-          this.navigate(`/paper/${res.data.author}/${res.data.permlink}`);
-        }, 3000);
-      } catch (err) {
-        if (!this._mounted) return;
-        this.step = 'error';
-        // 409 LOCK_HELD: a concurrent registration of the same preprint
-        // holds the Redis lock (35s TTL). Surface a transient-retry message
-        // so the user retries against the released lock instead of seeing
-        // the generic failure UI. LOCK_HELD is a semantic, expected code on
-        // routine contention, so it returns BEFORE console.warn to avoid
-        // log spam. Existing-duplicate is `DUPLICATE` and continues to fall
-        // through to the generic path.
-        if (err.code === 'LOCK_HELD') {
-          this.errorMessage = this.$t('bridge.lockHeldRetry');
+      this.step = 'registering';
+      this.duplicateExisting = null;
+      const keywords = this.keywordsText.split(',').map((k) => k.trim()).filter(Boolean);
+      const payload = {
+        identifier: this.identifier.trim(),
+        discipline: this.discipline,
+        keywords: keywords.length > 0 ? keywords : undefined,
+        language: this.language.trim() || undefined,
+      };
+
+      while (true) {
+        try {
+          const res = await registerBridgePaper(payload);
+          if (!this._mounted) return;
+          this.step = 'success';
+          Alpine.store('toast').show(this.$t('bridge.stepSuccess'), 'success');
+          // Wait for the Hive block to be produced before redirecting. The paper detail
+          // page retries on NOT_FOUND to cover any remaining HAF indexing lag.
+          this._setTimer(() => {
+            this.navigate(`/paper/${res.data.author}/${res.data.permlink}`);
+          }, 3000);
+          return;
+        } catch (err) {
+          if (!this._mounted) return;
+          if (err.code === 'LOCK_HELD' && lockHeldAttempt < lockHeldRetryDelaysMs.length) {
+            await new Promise((resolve) => setTimeout(resolve, lockHeldRetryDelaysMs[lockHeldAttempt]));
+            if (!this._mounted) return;
+            lockHeldAttempt++;
+            continue;
+          }
+          this.step = 'error';
+          if (err.code === 'LOCK_HELD') {
+            // Retry budget exhausted; expose the manual-retry path via the
+            // generic "Try again" button while keeping the LOCK_HELD-specific
+            // copy. Returns BEFORE console.warn — routine contention isn't
+            // worth log noise.
+            this.errorMessage = this.$t('bridge.lockHeldRetry');
+            return;
+          }
+          if (err.code === 'DUPLICATE') {
+            // Race condition: /api/bridge/check returned exists:false at
+            // preview time, but another user landed a /register broadcast
+            // for the same canonical permlink between preview and submit.
+            // Surface the existing paper via err.details per
+            // agents/docs/api-contracts/bridge.md, suppress the "Try again"
+            // affordance, and let the user navigate to the existing paper.
+            const author = err.details?.existing_author || null;
+            const permlink = err.details?.existing_permlink || null;
+            if (author && permlink) {
+              this.duplicateExisting = { author, permlink };
+              this.errorMessage = '';
+              return;
+            }
+            // Backend omitted the discriminator fields — fall through to
+            // the generic message rather than rendering a broken link.
+          }
+          console.warn('[bridge register]', err);
+          this.errorMessage = this.$t('common.registrationFailed');
           return;
         }
-        // Sanitization pattern (see executeUpgrade() in settings.js).
-        console.warn('[bridge register]', err);
-        this.errorMessage = this.$t('common.registrationFailed');
       }
     },
   }));

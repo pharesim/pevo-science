@@ -342,12 +342,15 @@ describe('bridgePage', () => {
       vi.useRealTimers();
     });
 
-    // UI-BRIDGE-REGISTER-LOCK-HELD-UX: 409 LOCK_HELD (concurrent registration
-    // of the same preprint, Redis lock held) gets a transient-retry message,
-    // not the generic registration-failed UI. DUPLICATE (existing preprint
-    // already on PEvO) and other errors still fall through to the generic
-    // path so their existing UX surfaces are unaffected.
-    it('LOCK_HELD code surfaces transient-retry message, not generic', async () => {
+    // 409 LOCK_HELD (concurrent registration of the same preprint, Redis
+    // lock held on the backend) auto-retries transparently with short
+    // backoffs. If the retry budget is exhausted, the catch surfaces the
+    // LOCK_HELD-specific message with the manual "Try again" affordance.
+    // 409 DUPLICATE branches separately and surfaces existing_author /
+    // existing_permlink from err.details so the template renders a link
+    // to the existing paper instead of the generic try-again button.
+    it('LOCK_HELD: persistent contention exhausts retry budget and surfaces lockHeldRetry', async () => {
+      vi.useFakeTimers();
       const lockErr = new Error('Registration already in progress');
       lockErr.code = 'LOCK_HELD';
       const comp = createComponent();
@@ -356,18 +359,47 @@ describe('bridgePage', () => {
       mockRegisterBridgePaper.mockRejectedValue(lockErr);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      await comp.handleRegister();
+      const registerP = comp.handleRegister();
+      // Drive the retry backoffs forward; total budget is 1500+2500+3500ms
+      // plus the trailing rejection that exits the loop.
+      await vi.advanceTimersByTimeAsync(10000);
+      await registerP;
 
       expect(comp.step).toBe('error');
       expect(comp.errorMessage).toBe('bridge.lockHeldRetry');
+      expect(comp.duplicateExisting).toBeNull();
+      // Initial attempt + 3 retries = 4 total invocations before surfacing.
+      expect(mockRegisterBridgePaper).toHaveBeenCalledTimes(4);
+      expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
+      vi.useRealTimers();
     });
 
-    it('DUPLICATE code with existing_author/existing_permlink falls through to generic (not LOCK_HELD branch)', async () => {
+    it('LOCK_HELD: a retry that succeeds reaches the success path without surfacing the error UI', async () => {
+      vi.useFakeTimers();
+      const lockErr = new Error('Registration already in progress');
+      lockErr.code = 'LOCK_HELD';
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper
+        .mockRejectedValueOnce(lockErr)
+        .mockResolvedValueOnce({ data: { author: 'testuser', permlink: 'paper-1' } });
+
+      const registerP = comp.handleRegister();
+      await vi.advanceTimersByTimeAsync(2000);
+      await registerP;
+
+      expect(comp.step).toBe('success');
+      expect(comp.errorMessage).toBe('');
+      expect(mockRegisterBridgePaper).toHaveBeenCalledTimes(2);
+      vi.useRealTimers();
+    });
+
+    it('DUPLICATE code surfaces existing_author/existing_permlink from err.details on duplicateExisting', async () => {
       const dupErr = new Error('Preprint already registered');
       dupErr.code = 'DUPLICATE';
-      dupErr.existing_author = 'someone';
-      dupErr.existing_permlink = 'paper-x';
+      dupErr.details = { existing_author: 'someone', existing_permlink: 'paper-x' };
       const comp = createComponent();
       comp.identifier = '10.1234/test';
       comp.discipline = 'Physics';
@@ -377,8 +409,26 @@ describe('bridgePage', () => {
       await comp.handleRegister();
 
       expect(comp.step).toBe('error');
+      expect(comp.duplicateExisting).toEqual({ author: 'someone', permlink: 'paper-x' });
+      expect(comp.errorMessage).toBe('');
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('DUPLICATE without details falls back to the generic message (no broken link)', async () => {
+      const dupErr = new Error('Preprint already registered');
+      dupErr.code = 'DUPLICATE';
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper.mockRejectedValue(dupErr);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await comp.handleRegister();
+
+      expect(comp.step).toBe('error');
+      expect(comp.duplicateExisting).toBeNull();
       expect(comp.errorMessage).toBe('common.registrationFailed');
-      expect(comp.errorMessage).not.toBe('bridge.lockHeldRetry');
       warnSpy.mockRestore();
     });
 
