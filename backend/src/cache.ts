@@ -12,6 +12,27 @@
  * subsequent retries. Independent of Redis: the coalescing layer is an
  * in-process coordination primitive and works whether the cache backend is
  * Redis or the in-memory fallback.
+ *
+ * Coalescing strength: this primitive eliminates duplicate fetcher
+ * invocations within an event-loop tick (concurrent callers that arrive
+ * at `getOrSet` synchronously, before any `await` resolves). Under the
+ * Redis backend, the `await this.get(key)` probe is an async network
+ * roundtrip (~1-5ms); two callers can both miss, both find the in-flight
+ * map empty (neither has reached `this.inflight.set` yet), and both
+ * create fetcher promises. The second `inflight.set` overwrites the
+ * first; both fetchers run to completion. Net effect: coalescing is
+ * complete for within-tick concurrency, and *reduces* duplication for
+ * concurrent cache-miss probes under the Redis backend (one fetcher
+ * runs instead of N). Correctness is preserved in both regimes.
+ *
+ * Invalidation-during-flight: an in-flight fetcher that started BEFORE
+ * an `invalidate*` / `clear*` call must not silently re-cache its
+ * pre-invalidation snapshot on resolution. An `epoch` counter is bumped
+ * by every invalidation method; `getOrSet` captures the epoch at
+ * fetcher start and skips the cache-write on resolution if the epoch
+ * has advanced. In-flight callers still receive the resolved value
+ * (the request that triggered the fetcher gets data), but the cache
+ * stays cold so the next caller picks up fresh post-invalidation data.
  */
 import { getRedis } from './redis.js';
 import { config } from './config.js';
@@ -29,6 +50,11 @@ export class QueryCache {
   // Single-flight: in-flight fetcher promises keyed by the prefixed cache
   // key (`${config.appTag}:cache:<routeKey>`). See class-level docblock.
   private inflight = new Map<string, Promise<unknown>>();
+  // Invalidation epoch: bumped by every `invalidate*` / `clear*` method.
+  // `getOrSet` captures the value at fetcher start and skips the cache
+  // write on resolution if the epoch has advanced (the snapshot is stale
+  // by construction). See class-level docblock.
+  private epoch = 0;
   private defaultTtlMs: number;
   private prefix: string;
 
@@ -78,14 +104,26 @@ export class QueryCache {
   /**
    * Get or compute a cached value.
    *
-   * Single-flight: concurrent callers for the same `key` that miss the
-   * cache share ONE fetcher invocation. The first miss creates a promise,
-   * stores it in `this.inflight`, awaits it, writes the result to the
-   * cache (if non-null), and clears the in-flight slot. Subsequent
+   * Single-flight: concurrent callers for the same `key` that arrive
+   * synchronously (same event-loop tick) share ONE fetcher invocation.
+   * The first miss creates a promise, stores it in `this.inflight`,
+   * awaits it, writes the result to the cache (if non-null and the
+   * epoch hasn't advanced), and clears the in-flight slot. Subsequent
    * concurrent callers find the existing promise and await it directly.
    * Null resolutions are not cached AND clear the in-flight slot so the
    * next wave retries fresh. Rejections also clear the slot to avoid
    * poisoning subsequent attempts.
+   *
+   * Under the Redis backend, the `await this.get(key)` probe is async;
+   * two callers can race past the in-flight check during cache-miss
+   * probes and both create fetchers. Coalescing is complete within a
+   * tick and reduces (does not eliminate) duplication during the
+   * Redis-probe window. See class-level docblock.
+   *
+   * Invalidation-during-flight: the epoch captured at fetcher start
+   * is compared on resolution; if any `invalidate*` / `clear*` ran
+   * meanwhile, the cache-write is skipped so the next caller does not
+   * see the pre-invalidation snapshot.
    *
    * @param stable - If true, this entry survives block-change cache clears (use for slow-changing data like reputation, WoT threshold, stats).
    */
@@ -101,10 +139,14 @@ export class QueryCache {
       return existing;
     }
 
+    // Capture epoch at fetcher start. If `invalidate*` / `clear*` bumps
+    // it before this promise resolves, the snapshot is stale and the
+    // cache-write below is skipped.
+    const capturedEpoch = this.epoch;
     const promise = (async (): Promise<T> => {
       try {
         const data = await fn();
-        if (data !== null && data !== undefined) {
+        if (data !== null && data !== undefined && capturedEpoch === this.epoch) {
           await this.set(key, data, ttlMs, stable);
         }
         return data;
@@ -179,6 +221,12 @@ export class QueryCache {
   }
 
   async invalidate(key: string): Promise<void> {
+    // Bump epoch BEFORE the actual delete so any in-flight fetcher that
+    // resolves between now and the delete sees the advanced epoch and
+    // skips its cache-write. Ordering matters: a fetcher resolving with
+    // a pre-bump captured epoch but writing after the bump-and-delete
+    // would otherwise undo the flush silently.
+    this.epoch++;
     const redis = getRedis();
     if (redis) {
       try { await redis.del(this.prefix + key); } catch (err) { logger.debug({ err, key }, 'Redis cache invalidate failed'); }
@@ -203,6 +251,10 @@ export class QueryCache {
    * non-blocking iteration so this is safe to call with broad prefixes.
    */
   async invalidatePrefix(keyPrefix: string): Promise<void> {
+    // Bump epoch first so in-flight fetchers under this prefix skip
+    // their cache-writes on resolution (see `invalidate` for ordering
+    // rationale and class-level docblock).
+    this.epoch++;
     const fullPrefix = this.prefix + keyPrefix;
     const redis = getRedis();
     if (redis) {
@@ -266,6 +318,9 @@ export class QueryCache {
 
   /** Clear ALL entries including stable ones. */
   async clear(): Promise<void> {
+    // Bump epoch first so in-flight fetchers skip their cache-writes
+    // on resolution (see `invalidate` for ordering rationale).
+    this.epoch++;
     const redis = getRedis();
     if (redis) {
       try {
@@ -279,6 +334,9 @@ export class QueryCache {
 
   /** Clear only volatile (non-stable) entries. Called on new block. */
   async clearVolatile(): Promise<void> {
+    // Bump epoch first so in-flight fetchers skip their cache-writes
+    // on resolution (see `invalidate` for ordering rationale).
+    this.epoch++;
     const redis = getRedis();
     if (redis) {
       try {

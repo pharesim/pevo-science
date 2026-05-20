@@ -12,9 +12,9 @@
  * Clause (b): no auth middleware in scope — these are unit-level cache
  * specs. Clause (c): the integration canary in
  * `backend/tests/routes/papers-enrichment-parity-gate.test.ts`
- * (`'single-flight: 3 concurrent /enrichment calls collapse to 1 HAF
- * fetcher'`) exercises the same primitive end-to-end through the
- * `/api/papers/:author/:permlink/enrichment` route with a mocked HAF
+ * (`'GET /api/papers/:author/:permlink/enrichment — single-flight
+ * coalescing canary'`) exercises the same primitive end-to-end through
+ * the `/api/papers/:author/:permlink/enrichment` route with a mocked HAF
  * responder, satisfying the real-path companion requirement at the route
  * layer.
  */
@@ -103,6 +103,50 @@ describe('QueryCache.getOrSet — single-flight coalescing', () => {
     expect(fetcherB).toHaveBeenCalledTimes(1);
     expect(a).toEqual({ key: 'A' });
     expect(b).toEqual({ key: 'B' });
+  });
+
+  it('invalidate() during an in-flight fetcher prevents the pre-invalidation snapshot from being cached', async () => {
+    // Reproduces the invalidation-during-flight race:
+    //   1. A slow fetcher F is started for key K (concurrent readers
+    //      coalesce on the in-flight promise).
+    //   2. While F is in flight, an `invalidate(K)` runs (e.g. a paper
+    //      edit calls `hafCache.invalidate(...)`).
+    //   3. F resolves with its pre-invalidation snapshot.
+    //   4. Without the epoch guard, F's success path would `set(K, ...)`
+    //      and silently undo the flush. With the epoch guard, F's
+    //      cache-write is skipped; the cache stays cold; the next
+    //      caller picks up fresh post-invalidation data.
+    //
+    // Mutation-kill: removing the `capturedEpoch === this.epoch` check
+    // in `getOrSet` causes this assertion to flip RED (the stale
+    // snapshot ends up in the cache).
+    const fetcher = vi.fn().mockImplementation(async () => {
+      // Slow enough that the invalidate() below runs before this
+      // resolves, but short enough that the test stays fast.
+      await new Promise((r) => setTimeout(r, 50));
+      return { value: 'pre-invalidation-snapshot' };
+    });
+
+    // Kick off the in-flight fetcher (do NOT await yet).
+    const inflightCall = cache.getOrSet('race-key', fetcher);
+
+    // While the fetcher is in flight, invalidate the key. Use a short
+    // delay to ensure the fetcher has started (its inflight entry is
+    // registered before the awaited 50ms timeout fires).
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.invalidate('race-key');
+
+    // Now wait for the fetcher to resolve. The in-flight caller still
+    // receives the value (per the epoch-guard semantics: callers get
+    // data, cache stays cold).
+    const inflightResult = await inflightCall;
+    expect(inflightResult).toEqual({ value: 'pre-invalidation-snapshot' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Post-condition: cache is cold. The pre-invalidation snapshot
+    // must NOT have been written back. A subsequent reader would
+    // therefore miss and fire a fresh fetcher.
+    expect(await cache.get('race-key')).toBeUndefined();
   });
 
   it('in-flight map entry is cleared on fetcher throw (next call retries fresh)', async () => {

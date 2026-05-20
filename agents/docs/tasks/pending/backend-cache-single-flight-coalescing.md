@@ -162,3 +162,39 @@ Cluster-wide findings: 6 findings (12 sub-points) surfaced across the persona fl
 When items 1-3 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Item 1 is the load-bearing correctness fix; items 2-3 are mechanical text rewrites.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-20, round-2)
+
+All three round-2 hold-block items landed in a single commit.
+
+### Item 1 — Invalidation-during-flight race (epoch counter)
+
+`backend/src/cache.ts`:
+- Added `private epoch = 0` field to `QueryCache`.
+- `invalidate()`, `invalidatePrefix()`, `clearVolatile()`, and `clear()` each bump `this.epoch` BEFORE the actual Redis/memory delete operation (ordering rationale documented in the `invalidate` body: a bump-after-delete leaves a window where a fetcher resolves with the captured-old epoch and writes its snapshot back between the delete and the bump).
+- `getOrSet` captures `const capturedEpoch = this.epoch` at fetcher start; the success-path cache write now requires `data !== null && data !== undefined && capturedEpoch === this.epoch`. In-flight callers still receive the resolved value; only the `this.set(...)` write is gated.
+- Class-level docblock and `getOrSet` JSDoc describe the invalidation-during-flight contract.
+
+### Item 2 — TOCTOU docblock honesty
+
+`backend/src/cache.ts`:
+- Class-level docblock added a "Coalescing strength" paragraph stating that the primitive eliminates duplication within an event-loop tick and *reduces* (does not eliminate) duplication during the Redis-probe window. Specifically calls out that two callers can both miss on `await this.get(key)`, both find the in-flight map empty, and both create fetchers; the second `inflight.set` overwrites the first; correctness preserved in both regimes.
+- `getOrSet` JSDoc updated to point at the class-level docblock for the strength claim, framing single-flight as "concurrent callers for the same `key` that arrive synchronously (same event-loop tick) share ONE fetcher invocation" rather than the previous unconditional "share ONE fetcher invocation."
+- No code-shape change (Fix A — synchronous in-memory `peek()` probe — explicitly not pursued per the hold-block direction).
+
+### Item 3 — Clause-(c) citation rot
+
+`backend/tests/lib/cache.test.ts`:
+- Header citation updated from the inaccurate `'single-flight: 3 concurrent /enrichment calls collapse to 1 HAF fetcher'` to the actual describe-block name `'GET /api/papers/:author/:permlink/enrichment — single-flight coalescing canary'` (verified by `grep -n describe backend/tests/routes/papers-enrichment-parity-gate.test.ts`).
+
+### New unit spec
+
+`backend/tests/lib/cache.test.ts`: added `'invalidate() during an in-flight fetcher prevents the pre-invalidation snapshot from being cached'`. Pattern: slow fetcher (50ms setTimeout) starts; 10ms later (after the in-flight slot is registered) `cache.invalidate('race-key')` runs; fetcher resolves with its pre-invalidation snapshot; the in-flight caller receives `{ value: 'pre-invalidation-snapshot' }` but `cache.get('race-key')` returns `undefined`. Mutation-kill verified: removing the `capturedEpoch === this.epoch` guard flips the assertion RED with `expected { value: 'pre-invalidation-snapshot' } to be undefined` — exactly the silent-recache failure mode the guard is meant to prevent.
+
+### Verification
+
+- `npm run typecheck` from `backend/`: clean (no new errors; the pre-existing `argon2-error-mocks.ts:178` error noted in the hold block did not appear, likely already remediated by a sibling task between hold-filing and round-2 implementation).
+- `npm run lint` from `backend/`: clean for changed files (only pre-existing warning in `author-supersession.ts` outside this task's zone).
+- Scoped vitest `tests/lib/cache.test.ts`: 5/5 pass (4 existing single-flight specs + 1 new invalidation-race spec). Mutation-kill of the epoch guard reproduced the expected RED before restore.
