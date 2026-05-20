@@ -45,8 +45,9 @@
  * membership + `isPevoAnyPaper`).
  *
  * Per CLAUDE.md clauses (a)/(b)/(c):
- *   (a) justification documented above (deterministic spoofed-continuation
- *       seeding is impractical against the public HAF DB),
+ *   (a) justification: deterministic spoofed-continuation seeding is
+ *       impractical against the public HAF DB (per the Carve-out
+ *       paragraph in this docblock),
  *   (b) `verifyHiveSignature` and other middleware are NOT mocked,
  *   (c) real-HAF integration is filed as a follow-up: neither
  *       `papers.test.ts` nor `paper-detail-v3.test.ts` exercises the gate
@@ -621,8 +622,12 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   // ────────────────────────────────────────────────────────────────
-  // Cumulative-union display canaries
-  // (`backend-multi-author-cumulative-union.md` acceptance #9)
+  // Cumulative-union display canaries — verify detail.authors[] is the
+  // running union of every hive ever named across the chain, in
+  // first-occurrence order. Sub-fields resolve via most-recent self-claim
+  // (with fallback to most-recent third-party claim); ORCID is server-
+  // overridden for accredited hives. Drops are silently retained by
+  // construction (the union only grows).
   // ────────────────────────────────────────────────────────────────
 
   /** SQL pattern matchers for accreditation lookups. */
@@ -712,7 +717,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   }
 
   it('cumulative union admits all hives across the chain (root + head)', async () => {
-    // Acceptance #1: chain `[root, bob/v2]`. Root has [alice, bob]; bob/v2
+    // Chain `[root, bob/v2]`. Root has [alice, bob]; bob/v2
     // adds carol. Display authors[] = [alice, bob, carol] in
     // first-occurrence order.
     seedTwoLinkChain({
@@ -728,7 +733,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('drops are silently ignored under cumulative-union (forbidden by construction)', async () => {
-    // Acceptance #2: bob/v2 drops alice from his pevo.authors[]
+    // bob/v2 drops alice from his pevo.authors[]
     // (insider-abuse vector). Cumulative union retains alice from root
     // post; display authors[] still includes alice. No
     // `continuation_authors_shrink_violation` event fires (event removed
@@ -755,7 +760,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('self-claim wins for sub-fields (most-recent self-claim by the hive about itself)', async () => {
-    // Acceptance #3: root has alice with name "Alice Smith" + bob with
+    // Root has alice with name "Alice Smith" + bob with
     // name "Robert Bob". bob/v2 has alice with no name + bob with name
     // "Bob Smith" (his self-claim). Display: alice's name = "Alice
     // Smith" (her self-claim from root); bob's name = "Bob Smith" (his
@@ -779,7 +784,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('fallback to most-recent claim when no self-claim exists for a hive', async () => {
-    // Acceptance #4: bob's continuation adds carol with a fallback
+    // bob's continuation adds carol with a fallback
     // name. carol hasn't broadcast her own continuation. Display:
     // carol's name = bob's claim about her (most-recent fallback).
     seedTwoLinkChain({
@@ -797,7 +802,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('self-claim updates fallback once the hive broadcasts a self-claim', async () => {
-    // Acceptance #5: 3-link chain. bob's continuation adds carol with
+    // 3-link chain. bob's continuation adds carol with
     // name "Initial Guess"; carol's own continuation claims name "Carol
     // Real". Display: carol's name = "Carol Real" (self-claim wins over
     // the prior fallback).
@@ -847,7 +852,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('ORCID server override fires for accredited-vs-claimed mismatch (audit event + display override)', async () => {
-    // Acceptance #6: alice's most-recent winning entry (whole-entry rule
+    // alice's most-recent winning entry (whole-entry rule
     // #2) carries an ORCID that disagrees with her on-chain accreditation
     // — here, the spoof source is alice's own self-claim post (the rule
     // governs the resolved entry regardless of whether the wrong ORCID
@@ -895,7 +900,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('ORCID passes through unchanged when claim matches accreditation (no mismatch event)', async () => {
-    // Acceptance #7: alice's claimed ORCID matches her accredited
+    // alice's claimed ORCID matches her accredited
     // ORCID. No audit event; display passes the matching value through.
     const warnSpy = vi.spyOn(logger, 'warn');
     seedTwoLinkChain({
@@ -919,7 +924,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('non-accredited ORCID claim passes through (no override, no audit)', async () => {
-    // Acceptance #8: carol is NOT accredited. bob's continuation lists
+    // carol is NOT accredited. bob's continuation lists
     // carol with arbitrary ORCID. Display: carol's ORCID = bob's claim
     // unchanged. No audit event.
     const warnSpy = vi.spyOn(logger, 'warn');
@@ -1004,7 +1009,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('per-hop cumulative admit-set admits an author added mid-chain', async () => {
-    // Acceptance #9: root has [alice, bob]; bob/v2 adds carol;
+    // Root has [alice, bob]; bob/v2 adds carol;
     // carol/v3 attempts to broadcast. v3 admitted because carol is in
     // the cumulative set after hop 1. Without cumulative, v3 would be
     // rejected (carol not in root's authors[]).
@@ -1042,7 +1047,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('per-hop cumulative admit-set rejects outsiders (mallory not anywhere in the chain)', async () => {
-    // Acceptance #10: mallory is not in root's authors[] and was never
+    // mallory is not in root's authors[] and was never
     // added by any chain post. Forward walker hop 0 rejects mallory's
     // continuation candidate via the cumulative SQL filter (mallory NOT
     // in cumulativeArr).
@@ -1070,7 +1075,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('accredited_authors rebuilt from cumulative union (head that drops an author cannot shrink accredited_authors)', async () => {
-    // Acceptance #12: bob (vouched) drops alice from his head metadata,
+    // bob (vouched) drops alice from his head metadata,
     // but the cumulative union still carries alice. accredited_authors
     // must include alice (assuming accredited) — reading from
     // detail.authors (the cumulative union) so a head that drops an
@@ -1192,8 +1197,9 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   // values), head's view wins for the entire triple — all three fields
   // collapse to null because pevoString narrows the bad values out. No
   // fallback to root: per-field Frankenstein composition is rejected
-  // structurally. The three integration canaries below pin all-null
-  // collapse for each non-string runtime shape on head.
+  // structurally. Three integration canaries in this describe block pin
+  // all-null collapse for each non-string runtime shape on head
+  // (empty-string, numeric, object).
   it('admits head\'s triple as all-null when head sets all three keys to empty strings (atomic-triple)', async () => {
     // Key-presence wins for the atomic triple: `'ipfs_cid' in headPevo` is
     // true (key present, even with empty-string value), so head's triple
@@ -1726,10 +1732,9 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     // Attacker-posted cycle: alice and bob are mutually in each other's
     // pevo.authors[] (cumulative-union admits both directions), so the
     // SQL author-set gate and the JS-side gate both admit the cycle. The
-    // forward walker has no depth-cap warn event (per the wall-clock test
-    // pair below: it exits silently at MAX_HOPS=50), so without cycle
-    // detection an attacker-posted cycle burns 50 chain-walk SQL queries
-    // per request silently.
+    // forward walker has no depth-cap warn event (exits silently when it
+    // hits MAX_HOPS=50), so without cycle detection an attacker-posted
+    // cycle burns 50 chain-walk SQL queries per request silently.
     //
     // Mutation kill: remove the `visited` Set check inside the loop. The
     // walker advances 50 times alternating alice ↔ bob → no cycle event
@@ -1784,8 +1789,8 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       .filter((e) => e?.event === 'continuation_chain_cycle_detected');
     expect(cycleEvents.length).toBeGreaterThan(0);
 
-    // Chain-walk SQL count well below MAX_HOPS=50. Without cycle detection
-    // this walk would alternate alice ↔ bob for the full 50 hops.
+    // Chain-walk SQL count much less than MAX_HOPS=50. Without cycle
+    // detection this walk would alternate alice ↔ bob for the full 50 hops.
     const walks = chainWalkCaptures();
     expect(walks.length).toBeLessThan(10);
 
@@ -1941,9 +1946,9 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       expect(wallClockEvents[0]?.hopIndex).toBeGreaterThanOrEqual(0);
       expect(wallClockEvents[0]?.elapsedMs).toBeGreaterThan(0);
 
-      // The chain-walk SQL count is bounded by the budget — well below
-      // MAX_HOPS=50. Pin a generous upper bound robust to timing jitter
-      // while still rejecting the unbounded-walker mutation.
+      // The chain-walk SQL count is bounded by the budget — much less
+      // than MAX_HOPS=50. Pin a generous upper bound robust to timing
+      // jitter while still rejecting the unbounded-walker mutation.
       const walks = chainWalkCaptures();
       expect(walks.length).toBeLessThan(20);
     } finally {
@@ -1965,8 +1970,9 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     // as always-true) → wall-clock event fires on every request → this
     // canary's `events.length === 0` assertion fails red.
     installResponder(async (sql, _params) => {
-      // Suppress backward walker (same pattern as the slow-HAF canary
-      // above) so logger.warn isn't called for cont_columns_invalid.
+      // Suppress backward walker (matching the slow-HAF wall-clock
+      // canary's responder shape) so logger.warn isn't called for
+      // cont_columns_invalid.
       if (/'continues'\s*IS\s+NOT\s+NULL/i.test(sql)) {
         return { rows: [] };
       }
@@ -2052,7 +2058,8 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     // (revert to bare `fetchPaperDetailFromHaf(author, permlink)` without
     // signal) → forward walker runs to depth cap regardless of budget →
     // wall-clock event never fires AND status stays 200/404, not 503 →
-    // both assertions below fail red.
+    // both the status-503 assertion and the wallClockEvents.length>0
+    // assertion fail red.
     installSlowForwardResponder();
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const originalBudget = config.hafWalkerWallClockMs;
@@ -2225,8 +2232,9 @@ describe('GET /api/papers/:author/:permlink — pevoString family adoption: rout
   // override) and `buildPaperDetail` use `pevoString(pevo, 'language') ?? 'en'`.
   // Single-version papers (no continuation) route through `buildPaperDetail` —
   // covered here. The integration with the head-meta override path is covered
-  // by the existing per-version display canaries in the multi-version describe
-  // block above (continuation-chain seed); a regression in either site that
+  // by the per-version display canaries in the
+  // `GET /api/papers/:author/:permlink — continuation chain-walk SQL gate`
+  // describe; a regression in either site that
   // collapsed `?? 'en'` to bare `pevoString(...)` would surface as `null`
   // here for the buildPaperDetail site.
   function paperRowWithFields(

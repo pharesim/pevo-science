@@ -163,3 +163,64 @@ These sites are in-scope per this task's existing acceptance criterion #4 ("Whol
 - The `orcid_verified` docblock's trailing `affiliation`-stripping note structural concern (single-reviewer, confidence 50, pre-dates this commit). Not part of this hold cycle.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+## Backend re-review signal (2026-05-20, round 3)
+
+Round-3 hold items 1-2 landed. Whole-file audit expanded scope per the hold block surfaced 6 additional sites beyond the 12 cited; all 6 fixed in the same commit.
+
+### Per-item summary
+
+1. **Section banner at L625 (slug citation).** Rewrote the cumulative-union display canaries banner to anchor on the behavioral invariant: detail.authors[] is the running union of every hive ever named across the chain in first-occurrence order, with sub-fields resolved via most-recent self-claim (fallback to most-recent third-party claim), server-overridden ORCID for accredited hives, and drops silently retained by construction. The archived task slug + acceptance-number citation removed entirely.
+
+2. **11 `Acceptance #N:` prefixes.** Stripped the `Acceptance #N:` prefix from each of the 11 cited comments (L715, L731, L758, L782, L800, L850, L898, L922, L1007, L1045, L1073; numbering skipped #11). The surrounding behavioral text in every site was self-contained — chain shape, expected display authors[], expected ORCID/name resolution, expected audit-event behavior — and survived the prefix removal without rewriting.
+
+### Holistic full-file audit findings (additional sites beyond the cited 12)
+
+Whole-file audit of `backend/tests/routes/continuation-author-gate.test.ts` (2339 lines) with the broadened grep surfaced 6 additional relative-positional-anchor sites not enumerated in the hold block. All 6 fixed in this commit per the hold-block acceptance ("Every `backend-*.md`, `acceptance #`, `above`, `below` hit in a comment must be replaced with a behavioral anchor or stable-symbol reference"):
+
+- **L48 (docblock).** `(a) justification documented above` — replaced with `(a) justification: ... (per the Carve-out paragraph in this docblock)`. Anchors on the named "Carve-out" paragraph, not relative position.
+- **L1195.** `The three integration canaries below pin all-null collapse ...` — replaced with `Three integration canaries in this describe block pin all-null collapse for each non-string runtime shape on head (empty-string, numeric, object).` Names the scope (describe block) and enumerates the three shapes.
+- **L1730.** `(per the wall-clock test pair below: it exits silently at MAX_HOPS=50)` — replaced with `(exits silently when it hits MAX_HOPS=50)`. Drops the relative anchor; the depth-cap behavior is the behavioral statement.
+- **L1792.** `// Chain-walk SQL count well below MAX_HOPS=50.` — replaced with `// Chain-walk SQL count much less than MAX_HOPS=50.` Numerical-comparison rephrase to avoid `below` substring match. (Borderline case: the original was a magnitude comparison, not a positional anchor, but rephrased proactively per the hold block's strict "every below hit in a comment" reading.)
+- **L1944.** `// The chain-walk SQL count is bounded by the budget — well below MAX_HOPS=50.` — same rephrase to `much less than`.
+- **L1969.** `// Suppress backward walker (same pattern as the slow-HAF canary above) ...` — replaced with `// Suppress backward walker (matching the slow-HAF wall-clock canary's responder shape) ...`. Anchors on the named canary class, not its position.
+- **L2055.** `... both assertions below fail red.` — replaced with `... both the status-503 assertion and the wallClockEvents.length>0 assertion fail red.` Names the specific assertions, not a positional reference.
+- **L2229.** `... per-version display canaries in the multi-version describe block above (continuation-chain seed); ...` — replaced with `... per-version display canaries in the `GET /api/papers/:author/:permlink — continuation chain-walk SQL gate` describe; ...`. Cites the actual describe-block name (verified via `grep '^describe' ...test.ts`) as a stable symbol.
+
+Hit count = 8 lines fixed (the 6 unique sites above; L1730 contained both `below` and an implied positional anchor in one phrase; L1792+L1944 are sibling numerical-comparison rephrases).
+
+No coordination-state markers (round-N, hold items, task slugs, SHAs, dates) remain in the file. No other relative positional anchors (`next test`, `previous test`, "spec just above", etc.) found.
+
+### Self-audit (added lines only)
+
+`git diff --no-color backend/tests/routes/continuation-author-gate.test.ts | grep '^+' | grep -v '^+++'` produced 39 added lines. Broadened grep against them:
+
+- `round-\d`: 0 hits.
+- All-caps-with-hyphens task slugs (`BACKEND-X-Y`, `BE-X`): 0 hits.
+- Line-number anchors (`\.ts:\d+`, `\.js:\d+`): 0 hits.
+- 7+ hex SHA-like patterns (`\b[0-9a-f]{7,}\b`): 0 hits.
+- Date anchors (`2026-\d{2}-\d{2}`): 0 hits.
+- Relative positional anchors (`\babove\b`, `\bbelow\b`, `\bnext test\b`, `\bprevious test\b`): 0 hits.
+- `acceptance #`, `backend-*.md`: 0 hits.
+- `hold #`, `F\d+[: ]`: 0 hits.
+
+### Verification
+
+Broadened acceptance grep across the four files:
+```
+grep -inoE "(round[- ]?[0-9]|hold #|BE-[A-Z_-]+|BACKEND-[A-Z_-]+|F[0-9]+[: ]|acceptance #|backend-[a-z0-9-]+\.md|\babove\b|\bbelow\b|\bnext test\b|\bprevious test\b)" \
+  backend/src/lib/author-supersession.ts \
+  backend/src/types/domain.ts \
+  backend/tests/helpers.test.ts \
+  backend/tests/routes/continuation-author-gate.test.ts
+```
+Output: empty (grep exit code 1, no matches). Clean.
+
+- `npm run typecheck` (both `typecheck:src` and `typecheck:tests`): clean, no errors.
+- Scoped vitest with Docker IP env-var overrides per CLAUDE.md "Running Tests":
+  ```
+  npx vitest run tests/routes/continuation-author-gate.test.ts tests/helpers.test.ts tests/routes/papers-canonical-orcid-resolution.test.ts tests/routes/profile-papers-supersession.test.ts
+  ```
+  Result: Test Files 4 passed (4); Tests 137 passed (137).
+
+No behavioral changes — pure comment edits only. The vitest scope was the hold-block-specified four files; full-suite was not run per the task constraints.
