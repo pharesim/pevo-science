@@ -278,9 +278,9 @@ const template = `
                       <span x-text="$t('citation.citeButton')"></span>
                     </button>
                     <div x-show="citeOpen" x-transition class="absolute right-0 rtl:right-auto rtl:left-0 mt-1 w-44 rounded-lg border border-parchment-dark bg-parchment shadow-md z-10">
-                      <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors rounded-t-lg" @click="handleCitationExport('apa')" x-text="$t('citation.apaFormat')"></button>
-                      <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors" @click="handleCitationExport('bibtex')" x-text="$t('citation.bibtexFormat')"></button>
-                      <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors rounded-b-lg" @click="handleCitationExport('ris')" x-text="$t('citation.risFormat')"></button>
+                      <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors rounded-t-lg disabled:opacity-50 disabled:cursor-not-allowed" :disabled="citeLoading" @click="handleCitationExport('apa')" x-text="$t('citation.apaFormat')"></button>
+                      <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors disabled:opacity-50 disabled:cursor-not-allowed" :disabled="citeLoading" @click="handleCitationExport('bibtex')" x-text="$t('citation.bibtexFormat')"></button>
+                      <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors rounded-b-lg disabled:opacity-50 disabled:cursor-not-allowed" :disabled="citeLoading" @click="handleCitationExport('ris')" x-text="$t('citation.risFormat')"></button>
                     </div>
                   </div>
                   <!-- Add to citation collection -->
@@ -537,13 +537,18 @@ const template = `
             </template>
 
             <!-- Enrichment-unavailable hint: shown when the lazy enrichment
-                 fetch returned a retriable 503. Distinct from the empty-data
-                 state — reviews/votes/claims may exist but were unreachable. -->
-            <template x-if="enrichmentRetriable">
+                 fetch returned a retriable 503 AND no prior enrichment
+                 payload has loaded. Gated on !enrichmentLoaded so a refresh
+                 failure from a claim-mutation flow does not contradict the
+                 still-visible reviews data below. The hint's retry path is
+                 wrapped by retryEnrichment so concurrent rapid clicks
+                 cannot race two fetchPaperEnrichment calls. -->
+            <template x-if="enrichmentRetriable && !enrichmentLoaded">
               <div class="mt-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
                 <p class="text-sm text-amber-800" x-text="$t('paperDetail.enrichmentUnavailable')"></p>
-                <button type="button" class="btn-secondary text-xs" data-testid="enrichment-retry"
-                        @click="loadEnrichment()" x-text="$t('common.retry')"></button>
+                <button type="button" class="btn-secondary text-xs disabled:opacity-50 disabled:cursor-not-allowed" data-testid="enrichment-retry"
+                        :disabled="enrichmentRetrying"
+                        @click="retryEnrichment()" x-text="$t('common.retry')"></button>
               </div>
             </template>
 
@@ -784,8 +789,14 @@ export function initPaperDetailPage() {
     enrichmentLoaded: false,
     // Set true when the enrichment fetch fails with a retriable 503. Drives
     // a small "Enrichment temporarily unavailable" hint above the reviews
-    // section; cleared at the top of each (re)load.
+    // section; cleared at the top of each (re)load. The template gates the
+    // hint on !enrichmentLoaded so a refresh-time failure does not show a
+    // banner above stale-but-valid review data from the initial load.
     enrichmentRetriable: false,
+    // In-flight guard for the enrichment retry button. Set synchronously at
+    // retryEnrichment() entry, cleared in finally, so a rapid double-click
+    // cannot fire two concurrent fetchPaperEnrichment calls.
+    enrichmentRetrying: false,
 
     // Citation export
     citeOpen: false,
@@ -914,9 +925,28 @@ export function initPaperDetailPage() {
       } catch (err) {
         if (this.author !== author || this.permlink !== permlink) return;
         if (err?.code === 'SERVICE_UNAVAILABLE' && err?.details?.retriable === true) {
+          // Recognized transient failure surfaces via the enrichmentRetriable
+          // banner; no log line — the user already has a UI affordance and
+          // a HAF outage would otherwise multiply this warn per claim
+          // mutation per user.
           this.enrichmentRetriable = true;
+        } else {
+          console.warn('Paper enrichment failed', err);
         }
-        console.warn('Paper enrichment failed', err);
+      }
+    },
+
+    // Wraps loadEnrichment with an in-flight flag so the retry banner's
+    // button can disable itself during the round-trip. Without this, a
+    // rapid double-click produces two concurrent fetchPaperEnrichment
+    // calls racing for last-write on this.paper.reviews and friends.
+    async retryEnrichment() {
+      if (this.enrichmentRetrying) return;
+      this.enrichmentRetrying = true;
+      try {
+        await this.loadEnrichment();
+      } finally {
+        this.enrichmentRetrying = false;
       }
     },
 
@@ -1059,7 +1089,15 @@ export function initPaperDetailPage() {
 
     // Citation export
     async handleCitationExport(format) {
+      // Capture paper identity at entry; the retry loop re-uses these
+      // closures rather than reading this.author/this.permlink, so a
+      // mid-backoff tab-switch to another paper does not produce a
+      // download named for the new paper containing data for the prior
+      // one (the post-await identity guard then bails the in-flight loop).
+      const author = this.author;
+      const permlink = this.permlink;
       this.citeLoading = true;
+      this.citeOpen = false;
       // Read-only path; the backend's `/cite` endpoint has no rate-limiter
       // slot concern, so a small auto-retry on retriable SERVICE_UNAVAILABLE
       // is safe and saves the user a manual round-trip during a transient
@@ -1070,7 +1108,8 @@ export function initPaperDetailPage() {
       try {
         while (true) {
           try {
-            const data = await fetchCitationExport(this.author, this.permlink, format);
+            const data = await fetchCitationExport(author, permlink, format);
+            if (this.author !== author || this.permlink !== permlink) return;
             if (format === 'apa') {
               await navigator.clipboard.writeText(data.content);
               this.$store.toast.show(this.$t('citation.copiedToClipboard'), 'success');
@@ -1081,7 +1120,7 @@ export function initPaperDetailPage() {
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');
               a.href = url;
-              a.download = `${this.permlink}.${ext}`;
+              a.download = `${permlink}.${ext}`;
               document.body.appendChild(a);
               a.click();
               document.body.removeChild(a);
@@ -1096,9 +1135,11 @@ export function initPaperDetailPage() {
               && serviceUnavailableAttempt < serviceUnavailableRetryDelaysMs.length
             ) {
               await new Promise((resolve) => setTimeout(resolve, serviceUnavailableRetryDelaysMs[serviceUnavailableAttempt]));
+              if (this.author !== author || this.permlink !== permlink) return;
               serviceUnavailableAttempt++;
               continue;
             }
+            if (this.author !== author || this.permlink !== permlink) return;
             // Retriable 503 surfaces a distinct toast so the user knows to
             // retry the action shortly. 400 (bad format) and 404 (paper not
             // found, generator dispatch failed) fall through to the generic
@@ -1113,8 +1154,9 @@ export function initPaperDetailPage() {
           }
         }
       } finally {
-        this.citeLoading = false;
-        this.citeOpen = false;
+        if (this.author === author && this.permlink === permlink) {
+          this.citeLoading = false;
+        }
       }
     },
 
@@ -1131,9 +1173,10 @@ export function initPaperDetailPage() {
         const res = await fetchPaper(this.author, this.permlink);
         this.paper = res.data;
       } catch (err) {
-        // Manual retry only on retriable SERVICE_UNAVAILABLE: the backend's
-        // retract rate limiter currently consumes a slot per attempt, so an
-        // auto-retry loop here would amplify the user's daily retract budget.
+        // Manual retry only on retriable SERVICE_UNAVAILABLE. Retract is a
+        // destructive, irreversible write op that publishes a chain-visible
+        // edit, so positive user confirmation per attempt is the right
+        // posture regardless of how the backend limiter handles failures.
         // The retract dialog stays open on error so the user can re-click
         // "Confirm Retraction" themselves; the toast distinguishes the
         // transient failure from a permanent one.

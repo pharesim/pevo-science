@@ -852,5 +852,83 @@ describe('paperDetailPage', () => {
         vi.useRealTimers();
       }
     });
+
+    it('loadEnrichment recognized retriable 503: no console.warn (carve-out aligns with loadPaper)', async () => {
+      // The hint banner is the user-visible affordance; the warn would
+      // multiply per claim-mutation per user across a HAF outage. Recognized
+      // transient failures stay quiet in the log.
+      fetchPaperEnrichment.mockRejectedValue(svcUnavailable());
+      const comp = createComponent();
+      comp.paper = { author: 'alice', permlink: 'my-paper' };
+      await comp.loadEnrichment();
+      expect(comp.enrichmentRetriable).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('loadEnrichment unrecognized error: console.warn fires (carve-out only covers recognized 503)', async () => {
+      fetchPaperEnrichment.mockRejectedValue(new Error('boom'));
+      const comp = createComponent();
+      comp.paper = { author: 'alice', permlink: 'my-paper' };
+      await comp.loadEnrichment();
+      expect(comp.enrichmentRetriable).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+    });
+
+    it('retryEnrichment: sets enrichmentRetrying during the round-trip, clears in finally', async () => {
+      // The retry banner's button disables itself while this flag is true;
+      // a rapid double-click is dropped because the second call sees the
+      // flag and bails immediately.
+      let resolveEnrichment;
+      fetchPaperEnrichment.mockReturnValue(
+        new Promise((resolve) => {
+          resolveEnrichment = resolve;
+        }),
+      );
+      const comp = createComponent();
+      comp.paper = { author: 'alice', permlink: 'my-paper' };
+      const p = comp.retryEnrichment();
+      expect(comp.enrichmentRetrying).toBe(true);
+      // Second call while the first is in flight is a no-op.
+      const secondP = comp.retryEnrichment();
+      await secondP;
+      expect(fetchPaperEnrichment).toHaveBeenCalledTimes(1);
+      resolveEnrichment({ data: { reviews: [] } });
+      await p;
+      expect(comp.enrichmentRetrying).toBe(false);
+    });
+
+    it('handleCitationExport: paper-identity changes mid-backoff -> retry abandoned, no download fires', async () => {
+      // Tab-switch race: user clicks APA on paper A, 503 backoff starts,
+      // user navigates to paper B, retry fetch must not fire against A's
+      // captured closure and produce a download named for B with A's
+      // content (or vice versa).
+      fetchCitationExport
+        .mockReset()
+        .mockRejectedValueOnce(svcUnavailable())
+        .mockResolvedValueOnce({ content: 'A-citation' });
+      try {
+        vi.useFakeTimers();
+        mockStores.router.params = { author: 'alice', permlink: 'paper-a' };
+        const comp = createComponent();
+        const p = comp.handleCitationExport('apa');
+        // Halfway into the first backoff (1500ms).
+        await vi.advanceTimersByTimeAsync(800);
+        // User navigates to paper B mid-backoff — router params flip.
+        mockStores.router.params = { author: 'bob', permlink: 'paper-b' };
+        // Finish out the backoff window.
+        await vi.advanceTimersByTimeAsync(800);
+        await p;
+        // The retry-arm identity guard fires after the backoff sleep, so the
+        // second fetchCitationExport call never reaches the network.
+        expect(fetchCitationExport).toHaveBeenCalledTimes(1);
+        // No success toast fired for paper A.
+        expect(mockStores.toast.show).not.toHaveBeenCalledWith(
+          'citation.copiedToClipboard',
+          'success',
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
