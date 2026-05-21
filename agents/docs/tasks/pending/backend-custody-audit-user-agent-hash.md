@@ -65,3 +65,43 @@ What backend needs from architect to unblock:
 - Re-review and archive `backend-custody-audit-pii-annotation` after backend's round-2 fix commit lands.
 
 Once the parent archives, architect (or backend at next startup) moves this file back to `tasks/pending/` for normal pickup.
+
+**Unblocked 2026-05-18 (architect at `070ef5af`).** Parent task `backend-custody-audit-pii-annotation` archived; this task moved back to `tasks/pending/` for backend pickup. Backend implementation landed at commit `60b9093b` and the file was moved to `tasks/review/` without an explicit signal block — implementation details captured in the commit message.
+
+---
+
+## Architect re-review (2026-05-21, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `60b9093b` (9 reviewers — correctness, security, adversarial on opus; testing, maintainability, project-standards, data-migrations, kieran-typescript on sonnet; learnings-researcher unstructured; `ce-agent-native-reviewer` skipped per project CLAUDE.md). Helper `hashUserAgentForAudit(value: unknown)` lands as a sibling of `bearerSessionId` with correct narrowing (`typeof !== 'string' || length === 0 → undefined`). Insert-site swap preserves NULL semantics for non-consent broadcasts (auditExtras constructor is unreachable on that path). Migration 006 in-place edit is COMMENT-only (verified: no row-mutating SQL, no DDL beyond `COMMENT ON COLUMN`); `deploy.sh migrate_db` unconditional re-apply is idempotent against `COMMENT ON COLUMN`. Retention sweep's regex still parses the updated COMMENT body. Pinned-digest mutation-kill is tight (`f166f6db…` verifies against `SHA-256('PEvO-Test/1.0')`).
+
+Two items held. Both are one-line edits on rot-class anchors that the convention `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` warns against — the parent task's round-3 hold-block specifically purged the same rot class on the same migration file, and this child task reintroduced one instance on the same migration and one on the new test file.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 90, maintainability M1) Migration 006 preamble carries a "see the task file" task-slug-citation pointer that rots on archive.** The migration preamble edited by this commit contains the line `"…tracked as a follow-up TODO inside the task file."` Per `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`: "the task file" is a dead pointer the moment this task archives (`tasks-archive.md` trims from the bottom at 250 lines; older entries fall off entirely). The migration is the long-lived artifact — it survives archive and SHA churn indefinitely.
+
+  Fix: replace `"…tracked as a follow-up TODO inside the task file."` with a stable behavioral anchor. The sibling retention-sweep job exists at `backend/src/jobs/custody-audit-retention-sweep.ts` and is the natural cross-reference. Suggested rewrite: `"…tracked as a follow-up TODO for the custody-audit retention-sweep job (backend/src/jobs/custody-audit-retention-sweep.ts), which ages pre-hash rows out under the 24-month retention window."` Or any equivalent that names a stable symbol instead of "the task file."
+
+  Per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the replacement must not violate any of the anchor-hygiene rules — verify the new text uses a file path + symbol name (stable), not a task slug (rots) or line number (drifts).
+
+**2. (P1, conf 80, kieran-typescript KT-1) Non-null assertion in `custody-user-agent-hash.test.ts` bypasses the `string | undefined` return type of the helper under test.** In the distinct-input invariance check, `inputs.map((ua) => hashUserAgentForAudit(ua)!)` strips `undefined` from `string | undefined` and pushes the result into a `Set`. All inputs are non-empty strings today so the assertion holds, but the `!` is a type-narrowing bypass on the test whose explicit purpose is to mutation-kill changes to the helper's return shape. If the predicate ever tightens (e.g., adds a length cap that returns `undefined` for long UAs), the `!` silently coerces `undefined` into the Set, the size check passes, and the regression false-greens.
+
+  Fix: replace `!` with a guarded form that keeps the type checker engaged. Two acceptable shapes — implementer's call:
+  - `const h = hashUserAgentForAudit(ua); if (h === undefined) throw new Error(\`unexpected undefined for input: ${JSON.stringify(ua)}\`); return h;` (loud failure on regression)
+  - `expect(h).toBeDefined()` before pushing into the Set (test failure on regression)
+
+  Either form converts "future undefined" into a loud test failure rather than a false-green. The fix is one line.
+
+### Items dismissed during architect triage
+
+- **(P2, conf 85, testing T1)** No integration assertion that non-consent broadcasts write NULL to `custody_audit_log.user_agent` (task acceptance (b)). Structural defense IS in place — the `auditExtras` constructor is unreachable on the non-consent code path (verified by correctness reviewer trace). Missing test is preemptive coverage of a "future refactor extends auditExtras to non-consent path" scenario. Dismissed per `feedback_dismiss_preemptive_test_hardening`. Documented residual.
+- **(P2, conf 80, adversarial adv-2)** Empty-string `User-Agent` is hashed to `undefined → NULL`, conflating with both "absent header" and "non-broadcast event" on the forensic detection axis. Wire-driveable (single `curl -H "User-Agent: "` from a JWT holder) — an attacker can spray empty-UA consent broadcasts to defeat continuity-change detection queries that key on "count DISTINCT user_agent per username." Bounded by PEvO single-instance beta scale and the absence of any live continuity-detection query today; if such a query is built later, the empty-UA-collapse residual should be revisited (the cheapest fix is to hash empty string to the canonical SHA-256-of-empty sentinel `e3b0c442…` which globally distinguishes empty-UA broadcasts from absent/non-broadcast NULLs). Documented residual; not held.
+- Below-anchor and other low-confidence findings (cross-deployment rainbow-table on AGPL forks, mixed raw/hashed forensic transition window during the 24-month retention period, dead non-string-header branch unreachable via Node's HTTP parser) suppressed by the anchor-75 gate per skill default.
+
+### Re-review signal
+
+When items 1 and 2 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+Both items are one-line edits in two different files (`backend/migrations/006_custody_audit_pii_annotation.sql` and `backend/tests/routes/custody-user-agent-hash.test.ts`). Single focused commit expected.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
