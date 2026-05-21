@@ -148,6 +148,7 @@ export async function fetchConsentOpsForPaper(
     .map((_, idx) => `$${idx + 5}`)
     .join(', ');
 
+  // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- fetchConsentOps: per-paper lookup further narrowed by `root_author`, `root_permlink`, and the `claimedPlaceholders` signer IN-list; pending audit per the BitmapAnd-floor sweep follow-up
   const sql = `
     SELECT
       cj.required_posting_auths ->> 0 AS signer,

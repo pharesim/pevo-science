@@ -56,6 +56,7 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
       // $1 = appTag, $2 = whitelist, $3 = genesis, $4+ = usernames
       const userPlaceholders = unique.map((_, i) => `$${i + 4}`).join(', ');
       const result = await pool.query(
+        // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- getAccreditedSet: batch lookup further narrowed by `account IN (...)`; pending audit per the BitmapAnd-floor sweep follow-up
         `WITH ranked AS (
           SELECT
             cj.json::jsonb ->> 'action' AS action,

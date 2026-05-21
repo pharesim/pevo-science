@@ -644,6 +644,7 @@ export function authorshipClaimsCteBody(
     }
   }
   return {
+    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- authorshipClaimsCteBody: callers pass a `scope` (claimer or paper-key) whose extra JSONB predicates further narrow the row set; pending audit per the BitmapAnd-floor sweep follow-up
     sql: `
   claim_events AS (
     SELECT

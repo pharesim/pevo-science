@@ -203,6 +203,7 @@ export async function findCustodyBroadcastByIdempotencyKey(
 
   // opType === undefined OR opType === 'custom_json'
   const customJsonHit = await pool.query<{ trx_id: string; block_num: number | null }>(
+    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- findOpByIdempotencyKey: per-key lookup further narrowed by `idempotency_key` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT op.included_trx_id AS trx_id, cj.block_num
      FROM ${T.customJson} cj
      JOIN hafsql.haf_operations op ON op.id = cj.id
@@ -251,6 +252,7 @@ export async function findAccreditationBroadcastByIdempotencyKey(
   // vanishingly unlikely), but the convention-alignment matters across both
   // accreditation-state helpers.
   const result = await pool.query<{ trx_id: string; block_num: number | null }>(
+    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- findAccreditationBroadcastByIdempotencyKey: per-key lookup further narrowed by `idempotency_key`, `action = 'accredit'`, and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT op.included_trx_id AS trx_id, cj.block_num
      FROM ${T.customJson} cj
      JOIN hafsql.haf_operations op ON op.id = cj.id
@@ -323,6 +325,7 @@ export async function findExistingAccreditation(
   hiveUsername: string,
 ): Promise<IdempotencyHit | null> {
   const result = await pool.query<{ trx_id: string; block_num: number | null; action: string }>(
+    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- findExistingAccreditation: per-account lookup further narrowed by `account = $hiveUsername` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT op.included_trx_id AS trx_id, cj.block_num, cj.json::jsonb ->> 'action' AS action
      FROM ${T.customJson} cj
      JOIN hafsql.haf_operations op ON op.id = cj.id

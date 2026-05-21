@@ -22,6 +22,18 @@
 //   below for allowlist + folding-coverage details and the convention:
 //   agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md
 //
+// - pevo/no-custom-id-block-num-floor (error): regex-based discipline guard
+//   that flags SQL fragments combining `<alias>.custom_id` with a
+//   `block_num >=` predicate in a single template literal (or string-concat
+//   chain). That combination forces PostgreSQL into a BitmapAnd plan against
+//   `hafsql.operation_custom_json_view` on the live HAF that scans tens of
+//   millions of operation rows and blows the per-request walker budget.
+//   The known-safe remediation is to drop the `block_num >=` floor; the
+//   `custom_id = $appTag` filter alone is selective enough on Mahdi's HAF.
+//   See the docstring on `activeAccreditationsCteBody` (backend/src/hafsql.ts)
+//   for the planner reasoning and the convention:
+//   agents/docs/solutions/conventions/convention-sweep-syntactic-form-misses-semantic-siblings-2026-05-21.md
+//
 // Frontend has its own tooling; this config is backend-scoped.
 import path from 'node:path';
 import tseslint from 'typescript-eslint';
@@ -182,10 +194,120 @@ const noBridgePaperLiteralRule = {
   },
 };
 
+// Regexes for the BitmapAnd-toxic SQL combination. The matcher is regex-only
+// over the flattened string value of a template literal (or string-concat
+// chain). We do not parse SQL — the bridge-paper precedent and the existing
+// canary tests under `backend/tests/canaries/` use the same shape-only
+// approach.
+//
+// CUSTOM_ID_RE: `\b\w+\.custom_id\b` — any alias-qualified `custom_id`
+//   reference (`cj.custom_id`, `c.custom_id`, etc.). Unaliased bare
+//   `custom_id` is excluded by design: every PEvO callsite to date uses an
+//   alias (`cj` for `${T.customJson}`), and the unaliased shape would create
+//   false positives on jsonb path docstrings and unrelated identifier tokens.
+//
+// BLOCK_NUM_FLOOR_RE: `\b(?:\w+\.)?block_num\s*>=` — `block_num >=`
+//   with or without an alias prefix, allowing optional whitespace between
+//   the column and the operator. The toxic predicate is the inclusive
+//   floor specifically; strict `block_num >` (used in
+//   notification-queries.ts for windowed deltas where the floor is the
+//   last-seen-block cursor, not a genesis floor) is excluded — the planner
+//   pathology in `activeAccreditationsCteBody`'s docstring is specific to
+//   the `>=` predicate against the small `custom_id`-selective row set.
+const CUSTOM_ID_RE = /\b\w+\.custom_id\b/;
+const BLOCK_NUM_FLOOR_RE = /\b(?:\w+\.)?block_num\s*>=/;
+
+// Flatten a node's string value the way the rule's matcher sees it: all
+// quasi text concatenated with a placeholder marker for substitutions, and
+// nested string concats walked recursively. The placeholder marker is `\0`
+// (NUL) — a character that cannot appear in source-code template-literal
+// cooked text and so cannot accidentally cross a predicate boundary
+// between two quasis. Anything outside the resolvable forms returns null.
+//
+// Recognised forms:
+//   - StringLiteral:                 (the string value)
+//   - TemplateLiteral (any/no interp): cooked quasis joined by \0
+//   - BinaryExpression '+':          recursive on left + right, no separator
+//                                     (mirrors JS-runtime string concat)
+//   - TS-only wrapper nodes:         unwrap (TSAsExpression, TSNonNullExpression,
+//                                     TSTypeAssertion) and recurse
+// Anything outside these forms returns null.
+function flattenSqlString(node) {
+  if (!node) return null;
+  if (
+    node.type === 'TSAsExpression'
+    || node.type === 'TSNonNullExpression'
+    || node.type === 'TSTypeAssertion'
+  ) {
+    return flattenSqlString(node.expression);
+  }
+  if (node.type === 'Literal' && typeof node.value === 'string') {
+    return node.value;
+  }
+  if (node.type === 'TemplateLiteral') {
+    // Join all cooked quasi text with a NUL placeholder where each
+    // substitution sits. This preserves predicate boundaries: a quasi that
+    // ends mid-token (`AND cj.${col} >= $1`) does not let a regex skip
+    // across the substitution gap and produce a false positive.
+    return node.quasis.map((q) => q.value.cooked).join('\0');
+  }
+  if (node.type === 'BinaryExpression' && node.operator === '+') {
+    const left = flattenSqlString(node.left);
+    if (left === null) return null;
+    const right = flattenSqlString(node.right);
+    if (right === null) return null;
+    return left + right;
+  }
+  return null;
+}
+
+const noCustomIdBlockNumFloorRule = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description:
+        'Forbid combining `<alias>.custom_id` with a `block_num >=` predicate in the same SQL fragment. The combination forces a BitmapAnd plan against hafsql.operation_custom_json_view that scans tens of millions of operation rows. Drop the `block_num >=` floor; `custom_id = $appTag` is selective enough on Mahdi\'s HAF.',
+    },
+    schema: [],
+    messages: {
+      forbidden:
+        'SQL fragment combines `<alias>.custom_id` with `block_num >=`. This forces a BitmapAnd plan against operation_custom_json_view on the live HAF and blows the walker budget. Drop the `block_num >=` floor; `custom_id = $appTag` is selective enough. See the docstring on `activeAccreditationsCteBody` and agents/docs/solutions/conventions/convention-sweep-syntactic-form-misses-semantic-siblings-2026-05-21.md.',
+    },
+  },
+  create(context) {
+    // No file-level allowlist — the BitmapAnd pathology is a property of the
+    // SQL plan against `operation_custom_json_view`, and that view has the
+    // same plan-shape risk no matter which `.ts` file the query lives in.
+    // Existing sites that genuinely need the floor (per-account /
+    // per-orcid / idempotency-key lookups whose additional JSONB predicates
+    // make the planner pick a different path) suppress the rule with an
+    // `eslint-disable-next-line` comment carrying a rationale anchored on
+    // the route handler or helper symbol.
+    const reported = new WeakSet();
+
+    function check(node) {
+      if (reported.has(node)) return;
+      const flat = flattenSqlString(node);
+      if (flat === null) return;
+      if (!CUSTOM_ID_RE.test(flat)) return;
+      if (!BLOCK_NUM_FLOOR_RE.test(flat)) return;
+      context.report({ node, messageId: 'forbidden' });
+      markDescendants(node, reported);
+    }
+
+    return {
+      Literal: check,
+      TemplateLiteral: check,
+      BinaryExpression: check,
+    };
+  },
+};
+
 const pevoPlugin = {
   meta: { name: 'pevo', version: '0.0.0' },
   rules: {
     'no-bridge-paper-literal': noBridgePaperLiteralRule,
+    'no-custom-id-block-num-floor': noCustomIdBlockNumFloorRule,
   },
 };
 
@@ -218,10 +340,11 @@ export default tseslint.config(
       ],
       'no-console': 'off',
       'pevo/no-bridge-paper-literal': 'error',
+      'pevo/no-custom-id-block-num-floor': 'error',
     },
   },
 );
 
-// Exported so unit tests under tests/eslint/ can drive the rule with
-// ESLint's RuleTester directly without re-deriving its shape.
-export { noBridgePaperLiteralRule };
+// Exported so unit tests under tests/eslint/ can drive the rules with
+// ESLint's RuleTester directly without re-deriving their shape.
+export { noBridgePaperLiteralRule, noCustomIdBlockNumFloorRule };

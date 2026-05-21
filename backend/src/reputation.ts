@@ -273,6 +273,7 @@ async function loadReputationWeights(): Promise<ReputationWeights> {
     await client.query('SET LOCAL statement_timeout = 2000');
 
     const exists = await client.query(
+      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- loadReputationWeights existence probe: bounded by a 2s LOCAL statement_timeout, runs at most once per reputation cycle; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT 1 FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
          AND cj.json LIKE '%update_weights%'
@@ -289,6 +290,7 @@ async function loadReputationWeights(): Promise<ReputationWeights> {
 
     await client.query('SET LOCAL statement_timeout = 5000');
     const result = await client.query(
+      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- loadReputationWeights latest-update read: bounded by a 5s LOCAL statement_timeout, runs at most once per reputation cycle; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT cj.json FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
          AND cj.json::jsonb ->> 'action' = 'update_weights'
@@ -380,6 +382,7 @@ export async function computeReputationBatch(
     const prevJson = prevScores ?? batchMapToScoreRecord(await getBatchReputationMap());
 
     const result = await pool.query(
+      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- computeReputationDelta: the batch reputation CTE bundles claim_events, accred_ranked, revote tallies, etc., each scoped by `target_users` / `target_authors` predicates that narrow well below the BitmapAnd-toxic threshold; runs as a scheduled background job not a request hot path; pending audit per the BitmapAnd-floor sweep follow-up
       `WITH
 
       -- Cast weight parameters once

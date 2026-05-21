@@ -52,6 +52,7 @@ async function fetchAccreditationsFromHaf(
     const authIdx = paramIdx++;
     params.push(config.accreditationAuthorities);
 
+    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- fetchAccreditationsFromHaf: GET /api/accreditations listing wrapped in a 60s `hafCache.getOrSet`; the row set is bounded by the accreditation-authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     const dataResult = await pool.query(`
       WITH ranked AS (
         SELECT
@@ -132,6 +133,7 @@ async function fetchAccreditationStatusFromHaf(username: string) {
 
   try {
     const result = await pool.query(
+      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- fetchAccreditationStatusFromHaf: per-account read further narrowed by `account = $username` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT cj.json, cj.id AS event_id FROM ${T.customJson} cj
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')

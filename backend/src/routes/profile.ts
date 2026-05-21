@@ -34,6 +34,7 @@ async function getAccreditationFromHaf(username: string) {
     // See SEC-AUTH-BYPASS. Mirrors the same filter in accreditations.ts and
     // orcid.ts's getExistingAccreditation.
     const result = await pool.query(
+      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- profile-page accreditation read: per-account lookup further narrowed by `account = $username` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT cj.json, cj.id AS event_id FROM ${T.customJson} cj
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')

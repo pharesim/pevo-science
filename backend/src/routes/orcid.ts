@@ -1856,6 +1856,7 @@ async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string |
   // Latest authorized on-chain accredit op carrying this ORCID. Filter by
   // accreditationAuthorities so a self-broadcast custom_json can't poison the check.
   const recent = await pool.query<{ account: string | null }>(
+    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- getOrcidAccount recent-binding probe: per-orcid lookup further narrowed by `orcid = $orcidId` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT cj.json::jsonb ->> 'account' AS account
      FROM ${T.customJson} cj
      WHERE cj.custom_id = $2
@@ -1876,6 +1877,7 @@ async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string |
   // 'revoke' clears it, and a subsequent 'accredit' with a different orcid
   // means the account rebound to another identity (freeing this orcid).
   const status = await pool.query<{ action: string | null; orcid: string | null }>(
+    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- getOrcidAccount status re-check: per-account lookup further narrowed by `account = $account` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT cj.json::jsonb ->> 'action' AS action,
             cj.json::jsonb ->> 'orcid' AS orcid
      FROM ${T.customJson} cj
@@ -1904,6 +1906,7 @@ async function getExistingAccreditation(username: string): Promise<{
   // by the target account's own posting key) cannot masquerade as a real
   // accreditation and unlock the /link flow. See SEC-AUTH-BYPASS.
   const result = await pool.query(
+    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- getExistingAccreditation: per-account read further narrowed by `account = $username` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT cj.json FROM ${T.customJson} cj
      WHERE cj.custom_id = $2
        AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')

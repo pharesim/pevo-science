@@ -41,3 +41,22 @@ Add an ESLint rule modelled after the existing `pevo/no-bridge-paper-literal` pr
 - Precedent: `backend/eslint.config.mjs` already defines `noBridgePaperLiteralRule` and exports it for RuleTester drive-by-import in `backend/tests/eslint/no-bridge-paper-literal.test.ts`. Match that structure exactly.
 - The rule should be a structural check on string-literal values, not a SQL parser. PEvO's existing canary tests (`notification-queries-lateral-guard-canary.test.ts` and friends) use the same shape-only approach.
 - Background: see `agents/docs/solutions/conventions/convention-sweep-syntactic-form-misses-semantic-siblings-2026-05-21.md` for the audit-discipline lesson that motivated this task, and commits `285e7c14` + `e31c984f` for the technical reasoning on why the floor is plan-toxic.
+
+## Audit findings (rule fires on existing sites)
+
+Running the new rule against `backend/src/` surfaces 15 pre-existing toxic-shape callsites. None of them match the original-bug shape exactly (CTE-body builder against the unconstrained accreditation namespace); each carries an additional selective JSONB predicate (per-account `account = $username`, per-orcid `orcid = $orcidId`, per-paper `root_author + root_permlink`, per-key `idempotency_key = $key`, scheduled-job statement_timeout bounds, etc.) that the original `activeAccreditationsCteBody` case lacked. The planner *may* favor the selective JSONB predicate path on each of these, but the BitmapAnd-toxic shape is still present as the static-SQL fingerprint, and a planner-stats shift on Mahdi's HAF could flip any of them.
+
+For this task, each site was suppressed with an `eslint-disable-next-line pevo/no-custom-id-block-num-floor` directive carrying a rationale anchored on the route handler or helper symbol (no task slugs, no SHAs, no line numbers — per the comment-anchoring convention). The rule lands as a structural guard for new code without forcing per-site SQL surgery in this task.
+
+[TODO Architect] File follow-up tasks (or one consolidated sweep task) to audit and either fix or permanently approve the disable at each of these 15 sites:
+
+- `backend/src/accreditation.ts` — `getAccreditedSet` batch lookup with `account IN (...)` further-narrowing.
+- `backend/src/consent-ops.ts` — `fetchConsentOps` with `root_author`, `root_permlink`, and claimed-signer IN-list further-narrowing.
+- `backend/src/hafsql.ts` — `authorshipClaimsCteBody` with optional `scope` (claimer or paper-key) JSONB predicates.
+- `backend/src/lib/idempotency.ts` — three sites: `findOpByIdempotencyKey`, `findAccreditationBroadcastByIdempotencyKey`, `findExistingAccreditation`.
+- `backend/src/reputation.ts` — three sites: `loadReputationWeights` existence probe (2s LOCAL statement_timeout), `loadReputationWeights` latest-update read (5s LOCAL statement_timeout), `computeReputationDelta` batch CTE (background job, multiple sub-CTEs each scoped by `target_users`/`target_authors`).
+- `backend/src/routes/accreditations.ts` — two sites: `fetchAccreditationsFromHaf` listing (60s `hafCache.getOrSet`) and `fetchAccreditationStatusFromHaf` per-account read.
+- `backend/src/routes/orcid.ts` — three sites: `getOrcidAccount` recent-binding probe (per-orcid), `getOrcidAccount` status re-check (per-account), `getExistingAccreditation` per-account read.
+- `backend/src/routes/profile.ts` — profile-page accreditation read (per-account).
+
+The fix shape per site is the same as `285e7c14` / `e31c984f`: drop the `cj.block_num >= $genesis` predicate (the additional JSONB filter is already selective enough; the genesis floor is by-construction inert because pre-genesis PEvO-namespace custom_jsons cannot exist), then remove the disable directive. Each site needs its own behavioral test pass against a real HAF to confirm the row count and ordering are unchanged.
