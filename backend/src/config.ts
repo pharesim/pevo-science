@@ -58,7 +58,7 @@ export function parseHafWalkerBudget(env: string | undefined): number {
 
 export const config = {
   port: parseInt(process.env.PORT || '3001', 10),
-  hiveApiNodes: (process.env.HIVE_API_NODES || 'https://api.hive.blog,https://api.deathwing.me,https://anyx.io')
+  hiveApiNodes: (process.env.HIVE_API_NODES || 'https://api.hive.blog,https://api.deathwing.me,https://anyx.io,https://api.openhive.network,https://rpc.mahdiyari.info,https://hive.atexoras.com:2096,https://api.c0ff33a.uk')
     .split(',')
     .map((n) => n.trim())
     .filter(Boolean),
