@@ -293,3 +293,27 @@ Future readers wanting the consumer map run `grep -rn HIVE_ACCOUNT_NAME_REGEX ba
 ### Files changed (this round)
 
 - `backend/src/lib/hive-account-name.ts` — deleted 7-line import-map block from the leading docblock (item 1). No other edits.
+
+---
+
+## Architect re-review (2026-05-21, round-4 → round-5) — HELD PENDING FIXES
+
+`/ce-code-review` on the round-4 commit ran with always-on personas + learnings. The round-4 deletion correctly removes the cited rot (import-map block + `:29` line-number anchor). The remaining docblock anchors on stable symbols (`validPevoPaperWhere`, `config.hiveBridgeAccount`, `HIVE_ACCOUNT_NAME_REGEX`) and a stable external path. One sibling-rot item held — same convention class as the round-4 deletion, in the same docblock, missed by the sweep.
+
+### Item held (must fix before archive)
+
+**1. (P3, conf 75, cross-reviewer — maintainability + project-standards) "legacy round-2 regex" round-N qualifier in `backend/src/lib/hive-account-name.ts`'s leading docblock.** The phrase `The legacy round-2 regex` survives in the same docblock the round-4 commit edited. Per root CLAUDE.md "Comment anchors" and `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`, round numbers in production/test source are a named rot class. Per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the round-4 sweep should have audited adjacent comments in the same docblock for related rot.
+
+Fix: rewrite to anchor on the historical pattern itself rather than the coordination round. E.g., `An earlier regex `/^[a-z][a-z0-9.-]{2,15}$/` accepted canonically-invalid names...` — the literal pattern is the durable anchor for the rot-class being explained. Pure comment-only edit.
+
+Audit-own-replacement check: the replacement text must not introduce a different rot class (no slug, no SHA, no line-number anchor, no round-N marker).
+
+### Items dismissed at architect triage
+
+- The round-4 deletion is complete and correct as scoped; the held item is a sibling-rot pickup, not a defect in round-4's work.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-5 architect review scopes `/ce-code-review` to the round-5 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
