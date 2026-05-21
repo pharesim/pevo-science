@@ -164,3 +164,43 @@ Re-disposition:
 
 No raw byte-equality remaining at any `.hive` lookup site. Wrapper adoption is exhaustive.
 
+## Architect re-review (2026-05-21, round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-2 commit `74ab7647` with 5 reviewer personas (correctness on Opus; testing, maintainability, project-standards on Sonnet; learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO `CLAUDE.md`). All 6 round-2 hold items land correctly: production `hafsql.ts` structural-safety comment is accurate (the direct-integer-subscript fail-soft claim holds against Postgres jsonb semantics); the SQL-shape canary for `authorshipClaimsCteBody` pins both LOWER/TRIM conjuncts; the `subqueryShape` rewrite mirrors production; scenario 4 admits the uppercase-co-author exclusion correctly; Carol unconditional assertion is sound; route-layer whitespace coverage and off-charset reject are well-scoped. Five-of-five reviewers concur that the code-side fixes are correct.
+
+Cross-reviewer convergence (testing + project-standards + correctness-residual + learnings convention #2 on structural-mirror staleness) surfaced one comment-accuracy defect in the new code that overstates the test's mutation-kill reach against production.
+
+### Items to address (one round-3 commit)
+
+**1. (P2, anchor 75, cross-reviewer convergence) `backend/tests/hafsql.test.ts` — two new comments overstate mutation-kill reach against the production CTE.** Two related defects introduced by this round's hold-fixes:
+
+   (a) The scenario-4 inline comment near the new uppercase-`'Bob'` test case claims "Targeted-revert canary: dropping the LOWER(TRIM(...)) wrap from the production CTE admits 'bob' here and turns this assertion red." FALSE — the test executes a constant `subqueryShape` string locally, NOT the production CTE in `reputation.ts:644-652`. A production-only revert leaves the test green. The test header at lines 779-783 already acknowledges this is a structural mirror; the scenario-4 comment contradicts that framing.
+
+   (b) The header comment block above the rewritten `subqueryShape` constant says "The pre-fix shape (`a ->> 'hive' = plv.voter`) is preserved as a structural-revert canary below" — but no second `subqueryShape` variant exists in the file. The "preserved below" claim is unsubstantiated.
+
+   Per `agents/docs/solutions/conventions/structural-mirror-test-silent-staleness-on-wrapper-adoption-2026-05-20.md` (filed FROM this exact task surface): wrapper adoption with structural-mirror tests must EITHER (a) honestly frame the mirror's reach OR (b) close the gap with a source-anchor canary tied to the production CTE.
+
+   **Implementer's choice between two fix shapes:**
+
+   - **Fix shape A (comment-only honesty, cheaper):** Reword both comments to state honestly that the test pins the LOCAL `subqueryShape` constant's behavior, not the production CTE. Drop the production-CTE-revert claim. Drop the "preserved canary below" framing. The test's actual mutation-kill reach is "if `subqueryShape` drifts from production and is re-derived, the test catches the drift only via the re-derivation." ~5-10 LOC change.
+
+   - **Fix shape B (close the gap with a source-anchor canary):** Keep the existing comments OR slightly rephrase them, AND add a sibling test that grep-asserts the `LOWER(TRIM(...))` substring appears in `reputation.ts:644-652` production source (mirror of the existing `excludeSelfReviewWhere-callsite-canaries.test.ts` pattern). This delivers the mutation-kill the existing comments claim. ~15-25 LOC change + 1 new test.
+
+   Either shape is acceptable; pick the one that fits the file's pattern.
+
+### Items dismissed at architect triage (recorded for transparency, not held)
+
+- Whitespace-padded route tests don't independently isolate trim from lowercase (testing F2, conf 40) — dismissed per PEvO memory `feedback_dismiss_preemptive_test_hardening`. Trim-half mutation IS covered by current tests; lowercase-only mutation is theoretical-only.
+- Carol unconditional assertion catches binary self-block-fires-for-everyone but doesn't actively exercise normalization correctness (Carol's name doesn't collide with author entries). Adequate for the over-exclusion concern the hold item was about; the Bob mid-case + whitespace tests carry the normalization coverage.
+
+### Architect notes (no implementer action)
+
+- Pre-existing Round-N rot in adjacent code at `backend/tests/hafsql.test.ts:740` ("Round-3 hold #1") and `backend/tests/routes/retract.test.ts:317` (describe with "round-2 item 2") was surfaced by maintainability review. Pre-existing at the diff base, NOT introduced by this commit. Will be noted in the eventual archive entry as forward-looking comment-anchor sweep targets per the convention `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`. Not blocking; not in scope for round-3.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only (round-2's content fixes are already reviewed clean).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
