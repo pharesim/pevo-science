@@ -43,7 +43,6 @@ import {
   authorsWithSupersessionSelect,
   retractedPapersCteBody,
   buildWith,
-  getCachedGenesisBlock,
   validPevoPaperWhere,
   validReviewWhere,
   excludeSelfReviewWhere,
@@ -102,7 +101,14 @@ async function batchResolveVotes(
        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC`,
       pairParams,
     ),
-    // All revotes for APP_TAG
+    // All revotes for APP_TAG. The `block_num >= $genesis` floor was dropped
+    // (matching the 285e7c14 fix on `activeAccreditationsCteBody`): combining
+    // `custom_id = $appTag` with `block_num >= $genesis` triggers a BitmapAnd
+    // plan that scans tens of millions of operation rows on
+    // `hive_operations_block_num_id_idx`. `custom_id` alone is selective enough
+    // on Mahdi's HAF (the pevotest namespace has on the order of dozens of
+    // revote rows); pre-genesis pevotest custom_jsons do not exist by
+    // construction, so the floor was redundant and plan-toxic.
     pool.query(
       `SELECT cj.json::jsonb ->> 'author' AS author,
               cj.json::jsonb ->> 'permlink' AS permlink,
@@ -111,9 +117,8 @@ async function batchResolveVotes(
               cj.block_num
        FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
-         AND cj.json::jsonb ->> 'action' = 'revote'
-         AND cj.block_num >= $2`,
-      [config.appTag, getCachedGenesisBlock()],
+         AND cj.json::jsonb ->> 'action' = 'revote'`,
+      [config.appTag],
     ),
   ]);
 
@@ -2983,7 +2988,15 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
 
     const latestVersion = versions.length > 0 ? versions[versions.length - 1].version_number : 1;
 
-    // Always query revote custom_json ops for this paper
+    // Always query revote custom_json ops for this paper. The
+    // `block_num >= $genesis` floor was dropped to match the 285e7c14 fix on
+    // `activeAccreditationsCteBody`: combining `custom_id = $appTag` with
+    // `block_num >= $genesis` triggers a BitmapAnd plan that scans tens of
+    // millions of operation rows on `hive_operations_block_num_id_idx`. This
+    // query runs sequentially after the parallel batch, so its full latency
+    // adds to the per-request walker budget; on the live HAF it exhausted the
+    // 3000ms budget and surfaced 503 SERVICE_UNAVAILABLE on the enrichment
+    // endpoint (reviews, voters, claims all silently empty on the SPA).
     const revoteResult = await pool.query(
       `SELECT cj.required_posting_auths ->> 0 AS voter,
               (cj.json::jsonb ->> 'weight')::int AS weight,
@@ -2995,9 +3008,8 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
          AND cj.json::jsonb ->> 'action' = 'revote'
          AND cj.json::jsonb ->> 'author' = $2
          AND cj.json::jsonb ->> 'permlink' = $3
-         AND cj.block_num >= $4
        ORDER BY cj.block_num DESC`,
-      [config.appTag, author, permlink, getCachedGenesisBlock()],
+      [config.appTag, author, permlink],
     );
     const revoteMap = new Map<string, { weight: number; timestamp: Date; block_num: number; version: number }>();
     for (const r of revoteResult.rows) {
