@@ -153,3 +153,5 @@ const recoverLimiter = rateLimit({
 | `accreditation.ts accreditationVerifyLimiter` | IP | ✓ | ❌ (token claim, not credential probe) | ❌ | Correct adoption — IP-keyed one-shot ceremony; HAF outage / Redis pre-INCR transients are the legitimate-user-lockout surface; 256-bit token entropy is the brute-force rate-bound |
 
 The grid is the discriminator-in-practice: every site with `skipFailedRequests: true` is JWT-required AND has a concrete legitimate-user-lockout DoS surface that motivates the adoption.
+
+This grid covers the `skipFailedRequests` adoption decision only. Where the body or URL validator sits relative to `verifyHiveSignature` on a `skipFailedRequests: true` route is a separate concern governed by the limiter's key class — URL-keyed limiters want the validator BEFORE auth (cheap pre-auth rejection forecloses ECDSA + Postgres-lookup amplification), `byAccount`-keyed limiters want the validator AFTER auth (the limiter's `keyFn` reads the auth-extracted username). See `agents/docs/solutions/conventions/validator-limiter-ordering-depends-on-key-class-2026-05-21.md` for the placement rule and the route-shape examples.
