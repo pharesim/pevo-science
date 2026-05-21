@@ -37,6 +37,10 @@ RUN cd backend && npm install --omit=dev --ignore-scripts
 COPY --from=build /app/backend/dist ./backend/dist
 COPY --from=build /app/backend/data ./backend/data
 
+# Migrations are the schema source of truth; verifyAppDbMigrations() reads
+# this dir on boot.
+COPY backend/migrations ./backend/migrations
+
 # Copy compiled frontend (Vite build output)
 COPY --from=build /app/backend/public ./backend/public
 
