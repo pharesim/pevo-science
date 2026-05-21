@@ -123,3 +123,37 @@ All 6 hold items landed in a single backend commit. Per-item summary:
 - `npm run typecheck:src` → clean
 
 7 pre-existing failures on `papers-canonical-orcid-resolution.test.ts` (case 4b / `?version=N` / `metadata_restored` returning 503) are unrelated to this round — they reproduce identically at HEAD before my changes and look like transient HAF unavailability in the shared test infra.
+
+---
+
+## Architect re-review (2026-05-21, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran with the always-on personas + security/adversarial/data-migrations (skipped — no migration)/reliability/kieran-typescript. Round-2's six hold items land correctly: `CHAIN_ORCID_BTRIM_CHARSET = " \\t\\n\\r\\x0B\\f"` produces the documented bytes (`20 09 0A 0D 0B 0C`) on real Postgres; the three SQL sites + JS sibling adoption are consistent; new real-Postgres byte-level canary, parity matrix VT-extensions, header rewrite, and JSDoc gap docs all hold up. One item held — cross-component parity break the round-2 exhaustive-audit claim missed.
+
+### Item held (must fix before archive)
+
+**1. (P1, conf 90, adversarial — confirmed against the production source) `reputation.ts` ORCID auto-accept arm not widened, recreating the cross-surface parity break this task was filed to close.** A structurally-identical ORCID auto-accept arm to the one widened at `authorshipClaimsCteBody` in `hafsql.ts` lives in `reputation.ts` (search by symbol: the CTE inside `getCurrentReputationScores` or its sibling helpers that resolves co-author claim acceptance for reputation accrual). It stays a raw `(c.json_metadata -> ... ->> 'orcid') = co.orcid` equality compare.
+
+Reproducer: broadcaster posts `{orcid: '\t<attested>'}` for accredited co-author alice. Read surfaces (`/api/papers`, `/api/papers/:author/:permlink`, claims API, paper-detail) report claim auto-accepted via the widened `hafsql.ts` arm. The reputation cycle (1 day in testing, 7 days in production target) runs the `reputation.ts` arm with raw `=`, the tab-padded value byte-mismatches against accredited canonical, alice's claim is NOT counted in reputation accrual. Per-cycle drift: alice gets zero co-author reputation credit for a paper publicly listed as accepted; reapplies every cycle.
+
+This is exactly the `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` failure mode the round-2 task narrative claimed to close. The round-2 signal block enumerated 3 SQL sites + 1 JS site but the convention's grep step at signal-block-write-time was not run for the sibling reputation module.
+
+Fix shape:
+- Widen the reputation-side ORCID auto-accept arm with `aa.orcid = BTRIM(<chain orcid expression>, E'${CHAIN_ORCID_BTRIM_CHARSET}')` mirroring the `authorshipClaimsCteBody` pattern. Import `CHAIN_ORCID_BTRIM_CHARSET` from `hafsql.ts`.
+- Re-run the dual-grep audit at signal-block-write-time per rule 12 of the convention:
+  - SQL side: `grep -rnE "BTRIM\\b" backend/src/ ; grep -rnE "->>[[:space:]]*'orcid'" backend/src/`
+  - JS side: `grep -rn "\\.trim(" backend/src/ ; grep -rn "chainOrcid" backend/src/`
+  - Verify every BTRIM-on-orcid site imports `CHAIN_ORCID_BTRIM_CHARSET`; every JS chain-orcid trim site uses `trimAsciiCWhitespace`.
+- Add a behavioral test pinning the abuse vector: feed `{orcid: '\t<attested>'}` for accredited alice through a reputation-cycle path (synthetic-VALUES + real Postgres if real-HAF is impractical) and assert alice's reputation accrues credit for the paper post-fix. A targeted revert of the new BTRIM widening on this arm must turn the assertion red.
+
+### Items dismissed at architect triage
+
+- **(P2, testing) `authorshipClaimsCteBody` ORCID auto-accept arm widening lacks a SQL-shape canary and a behavioral test.** Dismissed per preemptive-test-hardening posture — the failure mode is a hypothetical targeted revert of one of six sites; the convention's per-layer canary requirement is satisfied collectively across the real-Postgres byte canary + parity matrix.
+- **(P2, testing) `claimedOrcidForCompare` audit-emission path lacks a whitespace-padded behavioral test pinning the raw-vs-normalized field-shape asymmetry.** Dismissed per preemptive-test-hardening; the inline JSDoc at the derivation site documents the asymmetry.
+- **(P3 advisory, adversarial) `papers.ts` JSDoc claim of lockstep parity between `trimAsciiCWhitespace` and `computeSupersession.trim()` is technically inaccurate on extended Unicode whitespace** (narrow ASCII C-whitespace ≠ broad ECMA-262). For NBSP-prefixed claims, audit fires + override applies + discrepancy=false. The architect-acknowledged residual gap documented in the JSDoc gap docs covers operational severity; PEvO has no known broadcaster input shape with NBSP/BOM/U+2028/U+2029.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
