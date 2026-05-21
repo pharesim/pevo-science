@@ -516,4 +516,99 @@ describe('GET /api/papers/:author/:permlink — canonical-root forward-walker de
 
     warnSpy.mockRestore();
   });
+
+  it('mid-step-2 wall-clock abort skips the canonical-root cache write', async () => {
+    // Pins the post-forward-verify abort re-check: when the wall-clock
+    // budget trips DURING step 2 (forward verify), the forward walker
+    // swallows its own abort and returns whatever chain it has
+    // accumulated so far — possibly a truncated chain that does not
+    // contain the leaf. Without re-checking `signal.aborted` between the
+    // forward-walker return and the membership check, a legitimate
+    // deep-chain leaf would evaluate `isMember === false` and the
+    // negative-result branch would cache `{root: null}` for the full TTL,
+    // poisoning the entry for the next 30 minutes on a degraded HAF that
+    // has since recovered.
+    //
+    // Setup: the reproducer chain is admitted by the forward walker, so
+    // under normal conditions /api/papers/carol/v3 resolves to alice/p1
+    // and caches the mapping (pinned by the reproducer spec above). Here
+    // we shrink `hafWalkerWallClockMs` to 1ms and stall the
+    // forward-walker SQL probes long enough for the abort to fire mid
+    // step 2. The backward unconstrained walk completes synchronously
+    // against the mocked responder so the pre-step-2 abort guard does
+    // not pre-empt — the abort lands inside step 2, exercising the
+    // post-step-2 re-check.
+    const originalBudget = config.hafWalkerWallClockMs;
+    (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 1;
+    try {
+      const aliceMeta = pevoPaperJsonMeta(['alice', 'bob', 'carol']);
+      const bobMeta = pevoPaperJsonMeta(['bob']);
+      const carolMeta = pevoPaperJsonMeta(['carol']);
+      const aliceRow = pevoPaperRow('alice', 'p1', ['alice', 'bob', 'carol']);
+      const bobRow = pevoPaperRow('bob', 'v2', ['bob'], { continues: { author: 'alice', permlink: 'p1' } });
+      const carolRow = pevoPaperRow('carol', 'v3', ['carol'], { continues: { author: 'bob', permlink: 'v2' } });
+
+      installResponder(async (sql, params) => {
+        if (isBackwardWalkContinuesProbe(sql)) {
+          const a = params[0];
+          const p = params[1];
+          if (isInitialBackwardProbe(sql)) {
+            if (a === 'carol' && p === 'v3') {
+              return { rows: [{ author: 'carol', json_metadata: carolRow.json_metadata, cont_author: 'bob', cont_permlink: 'v2' }] };
+            }
+            return { rows: [] };
+          }
+          if (a === 'bob' && p === 'v2') {
+            return { rows: [{ cont_author: 'alice', cont_permlink: 'p1' }] };
+          }
+          if (a === 'alice' && p === 'p1') {
+            return { rows: [] };
+          }
+          return { rows: [] };
+        }
+        if (isHeadAuthorsLookup(sql)) {
+          const a = params[0];
+          if (a === 'alice') return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+          if (a === 'bob') return { rows: [{ author: 'bob', json_metadata: bobMeta }] };
+          if (a === 'carol') return { rows: [{ author: 'carol', json_metadata: carolMeta }] };
+          return { rows: [] };
+        }
+        if (isForwardWalkContinuationProbe(sql)) {
+          // Stall long enough for the wall-clock to fire on the next
+          // iteration's abort check inside the forward walker. The walker
+          // then breaks out, returning the chain accumulated so far.
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const parentAuthor = params[0];
+          const parentPermlink = params[1];
+          if (parentAuthor === 'alice' && parentPermlink === 'p1') {
+            return { rows: [{ author: 'bob', permlink: 'v2', json_metadata: bobRow.json_metadata, block_num: 200 }] };
+          }
+          if (parentAuthor === 'bob' && parentPermlink === 'v2') {
+            return { rows: [{ author: 'carol', permlink: 'v3', json_metadata: carolRow.json_metadata, block_num: 300 }] };
+          }
+          return { rows: [] };
+        }
+        if (isPaperDetailFetch(sql)) {
+          const a = params[0];
+          if (a === 'carol') return { rows: [carolRow] };
+          if (a === 'alice') return { rows: [aliceRow] };
+          if (a === 'bob') return { rows: [bobRow] };
+          return { rows: [] };
+        }
+        return { rows: [] };
+      });
+
+      await request(app).get('/api/papers/carol/v3');
+
+      // The load-bearing assertion: the abort occurred inside step 2,
+      // so no canonical-root cache entry should have been written for
+      // the leaf. A regression that removes the post-step-2 re-check
+      // would cache `{ root: null }` here and poison the entry for 30
+      // minutes.
+      const cached = await hafCache.get('canonical-root:carol:v3');
+      expect(cached).toBeUndefined();
+    } finally {
+      (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
+  });
 });

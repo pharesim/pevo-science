@@ -2253,7 +2253,7 @@ async function findCanonicalRoot(
     // depth cap is the attacker-amplifier backstop; cycle detection is
     // the structural short-circuit on top.
     const visited = new Set<string>([
-      memoKey(author, permlink),
+      memoKey(leafAuthorKey, leafPermlinkKey),
       memoKey(currentAuthor, currentPermlink),
     ]);
 
@@ -2380,6 +2380,29 @@ async function findCanonicalRoot(
       memo,
       signal,
     );
+
+    // Post-forward-verify abort re-check. The forward walker swallows its
+    // own wall-clock abort by returning whatever chain it has accumulated
+    // so far (possibly just the candidate root). If we fall through to the
+    // membership check with a truncated chain, a legitimate deep-chain
+    // leaf evaluates `isMember === false` and the negative-result branch
+    // would cache `{root: null}` for the full TTL. Skip the cache write on
+    // abort, mirroring the pre-step-2 abort branch (and the mid-loop abort
+    // branch inside the backward walk).
+    if (signal?.aborted) {
+      logger.warn(
+        {
+          event: 'canonical_root_walker_wall_clock_exceeded',
+          startAuthor: author,
+          startPermlink: permlink,
+          forwardChainLength: forwardChain.length,
+          elapsedMs: Date.now() - startedAt,
+          budgetMs: config.hafWalkerWallClockMs,
+        },
+        'canonical-root walker aborted: wall-clock budget exceeded during forward verify',
+      );
+      return null;
+    }
 
     // ──────────────────────────────────────────────────────────────────
     // STEP 3 — Membership check (fail-CLOSED).
@@ -3237,6 +3260,14 @@ router.post('/:author/:permlink/invalidate', verifyHiveSignature, invalidateLimi
     // The unversioned key was already handled above; this prefix sweep
     // catches the v1, v2, ... variants.
     hafCache.invalidatePrefix(`paper-detail:${author}:${permlink}:v`),
+    // Canonical-root mappings are leaf-keyed (any leaf in any chain whose
+    // topology shifts post-edit can resolve differently). The leaf→root
+    // function lookup is cheap to recompute, so a broad app-wide prefix
+    // flush is safe. Without this, an edit to a mid-chain post's
+    // `pevo.continues` pointer or `pevo.authors[]` within Hive's 7-day
+    // edit window would refresh the detail cache immediately but leave
+    // the canonical-root mapping cached for up to the full TTL.
+    hafCache.invalidatePrefix('canonical-root:'),
   ]);
 
   sendOk(res, { message: 'Cache invalidated' });
