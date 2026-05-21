@@ -45,3 +45,25 @@ Let ioredis handle reconnection the way it was designed to:
 ## References
 
 - Audit chunk: `.context/audit-2026-04-21/chunk-3-reliability-reviewer.md` (P1: Redis client never recovers from transient disconnect).
+
+## Backend implementer signal (2026-05-21)
+
+Landed in `backend/src/redis.ts`:
+
+- `retryStrategy` now returns `Math.min(times * 200, 5000)` for every `times` (no `null` bailout). The `times > 3` short-circuit is gone, so ioredis keeps reconnecting indefinitely with backoff capped at 5s.
+- `close` handler no longer nulls `redis`. The cached reference survives the disconnect so callers keep talking to the same ioredis instance once it reconnects. `isRedisAvailable()` (which checks `status === 'ready'`) and `cache.ts`'s per-call try/catch already route to the in-memory fallback during the disconnect window.
+- Initial-connect `client.connect().catch(...)` no longer nulls the cached reference either, so a slow-start Redis comes online once it's reachable.
+- Status transitions are surfaced via dedicated `connect` / `ready` / `reconnecting` / `end` listeners through a `logStatusTransition()` helper that suppresses repeat events. One line per transition, `event=<name>`, `status=<status>`, optional `delay` on `reconnecting`. Per the project's "logging minimal" feedback: no per-command noise, no gauges on every tick.
+- Added `reconnectOnError` that returns `true` for `READONLY` errors so a primary/replica flip triggers a reconnect rather than returning errors until manual restart.
+- Queue-depth bound: ioredis v5 has no `commandsQueueMaxLength` option. The bound is enforced by the existing `maxRetriesPerRequest: 3` (commands reject after N retries, freeing their offline-queue slot) plus a 30s-interval watchdog that inspects the private `offlineQueue.length` and warns when it crosses 10_000 (logs a second info line when it drains back below). Watchdog is `unref()`'d so it doesn't keep the process alive; `disconnectRedis()` clears it on shutdown.
+
+Targeted tests landed in `backend/tests/redis-reconnect.test.ts` (3 specs, all green against real Redis):
+
+- `retryStrategy returns a finite backoff for every retry count` — probes `times` 1..5000 against a throwaway client's configured strategy; asserts every result is a positive bounded number.
+- `module-scoped client survives a synthetic close event without being nulled` — emits `close` on the shared client and asserts `getRedis()` returns the same instance.
+- `recovers from a real disconnect: disconnect(true) -> ready -> commands succeed` — calls `redis.disconnect(true)` on the live ioredis client, waits for the `ready` event to fire again, asserts identity is preserved, and round-trips a real SET/GET against the recovered connection. This is the integration-shaped real-path companion the acceptance criterion calls for.
+
+Existing Redis-touching suites (`tests/cache.test.ts`, `tests/lib/cache.test.ts`, `tests/lib/redis-scripts.test.ts` — 21 specs total) pass against the new client.
+
+Lint + typecheck clean.
+
