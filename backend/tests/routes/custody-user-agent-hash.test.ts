@@ -43,7 +43,13 @@ describe('hashUserAgentForAudit', () => {
       'curl/8.5.0',
       'okhttp/4.12.0',
     ];
-    const outputs = inputs.map((ua) => hashUserAgentForAudit(ua)!);
+    const outputs = inputs.map((ua) => {
+      const h = hashUserAgentForAudit(ua);
+      if (h === undefined) {
+        throw new Error(`unexpected undefined for input: ${JSON.stringify(ua)}`);
+      }
+      return h;
+    });
     expect(new Set(outputs).size).toBe(inputs.length);
   });
 

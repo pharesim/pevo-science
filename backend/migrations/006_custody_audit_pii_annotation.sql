@@ -29,7 +29,9 @@
 --     beyond a typical breach-discovery window; short enough that we are not
 --     hoarding even derived data indefinitely. A periodic cleanup job that
 --     drops rows older than 24 months is OUT OF SCOPE for this migration and
---     tracked as a follow-up TODO inside the task file.
+--     lives in the custody-audit retention-sweep job
+--     (`backend/src/jobs/custody-audit-retention-sweep.ts`), which ages
+--     pre-hash rows out under the 24-month retention window.
 --   - Deletion path on user request: the account-deletion sweep inside the
 --     `DELETE /api/settings/email` handler in `backend/src/routes/settings.ts`
 --     runs `DELETE FROM custody_audit_log WHERE username = $1` inside the same

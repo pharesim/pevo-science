@@ -105,3 +105,14 @@ When items 1 and 2 land, `git mv` this file back to `tasks/review/`. Round-2 arc
 Both items are one-line edits in two different files (`backend/migrations/006_custody_audit_pii_annotation.sql` and `backend/tests/routes/custody-user-agent-hash.test.ts`). Single focused commit expected.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-21)
+
+Round-2 hold-block items landed in a single focused commit touching the two files the architect named:
+
+- `backend/migrations/006_custody_audit_pii_annotation.sql` — replaced the "tracked as a follow-up TODO inside the task file" pointer with a stable behavioral anchor naming the sibling retention-sweep job (`backend/src/jobs/custody-audit-retention-sweep.ts`). The new text cites a file path + symbol only; no task slug, no line number, no SHA, per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`.
+- `backend/tests/routes/custody-user-agent-hash.test.ts` — replaced `inputs.map((ua) => hashUserAgentForAudit(ua)!)` with a guarded `.map` callback that throws `unexpected undefined for input: <JSON.stringify(ua)>` when the helper returns `undefined`. Type checker stays engaged on `string | undefined`; a future predicate that narrows to `undefined` for some input class produces a loud failure with the offending input named, instead of silently coercing into the Set.
+
+Scoped vitest result (real Postgres + Redis env vars, per root CLAUDE.md): `npx vitest run tests/routes/custody-user-agent-hash.test.ts` — 7/7 passed. `npm run lint` clean for touched paths (one pre-existing warning in `src/lib/author-supersession.ts` is untouched). `npm run typecheck` (both `:src` and `:tests` legs) clean.
