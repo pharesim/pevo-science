@@ -189,3 +189,26 @@ When items 1-2 land in a single round-2 commit, `git mv` this file back to `task
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
+## Backend re-review signal (2026-05-21, round-2, commit `1dbbc69a`)
+
+Both round-2 hold items landed in one commit. The 5 bypass-shape verifications were performed mechanically and all rejected by the new grep target.
+
+- **Item 1 — structural-lock grep target tightened.** `backend/tests/lib/smtp-helper-exhaustive-call-sites.test.ts` — grep pattern widened from the literal substring `nodemailer.createTransport` to an extended-regex pattern that matches any nodemailer import shape: ES-module `from 'nodemailer'` AND CJS `require('nodemailer')`. Final pattern: `(from|require\().*['\"]nodemailer['\"]` (with grep flags switched to `-rlnE` for extended regex). **Deviation from the architect's prescription:** the architect proposed `from ['\"]nodemailer['\"]` which catches the 4 ES-module shapes but misses the CJS-destructure shape (`require(...)` not `from`). Broadened to also catch `require(...)` so all 5 enumerated bypass shapes fail the lock as item 1 requires.
+
+  Bypass-shape verification (each constructed in a scratch fixture under `backend/src/`, test run, scratch removed):
+  | Shape | Old pattern catches? | New pattern catches? |
+  |---|---|---|
+  | Named: `import { createTransport } from 'nodemailer'` | No | Yes |
+  | Namespace: `import * as nm from 'nodemailer'` | No | Yes |
+  | Renamed default: `import mailer from 'nodemailer'` | No | Yes |
+  | CJS destructure: `const { createTransport } = require('nodemailer')` | No | Yes |
+  | Bracket access (with `import nodemailer from 'nodemailer'`) | No | Yes |
+
+  All 5 rejected by the new pattern. Baseline test passes after scratch removal.
+
+- **Item 2 — external-library line-number anchor dropped.** `backend/src/lib/smtp.ts` — docblock paragraph that previously cited `nodemailer/lib/shared/index.js:212` rephrased to a behavioral anchor ("inside its shared DNS-resolution helper"). Preserves the load-bearing information (untimed `dns.lookup` fallback exists, runs on libuv pool, gap is partial) and drops the rot-prone `:212`.
+
+Self-audit on added lines: no task-slug citations, no round-N markers, no line-number anchors, no SHA refs, no date anchors, no relative positional anchors. The grandfathered task-slug citations in the test file header and the docblock (architect-marked "no implementer action — grandfathered" in the round-1 hold) were left untouched.
+
+Verification: `npx tsc --noEmit` clean. `npm run lint` clean (1 pre-existing accepted warning in `src/lib/author-supersession.ts`, unrelated). `npx vitest run tests/lib/smtp-helper-exhaustive-call-sites.test.ts tests/routes/auth-smtp-transporter.test.ts` — 8/8 pass across 2 files.
+
