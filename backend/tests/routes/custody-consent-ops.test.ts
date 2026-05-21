@@ -305,10 +305,19 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
     });
 
     it('self-custody JWT → 403 FORBIDDEN (no password mechanism)', async () => {
+      // Send a fully-shaped body so the body-shape validator (which runs
+      // before the handler under the body-validate-before-limiter pattern)
+      // doesn't short-circuit with 400; the route then reaches the JWT
+      // custody-mode check and returns 403 for the self-custody arm.
       const res = await request(app)
         .post('/api/custody/fresh-auth')
         .set('Authorization', bearerFor(ALICE, 'self'))
-        .send({ password: ALICE_PASSWORD });
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'author_accept',
+          root_author: 'someroot',
+          root_permlink: 'somepermlink-v1',
+        });
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe('FORBIDDEN');
     });
