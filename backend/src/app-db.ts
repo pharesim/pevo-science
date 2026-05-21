@@ -1,6 +1,9 @@
 import pg from 'pg';
+import { readdir } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { BootFatalError } from './startup-checks.js';
 
 const { Pool } = pg;
 
@@ -24,119 +27,113 @@ export function getAppPool(): pg.Pool | null {
   return pool;
 }
 
-export async function initAppDb(): Promise<void> {
+// Migrations live at `backend/migrations/` relative to the compiled module
+// directory. The TS source ships from `backend/src/` and the compiled JS
+// from `backend/dist/`; resolving one level up from `__dirname` reaches
+// `backend/` in both layouts, where the `migrations/` sibling directory
+// lives. `__dirname` is the CommonJS-globals form used elsewhere in this
+// codebase (tsconfig sets `module: Node16` without `"type": "module"` in
+// package.json, so .ts files compile to CJS and `__dirname` is the
+// standard module-relative anchor — `import.meta.url` is unavailable
+// under this output target).
+const MIGRATIONS_DIR = resolvePath(__dirname, '..', 'migrations');
+
+/**
+ * Enumerate the migration filenames on disk that the running code expects
+ * the database to have applied. The probe matches every `*.sql` file under
+ * `backend/migrations/` and sorts lexicographically; the numeric prefix on
+ * each file (`001_`, `002_`, ...) makes lex order the apply order.
+ */
+async function listExpectedMigrations(): Promise<string[]> {
+  const entries = await readdir(MIGRATIONS_DIR);
+  return entries.filter((name) => name.endsWith('.sql')).sort();
+}
+
+/**
+ * Minimal queryable surface satisfied by both `pg.Pool` and `pg.Client`. The
+ * verify function accepts either so test code can hand it a single-client
+ * connection (BEGIN ... ROLLBACK bracketed) to exercise the missing-table
+ * and missing-row branches without polluting the shared DB or needing a
+ * separate dedicated test database.
+ */
+interface Queryable {
+  query<R extends pg.QueryResultRow = pg.QueryResultRow>(
+    queryText: string,
+  ): Promise<pg.QueryResult<R>>;
+}
+
+/**
+ * Inner schema-verify routine. Exported for tests; production callers go
+ * through `verifyAppDbMigrations()` which resolves the pool from
+ * `getAppPool()`.
+ *
+ * Throws `BootFatalError` when:
+ *   - `schema_migrations` itself is missing (DB has never been migrated).
+ *   - Any expected `*.sql` file lacks a row in `schema_migrations`.
+ */
+export async function verifyAppDbMigrationsWith(p: Queryable): Promise<void> {
+  // Existence check on the tracking table itself. `to_regclass` returns NULL
+  // when the relation does not exist, which is cheaper and lock-free vs.
+  // catching the 42P01 (undefined_table) error from a SELECT against the
+  // missing table.
+  const trackingTable = await p.query<{ exists: boolean }>(
+    `SELECT (to_regclass('public.schema_migrations') IS NOT NULL) AS exists`,
+  );
+  if (!trackingTable.rows[0]?.exists) {
+    throw new BootFatalError(
+      'App database has no schema_migrations table. Run `./deploy.sh migrate` before starting the backend, ' +
+        'or apply backend/migrations/*.sql against the configured APP_DATABASE_URL manually. ' +
+        'See agents/docs/ARCHITECTURE.md (Migrations) for the contract: migrations are authoritative, ' +
+        'application code never issues DDL on startup.',
+    );
+  }
+
+  const expected = await listExpectedMigrations();
+  const result = await p.query<{ filename: string }>(
+    `SELECT filename FROM schema_migrations`,
+  );
+  const applied = new Set(result.rows.map((r) => r.filename));
+  const missing = expected.filter((name) => !applied.has(name));
+
+  if (missing.length > 0) {
+    throw new BootFatalError(
+      `App database is missing ${missing.length} expected migration(s): ${missing.join(', ')}. ` +
+        'Run `./deploy.sh migrate` before starting the backend. ' +
+        'See agents/docs/ARCHITECTURE.md (Migrations) for the contract: migrations are authoritative, ' +
+        'application code never issues DDL on startup.',
+    );
+  }
+
+  logger.info(
+    { migrations: expected.length },
+    'App database schema verified against migrations on disk',
+  );
+}
+
+/**
+ * Verify the app database has every migration the running code expects.
+ *
+ * Migrations are the sole source of truth for the application schema. This
+ * function runs at boot and confirms `schema_migrations` carries a row for
+ * each `backend/migrations/*.sql` file present on disk. A missing row means
+ * the operator skipped a migration run (or rolled back across a deploy);
+ * either way the running code's SQL will reference shapes the DB does not
+ * have yet, and silent INSERT failures downstream are far worse than a loud
+ * boot abort.
+ *
+ * Throws `BootFatalError` on schema gaps (see `verifyAppDbMigrationsWith`).
+ *
+ * Returns silently when `APP_DATABASE_URL` is unset — the backend can run
+ * without a notification/accounts DB; routes that need it 500 with a clear
+ * error rather than crashing the whole process at boot.
+ */
+export async function verifyAppDbMigrations(): Promise<void> {
   const p = getAppPool();
   if (!p) {
     logger.warn('APP_DATABASE_URL not configured — email notification preferences will not persist');
     return;
   }
-
-  // Auto-create tables for dev convenience. In production, use: npm run migrate:up
-  await p.query(`
-    CREATE TABLE IF NOT EXISTS notification_preferences (
-      username          TEXT PRIMARY KEY,
-      email_digest      BOOLEAN NOT NULL DEFAULT false,
-      digest_frequency  TEXT NOT NULL DEFAULT 'weekly',
-      email             TEXT,
-      last_digest_block BIGINT NOT NULL DEFAULT 0,
-      updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-
-    -- Add column if table already exists from previous schema
-    ALTER TABLE notification_preferences
-      ADD COLUMN IF NOT EXISTS last_digest_block BIGINT NOT NULL DEFAULT 0;
-
-    -- Unified accounts table (see migrations/002_accounts.sql)
-    CREATE TABLE IF NOT EXISTS accounts (
-      id                      SERIAL PRIMARY KEY,
-      email                   TEXT NOT NULL UNIQUE,
-      password_hash           TEXT,
-      full_name               TEXT NOT NULL DEFAULT '',
-      institution             TEXT NOT NULL DEFAULT '',
-      field                   TEXT NOT NULL DEFAULT '',
-      orcid                   TEXT,
-      username                TEXT UNIQUE,
-      verify_token            TEXT,
-      custody                 TEXT,
-      posting_key_enc         BYTEA,
-      memo_key_enc            BYTEA,
-      iv_posting              BYTEA,
-      iv_memo                 BYTEA,
-      upgraded_at             TIMESTAMPTZ,
-      pending_email           TEXT,
-      pending_email_token     TEXT,
-      pending_email_expires_at TIMESTAMPTZ,
-      reset_token             TEXT,
-      reset_token_expires_at  TIMESTAMPTZ,
-      sessions_invalidated_at TIMESTAMPTZ,
-      expires_at              TIMESTAMPTZ,
-      created_at              TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
-    CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
-    CREATE INDEX IF NOT EXISTS idx_accounts_verify_token ON accounts(verify_token);
-
-    -- Mirrors migrations/007_accounts_orcid_unique.sql. Partial unique so
-    -- NULL-ORCID rows (light + self-custody accounts without an ORCID link)
-    -- do not collide; the index enforces the 1:1 ORCID-to-account-row
-    -- invariant as defense-in-depth alongside the route-layer HAF
-    -- cross-check in findAccreditedAccountWithOrcid. Mirrored here for the
-    -- fresh-container bootstrap path (dev, CI, new prod nodes before
-    -- migration 007 runs) so an early code-path that races initAppDb
-    -- against the SQL migration runner does not see the index missing.
-    CREATE UNIQUE INDEX IF NOT EXISTS accounts_orcid_unique
-      ON accounts (orcid)
-      WHERE orcid IS NOT NULL;
-
-    CREATE TABLE IF NOT EXISTS custody_audit_log (
-      id              SERIAL PRIMARY KEY,
-      username        TEXT NOT NULL,
-      operation_type  TEXT NOT NULL,
-      tx_id           TEXT,
-      block_num       BIGINT,
-      created_at      TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    -- Round-3 of BACKEND-COAUTHOR-TRUST-MODEL — extends custody_audit_log
-    -- with consent-op metadata. Mirrors migrations/005_custody_audit_consent_ops.sql.
-    -- initAppDb() is the dual-source schema path for fresh-container boots
-    -- (dev, CI, new prod nodes before migration 005 runs); without these
-    -- ALTERs the consent-op INSERT in custody-audit.ts references missing
-    -- columns and the fire-and-forget catch silently drops the audit row
-    -- (round-4 hold #2).
-    ALTER TABLE custody_audit_log
-      ADD COLUMN IF NOT EXISTS auth_mechanism TEXT,
-      ADD COLUMN IF NOT EXISTS fresh_auth_outcome TEXT,
-      ADD COLUMN IF NOT EXISTS session_id TEXT,
-      ADD COLUMN IF NOT EXISTS user_agent TEXT;
-
-    -- Make username nullable so the DELETE /api/settings/email handler can
-    -- anonymize prior audit rows (UPDATE … SET username = NULL) instead of
-    -- DELETEing them. Anonymize-on-delete preserves the forensic trail
-    -- (operation_type + timestamp survive) across the right-to-erasure path.
-    -- Mirrors migrations/009_audit_log_fk_anonymize.sql for the
-    -- fresh-container bootstrap path (initAppDb runs before migrations on a
-    -- new node), so the DELETE /api/settings/email transaction's UPDATE
-    -- succeeds against a freshly-bootstrapped DB.
-    ALTER TABLE custody_audit_log
-      ALTER COLUMN username DROP NOT NULL;
-
-    CREATE INDEX IF NOT EXISTS idx_custody_audit_username ON custody_audit_log(username);
-    CREATE INDEX IF NOT EXISTS idx_custody_audit_created ON custody_audit_log(created_at);
-
-    CREATE TABLE IF NOT EXISTS pending_ipfs_uploads (
-      cid                TEXT PRIMARY KEY,
-      uploader_account   TEXT NOT NULL,
-      size_bytes         BIGINT,
-      created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_pending_ipfs_uploads_created_at
-      ON pending_ipfs_uploads (created_at);
-  `);
-
-  logger.info('App database tables initialized');
+  await verifyAppDbMigrationsWith(p);
 }
 
 export async function closeAppPool(): Promise<void> {

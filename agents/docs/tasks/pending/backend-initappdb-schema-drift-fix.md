@@ -72,3 +72,26 @@ The worker's branch (`worktree-agent-ae982a5937ebf2706`) is NOT being merged. A 
 - **Acceptance test**: a fresh-DB test (per-test BEGIN/ROLLBACK is fine) that drops all tables, runs migrations cold, runs `initAppDb()`, and asserts an ORCID-only signup (`email IS NULL`) succeeds. The test must fail if `initAppDb()` is ever resurrected with a `CREATE TABLE` block.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend implementer signal (2026-05-21)
+
+Re-dispatch landed. `initAppDb()` is gone entirely; it has been replaced by `verifyAppDbMigrations()` which performs a schema-version probe only (no DDL). All callers (`backend/src/index.ts`) and incidental docblock references (`src/jobs/custody-audit-retention-sweep.ts`, `src/startup-checks.ts`, `src/lib/broadcast-error.ts`, `tests/jobs/custody-audit-retention-sweep.test.ts`, `tests/startup-checks.test.ts`, `tests/routes/ipfs-pin-durability.test.ts`) updated to the new symbol.
+
+Changes:
+
+- `backend/src/app-db.ts`: removed every `CREATE TABLE` / `ALTER TABLE` / `CREATE INDEX` block. The file now exports `getAppPool`, `closeAppPool`, and a new pair `verifyAppDbMigrations()` / `verifyAppDbMigrationsWith(queryable)`. The probe reads `backend/migrations/*.sql` from disk, SELECTs `schema_migrations.filename`, and throws `BootFatalError` listing any missing files. Existence check on the tracking table itself via `to_regclass('public.schema_migrations')` covers the never-migrated DB case.
+- `backend/migrations/008_schema_migrations_tracking.sql`: creates `schema_migrations (filename PK, applied_at)` and backfills rows for 001 through 008. Each migration 009+ self-records via an idempotent UPSERT at the end of the file.
+- `backend/migrations/009_audit_log_fk_anonymize.sql`: appended the self-record UPSERT line.
+- `deploy.sh cmd_restart`: reordered to bring up postgres / redis / ipfs, run migrations, THEN start the backend. Backend now always boots against an already-migrated schema.
+- `backend/tests/app-db-fresh-migrations.test.ts`: four real-Postgres sub-tests using `BEGIN; DROP SCHEMA public CASCADE; CREATE SCHEMA public; <apply all migrations>; <assertions>; ROLLBACK`. Covers (a) ORCID-only INSERT succeeds against cold-migrated schema, (b) `schema_migrations` records every file on disk, (c) `verifyAppDbMigrationsWith` throws `BootFatalError` when `schema_migrations` is missing, (d) same throw when a migration file is absent from the row set (with the file name in the message).
+
+Verification:
+
+- `npm run typecheck`: pass.
+- `npm run lint`: pass (one pre-existing unrelated warning).
+- Targeted test run: 4/4 passed on `tests/app-db-fresh-migrations.test.ts`; sibling sanity-check on `tests/migrations/accounts-orcid-unique.test.ts` and `tests/routes/ipfs-pin-durability.test.ts` also pass.
+- `grep -c "CREATE TABLE" backend/src/app-db.ts` returns 0. No `ALTER TABLE`, `CREATE INDEX`, or `CREATE TRIGGER` in app-db.ts either.
+
+[TODO Architect] `agents/docs/ARCHITECTURE.md` needs a `§ Migrations` paragraph that states: "Migrations are authoritative. Application code never issues DDL on startup. The backend's `verifyAppDbMigrations` probe in `backend/src/app-db.ts` reads `schema_migrations` on boot and aborts via `BootFatalError` if any `backend/migrations/*.sql` file present on disk lacks a row there. Operators must run `./deploy.sh migrate` (or apply the migration set manually against `APP_DATABASE_URL`) before starting the backend; `deploy.sh cmd_restart` enforces that order." Do NOT document a dual-source pattern; that path is explicitly removed.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

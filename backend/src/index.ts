@@ -1,6 +1,6 @@
 import { config } from './config.js';
 import { isHafConfigured, closeHafPool, getPool } from './db.js';
-import { initAppDb, closeAppPool, getAppPool } from './app-db.js';
+import { verifyAppDbMigrations, closeAppPool, getAppPool } from './app-db.js';
 import { createApp } from './app.js';
 import { validateConfig, checkOrcidProcessSafety, BootFatalError } from './startup-checks.js';
 import { startBlockWatcher, stopBlockWatcher } from './block-watcher.js';
@@ -46,27 +46,25 @@ process.on('unhandledRejection', (reason) => {
 
 // ── Startup ─────────────────────────────────────────────────
 //
-// Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
 // Wrap the synchronous boot in a try/catch so a `BootFatalError` thrown
 // from `validateConfig()` / `initBridgePostingKeyCache()` unwinds the call
-// stack before `createApp()` / `initAppDb()` can run. The round-3 flush-
-// exit shape returned synchronously to this module and let `createApp()` +
-// `initAppDb()` (which runs DB migrations!) execute during the async flush
-// window on a fatal-misconfigured boot. The throw-then-catch shape blocks
-// that window — control reaches the catch BEFORE any post-validate boot
-// code runs. Unexpected throws are logged once here (boot-fatal sites
-// already logged before throwing `BootFatalError`, so we suppress the
-// re-log on that subclass to avoid noise).
+// stack before `createApp()` / `verifyAppDbMigrations()` can run. An older
+// flush-exit shape returned synchronously to this module and let
+// `createApp()` + the DB-schema probe execute during the async flush window
+// on a fatal-misconfigured boot. The throw-then-catch shape blocks that
+// window — control reaches the catch BEFORE any post-validate boot code
+// runs. Unexpected throws are logged once here (boot-fatal sites already
+// logged before throwing `BootFatalError`, so we suppress the re-log on
+// that subclass to avoid noise).
 //
 // CONSTRAINT: validateConfig and createApp MUST remain synchronous and at
 // module-evaluation scope. Introducing await or moving these into a .then
 // chain would route BootFatalError to the wrong handler (e.g.
-// initAppDb().catch logged as 'Failed to initialize app database'),
-// defeating the structured boot-fatal path.
+// `verifyAppDbMigrations().catch` logged as 'Failed to verify app database
+// schema'), defeating the structured boot-fatal path.
 //
-// Round-5 hold #5 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
 // `app` is narrowed via the `if (app) { ... }` block below rather than a
-// `throw err;` at the end of the catch. The previous re-throw propagated
+// `throw err;` at the end of the catch. A prior re-throw propagated
 // `BootFatalError` to module-evaluation scope, where Node routed it to the
 // `uncaughtException` handler — which logged a synthetic 'Uncaught
 // exception — shutting down' fatal AND called `flushAndExit()` again (two
@@ -87,7 +85,7 @@ let server: Server;
 
 if (app) {
   const bootedApp = app;
-  initAppDb()
+  verifyAppDbMigrations()
     .then(async () => {
       // Warm genesis block cache before accepting traffic
       const hafPool = getPool();
@@ -164,23 +162,23 @@ if (app) {
       });
     })
     .catch((err) => {
-      // Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-      // route through `flushAndExit()` so the fatal line drains under the 2s
+      // Route through `flushAndExit()` so the fatal line drains under the 2s
       // watchdog (a hung-flush callback no longer hangs the boot indefinitely).
       //
       // BootFatalError discrimination: boot-fatal throws (e.g. SOT-parse
-      // failure in `validateRetentionSweepConfig`) propagate out of the
-      // awaited call inside `initAppDb().then(...)` and land here. The
-      // synchronous top-level try/catch wrapping `validateConfig()` /
-      // `createApp()` already discriminates this class to suppress the
-      // re-log of the user-actionable detail emitted at the throw site;
-      // discriminate on `instanceof BootFatalError` here too so the async
-      // path's fatal log carries the BootFatalError's own message rather
-      // than the generic "Failed to initialize app database" label.
+      // failure in `validateRetentionSweepConfig`, or a missing migration
+      // surfaced by `verifyAppDbMigrations`) propagate out of the awaited
+      // call inside the `.then(...)` block and land here. The synchronous
+      // top-level try/catch wrapping `validateConfig()` / `createApp()`
+      // already discriminates this class to suppress the re-log of the
+      // user-actionable detail emitted at the throw site; discriminate on
+      // `instanceof BootFatalError` here too so the async path's fatal log
+      // carries the BootFatalError's own message rather than the generic
+      // "Failed to verify app database schema" label.
       if (err instanceof BootFatalError) {
         logger.fatal({ err }, err.message);
       } else {
-        logger.fatal({ err }, 'Failed to initialize app database');
+        logger.fatal({ err }, 'Failed to verify app database schema');
       }
       flushAndExit();
     });

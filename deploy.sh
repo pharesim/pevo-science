@@ -206,9 +206,34 @@ cmd_restart() {
   log "Rebuilding and restarting..."
   $COMPOSE down
   DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 $COMPOSE build
-  cmd_up
+  # Bring up infrastructure (postgres, redis, ipfs) and apply migrations
+  # BEFORE the backend starts. Migrations are the sole source of truth for
+  # the application schema; the backend's `verifyAppDbMigrations` probe in
+  # `backend/src/app-db.ts` aborts boot if `schema_migrations` lacks any row
+  # for a `*.sql` file present on disk. Running migrations first guarantees
+  # the probe sees a fully-migrated schema on the first boot attempt rather
+  # than racing against an in-flight migrate.
+  check_env
+  log "Starting infrastructure services (postgres, redis, ipfs)..."
+  $COMPOSE up -d --remove-orphans postgres redis ipfs
+  log "Waiting for postgres to be ready..."
+  local retries=30
+  while [ $retries -gt 0 ]; do
+    if $COMPOSE exec -T postgres pg_isready -U pevo -d pevo_app &>/dev/null; then
+      log "Postgres is ready"
+      break
+    fi
+    retries=$((retries - 1))
+    sleep 2
+  done
+  if [ $retries -eq 0 ]; then
+    err "Postgres did not become ready within 60s — aborting restart"
+    exit 1
+  fi
   log "Applying migrations..."
   cmd_migrate
+  log "Starting backend..."
+  cmd_up backend
 }
 
 cmd_status() {

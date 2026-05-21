@@ -86,3 +86,10 @@ COMMENT ON COLUMN custody_audit_log.user_agent IS
   'custody-audit event, (b) the row is a broadcast call but the HTTP client did '
   'not send a User-Agent header (or sent a non-string / empty one), or (c) the '
   'owning account has been deleted and the row was anonymized.';
+
+-- Record this migration in the schema_migrations tracking table created by
+-- migration 008. The application-code startup probe in
+-- `verifyAppDbMigrations` (backend/src/app-db.ts) aborts boot if any
+-- migration file on disk lacks a row here.
+INSERT INTO schema_migrations (filename) VALUES ('009_audit_log_fk_anonymize.sql')
+  ON CONFLICT (filename) DO UPDATE SET applied_at = NOW();
