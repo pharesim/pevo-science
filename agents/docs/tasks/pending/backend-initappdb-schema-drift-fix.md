@@ -46,3 +46,29 @@ The schema-migrations tracking table itself is a P1 audit finding (chunk-3-data-
   - `.context/audit-2026-04-21/chunk-3-data-integrity-guardian.md` (P0: initAppDb schema drift).
   - `.context/audit-2026-04-21/chunk-3-data-migrations-reviewer.md` (P0: same finding from migrations lens).
   - `.context/audit-2026-04-21/chunk-7-reliability-reviewer.md` (P1: cmd_restart applies migrations after backend is already up).
+
+## Backend parent re-dispatch (2026-05-21) — HELD PENDING FIXES
+
+The first dispatched worker (worktree-agent-ae982a5937ebf2706, commit 17e5f577) misinterpreted the task direction and produced a solution that runs **opposite** to acceptance criterion 1. Specifically:
+
+- The worker **kept** the `CREATE TABLE IF NOT EXISTS` blocks in `initAppDb()` and synced them with migration 002's `DROP NOT NULL` on `accounts.email` plus migration 001's `last_digest_block_non_negative` CHECK constraint (using a `pg_constraint` existence guard since Postgres lacks `ADD CONSTRAINT IF NOT EXISTS`).
+- The worker filed a `[TODO Architect]` note proposing to **document** dual-source-of-truth as a permanent pattern in `ARCHITECTURE.md § Migrations`, pointing at a new solutions doc `migration-and-initappdb-dual-source-schema-2026-05-05.md`.
+
+Both of these treat the dual-source bootstrap path as a feature to preserve, when the task is explicitly to **eliminate** it (Goal #1: "Delete the `CREATE TABLE IF NOT EXISTS` blocks from `initAppDb()`"). Acceptance criterion 1 is unambiguous: "`backend/src/app-db.ts` `initAppDb()` issues zero `CREATE TABLE` statements."
+
+The worker's other deliverables ARE useful and worth keeping in a future implementation:
+
+- `deploy.sh cmd_restart` reorder (migrations run before backend boots — matches Goal #2).
+- `backend/migrations/008_schema_migrations_tracking.sql` (informational tracking table per migration — partially matches Goal #3, modulo the startup probe).
+
+The worker's branch (`worktree-agent-ae982a5937ebf2706`) is NOT being merged. A fresh worker will be dispatched to implement the task as written.
+
+### Re-dispatch brief for next worker
+
+- **Primary goal:** `initAppDb()` issues **zero** `CREATE TABLE` and **zero** `ALTER TABLE` statements. The function body should reduce to whatever genuinely-runtime initialization remains after schema DDL is removed (likely just the pool getter, plus a `schema_migrations` probe per Goal #3). If nothing genuinely-runtime remains, the function can be deleted entirely and its callers removed.
+- **Migration 008 from prior worker is OK to reuse** but should be paired with a startup probe that reads from it and fails loud if expected migration N is missing.
+- **deploy.sh reorder from prior worker is OK to reuse**.
+- **Architect TODO for ARCHITECTURE.md § Migrations** should say "Migrations are authoritative. Application code never issues DDL on startup." — NOT a dual-source pattern doc.
+- **Acceptance test**: a fresh-DB test (per-test BEGIN/ROLLBACK is fine) that drops all tables, runs migrations cold, runs `initAppDb()`, and asserts an ORCID-only signup (`email IS NULL`) succeeds. The test must fail if `initAppDb()` is ever resurrected with a `CREATE TABLE` block.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
