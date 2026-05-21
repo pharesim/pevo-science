@@ -2,9 +2,16 @@ import crypto from 'node:crypto';
 import { config } from './config.js';
 
 const ALGORITHM = 'aes-256-gcm';
-const IV_LENGTH = 12; // 96 bits for GCM
-const AUTH_TAG_LENGTH = 16;
+export const IV_LENGTH = 12; // 96 bits for GCM
+export const AUTH_TAG_LENGTH = 16;
 const KEY_LENGTH = 32; // 256 bits
+
+/**
+ * HKDF info prefix that scopes derived keys to this module's purpose.
+ * Exported so tests can construct the canonical HKDF input without
+ * duplicating the literal string and silently drifting from production.
+ */
+export const HKDF_INFO_PREFIX = 'pevo:custody:';
 
 /**
  * Derive a per-account encryption key from the master CUSTODY_ENCRYPTION_KEY using HKDF.
@@ -17,7 +24,7 @@ function deriveKey(username: string): Buffer {
     throw new Error('CUSTODY_ENCRYPTION_KEY must be set (at least 32 hex characters)');
   }
   const keyMaterial = Buffer.from(masterKey, 'hex');
-  return Buffer.from(crypto.hkdfSync('sha256', keyMaterial, '', `pevo:custody:${username}`, KEY_LENGTH));
+  return Buffer.from(crypto.hkdfSync('sha256', keyMaterial, '', `${HKDF_INFO_PREFIX}${username}`, KEY_LENGTH));
 }
 
 /**

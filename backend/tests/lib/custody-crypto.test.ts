@@ -10,9 +10,9 @@
  *
  * Justification for direct unit tests (no infra mocks):
  *  - The module exposes pure functions over `node:crypto`. No DB, Redis, or
- *    HTTP surface is involved — there is nothing to mock besides the crypto
- *    primitives themselves, which the task forbids ("Tests use the real
- *    `crypto` module — no mocks of `crypto.createCipheriv` etc.").
+ *    HTTP surface is involved. `crypto.createCipheriv`, `crypto.hkdfSync`,
+ *    and `crypto.randomBytes` are exactly the primitives under test, so
+ *    mocking them would reduce coverage to tautology.
  *  - `CUSTODY_ENCRYPTION_KEY` is read by `src/config.ts` at module load.
  *    The test sets it on `process.env` before any import of either module
  *    so the captured `config.custodyEncryptionKey` is the test-only key.
@@ -39,7 +39,9 @@ process.env.CUSTODY_ENCRYPTION_KEY = TEST_MASTER_KEY;
 vi.resetModules();
 
 // Dynamic import so the env mutation above is in effect at config load.
-const { encryptKey, decryptKey } = await import('../../src/custody-crypto.js');
+const { encryptKey, decryptKey, AUTH_TAG_LENGTH, IV_LENGTH, HKDF_INFO_PREFIX } = await import(
+  '../../src/custody-crypto.js'
+);
 const crypto = await import('node:crypto');
 
 const SAMPLE_WIF = '5KQwrPbwdL6PhXujxW37FSSQZ1JiwsST4cqQzDeyXtP79zkvFD3';
@@ -116,31 +118,32 @@ describe('custody-crypto: IV non-reuse (semantic security)', () => {
     expect(first.ciphertext.equals(second.ciphertext)).toBe(false);
   });
 
-  it('IV length is 12 bytes (GCM standard nonce size)', () => {
+  it('IV length matches the module-exported GCM nonce size', () => {
     const { iv } = encryptKey('alice', SAMPLE_WIF);
     // 12-byte (96-bit) IVs are the GCM recommended size. A drift to a
     // longer IV would break interoperability with stored ciphertexts and
-    // is worth pinning.
-    expect(iv.length).toBe(12);
+    // is worth pinning. The expected length comes from the same exported
+    // constant production uses, so a deliberate change updates both sides
+    // together.
+    expect(iv.length).toBe(IV_LENGTH);
   });
 });
 
 describe('custody-crypto: GCM auth tag is present in the ciphertext envelope', () => {
-  it('ciphertext length exceeds the encrypted plaintext by exactly 16 bytes (AES-GCM tag)', () => {
+  it('ciphertext length exceeds the encrypted plaintext by exactly the AES-GCM tag size', () => {
     const plaintext = 'short';
     const { ciphertext } = encryptKey('alice', plaintext);
     // AES-GCM produces ciphertext of the same length as the plaintext
-    // (no padding); the module appends the 16-byte auth tag. Any swap to
-    // CBC (which pads to the 16-byte block boundary) or to a stream cipher
+    // (no padding); the module appends the auth tag. Any swap to CBC
+    // (which pads to the 16-byte block boundary) or to a stream cipher
     // without an appended tag would change this invariant.
-    const AUTH_TAG_LENGTH = 16;
     expect(ciphertext.length).toBe(Buffer.byteLength(plaintext, 'utf8') + AUTH_TAG_LENGTH);
   });
 
-  it('the trailing 16 bytes (auth tag slice) are not all zero', () => {
+  it('the trailing auth-tag slice is not all zero', () => {
     const { ciphertext } = encryptKey('alice', SAMPLE_WIF);
-    const tag = ciphertext.subarray(ciphertext.length - 16);
-    expect(tag.length).toBe(16);
+    const tag = ciphertext.subarray(ciphertext.length - AUTH_TAG_LENGTH);
+    expect(tag.length).toBe(AUTH_TAG_LENGTH);
     // An all-zero tag would indicate the cipher never produced one (e.g. a
     // silent fall-through to a tag-less mode). Vanishingly unlikely for
     // real GCM output over real plaintext.
@@ -198,10 +201,10 @@ describe('custody-crypto: master key length validation', () => {
   });
 
   it('accepts a 32-hex-character master key (current minimum)', async () => {
-    // The audit P2 follow-up notes the spec is 32 BYTES (64 hex chars),
-    // but the current validator's contract is 32 hex characters. Pin
-    // the current acceptance boundary so any tightening of the validator
-    // is a deliberate, test-visible change rather than a silent shift.
+    // The spec calls for 32 bytes (64 hex chars), but the current
+    // validator boundary is 32 hex characters. Pin the current boundary
+    // so any tightening of the validator is a deliberate, test-visible
+    // change.
     vi.resetModules();
     process.env.CUSTODY_ENCRYPTION_KEY = 'b'.repeat(32);
     const { encryptKey: encryptFresh, decryptKey: decryptFresh } = await import('../../src/custody-crypto.js');
@@ -235,16 +238,16 @@ describe('custody-crypto: HKDF derives deterministic per-username keys', () => {
   it('derives bytes that match a canonical `crypto.hkdfSync` invocation under the same context', () => {
     const masterKey = Buffer.from(TEST_MASTER_KEY, 'hex');
     const canonical = Buffer.from(
-      crypto.hkdfSync('sha256', masterKey, '', 'pevo:custody:alice', 32),
+      crypto.hkdfSync('sha256', masterKey, '', `${HKDF_INFO_PREFIX}alice`, 32),
     );
     // Round-trip a known plaintext using the module, then independently
     // GCM-decrypt the ciphertext with the canonical derived key. If the
     // module ever drops the username from the HKDF info or swaps to a
     // different KDF, this will fail loudly.
     const { ciphertext, iv } = encryptKey('alice', SAMPLE_WIF);
-    const authTag = ciphertext.subarray(ciphertext.length - 16);
-    const body = ciphertext.subarray(0, ciphertext.length - 16);
-    const decipher = crypto.createDecipheriv('aes-256-gcm', canonical, iv, { authTagLength: 16 });
+    const authTag = ciphertext.subarray(ciphertext.length - AUTH_TAG_LENGTH);
+    const body = ciphertext.subarray(0, ciphertext.length - AUTH_TAG_LENGTH);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', canonical, iv, { authTagLength: AUTH_TAG_LENGTH });
     decipher.setAuthTag(authTag);
     const plaintext = Buffer.concat([decipher.update(body), decipher.final()]).toString('utf8');
     expect(plaintext).toBe(SAMPLE_WIF);
