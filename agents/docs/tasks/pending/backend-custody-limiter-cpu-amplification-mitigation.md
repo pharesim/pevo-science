@@ -228,3 +228,104 @@ When items 1, 2, and 3 land, `git mv` this file back to `tasks/review/`. Round-2
 Items 1 + 2 + 3 can land in one focused commit (the `requireStringField` helper from item 3 is the natural site for item 2's `rateLimitCount` fail-loud helper if a sibling test-utility module is preferred). Item 1's URL-shape validator on `/retract` is a separate touch in `backend/src/routes/papers.ts` but can ship in the same commit if the implementer prefers a single round-2 commit; or split if the `requireStringField` refactor is large enough to warrant isolation.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-21, commit 956241a3)
+
+### Corrected sibling-route audit (7 sites, not 5)
+
+Verbatim grep output:
+
+```
+$ grep -rn "skipFailedRequests:\s*true" backend/src/
+backend/src/middleware/rateLimit.ts:87:   * sets `skipFailedRequests: true` MUST place body-shape validation
+backend/src/middleware/rateLimit.ts:100:   * `skipFailedRequests: true` produces a CPU-amplification surface where a
+backend/src/routes/papers.ts:738:  skipFailedRequests: true,
+backend/src/routes/bridge.ts:195:  skipFailedRequests: true,
+backend/src/routes/custody.ts:65:const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000, max: 1, keyFn: byAccount, skipFailedRequests: true });
+backend/src/routes/custody.ts:69:// broadcast). `skipFailedRequests: true` is a deliberate tradeoff: closing
+backend/src/routes/custody.ts:89:  skipFailedRequests: true,
+backend/src/routes/custody.ts:94:// distinct from the per-op consent-mint path. `skipFailedRequests: true` for
+backend/src/routes/custody.ts:106:  skipFailedRequests: true,
+backend/src/routes/custody.ts:110:// `skipFailedRequests: true` flag on those limiters refunds the slot on any
+backend/src/routes/accreditation.ts:40:const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount, skipFailedRequests: true });
+backend/src/routes/accreditation.ts:58:const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp, skipFailedRequests: true });
+```
+
+Filtering to actual call sites (excluding the two JSDoc string-literal hits in `middleware/rateLimit.ts` and the four comment-line echoes in `custody.ts`):
+
+| # | Site | Limiter | Pre-limiter gate | Status |
+|---|---|---|---|---|
+| 1 | `backend/src/routes/bridge.ts` | `registerLimiter` | `validateRegisterBody` | Existing (pre-task) |
+| 2 | `backend/src/routes/custody.ts` | `upgradeLimiter` | `validateUpgradeBodyShape` | Round-1 |
+| 3 | `backend/src/routes/custody.ts` | `freshAuthLimiter` | `validateFreshAuthBodyShape` | Round-1 |
+| 4 | `backend/src/routes/custody.ts` | `sessionAuthLimiter` | `validateSessionAuthBodyShape` | Round-1 |
+| 5 | `backend/src/routes/papers.ts` | `retractLimiter` | `validateRetractParams` | Round-2 (this commit) |
+| 6 | `backend/src/routes/accreditation.ts` | `accreditationRequestLimiter` | `validate(accreditationRequestSchema)` (hoisted) | Round-1 |
+| 7 | `backend/src/routes/accreditation.ts` | `accreditationVerifyLimiter` | `validate(accreditationVerifySchema)` (hoisted) | Round-1 |
+
+All seven sites are now protected. Site 1 (`bridge.ts`) was the accidentally-correct adopter the round-1 audit missed (already gated by `validateRegisterBody` from the bridge task). Site 5 (`papers.ts`) was the load-bearing miss closed in round-2.
+
+### Item 1 (P0) — /retract URL-shape validator landed
+
+Architect's preferred Option A applied. `validateRetractParams` middleware in `backend/src/routes/papers.ts`:
+
+- Validates `:author` against `HIVE_ACCOUNT_NAME_REGEX` (shared with the deploy-time config validator and `anonymousReview.ts`).
+- Validates `:permlink` against `/^[a-z0-9-]+$/` with a 256-char cap (matches the witness-imposed permlink cap and the `anonymousReview.ts` permlink check).
+- Both arms return `400 VALIDATION_ERROR` with a discriminating message.
+
+Wired into the route: `router.post('/:author/:permlink/retract', verifyHiveSignature, validateRetractParams, retractLimiter, async (req, res) => { ... })`.
+
+Regression spec `backend/tests/routes/papers-retract-url-shape-validator.test.ts` (5 specs, including the 100-sequential-malformed-slug pin parallel to the existing 100-sequential-malformed-bodies spec). All 5 specs assert `rateLimitCount('paper-retract', PROBE_USER) === null` after the malformed probes, proving the limiter primitive saw zero traffic.
+
+### Item 2 (P1) — fail-loud rateLimitCount
+
+`rateLimitCount` in `backend/tests/routes/custody-limiter-cpu-amplification.test.ts` (and its mirror in the new `papers-retract-url-shape-validator.test.ts`) now throws on three distinct setup-invalid conditions:
+
+- `getRedis()` returns null (Redis not configured at test boot).
+- `redis.status !== 'ready'` after the ~1s ready-wait (mid-suite Redis flake).
+- Redis returns a non-numeric value for a present key (corrupted state).
+
+The "key absent" arm still returns `null` so `expect(count).toBeNull()` continues to encode the load-bearing CPU-amplification invariant. The fail-loud branches surface a flake as a test failure rather than a vacuous pass. Docblock on the helper distinguishes the two cases explicitly.
+
+### Item 3 (P1+P1+P2 cluster) — body-record helper extraction
+
+New module: `backend/src/lib/body-record.ts` exporting `assertBodyRecord(req): Record<string, unknown>` (typed-narrowing boundary with runtime `typeof === 'object' && !== null` guard) and `requireStringField(body, fieldName, maxLength, message?): RequireStringFieldResult` (discriminated union; callers forward `error` to `sendError` on the failure arm).
+
+Sites collapsed (six `as Record<string, unknown>` casts removed):
+
+- `backend/src/routes/custody.ts` middleware: `validateUpgradeBodyShape`, `validateFreshAuthBodyShape`, `validateSessionAuthBodyShape` (3 sites).
+- `backend/src/routes/custody.ts` handlers: `/upgrade`, `/fresh-auth`, `/session-auth` defense-in-depth body reads (3 sites).
+
+Length caps now live in module-private constants (`PASSWORD_MAX_LEN`, `DERIVED_PUBKEY_MAX_LEN`, `SIGNED_PROOF_MAX_LEN`, `SIGNED_AT_MAX_LEN`, `ROOT_AUTHOR_MAX_LEN`, `ROOT_PERMLINK_MAX_LEN`) shared between each route's middleware and its handler. The middleware-vs-handler divergence M1 cited dies structurally — a future cap change at one site cannot quietly diverge from the other.
+
+Three oversized-but-present-field specs added to `custody-limiter-cpu-amplification.test.ts` (one per custody route: `derived_pubkey.length === 101`, `password.length === 4097` on `/fresh-auth`, `password.length === 4097` on `/session-auth`). Each asserts `400 VALIDATION_ERROR` and `rateLimitCount === null`, pinning the cap-policy invariant against future drift.
+
+### Scoped vitest pass
+
+```
+custody-limiter-cpu-amplification.test.ts  13 passed  (10 + 3 new cap-policy specs)
+custody-upgrade.test.ts                    17 passed
+custody-fresh-auth-null-hash.test.ts        9 passed
+custody-session-auth.test.ts               13 passed
+papers-retract-url-shape-validator.test.ts  5 passed  (new file)
+─────────────────────────────────────────────────
+                                           57 passed (0 failed)
+
+Sibling suites (sanity, not requested by task):
+custody.test.ts                             8 passed
+custody-non-consent-fresh-auth.test.ts      7 passed
+middleware/rateLimit.test.ts                7 passed
+                                           22 passed (0 failed)
+
+papers-haf-error-vs-not-found.test.ts      12 passed  (uses valid 'alice/paper-x' slugs;
+                                                       URL-shape gate does not fire)
+```
+
+`npm run typecheck` (typecheck:src + typecheck:tests): pass.
+`npm run lint`: pass (1 pre-existing warning in `lib/author-supersession.ts`, unrelated to this change).
+
+Pre-existing accreditation failures (`pre-INCR redis.eval rejection surfaces 503` and `concurrent retries claim slots atomically`) noted in the round-1 signal block remain failing on main HEAD; neither interacts with the round-2 changes.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
