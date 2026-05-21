@@ -90,6 +90,126 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
     const cachedHives = (cached!.authors).map((a) => a.hive).sort();
     expect(cachedHives).toEqual(['alice', 'bob']);
     expect(cached!.accredited_authors.sort()).toEqual(['alice', 'bob']);
+
+    // Warm-path short-circuit: a second call WITHOUT prebuiltChainPosts hits
+    // the cache populated above and must return the same value without any
+    // HAF roundtrip. A regression that removed the `getOrSet` cache-read
+    // would issue an HAF probe (returning `null` since `getPool()` is not
+    // mocked in this file), and the assertion would observe a divergent
+    // result. Pinning the read-side path is the structural complement to
+    // the write-side cache landing asserted above.
+    const warmResult = await resolveChainCumulativeAuthors('alice', 'p1', ctx);
+    expect(warmResult).not.toBeNull();
+    const warmHives = (warmResult!.authors).map((a) => a.hive).sort();
+    expect(warmHives).toEqual(['alice', 'bob']);
+    expect(warmResult!.accredited_authors.sort()).toEqual(['alice', 'bob']);
+  });
+
+  it('returns null on single-link prebuiltChainPosts (no cache poisoning)', async () => {
+    // Single-link short-circuit (prebuilt path): when the detail surface
+    // passes a 1-link chain, the helper must return null so the caller falls
+    // back to its own supersession projection (which preserves bridge-paper
+    // `hive: null` carrier entries that the cumulative-union construction
+    // intentionally strips). A regression that omitted the chain.length === 1
+    // guard from the prebuilt path would write a stripped result to
+    // `chain-authors:alice:p1` and a subsequent listing/profile call would
+    // serve the stripped shape instead of the head-meta projection — a
+    // divergence between cached and live shapes that surfaces as a missing-
+    // carrier bug on multi-author single-link papers.
+    const singleLinkPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } },
+    ];
+    const ctx = {
+      accreditedAccounts: new Set(['alice', 'bob']),
+      accreditedOrcids: new Map<string, string | null>(),
+      accreditationOrcidStatus: new Map<string, { orcid: string | null; status: 'active' | 'revoked' }>(),
+    };
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', {
+      ...ctx,
+      prebuiltChainPosts: singleLinkPosts,
+    });
+    expect(result).toBeNull();
+
+    // The load-bearing assertion: no cache entry was written. A regression
+    // that wrote the stripped result would observe a defined cache entry
+    // here, poisoning the leaf for the full TTL.
+    const cached = await hafCache.get('chain-authors:alice:p1');
+    expect(cached).toBeUndefined();
+  });
+
+  it('per-row Promise.all enrichment isolates a thrown helper from sibling rows', async () => {
+    // The listing and profile enrichment loops wrap each helper call in
+    // `Promise.all(rows.map(async r => { try { ... } catch (err) { ... } }))`.
+    // The architectural guarantee: one row's throw must not abort sibling
+    // rows nor surface as a 5xx — the catch absorbs the throw and the
+    // erroring row falls back to head-meta. This unit test pins that
+    // guarantee at the helper boundary so the route's wrapping has a sound
+    // primitive to layer on top.
+    //
+    // Inputs:
+    //   - row 1 (alice/p1): valid prebuiltChainPosts; helper returns the
+    //     cumulative-union result.
+    //   - row 2 (poisoned/x1): the buildCumulativeAuthorsForChain pipeline
+    //     dereferences `post.author` and `post.pevo.authors`; passing a
+    //     chainPosts entry whose `pevo` is `null` makes the loop throw on
+    //     `post.pevo.authors`. The pre-existing Promise.all + try/catch
+    //     pattern absorbs the throw.
+    const validChain = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } },
+      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ hive: 'bob' }] } },
+    ];
+    const poisonedChain = [
+      { author: 'poisoned', permlink: 'x1', pevo: { type: 'paper', authors: [{ hive: 'poisoned' }] } },
+      // Second link with `pevo: null as any` throws when the cumulative-union
+      // loop reads `post.pevo.authors`.
+      { author: 'poisoned-cont', permlink: 'x2', pevo: null as unknown as Record<string, unknown> },
+    ];
+    const ctx = {
+      accreditedAccounts: new Set(['alice', 'bob', 'poisoned']),
+      accreditedOrcids: new Map<string, string | null>(),
+      accreditationOrcidStatus: new Map<string, { orcid: string | null; status: 'active' | 'revoked' }>(),
+    };
+
+    // Mirror the route's per-row enrichment loop shape verbatim: Promise.all
+    // over a map function with try/catch absorbing per-row errors and a
+    // chainAuthorsByKey map collecting successes.
+    const rows = [
+      { author: 'alice', permlink: 'p1', prebuilt: validChain },
+      { author: 'poisoned', permlink: 'x1', prebuilt: poisonedChain },
+    ];
+    const chainAuthorsByKey = new Map<string, NonNullable<Awaited<ReturnType<typeof resolveChainCumulativeAuthors>>>>();
+    const errorsByKey = new Map<string, unknown>();
+    await Promise.all(
+      rows.map(async (r) => {
+        const key = `${r.author}/${r.permlink}`;
+        try {
+          const result = await resolveChainCumulativeAuthors(r.author, r.permlink, {
+            ...ctx,
+            prebuiltChainPosts: r.prebuilt,
+          });
+          if (result !== null) chainAuthorsByKey.set(key, result);
+        } catch (err) {
+          // Mirrors the route's logger.warn fallback; we capture for assertion.
+          errorsByKey.set(key, err);
+        }
+      }),
+    );
+
+    // (a) Other rows return their cumulative-union enriched authors.
+    expect(chainAuthorsByKey.has('alice/p1')).toBe(true);
+    const aliceResult = chainAuthorsByKey.get('alice/p1')!;
+    expect(aliceResult.authors.map((a) => a.hive).sort()).toEqual(['alice', 'bob']);
+
+    // (b) The erroring row has no chain-authors entry (the route's fallback
+    // path then keeps the head-meta projection at the response site).
+    expect(chainAuthorsByKey.has('poisoned/x1')).toBe(false);
+
+    // (c) The throw was absorbed by the per-row catch — Promise.all
+    // resolved rather than rejecting. Routes that wrap this pattern in a
+    // try/catch around `await Promise.all(...)` would also have caught it,
+    // but the per-row catch is the structural guarantee that the listing
+    // response stays 200 even when one row's chain walk explodes.
+    expect(errorsByKey.has('poisoned/x1')).toBe(true);
   });
 
   it('accredited_authors omits non-accredited hives from the cumulative union', async () => {

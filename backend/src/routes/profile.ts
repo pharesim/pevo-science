@@ -397,26 +397,39 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
       // `authorship_claims` UNION arm — the helper does not distinguish
       // claim-derived rows from author-derived rows. Per-root Redis cache
       // absorbs warm pages; cold pages walk in parallel.
+      //
+      // Wall-clock budget: per-row helpers thread the same `AbortSignal`
+      // bounded by `config.hafWalkerWallClockMs` so a degraded HAF cannot
+      // leave individual rows' chain walks hanging on `statement_timeout`
+      // independently of each other. Mirrors the listing enrichment in
+      // `fetchPapersFromHaf` and the detail handler's walker budget.
+      const enrichmentAbort = new AbortController();
+      const enrichmentBudget = setTimeout(() => enrichmentAbort.abort(), config.hafWalkerWallClockMs);
       const chainAuthorsByKey = new Map<string, ChainCumulativeAuthorsResult>();
-      await Promise.all(
-        result.rows.map(async (row) => {
-          const key = `${row.author}/${row.permlink}`;
-          try {
-            const chainResult = await resolveChainCumulativeAuthors(
-              row.author,
-              row.permlink,
-              {
-                accreditedAccounts: allAccredited,
-                accreditedOrcids: accreditedOrcidsByAccount,
-                accreditationOrcidStatus,
-              },
-            );
-            if (chainResult !== null) chainAuthorsByKey.set(key, chainResult);
-          } catch (err) {
-            logger.warn({ err, author: row.author, permlink: row.permlink }, 'profile chain cumulative authors enrichment failed');
-          }
-        }),
-      );
+      try {
+        await Promise.all(
+          result.rows.map(async (row) => {
+            const key = `${row.author}/${row.permlink}`;
+            try {
+              const chainResult = await resolveChainCumulativeAuthors(
+                row.author,
+                row.permlink,
+                {
+                  accreditedAccounts: allAccredited,
+                  accreditedOrcids: accreditedOrcidsByAccount,
+                  accreditationOrcidStatus,
+                  signal: enrichmentAbort.signal,
+                },
+              );
+              if (chainResult !== null) chainAuthorsByKey.set(key, chainResult);
+            } catch (err) {
+              logger.warn({ err, author: row.author, permlink: row.permlink }, 'profile chain cumulative authors enrichment failed');
+            }
+          }),
+        );
+      } finally {
+        clearTimeout(enrichmentBudget);
+      }
 
       for (const row of result.rows) {
         const authorAccredited = accreditedSet.has(row.author);
@@ -430,8 +443,14 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
         if (chainResult !== null && chainResult !== undefined) {
           // Cumulative-union takeover: helper output replaces the head-meta
           // projection so dropped chain authors stay visible at the profile
-          // surface.
-          row.authors = chainResult.authors as unknown as typeof row.authors;
+          // surface. Strip `affiliation` because PaperSummary's contract
+          // excludes that field (it is PaperDetail-only); the head-meta
+          // projection above is already affiliation-free via toPaperSummary's
+          // strip.
+          row.authors = chainResult.authors.map((a) => {
+            const { affiliation: _affiliation, ...rest } = a;
+            return rest;
+          });
           row.accredited_authors = chainResult.accredited_authors;
         } else {
           // Helper unreachable (HAF down, single-link fast-path failed):

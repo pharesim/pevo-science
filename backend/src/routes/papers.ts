@@ -36,6 +36,7 @@ import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { HIVE_ACCOUNT_NAME_REGEX } from '../lib/hive-account-name.js';
 import { HIVE_PERMLINK_FORMAT_REGEX, HIVE_PERMLINK_MAX_LEN } from '../lib/hive-permlink.js';
 import { paperDisciplineField } from '../types/disciplines.js';
+import type { PaperAuthor } from '../types/domain.js';
 import {
   T,
   accreditedVoteCount,
@@ -569,7 +570,7 @@ function buildCumulativeAuthorsForChain(
  * set. Cached as a single value so a Redis hit serves the whole enrichment.
  */
 export interface ChainCumulativeAuthorsResult {
-  authors: Array<Record<string, unknown>>;
+  authors: PaperAuthor[];
   accredited_authors: string[];
 }
 
@@ -631,28 +632,38 @@ export async function resolveChainCumulativeAuthors(
   const cacheKey = `chain-authors:${rootAuthor}:${rootPermlink}`;
 
   if (options.prebuiltChainPosts && options.prebuiltChainPosts.length > 0) {
-    const result = buildChainCumulativeFromPosts(
-      options.prebuiltChainPosts,
-      rootAuthor,
-      rootPermlink,
-      options,
+    // Single-link short-circuit on the prebuilt path: the HAF path returns
+    // null for chain.length === 1 so callers fall back to their own
+    // supersession projection (which preserves bridge-paper `hive: null`
+    // carrier entries that the cumulative-union construction intentionally
+    // strips). Without this guard the prebuilt path writes a stripped
+    // result to the cache, and a subsequent listing/profile call hits the
+    // warm cache and serves the stripped shape instead of the head-meta
+    // projection — a divergence between cached and live shapes that would
+    // surface as a missing-carrier bug on multi-author single-link papers.
+    if (options.prebuiltChainPosts.length === 1) return null;
+    // Route through getOrSet so the epoch guard suppresses the cache write
+    // when /invalidate fires between fetcher-start and resolve. Single-flight
+    // coalescing is a free side-effect: two concurrent same-key callers
+    // (typical for detail-surface write-through racing a listing cold-path)
+    // converge on one fetcher invocation.
+    return hafCache.getOrSet(
+      cacheKey,
+      async () => buildChainCumulativeFromPosts(
+        options.prebuiltChainPosts!,
+        rootAuthor,
+        rootPermlink,
+        options,
+      ),
+      CHAIN_CUMULATIVE_AUTHORS_TTL_MS,
     );
-    // Write-through so a subsequent listing/profile fetch in the next ~30
-    // min hits the warm cache instead of re-walking the chain. The detail
-    // surface is the only path that does the chain walk per-request anyway;
-    // sharing the result is free.
-    await hafCache.set(cacheKey, result, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
-    return result;
   }
 
-  const cached = await hafCache.get<ChainCumulativeAuthorsResult>(cacheKey);
-  if (cached !== undefined) return cached;
-
-  const computed = await computeChainCumulativeFromHaf(rootAuthor, rootPermlink, options);
-  if (computed === null) return null;
-
-  await hafCache.set(cacheKey, computed, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
-  return computed;
+  return hafCache.getOrSet(
+    cacheKey,
+    async () => computeChainCumulativeFromHaf(rootAuthor, rootPermlink, options),
+    CHAIN_CUMULATIVE_AUTHORS_TTL_MS,
+  );
 }
 
 function buildChainCumulativeFromPosts(
@@ -672,7 +683,20 @@ function buildChainCumulativeFromPosts(
   const accredited = authors
     .map((a) => normalizeHiveAccount(a.hive))
     .filter((hive): hive is string => hive !== null && options.accreditedAccounts.has(hive));
-  return { authors, accredited_authors: accredited };
+  // Boundary narrowing: `buildCumulativeAuthorsForChain` returns a looser
+  // `Array<Record<string, unknown>>` because it threads broadcaster-supplied
+  // author objects through the cumulative-union dedup. Entries that survived
+  // the union construction have a normalised `hive` (the dedup key) and the
+  // supersession projection populated the `orcid_verified`/`orcid_discrepancy`
+  // pair. `PaperAuthor.name` is structurally required, but in practice every
+  // entry the construction emits has `name` from the broadcaster's
+  // `pevo.authors[i]` payload (the API contract requires it). The single
+  // `as unknown as PaperAuthor[]` here is the TS-prescribed narrowing for
+  // structurally-trusted object literals — the same pattern `toPaperSummary`
+  // in helpers.ts uses for the head-meta projection. Consumers downstream
+  // get a typed value; only one boundary cast, not a fan-out of casts at
+  // every call site.
+  return { authors: authors as unknown as PaperAuthor[], accredited_authors: accredited };
 }
 
 async function computeChainCumulativeFromHaf(
@@ -711,6 +735,15 @@ async function computeChainCumulativeFromHaf(
     options.memo,
     options.signal,
   );
+  // Empty-versions guard. `reconstructVersionsFromHaf` swallows internal
+  // failures and returns an empty array; without this guard, the
+  // cumulative-union loop downstream would yield an empty authors array
+  // and the surrounding `getOrSet` would treat that non-null value as
+  // cacheable. A subsequent caller would then hit a warm cache returning
+  // an empty authors[] for 30 min — even after HAF recovered. Returning
+  // null here makes `getOrSet` skip the cache write and lets the caller
+  // fall back to the head-meta projection.
+  if (fullVersions.length === 0) return null;
   const latestMetaByLink = new Map<string, Record<string, unknown>>();
   for (const v of fullVersions) {
     latestMetaByLink.set(`${v.post_author}/${v.post_permlink}`, v.json_metadata);
@@ -985,28 +1018,43 @@ async function fetchPapersFromHaf(
     // surface uses. Per-root Redis cache (30 min) absorbs warm pages; cold
     // pages walk in parallel via `Promise.all`. `is_accredited` stays
     // row-author-scoped (singular bool used for filter/sort).
+    //
+    // Wall-clock budget: each per-row helper threads the same `AbortSignal`
+    // bounded by `config.hafWalkerWallClockMs`. Without this, a degraded HAF
+    // could leave each row's chain walk hanging on the 30s
+    // `statement_timeout` per query for the full MAX_HOPS depth; `Promise.all`
+    // parallelises across rows but each row's tail can hang independently.
+    // Mirrors the pattern in `fetchPaperDetailFromHaf` and the `/retract`
+    // handler.
+    const enrichmentAbort = new AbortController();
+    const enrichmentBudget = setTimeout(() => enrichmentAbort.abort(), config.hafWalkerWallClockMs);
     const chainAuthorsByKey = new Map<string, ChainCumulativeAuthorsResult>();
-    await Promise.all(
-      dataResult.rows.map(async (r: Record<string, unknown>) => {
-        const key = `${r.author}/${r.permlink}`;
-        try {
-          const result = await resolveChainCumulativeAuthors(
-            r.author as string,
-            r.permlink as string,
-            {
-              accreditedAccounts: allAccredited,
-              accreditedOrcids: accreditedOrcidsByAccount,
-              accreditationOrcidStatus,
-            },
-          );
-          if (result !== null) chainAuthorsByKey.set(key, result);
-        } catch (err) {
-          // Chain-walk failure for one row must not take down the whole
-          // listing. Fall back to the head-meta projection below.
-          logger.warn({ err, author: r.author, permlink: r.permlink }, 'chain cumulative authors enrichment failed');
-        }
-      }),
-    );
+    try {
+      await Promise.all(
+        dataResult.rows.map(async (r: Record<string, unknown>) => {
+          const key = `${r.author}/${r.permlink}`;
+          try {
+            const result = await resolveChainCumulativeAuthors(
+              r.author as string,
+              r.permlink as string,
+              {
+                accreditedAccounts: allAccredited,
+                accreditedOrcids: accreditedOrcidsByAccount,
+                accreditationOrcidStatus,
+                signal: enrichmentAbort.signal,
+              },
+            );
+            if (result !== null) chainAuthorsByKey.set(key, result);
+          } catch (err) {
+            // Chain-walk failure for one row must not take down the whole
+            // listing. Fall back to the head-meta projection below.
+            logger.warn({ err, author: r.author, permlink: r.permlink }, 'chain cumulative authors enrichment failed');
+          }
+        }),
+      );
+    } finally {
+      clearTimeout(enrichmentBudget);
+    }
 
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {
       const meta = parseMeta(r.json_metadata);
@@ -1038,6 +1086,19 @@ async function fetchPapersFromHaf(
       const headAccreditedAuthors = pevoAuthors
         .map((a) => normalizeHiveAccount(a.hive))
         .filter((hive): hive is string => hive !== null && allAccredited.has(hive));
+      // PaperSummary's contract excludes `affiliation` (that field is
+      // PaperDetail-only). The head-meta projection `authorsWithSupersession`
+      // is already affiliation-free because the SQL helper uses
+      // `includeAffiliation: false` on the listing surface; the cumulative-
+      // union path strips inline here so both branches emit the same shape.
+      // Stripping at the consumer (not in the helper) preserves the detail
+      // surface's legitimate use of `affiliation` on `PaperDetail.authors[]`.
+      const cumulativeAuthors = chainResult?.authors
+        ? chainResult.authors.map((a) => {
+            const { affiliation: _affiliation, ...rest } = a;
+            return rest;
+          })
+        : null;
       return {
         author: r.author,
         permlink: r.permlink,
@@ -1045,7 +1106,7 @@ async function fetchPapersFromHaf(
         abstract: r.abstract,
         discipline: paperDisciplineField(pevo.discipline),
         keywords: pevoStringArray(pevo, 'keywords'),
-        authors: chainResult?.authors ?? authorsWithSupersession,
+        authors: cumulativeAuthors ?? authorsWithSupersession,
         ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
           author: r.author as string,
           permlink: r.permlink as string,
@@ -3268,6 +3329,13 @@ router.post('/:author/:permlink/invalidate', verifyHiveSignature, invalidateLimi
     // edit window would refresh the detail cache immediately but leave
     // the canonical-root mapping cached for up to the full TTL.
     hafCache.invalidatePrefix('canonical-root:'),
+    // Chain-authors cumulative-union entries are root-keyed. The
+    // per-paper invalidate above does not know which root a given paper
+    // belongs to (a continuation post invalidates its own detail but the
+    // chain-authors entry sits under the root pair), so a broad app-wide
+    // prefix flush is the only correct shape. Recompute is cheap and
+    // happens lazily on the next listing/profile/detail call per root.
+    hafCache.invalidatePrefix('chain-authors:'),
   ]);
 
   sendOk(res, { message: 'Cache invalidated' });
