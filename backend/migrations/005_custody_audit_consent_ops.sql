@@ -1,7 +1,7 @@
--- Round-3 of BACKEND-COAUTHOR-TRUST-MODEL — extend custody_audit_log so
--- consent-op broadcasts (author_accept / author_resign) carry the
--- auth-mechanism, session, and user-agent fields ARCH.md "Light-account
--- signing of consent ops" requires.
+-- Migration 005: extend custody_audit_log so consent-op broadcasts
+-- (author_accept / author_resign) carry the auth-mechanism, session, and
+-- user-agent fields that ARCH.md "Light-account signing of consent ops"
+-- requires.
 --
 -- Existing rows have NULL for the new columns. The custody-broadcast
 -- success path keeps writing the same op_type / tx_id / block_num; new

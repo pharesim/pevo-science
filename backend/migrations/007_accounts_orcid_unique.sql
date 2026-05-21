@@ -1,6 +1,6 @@
--- BACKEND-ACCOUNTS-ORCID-UNIQUE-CONSTRAINT — enforce 1:1 ORCID-to-account
--- binding at the database layer as defense-in-depth alongside the route-layer
--- HAF cross-check in findAccreditedAccountWithOrcid.
+-- Migration 007: enforce 1:1 ORCID-to-account binding at the database layer
+-- as defense-in-depth alongside the route-layer HAF cross-check in
+-- findAccreditedAccountWithOrcid.
 --
 -- The route layer (POST /api/orcid/callback handleAccredit + handleLink) already
 -- queries HAF before broadcast and refuses 409 ORCID_ALREADY_LINKED when an
@@ -18,9 +18,8 @@
 --     burning index slots on the NULL rows that dominate the table during
 --     light-account onboarding.
 --
--- Backfill check (acceptance criterion 4): the DO block below scans for
--- existing duplicate ORCIDs and RAISES EXCEPTION before the CREATE UNIQUE
--- INDEX runs. The migration fails loud rather than silently failing partway
+-- Backfill check: the DO block below scans for existing duplicate ORCIDs
+-- and RAISES EXCEPTION before the CREATE UNIQUE INDEX runs. The migration fails loud rather than silently failing partway
 -- through CREATE INDEX with a less obvious "could not create unique index"
 -- error. Operators see exactly which ORCID has duplicates and which
 -- usernames collide, so the conflict can be resolved manually (revoke one,

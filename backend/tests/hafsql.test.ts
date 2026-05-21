@@ -286,7 +286,8 @@ describe('validReviewWhere SQL shape', () => {
     // The parity invariant holds when callers add both this fragment AND
     // their accreditation predicate. Pin the helper's narrow scope here so
     // a future widening that bakes accreditation into the helper (which
-    // would silently break the = ANY($N::text[]) sites at papers.ts:2199)
+    // would silently break the `c.author = ANY($N::text[])` callsites in
+    // the paper-detail review-listing handler in backend/src/routes/papers.ts)
     // fails red.
     const sql = validReviewWhere({ commentAlias: 'c', appTagParam: '$1' });
     expect(sql).not.toContain('active_accreditations');
@@ -297,8 +298,8 @@ describe('validReviewWhere SQL shape', () => {
 /**
  * Real-Postgres behavioral test for validReviewWhere. Uses synthetic JSONB
  * rows assembled via VALUES() — no chain seeds, no HAF reads, fully
- * deterministic against the live Postgres pool. Tests the four valid/
- * invalid axes from the task acceptance criteria:
+ * deterministic against the live Postgres pool. Each axis below pins one
+ * admit/exclude outcome of the rating-shape + review-type-tag gate:
  *
  *   1. Valid review (integer ratings, no app gate) → admitted
  *   2. Valid review with foreign 'app' value → still admitted (gate dropped)
@@ -369,9 +370,10 @@ describe('validReviewWhere behavioral matrix (real Postgres, synthetic JSONB)', 
 
 /**
  * excludeSelfReviewWhere() is the centralized self-review exclusion
- * predicate, mirroring the paper_resolved_votes self-vote exclusion at
- * reputation.ts:551-561 but for review-class content. Every review-
- * aggregating site (paper-detail review list, listing review_count/
+ * predicate, mirroring the inline self-vote exclusion inside the
+ * `paper_resolved_votes` CTE in backend/src/reputation.ts but for
+ * review-class content. Every review-aggregating site (paper-detail
+ * review list, listing review_count/
  * avg_rating, profile reviews, search reviews, stats reviews,
  * reputation's paper_reviews/user_reviews/citing-paper-quality CTEs)
  * MUST compose against this helper.
@@ -423,7 +425,8 @@ describe('excludeSelfReviewWhere SQL shape', () => {
 /**
  * Real-Postgres behavioral test for excludeSelfReviewWhere. Uses
  * synthetic paper+review pairs via VALUES() — no chain dependency.
- * Tests the canaries from the task acceptance criteria:
+ * Each axis below pins one admit/exclude outcome of the parent-author
+ * + co-author-EXISTS conjuncts:
  *
  *   1. Self-review by paper author → excluded
  *   2. Self-review by named co-author → excluded
@@ -529,8 +532,8 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
     }
   });
 
-  // Round-2 hold #1: pin the helper's behavior on malformed `pevo.authors`
-  // shapes that occur on the public chain (anyone can post arbitrary JSON).
+  // Pin the helper's behavior on malformed `pevo.authors` shapes that
+  // occur on the public chain (anyone can post arbitrary JSON).
   // Two failure-mode classes are tested here:
   //   (1) non-array top-level shapes (null, string, integer, object) —
   //       jsonb_array_elements raises a runtime error on a non-array JSONB
@@ -605,12 +608,10 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
     // accepted trade-off: malformed-bare-string entries don't elevate
     // someone into co-author status (and thus don't exclude them from
     // reviewing), but the helper also doesn't crash on the malformed
-    // shape. (Round-2 hold #1 + round-3 hold #2 resolution.)
+    // shape.
     //
     // Behavioral pin: alice excluded (c.author != p.author), bob and
-    // carol both admitted. The expected admit set is the architect's
-    // round-3 resolution, not the round-2 hold-block prose which was
-    // imprecise about admit outcome.
+    // carol both admitted.
     const arrayOfStrings = JSON.stringify({ pevotest: { type: 'paper', authors: ['alice', 'bob'] } });
     const arrayOfNulls = JSON.stringify({ pevotest: { type: 'paper', authors: [null] } });
     const arrayOfObjectsWithoutHive = JSON.stringify({ pevotest: { type: 'paper', authors: [{ name: 'alice' }] } });
@@ -643,7 +644,7 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
       // The helper must NOT raise on malformed shapes (cascade-fail
       // defense), and the first conjunct (c.author != p.author) still
       // excludes the paper author regardless of how malformed authors[]
-      // is. Round-3 hold #2 resolution.
+      // is.
       expect(admitted, `array-of-non-objects shape: ${shapeLabel}`).toEqual(['bob_named_as_string', 'third_party']);
     }
   });
@@ -737,8 +738,8 @@ describe('authorshipClaimsCteBody hive-username auto-accept normalization (real 
 });
 
 /**
- * Round-3 hold #1: pin the cascade-fail defense at `paper_resolved_votes`
- * CTE in `reputation.ts`. The CTE has its own inline
+ * Pin the cascade-fail defense at the `paper_resolved_votes` CTE in
+ * backend/src/reputation.ts. The CTE has its own inline
  * `jsonb_array_elements(up.json_metadata -> $3 -> 'authors')` shape — it
  * does NOT route through `excludeSelfReviewWhere`. Without a CASE-WHEN
  * `jsonb_typeof = 'array'` guard, a chain post broadcasting non-array
@@ -749,9 +750,9 @@ describe('authorshipClaimsCteBody hive-username auto-accept normalization (real 
  * against synthetic VALUES() rows under real Postgres, asserting:
  *   (1) malformed top-level shapes (null/string/integer/object) do NOT raise
  *       and admit the third-party voter as expected
- *   (2) the inner `jsonb_typeof(a) = 'object'` guard mirrors the helper's
- *       round-2 hold #1 tightening so bare-string elements don't admit a
- *       named-string co-author voter
+ *   (2) the inner `jsonb_typeof(a) = 'object'` guard mirrors
+ *       `excludeSelfReviewWhere`'s object-type tightening so bare-string
+ *       elements don't admit a named-string co-author voter
  *
  * Carve-out clause-(c): synthetic-VALUES is justified because seeding the
  * full reputation cycle's `user_papers` + `paper_latest_votes` chain with
@@ -918,9 +919,10 @@ describe('paper_resolved_votes NOT EXISTS subquery cascade-fail defense (real Po
 });
 
 /**
- * Round-4 hold #1: pin the cascade-fail defense at `citing_papers` CTE in
- * `reputation.ts`. The CTE uses `CROSS JOIN LATERAL jsonb_array_elements
- * (citing.json_metadata -> $3 -> 'citations')` to walk the citations array.
+ * Pin the cascade-fail defense at the `citing_papers` CTE in
+ * backend/src/reputation.ts. The CTE uses `CROSS JOIN LATERAL
+ * jsonb_array_elements(citing.json_metadata -> $3 -> 'citations')` to
+ * walk the citations array.
  * Postgres evaluates LATERAL BEFORE the WHERE clause, so a pre-existing
  * `WHERE jsonb_typeof(...) = 'array'` guard was a placebo — the SRF
  * expanded first on every row regardless of the WHERE filter. A chain

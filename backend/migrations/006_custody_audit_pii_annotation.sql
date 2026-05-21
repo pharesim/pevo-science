@@ -1,5 +1,5 @@
--- BACKEND-CUSTODY-AUDIT-PII-ANNOTATION — annotate `custody_audit_log.user_agent`
--- as PII-derived per GDPR / CNPD (Portugal). The column was added in
+-- Migration 006: annotate `custody_audit_log.user_agent` as PII-derived per
+-- GDPR / CNPD (Portugal). The column was added in
 -- `005_custody_audit_consent_ops.sql` to satisfy ARCH.md "Light-account signing
 -- of consent ops" (auth_mechanism + session_id + user_agent for consent-op
 -- broadcasts). The raw HTTP `User-Agent` header can carry OS version, browser
