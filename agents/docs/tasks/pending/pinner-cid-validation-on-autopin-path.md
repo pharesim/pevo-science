@@ -36,3 +36,8 @@ Add `ValidateCID` defensively at two layers:
 ## References
 
 - Audit chunk: `.context/audit-2026-04-21/chunk-6-correctness-reviewer.md` (P0: CID path traversal from HAF).
+
+## Architect re-review (2026-05-21) — HELD PENDING FIXES:
+
+- **Discovery filter `ValidateCID` integration is untested.** Acceptance bullet 1 in this task is unmet at the test-suite level: deleting any of the three `ValidateCID(...)` calls in `pinner/discovery.go` `refresh()` (paper CID path, supplementary CIDs path, inline-image CIDs path) leaves all tests green. `validation_test.go` covers the validator function in isolation and the backend entry points; the discovery-level integration is dark to the suite. Add table-driven tests that exercise the three call sites with traversal/junk payloads (`../../../etc/passwd`, empty string, NUL byte, mixed-case malformed CID) and assert the `dropped` counter increments and the item is excluded from the `DiscoveredItem` slice yielded to autopin. Prefer extracting a per-row helper that can be driven in memory over stubbing `sql.Rows`.
+- **Pinata backend builds URL path/query from CID without escaping.** `pinner/pinata.go` `Unpin` and `IsPinned` interpolate the CID into the URL via `fmt.Sprintf`. The `ValidateCID` regex this task adds is conservative enough that no dangerous characters can reach the URL builder today, so this is defense-in-depth, not an active bypass. Add `url.PathEscape(cid)` for path segments and `url.QueryEscape(cid)` for query parameters so the regex narrowing stops being load-bearing for URL safety. No new test required — existing Pinata tests should still pass; the change is purely additive at the URL-construction layer.

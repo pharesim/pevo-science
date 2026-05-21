@@ -39,4 +39,9 @@ Enforce a configurable byte ceiling on gateway fetches:
 ## References
 
 - Audit chunk: `.context/audit-2026-04-21/chunk-6-correctness-reviewer.md` (P0: no response-size limit).
-- Pairs with: `pinner-content-hash-verify-on-pin.md`.
+- Original pair `pinner-content-hash-verify-on-pin.md` archived 2026-05-21 as superseded by `pinner-embedded-ipfs-node-via-boxo.md` (the hash-verify approach was structurally non-functional for real `ipfs add`-produced content; see archive entry). The size-cap commit stands on its own merits while the boxo rewrite is pending — it bounds bytes-per-gateway-attempt regardless of whether downstream verification is present.
+
+## Architect re-review (2026-05-21) — HELD PENDING FIXES:
+
+- **Test comment anchors on coordination state instead of a stable symbol.** `pinner/sizecap_test.go:69-71` has `// Use a content/CID pair so hash verification (added after this task) also passes`. The phrase "(added after this task)" is task-coordination state, prohibited by CLAUDE.md "Comment anchors" in test source. Replace with a behavioral anchor: `// Use a content/CID pair so the hash-verify path in EmbeddedNode.Pin also passes` (anchors on the function name). Note that the hash-verify path itself is now superseded by the boxo rewrite, but the comment fix is independent and lives wherever this test file lives.
+- **Env var name breaks pinner naming convention.** This task introduced `PINNER_MAX_PIN_BYTES` while every other pinner env var (`PORT`, `GATEWAY_PORT`, `HAF_DATABASE_URL`, `REFRESH_INTERVAL`, `APP_TAG`, `DATA_DIR`, `PINATA_API_KEY`) is unprefixed; the CLI flag `--max-pin-bytes` is already correctly unprefixed. Rename the env var to `MAX_PIN_BYTES` for three-way consistency. After the rename lands and this task moves back to `review/`, the architect updates `.env.example` (currently missing the entry entirely) and the `agents/pinner/CLAUDE.md` configuration table (also missing `MAX_PIN_BYTES` / `--max-pin-bytes`) as part of the re-review's archive step.
