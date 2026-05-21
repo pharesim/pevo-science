@@ -40,3 +40,41 @@ Bind `auth_token` to the browser session that initiated the signup:
   - `.context/audit-2026-04-21/chunk-1-security-sentinel.md` (P1: auth_token is password-equivalent).
   - `.context/audit-2026-04-21/chunk-1-adversarial-reviewer.md` (P1: same).
 - Related cross-cutting theme: "Token as credential" pattern in `.context/audit-2026-04-21/SUMMARY.md` § Cross-cutting themes #2.
+
+## [TODO Architect] — auth API contract updates
+
+The backend implementation introduces the following changes to the auth domain
+that need reflecting in `agents/docs/api-contracts/auth.md`:
+
+1. **`POST /api/auth/confirm` and `POST /api/auth/link` now require an httpOnly
+   `pevo_signup_session` cookie.** The cookie is minted by `POST /api/auth/signup`
+   (ORCID-direct path), `POST /api/auth/verify`, and `POST /api/auth/resume-signup`.
+   When the cookie is missing or its SHA-256 does not match the row's stored
+   `signup_binding_hash`, both routes return `400 BAD_REQUEST` with the SAME
+   message as an invalid auth_token (`"Invalid or expired auth token"` for
+   `/confirm`, `"Invalid or expired link request"` for `/link`) so no
+   token-validity oracle is exposed. Cookie attributes: `httpOnly`, `sameSite=lax`,
+   `secure` in production, `path=/api/auth`, 24h max-age.
+
+2. **`POST /api/auth/login` PENDING_SIGNUP response no longer carries
+   `auth_token`.** The 409 body's `data` now contains only `{ email }`. The SPA
+   must direct the user back through `POST /api/auth/resume-signup` (or the
+   verification email link) to obtain a fresh cookie binding before
+   `/confirm`/`/link`.
+
+3. **New rate limit on `/confirm` and `/link`: 5 requests per auth_token per
+   hour** (layered on top of the existing 10/IP/hour). Brute-force attempts
+   against the same token from rotated IPs share the budget.
+
+4. **Stuck-account recovery (Option C) bypasses the binding check** on both
+   routes because Hive-account ownership is already proved by `posting_private`
+   (for `/confirm`) or `verifyHiveSignature` (for `/link`).
+
+Migration `010_accounts_signup_binding_hash.sql` adds the nullable BYTEA
+column. The architect should also note in `ARCHITECTURE.md` § 6.x that the
+PENDING_SIGNUP → CONFIRM transition now requires the session-binding cookie
+as an additional auth factor alongside the auth_token.
+
+A frontend follow-up will also be needed (UI agent task): update
+`/signup/verify` to handle the case where login PENDING_SIGNUP no longer
+provides `auth_token` (force a re-resume-signup with password to re-bind).
