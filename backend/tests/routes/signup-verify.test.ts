@@ -78,6 +78,15 @@ let dbReachable = false;
   }
 }
 
+// Test-environment bootstrap: see signup-verify-session-binding.test.ts
+// for the rationale. ADD COLUMN IF NOT EXISTS is idempotent and does not
+// violate the migrations-as-sole-authority contract — the operator-driven
+// `./deploy.sh migrate` flow would apply exactly the same DDL.
+if (dbReachable) {
+  const pool = getAppPool()!;
+  await pool.query('ALTER TABLE accounts ADD COLUMN IF NOT EXISTS signup_binding_hash BYTEA').catch(() => {});
+}
+
 async function cleanupByEmail(email: string) {
   if (!dbReachable) return;
   const pool = getAppPool()!;

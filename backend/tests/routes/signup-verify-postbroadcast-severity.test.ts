@@ -111,6 +111,14 @@ let dbReachable = false;
   }
 }
 
+// Test-environment bootstrap: see signup-verify-session-binding.test.ts
+// for the rationale. The migration's ADD COLUMN IF NOT EXISTS is the same
+// DDL the operator-driven `./deploy.sh migrate` flow applies.
+if (dbReachable) {
+  const pool = getAppPool()!;
+  await pool.query('ALTER TABLE accounts ADD COLUMN IF NOT EXISTS signup_binding_hash BYTEA').catch(() => {});
+}
+
 async function cleanupByUsername(username: string) {
   if (!dbReachable) return;
   const pool = getAppPool()!;

@@ -96,6 +96,19 @@ let dbReachable = false;
   }
 }
 
+// Test-environment bootstrap: in CI / dev where the operator has not yet
+// run `./deploy.sh migrate` since the column was added, the
+// signup_binding_hash column may be missing. Apply the migration's
+// idempotent ADD COLUMN IF NOT EXISTS clause directly so this suite can
+// run regardless. Production paths always go through deploy.sh migrate;
+// this is a test-only convenience that does not violate the
+// migrations-as-sole-authority contract because the same DDL would be
+// applied by the operator anyway.
+if (dbReachable) {
+  const pool = getAppPool()!;
+  await pool.query('ALTER TABLE accounts ADD COLUMN IF NOT EXISTS signup_binding_hash BYTEA').catch(() => {});
+}
+
 async function cleanupByEmail(email: string) {
   if (!dbReachable) return;
   const pool = getAppPool()!;
@@ -164,6 +177,11 @@ describe.skipIf(!dbReachable)('/confirm rejects cross-session replay of a leaked
   });
 
   it('session B with session A\'s leaked auth_token but no/wrong cookie gets 400 (same shape as invalid token)', async () => {
+    // Reseed inside the it() body so vitest's `retry:1` (set in
+    // backend/vitest.config.ts) replays cleanly — the previous attempt
+    // left a row with this email/orcid and consumed the orcid nonce.
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
     await clearRateLimitKeys(['auth-signup', 'signup-confirm', 'signup-confirm-token']);
     await seedOrcidNonce(nonce, orcidId);
 
@@ -268,6 +286,8 @@ describe.skipIf(!dbReachable)('/link rejects cross-session replay of a leaked au
   }
 
   it('session B with leaked auth_token + signed request but no cookie gets 400', async () => {
+    await cleanupByUsername(linkUser);
+    await cleanupByEmail(email);
     await clearRateLimitKeys(['auth-signup', 'signup-link', 'signup-link-token']);
     await seedOrcidNonce(nonce, orcidId);
 
@@ -296,8 +316,8 @@ describe.skipIf(!dbReachable)('/link rejects cross-session replay of a leaked au
     });
 
     const body = { auth_token: authToken };
-    const timestamp = new Date().toISOString();
-    const signature = signLink(body, timestamp);
+    const attackTimestamp = new Date().toISOString();
+    const attackSignature = signLink(body, attackTimestamp);
 
     // Attack: session B presents the leaked auth_token AND a valid signed
     // request from a Hive account they control, but NO binding cookie.
@@ -305,8 +325,8 @@ describe.skipIf(!dbReachable)('/link rejects cross-session replay of a leaked au
     const attack = await request(app)
       .post('/api/auth/link')
       .set('X-Hive-Username', linkUser)
-      .set('X-Hive-Signature', signature)
-      .set('X-Hive-Timestamp', timestamp)
+      .set('X-Hive-Signature', attackSignature)
+      .set('X-Hive-Timestamp', attackTimestamp)
       .send(body);
     expect(attack.status).toBe(400);
     expect(attack.body.status).toBe('error');
@@ -314,11 +334,17 @@ describe.skipIf(!dbReachable)('/link rejects cross-session replay of a leaked au
     expect(attack.body.data?.token).toBeFalsy();
 
     // Session A completes successfully when it presents its own cookie.
+    // Use a fresh timestamp + signature: the replay-prevention cache in
+    // verifyHiveSignature rejects the same signature value twice, so the
+    // legit call must sign anew (one second later is enough — the
+    // assembled hash differs on timestamp alone).
+    const legitTimestamp = new Date(Date.now() + 1000).toISOString();
+    const legitSignature = signLink(body, legitTimestamp);
     const legit = await request(app)
       .post('/api/auth/link')
       .set('X-Hive-Username', linkUser)
-      .set('X-Hive-Signature', signature)
-      .set('X-Hive-Timestamp', timestamp)
+      .set('X-Hive-Signature', legitSignature)
+      .set('X-Hive-Timestamp', legitTimestamp)
       .set('Cookie', sessionACookies)
       .send(body);
     expect(legit.status).toBe(200);
