@@ -111,6 +111,17 @@ export async function initAppDb(): Promise<void> {
       ADD COLUMN IF NOT EXISTS session_id TEXT,
       ADD COLUMN IF NOT EXISTS user_agent TEXT;
 
+    -- Make username nullable so the DELETE /api/settings/email handler can
+    -- anonymize prior audit rows (UPDATE … SET username = NULL) instead of
+    -- DELETEing them. Anonymize-on-delete preserves the forensic trail
+    -- (operation_type + timestamp survive) across the right-to-erasure path.
+    -- Mirrors migrations/009_audit_log_fk_anonymize.sql for the
+    -- fresh-container bootstrap path (initAppDb runs before migrations on a
+    -- new node), so the DELETE /api/settings/email transaction's UPDATE
+    -- succeeds against a freshly-bootstrapped DB.
+    ALTER TABLE custody_audit_log
+      ALTER COLUMN username DROP NOT NULL;
+
     CREATE INDEX IF NOT EXISTS idx_custody_audit_username ON custody_audit_log(username);
     CREATE INDEX IF NOT EXISTS idx_custody_audit_created ON custody_audit_log(created_at);
 
