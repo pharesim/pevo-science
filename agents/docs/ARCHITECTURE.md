@@ -209,7 +209,7 @@ When the chain head's metadata is overlaid on the displayed paper, fields are go
 | Field | Rule |
 |---|---|
 | `pevo.authors[]` | Consent-gated. Additions allowed (claimed-pending until accept). Removals only via the resigning author's own `author_resign` op. See "Authors mutation" below. |
-| `ipfs_cid`, `document_hash`, `ipfs_filename` | Per-version. Each chain post carries its own; the head's wins for the default view, prior versions accessible via `?version=N`. All historical CIDs preserved on chain (Hive immutability) AND on PEvO's IPFS pinner (see "Pinner constraint" below). |
+| `ipfs_cid`, `document_hash`, `ipfs_filename` | Per-version. Each chain post carries its own; the head's wins for the default view, prior versions accessible via `?version=N`. All historical CIDs preserved on chain (Hive immutability) AND on community-operated pinners (see "Pinner constraint" below). |
 | `title`, `body`, `abstract`, `citations`, `keywords`, `discipline`, `tags`, `language`, `supplementary_files`, `addresses_reviews` | Free-edit by any vouched author via continuation. Risk accepted. Deterrents: on-chain audit (broadcaster-attributed), accreditation revocation, original-author re-edit power. |
 
 
@@ -284,7 +284,11 @@ The flag-day deploy depends on two follow-up surfaces shipping concurrently: a b
 
 #### Pinner constraint
 
-PEvO's IPFS pinning service must retain pins for every CID that has appeared in an admitted chain post's `pevo.ipfs_cid`, `pevo.document_hash`, or `pevo.supplementary_files[].cid`, for the lifetime of the paper. Unpinning is only allowed when the paper itself is retracted (separate flow). This invariant is what makes the per-version preservation rule for `ipfs_cid`/`document_hash` operationally meaningful: prior versions remain retrievable, not just identifiable. The pinner agent owns the operational implementation of this invariant; see `agents/pinner/CLAUDE.md` for the discovery-and-retention pipeline.
+PEvO relies on community-operated IPFS pinners to retain pins for every CID that has appeared in an admitted chain post's `pevo.ipfs_cid`, `pevo.document_hash`, or `pevo.supplementary_files[].cid`, for the lifetime of the paper. Unpinning is only allowed when the paper itself is retracted (separate flow). This invariant is what makes the per-version preservation rule for `ipfs_cid`/`document_hash` operationally meaningful: prior versions remain retrievable, not just identifiable.
+
+Pinner implementation lives in [`pharesim/pevo-pinner`](https://github.com/pharesim/pevo-pinner) (extracted from PEvO main on 2026-05-21). See that repo's `agents/docs/ARCHITECTURE.md` for the discovery pipeline (HAF SQL filtered by `APP_TAG`), autopin rule engine, embedded-IPFS-node backend, and the retention invariant's operational implementation. Community deployments discover paper CIDs entirely via HAF; there is no PEvO → pinner call path.
+
+**Drift note.** Changes to the HAF discovery query consumed by pevo-pinner (the `hafsql.comments` filter shape, `json_metadata -> '<APP_TAG>'` field access, or `APP_TAG`-coupled assumptions) are breaking changes for community deployments. Flag pinner-impacting changes in the PR description so community operators can coordinate updates.
 
 ### Review (Hive comment on a paper)
 

@@ -98,7 +98,7 @@ The runtime-authoritative ownership map for commit-time enforcement is `.githook
 - `.env.example`, `deploy.sh`
 - `README.md`, `LICENSE`, `.gitignore`
 - `CLAUDE.md` (root) — project-wide conventions and agent coordination rules
-- `agents/*/CLAUDE.md` — per-agent protocol files (architect/backend/ui/pinner)
+- `agents/*/CLAUDE.md` — per-agent protocol files (architect/backend/ui)
 - `.githooks/**` — repo-local git hooks (commit-msg zone audit + future hooks)
 
 **Architect-self-task creation.** For tasks the architect both creates and implements (architect-owned design/refactor work), the file may be created directly in `tasks/review/` rather than passing through `tasks/pending/` — the pending→review trail adds no audit value when author and implementer are the same agent. For tasks the architect creates for OTHER agents to implement (the normal case), the file MUST go in `tasks/pending/` first; the implementer `git mv`s it to `review/` when done.

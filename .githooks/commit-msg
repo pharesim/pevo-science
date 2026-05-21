@@ -28,7 +28,7 @@ set -euo pipefail
 
 # Agent prefix set — used in BOTH the recognition regex (line ~50) and the
 # case statement (line ~85). When adding a role, update both.
-readonly AGENT_PATTERN='architect|backend|ui|pinner'
+readonly AGENT_PATTERN='architect|backend|ui'
 
 msg_file="${1:-}"
 [ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
@@ -153,9 +153,6 @@ allowed_for_agent() {
       ;;
     ui)
       [[ "$path" =~ ^frontend/ ]] && return 0
-      ;;
-    pinner)
-      [[ "$path" =~ ^pinner/ ]] && return 0
       ;;
   esac
   return 1

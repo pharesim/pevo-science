@@ -224,7 +224,6 @@ run_case "T-3c backend stages tasks/blocked/own task → accept"   0 "backend: o
 echo
 echo "=== Other coverage ==="
 run_case "T9 ui stages frontend/ → accept"                 0 "ui: tweak"             "frontend/src/main.js"
-run_case "T10 pinner stages pinner/ → accept"              0 "pinner: gc fix"        "pinner/foo.go"
 run_case "T11 architect stages root CLAUDE.md → accept"    0 "architect: tweak"      "CLAUDE.md"
 run_case "T12 architect stages backend CLAUDE.md → accept" 0 "architect: per-agent"  "agents/backend/CLAUDE.md"
 run_case "T13 architect stages .githooks → accept"         0 "architect: hook"       ".githooks/commit-msg"

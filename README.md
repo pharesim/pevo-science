@@ -103,9 +103,10 @@ pevo/
     ARCHITECTURE.md                  System design (single source of truth)
   backend/                           Node.js + Express API (types in src/types/)
   frontend/                          Alpine.js SPA (Vite build, served by backend)
-  pinner/                            Community pinner — standalone Go binary with embedded IPFS node
   scripts/                           Backup and deployment utilities
 ```
+
+**Community pinners.** The IPFS pinning service that retains paper CIDs against PEvO's retention invariant lives in its own repo at [`pharesim/pevo-pinner`](https://github.com/pharesim/pevo-pinner). It discovers content via HAF SQL filtered by `APP_TAG`; there is no PEvO → pinner call path. Operators with disk space and a `HAF_DATABASE_URL` can help host PEvO's content by running it.
 
 ### Running E2E tests
 
@@ -216,7 +217,7 @@ This project uses AI coding assistance (Claude Code, compound engineering) for i
 The agent configuration is committed for transparency:
 
 - [CLAUDE.md](CLAUDE.md) — project-wide instructions for all AI agents
-- [agents/architect/](agents/architect/), [agents/backend/](agents/backend/), [agents/ui/](agents/ui/), [agents/pinner/](agents/pinner/) — role-specific agent instructions
+- [agents/architect/](agents/architect/), [agents/backend/](agents/backend/), [agents/ui/](agents/ui/) — role-specific agent instructions
 - [agents/docs/ARCHITECTURE.md](agents/docs/ARCHITECTURE.md) — system design
 - [agents/docs/api-contracts/](agents/docs/api-contracts/) — API contract specifications
 - [agents/docs/tasks](agents/docs/tasks) — task tracking between agents
