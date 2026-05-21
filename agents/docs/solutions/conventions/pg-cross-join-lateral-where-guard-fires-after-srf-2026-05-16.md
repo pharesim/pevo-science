@@ -80,13 +80,9 @@ This is a SEPARATE concern from the outer array-guard — see `pg-jsonb-null-vs-
 
 ## Why This Matters
 
-The Postgres documentation describes LATERAL evaluation order plainly, but the WHERE-clause-after-LATERAL anti-pattern reads as protective and passes code review repeatedly. In PEvO this trap defeated TWO rounds of review:
+The Postgres documentation describes LATERAL evaluation order plainly, but the WHERE-clause-after-LATERAL anti-pattern reads as protective and passes code review repeatedly. In PEvO this trap defeated multiple rounds of review on the reputation-cycle CTEs (`paper_resolved_votes`, `citing_papers`) and on listing-path helpers (`authorsWithSupersessionSelect`, `profile`/`stats` per-user CTEs) before independent reviewers converged on the actual evaluation order. A WHERE-clause `jsonb_typeof(...) = 'array'` guard on a `CROSS JOIN LATERAL jsonb_array_elements(...)` reads exactly like the safe shape but provides zero protection.
 
-- Round-3 hold on `reputation.ts:paper_resolved_votes` (BACKEND-SELF-REVIEW-EXCLUSION-EVERYWHERE) called out one site as the cascade-fail vector and explicitly stated that sibling sites at `profile.ts`, `stats.ts`, and `reputation.ts:799` (citing_papers CTE) "all have the `jsonb_typeof = 'array'` guard" and were therefore safe.
-- Round-4 fix wrapped the named site with CASE-WHEN at argument position and added behavioral tests.
-- Round-4 `/ce-code-review` re-audit caught that the sibling sites were NOT safe — their WHERE-clause guards fire AFTER the LATERAL SRF expands. Reliability + adversarial + learnings-researcher independently converged on the trap.
-
-The cycle-cascade blast radius matters: a SINGLE chain post with malformed `pevo.authors` or `pevo.citations` crashes `computeReputationBatch` for EVERY user until the malformed post is edited or removed. The architect cannot patch the data (chain is the source of truth); the only mitigation is upgrading every PEvO instance to a defended build.
+The cycle-cascade blast radius matters: a SINGLE chain post with malformed `pevo.authors` or `pevo.citations` crashes `computeReputationBatch` for EVERY user until the malformed post is edited or removed. The architect cannot patch the data (chain is the source of truth); the only mitigation is upgrading every PEvO instance to a defended build. The listing-path sites (`authorsWithSupersessionSelect` consumed by `/api/papers`, the profile/stats per-user CTEs) have narrower per-request blast radius but the same shape.
 
 ## When to Apply
 
@@ -98,7 +94,7 @@ The cycle-cascade blast radius matters: a SINGLE chain post with malformed `pevo
 
 ### Correct (CASE-WHEN at SRF argument position)
 
-`backend/src/hafsql.ts:371-376` (`excludeSelfReviewWhere` helper, the reference implementation):
+The reference implementation is `excludeSelfReviewWhere` in `backend/src/hafsql.ts` — the NOT EXISTS subquery guards `p.json_metadata -> $tag -> 'authors'` with a CASE-WHEN at SRF argument position, then layers an inner `jsonb_typeof(auth) = 'object'` element-shape guard inside the subquery's WHERE clause:
 
 ```sql
 NOT EXISTS (
@@ -113,21 +109,19 @@ NOT EXISTS (
 )
 ```
 
-`backend/src/reputation.ts:607-615` (`paper_resolved_votes` CTE — landed via BACKEND-SELF-REVIEW-EXCLUSION-EVERYWHERE round-4, explicit defensive-cascade comment at lines 588-600).
+Sibling sites in the cycle-cascade class — the `paper_resolved_votes` CTE and the `citing_papers` CTE in `computeReputationBatch` — use the same CASE-WHEN-at-SRF-arg shape. The listing-path helper `authorsWithSupersessionSelect` in `backend/src/hafsql.ts` and the per-user CTEs in `backend/src/routes/profile.ts` + `backend/src/routes/stats.ts` use the same shape with narrower (per-request) blast radius.
 
 ### Anti-pattern (WHERE-clause guard after LATERAL — fires too late)
 
-`backend/src/reputation.ts:793-799` (`citing_papers` CTE — held back for round-5 fix):
-
 ```sql
-CROSS JOIN LATERAL jsonb_array_elements(citing.json_metadata -> $3 -> 'citations') AS cit
+CROSS JOIN LATERAL jsonb_array_elements(citing.json_metadata -> $tag -> 'citations') AS cit
 ...
-WHERE jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'   -- ❌ TOO LATE
+WHERE jsonb_typeof(citing.json_metadata -> $tag -> 'citations') = 'array'   -- ❌ TOO LATE
 ```
 
-Same shape: `backend/src/routes/profile.ts:137-143`, `backend/src/routes/stats.ts:70-72`. Tracked by `backend-jsonb-array-elements-lateral-guard-sweep.md`.
+Postgres expands the LATERAL SRF on every input row before applying the WHERE filter. A non-array `citations` value crashes `jsonb_array_elements` before the WHERE clause has a chance to reject the row. Same trap on `pevo.authors` (`authorsWithSupersessionSelect`'s ancestor shape) and `image` array fields in IPFS-pin checks.
 
-Worse anti-pattern (no guard at all): `backend/src/routes/notification-queries.ts:329, 358` — unguarded `jsonb_array_elements(... -> 'citations')` on per-user notification queries.
+Worse anti-pattern: no guard at all. The unguarded form has the same failure mode but reads as "we didn't think about it" rather than "we thought about it and got the placement wrong"; both crash identically.
 
 ### Migration pattern
 
