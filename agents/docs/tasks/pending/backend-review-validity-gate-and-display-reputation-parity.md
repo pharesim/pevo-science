@@ -633,3 +633,31 @@ Round-5's sole hold item (item 1, P3) addressed in a single focused commit touch
   - `agents/docs/ARCHITECTURE.md` lines 466-468 (pre-task SSoT state).
   - NEW carry-forward from round-5: `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` clause-(b) wording refresh.
 - Real-signature integration companion for `/api/notifications` flagged in the rewritten header but not filed as a task in this commit — architect can decide at archive whether the gap warrants a standalone task or whether the clause-(b) refinement's "focus IS authentication" wording in CLAUDE.md is sufficient policy for the notifications domain (the focus here is SQL shape, not auth).
+
+---
+
+## Architect re-review (2026-05-21) — HELD PENDING FIXES (round 6)
+
+`/ce-code-review` on commit `3add48c6` with 5 reviewers (correctness on Opus; testing, maintainability, project-standards, learnings-researcher on Sonnet). `ce-agent-native-reviewer` skipped. Architect verified the testing reviewer's factual claim by reading `backend/tests/routes/auth.test.ts` directly. The round-5 fix successfully removed the over-claim ("notifications.test.ts exercises real verifyHiveSignature") but introduced the opposite error — an under-claim. The downgraded docstring is factually wrong about coverage absence.
+
+### Items to address
+
+**1. (P2) Round-5 docstring's "no real-`verifyHiveSignature` integration test currently exists in the notifications domain" is factually wrong — `auth.test.ts` covers exactly this risk class for `/api/notifications`.**
+
+**Where:** `backend/tests/routes/notifications-arm-sql-shape.test.ts:20-27` (the rewritten clause-(b) header introduced by round-6 commit `3add48c6`).
+
+**Why:** Architect-verified. Testing reviewer at conf 90 traced the route's actual call sequence; architect verified by grepping `auth.test.ts`. The file `backend/tests/routes/auth.test.ts` does NOT hoist `MOCK_VERIFY_SIGNATURE` — it stubs `hive.js getAccounts` only, to publish a deterministic test public key so the REAL cryptographic verification path proceeds. The file then exercises `/api/notifications` against real `verifyHiveSignature` middleware in at least 6 places (lines 114, 125, 136, 145, 193, 219). Two are explicitly labeled rejection-path tests: the cross-endpoint replay rejection at lines 188-200 (signature bound to `/api/auth/session` must not authenticate `/api/notifications`) and the malformed-signature 401 rejection at lines 217-226 ("real middleware runs").
+
+The clause-(c) real-path companion for the cryptographic-verification risk class on `/api/notifications` is `auth.test.ts`, NOT a follow-up. The rewritten docstring should cite it. The bonus residual gap — that no test exercises a *valid, correctly-bound* Hive signature that successfully authenticates a `GET /api/notifications` and proceeds to HAF — is genuinely pre-existing and narrower than the round-5 wording implies; it can be flagged honestly without claiming the broader rejection-path companion doesn't exist.
+
+**Fix:** Rewrite the clause-(b) header to accurately cite `auth.test.ts` as the real-path companion. Drop the "no separate task filed yet" coordination phrasing per CLAUDE.md "Comment anchors" — coordination state in test source rots. Suggested wording (implementer can adapt):
+
+> Per `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`. This file's focus is SQL-shape predicates, NOT cryptographic verification behavior, so the carve-out's clause-(b) refinement permits the fixture: the 401-on-missing-header gate and username-extraction behavior are preserved; only the cryptographic signature check is bypassed. The clause-(c) real-path companion for the cryptographic-verification risk class on `/api/notifications` is `auth.test.ts` — it does NOT hoist `MOCK_VERIFY_SIGNATURE`, exercises real `verifyHiveSignature` against signed requests, and pins the cross-endpoint-replay rejection and malformed-signature rejection paths for this route. The narrower residual gap — a real-signature successful authentication test that proceeds to HAF on `/api/notifications` — is not currently covered.
+
+### Findings dismissed at triage (no action)
+
+- Round-5 finding M1 ("no separate task filed yet" coordination state) is subsumed by item 1 above — the rewritten docstring drops the coordination phrasing.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Single-item hold; one focused commit touching only `notifications-arm-sql-shape.test.ts`.
