@@ -26,6 +26,13 @@ import {
   type HandleBroadcastErrorOpts,
   type PostBroadcastFailedStep,
 } from '../lib/broadcast-error.js';
+import {
+  mintBinding,
+  setBindingCookie,
+  clearBindingCookie,
+  extractBindingCookie,
+  verifyBinding,
+} from '../signup-session-binding.js';
 
 const router = Router();
 
@@ -76,6 +83,46 @@ const resumeLimiter = rateLimit({ name: 'signup-resume', windowMs: 3_600_000, ma
 const confirmLimiter = rateLimit({ name: 'signup-confirm', windowMs: 3_600_000, max: 10, keyFn: byIp });
 const linkLimiter = rateLimit({ name: 'signup-link', windowMs: 3_600_000, max: 10, keyFn: byIp });
 
+/**
+ * Per-auth_token rate-limit for /confirm and /link.
+ *
+ * The IP limiters above (`confirmLimiter`, `linkLimiter`) bound brute-force
+ * attempts from a single IP, but an attacker rotating IPs (residential
+ * proxies, botnet) can bypass them and burn through the 32-byte auth_token
+ * space against any single pending row. Layering a per-token limiter on top
+ * means every attempt against a specific auth_token value counts against a
+ * shared budget regardless of source IP — so the brute-forcer pays a
+ * rate-cost on the dimension they were trying to amplify across.
+ *
+ * The key falls back to the IP when no auth_token is present in the body
+ * (malformed request); that case is already covered by the upstream IP
+ * limiter, so the fallback is essentially a no-op + double-spend on the IP
+ * bucket, which is acceptable for the malformed-body path.
+ *
+ * The window is the same 1h as the IP limiters; max is intentionally
+ * tighter (5 vs. 10) because the per-token surface is a much narrower
+ * brute-force vector than per-IP and a legitimate user needs at most one
+ * /confirm or one /link per auth_token.
+ */
+function byAuthToken(req: Request): string {
+  const token = req.body?.auth_token;
+  if (typeof token === 'string' && token.length > 0) return `tok:${token}`;
+  return `ip:${byIp(req)}`;
+}
+
+const confirmTokenLimiter = rateLimit({
+  name: 'signup-confirm-token',
+  windowMs: 3_600_000,
+  max: 5,
+  keyFn: byAuthToken,
+});
+const linkTokenLimiter = rateLimit({
+  name: 'signup-link-token',
+  windowMs: 3_600_000,
+  max: 5,
+  keyFn: byAuthToken,
+});
+
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/verify — Verify email token (SF3)
 // Marks account as confirmed, returns { flow: 'choose' }
@@ -109,13 +156,20 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'BAD_REQUEST', 'Verification token has expired');
     }
 
-    // Mark as confirmed with a random token
+    // Mark as confirmed with a random token. Mint a fresh browser-session
+    // binding for this row: any prior binding (e.g., from /signup on a
+    // different browser) is overwritten so that whichever browser clicked
+    // the verification email link is the one bound for the upcoming
+    // /confirm or /link ceremony. See `signup-session-binding.ts` for the
+    // threat model.
     const confirmed = `confirmed:${crypto.randomBytes(32).toString('hex')}`;
+    const binding = mintBinding();
     await pool.query(
-      'UPDATE accounts SET verify_token = $1 WHERE id = $2',
-      [confirmed, account.id],
+      'UPDATE accounts SET verify_token = $1, signup_binding_hash = $2 WHERE id = $3',
+      [confirmed, binding.hash, account.id],
     );
 
+    setBindingCookie(res, binding.cookieValue);
     sendOk(res, { flow: 'choose', email: account.email, auth_token: confirmed });
   } catch (err) {
     logger.error(
@@ -218,13 +272,20 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
-    // Reset expiry
+    // Reset expiry and rebind the signup session to this browser. The
+    // resume path is the only way back into a confirmed-but-incomplete
+    // signup that requires password proof; the prior binding (from a
+    // /signup-time browser that has since been closed or switched off) is
+    // overwritten so the browser completing resume is the one bound for
+    // the upcoming /confirm or /link ceremony.
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
+    const binding = mintBinding();
     await pool.query(
-      'UPDATE accounts SET expires_at = $1 WHERE id = $2',
-      [expiresAt, account.id],
+      'UPDATE accounts SET expires_at = $1, signup_binding_hash = $2 WHERE id = $3',
+      [expiresAt, binding.hash, account.id],
     );
 
+    setBindingCookie(res, binding.cookieValue);
     sendOk(res, { flow: 'choose', email: normalizedEmail, auth_token: account.verify_token });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
@@ -245,7 +306,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
 // POST /api/auth/confirm — Create new Hive account with client-provided keys (SF4)
 // Request: { auth_token, username, keys: { owner_public, active_public, posting_public, memo_public, posting_private, memo_private } }
 // ─────────────────────────────────────────────────────────────
-router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
+router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
@@ -302,9 +363,10 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       institution: string;
       field: string;
       orcid: string | null;
+      signup_binding_hash: Buffer | null;
     };
     const { rows } = await pool.query<SignupRow>(
-      `SELECT id, email, password_hash, full_name, institution, field, orcid
+      `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
        FROM accounts WHERE verify_token = $1`,
       [auth_token],
     );
@@ -326,7 +388,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
     let resumeStuck = false;
     if (!account) {
       const stuckLookup = await pool.query<SignupRow>(
-        `SELECT id, email, password_hash, full_name, institution, field, orcid
+        `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
          FROM accounts
          WHERE username = $1
            AND verify_token IS NULL
@@ -349,6 +411,33 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
 
     if (!account) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired auth token');
+    }
+
+    // Session-binding check. Required for the fresh-confirm path; bypassed
+    // on the stuck-recovery path because the supplied posting_private has
+    // already proved Hive-account ownership above and the row's
+    // verify_token / binding may have been cleared by the prior partial
+    // run. The reject response shape MUST equal the "invalid or expired
+    // auth token" 400 above so an attacker holding a leaked auth_token
+    // cannot distinguish "right token, wrong browser" from "wrong token"
+    // and confirm the token is valid. See `signup-session-binding.ts` for
+    // the full threat model.
+    if (!resumeStuck) {
+      const cookieValue = extractBindingCookie(req);
+      const bindingOk = cookieValue !== null
+        && verifyBinding(cookieValue, account.signup_binding_hash);
+      if (!bindingOk) {
+        logger.warn(
+          {
+            event: 'signup_verify.confirm.binding_rejected',
+            route: 'signup-verify.confirm',
+            cookie_present: cookieValue !== null,
+            row_has_hash: account.signup_binding_hash !== null,
+          },
+          'signup_verify.confirm rejected: session-binding cookie missing or mismatched',
+        );
+        return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired auth token');
+      }
     }
 
     // Steps 1 and 2 (create_claimed_account + pg activation) only fire on
@@ -379,11 +468,15 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       const memoEnc = encryptKey(normalizedUsername, memo_private);
 
       // Activate the account: set username, keys, custody, clear verify_token
+      // AND the signup_binding_hash — the binding has served its purpose and
+      // the row is post-signup; carrying the hash forward would let a
+      // session cookie from the signup ceremony re-use the row.
       await pool.query(
         `UPDATE accounts
          SET username = $1, custody = 'light', verify_token = NULL,
              posting_key_enc = $2, iv_posting = $3,
-             memo_key_enc = $4, iv_memo = $5
+             memo_key_enc = $4, iv_memo = $5,
+             signup_binding_hash = NULL
          WHERE id = $6`,
         [
           normalizedUsername,
@@ -523,6 +616,35 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       }
     }
 
+    // Invalidate any other still-pending signup rows that share this
+    // account's identity. Defence-in-depth: PostgreSQL's UNIQUE constraints
+    // on `email`, `username`, and the partial `orcid` index already prevent
+    // the most obvious multi-row case (re-signup overwrites the same row),
+    // but a rare cross-identity scenario can still leave a sibling row with
+    // a live verify_token (e.g. an ORCID-only row was created at /signup
+    // and the same person later started an email-only signup tied to the
+    // same ORCID via a different identifier). Sweep them clean here so a
+    // leaked sibling auth_token can't be replayed against /confirm after
+    // this user has already completed.
+    if (account.orcid) {
+      await pool.query(
+        `UPDATE accounts
+           SET verify_token = NULL, signup_binding_hash = NULL
+         WHERE orcid = $1 AND id <> $2 AND verify_token IS NOT NULL`,
+        [account.orcid, account.id],
+      ).catch((sweepErr) => {
+        // Non-fatal: the user's own row is fully active and the leak
+        // window on a sibling row is bounded by its expires_at. Log so
+        // operators can investigate but do not fail the confirm.
+        logger.warn(
+          { event: 'signup_verify.confirm.sibling_invalidation_failed', err: sweepErr },
+          'signup_verify.confirm sibling-token invalidation sweep failed',
+        );
+      });
+    }
+
+    clearBindingCookie(res);
+
     // Issue JWT session
     const jwtToken = jwt.sign(
       { sub: normalizedUsername, custody: 'light' },
@@ -551,7 +673,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
 // POST /api/auth/link — Link existing Hive account after email verification (SF6)
 // Requires auth_token + Keychain signature proving Hive account ownership
 // ─────────────────────────────────────────────────────────────
-router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
+router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
@@ -578,9 +700,10 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       institution: string;
       field: string;
       orcid: string | null;
+      signup_binding_hash: Buffer | null;
     };
     const { rows } = await pool.query<LinkRow>(
-      `SELECT id, email, password_hash, full_name, institution, field, orcid
+      `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
        FROM accounts WHERE verify_token = $1`,
       [auth_token],
     );
@@ -597,7 +720,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
     let resumeStuck = false;
     if (!account) {
       const stuckLookup = await pool.query<LinkRow>(
-        `SELECT id, email, password_hash, full_name, institution, field, orcid
+        `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
          FROM accounts
          WHERE username = $1
            AND verify_token IS NULL
@@ -612,6 +735,31 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
 
     if (!account) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired link request');
+    }
+
+    // Session-binding check. Required for the fresh-link path; bypassed on
+    // the stuck-recovery path because the verifyHiveSignature middleware
+    // above has already proved Hive-account ownership and the row's
+    // binding may have been cleared by the prior partial run. The reject
+    // shape matches the "invalid or expired" 400 above so a leaked
+    // auth_token cannot be confirmed-as-valid via this side channel. See
+    // `signup-session-binding.ts` for the threat model.
+    if (!resumeStuck) {
+      const cookieValue = extractBindingCookie(req);
+      const bindingOk = cookieValue !== null
+        && verifyBinding(cookieValue, account.signup_binding_hash);
+      if (!bindingOk) {
+        logger.warn(
+          {
+            event: 'signup_verify.link.binding_rejected',
+            route: 'signup-verify.link',
+            cookie_present: cookieValue !== null,
+            row_has_hash: account.signup_binding_hash !== null,
+          },
+          'signup_verify.link rejected: session-binding cookie missing or mismatched',
+        );
+        return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired link request');
+      }
     }
 
     if (!resumeStuck) {
@@ -631,10 +779,12 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       }
 
       // Activate: set username, custody=self, upgraded_at, clear verify_token
+      // and the binding hash (the binding has served its purpose).
       const now = new Date();
       await pool.query(
         `UPDATE accounts
-         SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = $2
+         SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = $2,
+             signup_binding_hash = NULL
          WHERE id = $3`,
         [hiveUsername, now, account.id],
       );
@@ -736,6 +886,25 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
         return;
       }
     }
+
+    // Invalidate any sibling pending-signup rows that share this user's
+    // ORCID. See `/confirm` above for the rationale (replay defence on a
+    // leaked sibling auth_token after this user is fully active).
+    if (account.orcid) {
+      await pool.query(
+        `UPDATE accounts
+           SET verify_token = NULL, signup_binding_hash = NULL
+         WHERE orcid = $1 AND id <> $2 AND verify_token IS NOT NULL`,
+        [account.orcid, account.id],
+      ).catch((sweepErr) => {
+        logger.warn(
+          { event: 'signup_verify.link.sibling_invalidation_failed', err: sweepErr },
+          'signup_verify.link sibling-token invalidation sweep failed',
+        );
+      });
+    }
+
+    clearBindingCookie(res);
 
     // Issue JWT session
     const jwtToken = jwt.sign(

@@ -20,6 +20,7 @@ import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js'
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs, maskEmail, safeHashEmailForLogs } from '../lib/log-pii.js';
 import { createSmtpTransporter } from '../lib/smtp.js';
+import { mintBinding, setBindingCookie } from '../signup-session-binding.js';
 
 // ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
 //
@@ -458,12 +459,19 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     // ORCID signups skip email verification — go directly to confirmed state
     if (verifiedOrcid) {
       const confirmed = `confirmed:${crypto.randomBytes(32).toString('hex')}`;
+      // Mint the session-binding cookie that `/confirm` and `/link` will
+      // require. Store the SHA-256 of the cookie value on the row's
+      // `signup_binding_hash` column. See `signup-session-binding.ts` for
+      // the threat model: possession of the auth_token alone (mailbox leak,
+      // Referer, login error body) must NOT be enough to complete the
+      // signup with attacker-controlled keys.
+      const binding = mintBinding();
 
       if (normalizedEmail) {
         // ORCID + email: upsert with ON CONFLICT
         await pool.query(
-          `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at, signup_binding_hash)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            ON CONFLICT (email) DO UPDATE SET
              password_hash = EXCLUDED.password_hash,
              full_name = EXCLUDED.full_name,
@@ -472,18 +480,20 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
              orcid = EXCLUDED.orcid,
              verify_token = EXCLUDED.verify_token,
              expires_at = EXCLUDED.expires_at,
+             signup_binding_hash = EXCLUDED.signup_binding_hash,
              created_at = NOW()`,
-          [normalizedEmail, passwordHash, resolvedName, resolvedInstitution, resolvedField, verifiedOrcid, confirmed, expiresAt],
+          [normalizedEmail, passwordHash, resolvedName, resolvedInstitution, resolvedField, verifiedOrcid, confirmed, expiresAt, binding.hash],
         );
       } else {
         // ORCID-only (no email): plain insert
         await pool.query(
-          `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [null, null, resolvedName, resolvedInstitution, resolvedField, verifiedOrcid, confirmed, expiresAt],
+          `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at, signup_binding_hash)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [null, null, resolvedName, resolvedInstitution, resolvedField, verifiedOrcid, confirmed, expiresAt, binding.hash],
         );
       }
 
+      setBindingCookie(res, binding.cookieValue);
       sendOk(res, {
         flow: 'choose',
         auth_token: confirmed,
@@ -797,11 +807,20 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // Account not yet active — handle pending states
     if (account.verify_token !== null) {
       if (account.verify_token.startsWith('confirmed:')) {
-        // Email verified but signup not completed — let them continue
+        // Email verified but signup not completed. The SPA must direct the
+        // user back to /signup/verify (via /resume-signup) where a fresh
+        // session-binding cookie is minted before /confirm or /link can
+        // succeed. Do NOT return the auth_token in the response body: the
+        // token is the row-lookup credential for /confirm and /link, and
+        // returning it here leaks it to any caller who can guess a
+        // username and supply the correct password (or who can read this
+        // body from a referer / proxy log / browser DevTools panel).
+        // /resume-signup re-binds the cookie after re-verifying the
+        // password, which is the only auth proof acceptable at this stage.
         return res.status(409).json({
           status: 'error',
           error: { code: 'PENDING_SIGNUP', message: 'Your signup is not complete yet.' },
-          data: { auth_token: account.verify_token, email: account.email },
+          data: { email: account.email },
         });
       }
       // Unverified — check expiry
