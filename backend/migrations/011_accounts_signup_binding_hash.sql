@@ -51,5 +51,5 @@ COMMENT ON COLUMN accounts.signup_binding_hash IS
   'rows. Stored as raw bytes (BYTEA, 32 bytes) rather than hex TEXT to mirror '
   'the encrypted-key columns on this table.';
 
-INSERT INTO schema_migrations (filename) VALUES ('010_accounts_signup_binding_hash.sql')
+INSERT INTO schema_migrations (filename) VALUES ('011_accounts_signup_binding_hash.sql')
   ON CONFLICT (filename) DO UPDATE SET applied_at = NOW();
