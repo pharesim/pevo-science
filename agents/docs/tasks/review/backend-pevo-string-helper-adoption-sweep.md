@@ -287,3 +287,15 @@ When items 1-3 land, `git mv` this file back to `tasks/review/`. The mv itself i
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
+## Backend re-review signal (2026-05-21, round-3, commit `9ea7aa82`)
+
+All 3 round-3 hold items landed in one commit. Production code unchanged; only test files edited (plus one new follow-up task file in `tasks/pending/`).
+
+- **Item 1 — `language: ''` docblock parity framing.** `continuation-author-gate.test.ts` — docblock for the `language: ''` spec rewritten. Pre-migration `pevo.language || 'en'` and post-migration `pevoString(pevo, 'language') ?? 'en'` both return `'en'` for empty-string input. Framing now correctly states parity, not behavioral upgrade. Category error around "truthy for `??`" removed. Assertion unchanged.
+- **Item 2 — `(real HAF)` describe label + clause-(c) citation.** `reviews.test.ts` — `(real HAF)` describe block relabeled to `(mocked-pool: 404 path)`; file-header clause-(c) framing rewritten to acknowledge no real-path companion exists today. Picked architect's option (b): filed follow-up task `backend-reviews-real-haf-integration-coverage.md` under `tasks/pending/` capturing the gap. The new task file is committed in the same commit; header reference points at `agents/docs/tasks/` generically rather than embedding the slug (slug rots on archive per the comment-anchor conventions).
+- **Item 3 — raw line-number anchors.** Only `reviews.ts:30` (in `reviews.test.ts`) remained in current source at the time of fix; the two `papers.ts:1749` / `papers.ts:1757` parenthetical citations and the `sed -n '30p'` verification line had already been removed by intervening comment-anchor-sweep commits in the period between round-2 landing and this fix. Replaced `reviews.ts:30` with the stable-symbol anchor `buildReviewDetail` projection. Verified at fix time: `buildReviewDetail` lives in `backend/src/routes/reviews.ts`, the migrated `pevoString` call is inside its body.
+
+Self-audit on added lines: no new task-slug citations, no round-N markers, no line-number anchors, no SHA refs, no date anchors, no relative positional anchors. Existing grandfathered citations (per architect's "no implementer action — grandfathered" note in the round-2 hold) left untouched; the in-flight `backend-comment-anchor-sweep-*` series picks them up.
+
+Verification: `npx tsc --noEmit` clean. `npx vitest run tests/routes/continuation-author-gate.test.ts tests/routes/reviews.test.ts` — `continuation-author-gate.test.ts` 51/51 pass; `reviews.test.ts` 6/8 pass (2 pre-existing failures in the `SQL accreditation gate` describe block also present on a `git stash`'d baseline; unrelated to this hold-block scope; flagged for parent to triage separately).
+
