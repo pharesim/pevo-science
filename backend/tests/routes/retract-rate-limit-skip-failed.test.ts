@@ -127,7 +127,10 @@ describe('POST /api/papers/:author/:permlink/retract — rate-limiter slot-burn 
     // polluting the slot count. retractLimiter's appTag-prefixed key
     // (`${appTag}:rl:paper-retract:${username}`) starts at zero for a
     // never-seen account, so we don't need to flush Redis explicitly.
-    const acct = `slot-burn-user-${Math.random().toString(36).slice(2, 10)}`;
+    // Account names must fit Hive's 16-char witness cap (enforced at the
+    // /retract URL-shape validator); shorten the prefix from "slot-burn-user"
+    // to "sbu" so the fixture stays ≤16 chars with an 8-char random suffix.
+    const acct = `sbu-${Math.random().toString(36).slice(2, 10)}`;
     const paper = 'slot-burn-paper';
 
     // First 5 requests: HAF throws. Route catches `HafQueryError`,
@@ -176,7 +179,7 @@ describe('POST /api/papers/:author/:permlink/retract — rate-limiter slot-burn 
     // success path still consumes a slot. Without this assertion a future
     // mis-config (e.g. accidentally also refunding 200s) would silently
     // remove the rate limit.
-    const acct = `success-rate-user-${Math.random().toString(36).slice(2, 10)}`;
+    const acct = `sru-${Math.random().toString(36).slice(2, 10)}`;
     const paper = 'success-rate-paper';
 
     // Each successful retract consumes one slot (5 slots total). The

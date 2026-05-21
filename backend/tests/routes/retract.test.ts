@@ -323,7 +323,7 @@ describe('POST /api/papers/:author/:permlink/retract — wall-clock budget (roun
   // by prior tests in this file using PAPER_AUTHOR='alice'. Without a
   // fresh account the canary's request gets 429'd before reaching the
   // walker abort path.
-  const ABORT_USER = 'abort-canary-user';
+  const ABORT_USER = 'abort-canary';
   const ABORT_PAPER = 'abort-canary-paper';
 
   beforeEach(() => {

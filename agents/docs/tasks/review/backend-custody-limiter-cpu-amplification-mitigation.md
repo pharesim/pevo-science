@@ -329,3 +329,18 @@ papers-haf-error-vs-not-found.test.ts      12 passed  (uses valid 'alice/paper-x
 Pre-existing accreditation failures (`pre-INCR redis.eval rejection surfaces 503` and `concurrent retries claim slots atomically`) noted in the round-1 signal block remain failing on main HEAD; neither interacts with the round-2 changes.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Parent agent followup (2026-05-21) — test fixture cap
+
+Parent's serialized full-vitest pass after merging the round-2 worktrees surfaced 3 unique regressions in `/retract` tests that worker 2's scoped run did not cover. Cause: pre-existing test fixtures used account-name strings exceeding Hive's 16-char witness cap, which the new `validateRetractParams` (using `HIVE_ACCOUNT_NAME_REGEX`) correctly rejects. The validator is right; the fixtures were unrealistic.
+
+Fixtures shortened to fit the cap (12-13 chars, structurally valid Hive shape):
+
+- `backend/tests/routes/retract.test.ts`: `ABORT_USER = 'abort-canary-user'` (17) → `'abort-canary'` (12).
+- `backend/tests/routes/retract-rate-limit-skip-failed.test.ts`: `slot-burn-user-<random8>` (23) → `sbu-<random8>` (12); `success-rate-user-<random8>` (26) → `sru-<random8>` (12).
+
+Re-ran the three affected test files: 15/15 pass. The validator's strictness is preserved; only the fixtures changed. Precedent for using `HIVE_ACCOUNT_NAME_REGEX` at user-input boundaries already exists at `backend/src/routes/anonymousReview.ts` (`paper_author` field), so the validator's choice of regex stays consistent with established practice.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
