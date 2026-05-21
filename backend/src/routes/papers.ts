@@ -2670,9 +2670,8 @@ async function loadRetractedPapers(): Promise<RetractionEntry[]> {
        cj.json::jsonb ->> 'timestamp' AS ts
      FROM ${T.customJson} cj
      WHERE cj.custom_id = $1
-       AND cj.json::jsonb ->> 'action' = 'retract_paper'
-       AND cj.block_num >= $2`,
-    [config.appTag, getCachedGenesisBlock()],
+       AND cj.json::jsonb ->> 'action' = 'retract_paper'`,
+    [config.appTag],
   );
   return result.rows.map((r: Record<string, unknown>) => ({
     author: r.author as string,

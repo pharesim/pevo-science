@@ -247,6 +247,14 @@ export function activeVouchesCteBody(startIdx = 1): SqlFragment {
  * CTE body for retracted papers. Returns (author, permlink) pairs.
  * Use inside a WITH block alongside other CTEs.
  *
+ * Same BitmapAnd avoidance as `activeAccreditationsCteBody` (see its
+ * docstring): `custom_id = $appTag` alone is selective enough on Mahdi's
+ * HAF that adding a `block_num >= genesis` floor flips the planner to a
+ * parallel index scan over tens of millions of operation rows. The list
+ * endpoint joins this CTE via `NOT EXISTS` on every paper, so the cost
+ * multiplies. Without the floor, the custom_id index alone runs in low
+ * milliseconds.
+ *
  * @param startIdx - first available $N parameter index
  */
 export function retractedPapersCteBody(startIdx = 1): SqlFragment {
@@ -260,10 +268,9 @@ export function retractedPapersCteBody(startIdx = 1): SqlFragment {
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' = 'retract_paper'
-      AND cj.block_num >= $${p + 1}
   )`,
-    params: [config.appTag, getCachedGenesisBlock()],
-    nextIdx: p + 2,
+    params: [config.appTag],
+    nextIdx: p + 1,
   };
 }
 
