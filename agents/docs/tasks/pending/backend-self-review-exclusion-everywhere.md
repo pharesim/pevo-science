@@ -553,3 +553,64 @@ All 6 round-4 hold items addressed in a single commit. Parent re-took over after
 
 - The initial worker edit on reputation.ts's two new comment blocks (paper_resolved_votes inner-guard rationale at lines ~597-621 and citing_papers cascade-fail framing at lines ~806-815) wrapped SQL identifier names and JSON-shape literals in backticks, prematurely terminating the JS template literal that wraps the SQL string. Parent dropped the backticks in favor of bare identifier names (matching the convention established by the round-3 fix on item #8 of this same task).
 - No `git mv` from `pending/` to `review/` was performed in this worktree; parent serializes that after all in-flight workers merge.
+
+---
+
+## Architect re-review (2026-05-21) — HELD PENDING FIXES (round 5)
+
+`/ce-code-review` on commit `1b2f9b8f` with 8 reviewers (correctness on Opus; testing, maintainability, project-standards, reliability, security, learnings-researcher on Sonnet; ce-adversarial on Opus). `ce-agent-native-reviewer` skipped. All 6 round-4 hold items landed at their cited sites and the SRF-argument-position pattern was verified correct (Postgres planner evaluates the CASE-WHEN scalar expression before `jsonb_array_elements` is invoked). Round-5 surfaces 4 items held below — three are residual within-commit hygiene (a coordination anchor introduced in the new test, a parallel docblock that wasn't updated when item 4 fixed the production version, a missing-symmetry drift-reach acknowledgment) and one is a real test-coverage asymmetry (item 2 production-fix has no behavioral canary while item 1's parallel fix has one).
+
+### Items to address
+
+**1. (P2) New `citing_papers` describe block opens with "Round-4 hold #1:" — task-coordination anchor in test source.**
+
+**Where:** `backend/tests/hafsql.test.ts:921` (the new `citing_papers CROSS JOIN LATERAL cascade-fail defense` describe block's docstring).
+
+**Why:** Two-reviewer cross-corroboration at conf 100 (project-standards PS-001 + maintainability M1). Per CLAUDE.md "Comment anchors", round numbers and hold-item indexes are coordination context that belongs in commit messages and task files, not in production or test source. When this task archives, "Round-4 hold #1" loses its referent — the prepended archive entry trims off the 250-line `tasks-archive.md` cap and the cited round becomes a dead pointer. This is also the exact self-violation class flagged by `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`: item 6 of the same commit fixed a task-slug citation at `reputation.ts:595` but introduced a fresh coordination anchor at this new test docstring.
+
+**Fix:** Drop the "Round-4 hold #1:" prefix. Open with the behavioral description directly — e.g., "Pin the cascade-fail defense at the citing_papers CROSS JOIN LATERAL SRF argument position." The rest of the docblock describes the behavior accurately and stays.
+
+**2. (P2) Test docblock at `hafsql.test.ts:752-755` retains the round-4 misframing that item 4 removed from `reputation.ts` — and contradicts the test's own bob-admitted assertion at line 862.**
+
+**Where:** `backend/tests/hafsql.test.ts:752-755` (the existing comment block above the paper_resolved_votes behavioral matrix, near the array-of-non-objects assertion).
+
+**Why:** Correctness reviewer at conf 90. Round-4 item 4 corrected the production-source comment at `reputation.ts:597-621` to clarify that the inner `jsonb_typeof(a) = 'object'` guard is a cascade-fail defense, NOT an admission tightening — bare-string co-author entries ARE admitted as non-self voters. The parallel test docblock at `hafsql.test.ts:752-755` still carries the round-4 misframing ("so a named-string co-author is NOT admitted as a non-self reviewer"). The test's own assertion at line 862 contradicts this: `expect(admitted).toEqual(['bob_named_as_string', 'third_party'])` — bob IS admitted. The asymmetric fix left the test docblock as a self-contradicting reader trap.
+
+**Fix:** Rewrite the comment block at `hafsql.test.ts:752-755` to match the corrected production-source framing. Mirror the `reputation.ts:597-621` rewrite: bare-string entries are NOT identity claims per `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`; treating them as identity would enable denial-of-vote attacks via malformed-metadata broadcast. Keep the test assertion as-is — it pins the correct intended behavior.
+
+**3. (P2) Item 2's CASE-WHEN at `authorsWithSupersessionSelect` has NO cascade-fail behavioral test — asymmetric with item 1's coverage.**
+
+**Where:** `backend/src/hafsql.ts:988-993` (the item 2 fix); `backend/tests/hafsql.test.ts` (no covering test).
+
+**Why:** Testing G1 at conf 88. Round-4 hold items 1 and 2 closed the same cascade-fail class at two SRF sites: item 1 at `reputation.ts citing_papers`, item 2 at `hafsql.ts authorsWithSupersessionSelect`. Item 1's fix landed with a new behavioral test in `hafsql.test.ts` (synthetic VALUES + real Postgres, exercises 4 non-array shapes + well-formed control). Item 2's fix has no equivalent test. A revert of the CASE-WHEN guard at `authorsWithSupersessionSelect` alone would pass every test in the suite. The canary comment at `backend/tests/routes/citations-lateral-guard-canary.test.ts:44` marks `authorsWithSupersessionSelect` as "already correct" in an audit table but provides no assertion. Asymmetric coverage for the same risk class.
+
+**Fix:** Add a behavioral test mirroring the citing_papers pattern at `backend/tests/hafsql.test.ts`. Synthetic VALUES + real Postgres against the `authorsWithSupersessionSelect` helper: exercise non-array top-level `pevo.authors` shapes (null, string, integer, object) + array-of-non-objects (`["alice","bob"]`, `[null]`, `[{name:"alice"}]`) + well-formed control. Assert the helper does NOT raise and the COALESCE/jsonb_agg semantics produce the expected empty-vs-populated outputs. Per the convention that bare-string entries are NOT identity claims, the well-formed control's accreditation-aware enrichment expectations carry through.
+
+**4. (P2) `lateralShape` constant in the new citing_papers test lacks the drift-reach acknowledgment the sibling `subqueryShape` block has.**
+
+**Where:** `backend/tests/hafsql.test.ts:954-957` (the `lateralShape` constant's comment block).
+
+**Why:** Two-reviewer cross-corroboration at conf 75 (testing G2 + maintainability M2). The new citing_papers test exercises an inlined production-SQL constant (`lateralShape`) against synthetic VALUES rows rather than calling production code. If `reputation.ts citing_papers` later reverts the CASE-WHEN guard, the test stays green because it operates on the local SQL string. The sibling `subqueryShape` block immediately above (at lines 779-793) explicitly acknowledges this drift-reach gap and cross-references `excludeSelfReviewWhere-callsite-canaries.test.ts` as the structural canary pattern that pins the production source. `lateralShape`'s comment does not.
+
+**Fix:** Add the drift-reach acknowledgment to `lateralShape`'s comment, matching the depth of `subqueryShape`'s. One sentence: "A production-side revert of the CASE-WHEN guard at `reputation.ts citing_papers` leaves this test green — the behavioral test exercises the inlined SQL, not the production source. The structural canary for the production site lives in `excludeSelfReviewWhere-callsite-canaries.test.ts`-style coverage (not yet added; see hold item 3 above for the parallel `authorsWithSupersessionSelect` gap)."
+
+### Findings dismissed at triage (no action)
+
+- **(reliability R-002 + R-003, P2 conf 85-90)** Silent `ELSE '[]'::jsonb` fallback removes the loud cycle-crash signal that previously detected broadcast-path bugs. Per memory `feedback_pevo_logging_minimal`, default-dismiss log-expansion findings. The cycle-cascade-vs-silence trade-off is the correct architectural call.
+- **(security sec-3, P2 conf 75)** Malformed `pevo.authors` paper appears in `/api/papers` with empty `authors[]`. Same trade-off as above — accept the empty-byline rendering over the listing crash.
+- **(correctness-2 + correctness-3, P3 conf 45-70)** Awkward grammar in rewritten comment + missing-key shape gap in citing_papers test. Polish; #29 is safe by Postgres STRICT-NULL semantics. Dismissed per `feedback_dismiss_preemptive_test_hardening`.
+- **(adversarial mixed-shape coverage)** Preemptive lattice-coverage. Dismissed for consistency with round-3 + round-4 lattice dismissals.
+
+### Items routed elsewhere
+
+- **(reliability R-001 + security sec-2, P1 conf 100)** Referenced follow-up `backend-jsonb-array-elements-lateral-guard-sweep.md` was never filed; sibling-site fixes landed independently at HEAD (profile.ts:153, stats.ts:82, notification-queries.ts:338+374). Architect-zone cleanup at archive: when this task archives, the prepended archive entry should note that the sweep landed independently and cite the SHAs. No implementer action.
+- **(security sec-1 + adversarial ADV-PREEXISTING-IPFS-SRF-UNGUARDED, P3 pre-existing)** `routes/ipfs.ts:344` + `ipfs-cleanup.ts:38` have unguarded `jsonb_array_elements_text(json_metadata->'image')` — same cascade-fail class, per-request blast radius. NOT introduced by this commit. Filed as separate task `backend-ipfs-image-srf-guard` in `tasks/pending/`.
+
+### Architect-zone carry-forwards (no implementer action)
+
+- Architect-zone update to `agents/docs/reputation-algorithm.md` documenting the 4-site self-exclusion invariant.
+- Solutions-doc refresh on `agents/docs/solutions/conventions/pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md` — stale anti-pattern examples cite the now-fixed sibling sites; line-number anchors in the Examples section violate `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`. Will be addressed via `/ce-compound-refresh`.
+
+### Re-review signal
+
+When items 1, 2, 3, 4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. Items 1 + 2 + 4 all touch `hafsql.test.ts` — bundle. Item 3 adds a new test in the same file but is a substantive addition; can be in the same commit if scope is manageable.
