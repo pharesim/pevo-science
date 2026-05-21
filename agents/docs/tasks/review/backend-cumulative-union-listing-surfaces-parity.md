@@ -231,3 +231,65 @@ Single-link cached sentinel: today `resolveChainCumulativeAuthors` returns `null
 - Route-to-route import (`profile.ts` imports from `./papers.js`) — filed as the same separate task.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (round-2, commit 850c32ff)
+
+### Items landed
+
+**Item 1 — AbortSignal threading on listing + profile per-row helpers.** `fetchPapersFromHaf` and the `GET /api/profile/:username/papers` enrichment loop each create a local `AbortController` bounded by `setTimeout(() => controller.abort(), config.hafWalkerWallClockMs)`. The signal is threaded into every `resolveChainCumulativeAuthors` call inside the surrounding `Promise.all`. `clearTimeout` runs in a `finally` so a synchronous completion does not leak the timer. Mirrors the budget pattern already established in `fetchPaperDetailFromHaf`, the canonical-root walker, and the `/retract` handler.
+
+**Item 2 — getOrSet routing + /invalidate prefix flush.** `resolveChainCumulativeAuthors` now uses `hafCache.getOrSet` for both write paths (prebuilt and HAF), so the epoch guard suppresses cache writes when `/invalidate` fires between fetcher-start and resolve. Single-flight coalescing is the free side-effect — two concurrent same-key callers (detail-surface write-through racing a listing cold-path) converge on one fetcher invocation. The `/invalidate` handler's `Promise.all` now also includes `hafCache.invalidatePrefix('chain-authors:')` alongside the `canonical-root:*` flush landed for the sibling task; both prefix flushes coexist as the architect anticipated.
+
+**Item 3 — empty-versions guard.** `computeChainCumulativeFromHaf` returns `null` immediately when `reconstructVersionsFromHaf` yields `fullVersions.length === 0`. Combined with `getOrSet`'s skip-on-null rule, a HAF-side reconstruction failure no longer poisons the cache with an empty `{authors:[], accredited_authors:[]}` for 30 minutes. Inline comment anchors on the behavioural cause ("`reconstructVersionsFromHaf` swallows internal failures and returns an empty array").
+
+**Item 4 — affiliation strip at listing + profile call-sites.** Both consumers now `.map(a => { const { affiliation: _, ...rest } = a; return rest; })` the cumulative-union output before assigning to `authors`. The detail-surface call-site is unchanged (PaperDetail legitimately carries affiliation). The strip is per-consumer because the helper's return shape is shared across all three surfaces and PaperDetail needs the field.
+
+**Item 5 — single-link prebuiltChainPosts short-circuit.** `if (options.prebuiltChainPosts.length === 1) return null;` guards the prebuilt fast-path so detail-surface calls with a 1-link chain (bridge papers, papers without continuations) do not write a stripped cumulative-union result to the per-root cache. Symmetric with the HAF path's `chain.length === 1` short-circuit which existed since landing.
+
+**Item 6 — PaperAuthor narrowing on the return type.** `ChainCumulativeAuthorsResult.authors` is now `PaperAuthor[]`. `profile.ts`'s `chainResult.authors as unknown as typeof row.authors` cast is gone — the typed return makes the assignment direct. The deterministic test file's derivative casts on `result!.authors as Array<{ hive?: string }>` similarly resolve via the typed return; the existing tests now read `result!.authors.map(a => a.hive)` directly with no cast. Boundary cast at `buildChainCumulativeFromPosts` uses `as unknown as PaperAuthor[]` with an inline comment explaining the structural confidence and pointing at the symmetric pattern in `helpers.ts toPaperSummary`. The architect's "real type guard" preference is acknowledged in the same comment; constructing a meaningful guard would require either filtering entries without `name` (semantic change) or defaulting missing fields (also a semantic change); the single-site through-unknown cast is the minimum-divergence option for the helper's exit boundary. If the architect prefers a different shape, items 4-6 of the round-3 hold would naturally land together.
+
+**Item 7 — warm-path cache short-circuit pinned.** The existing "writes through to the per-root Redis cache" spec was extended to call `resolveChainCumulativeAuthors` a SECOND time without `prebuiltChainPosts` for the same root pair; asserts the returned hives + accredited_authors match the cached value. A regression that removed the `getOrSet` cache-read would issue an HAF probe (returning null since `getPool()` is not mocked in this file), and the assertion would observe a divergent result.
+
+**Item 8 — per-row error-isolation pinned at the helper boundary.** New spec mirrors the listing/profile route's enrichment-loop shape (`Promise.all(rows.map(async r => try { ... } catch ...))`) with two rows — one with a valid prebuilt chain, one with a poisoned prebuilt where the second link's `pevo` is `null`, causing `buildCumulativeAuthorsForChain` to throw on `post.pevo.authors`. The test asserts (a) the valid row enriches correctly, (b) the erroring row has no `chainAuthorsByKey` entry (route's fallback path then keeps head-meta), (c) the throw is absorbed by the per-row catch — `Promise.all` resolves rather than rejecting.
+
+  Scope note: this pins the per-row catch-isolation invariant at the helper-call boundary, the exact shape the route's loop uses. A full route-level test asserting "listing response status 200" would require mocking the entire listing SQL surface (count CTE, data query with author projections, reputation batch, accreditation set, vote resolution, ORCID maps) — significant additional fixture work for marginal coverage beyond what this helper-boundary test already pins. If the architect wants the route-level 200-status assertion explicitly, that's a follow-up worth filing separately rather than holding round-2 on it.
+
+### Scoped vitest pass
+
+```
+$ npx vitest run \
+    tests/routes/papers-cumulative-cross-surface-parity-mocked.test.ts \
+    tests/routes/papers-canonical-root-walker.test.ts \
+    tests/routes/continuation-author-gate.test.ts \
+    tests/routes/papers-canonical-orcid-resolution.test.ts \
+    tests/routes/profile-papers-supersession.test.ts \
+    tests/routes/profile-papers-cid-validate.test.ts \
+    tests/routes/papers-cumulative-orcid-audit.test.ts
+
+ Test Files  7 passed (7)
+      Tests  109 passed (109)
+   Duration  6.03s
+
+$ npx vitest run tests/routes/papers.test.ts tests/routes/profile.test.ts
+
+ Test Files  2 passed (2)
+      Tests  20 passed | 1 skipped (21)
+   Duration  21.31s
+```
+
+`papers.test.ts` carries the real-HAF cross-surface parity canary and is the load-bearing integration test for the helper's end-to-end shape across detail / listing / profile. `npm run typecheck` (typecheck:src + typecheck:tests) passes; `npm run lint` clean (pre-existing `author-supersession.ts` unused-eslint-disable warning, unrelated).
+
+### Architect-owned doc work (deferred to archive per task body)
+
+Two `[TODO Architect]` items are still pending:
+- `agents/docs/api-contracts/papers.md` — extend cumulative-union semantics note from PaperDetail.authors[] to PaperSummary.authors[] + PaperSummary.accredited_authors.
+- `agents/docs/api-contracts/profiles.md` — verify PaperSummary inheritance language after the cumulative-union extension.
+
+### Self-audit on added lines
+
+- No task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in production or test source.
+- Inline comments anchor on behavioural symbols: `getOrSet`, `epoch guard`, `single-flight coalescing`, `affiliation strip`, `PaperSummary's contract`, `PaperDetail`, `chain.length === 1`, `reconstructVersionsFromHaf swallows internal failures`. Test docstrings anchor on the listing/profile enrichment-loop shape and the per-row catch contract.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
