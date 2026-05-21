@@ -88,6 +88,14 @@ export const CHAIN_ORCID_BTRIM_CHARSET = " \\t\\n\\r\\x0B\\f";
  * CTE body that computes the current accreditation status per account.
  * Replaces `pevo.active_accreditations`.
  *
+ * The `custom_id = $appTag` filter alone is selective enough on Mahdi's HAF
+ * (single-digit row count per namespace), so we deliberately do NOT add a
+ * `block_num >= genesis` floor. Combining the two via `WHERE ... AND
+ * block_num >= ...` triggers a BitmapAnd plan that scans tens of millions
+ * of operation rows on the block_num index and runs in seconds; the
+ * custom_id index alone runs in low milliseconds. The
+ * `required_posting_auths` gate already prevents pre-namespace forgeries.
+ *
  * @param startIdx - first available $N parameter index
  * @returns SqlFragment with the CTE body (without WITH keyword)
  */
@@ -111,15 +119,14 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
       AND cj.required_posting_auths ?| $${p + 1}::text[]
-      AND cj.block_num >= $${p + 2}
   ),
   active_accreditations AS (
     SELECT account, researcher_name, institution, field, method, orcid, event_timestamp, event_id
     FROM accred_ranked
     WHERE rn = 1 AND action = 'accredit'
   )`,
-    params: [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock()],
-    nextIdx: p + 3,
+    params: [config.appTag, config.accreditationAuthorities],
+    nextIdx: p + 2,
   };
 }
 
