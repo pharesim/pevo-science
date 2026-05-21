@@ -776,16 +776,21 @@ describe('paper_resolved_votes NOT EXISTS subquery cascade-fail defense (real Po
       return;
     }
 
-    // Helper that renders the production CTE's NOT EXISTS subquery shape
-    // exactly as `reputation.ts:paper_resolved_votes` composes it. The
-    // test is intentionally a structural mirror (not a substring scrape)
-    // so a future refactor that splits the inline shape into a helper
-    // keeps the cascade-fail defense exercised.
-    // Mirror the production predicate's broadcaster-canonicalization arm:
-    // LOWER(TRIM(a ->> 'hive')) charset-regex + equality. The pre-fix shape
-    // (`a ->> 'hive' = plv.voter`) is preserved as a structural-revert canary
-    // below — a targeted revert that drops the LOWER(TRIM(...)) wrap from the
-    // production CTE must turn the uppercase-co-author admission test red.
+    // `subqueryShape` is a LOCAL constant that mirrors the production
+    // `paper_resolved_votes` NOT EXISTS subquery from `reputation.ts` as of
+    // the time this test was authored. It is intentionally a structural
+    // mirror, not a substring scrape of the production source: the test
+    // pins the BEHAVIOR of this local string against real Postgres
+    // (cascade-fail defense + admit-set shape under malformed/canonicalized
+    // authors), it does NOT pin that production still composes its CTE
+    // this way. A targeted revert of the LOWER(TRIM(...)) wrap in
+    // production leaves this test GREEN — the test's mutation-kill reach
+    // is: if `subqueryShape` here drifts from production and is re-derived
+    // by a future maintainer, the test catches the drift only via that
+    // re-derivation. Closing the gap to a true production-source canary
+    // would require a separate grep-anchor test (see the existing
+    // `excludeSelfReviewWhere-callsite-canaries.test.ts` pattern); not
+    // included here by design.
     const subqueryShape = `
       NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements(
@@ -884,9 +889,10 @@ describe('paper_resolved_votes NOT EXISTS subquery cascade-fail defense (real Po
     // non-self vote set). Without LOWER(TRIM(...)) on the broadcaster value,
     // an uppercase `'Bob'` byte-mismatches against the chain-validated
     // lowercase voter column `plv.voter`, NOT EXISTS evaluates TRUE for bob,
-    // and bob's vote inflates the paper-author's reputation. Targeted-revert
-    // canary: dropping the LOWER(TRIM(...)) wrap from the production CTE
-    // admits 'bob' here and turns this assertion red.
+    // and bob's vote inflates the paper-author's reputation. This pins the
+    // BEHAVIOR of the local `subqueryShape` constant above; per that
+    // constant's header docblock, this assertion does NOT pin the
+    // production CTE — a production-only revert leaves it green.
     const uppercaseCoauthor = JSON.stringify({
       pevotest: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'Bob' }] },
     });
