@@ -34,7 +34,20 @@ import {
   lookupCustodyBroadcastIdempotency,
   validateIdempotencyKey,
 } from '../lib/idempotency.js';
+import { assertBodyRecord, requireStringField } from '../lib/body-record.js';
 import { getPool, isHafConfigured } from '../db.js';
+
+// Centralized length caps for custody body-shape validation. Shared between
+// the pre-limiter validators and the handler-side defense-in-depth reads so
+// the two layers cannot diverge on what counts as malformed input. Selected
+// to absorb the route's body-parser limit (1 MB) without ever requiring the
+// handler to materialize multi-megabyte attacker-supplied fields.
+const PASSWORD_MAX_LEN = 4096;
+const DERIVED_PUBKEY_MAX_LEN = 100;
+const SIGNED_PROOF_MAX_LEN = 200;
+const SIGNED_AT_MAX_LEN = 64;
+const ROOT_AUTHOR_MAX_LEN = 64;
+const ROOT_PERMLINK_MAX_LEN = 256;
 
 const router = Router();
 
@@ -113,19 +126,13 @@ const sessionAuthLimiter = rateLimit({
  *  not the Signature.recover / Hive getAccounts / DB roundtrip the handler
  *  performs. */
 function validateUpgradeBodyShape(req: Request, res: Response, next: NextFunction) {
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const derivedPubkey = body.derived_pubkey;
-  const signedProof = body.signed_proof;
-  const signedAt = body.signed_at;
-  if (typeof derivedPubkey !== 'string' || derivedPubkey.length === 0 || derivedPubkey.length > 100) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'derived_pubkey is required');
-  }
-  if (typeof signedProof !== 'string' || signedProof.length === 0 || signedProof.length > 200) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'signed_proof is required');
-  }
-  if (typeof signedAt !== 'string' || signedAt.length === 0 || signedAt.length > 64) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'signed_at is required');
-  }
+  const body = assertBodyRecord(req);
+  const derivedPubkey = requireStringField(body, 'derived_pubkey', DERIVED_PUBKEY_MAX_LEN);
+  if (!derivedPubkey.ok) return sendError(res, 400, 'VALIDATION_ERROR', derivedPubkey.error);
+  const signedProof = requireStringField(body, 'signed_proof', SIGNED_PROOF_MAX_LEN);
+  if (!signedProof.ok) return sendError(res, 400, 'VALIDATION_ERROR', signedProof.error);
+  const signedAt = requireStringField(body, 'signed_at', SIGNED_AT_MAX_LEN);
+  if (!signedAt.ok) return sendError(res, 400, 'VALIDATION_ERROR', signedAt.error);
   next();
 }
 
@@ -136,11 +143,9 @@ function validateUpgradeBodyShape(req: Request, res: Response, next: NextFunctio
  *  the handler performs. Length caps are conservative defaults aligned
  *  with the route's existing 1mb body limit. */
 function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunction) {
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const { password } = body;
-  if (typeof password !== 'string' || password.length === 0 || password.length > 4096) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
-  }
+  const body = assertBodyRecord(req);
+  const password = requireStringField(body, 'password', PASSWORD_MAX_LEN, 'Password is required');
+  if (!password.ok) return sendError(res, 400, 'VALIDATION_ERROR', password.error);
   const action = body.action;
   if (action === 'change_email') {
     // No additional fields required; target is derived from authenticated
@@ -148,14 +153,10 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     return next();
   }
   if (action === 'author_accept' || action === 'author_resign') {
-    const rootAuthor = body.root_author;
-    const rootPermlink = body.root_permlink;
-    if (typeof rootAuthor !== 'string' || rootAuthor.length === 0 || rootAuthor.length > 64) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
-    }
-    if (typeof rootPermlink !== 'string' || rootPermlink.length === 0 || rootPermlink.length > 256) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
-    }
+    const rootAuthor = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN);
+    if (!rootAuthor.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootAuthor.error);
+    const rootPermlink = requireStringField(body, 'root_permlink', ROOT_PERMLINK_MAX_LEN);
+    if (!rootPermlink.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootPermlink.error);
     return next();
   }
   return sendError(
@@ -170,11 +171,9 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
  *  password is present and well-typed. Runs BEFORE `sessionAuthLimiter` so
  *  malformed bodies do not pay the argon2.verify cost. */
 function validateSessionAuthBodyShape(req: Request, res: Response, next: NextFunction) {
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const { password } = body;
-  if (typeof password !== 'string' || password.length === 0 || password.length > 4096) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
-  }
+  const body = assertBodyRecord(req);
+  const password = requireStringField(body, 'password', PASSWORD_MAX_LEN, 'Password is required');
+  if (!password.ok) return sendError(res, 400, 'VALIDATION_ERROR', password.error);
   next();
 }
 
@@ -840,16 +839,17 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
     return sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Self-custody users sign consent ops via Hive Keychain.');
   }
 
-  const body = (req.body ?? {}) as {
-    password?: unknown;
-    root_author?: unknown;
-    root_permlink?: unknown;
-    action?: unknown;
-  };
-  const { password } = body;
-  if (typeof password !== 'string' || password.length === 0) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
-  }
+  // Defense-in-depth re-read via the shared `requireStringField` helper. The
+  // pre-limiter `validateFreshAuthBodyShape` middleware already short-circuits
+  // malformed inputs; these handler-side reads exist to (a) narrow `req.body`
+  // to typed locals without an unsafe cast and (b) document intent at the use
+  // site. The length-cap constants (PASSWORD_MAX_LEN etc.) are the same ones
+  // the middleware uses, so a future cap change at one site cannot diverge
+  // from the other.
+  const body = assertBodyRecord(req);
+  const passwordResult = requireStringField(body, 'password', PASSWORD_MAX_LEN, 'Password is required');
+  if (!passwordResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', passwordResult.error);
+  const password = passwordResult.value;
   // Round-5 hold #3: per-op target binding. The proof binds to the
   // (action, root_author, root_permlink) triple of the consent op the user
   // intends to authorize. Closed-default: consent-op callers must supply
@@ -863,22 +863,18 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
   // (passwordless) has no password to base a password-mechanism proof on
   // and must mint via /api/orcid/start { mode: 'fresh_auth' } instead.
   const action = body.action;
-  const rootAuthor = body.root_author;
-  const rootPermlink = body.root_permlink;
   let target: FreshAuthTarget;
   if (action === 'change_email') {
     target = changeEmailFreshAuthTarget(username);
   } else if (action === 'author_accept' || action === 'author_resign') {
-    if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
-    }
-    if (typeof rootPermlink !== 'string' || rootPermlink.length === 0) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
-    }
+    const rootAuthorResult = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN);
+    if (!rootAuthorResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootAuthorResult.error);
+    const rootPermlinkResult = requireStringField(body, 'root_permlink', ROOT_PERMLINK_MAX_LEN);
+    if (!rootPermlinkResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootPermlinkResult.error);
     target = {
       action,
-      root_author: rootAuthor,
-      root_permlink: rootPermlink,
+      root_author: rootAuthorResult.value,
+      root_permlink: rootPermlinkResult.value,
     };
   } else {
     return sendError(
@@ -976,11 +972,13 @@ router.post('/session-auth', verifyHiveSignature, validateSessionAuthBodyShape, 
     return sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Self-custody users sign consent ops via Hive Keychain.');
   }
 
-  const body = (req.body ?? {}) as { password?: unknown };
-  const { password } = body;
-  if (typeof password !== 'string' || password.length === 0) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
-  }
+  // Defense-in-depth re-read via the shared `requireStringField` helper. See
+  // the equivalent doc on the sibling `/fresh-auth` handler for why the
+  // middleware short-circuit is augmented with a typed handler-side read.
+  const body = assertBodyRecord(req);
+  const passwordResult = requireStringField(body, 'password', PASSWORD_MAX_LEN, 'Password is required');
+  if (!passwordResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', passwordResult.error);
+  const password = passwordResult.value;
 
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
@@ -1125,20 +1123,21 @@ router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLi
     return sendError(res, 403, 'FORBIDDEN', 'Only custodial accounts can upgrade');
   }
 
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const derivedPubkey = body.derived_pubkey;
-  const signedProof = body.signed_proof;
-  const signedAt = body.signed_at;
-
-  if (typeof derivedPubkey !== 'string' || derivedPubkey.length === 0) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'derived_pubkey is required');
-  }
-  if (typeof signedProof !== 'string' || signedProof.length === 0) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'signed_proof is required');
-  }
-  if (typeof signedAt !== 'string' || signedAt.length === 0) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'signed_at is required');
-  }
+  // Defense-in-depth re-read via the shared `requireStringField` helper. The
+  // pre-limiter `validateUpgradeBodyShape` middleware short-circuits malformed
+  // bodies before this handler runs; these reads pin the typed boundary at
+  // the use site without an unsafe cast and share length caps with the
+  // middleware.
+  const body = assertBodyRecord(req);
+  const derivedPubkeyResult = requireStringField(body, 'derived_pubkey', DERIVED_PUBKEY_MAX_LEN);
+  if (!derivedPubkeyResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', derivedPubkeyResult.error);
+  const derivedPubkey = derivedPubkeyResult.value;
+  const signedProofResult = requireStringField(body, 'signed_proof', SIGNED_PROOF_MAX_LEN);
+  if (!signedProofResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', signedProofResult.error);
+  const signedProof = signedProofResult.value;
+  const signedAtResult = requireStringField(body, 'signed_at', SIGNED_AT_MAX_LEN);
+  if (!signedAtResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', signedAtResult.error);
+  const signedAt = signedAtResult.value;
 
   // Freshness gate: past-biased 60s window with 5s forward-skew tolerance.
   // The symmetric `Math.abs(...) > 60s` form this replaced doubled the

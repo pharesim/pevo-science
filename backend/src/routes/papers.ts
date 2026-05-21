@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool, HafQueryError, isRetriableHafError } from '../db.js';
 import { broadcastJsonWithTimeout } from '../hive.js';
@@ -33,6 +33,7 @@ import {
 } from '../lib/author-supersession.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
+import { HIVE_ACCOUNT_NAME_REGEX } from '../lib/hive-account-name.js';
 import { paperDisciplineField } from '../types/disciplines.js';
 import {
   T,
@@ -736,6 +737,44 @@ const retractLimiter = rateLimit({
   keyFn: byAccount,
   skipFailedRequests: true,
 });
+
+// Hive permlink format: lowercase alphanumeric + hyphens, witness-imposed
+// maximum length 256. Pinned here (rather than reused from anonymousReview.ts)
+// so the regex's role at this site is clear from the local context. Permlinks
+// are derived from post titles on Hive, so a structurally invalid slug under
+// these rules cannot resolve to a real paper — rejecting up-front is safe.
+const PERMLINK_FORMAT_REGEX = /^[a-z0-9-]+$/;
+const PERMLINK_MAX_LEN = 256;
+
+/** URL-param shape validator for POST /api/papers/:author/:permlink/retract.
+ *  Runs BEFORE `retractLimiter` so a JWT holder spraying structurally-invalid
+ *  slugs pays only the `verifyHiveSignature` ECDSA recovery plus this regex
+ *  check, not the full HAF walker (`fetchPaperDetailFromHaf` runs the forward
+ *  continuation-chain resolver, bounded by `hafWalkerWallClockMs`). Without
+ *  this gate, the `skipFailedRequests` refund on the 404 "paper not found"
+ *  path restores the limiter slot on every probe, producing sustained per-
+ *  account HAF query load with no rate bound. Body-shape validation is
+ *  structurally inapplicable on this route because the target is derived
+ *  from URL params; a URL-shape validator is the analog of the body-shape
+ *  validators on `/upgrade`, `/fresh-auth`, `/session-auth`. */
+function validateRetractParams(req: Request, res: Response, next: NextFunction): void {
+  const author = req.params.author;
+  const permlink = req.params.permlink;
+  if (typeof author !== 'string' || !HIVE_ACCOUNT_NAME_REGEX.test(author)) {
+    sendError(res, 400, 'VALIDATION_ERROR', 'Invalid author format');
+    return;
+  }
+  if (
+    typeof permlink !== 'string' ||
+    permlink.length === 0 ||
+    permlink.length > PERMLINK_MAX_LEN ||
+    !PERMLINK_FORMAT_REGEX.test(permlink)
+  ) {
+    sendError(res, 400, 'VALIDATION_ERROR', 'Invalid permlink format');
+    return;
+  }
+  next();
+}
 // ──────────────────────────────────────────────
 // HAF SQL implementation for paper listing
 // ──────────────────────────────────────────────
@@ -3221,7 +3260,7 @@ async function isRetracted(author: string, permlink: string): Promise<boolean> {
   return false;
 }
 
-router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, async (req: Request, res: Response) => {
+router.post('/:author/:permlink/retract', verifyHiveSignature, validateRetractParams, retractLimiter, async (req: Request, res: Response) => {
   const author = req.params.author as string;
   const permlink = req.params.permlink as string;
   const username = req.hiveUsername!;

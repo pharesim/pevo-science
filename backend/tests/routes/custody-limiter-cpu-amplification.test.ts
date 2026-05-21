@@ -63,19 +63,33 @@ const FRESH_USER = `cluf${SUFFIX}user`;
 const SESSION_USER = `clus${SUFFIX}user`;
 
 /** Return the Redis count for a rate-limit key, or null if the key is
- *  absent (limiter never touched). The `redis.get` returns a string for
- *  existing INCR keys; we coerce to a number for assertions. */
+ *  ABSENT (limiter never touched — the invariant every CPU-amplification
+ *  spec asserts via `expect(count).toBeNull()`).
+ *
+ *  Throws when Redis is unreachable or returns a non-numeric value: the load-
+ *  bearing `toBeNull()` assertion must distinguish "key absent" (invariant
+ *  satisfied) from "Redis unavailable" (test setup invalid). The describe-
+ *  block startup probe gates execution behind `redisReachable === true`, so
+ *  reaching this helper with `redis.status !== 'ready'` indicates a mid-suite
+ *  Redis flake — fail loud rather than vacuously pass. */
 async function rateLimitCount(name: string, key: string): Promise<number | null> {
   const redis = getRedis();
-  if (!redis) return null;
+  if (!redis) {
+    throw new Error('rateLimitCount: getRedis() returned null — test setup invalid (Redis not configured)');
+  }
   for (let i = 0; i < 20 && redis.status !== 'ready'; i++) {
     await new Promise((r) => setTimeout(r, 50));
   }
-  if (redis.status !== 'ready') return null;
+  if (redis.status !== 'ready') {
+    throw new Error(`rateLimitCount: Redis unavailable mid-suite (status=${redis.status}) — test setup invalid; do not interpret as "key absent"`);
+  }
   const raw = await redis.get(`${config.appTag}:rl:${name}:${key}`);
   if (raw === null) return null;
   const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) {
+    throw new Error(`rateLimitCount: non-numeric Redis value for key ${name}:${key} (raw=${JSON.stringify(raw)}) — test setup invalid`);
+  }
+  return n;
 }
 
 /** Bearer header with custody:'light' claim. The fixture decodes the claim
@@ -279,6 +293,66 @@ describe.skipIf(!redisReachable)(
 
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('VALIDATION_ERROR');
+
+      const count = await rateLimitCount('custody-session-auth', SESSION_USER);
+      expect(count).toBeNull();
+    });
+
+    // ─── Length-cap policy pins (oversized-but-present field) ──────────
+    //
+    // Pins the requireStringField length-cap invariant against future drift.
+    // The middleware and the handler-side defense-in-depth re-read share
+    // the same length constants (PASSWORD_MAX_LEN=4096, DERIVED_PUBKEY_MAX_LEN
+    // =100, etc.) so a future developer who changes one site without the
+    // other cannot quietly diverge — the present-but-oversized branch
+    // exercises the cap directly.
+
+    it('/upgrade: oversized derived_pubkey (length=101) returns 400 WITHOUT touching the limiter', async () => {
+      const oversized = 'A'.repeat(101);
+      const res = await request(app)
+        .post('/api/custody/upgrade')
+        .set('X-Hive-Username', UPGRADE_USER)
+        .set('X-Hive-Signature', 'mock')
+        .set('Authorization', bearerForLight(UPGRADE_USER))
+        .send({ derived_pubkey: oversized, signed_proof: 'sig', signed_at: '2026-05-20T00:00:00.000Z' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.body.error.message).toMatch(/derived_pubkey/);
+
+      const count = await rateLimitCount('custody-upgrade', UPGRADE_USER);
+      expect(count).toBeNull();
+    });
+
+    it('/fresh-auth: oversized password (length=4097) returns 400 WITHOUT touching the limiter', async () => {
+      const oversized = 'p'.repeat(4097);
+      const res = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('X-Hive-Username', FRESH_USER)
+        .set('X-Hive-Signature', 'mock')
+        .set('Authorization', bearerForLight(FRESH_USER))
+        .send({ password: oversized, action: 'author_accept', root_author: 'alice', root_permlink: 'paper' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.body.error.message).toMatch(/[Pp]assword/);
+
+      const count = await rateLimitCount('custody-fresh-auth', FRESH_USER);
+      expect(count).toBeNull();
+    });
+
+    it('/session-auth: oversized password (length=4097) returns 400 WITHOUT touching the limiter', async () => {
+      const oversized = 'p'.repeat(4097);
+      const res = await request(app)
+        .post('/api/custody/session-auth')
+        .set('X-Hive-Username', SESSION_USER)
+        .set('X-Hive-Signature', 'mock')
+        .set('Authorization', bearerForLight(SESSION_USER))
+        .send({ password: oversized });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.body.error.message).toMatch(/[Pp]assword/);
 
       const count = await rateLimitCount('custody-session-auth', SESSION_USER);
       expect(count).toBeNull();
