@@ -344,3 +344,55 @@ Fixtures shortened to fit the cap (12-13 chars, structurally valid Hive shape):
 Re-ran the three affected test files: 15/15 pass. The validator's strictness is preserved; only the fixtures changed. Precedent for using `HIVE_ACCOUNT_NAME_REGEX` at user-input boundaries already exists at `backend/src/routes/anonymousReview.ts` (`paper_author` field), so the validator's choice of regex stays consistent with established practice.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-21, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` on commits `956241a3` + `f98cfc5e` + `3e92ee91` (10 reviewers — correctness, security, adversarial on opus; testing, maintainability, project-standards, reliability, api-contract, kieran-typescript, learnings-researcher on sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All three round-1 hold items landed cleanly: corrected 7-site sibling-route audit (was 5; missed site was `papers.ts retractLimiter`), fail-loud `rateLimitCount` distinguishing key-absent from setup-invalid via three throw branches, shared `body-record.ts` helper collapsing six `as Record<string, unknown>` casts into one well-documented site with module-private length-cap constants shared between middleware and handler. Fixture-cap follow-up (`f98cfc5e`) and full-shape fresh-auth body (`3e92ee91`) preserve behavioral invariants. Round-1 KT-1/KT-2 and M1 confirmed resolved at all six call sites in `custody.ts`.
+
+Four items held. One P1 cross-reviewer load-bearing (validator ordering on `/retract`); three P2 (validator behavior consistency + constant duplication + TS hygiene).
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 100, cross-reviewer: reliability R1 conf 100 + security sec-1 conf 60) Middleware chain on `POST /api/papers/:author/:permlink/retract` is `verifyHiveSignature → validateRetractParams → retractLimiter` — round-1 hold recommended `validateRetractParams` BEFORE `verifyHiveSignature` to foreclose ECDSA-cost amplification entirely.** Implementer placed validator AFTER auth, matching the sibling custody-route pattern. HAF-walker amplification IS closed (the load-bearing threat). The residual: a JWT-holding attacker spraying malformed slugs still pays per-probe (a) JWT HMAC verify (cheap), (b) ECDSA recovery (~5-10ms), and (c) a Postgres point-lookup on `accounts.sessions_invalidated_at` inside `verifyHiveSignature`. The architect's round-1 framing ("a few lines, parallels the body-validate-before-limiter pattern... and forecloses the actual CPU/RPC amplification class") was the load-bearing rationale for Option A; the partial implementation defeats that. The implementer's docstring on `validateRetractParams` accurately describes the residual; the commit message overstates ("BEFORE the expensive verifyHiveSignature + HAF walker calls" — only the HAF half delivered).
+
+  Fix: hoist `validateRetractParams` ABOVE `verifyHiveSignature` in the `/retract` route registration. The decision NOT to also reorder the three custody-sibling routes (`/upgrade`, `/fresh-auth`, `/session-auth`) is preserved at architect triage — the custody routes have a stronger argument for auth-first ordering (`byAccount` keying depends on `X-Hive-Username`, and the body-shape error messages benefit from being attributable to an authenticated principal); `/retract` is URL-keyed and the cheap rejection saves a bigger spray class. The asymmetry between `papers.ts` and `custody.ts` is acceptable; document it inline with a one-line comment on the route registration explaining the divergence — anchor on the behavioral distinction (URL-keyed vs header-keyed limiter, ECDSA-cost-amplification class on `/retract`), NOT on hold-item or round-number citations.
+
+  Test note: the existing `papers-retract-url-shape-validator.test.ts` uses `MOCK_VERIFY_SIGNATURE`, so the ordering change does not affect its assertions. No new test required for the reorder itself; a separate follow-up real-path test is filed in pending/ (see "Items dismissed" below).
+
+**2. (P2, conf 80, adversarial) `requireStringField` in `backend/src/lib/body-record.ts` accepts whitespace-only strings (`'   '` passes the `length === 0` guard).** Inconsistent with `bridge.ts validateRegisterBody`, which trims before length-checking. Across the seven `skipFailedRequests:true` adopters, validator behavior on whitespace-only inputs now diverges by route. Material for fields where whitespace-only is semantically invalid (password, derived_pubkey, signed_proof, signed_at, root_author, root_permlink — i.e., every field the helper covers today). Downstream argon2 + Hive `Signature.fromString()` reject whitespace-only cleanly with structured error shape, so the immediate exploit surface is closed; the inconsistency is a maintenance hazard.
+
+  Fix (implementer's call between two shapes):
+  - **Option A (architect recommendation)**: trim inside `requireStringField` before the `length === 0` check. Aligns helper behavior with bridge.ts, makes the helper safe-by-default for the seven adopters. JSDoc updated to declare the trim contract.
+  - **Option B**: document an explicit no-trim contract in the helper's JSDoc and add a sibling `requireTrimmedStringField` variant for callers that want trim semantics. Bridge.ts and any future caller picks the appropriate variant explicitly.
+
+  Architect prefers Option A. Whitespace-only is not a semantically valid value for any field the helper covers today. If a future field legitimately needs whitespace-preserving semantics, that's the moment to introduce the variant.
+
+**3. (P2, conf 75, maintainability M1) `PERMLINK_MAX_LEN = 256` in `backend/src/routes/papers.ts` and `ROOT_PERMLINK_MAX_LEN = 256` in `backend/src/routes/custody.ts` are two independent definitions of the same Hive constraint with no cross-reference.** The established pattern is shared export via `backend/src/lib/hive-account-name.ts` (where `HIVE_ACCOUNT_NAME_REGEX` lives — already cross-referenced by `anonymousReview.ts` and `papers.ts`). The existing comment on `papers.ts`'s local definition says nothing about `custody.ts`'s parallel constant.
+
+  Fix: extract `HIVE_PERMLINK_MAX_LEN` (and consider extracting the permlink format regex `/^[a-z0-9-]+$/` as `HIVE_PERMLINK_FORMAT_REGEX`) to `backend/src/lib/hive-account-name.ts` or a new `backend/src/lib/hive-permlink.ts` — implementer's call between extending the existing module and creating a sibling. Both `papers.ts` and `custody.ts` import from the shared module. Document the 256 value at the export site with the Hive witness/protocol cap rationale.
+
+**4. (P2, conf 75, maintainability M2) Vacuous `req.params.author as string` and `req.params.permlink as string` casts on the `/retract` route handler after `validateRetractParams` confirmed structural shape.** Express types `req.params` values as `string` already; the casts add visual noise and imply a narrowing that wasn't done, contradicting the explicit-narrowing pattern the rest of the round-2 refactor establishes (where `requireStringField`'s discriminated union earns a typed local through real narrowing).
+
+  Fix: drop the `as string` casts. One-line removal each. Pairs naturally with item 1 since the same handler-registration region is being touched.
+
+### Items dismissed during architect triage
+
+- **(P1, conf 90, api-contract AC-1)** `/retract` 400 VALIDATION_ERROR responses not documented in `agents/docs/api-contracts/papers.md`. **Architect-direct fix in-place this session** (papers.md is in architect zone). New `VALIDATION_ERROR (400)` entry added to the `/retract` Errors list documenting the URL-shape validator's two trigger conditions and noting the limiter-bypass behavior. Not held on this task.
+- **(P1, conf 75, project-standards PS-R2-01)** MOCK_VERIFY_SIGNATURE carve-out clause (b) companion requirement unsatisfied for `/retract` — `papers-retract-url-shape-validator.test.ts` cites companions that also mock; no real-path test exercises real `verifyHiveSignature` on any `papers.ts` route. **Filed as new pending task** `backend-retract-real-path-verifyhivesignature-test.md` per the carve-out's explicit "OR a follow-up task is filed to add such coverage" alternative. Not held on this task.
+- **(adversarial)** `body-record.ts` has no direct unit tests. Preemptive coverage of a thin-wrapper whose integration exposure is already six sites (three middleware + three handlers) in `custody.ts` plus the discriminated-union return shape exercised by every cap-policy spec. Dismissed per `feedback_dismiss_preemptive_test_hardening`.
+- **(adversarial)** `bridge.ts validateRegisterBody` did not adopt the new shared helpers. Advisory observation; the bridge validator pre-dates the round-2 helper extraction and carries its own trim-and-validate shape. Migration is scope expansion outside the round-2 purview.
+- **(adversarial)** Permissive permlink regex accepts hyphen-prefixed / hyphen-suffixed / consecutive-hyphen permlinks; the well-formed-but-unresolvable class still pays HAF walker on the 404 refund. Mitigated by the per-account `skipFailedRequests` limiter cap — well-formed spray is exactly what the limiter was designed to bound. Dismissed at triage.
+- **(kieran-typescript KT-R2-1)** `assertBodyRecord` still contains an `as Record<string, unknown>` cast — now concentrated in one well-documented site with a sound runtime guard. Known thin-wrapper limitation; not a regression vs round-1's three-scattered-cast state. Dismissed.
+- **(reliability TG-1)** Mocked test cannot prove ECDSA is skipped on malformed-slug probes — this IS the load-bearing observation that surfaced item #1 above; structurally closed by item #1's reorder. No separate test needed.
+- **(testing RR-1)** `papers-retract-url-shape-validator.test.ts` does not pin auth-before-validator ordering — rendered moot by item #1's reorder and was preemptive coverage in any case. Dismissed per `feedback_dismiss_preemptive_test_hardening`.
+- Below-anchor and lower-confidence findings suppressed by the anchor-75 gate per skill default.
+
+### Re-review signal
+
+When items 1–4 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commits only.
+
+Item 1 + Item 4 touch the same route registration region in `backend/src/routes/papers.ts` — single focused commit makes sense. Item 2 touches `backend/src/lib/body-record.ts` (separate commit reasonable). Item 3 touches `backend/src/lib/hive-account-name.ts` (or new sibling) + `backend/src/routes/papers.ts` + `backend/src/routes/custody.ts` (separate commit reasonable). Implementer's call between bundling and splitting; the architect's mild preference is one focused commit per logical item.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

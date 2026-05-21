@@ -454,6 +454,7 @@ Retract a paper. The backend broadcasts a `retract_paper` custom_json to Hive.
 ```
 
 **Errors:**
+- `VALIDATION_ERROR` (400) — malformed `:author` (fails the Hive account-name format) or `:permlink` (empty, exceeds 256 chars, or contains characters outside `[a-z0-9-]`). Returned by the URL-shape validator that runs before the rate limiter and before any HAF roundtrip, so malformed-slug requests do not consume per-account `retractLimiter` capacity.
 - `UNAUTHORIZED` — invalid signature
 - `FORBIDDEN` — user is neither the paper author, `pevo.admin`, nor (for bridge papers) the registerer or an original author listed in `pevo.authors[].hive`
 - `NOT_FOUND` — paper does not exist
