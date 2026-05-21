@@ -34,7 +34,7 @@ The wrapper was the round-5 hold #4 fix for "ORCID `fetch` calls have no timeout
 
 The architect re-review's adversarial reviewer surfaced a coverage gap that the wrapper's surface obscures: **Node's `fetch()` resolves as soon as response headers arrive, not when the response body is fully read.** Body-read calls (`tokenRes.json()`, `tokenRes.text()`, `worksRes.json()`, etc.) execute AFTER the wrapper has resolved and the `finally` block has cleared the abort timer. The `AbortController` is no longer scheduled to fire. A provider that returns `200 OK` headers within the timeout window but then dribbles body bytes for an arbitrary duration (TCP backpressure, upstream throttling, slow-stream attack shape) hangs the route handler indefinitely. The 504 `ORCID_PROVIDER_TIMEOUT` defense never fires for this failure mode.
 
-The architect dismissed acting on the gap for the ORCID-specific instance — ORCID's production load balancer is unlikely to dribble bytes; the headers-phase guard catches the dominant failure mode (full-call hang on the upstream's first byte). The structural insight is generalizable, though, and likely to recur in any future fetch wrapper PEvO builds (pinner IPFS gateways, third-party API integrations, anything wrapping Node fetch with timeout discipline).
+The architect dismissed acting on the gap for the ORCID-specific instance — ORCID's production load balancer is unlikely to dribble bytes; the headers-phase guard catches the dominant failure mode (full-call hang on the upstream's first byte). The structural insight is generalizable, though, and likely to recur in any future fetch wrapper PEvO builds (third-party API integrations, anything wrapping Node fetch with timeout discipline).
 
 This convention captures the rule that surfaces the gap, so future authors of fetch wrappers don't repeat the mistake silently.
 
@@ -72,7 +72,7 @@ The rule's positive side: stating the gap explicitly turns "wrapper coverage" in
 
 ## When to Apply
 
-- Authoring any new fetch wrapper helper in PEvO backend code (`backend/src/lib/fetch-*.ts`, `backend/src/routes/*.ts` inline wrappers, IPFS gateway wrappers in pinner code).
+- Authoring any new fetch wrapper helper in PEvO backend code (`backend/src/lib/fetch-*.ts`, `backend/src/routes/*.ts` inline wrappers). The IPFS-gateway-wrapper application of this convention lives in the `pevo-pinner` repo since the extraction on 2026-05-21.
 - Reviewing a PR that introduces or modifies a fetch wrapper, particularly when the wrapper is presented as "a fetch with timeout."
 - Extending an existing fetch wrapper (e.g., `fetchWithOrcidTimeout`) to a new caller whose body-read characteristics differ from the original consumer's. Example: extending `fetchWithOrcidTimeout` to a hypothetical "fetch ORCID works with full pagination" path that streams large JSON bodies — the original headers-only bound becomes inadequate.
 - Triaging a route handler that hangs in production despite a fetch-timeout wrapper being in place. The wrapper might be doing what it was written to do (bound headers); the hang is in body-read territory.

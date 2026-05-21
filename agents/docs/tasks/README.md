@@ -15,7 +15,7 @@ tasks/
 
 `<role>-<kebab-summary>.md`
 
-Examples: `ui-keychain-upgrade.md`, `backend-recover-rate-limit.md`, `pinner-cid-gc.md`. No date prefix. Dates live inside the file (hold blocks).
+Examples: `ui-keychain-upgrade.md`, `backend-recover-rate-limit.md`. No date prefix. Dates live inside the file (hold blocks).
 
 ## Task file shape
 

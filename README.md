@@ -55,7 +55,7 @@ git config core.hooksPath .githooks   # one-time: enables the commit-zone audit 
 
 This builds and starts four services: PostgreSQL, Redis, Kubo (IPFS), and the backend (which serves the frontend). The app runs at `http://localhost:3001`.
 
-The `core.hooksPath` step is a per-clone setting (not git-tracked) that points git at `.githooks/`, where the repo's `commit-msg` zone-audit hook lives. The hook rejects commits whose staged paths cross agent ownership boundaries — it's a no-op for human-driven commits with `chore:` / `fix:` / etc. prefixes, but enforces the agent-zone discipline documented in `CLAUDE.md` "Commits and Pushes" for `architect:` / `backend:` / `ui:` / `pinner:` commits.
+The `core.hooksPath` step is a per-clone setting (not git-tracked) that points git at `.githooks/`, where the repo's `commit-msg` zone-audit hook lives. The hook rejects commits whose staged paths cross agent ownership boundaries — it's a no-op for human-driven commits with `chore:` / `fix:` / etc. prefixes, but enforces the agent-zone discipline documented in `CLAUDE.md` "Commits and Pushes" for `architect:` / `backend:` / `ui:` commits.
 
 ### Configure environment
 
