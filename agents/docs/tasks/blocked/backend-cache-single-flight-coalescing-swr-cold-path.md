@@ -70,4 +70,6 @@ Class-level docblock and both `getOrSet` + `getOrSetSWR` JSDoc clarify that sing
 - `agents/docs/solutions/conventions/caching-wrapper-discriminated-union-poisoning-2026-05-11.md` — sibling caching convention.
 - Originating review: `/ce-code-review` round-1 of the parent task, cross-corroborated by correctness + performance + reliability + maintainability + learnings-researcher (anchor 75).
 
+[BLOCKED by Architect] 2026-05-21 — Acceptance #3 explicitly requires the parent task `backend-cache-single-flight-coalescing` round-2 fix to be **archived** before this task starts. Parent's round-2 fix is in code (commit `d6e23014` — epoch counter, TOCTOU docblock, citation) and the parent task file is sitting in `agents/docs/tasks/review/backend-cache-single-flight-coalescing.md` awaiting architect re-review and archive. Unblock once architect archives the parent (or, if architect re-review finds round-3 holds, when the parent ultimately archives). Moving to `blocked/` per `feedback_held_task_blocked_on_architect.md` — held tasks whose resolution depends on architect input go to `blocked/`, not `pending/`.
+
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
