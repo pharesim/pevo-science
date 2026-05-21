@@ -86,7 +86,7 @@ Architect or backend (at next startup) moves this file back to `tasks/pending/` 
 
 ---
 
-## Backend re-review signal (2026-05-20)
+## Backend re-review signal (2026-05-20, commit a4863aa8)
 
 ### Option 1: body-validate-before-limiter applied
 
@@ -176,3 +176,55 @@ accreditation.test.ts                     31 passed | 2 failed
 ```
 
 Pre-existing failures verified against main HEAD: `cd backend && npx vitest run tests/routes/accreditation.test.ts -t "pre-INCR redis.eval rejection"` fails on main HEAD with the same `expected 502 to be 503` assertion. The concurrent-retries spec is similarly flaky on main (HAF-query-latency-bound: when the dev HAF environment responds slowly, the cap+1 broadcasts don't all reach the increment site within the 5s polling deadline). Neither failure mode interacts with the middleware reorder this task lands.
+
+---
+
+## Architect re-review (2026-05-21, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `a4863aa8` (9 reviewers — correctness, security, adversarial on opus; testing, maintainability, project-standards, api-contract, reliability, kieran-typescript on sonnet; learnings-researcher unstructured; `ce-agent-native-reviewer` skipped per project CLAUDE.md). Body-validate-before-limiter pattern lands cleanly on the 5 sites the implementer enumerated: middleware-chain ordering is `verifyHiveSignature → validateXBodyShape → xLimiter → handler` on all 3 custody routes; zod hoist is structurally equivalent on the 2 accreditation routes. Auth-before-validator invariant is pinned by the missing-X-Hive-Username 401 spec. `req.body ?? {}` guards the body-parser-failed path. The new JSDoc on `skipFailedRequests` documents the layered-pattern obligation and the misuse-direction warning. Real-path companion tests exist for cryptographic verification on all three custody routes (carve-out clause (b) satisfied).
+
+Three items held — one of them P0 with 3-way cross-reviewer corroboration that the implementer's signal claim "five sites; no further sibling-route work outstanding" is mechanically wrong.
+
+### Items held (must fix before archive)
+
+**1. (P0, cross-reviewer 3×: reliability conf 100 + adversarial adv-1 conf 95 + adversarial adv-2 conf 80 → anchor 100 after promotion) Sibling-route audit undercounts `skipFailedRequests:true` adopters; `papers.ts retractLimiter` is the missed adopter, structurally unprotected.** The round-1 verbatim audit grep in this task's signal block enumerates five opt-in sites and concludes "no further sibling-route work outstanding." Real `grep -rn "skipFailedRequests:\s*true" backend/src/` returns **seven** sites. The two missed: `bridge.ts registerLimiter` (already protected by `validateRegisterBody`, accidentally correct) and `papers.ts retractLimiter` (NOT protected). The `/retract` route registration is `verifyHiveSignature, retractLimiter, handler` — no body- or URL-shape validator between auth and limiter. The handler immediately calls `fetchPaperDetailFromHaf` (HAF SQL walker bounded by `hafWalkerWallClockMs`). A JWT holder spraying `POST /api/papers/<arbitrary>/<arbitrary>/retract` pays `verifyHiveSignature` ECDSA + full HAF walker cost per probe; 404 ("paper not found") triggers `skipFailedRequests` refund → slot restored → sustained per-account RPS amplifying HAF query load. This is the exact amplification class the task was filed to eliminate, on a route the audit claimed was reviewed.
+
+  Body-validation is structurally inapplicable on `/retract` (it derives the target from URL params, not body). Fix shape (implementer's call between two options):
+
+  - **Option A (preferred)**: add a URL-param shape validator analogous to the body-shape validators — middleware that runs BEFORE `retractLimiter` and rejects requests with structurally invalid `:author`/`:permlink` slug shapes (length cap, character class — Hive username/permlink format rules) with 400 before `verifyHiveSignature` or any HAF roundtrip. Cheap upstream gate; eliminates the cheap-probe amplification class even when slugs would otherwise pass into the handler.
+  - **Option B**: explicitly accept `/retract` as the deferred Option-2 IP-keyed-limiter class — add a structured comment on `retractLimiter` documenting that the route's residual amplification surface is bounded only by Hive RPC + HAF walker latency, and that a future nginx-layer per-IP rate-limit is the proper home for this bound; revise the round-2 signal block to acknowledge the seventh site explicitly with its accepted-residual rationale.
+
+  Architect recommendation: **Option A**. The URL-shape validator is a few lines, parallels the body-validate-before-limiter pattern this task already establishes, and forecloses the actual CPU/RPC amplification class. Option B preserves the surface and asks the operator/nginx layer to bound it; defensible but inconsistent with the task's stated goal of "bound CPU/RPC cost per authenticated account regardless of whether the limiter consumes on failure."
+
+  **Correct the verbatim audit grep**: the round-2 signal block must enumerate all seven sites (not five), confirm Option A or B is applied to `/retract`, and note `bridge.ts registerLimiter`'s existing `validateRegisterBody` protection so the grid is mechanically accurate. Per `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`: claim, not evidence, is the failure mode — the grep output must back the claim.
+
+  **Regression test**: add a spec parallel to the existing 100-sequential-malformed-bodies test against `/retract` (asserting that 100 sequential probes do not consume any of the limiter's per-account capacity if Option A; or, if Option B, that the structured-comment rationale is captured in the round-2 signal block — no test required, only documentation).
+
+**2. (P1, conf 90, testing T1) `rateLimitCount` helper returns null on Redis-unreachable — vacuously satisfies the load-bearing `expect(count).toBeNull()` assertion if Redis flakes mid-suite.** In `backend/tests/routes/custody-limiter-cpu-amplification.test.ts`, the `rateLimitCount` helper returns `null` when `redis.status !== 'ready'`. The load-bearing assertion in every CPU-amplification spec is `expect(count).toBeNull()` — "the limiter key is absent, proving the malformed spray never touched the limiter." The startup probe (`redisReachable=true/false`) is a one-shot at the top of the file. If Redis becomes unreachable AFTER that probe passes (mid-suite container restart, network hiccup), per-call `redis.get()` returns null for the wrong reason — not "key absent" but "couldn't reach Redis." All 10 specs pass vacuously. The load-bearing CPU-amplification pin silently disarms exactly when CI is least reliable. (The pre-existing accreditation Redis-flake noted in this task's own signal block is direct evidence that mid-suite Redis flakes happen in this codebase.)
+
+  Fix shape: `rateLimitCount` should throw (or return a distinct sentinel value such as `Symbol('redis-unavailable')` that fails the `toBeNull()` comparison) when `redis.status !== 'ready'`. A Redis flake mid-suite becomes a test failure rather than a silent pass. Add a one-line docblock on the helper naming the distinction between "key absent" (test invariant satisfied) and "Redis unavailable" (test setup invalid).
+
+**3. (P1+P1+P2 cluster, cross-reviewer: kieran-typescript KT-1 conf 90 + maintainability M1 conf 90 + kieran-typescript KT-2 conf 80) Three custody validators duplicate an unsafe `as` cast and length-cap policy that diverges from in-handler defense-in-depth — extract a shared typed-narrowing helper that absorbs all three concerns.** Three coupled issues, one structural fix:
+
+  - (a) KT-1: each of `validateUpgradeBodyShape` / `validateFreshAuthBodyShape` / `validateSessionAuthBodyShape` opens with `const body = (req.body ?? {}) as Record<string, unknown>`. Express types `req.body` as `any`; the `as` cast silences the checker rather than narrowing. Subsequent property reads inherit the lie. The middleware that exists to BE the typed boundary opens with a non-narrowing type assertion.
+  - (b) M1: middleware caps each field (password 4096, derived_pubkey 100, signed_proof 200, signed_at 64, root_author 64, root_permlink 256). The retained in-handler defense-in-depth checks have NO length caps. The two layers disagree on what constitutes a malformed request; no comment declares the divergence intentional; no test pins which side wins on oversized input. A future developer changing one side's cap has no signal that the other side exists.
+  - (c) KT-2: same entry-cast and per-field length-check triple appears in all three validators with no shared abstraction. The fix for KT-1 must be applied three times. Length-cap policy from (b) lives in three places (or six, counting the handler-side absence).
+
+  Fix shape: extract a module-private helper (e.g., `requireStringField(body: Record<string, unknown>, fieldName: string, maxLength: number): string | { error: string }`) plus a typed boundary helper (`assertBodyRecord(req): Record<string, unknown>` that throws/returns the cast result after a `typeof === 'object' && !== null` guard). Each validator collapses to ~5 lines of `requireStringField` calls. The unsafe `as` cast lives in one place (KT-1 closed). Length-cap policy lives in one place — and if the handler-side defense-in-depth check also calls `requireStringField`, the middleware-vs-handler divergence dies of its own accord (M1 closed). The 3× duplication collapses (KT-2 closed).
+
+  Test pin: add at least one spec sending an oversized-but-present field (e.g., `password.length === 4097`, `derived_pubkey.length === 101`) against each route, asserting 400 VALIDATION_ERROR with limiter-key absent (using the fail-loud `rateLimitCount` from item 2). Pins the cap-policy invariant against future drift.
+
+### Items dismissed during architect triage
+
+- **(P1, conf 85, testing T2)** Valid-shape-but-wrong-proof 401 refund-pin test gap on `/upgrade`. Structural refund gate (`statusCode < 400 && writableEnded` in `rateLimit.ts`) is in place and pinned for the 503 exception path by the existing `Hive getAccounts throws then recovers` canary in `custody-upgrade.test.ts`. Missing deliberate-4xx-path coverage is preemptive against a future regression to the gate. Dismissed per `feedback_dismiss_preemptive_test_hardening`. Documented residual.
+- **(P2, conf 80, testing T3)** Accreditation route body-before-limiter test gap. Structural zod hoist landed in this commit. Missing test is preemptive coverage of a "future developer reorders middleware chain back to broken state" scenario. Dismissed per the same memory. **Note for triage transparency**: the implementer's signal-block claim that existing accreditation canaries pin this is inaccurate — verified: the `accred-req limiter refunds slot on transient SMTP failure` canary pins slot-refund mechanics (5xx), not body-before-limiter ordering; and `accreditation.test.ts:195`'s `expect([400, 429]).toContain(res.status)` is an explicit non-pin (accepts either outcome). The disposition is unchanged (preemptive), but the rationale-of-record is "preemptive per memory," not "implementer's coverage claim trusted." A future signal-block claim of test coverage should be backed by a specific test ID, not a generic "covered by existing canaries."
+- **(P2, conf 85, kieran-typescript KT-3)** `bearerForLight` JWT-mint helper has no type contract tying it to fixture's `decodeJwtCustodyClaim` decode fields. Hand-rolled token works today; the failure mode requires a future refactor of the decoder's required-claim set. Preemptive documentation against a hypothetical future refactor. Dismissed per the same memory.
+- Below-anchor and other low-confidence findings (cross-deployment rainbow-table on AGPL forks, fresh-auth `set_password` stale comment, top-level Redis-wait at module scope, etc.) suppressed by the anchor-75 gate per skill default.
+
+### Re-review signal
+
+When items 1, 2, and 3 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+Items 1 + 2 + 3 can land in one focused commit (the `requireStringField` helper from item 3 is the natural site for item 2's `rateLimitCount` fail-loud helper if a sibling test-utility module is preferred). Item 1's URL-shape validator on `/retract` is a separate touch in `backend/src/routes/papers.ts` but can ship in the same commit if the implementer prefers a single round-2 commit; or split if the `requireStringField` refactor is large enough to warrant isolation.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
