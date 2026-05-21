@@ -97,6 +97,17 @@ async function fetchCommentsFromHaf(
     // the UNION ALL arm; PostgreSQL rejects forward references inside a
     // non-RECURSIVE WITH (the failure is silent here — the caller catches
     // the parse error and returns []).
+    //
+    // Descent gate: the recursive arm additionally requires the parent
+    // (`ct.author`) to be in `active_accreditations`. The base arm matches
+    // `parent_author = paperAuthor`, and paper authorship requires
+    // accreditation (PEvO invariant), so the base arm is structurally safe
+    // without an explicit EXISTS check. Without the recursive-arm gate, an
+    // accredited reply whose parent was authored by a non-accredited Hive
+    // account (e.g. posted via peakd/ecency by an unaccredited user) would
+    // survive the outer `accreditedJoin` (which only checks `dc.author`) and
+    // render as an orphan against missing context. The outer
+    // `accreditedJoin` stays as the author-side gate.
     const query = `
       WITH RECURSIVE ${accredCte.sql},
       comment_tree AS (
@@ -113,6 +124,10 @@ async function fetchCommentsFromHaf(
         -- Recursive: replies to discussion comments. The negative
         -- discriminator (IS DISTINCT FROM 'review') admits comments that
         -- carry no pevotest metadata at all — NULL is considered "distinct".
+        -- The EXISTS clause restricts descent to accredited parents so
+        -- accredited replies under a non-accredited parent do not survive
+        -- as orphans (the outer accreditedJoin only checks the row's own
+        -- author, not the chain of ancestry).
         SELECT
           c.author, c.permlink, c.body, c.created,
           c.parent_author, c.parent_permlink, ct.depth + 1
@@ -120,6 +135,7 @@ async function fetchCommentsFromHaf(
         JOIN comment_tree ct ON c.parent_author = ct.author AND c.parent_permlink = ct.permlink
         WHERE (c.json_metadata -> $${appTagIdx} ->> 'type') IS DISTINCT FROM 'review'
           AND ct.depth < 20
+          AND EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = ct.author)
       ),
       filtered AS (
         SELECT
@@ -133,6 +149,8 @@ async function fetchCommentsFromHaf(
       ORDER BY ${sortCol} ${safeOrder}
       LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
 
+    // Count query must apply the same descent restriction so
+    // `meta.total` matches `data.length` after pagination.
     const countQuery = `
       WITH RECURSIVE ${accredCte.sql},
       comment_tree AS (
@@ -146,6 +164,7 @@ async function fetchCommentsFromHaf(
         JOIN comment_tree ct ON c.parent_author = ct.author AND c.parent_permlink = ct.permlink
         WHERE (c.json_metadata -> $${appTagIdx} ->> 'type') IS DISTINCT FROM 'review'
           AND ct.depth < 20
+          AND EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = ct.author)
       )
       SELECT count(*)::int AS total
       FROM comment_tree dc

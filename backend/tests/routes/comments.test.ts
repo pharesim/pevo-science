@@ -104,6 +104,44 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
     ).toContain(PEAKD_COMMENT);
   });
 
+  // Regression: an accredited-authored reply whose parent comment is
+  // authored by a non-accredited Hive account (e.g. posted via peakd by
+  // an unaccredited user) must NOT survive the listing. The outer
+  // `accreditedJoin` only gates on the row's own author, so without a
+  // descent-side gate in the recursive CTE arm such replies would render
+  // as orphans against missing context. The fix adds an EXISTS
+  // (active_accreditations) clause to the recursive arm so descent only
+  // proceeds through accredited parents.
+  //
+  // This canary pins a real on-chain orphan: `pevo.science` replied to a
+  // comment authored by `joann2`, who is not accredited. The reply must
+  // be absent from the response (parent is gone; reply has no context).
+  it('hides accredited replies whose parent author is non-accredited', { timeout: 60_000, retry: 5 }, async () => {
+    const PAPER_AUTHOR = 'pevo.science';
+    const PAPER_PERMLINK = 'pevo-original-whitepaper-2016-2026-revision-mnczwwdm';
+    const ORPHAN_REPLY_PERMLINK = 're-joann2-tdeuxx';
+    const res = await request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=200`);
+    expect(res.status).toBe(200);
+    const permlinks = res.body.data.map((c: { permlink: string }) => c.permlink);
+    expect(
+      permlinks,
+      'accredited reply with non-accredited parent must be hidden; if present, the recursive CTE descent is not gated on parent accreditation',
+    ).not.toContain(ORPHAN_REPLY_PERMLINK);
+  });
+
+  // Pagination integrity: meta.total must match the size of the unpaginated
+  // data set. If the data query gates descent on accreditation but the count
+  // query does not (or vice versa), totals drift from rendered counts and
+  // pagination breaks. Pin the bug-paper because we know it has a deliberate
+  // mismatch case (orphan reply) that the count query must also exclude.
+  it('meta.total matches the unpaginated data length for the orphan-parent paper', { timeout: 60_000, retry: 5 }, async () => {
+    const PAPER_AUTHOR = 'pevo.science';
+    const PAPER_PERMLINK = 'pevo-original-whitepaper-2016-2026-revision-mnczwwdm';
+    const res = await request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=200`);
+    expect(res.status).toBe(200);
+    expect(res.body.meta.total).toBe(res.body.data.length);
+  });
+
   // backend-papers-filter-accreditation lane 2 canary: legacy
   // `?accredited_only=false` opt-out is silently ignored. A regression
   // that re-introduces the parse + JOIN-toggle branch would surface here
