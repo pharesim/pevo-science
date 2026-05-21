@@ -29,8 +29,7 @@ Move all pinner-bearing surfaces to `pevo-pinner` and clean up PEvO main so it n
 
 ### Phase A — Prerequisites (block the extraction until clear)
 
-1. **Sibling pinner work lands.** `pinner-autopin-concurrency-and-quota` (`pinner/autopin*.go`, `pinner/autopin_runner*.go`) must be committed by the pinner agent, reviewed by the architect, and archived (or held + resolved) BEFORE Phase B runs. Confirm via `git status` clean inside `pinner/`.
-2. **In-flight pinner tasks frozen.** Pause all pinner-* tasks during the extraction window. Other agents and parallel sessions must not start a new pinner task until Phase F completes and the architect announces extraction done. The pinner CLAUDE.md will gain a "DO NOT START NEW WORK" notice at Phase B start; remove it at Phase F end.
+**Phase A SKIPPED per user decision 2026-05-21:** "We won't do any more pinner work here." In-flight pinner tasks in `tasks/review/` will NOT be reviewed in PEvO main; they migrate as-is to `pevo-pinner/agents/docs/tasks/review/` (see Phase D step 14). No code-review pass on the sibling-pinner work happens here; whatever pinner code is committed to PEvO main at extraction time is the snapshot that ships to `pevo-pinner`. The "DO NOT START NEW WORK" notice is also unnecessary — the pinner agent is being retired from PEvO main entirely (Phase F removes its CLAUDE.md and zone).
 
 ### Phase B — Extract via git-filter-repo (architect-local)
 
@@ -53,14 +52,17 @@ The architect cannot SSH or run `gh` against an account; these steps require the
 11. **README.md.** New file. Describe what the pinner is, who runs it (community operators), how to deploy (Docker), what `APP_TAG` to set, and how it interacts with PEvO indirectly via HAF SQL. Mention the AGPL-3.0 license and the PEvO project as the original consumer.
 12. **LICENSE.** AGPL-3.0. Copy from PEvO main if compatible.
 13. **agents/docs/ARCHITECTURE.md** (in pevo-pinner). New file. Cover: discovery via HAF SQL (the query shape, the `APP_TAG` filter), the autopin rule engine, the embedded IPFS node vs Pinata backend choice, the gateway-server architecture, the drain shutdown sequence (will need to be re-described after the drain-timeout-partial-block-trust work completes, which now lands in pevo-pinner not PEvO). This is the pinner's own architecture doc, not a fragment carried from PEvO.
-14. **agents/docs/tasks/{pending,review,blocked}/ migrated.** Move every `pinner-*.md` task file from PEvO main's tasks tree to pevo-pinner's tasks tree, including:
-    - `pending/pinner-autopin-concurrency-and-quota.md`
-    - `pending/pinner-cid-validation-on-autopin-path.md`
-    - `pending/pinner-embedded-ipfs-node-via-boxo.md`
-    - `pending/pinner-response-size-cap-on-gateway-fetch.md`
-    - `pending/pinner-shutdown-drain-in-flight-pins.md` (held; carries its 2 hold-block items)
-    - `pending/pinner-drain-timeout-partial-block-trust.md` (filed during the just-completed code review)
-    - Any `pinner-*` files in `tasks/blocked/` (none today, but check at execution time).
+14. **agents/docs/tasks/{pending,review,blocked}/ migrated.** Move every `pinner-*.md` task file from PEvO main's tasks tree to pevo-pinner's tasks tree, preserving the section (pending/review/blocked) each file currently sits in. As of 2026-05-21:
+    - Migrate to `pevo-pinner/agents/docs/tasks/pending/`:
+      - `pinner-drain-timeout-partial-block-trust.md`
+      - `pinner-embedded-ipfs-node-via-boxo.md`
+      - `pinner-shutdown-drain-in-flight-pins.md` (held; carries its 2 hold-block items)
+    - Migrate to `pevo-pinner/agents/docs/tasks/review/`:
+      - `pinner-autopin-concurrency-and-quota.md`
+      - `pinner-cid-validation-on-autopin-path.md`
+      - `pinner-response-size-cap-on-gateway-fetch.md`
+    - `tasks/blocked/`: no `pinner-*` files currently (verified 2026-05-21); re-check at execution time.
+    - Re-check `git status` for any new `pinner-*` task files added between this planning and execution and migrate them too.
     - The slug prefix stays `pinner-*` in the new repo because the new repo's single-agent shape still wants role-prefix consistency; if the new repo later moves to multi-agent, the architect-vs-pinner split can be revisited.
 15. **agents/docs/solutions/ — selective carry.** Most of PEvO's solutions docs that mention "pinner" are git-coordination conventions (commit-zone-audit-hook, concurrent-agent-staging-sweep, git-restore-staged, parallel-agent-git-index-race, etc.) that apply to PEvO's multi-agent setup and are irrelevant to pevo-pinner's single-agent day-1. Only carry the genuinely pinner-domain learnings:
     - `agents/docs/solutions/conventions/fetch-abort-controller-bounds-headers-only-2026-05-06.md` — explicitly scopes "IPFS gateway wrappers in pinner code"; copy with a note that the PEvO-side scope text should be updated when this task completes (or strip the PEvO-specific framing entirely).
