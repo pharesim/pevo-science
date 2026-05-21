@@ -44,6 +44,7 @@ vi.mock('../../src/account-creation.js', () => ({
   stopAccountCreationWorker: vi.fn(),
 }));
 
+import crypto from 'node:crypto';
 import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { orcidVerified } from '../../src/routes/orcid.js';
@@ -51,6 +52,7 @@ import { config } from '../../src/config.js';
 import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 import { TIMING_ORACLE_FLOOR_MS } from '../support/timing-constants.js';
+import { SIGNUP_BINDING_COOKIE_NAME } from '../../src/signup-session-binding.js';
 
 // Encryption key must be configured for `/confirm` (encryptKey on posting/memo)
 if (!process.env.CUSTODY_ENCRYPTION_KEY || process.env.CUSTODY_ENCRYPTION_KEY.length < 32) {
@@ -100,6 +102,37 @@ afterEach(() => {
 });
 
 /**
+ * Extract `Set-Cookie` header values from a supertest response in the shape
+ * supertest's `.set('Cookie', ...)` accepts (an array of `name=value` pairs,
+ * with cookie attributes stripped). Used to forward the signup-binding
+ * cookie from one request to the next so the same simulated browser owns
+ * both halves of the signup ceremony.
+ */
+function extractSetCookies(res: { headers: Record<string, string | string[] | undefined> }): string[] {
+  const raw = res.headers['set-cookie'];
+  if (!raw) return [];
+  const list = Array.isArray(raw) ? raw : [raw];
+  return list.map((entry) => entry.split(';')[0]);
+}
+
+/**
+ * Synthesize a (cookie-value, sha256-hash) pair for tests that seed a row
+ * directly via INSERT (bypassing /signup or /verify, which would otherwise
+ * mint and persist the binding for us). The hash goes into
+ * `accounts.signup_binding_hash`; the cookie value goes into the request's
+ * `Cookie:` header so /confirm and /link's binding check passes.
+ */
+function makeBindingForSeededRow(): { cookieValue: string; hash: Buffer; cookieHeader: string } {
+  const cookieValue = crypto.randomBytes(32).toString('hex');
+  const hash = crypto.createHash('sha256').update(cookieValue).digest();
+  return {
+    cookieValue,
+    hash,
+    cookieHeader: `${SIGNUP_BINDING_COOKIE_NAME}=${cookieValue}`,
+  };
+}
+
+/**
  * Seed a verified-ORCID nonce into Redis (if available) and the in-memory map.
  * The signup/recover routes read Redis first when it's available, so both
  * stores must be primed to work regardless of the test environment.
@@ -140,7 +173,7 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm without passwo
   });
 
   it('stores password_hash = NULL end-to-end and confirm succeeds', async () => {
-    await clearRateLimitKeys(['auth-signup', 'signup-confirm']);
+    await clearRateLimitKeys(['auth-signup', 'signup-confirm', 'signup-confirm-token']);
     await seedOrcidNonce(nonce, orcidId);
 
     // /signup with orcid_token + no password
@@ -156,6 +189,9 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm without passwo
     expect(signupRes.status).toBe(200);
     const authToken = signupRes.body.data.auth_token as string;
     expect(authToken).toMatch(/^confirmed:/);
+    // /signup mints a session-binding httpOnly cookie that /confirm requires.
+    const signupCookies = extractSetCookies(signupRes);
+    expect(signupCookies.length).toBeGreaterThan(0);
 
     // DB assertion: password_hash is NULL
     const pool = getAppPool()!;
@@ -175,6 +211,7 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm without passwo
 
     const confirmRes = await request(app)
       .post('/api/auth/confirm')
+      .set('Cookie', signupCookies)
       .send({
         auth_token: authToken,
         username,
@@ -222,7 +259,7 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password'
   });
 
   it('stores password_hash, confirm succeeds, password login works', async () => {
-    await clearRateLimitKeys(['auth-signup', 'signup-confirm']);
+    await clearRateLimitKeys(['auth-signup', 'signup-confirm', 'signup-confirm-token']);
     await seedOrcidNonce(nonce, orcidId);
 
     const signupRes = await request(app)
@@ -237,6 +274,7 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password'
       });
     expect(signupRes.status).toBe(200);
     const authToken = signupRes.body.data.auth_token as string;
+    const signupCookies = extractSetCookies(signupRes);
 
     const pool = getAppPool()!;
     const pre = await pool.query<{ password_hash: string | null }>(
@@ -247,6 +285,7 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password'
 
     const confirmRes = await request(app)
       .post('/api/auth/confirm')
+      .set('Cookie', signupCookies)
       .send({
         auth_token: authToken,
         username,
@@ -403,18 +442,22 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
   const username = `piinul${PII_SUFFIX}`;
   const orcidId = '0000-0001-0000-1234';
   const confirmedToken = `confirmed:${'a1b2c3d4'.repeat(8)}`;
+  const binding = makeBindingForSeededRow();
 
   beforeAll(async () => {
     if (!dbReachable) return;
     const pool = getAppPool()!;
     await cleanupByUsername(username);
     // Seed the ORCID-only signup row: email = NULL, password_hash = NULL,
-    // verify_token = 'confirmed:…' (post-/signup state, pre-/confirm).
+    // verify_token = 'confirmed:…' (post-/signup state, pre-/confirm). The
+    // signup_binding_hash mimics the cookie minted at /signup so /confirm's
+    // binding check passes; the same cookie value is forwarded in the
+    // request below.
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await pool.query(
-      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
-       VALUES (NULL, NULL, 'PII Null Confirm', 'MIT', 'physics', $1, $2, $3)`,
-      [orcidId, confirmedToken, expiresAt],
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at, signup_binding_hash)
+       VALUES (NULL, NULL, 'PII Null Confirm', 'MIT', 'physics', $1, $2, $3, $4)`,
+      [orcidId, confirmedToken, expiresAt, binding.hash],
     );
   });
 
@@ -423,7 +466,7 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
   });
 
   it('logs email_hash:undefined with no top-level email key, then returns 502 BROADCAST_FAILED (no JWT)', async () => {
-    await clearRateLimitKeys(['auth-signup', 'signup-confirm']);
+    await clearRateLimitKeys(['auth-signup', 'signup-confirm', 'signup-confirm-token']);
 
     // The accreditation broadcast in the catch path is the failure we stage.
     // createClaimedAccount stays at its default success — the broadcast catch
@@ -434,8 +477,8 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
     // emitted by handleBroadcastError.
     broadcastJsonMock.mockReset();
     broadcastJsonMock.mockRejectedValue(new Error('RPC node rejected: insufficient RC'));
-    // Username lookup at line 264 must return [] (Hive-side username is
-    // available — createClaimedAccount can claim it).
+    // Username lookup at confirm handler must return [] (Hive-side username
+    // is available — createClaimedAccount can claim it).
     getAccountsMock.mockReset();
     getAccountsMock.mockResolvedValue([]);
 
@@ -443,6 +486,7 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
     try {
       const res = await request(app)
         .post('/api/auth/confirm')
+        .set('Cookie', binding.cookieHeader)
         .send({
           auth_token: confirmedToken,
           username,
@@ -502,17 +546,21 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
   const confirmedToken = `confirmed:${'b2c3d4e5'.repeat(8)}`;
   const TEST_KEY = PrivateKey.fromSeed(`pii-link-${PII_SUFFIX}`);
   const TEST_PUB = TEST_KEY.createPublic().toString();
+  const binding = makeBindingForSeededRow();
 
   beforeAll(async () => {
     if (!dbReachable) return;
     const pool = getAppPool()!;
     await cleanupByUsername(username);
-    // Seed the ORCID-only signup row: email = NULL, ready for /link.
+    // Seed the ORCID-only signup row: email = NULL, ready for /link. The
+    // signup_binding_hash mirrors a cookie minted at /signup so /link's
+    // binding check passes; the same cookie value is forwarded in the
+    // request below.
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await pool.query(
-      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
-       VALUES (NULL, NULL, 'PII Null Link', 'MIT', 'physics', $1, $2, $3)`,
-      [orcidId, confirmedToken, expiresAt],
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at, signup_binding_hash)
+       VALUES (NULL, NULL, 'PII Null Link', 'MIT', 'physics', $1, $2, $3, $4)`,
+      [orcidId, confirmedToken, expiresAt, binding.hash],
     );
   });
 
@@ -557,6 +605,7 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
         .set('X-Hive-Username', username)
         .set('X-Hive-Signature', signature)
         .set('X-Hive-Timestamp', timestamp)
+        .set('Cookie', binding.cookieHeader)
         .send(body);
 
       expect(res.status).toBe(502);

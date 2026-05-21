@@ -39,9 +39,11 @@
  */
 import { describe, it, expect, vi, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
+import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 import { signRequestBound as signRequestBoundShared } from '../support/sign-request.js';
+import { SIGNUP_BINDING_COOKIE_NAME } from '../../src/signup-session-binding.js';
 
 const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock, seedBonusMock } = vi.hoisted(() => ({
   getAccountsMock: vi.fn().mockResolvedValue([]),
@@ -132,6 +134,9 @@ describe.skipIf(!dbReachable)('signup-verify /confirm: seedAccreditationBonus Ty
   const email = `sev_confirm_${RUN_ID}@example.com`;
   const password = 'AccrConfirm1';
   const verifyToken = `confirmed:${'b2c3d4e5'.repeat(8)}`;
+  // The cookie value is regenerated per reseed so the cookie + hash always
+  // match the row currently in pg (reseed wipes and re-inserts the row).
+  let bindingCookieValue = '';
 
   async function reseedRow() {
     if (!dbReachable) return;
@@ -141,10 +146,12 @@ describe.skipIf(!dbReachable)('signup-verify /confirm: seedAccreditationBonus Ty
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const argon2 = await import('argon2');
     const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+    bindingCookieValue = crypto.randomBytes(32).toString('hex');
+    const bindingHash = crypto.createHash('sha256').update(bindingCookieValue).digest();
     await pool.query(
-      `INSERT INTO accounts (email, password_hash, full_name, institution, field, verify_token, expires_at)
-       VALUES ($1, $2, 'Severity Pin', 'MIT', 'physics', $3, $4)`,
-      [email, passwordHash, verifyToken, expiresAt],
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, verify_token, expires_at, signup_binding_hash)
+       VALUES ($1, $2, 'Severity Pin', 'MIT', 'physics', $3, $4, $5)`,
+      [email, passwordHash, verifyToken, expiresAt, bindingHash],
     );
   }
 
@@ -169,6 +176,7 @@ describe.skipIf(!dbReachable)('signup-verify /confirm: seedAccreditationBonus Ty
 
     const res = await request(app)
       .post('/api/auth/confirm')
+      .set('Cookie', `${SIGNUP_BINDING_COOKIE_NAME}=${bindingCookieValue}`)
       .send({
         auth_token: verifyToken,
         username,
@@ -218,6 +226,7 @@ describe.skipIf(!dbReachable)('signup-verify /link: seedAccreditationBonus TypeE
   const verifyToken = `confirmed:${'c3d4e5f6'.repeat(8)}`;
   const TEST_KEY = PrivateKey.fromSeed(`sev-link-${SUFFIX}`);
   const TEST_PUB = TEST_KEY.createPublic().toString();
+  let bindingCookieValue = '';
 
   async function reseedRow() {
     if (!dbReachable) return;
@@ -225,10 +234,12 @@ describe.skipIf(!dbReachable)('signup-verify /link: seedAccreditationBonus TypeE
     await cleanupByUsername(username);
     await pool.query('DELETE FROM accounts WHERE email = $1', [email]).catch(() => {});
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    bindingCookieValue = crypto.randomBytes(32).toString('hex');
+    const bindingHash = crypto.createHash('sha256').update(bindingCookieValue).digest();
     await pool.query(
-      `INSERT INTO accounts (email, password_hash, full_name, institution, field, verify_token, expires_at)
-       VALUES ($1, NULL, 'Severity Pin Link', 'MIT', 'physics', $2, $3)`,
-      [email, verifyToken, expiresAt],
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, verify_token, expires_at, signup_binding_hash)
+       VALUES ($1, NULL, 'Severity Pin Link', 'MIT', 'physics', $2, $3, $4)`,
+      [email, verifyToken, expiresAt, bindingHash],
     );
   }
 
@@ -276,6 +287,7 @@ describe.skipIf(!dbReachable)('signup-verify /link: seedAccreditationBonus TypeE
       .set('X-Hive-Username', username)
       .set('X-Hive-Signature', signature)
       .set('X-Hive-Timestamp', timestamp)
+      .set('Cookie', `${SIGNUP_BINDING_COOKIE_NAME}=${bindingCookieValue}`)
       .send(body);
 
     expect(res.status).toBe(502);
