@@ -1,26 +1,31 @@
 /**
  * Review-detail route tests.
  *
- * The first describe block is real-HAF integration (404 path only — does not
- * require a seeded review).
+ * Every describe block in this file runs against a mocked DB pool: the
+ * file-level `vi.mock('../../src/db.js')` applies globally, so even the
+ * 404 spec exercises the route's mocked-empty-rows path, not real HAF.
  *
- * The second describe block is mocked-pool. Carve-out justification: the
- * `reviewer_attestation_id` collapse semantic introduced by migrating
- * `pevo.reviewer_attestation_id || null` → `pevoString(pevo, 'reviewer_attestation_id')`
- * (per backend-pevo-string-helper-adoption-sweep.md round-1) cannot be
- * deterministically seeded against the public HAF DB — the field is normally
- * a SHA-256 hex string broadcast by the anon-review pipeline; provoking the
- * non-string / empty-string runtime shape that exercises the migration's
- * behavioral upgrade requires a controlled `pevo` payload. Per CLAUDE.md
- * "Running Tests" carve-out clauses (a)/(b)/(c):
+ * Carve-out justification: the `reviewer_attestation_id` collapse semantic
+ * introduced by migrating `pevo.reviewer_attestation_id || null` →
+ * `pevoString(pevo, 'reviewer_attestation_id')` cannot be deterministically
+ * seeded against the public HAF DB. The field is normally a SHA-256 hex
+ * string broadcast by the anon-review pipeline; provoking the non-string /
+ * empty-string runtime shape that exercises the helper-narrowing requires
+ * a controlled `pevo` payload. Per CLAUDE.md "Running Tests" carve-out
+ * clauses (a)/(b)/(c):
  *   (a) deterministic non-string `reviewer_attestation_id` requires writing
  *       a malformed pevo payload to HAF, impractical against the live DB;
  *   (b) `verifyHiveSignature` and other middleware are NOT mocked
  *       (the route is GET / read-only — no auth middleware to mock);
- *   (c) the real-HAF integration path is exercised by the existing 404
- *       test above + the integration suite that walks live review records.
- *       This mocked block is targeted at the migration-introduced runtime
- *       shape only.
+ *   (c) no real-HAF integration coverage currently exists for the
+ *       `/api/reviews/:author/:permlink` endpoint — every existing spec in
+ *       this file uses the mocked pool. A follow-up task has been filed
+ *       under `agents/docs/tasks/` to add a real-HAF companion suite for
+ *       the GET-review route family (404 path against an unseeded
+ *       permlink, 200 path against a live reviewer-authored record). Once
+ *       that companion lands, this clause-(c) reference can be replaced
+ *       with the integration file path. The mocked specs below pin the
+ *       migration-introduced runtime shape only.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -53,10 +58,10 @@ beforeEach(async () => {
   await hafCache.clear();
 });
 
-describe('GET /api/reviews/:author/:permlink (real HAF)', () => {
+describe('GET /api/reviews/:author/:permlink (mocked-pool: 404 path)', () => {
   it('returns 404 for nonexistent review', async () => {
-    // Real HAF query (mock returns empty rows for everything by default →
-    // 404 path). Pinned for the contract surface; the next describe block
+    // Mocked HAF query returns empty rows for everything by default → 404
+    // path. Pinned for the contract surface; the next describe block
     // covers the migration-introduced runtime shape against a seeded row.
     hafQueryMock.mockImplementation(async () => ({ rows: [] }));
     const res = await request(app).get('/api/reviews/nobody/nothing');
@@ -68,7 +73,8 @@ describe('GET /api/reviews/:author/:permlink (real HAF)', () => {
 describe('GET /api/reviews/:author/:permlink — pevoString adoption: reviewer_attestation_id collapse', () => {
   // Round-2 hold item 3b for backend-pevo-string-helper-adoption-sweep.
   //
-  // `reviews.ts:30` was migrated from:
+  // The `buildReviewDetail` projection in `backend/src/routes/reviews.ts`
+  // was migrated from:
   //   reviewer_attestation_id: pevo.reviewer_attestation_id || null
   // to:
   //   reviewer_attestation_id: pevoString(pevo, 'reviewer_attestation_id')

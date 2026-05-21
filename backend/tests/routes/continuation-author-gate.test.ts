@@ -2319,12 +2319,16 @@ describe('GET /api/papers/:author/:permlink — pevoString family adoption: rout
     expect(detail.language).toBe('en');
   });
 
-  it('language set to empty string: response defaults to "en" (pevoString collapse + ?? "en" combine to fallback)', async () => {
-    // Edge case the cast pattern leaked: `language: ''` previously would
-    // pass through `?? 'en'` (empty string is truthy for `??`) yielding
-    // `''`. The `pevoString` migration narrows `''` to `null` first, so
-    // the `?? 'en'` fallback fires and the response carries `'en'`. This
-    // pins the behavioral upgrade the migration delivered.
+  it('language set to empty string: response defaults to "en" (parity pin across pre/post helper-adoption shapes)', async () => {
+    // Parity pin: both the prior `pevo.language || 'en'` read and the
+    // `pevoString(pevo, 'language') ?? 'en'` read return `'en'` for
+    // `language: ''` — the prior form because `''` is falsy for `||`, the
+    // current form because `pevoString` collapses `''` to `null` and the
+    // `?? 'en'` fallback then fires. This test pins parity (not a
+    // behavioral upgrade); its mutation-kill value is catching a drop of
+    // the `?? 'en'` fallback or a revert of `pevoString` to a passthrough
+    // cast, either of which would surface `''` or `null` here and fail
+    // red.
     const row = paperRowWithFields('alice', 'p1', { language: '' });
     installResponder(async (sql, _params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
