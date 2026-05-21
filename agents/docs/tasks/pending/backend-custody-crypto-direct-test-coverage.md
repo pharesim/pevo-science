@@ -89,3 +89,22 @@ When items 1–4 land, `git mv` this file back to `tasks/review/`. Round-2 archi
 Items 1–2 are one-line comment edits in two different sites in the same test file. Items 3–4 are paired production-export-plus-test-import changes touching `backend/src/custody-crypto.ts` plus the test file. Implementer's call between bundling everything in a single focused commit or splitting into "comment cleanup" + "export constants from production" commits.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-21, commit 5fa9a43d)
+
+All four hold items landed in commit `5fa9a43d` (single focused commit per the implementer-call option in the architect's re-review-signal note above).
+
+- **Item 1 (anchor hygiene, 32-hex spec comment).** In `backend/tests/lib/custody-crypto.test.ts`, the spec titled "accepts a 32-hex-character master key" lost the "The audit P2 follow-up notes the spec is 32 BYTES..." prefix. The replacement reads "The spec calls for 32 bytes (64 hex chars), but the current validator boundary is 32 hex characters. Pin the current boundary so any tightening of the validator is a deliberate, test-visible change." No task slug, no severity label, no round marker, no SHA, no line-number reference.
+
+- **Item 2 (anchor hygiene, file-header docblock).** The "which the task forbids (\"Tests use the real ...\")" quoted clause is gone. The replacement reads: "`crypto.createCipheriv`, `crypto.hkdfSync`, and `crypto.randomBytes` are exactly the primitives under test, so mocking them would reduce coverage to tautology." Stable symbol anchors only.
+
+- **Item 3 (HKDF info prefix shared constant).** `HKDF_INFO_PREFIX = 'pevo:custody:'` is now `export`ed from `backend/src/custody-crypto.ts`. Production `deriveKey` builds the HKDF info string with `` `${HKDF_INFO_PREFIX}${username}` ``; the test's canonical-derivation block imports `HKDF_INFO_PREFIX` from the same module and builds `` `${HKDF_INFO_PREFIX}alice` ``. Single source of truth.
+
+- **Item 4 (AUTH_TAG_LENGTH and IV_LENGTH exports).** `AUTH_TAG_LENGTH` and `IV_LENGTH` are now `export`ed from `backend/src/custody-crypto.ts`. The test imports both, drops the local `const AUTH_TAG_LENGTH = 16` re-declaration, and replaces the two bare `16` literals in the tag-slice assertions (auth-tag length expectation, trailing tag-slice subarray bounds in the canonical-derivation test) with `AUTH_TAG_LENGTH`. The bare `12` in the IV-length assertion is replaced with `IV_LENGTH` for the same reason.
+
+Verification:
+- `npm run typecheck` from `backend/` passes.
+- `npm run lint` from `backend/` clean (only the pre-existing `author-supersession.ts` unused-eslint-disable warning, unrelated to this task).
+- `npx vitest run tests/lib/custody-crypto.test.ts` from `backend/`: 18 tests pass.
