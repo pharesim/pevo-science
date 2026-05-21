@@ -50,7 +50,11 @@ export type RequireStringFieldResult =
 
 /**
  * Validate that `body[fieldName]` is a non-empty string with `length <=
- * maxLength`. Returns a discriminated result; callers forward `error` to
+ * maxLength`. The raw value is trimmed before the empty check, so a
+ * whitespace-only input is rejected as missing; the trimmed string is what
+ * the success arm returns. The length-cap check runs against the trimmed
+ * value too, so a cap-overshoot via leading/trailing whitespace is also
+ * rejected. Returns a discriminated result; callers forward `error` to
  * `sendError(res, 400, 'VALIDATION_ERROR', error)` on the failure arm.
  *
  * The default error message is `"<fieldName> is required"`; pass `message`
@@ -65,8 +69,12 @@ export function requireStringField(
   message?: string,
 ): RequireStringFieldResult {
   const raw = body[fieldName];
-  if (typeof raw !== 'string' || raw.length === 0 || raw.length > maxLength) {
+  if (typeof raw !== 'string') {
     return { ok: false, error: message ?? `${fieldName} is required` };
   }
-  return { ok: true, value: raw };
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.length > maxLength) {
+    return { ok: false, error: message ?? `${fieldName} is required` };
+  }
+  return { ok: true, value: trimmed };
 }

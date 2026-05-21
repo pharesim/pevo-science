@@ -34,6 +34,7 @@ import {
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { HIVE_ACCOUNT_NAME_REGEX } from '../lib/hive-account-name.js';
+import { HIVE_PERMLINK_FORMAT_REGEX, HIVE_PERMLINK_MAX_LEN } from '../lib/hive-permlink.js';
 import { paperDisciplineField } from '../types/disciplines.js';
 import {
   T,
@@ -743,25 +744,19 @@ const retractLimiter = rateLimit({
   skipFailedRequests: true,
 });
 
-// Hive permlink format: lowercase alphanumeric + hyphens, witness-imposed
-// maximum length 256. Pinned here (rather than reused from anonymousReview.ts)
-// so the regex's role at this site is clear from the local context. Permlinks
-// are derived from post titles on Hive, so a structurally invalid slug under
-// these rules cannot resolve to a real paper — rejecting up-front is safe.
-const PERMLINK_FORMAT_REGEX = /^[a-z0-9-]+$/;
-const PERMLINK_MAX_LEN = 256;
-
 /** URL-param shape validator for POST /api/papers/:author/:permlink/retract.
- *  Runs BEFORE `retractLimiter` so a JWT holder spraying structurally-invalid
- *  slugs pays only the `verifyHiveSignature` ECDSA recovery plus this regex
- *  check, not the full HAF walker (`fetchPaperDetailFromHaf` runs the forward
- *  continuation-chain resolver, bounded by `hafWalkerWallClockMs`). Without
- *  this gate, the `skipFailedRequests` refund on the 404 "paper not found"
- *  path restores the limiter slot on every probe, producing sustained per-
- *  account HAF query load with no rate bound. Body-shape validation is
- *  structurally inapplicable on this route because the target is derived
- *  from URL params; a URL-shape validator is the analog of the body-shape
- *  validators on `/upgrade`, `/fresh-auth`, `/session-auth`. */
+ *  Mounted BEFORE both `verifyHiveSignature` and `retractLimiter` so a spray of
+ *  structurally-invalid slugs is rejected without paying ECDSA recovery, the
+ *  Postgres point-lookup on `accounts.sessions_invalidated_at`, or the HAF
+ *  walker (`fetchPaperDetailFromHaf` runs the forward continuation-chain
+ *  resolver, bounded by `hafWalkerWallClockMs`). The route is URL-keyed (the
+ *  target is the slug pair, not the authenticated principal), so it differs
+ *  from the body-shape validators on `/upgrade`, `/fresh-auth`, `/session-auth`
+ *  where the limiter is `byAccount`-keyed and the validator must run AFTER
+ *  `verifyHiveSignature` to attribute the error to an authenticated user.
+ *  Permlinks are derived from post titles on Hive, so a slug outside the
+ *  canonical character class cannot resolve to a real paper — rejecting
+ *  up-front is safe. */
 function validateRetractParams(req: Request, res: Response, next: NextFunction): void {
   const author = req.params.author;
   const permlink = req.params.permlink;
@@ -772,8 +767,8 @@ function validateRetractParams(req: Request, res: Response, next: NextFunction):
   if (
     typeof permlink !== 'string' ||
     permlink.length === 0 ||
-    permlink.length > PERMLINK_MAX_LEN ||
-    !PERMLINK_FORMAT_REGEX.test(permlink)
+    permlink.length > HIVE_PERMLINK_MAX_LEN ||
+    !HIVE_PERMLINK_FORMAT_REGEX.test(permlink)
   ) {
     sendError(res, 400, 'VALIDATION_ERROR', 'Invalid permlink format');
     return;
@@ -3273,7 +3268,12 @@ async function isRetracted(author: string, permlink: string): Promise<boolean> {
   return false;
 }
 
-router.post('/:author/:permlink/retract', verifyHiveSignature, validateRetractParams, retractLimiter, async (req: Request, res: Response) => {
+// validateRetractParams runs BEFORE verifyHiveSignature: this route's limiter
+// is URL-keyed, so a structurally-invalid slug spray must be rejected without
+// paying ECDSA recovery. The custody routes mount their body-shape validators
+// AFTER verifyHiveSignature because their limiters are byAccount-keyed; that
+// asymmetry is intentional and is documented on validateRetractParams above.
+router.post('/:author/:permlink/retract', validateRetractParams, verifyHiveSignature, retractLimiter, async (req: Request, res: Response) => {
   const author = req.params.author as string;
   const permlink = req.params.permlink as string;
   const username = req.hiveUsername!;

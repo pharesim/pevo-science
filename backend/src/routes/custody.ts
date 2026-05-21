@@ -35,6 +35,7 @@ import {
   validateIdempotencyKey,
 } from '../lib/idempotency.js';
 import { assertBodyRecord, requireStringField } from '../lib/body-record.js';
+import { HIVE_PERMLINK_MAX_LEN } from '../lib/hive-permlink.js';
 import { getPool, isHafConfigured } from '../db.js';
 
 // Centralized length caps for custody body-shape validation. Shared between
@@ -47,7 +48,6 @@ const DERIVED_PUBKEY_MAX_LEN = 100;
 const SIGNED_PROOF_MAX_LEN = 200;
 const SIGNED_AT_MAX_LEN = 64;
 const ROOT_AUTHOR_MAX_LEN = 64;
-const ROOT_PERMLINK_MAX_LEN = 256;
 
 const router = Router();
 
@@ -155,7 +155,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
   if (action === 'author_accept' || action === 'author_resign') {
     const rootAuthor = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN);
     if (!rootAuthor.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootAuthor.error);
-    const rootPermlink = requireStringField(body, 'root_permlink', ROOT_PERMLINK_MAX_LEN);
+    const rootPermlink = requireStringField(body, 'root_permlink', HIVE_PERMLINK_MAX_LEN);
     if (!rootPermlink.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootPermlink.error);
     return next();
   }
@@ -869,7 +869,7 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
   } else if (action === 'author_accept' || action === 'author_resign') {
     const rootAuthorResult = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN);
     if (!rootAuthorResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootAuthorResult.error);
-    const rootPermlinkResult = requireStringField(body, 'root_permlink', ROOT_PERMLINK_MAX_LEN);
+    const rootPermlinkResult = requireStringField(body, 'root_permlink', HIVE_PERMLINK_MAX_LEN);
     if (!rootPermlinkResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootPermlinkResult.error);
     target = {
       action,
