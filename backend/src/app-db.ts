@@ -77,6 +77,18 @@ export async function initAppDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
     CREATE INDEX IF NOT EXISTS idx_accounts_verify_token ON accounts(verify_token);
 
+    -- Mirrors migrations/007_accounts_orcid_unique.sql. Partial unique so
+    -- NULL-ORCID rows (light + self-custody accounts without an ORCID link)
+    -- do not collide; the index enforces the 1:1 ORCID-to-account-row
+    -- invariant as defense-in-depth alongside the route-layer HAF
+    -- cross-check in findAccreditedAccountWithOrcid. Mirrored here for the
+    -- fresh-container bootstrap path (dev, CI, new prod nodes before
+    -- migration 007 runs) so an early code-path that races initAppDb
+    -- against the SQL migration runner does not see the index missing.
+    CREATE UNIQUE INDEX IF NOT EXISTS accounts_orcid_unique
+      ON accounts (orcid)
+      WHERE orcid IS NOT NULL;
+
     CREATE TABLE IF NOT EXISTS custody_audit_log (
       id              SERIAL PRIMARY KEY,
       username        TEXT NOT NULL,
