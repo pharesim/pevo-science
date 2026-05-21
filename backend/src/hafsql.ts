@@ -260,6 +260,14 @@ export function activeVouchesCteBody(startIdx = 1): SqlFragment {
  * multiplies. Without the floor, the custom_id index alone runs in low
  * milliseconds.
  *
+ * The `required_posting_auths ? $admin` gate is load-bearing: every
+ * legitimate retract_paper custom_json is broadcast by the retract
+ * handler signing with `config.pevoAdminPostingKey`, so a row whose
+ * `required_posting_auths` does not contain `config.hiveAdminAccount`
+ * is a forgery and must not suppress the named paper from listings.
+ * Singular `?` not `?|` because the admin account is singular by
+ * design (see CLAUDE.md).
+ *
  * @param startIdx - first available $N parameter index
  */
 export function retractedPapersCteBody(startIdx = 1): SqlFragment {
@@ -273,9 +281,10 @@ export function retractedPapersCteBody(startIdx = 1): SqlFragment {
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' = 'retract_paper'
+      AND cj.required_posting_auths ? $${p + 1}
   )`,
-    params: [config.appTag],
-    nextIdx: p + 1,
+    params: [config.appTag, config.hiveAdminAccount],
+    nextIdx: p + 2,
   };
 }
 

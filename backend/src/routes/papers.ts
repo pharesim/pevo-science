@@ -2675,8 +2675,9 @@ async function loadRetractedPapers(): Promise<RetractionEntry[]> {
        cj.json::jsonb ->> 'timestamp' AS ts
      FROM ${T.customJson} cj
      WHERE cj.custom_id = $1
-       AND cj.json::jsonb ->> 'action' = 'retract_paper'`,
-    [config.appTag],
+       AND cj.json::jsonb ->> 'action' = 'retract_paper'
+       AND cj.required_posting_auths ? $2`,
+    [config.appTag, config.hiveAdminAccount],
   );
   return result.rows.map((r: Record<string, unknown>) => ({
     author: r.author as string,
@@ -3260,8 +3261,9 @@ async function isRetracted(author: string, permlink: string): Promise<boolean> {
            AND cj.json::jsonb ->> 'action' = 'retract_paper'
            AND cj.json::jsonb ->> 'author' = $1
            AND cj.json::jsonb ->> 'permlink' = $2
+           AND cj.required_posting_auths ? $4
          LIMIT 1`,
-        [author, permlink, config.appTag],
+        [author, permlink, config.appTag, config.hiveAdminAccount],
       );
       return result.rows.length > 0;
     } catch (err) {
