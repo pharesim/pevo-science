@@ -74,3 +74,48 @@ Test results:
 - 94/94 existing orcid tests still pass (no regression).
 - Typecheck (src): clean. Typecheck (tests): one pre-existing error in `tests/support/argon2-error-mocks.ts` (missing `isRetriableHafError` export — unrelated to this task).
 - Lint (src/): clean (one pre-existing warning unrelated).
+
+---
+
+## Architect re-review (2026-05-21, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran with the always-on personas + security/adversarial/data-migrations/reliability/kieran-typescript conditional, plus the deployment-verification CE agent. Acceptance criteria 1 (partial unique index), 2 (HAF cross-check, already in place pre-task), 3 (409 on re-link, already in place pre-task), and 4 (fail-loud DO-block backfill scan) all land per the spec. Production paths are unaffected on the happy path (route-layer HAF check fires first); the DB constraint only catches direct-DB-write bypasses, which surface as 502 POST_BROADCAST_OPERATOR_REQUIRED via the existing 23xxx classification. Five new tests pass; no regression on 94 existing orcid tests. One item held — operator-message accuracy on the fail-loud branch.
+
+### Item held (must fix before archive)
+
+**1. (P2, conf 100, cross-reviewer — correctness + data-migrations) `dup_count` under-reports at >50 duplicate ORCIDs because the inner `LIMIT 50` caps the outer `COUNT(*)`.** The DO block's structure:
+
+```sql
+SELECT COUNT(*), COALESCE(string_agg(...), '')
+INTO dup_count, dup_sample
+FROM (
+  SELECT orcid, string_agg(...) AS usernames
+  FROM accounts WHERE orcid IS NOT NULL
+  GROUP BY orcid HAVING COUNT(*) > 1
+  LIMIT 50
+) dups;
+```
+
+The `LIMIT 50` is inside the subquery to cap the sample-message size, but the outer `COUNT(*) INTO dup_count` then counts that capped result set — not the true count. If production has 60 duplicate-ORCID groups, the migration aborts with `dup_count=50` and a 50-line sample; the operator believes there are 50 to resolve when there are actually 60. Two-cycle resolution where one was expected.
+
+Real-world impact on the beta accounts table is low (the route-layer HAF check prevents broadcast-time dupes; only ad-hoc operator UPDATE or data-import scripts can introduce dupes). But the operator-message accuracy on the fail-loud branch is the primary value of the DO block; getting it wrong is silently misleading.
+
+Two acceptable fix shapes — implementer's choice:
+
+- **Shape A — split queries.** Add an uncapped scalar `COUNT(*)` for the true magnitude, keep the existing capped subquery for the sample. Two passes over the small accounts table; trivial cost on PEvO's size.
+- **Shape B — rephrase the RAISE.** Keep one query but phrase the message as `'at least % duplicate ORCID(s) found, showing first 50 in sample'` so the count is honest about being a cap. No SQL semantic change.
+
+Test addition (mutation-kill the new shape): seed 51+ distinct duplicate ORCIDs in the existing migration-body RAISE test (`tests/migrations/accounts-orcid-unique.test.ts` sub-test (e)) and assert the RAISE message correctly reports the true magnitude (Shape A: exact 51; Shape B: contains the `at least` phrasing and a count ≥ 51).
+
+### Items dismissed / deferred at architect triage
+
+- **P2 (project-standards + maintainability + learnings) — migration header line 1 carries the task-slug citation `BACKEND-ACCOUNTS-ORCID-UNIQUE-CONSTRAINT`.** Deferred to a new umbrella sweep task `backend-anchor-rot-sweep-2026-05-21` (covers migrations 005/006/007 leading-title prefixes uniformly + sibling test-file anchor rot in the same convention class). Not held against this task to preserve the per-migration convention consistency across 005/006/007.
+- **Implementer signal-block staleness — initAppDb mirror.** The signal at lines 62-66 claims the partial unique index is also mirrored in `initAppDb()`. The mirror was correct at this commit, but a later separate task (`backend-initappdb-schema-drift-fix`) removed all bootstrap DDL from `initAppDb()` — migrations are now sole schema authority. Note for the archive entry; no implementer action.
+- Tests don't pin partial-WHERE necessity independently (test (a)'s indexdef regex is the canonical pin); RAISE message format payload only partially asserted; re-run-idempotency not separately covered. All dismissed per preemptive-test-hardening posture.
+- CREATE UNIQUE INDEX (non-CONCURRENTLY) takes ACCESS EXCLUSIVE lock — accepted per single-instance posture + small accounts table.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
