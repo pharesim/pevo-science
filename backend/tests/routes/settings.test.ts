@@ -306,6 +306,110 @@ describe('Settings email (with DB)', () => {
     expect(prefRows.length).toBe(0);
   });
 
+  it.skipIf(!dbReachable)(
+    'DELETE anonymizes audit history instead of wiping it (forensics + right-to-erasure)',
+    async () => {
+      // Seed: an account row plus two prior custody_audit_log rows for the
+      // same username — one with PII-derived columns populated (simulating
+      // a consent-op broadcast that ran the fresh-auth gate), one without.
+      // After DELETE /api/settings/email, both prior rows AND the
+      // `email_deleted` row inserted by the handler must survive with
+      // username/user_agent/session_id NULLed and operation_type +
+      // created_at preserved. The wider table's row count stays exactly
+      // (prior + 1) — no row was DELETEd, only anonymized.
+      const pool = getAppPool()!;
+      const username = `anon_audit_${Date.now()}`;
+      const email = `anon_audit_${Date.now()}@example.com`;
+      await pool.query(
+        `INSERT INTO accounts (email, username, verify_token) VALUES ($1, $2, NULL)`,
+        [email, username],
+      );
+      await pool.query(
+        `INSERT INTO custody_audit_log (username, operation_type, user_agent, session_id)
+         VALUES ($1, 'author_accept', 'fake-ua-hash', 'fake-session-id')`,
+        [username],
+      );
+      await pool.query(
+        `INSERT INTO custody_audit_log (username, operation_type)
+         VALUES ($1, 'login_failure')`,
+        [username],
+      );
+
+      try {
+        const res = await request(app)
+          .delete('/api/settings/email')
+          .set('X-Hive-Username', username)
+          .send({ confirm: true });
+        expect(res.status).toBe(200);
+        expect(res.body.data.deleted).toBe(true);
+
+        // No rows remain bound to the deleted username (privacy: the
+        // username link is severed for every prior row, including the
+        // just-inserted `email_deleted` row).
+        const { rows: stillBound } = await pool.query(
+          'SELECT id FROM custody_audit_log WHERE username = $1',
+          [username],
+        );
+        expect(stillBound.length).toBe(0);
+
+        // The accounts row is gone (right-to-erasure on the primary
+        // PII-bearing table).
+        const { rows: accRows } = await pool.query(
+          'SELECT id FROM accounts WHERE username = $1',
+          [username],
+        );
+        expect(accRows.length).toBe(0);
+
+        // The pre-existing operation_type rows survive, anonymized.
+        // Identify them via `tx_id` / `operation_type` markers we seeded.
+        // We can't filter by username (it's NULL now), so we look for the
+        // three operation types we wrote/triggered: author_accept,
+        // login_failure, email_deleted, all with username IS NULL and
+        // PII columns NULL.
+        const { rows: anonRows } = await pool.query<{
+          operation_type: string;
+          username: string | null;
+          user_agent: string | null;
+          session_id: string | null;
+        }>(
+          `SELECT operation_type, username, user_agent, session_id
+             FROM custody_audit_log
+            WHERE operation_type IN ('author_accept', 'login_failure', 'email_deleted')
+              AND username IS NULL
+              AND user_agent IS NULL
+              AND session_id IS NULL
+              AND created_at >= NOW() - INTERVAL '1 minute'`,
+        );
+        // At least our three rows must be present, all anonymized. We
+        // use >= 3 rather than == 3 to tolerate sibling test seeding into
+        // the same window.
+        const opTypes = anonRows.map((r) => r.operation_type).sort();
+        expect(opTypes).toContain('author_accept');
+        expect(opTypes).toContain('login_failure');
+        expect(opTypes).toContain('email_deleted');
+        // Re-confirm every anon row has the link severed + PII NULLed.
+        for (const r of anonRows) {
+          expect(r.username).toBeNull();
+          expect(r.user_agent).toBeNull();
+          expect(r.session_id).toBeNull();
+        }
+      } finally {
+        // Defensive: rows with username=NULL won't match the WHERE in
+        // the file-level cleanup, so sweep the seeded operation_types
+        // from this test window directly.
+        await pool
+          .query(
+            `DELETE FROM custody_audit_log
+              WHERE username IS NULL
+                AND operation_type IN ('author_accept', 'login_failure', 'email_deleted')
+                AND created_at >= NOW() - INTERVAL '5 minutes'`,
+          )
+          .catch(() => {});
+        await pool.query('DELETE FROM accounts WHERE username = $1', [username]).catch(() => {});
+      }
+    },
+  );
+
   it.skipIf(!dbReachable)('DELETE returns 401 when no account row exists for the authed user', async () => {
     // SEC-004-BE finding #2: 404 → 401 on authed-endpoint missing-own-row.
     // The distinguishing 404 leaked account deletion to an authed session-

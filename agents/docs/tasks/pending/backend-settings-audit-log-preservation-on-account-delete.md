@@ -59,3 +59,23 @@ Recommendation: Option A. It's a single migration plus one query change, and PEv
   - `.context/audit-2026-04-21/chunk-3-data-integrity-guardian.md` (P1: audit log wiped by same transaction).
   - `.context/audit-2026-04-21/chunk-4-correctness-reviewer.md` (P1: same finding, correctness lens).
 - Related: `backend-recover-email-verification-and-notify.md` (recovery logging depends on this surviving).
+
+## Backend implementer signal
+
+Option A taken (anonymize-on-delete).
+
+Schema correction: the task Context described a FK from `custody_audit_log.username → accounts.username`, but no such FK exists in `001_schema.sql` or any later migration (confirmed via `\d custody_audit_log` against the running DB). The "Delete in FK-safe order" comment in the route handler was misleading — the DELETE was application-level cleanup, not FK-enforced. The substantive concern (audit history wipe at deletion time) was still real and is what this implementation addresses.
+
+Changes landed:
+- `backend/migrations/009_audit_log_fk_anonymize.sql` — drops the NOT NULL constraint on `custody_audit_log.username` so anonymized rows can co-exist with reused usernames; updates the column COMMENT on `username`; supersedes the COMMENT on `user_agent` (from migration 006) to reflect the new right-to-erasure path. Migration applied to both `pevo_app` and `pevo_app_test`.
+- `backend/src/app-db.ts` — mirrors the DROP NOT NULL idempotently into the initAppDb bootstrap path so fresh-container boots before migration 009 runs (dev/CI) still see the nullable column.
+- `backend/src/routes/settings.ts` — replaces `DELETE FROM custody_audit_log WHERE username = $1` with `UPDATE custody_audit_log SET username = NULL, user_agent = NULL, session_id = NULL WHERE username = $1`. Order preserved so the `email_deleted` INSERT happens before the anonymize UPDATE; the just-inserted row is then anonymized alongside all prior rows.
+- `backend/tests/routes/settings.test.ts` — added a DB-backed test that seeds two prior audit rows (one consent-op with PII columns populated, one non-broadcast), triggers DELETE, and asserts (a) no row remains bound to the deleted username, (b) the accounts row is gone, (c) the three operation_type rows survive with username/user_agent/session_id all NULL.
+
+Out of scope for backend zone:
+- `agents/docs/ARCHITECTURE.md` § 4 (~line 240) currently documents the DELETE policy as the right-to-erasure path. This contradicts the new anonymize-on-delete behavior. **Architect: please update the trailing sentence ("the user's 'delete my account' path MUST `DELETE FROM custody_audit_log WHERE username = $1` inside the same transaction") to describe the anonymize UPDATE instead.** The migration COMMENTs and the route handler's comment block describe the new policy in full.
+
+Verification:
+- Lint: pass (one pre-existing warning in unrelated `author-supersession.ts`).
+- Typecheck: pass (both src and tests).
+- Targeted test: `settings.test.ts` 23/23 pass; full settings cluster 63/63 pass.

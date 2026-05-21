@@ -517,19 +517,38 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
       );
     }
 
-    // Single transaction: audit log, then delete all data
+    // Single transaction: record the `email_deleted` audit row, anonymize
+    // every prior audit row for this username (NULL the PII-derived
+    // columns + the username link), then delete the application-side rows.
+    //
+    // Anonymize-on-delete instead of DELETE preserves the forensic trail
+    // across the right-to-erasure path: operation_type + timestamp survive
+    // so an operator triaging incident traffic can still see that an event
+    // happened, but the username link and the PII-derived columns
+    // (user_agent, session_id) are erased. Per the column COMMENT on
+    // `custody_audit_log.username` (set in migration 009): username is
+    // nullable for exactly this purpose; the prior account-delete path
+    // wiped the entire row history, giving an attacker who triggered
+    // `email_deleted` a one-call audit-log wipe.
+    //
+    // Order matters: the `email_deleted` INSERT must come BEFORE the
+    // anonymize UPDATE, otherwise the just-inserted row's username would
+    // itself be NULLed in the same WHERE-username-matches sweep. The
+    // post-INSERT UPDATE then anonymizes the new row alongside every
+    // older row for the same username.
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      // Insert audit log before deleting
       await client.query(
         'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
         [username, 'email_deleted'],
       );
 
-      // Delete in FK-safe order
-      await client.query('DELETE FROM custody_audit_log WHERE username = $1', [username]);
+      await client.query(
+        'UPDATE custody_audit_log SET username = NULL, user_agent = NULL, session_id = NULL WHERE username = $1',
+        [username],
+      );
       await client.query('DELETE FROM notification_preferences WHERE username = $1', [username]);
       await client.query('DELETE FROM accounts WHERE username = $1', [username]);
 
