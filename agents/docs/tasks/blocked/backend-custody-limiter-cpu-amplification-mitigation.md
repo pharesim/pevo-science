@@ -396,3 +396,72 @@ When items 1–4 land, `git mv` this file back to `tasks/review/`. Round-3 archi
 Item 1 + Item 4 touch the same route registration region in `backend/src/routes/papers.ts` — single focused commit makes sense. Item 2 touches `backend/src/lib/body-record.ts` (separate commit reasonable). Item 3 touches `backend/src/lib/hive-account-name.ts` (or new sibling) + `backend/src/routes/papers.ts` + `backend/src/routes/custody.ts` (separate commit reasonable). Implementer's call between bundling and splitting; the architect's mild preference is one focused commit per logical item.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (round-3 → blocked, commit 330b9012)
+
+### Items landed (1-3)
+
+**Item 1 (P1):** `/retract` middleware chain reordered to `validateRetractParams → verifyHiveSignature → retractLimiter → handler`. URL-keyed slug spray now short-circuits before ECDSA recovery, the Postgres point-lookup on `accounts.sessions_invalidated_at`, and the HAF walker. Inline comment on the route registration documents the asymmetry with the custody routes: the custody limiters are `byAccount`-keyed (need `X-Hive-Username` from `verifyHiveSignature`), so their body-shape validators correctly run AFTER auth; `/retract` is URL-keyed and the cheap rejection on slug-shape saves a bigger spray class. Anchor on the URL-keyed-vs-header-keyed distinction per the comment-anchor conventions; no hold-item or round-number citations.
+
+**Item 2 (P2):** `requireStringField` in `backend/src/lib/body-record.ts` now trims `raw` before the empty check and the length-cap check. The success arm returns the trimmed value. JSDoc updated: "The raw value is trimmed before the empty check, so a whitespace-only input is rejected as missing; the trimmed string is what the success arm returns. The length-cap check runs against the trimmed value too, so a cap-overshoot via leading/trailing whitespace is also rejected." Aligns the helper with `bridge.ts validateRegisterBody`'s pre-existing trim semantics; safe-by-default for the seven `skipFailedRequests:true` adopters that consume the helper.
+
+**Item 3 (P2):** New module `backend/src/lib/hive-permlink.ts` exports `HIVE_PERMLINK_MAX_LEN = 256` and `HIVE_PERMLINK_FORMAT_REGEX = /^[a-z0-9-]+$/` with a docblock anchoring on the witness-imposed protocol cap. `backend/src/routes/papers.ts` drops local `PERMLINK_FORMAT_REGEX` + `PERMLINK_MAX_LEN` and imports from the shared module; `backend/src/routes/custody.ts` drops local `ROOT_PERMLINK_MAX_LEN` and uses `HIVE_PERMLINK_MAX_LEN` at both call sites (line 158 + line 872). Single source of truth across both routes.
+
+### Item 4 — BLOCKED on architect input
+
+Hold item 4 reads: "Express types `req.params` values as `string` already; the casts add visual noise and imply a narrowing that wasn't done... Fix: drop the `as string` casts."
+
+The premise is mechanically wrong against the installed Express typing. `@types/express-serve-static-core`'s `ParamsDictionary` indexer is declared:
+
+```ts
+export interface ParamsDictionary {
+    [key: string]: string | string[];
+    [key: number]: string;
+}
+```
+
+Accessing `req.params.author` via the string-key indexer therefore types as `string | string[]`, not `string`. Dropping the `as string` cast produces TS2345 / TS2322 errors on every downstream usage — verified by attempting the fix:
+
+```
+src/routes/papers.ts(3298,44): error TS2345: Argument of type 'string | string[]' is not assignable to parameter of type 'string'.
+src/routes/papers.ts(3327,33): error TS2345: same.
+src/routes/papers.ts(3348,25): error TS2345: same.
+src/routes/papers.ts(3378,21): error TS2322: same.
+src/routes/papers.ts(3378,29): error TS2322: same.
+```
+
+The `as string` form is also the codebase's established narrowing pattern for `req.params.*` — `grep -rn "req\.params\.[a-z]\+ as string" backend/src/routes` returns 10+ sites in `papers.ts` plus matches in `comments.ts`. Removing only the `/retract` handler's casts would diverge this site from every sibling route handler.
+
+Possible architect dispositions (need clarification before re-review):
+
+- **Accept the casts as the codebase's narrowing pattern.** Strike item 4 from the hold or amend to "no change required — `as string` is necessary for typecheck under current `@types/express`." The "vacuous" framing is incorrect.
+- **Land a typed-narrowing helper for params.** New `assertStringParam(req, name): string` or a `RequestHandler<{author: string; permlink: string}>` generic on the route handler. Bigger scope than the hold suggested ("one-line removal each") and inconsistent with sibling sites unless the migration is repo-wide.
+- **Override `req.params` value type repo-wide.** Add a `declare module 'express'` augmentation that narrows `ParamsDictionary` values to `string`. Drops casts globally; semantically asserts no route uses the array-valued shape.
+
+This task is moved to `tasks/blocked/` per root CLAUDE.md rule #8 ("If a held task also becomes blocked on another agent's decision mid-cycle, move it to `blocked/` with a `[BLOCKED by <agent>]` note") and `[feedback_held_task_blocked_on_architect]`.
+
+### Scoped vitest pass (items 1-3 only)
+
+```
+$ npx vitest run \
+    tests/routes/papers-retract-url-shape-validator.test.ts \
+    tests/routes/papers-retract-real-path-verifyhivesignature.test.ts \
+    tests/routes/custody-limiter-cpu-amplification.test.ts \
+    tests/routes/retract.test.ts \
+    tests/routes/retract-rate-limit-skip-failed.test.ts \
+    tests/routes/custody-upgrade.test.ts \
+    tests/routes/custody-fresh-auth-null-hash.test.ts \
+    tests/routes/custody-session-auth.test.ts
+
+ Test Files  8 passed (8)
+      Tests  63 passed (63)
+   Duration  7.11s
+```
+
+`npm run typecheck` (typecheck:src + typecheck:tests): pass. `npm run lint`: pass (only the pre-existing `author-supersession.ts` unused-eslint-disable warning, unrelated).
+
+[BLOCKED by Architect] (2026-05-21) — Item 4's "drop `as string` casts" prescription cannot land as written. `@types/express-serve-static-core`'s `ParamsDictionary` indexer is `string | string[]`, so the casts are required for typecheck and are also the codebase's established pattern (10+ identical sites). Architect to clarify the disposition listed under "Item 4 — BLOCKED on architect input" above. Items 1-3 are landed at commit `330b9012`.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
