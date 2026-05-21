@@ -71,6 +71,7 @@ Implementer's 5-clause expansion at `backend/tests/routes/continuation-author-ga
 
 ## Related
 
+- [[coverage-claim-downgrade-requires-codebase-search-2026-05-21]] — direction-complementary sibling. This convention covers the expansion direction (don't add inaccurate expanded clauses when growing a comment); the downgrade sibling covers the downgrade direction (don't replace an over-claim with an unverified negation). Same root cause (no pre-write codebase check), same fix discipline (search before writing). Together they form the complete write-time accuracy rule for test-header prose changes — any direction.
 - [[convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17]] — the self-audit clause this convention extends. That doc covers rot-pattern reintroduction; this one covers behavioral-accuracy drift in the same expanded prose. The two together form the complete audit checklist for convention-enforcing fixes: rot-pattern grep AND added-clause behavioral accuracy.
 - [[hold-block-must-not-contradict-convention-docs-2026-04-22]] — sibling rule binding the architect side: hold-block prescriptions must themselves be accurate against the code and the conventions. This rule binds the implementer side: expansions beyond the prescription must be accurate against the code at the cited site.
 - [[docblock-anchor-stable-symbols-not-line-numbers-2026-05-15]] — anchoring rule for cross-references. Combines naturally: anchor on stable symbols AND verify the claim about those symbols is accurate.
