@@ -241,3 +241,40 @@ All four round-3 hold items addressed in one bundled commit:
 **Deviations:** None. Pre-existing rot patterns elsewhere in the test files (`BACKEND-SETTINGS-EMAIL-REAUTH-FRESH-AUTH` header, `orcid.test.ts` line-number citations) were out of round-3 scope and left untouched; they belong to separate audit-passes if surfaced.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-21, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` on the round-3 commit ran with always-on personas + security/adversarial/reliability/kieran-typescript. All four round-3 items land correctly: comment-anchor cleanup is exhaustive (no slugs/round-N markers/line-number anchors/SHAs reintroduced); the two oracle-closure regression specs mutation-kill a reorder revert; the concurrent-overwrite WHERE-scope spec mutation-kills a drop of the `AND pending_email_token = $5` clause; the new `settings.email_post.smtp_fail_restore_raced` warn fires only on the race path and mirrors the sibling event's PII shape (`email_hash`, not raw email). One item held — error-propagation gap that re-opens the status-code oracle round-2 closed.
+
+### Item held (must fix before archive)
+
+**1. (P1, conf 75, reliability) SMTP-fail catch block's rollback queries lack inner try/catch, allowing a rollback throw to escape to the outer 500 handler and reopen the 401-vs-409-vs-500 enumeration oracle.** The Change-flow restore UPDATE (round-2 item 7's snapshot-restore + round-2 hold item 2's WHERE-scope) and the Add-flow DELETE (pre-existing) both run inside the SMTP-fail catch with no inner try/catch. If the rollback query itself throws (Postgres deadlock, statement timeout, transient pool connection blip), the error propagates out of the SMTP-fail catch.
+
+The round-2/round-3 oracle closure rests on uniform 200 + `warn` on SMTP failure (Option A canonical shape from `timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`). When the rollback throws unguarded, the route's outer error handler converts it to 500, and the envelope shape varies:
+
+- Happy path SMTP fail → 200 (Option A)
+- SMTP fail + rollback throw → 500 (escapes the catch)
+
+An attacker who can deliberately induce rollback contention (e.g., burst-rate-limited concurrent change-email requests targeting the same row) can drive the 500 branch for SOME inputs and not others, re-opening a differential-error oracle.
+
+Fix shape:
+- Wrap the Change-flow restore UPDATE and the Add-flow DELETE in their own try/catch inside the SMTP-fail handler.
+- On rollback failure: emit a distinct discriminator warn event (e.g., `settings.email_post.smtp_fail_rollback_failed`) carrying the same field shape as the sibling `smtp_send_failed` warn (`{event, route, email_hash, username, err}`), then fall through to the uniform 200 return.
+- Mirror the round-3 pattern: the new event fires only on the rollback-failure path (`catch` of the inner try/catch), preserving the logging-minimal posture on the normal SMTP-fail path.
+
+Test addition (mutation-kill the inner try/catch):
+- Stub the restore UPDATE / Add-flow DELETE to reject (mock `pool.query` for the specific rollback statement to throw a Postgres-like error, or wrap with `mockRejectedValueOnce` on the right call), trigger an SMTP failure on the same request, assert status 200 (NOT 500), assert the new `smtp_fail_rollback_failed` warn fires. A regression that removes the inner try/catch flips the assertion red.
+
+### Items dismissed at architect triage
+
+- **(advisory, learnings) Race-path warn field shape `{event, route, email_hash, username}` deviates from the `timing-equalization-smtp-failure-mode-oracle` convention's prescribed `{err, route, emailKnown}`.** Documented as reasonable: no Error exists at the rowCount-check point; the new shape mirrors the sibling `smtp_send_failed` and preserves CNPD PII posture. Convention doc may benefit from a clarifying note at next refresh.
+- **(advisory, learnings) Semantic-siblings sweep — `orcid.ts /fresh-auth` and `custody.ts /fresh-auth` may carry residual line-number anchors from the round-1 mint widening that were not audited.** Filed-by-reference to a future convention sweep if anchor rot is observed during a later review pass; not held against this task.
+- Pre-existing comment-anchor rot in `settings.test.ts` (BE-LOG-SHAPE-CONVERGENCE-SIBLING-FILES slug, settings.ts:315 line anchor) is outside the round-3 diff hunks — pre_existing, deferred to a future sweep if surfaced.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
