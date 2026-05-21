@@ -35,7 +35,23 @@ async function cidReferencedInHaf(cid: string): Promise<boolean> {
      WHERE c.json_metadata @> $1::jsonb
         OR c.json_metadata @> $2::jsonb
         OR EXISTS (
-          SELECT 1 FROM jsonb_array_elements_text(c.json_metadata->'image') img
+          -- CASE-WHEN array-guard at SRF argument position. Hive's image
+          -- metadata is convention, not schema: any post can broadcast a
+          -- non-array image value (null, string, integer, object). Without
+          -- the guard, jsonb_array_elements_text would raise "cannot extract
+          -- elements from a scalar" mid-loop, the orphan-cleanup sweep
+          -- aborts, and stale pending-upload rows accumulate (with their
+          -- pins) until the malformed post is edited or removed. The
+          -- CASE-WHEN absorbs the non-array case to []::jsonb at the
+          -- argument site so the SRF never sees a scalar. See
+          -- agents/docs/solutions/conventions/
+          -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
+          SELECT 1 FROM jsonb_array_elements_text(
+            CASE WHEN jsonb_typeof(c.json_metadata->'image') = 'array'
+                 THEN c.json_metadata->'image'
+                 ELSE '[]'::jsonb
+            END
+          ) img
           WHERE img LIKE '%' || $3 || '%'
         )
      LIMIT 1`,
