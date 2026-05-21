@@ -237,3 +237,53 @@ Test Files  3 passed (3)
 - `agents/docs/tasks/pending/backend-pevo-string-helper-adoption-sweep.md` (this signal block)
 
 No `backend/src/` files modified. Parent agent should `git mv` this file from `pending/` to `review/` after merging the worktree branch back into the orchestrating branch (per round-1 protocol).
+
+## Architect re-review (2026-05-21, round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-2 commit `e98d5a16` with 5 reviewer personas (correctness on Opus; testing, maintainability, project-standards on Sonnet; learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO `CLAUDE.md`). All 4 architect-held items (whitespace contract, route-level mutation-kill, language fallback, reviewer_attestation_id collapse) land correctly. The new specs pin the claimed invariants; mutation-kill is sound; the per-knob assertions catch the right mutations. Three round-3 items hold — one factual error in a test docblock, one misleading test-file label, three line-number anchors that have already drifted between commit time and re-review time.
+
+### Items to address (one round-3 commit)
+
+**1. (P2, anchor 95, correctness) `backend/tests/routes/continuation-author-gate.test.ts` `language: ''` spec docblock confuses `||` vs `??` and misrepresents pre-migration behavior.** The new comment claims pre-migration `?? 'en'` returned `''` for empty-string language, framing the new behavior as "the behavioral upgrade the migration delivered." Verified via `git show ac30ad53`: pre-migration code was `pevo.language || 'en'`, NOT a `??` form. For `language: ''`: pre-migration `'' || 'en'` returns `'en'` (`''` falsy for `||`); post-migration `pevoString(...) ?? 'en'` also returns `'en'` (pevoString collapses `''` to `null`). Both forms produce identical output — PARITY, not an upgrade. Comment also calls `''` "truthy for `??`" (category error: `??` is nullish, not truthy). Task-file signal block has the correct phrasing ("parity check (both forms return 'en'); pins the convention"); only the in-test comment is wrong. Assertion itself is correct.
+
+   Fix: replace the in-test docblock with the signal-block phrasing — both pre- and post-migration return `'en'` for empty-string; the test pins parity. The mutation-kill value is a `?? 'en'` drop or a `pevoString` → passthrough-cast revert, NOT a behavioral upgrade. Trim the misleading "behavioral upgrade the migration delivered" framing.
+
+**2. (P2, cross-reviewer convergence — testing + project-standards) `backend/tests/routes/reviews.test.ts` "(real HAF)" describe block label is misleading; clause-(c) companion citation is unsubstantiated.** When the file was expanded from 13 → 150 lines, the existing 404 spec was preserved inside a new `(real HAF)` describe block. But the file's global `vi.mock('../../src/db.js')` applies to EVERY spec including that one — the 404 spec runs against a mocked-empty pool, not real HAF. The label is factually wrong, AND the file-header carve-out justification cites this `(real HAF)` block as the clause-(c) real-path companion for the mocked transform-axis specs — a citation the file's own structure contradicts.
+
+   Fix: relabel the `(real HAF)` describe to `(mocked-pool: 404 path)` (or similar). Then update the file-header clause-(c) framing to one of two shapes:
+   - (a) Cite a different real-path companion test file for the same risk class (`/api/reviews/:author/:permlink` integration coverage), IF one exists in the codebase.
+   - (b) Acknowledge no real-path companion currently exists and file a follow-up task `backend-reviews-real-haf-integration-coverage` (or equivalent) capturing the gap. The follow-up satisfies clause (c)'s "filed as a follow-up" allowance.
+
+   Implementer's choice between (a) and (b) — pick whichever matches the file's actual coverage today.
+
+**3. (P3, cross-reviewer convergence — project-standards + maintainability) Three raw line-number anchors in test comments have already drifted between commit time and re-review.** Sites:
+   - `backend/tests/routes/continuation-author-gate.test.ts:231` — "Pins the buildPaperDetail call site (`papers.ts:1749`)"
+   - `backend/tests/routes/continuation-author-gate.test.ts:260` — "Pins `pevoString(pevo, 'language') ?? 'en'` at `papers.ts:1757`"
+   - `backend/tests/routes/reviews.test.ts:387` — "production code at `reviews.ts:30`" / "Verified `sed -n '30p' backend/src/routes/reviews.ts` at task start"
+
+   Per `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md`. The line numbers cited are ALREADY stale: `papers.ts:1749` is `papers.ts:2721` in current source; `papers.ts:1757` is `:2729`; the "verified at task start" attestation has been invalidated by intervening edits. Replace each anchor with the stable symbol it pins — `buildPaperDetail` (with the field-name disambiguator), the `pevoString(pevo, 'language') ?? 'en'` call shape, or the equivalent exported route-handler anchor. Drop the `sed -n '30p'` verification line entirely.
+
+### Items dismissed at architect triage (recorded for transparency, not held)
+
+- **`installResponder` block duplication across 3 new specs** (maintainability, conf 65). 3 sites is at the borderline of helper-extraction value; consistency with surrounding file style + PEvO "three similar lines is better than a premature abstraction" guidance tips the call toward leave-as-is.
+- **`language` absent/empty-string tests don't distinguish `||` vs `??` shapes** (testing, conf 60). Specs kill `?? 'en'` drop mutations correctly; pre/post-distinction is narrowness, not defect. Per memory `feedback_dismiss_preemptive_test_hardening`.
+- **4-site `pevoStringArray` symmetry coverage** (testing residual). Round-1 architect hold block authorized single-site adoption testing; helper-layer + 1 route-site is acceptable coverage symmetry.
+
+### Architect notes (no implementer action — grandfathered)
+
+- **6 task-slug + round-number citations in new test comments** were surfaced by project-standards + maintainability + learnings convergence:
+  - `backend/tests/helpers.test.ts:162` — "Round-2 hold item 1"
+  - `backend/tests/routes/continuation-author-gate.test.ts:184` — "Round-2 hold items 2 + 3a for backend-pevo-string-helper-adoption-sweep"
+  - `backend/tests/routes/continuation-author-gate.test.ts:186` — "Item 2"
+  - `backend/tests/routes/continuation-author-gate.test.ts:193` — "Item 3a"
+  - `backend/tests/routes/reviews.test.ts:324` — file header "(per backend-pevo-string-helper-adoption-sweep.md round-1)"
+  - `backend/tests/routes/reviews.test.ts:385` — "Round-2 hold item 3b for backend-pevo-string-helper-adoption-sweep"
+
+  Convention `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` was filed 2026-05-15; this commit landed 2026-05-07 (8 days pre-convention). Per learnings researcher, "Comments authored before 2026-05-15 are pre-convention; round-2 fixes are the first opportunity to apply this rule" — but the codebase has an active `backend-comment-anchor-sweep-*` task series whose explicit purpose is picking up exactly this rot class. Grandfathered per timing; the comment-anchor sweep series picks these sites up on its next pass. Will be noted in the eventual archive entry.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
