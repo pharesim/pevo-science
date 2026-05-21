@@ -37,3 +37,46 @@ The implementer should `/ce-brainstorm` on which quota shape fits PEvO's threat 
 
 - 2026-05-21 architect review of `pinner-content-hash-verify-on-pin`: adversarial reviewer `adv-3` (hostile-author serial-loop wedge) + performance reviewer `PERF-01` (serial autopin loop stall with 2-min gateway timeout).
 - Related but separate: `pinner-embedded-ipfs-node-via-boxo.md` (the IPFS-subsystem rewrite). This task targets the autopin queue, not the fetch subsystem.
+
+## Brainstorm output (2026-05-21)
+
+### Summary
+
+Bounded worker pool (default N=4) replaces the serial loop. Per-author CID cap per discovery batch (default 20) bounds a single hostile author's impact while leaving legitimate authors (1-5 CIDs/paper) untouched. Single-batch quota only. Each batch emits one shed-summary log line per author that tripped the cap. Pool drains before the callback returns so discovery batches don't overlap each other's in-flight pins, which composes cleanly with the existing shutdown drain.
+
+### Key decisions
+
+- **Quota shape: per-author cap per batch.** Chosen over total queue-depth cap, belt-and-suspenders combination, and weighted round-robin. Rationale: per-author cap targets the actual attack vector (a single hostile accredited author broadcasting many CIDs) rather than memory pressure; legitimate authors fall far below the cap; operator log identifies the responsible author. Queue-depth alone is threat-blind and would still let a hostile author saturate the queue; combination and round-robin are over-engineered for PEvO's single-instance scale.
+- **Default concurrency N=4.** Matches the task author's starting point. Small enough that disk I/O + HTTP fetch CPU don't thrash; large enough that one stuck gateway doesn't stall others.
+- **Default per-author cap = 20.** Matches the task's example. A normal paper carries 1 PDF + a handful of supplementary files + a few inline images, well under 20. Multi-paper batches from one author at one moment are unusual outside of mass broadcast.
+- **Log shape: one summary line per capped author per batch.** Form `[autopin] shed N CIDs from <author> (per-author cap=<cap>)`. NOT per-shed-CID. Preserves operator visibility without inflating log volume.
+- **Quota and pool live in their own file under `pinner/`.** The semaphore/pool, per-author counter map, and shed accounting are larger than fits inline in `main.go`'s `SetOnRefresh` closure.
+- **`AutoPinManager.MatchingCIDs` signature widens to return items, not CID strings.** Author is required downstream by the quota. The single existing call site (`main.go` autopin callback) is the only consumer.
+- **Pool drains before the callback returns.** Successive discovery batches do not overlap each other's in-flight pins. Composes with `pinner-shutdown-drain-in-flight-pins` (already in `tasks/review/`).
+
+### Configuration knobs
+
+| Env | Flag | Default | Description |
+|---|---|---|---|
+| `AUTOPIN_CONCURRENCY` | `--autopin-concurrency` | `4` | Max in-flight pin operations per batch. |
+| `AUTOPIN_AUTHOR_CAP` | `--autopin-author-cap` | `20` | Max CIDs pinned from any single Hive author per discovery batch. Excess CIDs are shed. |
+
+Naming matches the bare pinner convention (`PORT`, `GATEWAY_PORT`, `APP_TAG`, `MAX_PIN_BYTES`); no `PINNER_` prefix.
+
+### Acceptance refinement (supplements the Acceptance section above)
+
+- Startup log includes both `AUTOPIN_CONCURRENCY` and `AUTOPIN_AUTHOR_CAP` alongside existing knobs.
+- The 100-CID-one-author test (per the original Acceptance) asserts: exactly `AUTOPIN_AUTHOR_CAP` worth of `Pin` attempts were made; the rest were shed; a single shed-summary log line was emitted naming the author and the cap.
+- A second test asserts the per-author cap does NOT shed across multiple authors: 100 CIDs split across 10 authors (10 CIDs each) all attempt `Pin`, none shed.
+
+### Scope boundaries (clarifications)
+
+The task's existing Non-goals stand. The brainstorm adds:
+
+- Global queue-depth cap as a second backstop. Rejected in favor of single-axis per-author cap; revisit only if a concrete failure mode surfaces.
+- Weighted round-robin / fair-share queueing. Rejected as over-engineered for PEvO scale.
+- Per-CID drop logging. Rejected to keep log volume bounded.
+
+### Handoff
+
+The pinner agent picks this up via `/ce-work`. The brainstorm-output section above resolves the open decision the task deferred; the original Goal / Non-goals / Acceptance / References remain authoritative for everything else.
