@@ -41,3 +41,55 @@ These tests use real HAF + Hive + Postgres + Redis per the project test conventi
 
 - Audit chunk: `.context/audit-2026-04-21/chunk-8-testing-reviewer.md` (P0: anonymous review has zero happy-path coverage).
 - Related: `backend-custody-crypto-direct-test-coverage.md`.
+
+## Backend implementer signal (2026-05-21)
+
+Added three happy-path / round-trip specs to
+`backend/tests/routes/anonymousReview.test.ts` under a new
+`POST /api/reviews/anonymous — happy-path mapping round-trip` describe:
+
+1. **Valid-submission round-trip.** POSTs a signed request with a
+   third-party reviewer (`carol`) against a staged paper, asserts 200 +
+   response envelope shape (proxy account, permlink containing the paper
+   slug, tx_id), asserts the comment broadcast fired with
+   `parent_author`/`parent_permlink`/`author=hiveAnonAccount` and
+   `is_anonymous: true` in `json_metadata`, asserts the attestation
+   `custom_json` fired with `id=appTag` + `required_posting_auths=[anon]`
+   + `action='anon_review'`, then fetches the mapping via the route's
+   exported `getAnonMapping` and asserts `decryptMapping(...)` recovers
+   the original reviewer username byte-for-byte.
+
+2. **Ciphertext byte-inequality.** Submits a second review with a longer
+   reviewer name (`davidlongername`), reads the raw Redis envelope at
+   `${appTag}:anon_mapping:${permlink}` (with in-memory fallback when
+   Redis is unavailable), asserts the `encrypted` hex string and all
+   common byte decodings of the cipher buffer (utf8 / latin1 / base64 /
+   hex-of-utf8) do NOT contain the reviewer username substring. Catches
+   a regression that accidentally stored cleartext under the mapping key.
+
+3. **Post-TTL expiry.** Uses the new `__test_seams` export on
+   `backend/src/routes/anonymousReview.ts` (exposing the internal
+   `storeAnonMapping`/`encryptMapping` and the `ANON_TTL_DAYS` constant
+   as a `as const` test-only surface) to seal a mapping with a 1-second
+   `expiresAt`, asserts it is readable immediately, sleeps 2500ms, then
+   asserts `getAnonMapping` returns null. Exercises both the Redis
+   `EX 1` eviction path and the in-memory fallback's
+   `new Date() > expiresAt` predicate.
+
+Mocks added under the file-header carve-out: stubbed
+`broadcastSendOperationsWithTimeout` + `broadcastJsonWithTimeout` so the
+test does not need a funded `pevo.anon`/proxy account on pevotest, and a
+config override that pins `pevoAnonPostingKey` to a deterministic
+seed-derived WIF and `anonReviewEncryptionKey` to a SHA-256 of a test
+seed (the project `.env` leaves both empty). Real-path companion
+documented in the header (`verifyHiveSignature-authmethod.test.ts` for
+the auth gate; the AES-GCM seal itself runs unmocked against `node:crypto`
+and real Redis here, so the encrypt/persist/unseal chain is the real
+risk-class coverage).
+
+Production seam: only the `__test_seams` constant block was added at the
+bottom of `backend/src/routes/anonymousReview.ts`. The route handler does
+not reference it; no behavioural change. The handler still hardcodes
+`ANON_TTL_DAYS = 180` and uses `storeAnonMapping` directly. Lint clean
+(only pre-existing unrelated warning in `lib/author-supersession.ts`),
+typecheck clean, 11/11 targeted specs green.
