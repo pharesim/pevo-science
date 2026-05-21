@@ -265,3 +265,61 @@ Broken out by file (separate run):
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
+---
+
+## Backend re-review signal (round-2, commit 7b4fc7c9)
+
+### Item 1 — post-step-2 abort re-check landed
+
+After `await resolveContinuationChain(...)` returns in `findCanonicalRoot`, a new `signal?.aborted` guard runs before the membership check and the cache write. On abort the function returns `null` without writing the cache, mirroring the pre-step-2 and the mid-backward-walk abort branches. Emits `canonical_root_walker_wall_clock_exceeded` at the new abort site carrying `forwardChainLength` for operator observability (the chain length at the moment the abort poisoned step 3's evaluation, useful for diagnosing "did the forward walker make any progress before the budget tripped").
+
+The other two abort branches in this function (pre-step-2 at the function head, mid-loop at each backward hop) already document why they skip caching; the new branch follows the same shape.
+
+### Item 2 — /invalidate handler flushes canonical-root:* prefix
+
+The `Promise.all` in the `POST /api/papers/:author/:permlink/invalidate` handler now includes `hafCache.invalidatePrefix('canonical-root:')` alongside the existing `paper-detail:*`, `paper-enrichment:*`, and versioned `paper-detail:*:v*` flushes. Inline comment documents: canonical-root mappings are leaf-keyed (not root-keyed), so a chain-topology edit at any post in the chain can flip the resolution for an arbitrary leaf elsewhere in the chain; broad app-wide flush is safe because the leaf→root recomputation is cheap.
+
+Sibling-task coordination: `backend-cumulative-union-listing-surfaces-parity` round-2 hold item 2 wants the same `Promise.all` extended with `hafCache.invalidatePrefix('chain-authors:')`. The two prefix flushes coexist by construction; landing #4's item 2 alongside this one will produce a single `Promise.all` with both new prefix flushes.
+
+### Item 3 — visited-Set seed normalisation
+
+The backward-walker visited-Set seed at the cycle-detection initialisation point now uses `memoKey(leafAuthorKey, leafPermlinkKey)` (the lowercased+trimmed coords already computed at function entry for the cache key and SQL bind) instead of `memoKey(author, permlink)` (the raw route params). Pin-1 parity across all four surfaces — cache key, SQL bind on the initial probe, step-3 membership check, AND the visited-Set seed — now uniform on the normalised shape. A mixed-case URL cycling back to its lowercased chain entry short-circuits at the seed instead of one iteration later.
+
+### Mid-step-2 abort canary
+
+New spec in `backend/tests/routes/papers-canonical-root-walker.test.ts`:
+
+```
+it('mid-step-2 wall-clock abort skips the canonical-root cache write', ...)
+```
+
+Setup: shrinks `config.hafWalkerWallClockMs` to 1ms and stalls every forward-walker SQL probe by 50ms via the responder. The backward walk completes synchronously against the mocked responder, so the pre-step-2 abort guard does NOT pre-empt — the abort lands inside step 2 (the forward walker's first SQL is in-flight when the wall-clock fires). The forward walker's own per-iteration `signal?.aborted` check on the next loop iteration returns the partial chain.
+
+Load-bearing assertion: `expect(await hafCache.get('canonical-root:carol:v3')).toBeUndefined()`. A regression that removed the post-step-2 re-check would cache `{ root: null }` on this leaf and the assertion would observe a defined entry. Restores the original `hafWalkerWallClockMs` value in a `finally` block.
+
+### Scoped vitest pass
+
+```
+$ npx vitest run \
+    tests/routes/papers-canonical-root-walker.test.ts \
+    tests/routes/continuation-author-gate.test.ts \
+    tests/routes/papers-canonical-orcid-resolution.test.ts
+
+ Test Files  3 passed (3)
+      Tests  87 passed (87)
+   Duration  3.59s
+```
+
+- `papers-canonical-root-walker.test.ts` — 6/6 (5 existing + 1 new mid-abort canary).
+- `continuation-author-gate.test.ts` — pass (forward walker behaviour unchanged).
+- `papers-canonical-orcid-resolution.test.ts` — pass (supersession projection unchanged).
+
+`npm run typecheck` (typecheck:src + typecheck:tests): pass. `npm run lint`: pass (pre-existing `author-supersession.ts` unused-eslint-disable warning, unrelated).
+
+### Self-audit on added lines
+
+- No task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in production or test source.
+- Inline comments anchor on stable symbols: `step 2`, `forward walker`, `pre-step-2 abort branch`, `wall-clock budget`, `pevo.continues pointer`, `Hive's 7-day edit window`. The canary's docblock anchors on the behavioural setup ("shrinks `config.hafWalkerWallClockMs`", "stalls every forward-walker SQL probe", "post-forward-verify abort re-check") rather than coordination context.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
