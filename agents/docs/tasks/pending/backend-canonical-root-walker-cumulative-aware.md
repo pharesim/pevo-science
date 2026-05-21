@@ -236,3 +236,32 @@ Broken out by file (separate run):
 
 `tests/routes/canonical-root-walker.test.ts` (the older walker canary file) contains 8 tests tightly coupled to the previous per-hop-gate behaviour: they assert `canonical_root_walker_unauthorized_hop` events and bridge-paper backward-walk shapes that no longer fire under Alternative 3. These tests will need to be adapted to the new event vocabulary (`canonical_root_walker_membership_failed`) and the new two-phase shape; that adaptation was not in this task's scoped acceptance. The architect's hold block explicitly scoped the test runs to the three files above and did not require updating `canonical-root-walker.test.ts`.
 
+---
+
+## Architect re-review (2026-05-21) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `e084c802` (Alternative 3 forward-walker delegate rewrite) returned three items that block archive. The implementation correctly delivers the ratified three-step shape with Pin 1 (mixed-case URL normalisation), Pin 2 (cycle-detect on backward walk + retained on forward walker), 30-min TTL alignment with the sibling cumulative-authors cache, and the fail-CLOSED security property. The reproducer canary, Pin-1 canary, Pin-2 canary, and fail-CLOSED canary are all present and pin the intended behaviour. The three items below are async-completion + invalidate-completeness + Pin-1-parity gaps that need closure before this archives.
+
+### Items
+
+1. **Mid-step-2 wall-clock abort poisons the canonical-root cache for 30 min on a legitimately authorized leaf.** The pre-step-2 abort guard correctly skips the cache write. The mid-loop abort branches at the backward-walker hop boundaries also skip caching. But once `resolveContinuationChain` is invoked at step 2, the abort can fire INSIDE the forward walker; the forward walker swallows its own wall-clock abort by returning the partial chain accumulated so far (potentially just `[R]`). Control returns to step 3; the membership check evaluates `isMember` against a truncated chain; for a legitimate deep-chain leaf the check evaluates `false`; the negative-result branch caches `{root: null}` for the full 30-min TTL. The other two abort branches in this function explicitly document why they skip caching — that rationale applies here but was missed. **Fix:** re-check `signal?.aborted` after `resolveContinuationChain` returns and BEFORE computing `isMember` / writing the cache. On abort, return `null` without caching (same shape as the pre-step-2 abort branch). Add a canary that fires the AbortController mid-walk and asserts no `canonical-root:*` cache entry was written for the leaf.
+
+2. **`/invalidate` handler doesn't flush `canonical-root:*` prefix.** The `/invalidate` route clears `paper-detail:*`, `paper-enrichment:*`, and versioned `paper-detail:*:v*` — but not the new `canonical-root:*` keys this commit introduces. A paper edit changing chain topology (e.g., a mid-chain paper's `pevo.authors[]` mutation within Hive's 7-day edit window, or a leaf's `pevo.continues` pointer change) refreshes the detail cache immediately but leaves the canonical-root mapping cached for up to 30 min. The function's own docblock claims "post-edit staleness closes uniformly across the chain caching surface" — false for canonical-root entries. **Fix:** extend the invalidate handler's `Promise.all` to include `hafCache.invalidatePrefix('canonical-root:')`. Canonical-root entries are cheap to recompute; broad prefix flush is safe. (Note: sibling task `backend-cumulative-union-listing-surfaces-parity` carries a parallel item to also flush `chain-authors:*`; if both holds land in the same invalidate-handler edit, that's the expected shape — the two prefix flushes coexist.)
+
+3. **Backward-walker visited-Set seed uses raw route params; Pin-1 parity gap on a 4th surface.** Pin 1 ratified lowercased+trimmed normalisation on three surfaces (cache key, SQL bind on the initial probe, step-3 membership check). The backward-walker visited-Set seed uses `memoKey(author, permlink)` — the raw route params — while subsequent visited additions use lowercased HAF values. For a mixed-case URL `/Carol/V3` cycling back to lowercased `carol/v3`, `visited.has('carol/v3')` is `false` against the `'Carol/V3'` seed; cycle is detected one iteration later via the second seed entry. Not security-critical (cycle still detected) but introduces one extra SQL probe and leaves a Pin-1 parity gap that the next refactor may miss. **Fix:** seed the visited-Set with `memoKey(leafAuthorKey, leafPermlinkKey)` (the normalised coords already computed at function entry), not the raw `author`/`permlink` route params.
+
+### Acceptance for re-review
+
+- All 3 items addressed in code + tests landed.
+- Scoped vitest run on `tests/routes/papers-canonical-root-walker.test.ts` + `tests/routes/continuation-author-gate.test.ts` + `tests/routes/papers-canonical-orcid-resolution.test.ts` passes (same scope as round-1).
+- Self-audit on added lines: no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors per the comment-anchor conventions.
+
+### Dismissed at architect triage (out of scope)
+
+- Worst-case 61 sequential SQL queries per uncached canonical-root resolution on a max-depth chain — architect ratification explicitly weighed and accepted this envelope (typical ~95% single-link case is +1 query; deep-chain case is amortized by the per-leaf cache).
+- The 8 stale tests in `tests/routes/canonical-root-walker.test.ts` (the older walker canary file) — filed as separate task `backend-canonical-root-walker-old-test-file-adapt.md` so the canonical-root-walker task can archive cleanly once items 1-3 land. Loud-RED failures are scoped out of CI today; not silent.
+- Negative-result `{root: null}` cache entries shadowing a future legitimate canonical-root mapping after a chain extension — subsumed by item 2's invalidate-prefix fix; once `/invalidate` clears `canonical-root:*`, the negative-cache shadowing closes too.
+- Redundant `forwardChain.length > 0` guard on the positive branch (`isMember && forwardChain.length > 0`) — dead-by-construction (`some` on empty is `false`) but harmless; not worth a round-2.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
