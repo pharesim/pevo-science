@@ -30,7 +30,7 @@ describe('nodemailer.createTransport — exhaustive call-site audit', () => {
     try {
       out = execFileSync(
         'grep',
-        ['-rln', '--include=*.ts', 'nodemailer.createTransport', 'src/'],
+        ['-rlnE', '--include=*.ts', "(from|require\\().*['\"]nodemailer['\"]", 'src/'],
         { cwd: BACKEND_ROOT, encoding: 'utf8' },
       ).trim();
     } catch (err) {

@@ -34,12 +34,12 @@ import { config } from '../config.js';
 //
 // dns.lookup fallback caveat: `dnsTimeout: 5000` only bounds nodemailer's
 // `dns.Resolver` (resolve4/resolve6) path. When that returns no usable
-// addresses, nodemailer falls back to `dns.lookup()` at
-// `nodemailer/lib/shared/index.js:212` — that call receives no timeout and
-// runs on libuv's thread pool. Under degraded system DNS the fallback is the
-// live path. The other timers eventually fire from different anchor points,
-// so the gap is partial. If telemetry surfaces real `dns.lookup` pins, file
-// a follow-up to wrap the helper with a custom `dnsResolver` or pre-flight
+// addresses, nodemailer falls back to `dns.lookup()` inside its shared
+// DNS-resolution helper — that call receives no timeout and runs on libuv's
+// thread pool. Under degraded system DNS the fallback is the live path. The
+// other timers eventually fire from different anchor points, so the gap is
+// partial. If telemetry surfaces real `dns.lookup` pins, file a follow-up to
+// wrap the helper with a custom `dnsResolver` or pre-flight
 // `dns.promises.lookup(host, {timeout: 5000})`.
 //
 // See agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md
