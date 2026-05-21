@@ -52,7 +52,7 @@
  *      'bridge.check' (NOT bridge.register).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import request from 'supertest';
 import { PrivateKey } from '@hiveio/dhive';
 
@@ -246,12 +246,22 @@ vi.mock('../../src/redis.js', () => ({
   disconnectRedis: async () => {},
 }));
 
-vi.mock('../../src/app-db.js', () => ({
-  getAppPool: () => null,
-}));
+// app-db is NOT mocked: the route's enqueue path requires a real Postgres
+// pool against the bridge_import_queue table. Cleanup at the suite level
+// avoids cross-test row contamination on re-runs.
 
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
+const { getAppPool, closeAppPool } = await import('../../src/app-db.js');
+
+async function cleanupQueueRowsFor(usernamePrefix: string): Promise<void> {
+  const pool = getAppPool();
+  if (!pool) return;
+  await pool.query(
+    `DELETE FROM bridge_import_queue WHERE username LIKE $1`,
+    [`${usernamePrefix}%`],
+  );
+}
 // Dynamic import (not top-level static) so the eager import chain doesn't
 // pull `../../src/config.js` in before this file's vi.mock factory's closed-
 // over `TEST_BRIDGE_KEY` initializes. Static import would trigger a TDZ
@@ -319,7 +329,7 @@ async function waitForSetnxBlocked(lockKey: string, count = 1, timeoutMs = 200):
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   fakeRedis.store.clear();
   fakeRedis.setnxBlockedCount.clear();
   sendOperations.mockClear();
@@ -330,6 +340,10 @@ beforeEach(() => {
   sendOperationsImpl = async () => ({ id: 'mock-tx-id' });
   // Default HAF: no existing duplicate.
   pgQueryImpl = async () => ({ rows: [] });
+  // Clean queue rows from prior runs so per-user cap and permlink
+  // uniqueness do not collide on re-runs.
+  await cleanupQueueRowsFor('racingauthor');
+  await cleanupQueueRowsFor('hafoutageauthor');
 });
 
 describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock', () => {
@@ -339,23 +353,21 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
     accreditedSet.add(ACCREDITED);
   });
 
-  it('two concurrent /register for the same identifier: exactly ONE broadcast fires, the second returns 409 LOCK_HELD retriable, lock key released in finally, contention warn-log fires', async () => {
-    // Slow broadcast: A awaits this gate so it holds the lock until we
-    // release. B reaches SETNX while A is still in the broadcast, hits the
-    // lock-already-held branch, and 409s deterministically.
-    let releaseBroadcast: (() => void) | null = null;
-    const broadcastGate = new Promise<void>((resolve) => { releaseBroadcast = resolve; });
-    sendOperationsImpl = async () => {
-      await broadcastGate;
-      return { id: 'tx-winner' };
+  it('two concurrent /register for the same identifier: A wins the lock and enqueues, B gets 409 LOCK_HELD retriable, lock key released in finally, contention warn-log fires', async () => {
+    // After the route migration to enqueue + 202, broadcast no longer
+    // happens inside the per-permlink lock. To simulate contention
+    // deterministically, slow down the HAF duplicate-check (which IS
+    // inside the lock critical section) so A holds the lock while B
+    // arrives at SETNX. The wire-shape assertion (B → 409 LOCK_HELD
+    // retriable, contention warn fires, lock key released in finally)
+    // is the load-bearing property of this spec.
+    let releaseHaf: (() => void) | null = null;
+    const hafGate = new Promise<void>((resolve) => { releaseHaf = resolve; });
+    pgQueryImpl = async () => {
+      await hafGate;
+      return { rows: [] };
     };
 
-    // Capture the contention warn so the LOCK_HELD outcome's structured
-    // event tag is asserted alongside the wire shape. Operator dashboards
-    // key on event:'bridge.register.lock_contention_held' to count
-    // real-time contention separately from the steady-state DUPLICATE
-    // outcome. Mirrors the orcid.binding_lock.contention_held warn in the
-    // analogous SETNX-loser site in routes/orcid.ts.
     const { logger } = await import('../../src/logger.js');
     const warnSpy = vi.spyOn(logger, 'warn');
 
@@ -364,53 +376,37 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
       const body = { identifier: '2301.99999', discipline: 'CS' };
 
       // Fire A; wait for A's SETNX to populate fakeRedis.store before firing B.
-      // This barrier replaces the prior `setTimeout(r, 5)` stagger — A is now
-      // the deterministic SETNX winner under any CI load.
       const reqA = signedPost('/api/bridge/register', ACCREDITED, body);
       await waitForLockAcquired(expectedLockKey);
 
       // Fire B; wait until B's SETNX has observed the held lock and been
-      // rejected. This second barrier replaces the prior `setTimeout(r, 20)`
-      // delay — without it A's broadcast (once we release the gate below) can
-      // complete and release the lock before B reaches SETNX, both broadcasts
-      // fire, and `toHaveBeenCalledTimes(1)` fails non-deterministically.
+      // rejected.
       const reqB = signedPost('/api/bridge/register', ACCREDITED, body);
       await waitForSetnxBlocked(expectedLockKey);
 
-      // Both requests have now reached their deterministic state: A holds the
-      // lock and is parked on broadcastGate, B has been rejected at SETNX and
-      // is heading to its 409 response. Release the gate so A can broadcast,
-      // release the lock, and respond 200.
-      releaseBroadcast!();
+      // Release A's HAF check so it can enqueue and respond 202.
+      releaseHaf!();
 
       const [resA, resB] = await Promise.all([reqA, reqB]);
 
-      // Exactly one broadcast must have fired.
-      expect(sendOperations).toHaveBeenCalledTimes(1);
-
-      // A is the deterministic winner: the barrier guarantees A acquired the
-      // SETNX before B was even issued. No winner-flip absorption needed.
-      expect(resA.status).toBe(200);
+      // A wins; the enqueue path replaces the prior broadcast assertion
+      // (broadcasts no longer happen inside the route).
+      expect(resA.status).toBe(202);
       expect(resA.body.status).toBe('ok');
-      expect(resA.body.data.tx_id).toBe('tx-winner');
+      expect(resA.body.data.entry.permlink).toBe('bridge-arxiv-2301-99999');
 
-      // Round-2 hold item #1: lock-held 409 carries `code: 'LOCK_HELD'`, NOT
-      // `code: 'DUPLICATE'`. The two 409 shapes share the HTTP status but
-      // differ on the error code so SPA/integrators can switch on
+      // B: 409 LOCK_HELD with retriable details. Distinguished from
+      // DUPLICATE by error.code so SPA/integrators can switch on
       // err.code without parsing the message string.
       expect(resB.status).toBe(409);
       expect(resB.body.error.code).toBe('LOCK_HELD');
       expect(resB.body.error.details).toEqual({ retriable: true });
 
-      // Round-2 hold item #9: assert the lock key is absent from Redis after
-      // both requests resolve — catches early-return / missing-`state ===
-      // 'acquired'` regressions in the finally block. The winner's finally
-      // released the key under Lua CAS; the loser never acquired it.
+      // Lock key absent after both requests resolve (winner's finally
+      // released under Lua CAS; loser never acquired).
       expect(fakeRedis.store.has(expectedLockKey)).toBe(false);
 
-      // Structured event tag for the LOCK_HELD outcome. Find by event then
-      // assert route/identifier/username/permlink — circular-assertion guard:
-      // do NOT assert `event !== 'something-else'` on the filtered call.
+      // Structured event tag for the LOCK_HELD outcome.
       const matchingCall = warnSpy.mock.calls.find((c) => {
         const ctx = c[0] as Record<string, unknown> | undefined;
         return ctx?.event === 'bridge.register.lock_contention_held';
@@ -530,4 +526,10 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /check fail-open on HAF outage (round-2 ho
       warnSpy.mockRestore();
     }
   });
+});
+
+afterAll(async () => {
+  await cleanupQueueRowsFor('racingauthor').catch(() => undefined);
+  await cleanupQueueRowsFor('hafoutageauthor').catch(() => undefined);
+  await closeAppPool().catch(() => undefined);
 });

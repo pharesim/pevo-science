@@ -43,7 +43,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import { PrivateKey } from '@hiveio/dhive';
-import { MockBroadcastTimeoutError, makeDhiveLikeError } from '../support/broadcast-mocks.js';
 import { logger } from '../../src/logger.js';
 
 // Deterministic test keypair shared by all usernames (mocked getAccounts
@@ -367,122 +366,20 @@ describe('BE-CLAIMS-ERROR-POLISH — bridge misconfig surfaces as 503', () => {
 });
 
 // ──────────────────────────────────────────────
-// BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-route timeout/failure specs.
+// Broadcast-timeout / broadcast-failed discrimination on /api/bridge/register
+// was REMOVED when the route switched from synchronous broadcast to enqueue
+// + 202 Accepted. Those failure classes now happen at the worker's dispatch
+// path, not on the route. The worker-side coverage is exercised through the
+// queue model tests in `backend/tests/lib/bridge-queue.test.ts` (state
+// transitions on success / retry / terminal failure) and the
+// `lib/broadcast-error.test.ts` helper-level tests.
 //
-// /register must discriminate BroadcastTimeoutError into a 504
-// BROADCAST_TIMEOUT envelope and all other broadcast errors into a 502
-// BROADCAST_FAILED envelope with {retriable:false}. The response body must
-// NOT interpolate err.message / jse_shortmsg — that was a defense-in-depth
-// leak the helper migration closes.
+// The mock-substitution-chain identity check (the `BroadcastTimeoutError`
+// `vi.mock` substitution that gates `instanceof` resolution) is still
+// load-bearing for the worker's `handleBroadcastError` consumers; it's
+// validated indirectly when the queue's retry path is exercised against
+// the real worker dispatch.
 // ──────────────────────────────────────────────
-
-const TIMEOUT_DETAILS = {
-  retriable: false,
-  outcome: 'uncertain',
-  verify_before_retry: true,
-  timeout_ms: 30_000,
-};
-
-describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /register timeout discrimination', () => {
-  const ACCREDITED_CALLER = 'accreditedregister';
-
-  // Structural identity assertion — round-2 hold #1 (mutation-kill the
-  // mock-substitution chain). The route's `instanceof BroadcastTimeoutError`
-  // check (and `lib/broadcast-error.ts`'s sibling check inside
-  // `handleBroadcastError`) both resolve `BroadcastTimeoutError` via
-  // `import { BroadcastTimeoutError } from '../hive.js'`. The `vi.mock` above
-  // substitutes `MockBroadcastTimeoutError` at that module's export. If a
-  // future refactor (re-export barrel, top-level import preempting the
-  // hoist, test-side import-ordering change) breaks the chain, the helper's
-  // imported reference would be the REAL class and `instanceof` would return
-  // false — the route would emit 502 on a real timeout and every 504-spec
-  // would pass against the wrong branch. This single assertion fails fast and
-  // surfaces the regression before any other test runs.
-  it('mock-substitution chain identity check (round-2 hold #1)', async () => {
-    const { BroadcastTimeoutError } = await import('../../src/hive.js');
-    expect(BroadcastTimeoutError).toBe(MockBroadcastTimeoutError);
-  });
-
-  beforeEach(() => {
-    sendOperations.mockClear();
-    accreditedSet.clear();
-    accreditedSet.add(ACCREDITED_CALLER);
-  });
-
-  it('POST /api/bridge/register: BroadcastTimeoutError → 504 BROADCAST_TIMEOUT with uncertain-outcome envelope', async () => {
-    sendOperations.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
-    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
-      identifier: '2301.12345',
-      discipline: 'CS',
-    });
-    expect(res.status).toBe(504);
-    expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
-    expect(res.body.error.message).toBe('Broadcasting bridge paper registration timed out');
-    expect(res.body.error.details).toEqual(TIMEOUT_DETAILS);
-    // No orcid-style verify_location hint on the bridge surface.
-    expect(res.body.error.details.verify_location).toBeUndefined();
-  });
-
-  it('POST /api/bridge/register: non-timeout broadcast error → 502 BROADCAST_FAILED with retriable=false and no err.message leak', async () => {
-    const CHAIN_INTERNAL = 'RPC node rejected: missing_active_authority pevotest.bridge';
-    sendOperations.mockRejectedValueOnce(new Error(CHAIN_INTERNAL));
-    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
-      identifier: '2301.12345',
-      discipline: 'CS',
-    });
-    expect(res.status).toBe(502);
-    expect(res.body.error.code).toBe('BROADCAST_FAILED');
-    expect(res.body.error.message).toBe('Failed to broadcast bridge paper registration to Hive');
-    expect(res.body.error.details).toEqual({ retriable: false });
-    // Chain-internal error text must NOT be interpolated into the response.
-    expect(JSON.stringify(res.body)).not.toContain('missing_active_authority');
-    expect(JSON.stringify(res.body)).not.toContain(CHAIN_INTERNAL);
-  });
-
-  // Round-2 hold #3: the leak-assertion above passes by construction against
-  // a plain `Error(CHAIN_INTERNAL)` because the response body is now a static
-  // string regardless of throw shape. The pre-migration code preferred
-  // `err.jse_shortmsg` over `err.message`; a regression that re-introduces
-  // `err.jse_shortmsg` interpolation would NOT fail the prior assertion.
-  // This spec stages a real-shaped dhive RPCError so the leak-assertion has
-  // actual surface — every field that pre-migration code path touched
-  // (`jse_shortmsg`, `jse_cause`, `info`, `cause.message`) is in the throw
-  // payload, and the body must contain none of them.
-  // Round-3 hold #3: per-field unique sentinels. The fixture now stamps each
-  // of `err.message`, `err.jse_shortmsg`, `err.cause.message`, `err.jse_cause`
-  // with a distinct auto-generated marker so a single-field interpolation
-  // regression cannot pass spuriously against a shared sentinel.
-  it('POST /api/bridge/register: dhive-shaped RPCError → no jse_shortmsg/jse_cause/info leak', async () => {
-    const SHORT = 'missing_active_authority pevotest.bridge';
-    const CAUSE = 'op_authority_check_failed';
-    const INFO_KEY = 'rpc_internal_state_dump';
-    const dhiveErr = makeDhiveLikeError({
-      shortmsg: SHORT,
-      cause: CAUSE,
-      info: { internal_marker: INFO_KEY, stack_frame: 'witness_node_signature.cpp:217' },
-    });
-    sendOperations.mockRejectedValueOnce(dhiveErr);
-    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
-      identifier: '2301.12345',
-      discipline: 'CS',
-    });
-    expect(res.status).toBe(502);
-    expect(res.body.error.code).toBe('BROADCAST_FAILED');
-    expect(res.body.error.message).toBe('Failed to broadcast bridge paper registration to Hive');
-    const bodyStr = JSON.stringify(res.body);
-    // Per-field leak assertions: each marker is unique (round-3 hold #3).
-    expect(bodyStr).not.toContain(dhiveErr.messageMarker);
-    expect(bodyStr).not.toContain(dhiveErr.jseShortMsgMarker);
-    expect(bodyStr).not.toContain(dhiveErr.causeMarker);
-    expect(bodyStr).not.toContain(dhiveErr.jseCauseMarker);
-    // Keep the original shortmsg / cause / info-key assertions too so any
-    // residual interpolation that strips the marker suffix still trips.
-    expect(bodyStr).not.toContain(SHORT);
-    expect(bodyStr).not.toContain(CAUSE);
-    expect(bodyStr).not.toContain(INFO_KEY);
-    expect(bodyStr).not.toContain('witness_node');
-  });
-});
 
 // ──────────────────────────────────────────────
 // BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS — catch-block log shape.
@@ -606,75 +503,15 @@ describe('BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS — catch-block log sh
     expect(ctx.err).toBeInstanceOf(Error);
   });
 
-  // Outer-catch discriminator. Forces buildBridgeBody (re-exported via the
-  // bridge module mock as a thin pass-through) to throw, exercising the new
-  // outer try/catch that emits event:'bridge.register.internal_error'
-  // instead of letting the throw default to middleware/errorHandler.ts's
-  // event-less 500. The tag uses the coarse `.internal_error` tier per the
-  // event-label-granularity-tier convention — the catch wraps the full
-  // lock-acquired body, so a specific pre-broadcast qualifier would
-  // misclassify on any future refactor that narrows the inner-catch scope.
-  it('POST /api/bridge/register: buildBridgeBody throw → event:bridge.register.internal_error with route, identifier, username, permlink', async () => {
-    (bridgeMod.buildBridgeBody as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
-      throw new Error('synthetic body-construction failure');
-    });
-    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
-      identifier: '2301.12345',
-      discipline: 'CS',
-    });
-    expect(res.status).toBe(500);
-    expect(res.body.error.code).toBe('INTERNAL_ERROR');
-
-    const matchingCall = errorSpy.mock.calls.find((call: unknown[]) => {
-      const ctx = call[0] as Record<string, unknown> | undefined;
-      return ctx?.event === 'bridge.register.internal_error';
-    });
-    expect(matchingCall, 'expected error log with event=bridge.register.internal_error').toBeDefined();
-    const ctx = matchingCall![0] as Record<string, unknown>;
-    expect(ctx.route).toBe('bridge.register');
-    expect(ctx.identifier).toBe('2301.12345');
-    expect(ctx.username).toBe(ACCREDITED_CALLER);
-    // permlink is computed from the resolved identifier; just assert presence
-    // and string shape rather than the literal (regression on the derivation
-    // function would be caught by other specs).
-    expect(typeof ctx.permlink).toBe('string');
-    expect(ctx.err).toBeInstanceOf(Error);
-  });
-
-  // BridgeKeyCacheUnpopulated discriminator: when getRequiredBridgePostingKey
-  // throws because the cache desynced from the config-truthiness check, the
-  // route emits a precursor error log with the dedicated event tag BEFORE
-  // delegating to handleBroadcastError (which would otherwise tag this as
-  // event:'broadcast_failed' and misclassify a key-cache desync as a chain
-  // rejection). Wire shape stays 502 BROADCAST_FAILED — no behavioral change.
-  it('POST /api/bridge/register: BridgeKeyCacheUnpopulated → precursor event:bridge.register.bridge_key_cache_unpopulated, still 502 BROADCAST_FAILED', async () => {
-    const { BridgeKeyCacheUnpopulated } = await import('../../src/startup-checks.js');
-    sendOperations.mockImplementationOnce(() => {
-      throw new BridgeKeyCacheUnpopulated();
-    });
-    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
-      identifier: '2301.12345',
-      discipline: 'CS',
-    });
-    // Wire shape: the existing handleBroadcastError fall-through still emits
-    // 502 BROADCAST_FAILED. Pin the unchanged response so a future refactor
-    // that drops the fall-through (e.g., routing the cache-unpopulated class
-    // to its own 503 envelope) is a separate, intentional behavioral change.
-    expect(res.status).toBe(502);
-    expect(res.body.error.code).toBe('BROADCAST_FAILED');
-
-    const matchingCall = errorSpy.mock.calls.find((call: unknown[]) => {
-      const ctx = call[0] as Record<string, unknown> | undefined;
-      return ctx?.event === 'bridge.register.bridge_key_cache_unpopulated';
-    });
-    expect(matchingCall, 'expected precursor error log with event=bridge.register.bridge_key_cache_unpopulated').toBeDefined();
-    const ctx = matchingCall![0] as Record<string, unknown>;
-    expect(ctx.route).toBe('bridge.register');
-    expect(ctx.identifier).toBe('2301.12345');
-    expect(ctx.username).toBe(ACCREDITED_CALLER);
-    expect(typeof ctx.permlink).toBe('string');
-    expect(ctx.err).toBeInstanceOf(Error);
-    expect((ctx.err as Error).name).toBe('BridgeKeyCacheUnpopulated');
-  });
+  // The synchronous-broadcast-class outer-catch tests
+  // (`buildBridgeBody throw` and `BridgeKeyCacheUnpopulated`) were removed
+  // when the route migrated from synchronous broadcast to enqueue + 202.
+  // The remaining outer-catch event-discriminator tests above
+  // (`bridge.lookup.internal_error`, `bridge.check.internal_error`,
+  // `bridge.register.identifier_resolution_failed`,
+  // `bridge.register.metadata_fetch_failed`) still apply because those
+  // exception paths fire BEFORE enqueue. The broadcast-class catch sites
+  // now live in the worker (`backend/src/bridge-worker.ts`) and are
+  // covered through the queue model's retry/terminal-fail transitions.
 });
 

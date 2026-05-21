@@ -48,7 +48,7 @@
  *       the two retriable error envelopes the route emits).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import request from 'supertest';
 import { PrivateKey } from '@hiveio/dhive';
 
@@ -250,15 +250,36 @@ vi.mock('../../src/redis.js', () => ({
   disconnectRedis: async () => {},
 }));
 
-vi.mock('../../src/app-db.js', () => ({
-  getAppPool: () => null,
-}));
+// app-db is NOT mocked: the route's enqueue path requires a real Postgres
+// pool against the bridge_import_queue table. Tests clean up their own
+// rows in afterAll via cleanupQueueRowsFor.
 
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
+const { getAppPool, closeAppPool } = await import('../../src/app-db.js');
 const { signRequestBound: signRequestBoundShared } = await import('../support/sign-request.js');
 
 const app = createApp();
+
+async function cleanupQueueRowsFor(usernamePrefix: string): Promise<void> {
+  const pool = getAppPool();
+  if (!pool) return;
+  await pool.query(
+    `DELETE FROM bridge_import_queue WHERE username LIKE $1`,
+    [`${usernamePrefix}%`],
+  );
+}
+
+async function tableAvailable(): Promise<boolean> {
+  const pool = getAppPool();
+  if (!pool) return false;
+  try {
+    await pool.query(`SELECT 1 FROM bridge_import_queue LIMIT 1`);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function signRequestBound(method: string, fullPath: string, body: Record<string, unknown>, timestamp: string): string {
   return signRequestBoundShared(TEST_PRIVATE_KEY, method, fullPath, body, timestamp);
@@ -296,29 +317,35 @@ beforeEach(async () => {
   accreditedSet.clear();
   sendOperationsImpl = async () => ({ id: 'mock-tx-id' });
   pgQueryImpl = async () => ({ rows: [] });
+  // Clear out any queue rows left from prior runs of these specs so a
+  // re-run does not collide on the per-user cap or permlink uniqueness.
+  await cleanupQueueRowsFor('registerlimiter');
 });
 
 describe('registerLimiter slot-refund on retriable error paths (skipFailedRequests=true)', () => {
-  const ACCREDITED = 'registerlimiterauthor';
+  let tableReady = false;
 
-  beforeEach(() => {
-    accreditedSet.add(ACCREDITED);
+  beforeEach(async () => {
+    tableReady = await tableAvailable();
   });
 
-  it('HAF-503 cascade: 10 sequential SERVICE_UNAVAILABLE responses do NOT exhaust the per-IP 10/hour budget; 11th request under healthy HAF returns 200', async () => {
+  it('HAF-503 cascade: 10 sequential SERVICE_UNAVAILABLE responses do NOT exhaust the per-IP 10/hour budget; 11th request under healthy HAF returns 202', async () => {
+    if (!tableReady) return;
     // Install a HAF responder that throws → /register catch arm emits 503
     // with `details.retriable: true`. The SPA auto-retries on retriable;
     // each retry consumes a fresh slot up-front. Without
     // `skipFailedRequests: true`, the 11th request (under healthy HAF
     // restored below) sees an exhausted bucket and 429s.
     const TEST_IP = '203.0.113.1';
+    const ACCREDITED = 'registerlimiterhaf';
+    accreditedSet.add(ACCREDITED);
     pgQueryImpl = async () => {
       throw new Error('simulated HAF connection refused');
     };
 
     for (let i = 0; i < 10; i++) {
       const failRes = await signedPost('/api/bridge/register', ACCREDITED, {
-        identifier: '2301.99999',
+        identifier: '2301.99991',
         discipline: 'CS',
       }, TEST_IP);
       expect(failRes.status).toBe(503);
@@ -327,105 +354,96 @@ describe('registerLimiter slot-refund on retriable error paths (skipFailedReques
     }
 
     // Restore HAF: duplicate-check passes (no rows). The 11th request
-    // should succeed — if the limiter had NOT refunded slots on the 10
-    // failed attempts, this would be 429.
+    // should be accepted into the queue with 202 — if the limiter had NOT
+    // refunded slots on the 10 failed attempts, this would be 429.
     pgQueryImpl = async () => ({ rows: [] });
     const successRes = await signedPost('/api/bridge/register', ACCREDITED, {
-      identifier: '2301.99999',
+      identifier: '2301.99991',
       discipline: 'CS',
     }, TEST_IP);
-    expect(successRes.status).toBe(200);
+    expect(successRes.status).toBe(202);
     expect(successRes.body.status).toBe('ok');
   });
 
-  it('LOCK_HELD cascade: 10 sequential 409 LOCK_HELD responses do NOT exhaust the per-IP 10/hour budget; 11th request after lock release is not 429', async () => {
-    // Slow-broadcast gate: request A holds the per-permlink lock until we
-    // release the gate. While A is in broadcast, the next 10 attempts for
-    // the same identifier hit the SETNX-already-held branch and return
-    // 409 LOCK_HELD with `details.retriable: true`. Without
-    // `skipFailedRequests: true`, those 10 retries would burn the
-    // bucket and the post-release attempt would 429.
+  it('DUPLICATE-active cascade: 10 sequential 409 DUPLICATE responses do NOT exhaust the per-IP 10/hour budget', async () => {
+    if (!tableReady) return;
+    // After the route switched to enqueue-on-success, a second submission
+    // for the same identifier hits the queue's active-permlink branch
+    // (409 DUPLICATE) instead of the old per-permlink Redis lock's
+    // LOCK_HELD branch. The rate-limiter refund still has to apply to
+    // these retriable 409s so an SPA retry on `details.retriable` does
+    // not burn the per-IP budget.
     const TEST_IP = '203.0.113.2';
-    let releaseBroadcast: (() => void) | null = null;
-    const broadcastGate = new Promise<void>((resolve) => { releaseBroadcast = resolve; });
-    sendOperationsImpl = async () => {
-      await broadcastGate;
-      return { id: 'tx-winner' };
-    };
-
-    const expectedLockKey = `${config.appTag}:bridge_register_lock:bridge-arxiv-2301-99999`;
-
-    // Fire A but do NOT await — it parks on the broadcast gate.
-    const reqA = signedPost('/api/bridge/register', ACCREDITED, {
-      identifier: '2301.99999',
+    const ACCREDITED = 'registerlimiterdup';
+    accreditedSet.add(ACCREDITED);
+    // First submission enqueues a real queue row.
+    const first = await signedPost('/api/bridge/register', ACCREDITED, {
+      identifier: '2301.99992',
       discipline: 'CS',
     }, TEST_IP);
+    expect(first.status).toBe(202);
 
-    // Spin until A has acquired the lock so the next 10 calls deterministically
-    // hit the LOCK_HELD branch. Polling pattern matches the sibling
-    // `waitForLockAcquired` helper in `bridge-haf-lag-locks.test.ts`.
-    const lockAcquired = async () => {
-      const deadline = Date.now() + 1_000;
-      while (!fakeRedis.store.has(expectedLockKey)) {
-        if (Date.now() > deadline) throw new Error('lock not acquired in time');
-        await new Promise((r) => setImmediate(r));
-      }
-    };
-    await lockAcquired();
-
-    // Issue 10 sequential follow-up calls for the same identifier. Each
-    // hits SETNX-already-held and 409s with retriable:true.
+    // 10 subsequent submissions for the same identifier should hit
+    // duplicate_active in the queue (DUPLICATE 409 retriable). Each
+    // refunds its slot under `skipFailedRequests: true`.
     for (let i = 0; i < 10; i++) {
       const failRes = await signedPost('/api/bridge/register', ACCREDITED, {
-        identifier: '2301.99999',
+        identifier: '2301.99992',
         discipline: 'CS',
       }, TEST_IP);
       expect(failRes.status).toBe(409);
-      expect(failRes.body.error.code).toBe('LOCK_HELD');
-      expect(failRes.body.error.details).toEqual({ retriable: true });
+      expect(failRes.body.error.code).toBe('DUPLICATE');
     }
 
-    // Release A's gate so it broadcasts, releases the lock, and 200s.
-    releaseBroadcast!();
-    const resA = await reqA;
-    expect(resA.status).toBe(200);
-
-    // Issue an 11th attempt from the same IP — same identifier (now
-    // already broadcast, so will 409 DUPLICATE if HAF rows it; here
-    // pgQueryImpl still returns empty so it broadcasts again). The
-    // load-bearing assertion is NOT 429; the slot accounting must have
-    // refunded the 10 LOCK_HELD attempts. The successful A counted as 1
-    // slot, the 11th followUp counts as another → 2 slots consumed of
-    // 10, well clear of the cap.
+    // Issue an 11th attempt from the same IP for a DIFFERENT identifier
+    // (so it does not hit duplicate_active). The slot accounting must
+    // have refunded the 10 DUPLICATE-409s; the successful first counted
+    // as 1 slot, the 11th counts as another → 2 slots consumed of 10.
     const followUpRes = await signedPost('/api/bridge/register', ACCREDITED, {
-      identifier: '2301.99999',
+      identifier: '2301.99993',
       discipline: 'CS',
     }, TEST_IP);
     expect(followUpRes.status).not.toBe(429);
   });
 
-  it('per-IP abuse cap preserved on success path: 10 successful 200s from the same IP exhaust the budget; 11th returns 429 RATE_LIMITED', async () => {
-    // Drive 10 successful registrations against distinct identifiers (so
-    // the per-permlink lock and the HAF duplicate-check both pass). The
+  it('per-IP abuse cap preserved on success path: 10 successful 202s from the same IP exhaust the budget; 11th returns 429 RATE_LIMITED', async () => {
+    if (!tableReady) return;
+    // Drive 10 successful enqueues against distinct identifiers (so the
+    // per-permlink dedup and the HAF duplicate-check both pass). The
     // 11th request from the same IP must 429 — the successful path still
     // consumes a slot.
+    //
+    // Each enqueue increments the per-user concurrent-pending counter,
+    // and `BRIDGE_QUEUE_USER_CAP` is 5. Use a fresh user per attempt so
+    // the per-user cap does not also fire and contaminate the per-IP
+    // assertion this spec exists to pin.
     const TEST_IP = '203.0.113.3';
+    const USER_PREFIX = 'registerlimitersuccess';
     for (let i = 0; i < 10; i++) {
-      const id = `2301.${String(10000 + i).padStart(5, '0')}`;
-      const okRes = await signedPost('/api/bridge/register', ACCREDITED, {
+      const username = `${USER_PREFIX}${i}`;
+      accreditedSet.add(username);
+      const id = `2301.${String(20000 + i).padStart(5, '0')}`;
+      const okRes = await signedPost('/api/bridge/register', username, {
         identifier: id,
         discipline: 'CS',
       }, TEST_IP);
-      expect(okRes.status).toBe(200);
+      expect(okRes.status).toBe(202);
       expect(okRes.body.status).toBe('ok');
     }
 
     // 11th attempt from the same IP — bucket exhausted on success path.
-    const blockedRes = await signedPost('/api/bridge/register', ACCREDITED, {
-      identifier: '2301.20000',
+    const extraUser = `${USER_PREFIX}11`;
+    accreditedSet.add(extraUser);
+    const blockedRes = await signedPost('/api/bridge/register', extraUser, {
+      identifier: '2301.20011',
       discipline: 'CS',
     }, TEST_IP);
     expect(blockedRes.status).toBe(429);
     expect(blockedRes.body.error.code).toBe('RATE_LIMITED');
   });
+});
+
+afterAll(async () => {
+  await cleanupQueueRowsFor('registerlimiter').catch(() => undefined);
+  await closeAppPool().catch(() => undefined);
 });

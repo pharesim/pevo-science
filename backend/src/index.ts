@@ -17,6 +17,7 @@ import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
 import { validateRetentionSweepConfig, startRetentionSweepTicker, stopRetentionSweep } from './jobs/custody-audit-retention-sweep.js';
+import { startBridgeWorker, stopBridgeWorker } from './bridge-worker.js';
 import { drainArgon2Queue, startArgon2AbortReporter, stopArgon2AbortReporter } from './lib/argon2-semaphore.js';
 import { startDecrementQueueDrainer, stopDecrementQueueDrainer } from './lib/pending-decrement-queue.js';
 import { logger } from './logger.js';
@@ -157,6 +158,15 @@ if (app) {
         // queued during a Redis flap on the route's compensation path.
         startDecrementQueueDrainer();
 
+        // Start the bridge import queue worker. The worker polls the
+        // durable `bridge_import_queue` table and dispatches one entry
+        // per chain-cooldown window under the bridge account. Started
+        // here so the in-process timer does not contend with boot-time
+        // HAF warmup. The worker's in-process cadence state is seeded
+        // from the DB inside `startBridgeWorker` so a restart cannot
+        // bypass the cooldown by losing the in-memory timestamp.
+        void startBridgeWorker();
+
         // Non-blocking: check Hive API node connectivity at startup
         void checkHiveNodes();
       });
@@ -213,6 +223,7 @@ async function shutdown(signal: string): Promise<void> {
   stopArgon2AbortReporter();
   stopDecrementQueueDrainer();
   stopRetentionSweep();
+  stopBridgeWorker();
 
   // Reject any auth requests parked in the argon2 semaphore queue. Without
   // this, `server.close()` waits for them until the 30s force-timeout fires,

@@ -1,8 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import crypto from 'crypto';
-import { getRequiredBridgePostingKey, BridgeKeyCacheUnpopulated } from '../startup-checks.js';
 import { getPool, isHafConfigured } from '../db.js';
-import { broadcastSendOperationsWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -12,16 +10,20 @@ import { logger } from '../logger.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { T, validPevoPaperWhere } from '../hafsql.js';
-import { handleBroadcastError, makeLogBroadcastAttempt } from '../lib/broadcast-error.js';
 import { assertNever } from '../util/assertNever.js';
 import {
   parseIdentifier,
   resolveToCanonical,
   bridgePermlink,
   lookupPreprint,
-  buildBridgeBody,
-  buildBridgeMetadata,
 } from '../bridge.js';
+import {
+  tryEnqueueBridgeImport,
+  listUserImports,
+  BRIDGE_QUEUE_USER_CAP,
+  BRIDGE_CHAIN_COOLDOWN_MS,
+  type BridgeImportRow,
+} from '../bridge-queue.js';
 
 // ──────────────────────────────────────────────
 // Bridge read-then-write race protection
@@ -413,6 +415,41 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
 // POST /api/bridge/register
 // ──────────────────────────────────────────────
 
+/**
+ * Map a queue row's state + error_code + result fields to a status shape
+ * suitable for the SPA's "My imports" surface. The wire fields stay
+ * close to the queue's persisted shape so the UI can render queue
+ * position, retry-attempt count, and terminal outcomes without a parallel
+ * vocabulary.
+ *
+ * Contract-shape decision: the UI agent's sibling task negotiates the
+ * exact field set; this is the proposed v1 shape and is documented in
+ * the task file's TODO Architect note. The wire response from
+ * `/api/bridge/imports` is the source of truth that the architect
+ * formalises in the contract during review.
+ */
+function serializeQueueRow(row: BridgeImportRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    operation_kind: row.operation_kind,
+    identifier: row.identifier,
+    permlink: row.permlink,
+    discipline: row.discipline,
+    keywords: row.keywords,
+    language: row.language,
+    state: row.state,
+    attempts: row.attempts,
+    scheduled_at: row.scheduled_at.toISOString(),
+    tx_id: row.tx_id,
+    error_code: row.error_code,
+    error_message: row.error_message,
+    existing_author: row.existing_author,
+    existing_permlink: row.existing_permlink,
+    created_at: row.created_at.toISOString(),
+    completed_at: row.completed_at?.toISOString() ?? null,
+  };
+}
+
 router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimiter, async (req: Request, res: Response) => {
   const username = req.hiveUsername!;
   // `validateRegisterBody` middleware has already gated identifier + discipline
@@ -447,18 +484,13 @@ router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimi
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to resolve identifier');
   }
   if (!parsed) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier — try pasting a DOI or arXiv ID directly');
+    return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier. Try pasting a DOI or arXiv ID directly.');
   }
 
-  // `lookupPreprint` is intentionally invoked OUTSIDE the per-permlink lock
-  // critical section. CrossRef (15s timeout) + PubMed (15s) + DOI scrape
-  // (10s) on top of the broadcast (~30s) would push wall-clock past the 35s
-  // lock TTL, causing the lock to expire mid-flight and a sibling to
-  // re-acquire under a new nonce. The lookup is a pure external metadata
-  // fetch with no chain state, so it does not need lock protection; keeping
-  // it out of the critical section bounds the in-lock wall-clock to HAF
-  // query (~100ms) + broadcast (~30s), comfortably under
-  // BRIDGE_LOCK_TTL_SECONDS.
+  // Metadata-fetch is done synchronously so failures discovered at enqueue
+  // surface to the submitter (no queue entry created). Per task acceptance:
+  // "Metadata-fetch failures discovered at enqueue are surfaced
+  // synchronously to the submitter (no queue entry created)."
   let meta;
   try {
     meta = await lookupPreprint(identifier);
@@ -473,30 +505,17 @@ router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimi
     return sendError(res, 400, 'BAD_REQUEST', 'No preprint found for the given identifier');
   }
 
-  // Claim the per-permlink lock BEFORE the HAF duplicate-check so two
-  // concurrent /register calls for the same identifier serialize on Redis
-  // (loser gets 409 LOCK_HELD). The lock spans the entire read-then-broadcast
-  // window and is released in finally on every exit path. On Redis outage
-  // the handler degrades to the unlocked path so a Redis flap can't 503
-  // every registration.
+  // Pre-enqueue HAF duplicate check. If the preprint is already registered
+  // on PEvO, return the existing record synchronously rather than enqueue a
+  // submission that will short-circuit at dispatch (the worker would mark
+  // the entry completed with `existing_*` set, but synchronous resolution
+  // is the better UX). Retain the per-permlink Redis dedup-lock on this
+  // critical section so two simultaneous submissions for the same
+  // identifier serialize, matching the pre-queue race-protection contract.
   const permlink = bridgePermlink(parsed);
   const lockKey = bridgeRegisterLockKey(permlink);
   const lockState = await acquireBridgeLock(lockKey);
   if (lockState.state === 'held') {
-    // duplicate 409 emitted on `BridgeCheckResult.exists === true` so SPA /
-    // integrators can switch on err.code without parsing the message string.
-    // LOCK_HELD is retriable (the other request will land on chain and the
-    // next attempt will hit the DUPLICATE path); existing-duplicate is
-    // terminal.
-    //
-    // Operator-alert anchor: structured `event:'bridge.register.lock_
-    // contention_held'` so contention frequency is dashboard-keyable.
-    // Mirrors the `orcid.binding_lock.contention_held` warn at the
-    // analogous SETNX-loser site in routes/orcid.ts. Without this emission
-    // the 409 LOCK_HELD outcome would be invisible to log-based alerting
-    // (the contention is a real-time race signal distinct from the
-    // steady-state DUPLICATE outcome emitted on `exists === true`, which
-    // represents a registered preprint and is intentionally quiet).
     logger.warn(
       {
         event: 'bridge.register.lock_contention_held',
@@ -517,14 +536,8 @@ router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimi
   }
 
   try {
-    // Check for duplicates (now race-free against concurrent /register
-    // siblings for the same identifier, modulo the unlocked-degrade window
-    // when Redis is unavailable).
     const existing = await checkExistingBridge(identifier, parsed, 'bridge.register');
     if (existing.status === 'haf_unavailable') {
-      // Fail-closed: do NOT broadcast on a HAF outage — duplicate-check is
-      // unreliable and a successful broadcast under those conditions could
-      // create a duplicate top-level post under the bridge account.
       return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Bridge duplicate-check is temporarily unavailable. Please retry shortly.', { retriable: true });
     } else if (existing.status === 'ok') {
       if (existing.exists) {
@@ -540,176 +553,81 @@ router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimi
         );
       }
     } else {
-      // `assertNever` is the exhaustiveness guard on `BridgeCheckResult` so
-      // a future variant becomes a compile error instead of silently falling
-      // through to broadcast.
       return assertNever(existing);
     }
 
-    // Build and broadcast the Hive post under the bridge account
-    const body = buildBridgeBody(meta, username);
-    const jsonMetadata = buildBridgeMetadata(
-      meta,
-      username,
-      discipline || '',
-      keywords || [],
-      language || 'en',
-      1,
-      meta.title,
-      body,
-      config.hiveBridgeAccount,
-      permlink,
-    );
-
-    // Per-attempt audit-log signal. Same pattern as
-    // `custody.broadcast.attempt` — fires on EVERY broadcast attempt
-    // (success/failure/timeout) so operators can correlate
-    // retry-amplification. The shared `makeLogBroadcastAttempt` factory
-    // enforces level-dispatch + spread-after-literal symmetry with the
-    // custody site; only the event-label literal differs.
-    //
-    // `attempt_n` is INTENTIONALLY OMITTED here, same rationale as the
-    // custody site. The idempotency layer (HAF dedup + tx_id replay
-    // short-circuit) does NOT include a per-attempt counter. A hardcoded
-    // `attempt_n: 1` would silently report "no retries" to dashboards keyed
-    // on the field for retry-amplification alerts, masking the very signal
-    // the alert exists to surface. The slot stays absent until a per-key
-    // counter mechanism exists; alerts fire on missing-field rather than
-    // reading a constant 1 as ground truth.
-    const op_types = ['comment', 'comment_options'];
-    const op_count = op_types.length;
-    const logBroadcastAttempt = makeLogBroadcastAttempt(
-      'bridge.register.attempt',
-      {
-        route: 'bridge.register',
-        username,
-        author: config.hiveBridgeAccount,
-        permlink,
-        identifier,
-        op_types,
-        op_count,
-      },
-    );
-
+    // Enqueue. Per-user cap and active-duplicate (already in queue)
+    // checks happen atomically inside `tryEnqueueBridgeImport`.
+    let enqueueResult;
     try {
-      // Use the boot-cached parsed key. `assertBridgeKeyConfigured` already
-      // returned 503 earlier in the handler if the WIF env var is unset, so
-      // the cache is guaranteed populated when we reach here. The
-      // `getRequiredBridgePostingKey()` accessor throws a structured
-      // `BridgeKeyCacheUnpopulated` error if the cache is null. The throw is
-      // unreachable on the happy path; it surfaces as a recognizable shape
-      // (instead of a silent `null!.toString()` TypeError) if a future
-      // change ever desyncs the cache from the config-truthiness check.
-      const key = getRequiredBridgePostingKey();
-      const result = await broadcastSendOperationsWithTimeout(
-        [
-          ['comment', {
-            parent_author: '',
-            parent_permlink: config.appTag,
-            author: config.hiveBridgeAccount,
-            permlink,
-            title: meta.title.length > 256 ? meta.title.slice(0, 253) + '...' : meta.title,
-            body,
-            json_metadata: JSON.stringify(jsonMetadata),
-          }],
-          ['comment_options', {
-            author: config.hiveBridgeAccount,
-            permlink,
-            max_accepted_payout: '1000000.000 HBD',
-            percent_hbd: 0,
-            allow_votes: true,
-            allow_curation_rewards: true,
-            extensions: [],
-          }],
-        ],
-        key,
-      );
-
-      logBroadcastAttempt('success', { tx_id: result.id });
-
-      sendOk(res, {
-        author: config.hiveBridgeAccount,
+      enqueueResult = await tryEnqueueBridgeImport({
+        username,
+        identifier,
         permlink,
-        tx_id: result.id,
+        discipline: discipline.trim(),
+        keywords: keywords ?? [],
+        language: language ?? 'en',
+      });
+    } catch (err) {
+      logger.error(
+        {
+          err,
+          route: 'bridge.register',
+          identifier,
+          username,
+          permlink,
+          event: 'bridge.register.enqueue_failed',
+        },
+        'bridge /register enqueue failed',
+      );
+      return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to enqueue bridge paper registration');
+    }
+
+    if (enqueueResult.status === 'cap_exceeded') {
+      return sendError(
+        res,
+        429,
+        'RATE_LIMITED',
+        `You have ${enqueueResult.inflight} in-flight imports (cap ${enqueueResult.cap}). Submission resumes once one completes.`,
+        { retriable: true, inflight: enqueueResult.inflight, cap: enqueueResult.cap },
+      );
+    }
+    if (enqueueResult.status === 'duplicate_active') {
+      // A sibling submission for the same permlink is already pending or
+      // in-progress (likely a concurrent submission from the same user).
+      // Return the existing in-flight entry as the canonical reference.
+      return sendError(
+        res,
+        409,
+        'DUPLICATE',
+        'This preprint is already queued for import',
+        {
+          existing_entry_id: enqueueResult.existing.id,
+          existing_entry_state: enqueueResult.existing.state,
+        },
+      );
+    }
+
+    // Successful enqueue. Return 202 Accepted with the entry's queue
+    // position and a best-effort ETA derived from the chain cooldown.
+    // Position 1 dispatches on the next worker tick (cooldown permitting);
+    // each subsequent slot adds one chain-cooldown window.
+    const etaSeconds = Math.max(0, enqueueResult.queuePosition - 1) * (BRIDGE_CHAIN_COOLDOWN_MS / 1000);
+    res.status(202).json({
+      status: 'ok',
+      data: {
+        entry: serializeQueueRow(enqueueResult.row),
+        queue_position: enqueueResult.queuePosition,
+        eta_seconds: etaSeconds,
         source: {
           type: meta.source_type,
           doi: meta.doi,
           arxiv_id: meta.arxiv_id,
           url: meta.source_url,
         },
-      });
-    } catch (err) {
-      // Discriminate `BridgeKeyCacheUnpopulated` BEFORE delegating to
-      // `handleBroadcastError`. The throw originates from
-      // `getRequiredBridgePostingKey()` at the top of this try block (a
-      // pre-broadcast SYNC throw — the broadcast call never reached the
-      // network). The downstream `handleBroadcastError` falls this class
-      // through to its standard 502 BROADCAST_FAILED branch with
-      // `event:'broadcast_failed'`, which misclassifies "the chain
-      // rejected our broadcast" as "we never got to broadcast because our
-      // local key cache is empty". A precursor error-level log with the
-      // distinct event tag gives operator dashboards a discriminator
-      // without changing the wire shape (the 502 response stays — clause:
-      // no behavioral changes beyond log structure). Operators filter on
-      // the precursor; the broadcast_failed entry is redundant context.
-      if (err instanceof BridgeKeyCacheUnpopulated) {
-        logger.error(
-          {
-            err,
-            route: 'bridge.register',
-            identifier,
-            username,
-            permlink,
-            event: 'bridge.register.bridge_key_cache_unpopulated',
-          },
-          'bridge /register reached broadcast site with unpopulated key cache (operator-actionable misconfig)',
-        );
-      }
-      // Pino-side per-attempt signal for the broadcast catch path. The
-      // outcome label discriminates timeout vs. failure so dashboards can
-      // separate the two without parsing the inner-helper's stable suffix.
-      // Mirrors the custody.ts pattern at the matching catch site.
-      const outcome: 'failure' | 'timeout' = err instanceof BroadcastTimeoutError ? 'timeout' : 'failure';
-      logBroadcastAttempt(outcome);
-      return handleBroadcastError(res, err, {
-        timeoutMsg: 'Broadcasting bridge paper registration timed out',
-        failMsg: 'Failed to broadcast bridge paper registration to Hive',
-        logContext: { author: config.hiveBridgeAccount, permlink, username },
-        routeLabel: 'bridge.register',
-      });
-    }
+      },
+    });
   } catch (err) {
-    // Outer-catch for unexpected throws inside the lock-acquired body. In
-    // current code the inner broadcast catch absorbs all broadcast-class
-    // throws, so the failure classes that actually reach here are the
-    // pre-broadcast sync ones (`buildBridgeBody` / `buildBridgeMetadata`
-    // rejecting malformed metadata, `assertNever` firing on a discriminated-
-    // union drift, or any other unexpected throw that escapes
-    // `checkExistingBridge`'s internal HAF catch). Without this catch,
-    // Express 5 routes the async rejection to `middleware/errorHandler.ts`,
-    // which emits an `event:`-less 500 — operator dashboards lose the route
-    // discriminator. Tagging it here as `bridge.register.internal_error`
-    // distinguishes this class from:
-    //   * broadcast timeout / rejection (handled by `handleBroadcastError`
-    //     with `event:'broadcast_timeout'` / `'broadcast_failed'`)
-    //   * key-cache desync at the broadcast site (precursor
-    //     `event:'bridge.register.bridge_key_cache_unpopulated'` emitted
-    //     inside the inner catch above)
-    //   * HAF unavailable on duplicate-check (warn from
-    //     `checkExistingBridge` with `event:'bridge.register.haf_check_failed'`)
-    //   * identifier resolution / metadata fetch throw before the lock
-    //     (separate inner catches above with their own event tags)
-    // The tag uses the coarse `.internal_error` tier rather than a
-    // specific qualifier because the structural scope of this catch is
-    // broad (the full lock-acquired body, including the inner broadcast
-    // try/catch). A specific qualifier would silently misclassify if a
-    // future refactor narrows the inner-catch coverage. The wire shape
-    // (500 INTERNAL_ERROR) matches what the default `errorHandler` would
-    // have emitted; `error.message` is the route-specific
-    // 'Failed to register bridge paper' per the orcid.ts precedent.
-    // Mirrors the `event:'orcid.callback.failed'` outer-catch in
-    // routes/orcid.ts which serves the same purpose for the ORCID OAuth
-    // callback dispatch (same coarse tier on the same structural scope).
     logger.error(
       {
         err,
@@ -726,6 +644,50 @@ router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimi
     if (lockState.state === 'acquired') {
       await releaseBridgeLock(lockKey, lockState.nonce, lockState.acquiredAtMs, 'bridge.register', permlink);
     }
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /api/bridge/imports
+//
+// Caller's own bridge import queue entries. Used by the SPA's "My imports"
+// surface to render pending / in-progress / completed / failed entries
+// with their reasons. Authenticated; no per-account targeting (the route
+// always reads `req.hiveUsername`'s entries).
+//
+// Contract-shape decision (recorded in the task file's TODO Architect):
+// the shape returned is the union of fields a UI needs to render the
+// surface — entry state, attempts, scheduled_at (so the UI can show "next
+// retry in N seconds"), tx_id on success, error_code+error_message on
+// failure, and existing_* on permlink-collision short-circuits. The shape
+// is documented in `agents/docs/api-contracts/bridge.md` during the
+// architect's review pass.
+// ──────────────────────────────────────────────
+router.get('/imports', verifyHiveSignature, async (req: Request, res: Response) => {
+  const username = req.hiveUsername!;
+  const stateParam = typeof req.query.state === 'string' ? req.query.state : undefined;
+  const limitParam = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+  const allowedStates = ['pending', 'in_progress', 'completed', 'failed'] as const;
+  let state: typeof allowedStates[number] | undefined;
+  if (stateParam !== undefined) {
+    const found = allowedStates.find((s) => s === stateParam);
+    if (!found) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid state filter');
+    }
+    state = found;
+  }
+  try {
+    const rows = await listUserImports(username, { state, limit: limitParam });
+    sendOk(res, {
+      entries: rows.map(serializeQueueRow),
+      cap: BRIDGE_QUEUE_USER_CAP,
+    });
+  } catch (err) {
+    logger.error(
+      { err, username, route: 'bridge.imports', event: 'bridge.imports.internal_error' },
+      'bridge /imports unexpected throw',
+    );
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to list bridge imports');
   }
 });
 
