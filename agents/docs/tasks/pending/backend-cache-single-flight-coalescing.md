@@ -198,3 +198,36 @@ All three round-2 hold-block items landed in a single commit.
 - `npm run typecheck` from `backend/`: clean (no new errors; the pre-existing `argon2-error-mocks.ts:178` error noted in the hold block did not appear, likely already remediated by a sibling task between hold-filing and round-2 implementation).
 - `npm run lint` from `backend/`: clean for changed files (only pre-existing warning in `author-supersession.ts` outside this task's zone).
 - Scoped vitest `tests/lib/cache.test.ts`: 5/5 pass (4 existing single-flight specs + 1 new invalidation-race spec). Mutation-kill of the epoch guard reproduced the expected RED before restore.
+
+---
+
+## Architect re-review (2026-05-21) — HELD PENDING FIXES (round 3)
+
+Round-2 commit `d6e23014` (epoch counter for invalidation-during-flight race + TOCTOU docblock honesty + clause-(c) citation fix). `/ce-code-review` ran with 7 reviewer personas (correctness on Opus; adversarial on Opus; reliability/testing/maintainability/project-standards/learnings on Sonnet; `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md). The epoch counter mechanism itself is structurally correct: bump-then-delete ordering verified, capture timing sufficient, the new unit spec mutation-kills the guard removal. The class-level docblock TOCTOU honesty rewrite is accurate. The citation fix grep-resolves cleanly.
+
+Cluster review surfaced one cross-reviewer-corroborated semantic bug (clearVolatile + stable-key bleedthrough). The SWR/revalidate/registerPeriodicRefresh.reload coverage gap was already-filed as a separate follow-up at round-2 hold time (`backend-cache-single-flight-coalescing-swr-cold-path.md` in `tasks/blocked/`); its scope is widened at architect re-review to enumerate all 3 unguarded sites rather than just `getOrSetSWR`. Other findings (cross-key bleed via class-wide epoch, `await this.set` residual narrow race, inflight-slot late-arriving caller, repeated bump-rationale comment opener) were dismissed at triage as accepted design trade-offs, theoretical-only, or below confidence gate.
+
+### Item held (must fix before archive)
+
+**1. (P1, anchor 80+, cross-reviewer reliability + testing + adversarial corroborated) `clearVolatile()` bumps the class-wide epoch but only deletes non-stable entries, suppressing in-flight stable-key cache writes on every 3s block tick — defeats the `stable: true` contract.** `backend/src/cache.ts` `clearVolatile()` method (bumps `this.epoch` unconditionally) interacts with `getOrSet`'s epoch guard (`capturedEpoch === this.epoch`) such that any in-flight fetcher for a stable key (e.g., `reputation_weights`, `wot_threshold`, `disciplines`) that captured the epoch BEFORE a `clearVolatile()` will see the advanced epoch on resolution and skip its `this.set` write — even though the stable entry was never actually deleted by `clearVolatile()`. Under sustained load, every 3s block-watcher tick suppresses cache writes for any concurrent stable-key fetch, leaving the cache cold for stable entries that were supposed to survive volatile clears. Defeats the `stable` parameter's contract; effectively makes `stable: true` no-op under any concurrency.
+
+Fix shape (architect-prescribed): **separate volatile and stable epoch counters.** Replace `private epoch = 0` with `private volatileEpoch = 0` and `private stableEpoch = 0`. `clearVolatile()` bumps ONLY `volatileEpoch`. `clear()` bumps BOTH. `invalidate(key)` and `invalidatePrefix(prefix)` should also bump both (their semantics target specific keys regardless of stable-ness; bumping both preserves correctness for both stable and volatile in-flight fetchers targeting any key). `getOrSet`'s captureEpoch reads BOTH counters at fetcher start and gates on `capturedVolatileEpoch === this.volatileEpoch && capturedStableEpoch === this.stableEpoch` for non-stable entries, and on `capturedStableEpoch === this.stableEpoch` for stable entries. Estimated ~20 LOC of additional logic. Update the class-level docblock's "Invalidation-during-flight" paragraph to document the per-tier-counter design.
+
+Add a unit spec: `'clearVolatile() during an in-flight STABLE fetcher does NOT prevent the post-resolution cache write'`. Pattern: slow fetcher with `stable: true` starts; 10ms later (after inflight slot registered) `cache.clearVolatile()` runs; fetcher resolves; assert `cache.get('stable-key')` returns the value (NOT undefined). Mutation-kill: replacing the per-tier counters with the current single-counter implementation flips RED.
+
+### Items dismissed at architect triage (recorded for transparency)
+
+- **(P2 adversarial adv-2 + testing RR1, conf 70-85)** Cross-key bleed via class-wide epoch — `invalidate('X')` cancels in-flight writes for unrelated keys Y, Z, W. The class-level docblock implicitly documents this (every invalidation bumps the same epoch). Intentional coarse-grained design at PEvO single-instance scale; low write traffic + bounded cold-fill burst. Dismissed.
+- **(P3 correctness #1, conf 60)** `await this.set` residual narrow race window (~1-5ms during the Redis network roundtrip). Same bug class as the round-2 fix targeted, narrower window. PEvO single-instance scale + vanishingly narrow window — accepted residual.
+- **(P3 adversarial adv-3, conf 80)** Late-arriving caller via inflight-slot bypass post-invalidate sees pre-invalidation snapshot. Acceptable per the design's "in-flight callers still receive the resolved value" contract — the alternative would be "abort the in-flight fetcher on invalidate" which is more invasive and not warranted.
+- **(P3 maintainability M1, conf 65)** Four repeated bump-rationale comment openers across invalidate/invalidatePrefix/clear/clearVolatile. Current state is readable; the three shorter methods already delegate to `invalidate` via "see invalidate for ordering rationale". Acceptable, no action.
+
+### Items handled via separate task (widened scope, not in this hold)
+
+- **(P1 reliability R1 + adversarial adv-4 + correctness #2, conf 70-90, cross-reviewer corroborated)** `getOrSetSWR` (cold path), `revalidate` (background SWR refresh, lines 200-221), and `registerPeriodicRefresh.reload` (lines 297-317) all do `await fn() → await this.set(...)` with no epoch capture or check. The same invalidation-during-flight race the round-2 fix closed is still alive at all 3 sites. The existing blocked follow-up task `backend-cache-single-flight-coalescing-swr-cold-path.md` was originally filed to cover `getOrSetSWR` only; its scope is being widened at re-review to enumerate all 3 sites. Same fix pattern (capture epoch at fetcher start, gate `this.set` calls on epoch match) applies to all 3. The widened task stays in `tasks/blocked/` (blocked on item 1 above landing, since the per-tier counter design must be settled before extending to the SWR/revalidate/reload paths).
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect re-review scopes `/ce-code-review` to the round-3 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
