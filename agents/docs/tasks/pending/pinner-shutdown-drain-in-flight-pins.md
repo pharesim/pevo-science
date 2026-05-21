@@ -42,3 +42,15 @@ Make shutdown deterministic:
 - Audit chunks:
   - `.context/audit-2026-04-21/chunk-6-correctness-reviewer.md` (P1: shutdown runs autopin callback against closed backend).
   - `.context/audit-2026-04-21/chunk-6-reliability-reviewer.md` (P1: in-flight pin operations cancelled not drained on shutdown).
+
+## Architect re-review (2026-05-21) — HELD PENDING FIXES
+
+The drain barrier itself is correct: gate-check + WaitGroup.Add under `drainMu` serializes against signal + Wait; sync.Once on `signalDone`; shutdown order `httpServer.Shutdown → discovery.Stop → backend.Drain → backend.Close` is the right shape. Two items block archive.
+
+A separate task in `tasks/pending/` captures the deeper data-integrity concerns (partial-file-trust on next startup, ctx propagation through Drain, atomic `savePins`, the unmet acceptance criterion #2 test). Those are out of scope here — this task is the drain-barrier mechanism; the new task is the integrity loop around it. Land the two items below to archive this task; the new task carries the rest.
+
+1. **The comment above `discovery.Stop()` in `pinner/main.go` overstates the ordering guarantee.** It claims stopping discovery first prevents fresh autopin callbacks from queueing pins behind the drain barrier. In fact, `discovery.Stop()` only cancels the ticker context; an in-flight `refresh(ctx)` call that has already produced items continues into the `onRefresh` callback (the autopin closure), which iterates synchronously calling `backend.Pin(ctx, cid)` with the long-lived outer ctx. New Pin calls CAN land after `Stop()` returns. The drain gate catches them — that's the actual barrier. Rewrite the comment to be honest: the drain gate is the barrier; `discovery.Stop()` only halts new refresh cycles. Don't promise an ordering invariant the code does not enforce.
+
+2. **The 30s drain budget produces a worst-case shutdown wall-clock of ~45s (10s HTTP + 30s drain + 5s gateway close), which exceeds Docker's default 10s SIGTERM grace.** Community operators running the pinner via `docker run` or their own `docker-compose.yml` without `stop_grace_period: 60s` will have the drain killed mid-flight by SIGKILL — defeating the whole drain mechanism in the most common deployment path. Lower `drainCtx` to ~5s so the worst-case wall-clock (~20s) fits inside reasonable orchestrator defaults. Also document the recommended `stop_grace_period` (and equivalents for systemd / k8s) in the pinner's README so operators who want a longer drain budget know what to configure. The README is in the pinner zone.
+
+Re-review path: when both items land, `git mv` this file back to `tasks/review/` and the next architect review pass picks it up.
