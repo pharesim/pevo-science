@@ -52,3 +52,24 @@ Make the DB insert load-bearing for "pin succeeded":
 ## References
 
 - Audit chunk: `.context/audit-2026-04-21/chunk-3-data-integrity-guardian.md` (P0: IPFS pin recorded outside the HTTP transaction).
+
+## Backend implementer signal (2026-05-21)
+
+Implemented in `backend/src/routes/ipfs.ts`:
+
+- `PinResult` now carries a `backend: 'kubo' | 'pinata'` discriminator so the compensation path can dispatch the unpin to the same backend that produced the pin.
+- New module-private `unpinFromKubo` / `unpinFromPinata` / `unpinFromIpfs(cid, backend)` helpers. Kubo unpin tolerates "not pinned" responses (mirrors `ipfs-cleanup.ts`'s tolerance for the same benign race).
+- `/api/ipfs/upload` handler:
+  - Refuses pin with `503 SERVICE_UNAVAILABLE` when `getAppPool()` returns null — short-circuits BEFORE calling `pinToIpfs`, so no orphan pin is produced when durability is unavailable.
+  - DB insert into `pending_ipfs_uploads` no longer swallows errors via `.catch()`. On `INSERT` failure, the handler calls `unpinFromIpfs(result.cid, result.backend)`, logs both the DB error and any unpin error (with `dbErr` nested in the unpin-failure log for forensic correlation), and returns `500 INTERNAL_ERROR`.
+  - Redis hot-cache write remains best-effort below the DB write.
+
+Tests in new sibling file `backend/tests/routes/ipfs-pin-durability.test.ts` (clauses a/b/c documented in the file header):
+
+1. `getAppPool() === null` → 503, NO fetch to IPFS, NO query attempted.
+2. DB insert rejects after successful pin → unpin called against Kubo with `arg=<cid>`, 500 returned, exactly one query attempted (no retry, no post-compensation write).
+3. Happy path → 200, NO unpin called.
+
+Real-path companion in `tests/routes/ipfs.test.ts` (untouched) covers the integrated route with real `verifyHiveSignature` (401 without auth headers test).
+
+Lint clean. `typecheck:src` clean. `typecheck:tests` has one pre-existing error in `tests/support/argon2-error-mocks.ts` unrelated to this change.

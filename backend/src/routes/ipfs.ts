@@ -83,9 +83,12 @@ const upload = multer({
 // IPFS pinning via Kubo HTTP API
 // ──────────────────────────────────────────────
 
+type PinBackend = 'kubo' | 'pinata';
+
 interface PinResult {
   cid: string;
   size: number;
+  backend: PinBackend;
 }
 
 async function pinToKubo(buffer: Buffer, filename: string): Promise<PinResult> {
@@ -104,7 +107,7 @@ async function pinToKubo(buffer: Buffer, filename: string): Promise<PinResult> {
   }
 
   const data = await response.json() as { Hash: string; Size: string };
-  return { cid: data.Hash, size: parseInt(data.Size, 10) };
+  return { cid: data.Hash, size: parseInt(data.Size, 10), backend: 'kubo' };
 }
 
 async function pinToPinata(buffer: Buffer, filename: string): Promise<PinResult> {
@@ -128,7 +131,7 @@ async function pinToPinata(buffer: Buffer, filename: string): Promise<PinResult>
   }
 
   const data = await response.json() as { IpfsHash: string; PinSize: number };
-  return { cid: data.IpfsHash, size: data.PinSize };
+  return { cid: data.IpfsHash, size: data.PinSize, backend: 'pinata' };
 }
 
 async function pinToIpfs(buffer: Buffer, filename: string): Promise<PinResult> {
@@ -146,6 +149,50 @@ async function pinToIpfs(buffer: Buffer, filename: string): Promise<PinResult> {
   }
 
   throw new Error('No IPFS backend available — configure IPFS_API_URL or Pinata keys');
+}
+
+async function unpinFromKubo(cid: string): Promise<void> {
+  const response = await fetch(
+    `${config.ipfsApiUrl}/api/v0/pin/rm?arg=${encodeURIComponent(cid)}`,
+    { method: 'POST', signal: AbortSignal.timeout(15_000) },
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    // "not pinned" is benign — the pin may already be absent (e.g., backend
+    // restarted between pin and unpin). Mirrors the same tolerance in
+    // ipfs-cleanup.ts's unpin path.
+    if (!text.includes('not pinned')) {
+      throw new Error(`Kubo unpin failed: ${response.status} ${text}`);
+    }
+  }
+}
+
+async function unpinFromPinata(cid: string): Promise<void> {
+  const response = await fetch(`https://api.pinata.cloud/pinning/unpin/${encodeURIComponent(cid)}`, {
+    method: 'DELETE',
+    headers: {
+      pinata_api_key: config.pinataApiKey,
+      pinata_secret_api_key: config.pinataSecretKey,
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Pinata unpin failed: ${response.status} ${text}`);
+  }
+}
+
+/**
+ * Compensation unpin for the pin-then-record durability shape: dispatch to the
+ * same backend that produced the pin. If the original pin came from Kubo, only
+ * Kubo's unpin can release the disk; calling the wrong backend would silently
+ * leak the pinned blob.
+ */
+async function unpinFromIpfs(cid: string, backend: PinBackend): Promise<void> {
+  if (backend === 'kubo') {
+    return unpinFromKubo(cid);
+  }
+  return unpinFromPinata(cid);
 }
 
 // ──────────────────────────────────────────────
@@ -183,24 +230,56 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
       return sendError(res, 500, 'INTERNAL_ERROR', 'IPFS not configured — set IPFS_API_URL or Pinata keys');
     }
 
+    // Refuse the pin entirely when the durable tracking store is unavailable.
+    // The cleanup job scans `pending_ipfs_uploads` to find orphans; a pin
+    // without a row is undetectable orphan storage forever. Better a 503
+    // than a guaranteed silent leak.
+    const appPool = getAppPool();
+    if (!appPool) {
+      return sendError(
+        res,
+        503,
+        'SERVICE_UNAVAILABLE',
+        'IPFS upload tracking unavailable. Try again later.',
+      );
+    }
+
     try {
       const safeName = sanitizeFilename(req.file.originalname);
       const result = await pinToIpfs(req.file.buffer, safeName);
 
       // Durable tracking for orphan cleanup — Postgres is authoritative.
-      const appPool = getAppPool();
-      if (appPool) {
+      // The insert is load-bearing for the success response: if it fails,
+      // we compensate by unpinning so we leave neither a DB row nor a live
+      // pin (cleanup job's two-state model: in `pending_ipfs_uploads` OR
+      // referenced on-chain; an untracked live pin is the orphan class
+      // this defends against).
+      try {
         await appPool.query(
           `INSERT INTO pending_ipfs_uploads (cid, uploader_account, size_bytes)
            VALUES ($1, $2, $3)
            ON CONFLICT (cid) DO NOTHING`,
           [result.cid, req.hiveUsername, result.size],
-        ).catch((err) => {
-          logger.error({ err, cid: result.cid }, 'Failed to record pending IPFS upload in DB');
-        });
+        );
+      } catch (dbErr) {
+        logger.error({ err: dbErr, cid: result.cid }, 'Failed to record pending IPFS upload in DB; compensating with unpin');
+        try {
+          await unpinFromIpfs(result.cid, result.backend);
+        } catch (unpinErr) {
+          // Compensation failed — the pin is now an orphan that the cleanup
+          // job cannot see (no DB row). Log loudly; operator-side recovery
+          // requires manual `pin rm` against the recorded CID.
+          logger.error(
+            { err: unpinErr, cid: result.cid, backend: result.backend, dbErr },
+            'IPFS unpin compensation failed after DB insert error — orphan pin requires manual cleanup',
+          );
+        }
+        return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to record IPFS upload');
       }
 
-      // Hot cache for the download proxy's known-CID check.
+      // Hot cache for the download proxy's known-CID check. Best-effort
+      // below the load-bearing DB write — Postgres is authoritative, Redis
+      // is optimization, so a failure here does not invalidate the response.
       const redis = getRedis();
       if (redis) {
         const trackingData = JSON.stringify({
