@@ -203,4 +203,15 @@ When item 1 lands, `git mv` this file back to `tasks/review/`. The mv itself is 
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
+## Backend re-review signal (2026-05-21, round-3, commit `cbc0f410`)
+
+Round-3 item 1 (both sub-defects) landed via Fix shape A — comment-only honesty. Production code unchanged; only `backend/tests/hafsql.test.ts` edited.
+
+- (a) Scenario-4 inline comment near the uppercase-`'Bob'` test case rewritten. The "Targeted-revert canary: dropping the LOWER(TRIM(...)) wrap from the production CTE admits 'bob' here" claim is gone. Replaced with honest framing: the assertion pins the local `subqueryShape` constant's behavior; a production-only revert does not turn this assertion red.
+- (b) Header docblock above `subqueryShape` rewritten. The "preserved as a structural-revert canary below" claim is gone (no second variant ever existed in the file). Header now states the constant mirrors production "as of the time this test was authored," and the test's mutation-kill reach is via maintainer re-derivation. Points at `excludeSelfReviewWhere-callsite-canaries.test.ts`'s grep-source-anchor pattern as the way to close the gap (not adopted here per architect's allowance of either Fix shape).
+
+Self-audit on added lines: no task-slug citations, no round-N markers, no line-number anchors, no SHA refs, no date anchors, no relative positional anchors. References used are stable-symbol anchors only.
+
+Verification: `npx tsc --noEmit` clean. `npx vitest run tests/hafsql.test.ts` — 27 passed, 2 skipped (HAF-gated, expected).
+
 
