@@ -54,3 +54,20 @@ Add at least one integration test exercising the real `verifyHiveSignature` midd
 - `backend/tests/routes/custody-upgrade.test.ts` (existing real-path pattern reference)
 - `backend/src/middleware/verifyHiveSignature.ts` (middleware under test)
 - `backend/src/routes/papers.ts` (route under test)
+
+## Backend signal (2026-05-21)
+
+Added `backend/tests/routes/papers-retract-real-path-verifyhivesignature.test.ts` — 8 specs exercising the real `verifyHiveSignature` middleware against `POST /api/papers/:author/:permlink/retract`:
+
+- POSITIVE: valid signed request reaches the handler — 404 NOT_FOUND post-auth (proves verifyHiveSignature → validateRetractParams → retractLimiter → handler chain ran end-to-end).
+- NEGATIVE: missing `X-Hive-Signature` header → 401 UNAUTHORIZED, chain mock never consulted, HAF query never fired.
+- NEGATIVE: missing `X-Hive-Timestamp` header → 401 UNAUTHORIZED.
+- NEGATIVE: malformed `X-Hive-Signature` (non-hex) → 401 UNAUTHORIZED.
+- NEGATIVE: signature whose recovered pubkey is not in `posting.key_auths` → 401 UNAUTHORIZED.
+- NEGATIVE: signature bound to a different body (body-tamper) → 401 UNAUTHORIZED.
+- NEGATIVE: timestamp outside the 60s freshness window → 401 UNAUTHORIZED.
+- NEGATIVE: cross-account spoof (header username doesn't match an on-chain account) → 401 UNAUTHORIZED.
+
+Mock targets per carve-out clause (a): `hiveClient.database.getAccounts` (deterministic posting-key fixture, same approach as `verifyHiveSignature-authmethod.test.ts` and `custody-upgrade.test.ts`); `getPool()` (empty rows → 404 paper-not-found deterministically). `verifyHiveSignature` runs real — that is the focus of this file. Header citation in `papers-retract-url-shape-validator.test.ts` updated to point at this file as the real-path companion (replacing the dead citations to `papers-haf-error-vs-not-found.test.ts` and `retract.test.ts`, both of which also use `MOCK_VERIFY_SIGNATURE`).
+
+Scoped vitest output: 2 test files, 13 tests, all passing (8 new + 5 existing URL-shape-validator). Typecheck + lint clean.

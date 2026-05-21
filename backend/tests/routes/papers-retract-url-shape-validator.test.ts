@@ -27,11 +27,12 @@
  *       because the focus of this file is URL-param shape gating
  *       upstream of the limiter, NOT cryptographic verification. The 401-on-
  *       missing-header gate the fixture preserves is sufficient. Real-path
- *       companion: `papers-haf-error-vs-not-found.test.ts` (and the
- *       sibling `retract.test.ts` suite it cross-references) exercise the
- *       full /retract path with `MOCK_VERIFY_SIGNATURE` against real HAF;
- *       the cryptographic gate is verified end-to-end via the live custody
- *       broadcast tests.
+ *       companion: `papers-retract-real-path-verifyhivesignature.test.ts`
+ *       exercises the real `verifyHiveSignature` middleware against signed
+ *       requests to this same route, covering the positive accept branch
+ *       (handler reached) and the rejection paths (missing header, missing
+ *       timestamp, malformed signature, mismatched chain key, body-tamper,
+ *       expired timestamp, cross-account spoof).
  *   (c) Real-path companion: the existing custody-limiter CPU-amplification
  *       test suite covers the equivalent body-shape pattern on the three
  *       custody routes against the same real Redis backend; both suites
