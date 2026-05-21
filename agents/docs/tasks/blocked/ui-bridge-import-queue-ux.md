@@ -48,3 +48,45 @@ Brainstorm 2026-05-21 with user. The UX requirements (queue position + ETA, per-
 
 - `backend-bridge-import-queue.md` — sibling backend task; defines the new response shape and status endpoint.
 - `frontend/src/` — existing bridge import submission UI lives in the paper authoring flow.
+
+[BLOCKED by Backend] (2026-05-21) — Sibling task `backend-bridge-import-queue.md` is still in `agents/docs/tasks/pending/`. Full integration is gated on:
+
+- New `POST /api/bridge/register` 202 response shape (queue position + ETA representation).
+- Per-user-cap rejection error code and `error.details` shape.
+- Status endpoint(s) for "My imports" list (URL, query params, response shape).
+- Retry-submission semantics (re-POST identifier vs. dedicated retry endpoint).
+- `api-contracts/bridge.md` updates for the above.
+
+**Scaffolding landed in this pass (consumable while backend implements):**
+
+- New i18n keys for queued/cap-rejected states (in the `bridge` namespace) and the full `myImports` namespace, English source + stub rows for all 15 non-English locales, with `STUBS.md` sweep entry under `### Added 2026-05-21 (UI-BRIDGE-IMPORT-QUEUE-UX)`.
+- New `/my-imports` page at `frontend/src/pages/my-imports.js`, registered in `pages/index.js` and routed by `router.js`. Auth-gated; signed-in users see the empty state in production; the `?demo=1` query param renders representative entries spanning pending / in-progress / completed / failed for design review.
+- "My imports" link in the authenticated user dropdown (`frontend/index.html`), parallel to the Settings link.
+
+**Consumer-side shape the UI binds against today** (see the docblock at the top of `frontend/src/pages/my-imports.js`):
+
+```
+{
+  id:            string,
+  identifier:    string,           // user-submitted DOI / arXiv / URL
+  title:         string | null,
+  state:         'pending' | 'in_progress' | 'completed' | 'failed',
+  submitted_at:  ISO-8601 string,
+  completed_at:  ISO-8601 string | null,
+  author:        string | null,    // bridge account (completed only)
+  permlink:      string | null,
+  failure_reason:string | null,
+  retriable:     boolean,
+}
+```
+
+This is a starting point for backend-side shape negotiation, not a contract. Backend may name fields differently or split state into separate fields; the UI adapter (`loadEntries`) absorbs the difference.
+
+**Still gated on backend (unwritten in this pass):**
+
+- Wiring `registerBridgePaper()` to handle the 202 response and render the queued state with position + ETA on the bridge submission page (uses the already-shipped `bridge.queued*` keys).
+- Rendering the per-user-cap rejection on the bridge submission page (uses the already-shipped `bridge.userCap*` keys).
+- Replacing the empty stub in `my-imports.js` `loadEntries()` with a real fetch and an ETA-formatter that consumes `myImports.etaMinutes` / `etaHours` / `etaUnknown`.
+- E2E coverage of the new submission flow and the My imports surface.
+
+Move back to `pending/` once `backend-bridge-import-queue.md` archives and the new endpoints are documented in `agents/docs/api-contracts/bridge.md`.

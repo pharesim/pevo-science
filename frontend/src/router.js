@@ -25,6 +25,7 @@ const ROUTE_TITLES = {
   'recover':               'Recover Account — PEvO',
   'settings':              'Settings — PEvO',
   'settings-verify-email': 'Verify Email — PEvO',
+  'my-imports':            'My Imports — PEvO',
 };
 
 function updateTitle(routeName) {
@@ -61,6 +62,7 @@ const ROUTES = [
   { pattern: /^\/recover$/,                            name: 'recover' },
   { pattern: /^\/settings$/,                           name: 'settings' },
   { pattern: /^\/settings\/verify-email\/([^/]+)$/,   name: 'settings-verify-email', params: ['token'] },
+  { pattern: /^\/my-imports$/,                         name: 'my-imports' },
 ];
 
 function parsePath(url) {

@@ -28,6 +28,7 @@ import { initResetPasswordPage, resetPasswordPageTemplate } from './reset-passwo
 import { initRecoverPage, recoverPageTemplate } from './recover.js';
 import { initSettingsPage, settingsPageTemplate } from './settings.js';
 import { initSettingsVerifyEmailPage, settingsVerifyEmailPageTemplate } from './settings-verify-email.js';
+import { initMyImportsPage, myImportsPageTemplate } from './my-imports.js';
 
 export const pages = {
   'home':                        { init: initHomePage, template: homePageTemplate },
@@ -57,4 +58,5 @@ export const pages = {
   'recover':                     { init: initRecoverPage, template: recoverPageTemplate },
   'settings':                    { init: initSettingsPage, template: settingsPageTemplate },
   'settings-verify-email':       { init: initSettingsVerifyEmailPage, template: settingsVerifyEmailPageTemplate },
+  'my-imports':                  { init: initMyImportsPage, template: myImportsPageTemplate },
 };
