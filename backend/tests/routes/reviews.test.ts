@@ -17,15 +17,15 @@
  *       a malformed pevo payload to HAF, impractical against the live DB;
  *   (b) `verifyHiveSignature` and other middleware are NOT mocked
  *       (the route is GET / read-only — no auth middleware to mock);
- *   (c) no real-HAF integration coverage currently exists for the
- *       `/api/reviews/:author/:permlink` endpoint — every existing spec in
- *       this file uses the mocked pool. A follow-up task has been filed
- *       under `agents/docs/tasks/` to add a real-HAF companion suite for
- *       the GET-review route family (404 path against an unseeded
- *       permlink, 200 path against a live reviewer-authored record). Once
- *       that companion lands, this clause-(c) reference can be replaced
- *       with the integration file path. The mocked specs below pin the
- *       migration-introduced runtime shape only.
+ *   (c) Real-HAF integration coverage for the `/api/reviews/:author/:permlink`
+ *       endpoint lives in `reviews-real-haf.test.ts`, which exercises the
+ *       404 path against an unseeded permlink and the 200 path against a
+ *       live reviewer-authored record (with tolerant shape assertions).
+ *       That file is the clause-(c) real-path companion for the
+ *       single-doc reviews route: different mutation class (SQL
+ *       composition errors, real CTE-binding bugs, pool config) is
+ *       caught there. The mocked specs below pin the migration-introduced
+ *       runtime shape only.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
