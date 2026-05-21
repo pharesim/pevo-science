@@ -82,7 +82,7 @@ let appPoolHandle: { query: typeof appQueryMock } | null = { query: appQueryMock
 
 vi.mock('../../src/app-db.js', () => ({
   getAppPool: () => appPoolHandle,
-  initAppDb: vi.fn(async () => {}),
+  verifyAppDbMigrations: vi.fn(async () => {}),
   closeAppPool: vi.fn(async () => {}),
 }));
 

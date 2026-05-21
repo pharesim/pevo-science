@@ -160,13 +160,12 @@ export function validateConfig(): void {
   }
 
   if (missing.length > 0) {
-    // Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-    // log then THROW — do NOT call `logger.flush(() => process.exit(1))` here.
-    // Returning after the round-3 flush-exit left the call stack intact:
+    // Log then THROW — do NOT call `logger.flush(() => process.exit(1))`
+    // here. Returning after a flush-exit left the call stack intact:
     // `validateConfig()` returned synchronously to `index.ts`, and the
-    // module-level `createApp()` / `initAppDb()` lines below it kept running
-    // during the async flush window. Migrations would execute on a fatal-
-    // misconfigured boot; `app.listen` could even bind. Throw a structured
+    // module-level `createApp()` / `verifyAppDbMigrations()` lines below it
+    // kept running during the async flush window. A boot-fatal config gap
+    // would let `app.listen` bind anyway. Throw a structured
     // `BootFatalError` so the call stack unwinds — `index.ts`'s top-level
     // boot wrapper catches it and routes through the single
     // `flushAndExit()` watchdog (flush + 2s setTimeout fallback so a
@@ -237,14 +236,13 @@ function initBridgePostingKeyCache(): void {
     // would otherwise tear down the runtime before the buffered fatal line
     // drains. Flush before exit so the boot-fatal log is observable to
     // operators.
-    // Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-    // log fatal then THROW — do NOT call `logger.flush(() => process.exit(1))`
-    // here. The round-3 flush-exit at this site left the call stack intact:
+    // Log fatal then THROW — do NOT call `logger.flush(() => process.exit(1))`
+    // here. A flush-exit at this site left the call stack intact:
     // `initBridgePostingKeyCache()` returned synchronously to
-    // `validateConfig()`, which returned synchronously to `index.ts`,
-    // and the module-level `createApp()` / `initAppDb()` lines below kept
-    // running during the async flush window (migrations would execute on a
-    // fatal-misconfigured boot; `app.listen` could even bind). Throw a
+    // `validateConfig()`, which returned synchronously to `index.ts`, and
+    // the module-level `createApp()` / `verifyAppDbMigrations()` lines
+    // below kept running during the async flush window. A boot-fatal
+    // misconfiguration could let `app.listen` bind anyway. Throw a
     // structured `BootFatalError` so the call stack unwinds — `index.ts`'s
     // top-level boot wrapper catches it and routes through the single
     // `flushAndExit()` watchdog (flush + 2s setTimeout fallback so a

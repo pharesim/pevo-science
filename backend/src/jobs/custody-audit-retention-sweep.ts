@@ -163,8 +163,8 @@ export async function runSweep(
  * only needs the SOT-parse to succeed.
  *
  * On parse failure this throws `BootFatalError`. The throw propagates out
- * of the awaited call inside `initAppDb().then(...)` in `index.ts`, into
- * the `.catch` of that `initAppDb().then(...)` chain, which discriminates
+ * of the awaited call inside `verifyAppDbMigrations().then(...)` in
+ * `index.ts`, into the `.catch` of that chain, which discriminates
  * `instanceof BootFatalError` and calls `flushAndExit()` before
  * `app.listen()` ever runs — per the boot-fatal call-stack-unwind convention
  * (`agents/docs/solutions/conventions/boot-fatal-call-stack-unwind-and-rethrow-trap-2026-05-11.md`).
@@ -182,7 +182,8 @@ export async function validateRetentionSweepConfig(pool: pg.Pool | null): Promis
   if (!pool) {
     // Mirrors `signup-cleanup.cleanupExpiredSignups`: when APP_DATABASE_URL
     // is unset (rare dev configuration), the sweep is a no-op. Production
-    // always configures APP_DATABASE_URL and initAppDb() warns at that point.
+    // always configures APP_DATABASE_URL and `verifyAppDbMigrations()`
+    // warns at that point.
     return;
   }
   try {

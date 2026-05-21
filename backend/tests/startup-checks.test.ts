@@ -538,16 +538,15 @@ describe('Bridge admin WIF boot validation end-to-end', () => {
 });
 
 // ──────────────────────────────────────────────
-// Round-5 hold #3 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
 // `validateConfig` / `initBridgePostingKeyCache` BootFatalError throw.
 //
-// The round-4 item-1 main contract — replace `flush(() => exit); return`
-// with `logger.fatal; throw BootFatalError` — is the load-bearing semantic
-// that prevents `createApp()` and `initAppDb()` (which runs DB migrations!)
-// from running on a fatal-misconfigured boot. Without a direct test of the
-// throw, a regression that replaced `throw new BootFatalError(...)` with a
-// bare `return` would break no test. These canaries pin the throw shape so
-// any regression that drops it surfaces as a failing assertion.
+// The main contract — replace `flush(() => exit); return` with
+// `logger.fatal; throw BootFatalError` — is the load-bearing semantic that
+// prevents `createApp()` and `verifyAppDbMigrations()` from running on a
+// fatal-misconfigured boot. Without a direct test of the throw, a
+// regression that replaced `throw new BootFatalError(...)` with a bare
+// `return` would break no test. These canaries pin the throw shape so any
+// regression that drops it surfaces as a failing assertion.
 //
 // Mutation kill: replacing `throw new BootFatalError(...)` with `return;`
 // inside validateConfig's missing-config branch (or

@@ -58,8 +58,9 @@ export type PostBroadcastSeverity = 'transient' | 'permanent';
 /**
  * Sentinel error thrown by cascade fns when the app DB pool is not initialised
  * at the time a post-broadcast write is attempted (e.g. `updateAccountOrcid`
- * called before `initAppDb()` has resolved, or after a hot-rotation tore down
- * the pool). Production-pathological — the app should fail to start before
+ * called before `verifyAppDbMigrations()` has resolved, or after a
+ * hot-rotation tore down the pool). Production-pathological — the app
+ * should fail to start before
  * any route handler runs without a configured pool — but if it does reach a
  * post-broadcast cascade site, the chain op IS confirmed and there is no
  * retry/batch-cycle that re-attempts the write against an uninitialised pool.

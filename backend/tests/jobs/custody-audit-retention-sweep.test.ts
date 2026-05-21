@@ -44,14 +44,14 @@
  *     contract, so no clause (c) real-path companion is needed — the spy
  *     does not bypass any code path, it only observes whether one is taken.
  *
- * BootFatalError mechanism (round-3 item 1): `validateRetentionSweepConfig`
- * does NOT call `flushAndExit()` itself. Instead it throws a `BootFatalError`
- * which propagates out of the awaited call inside `initAppDb().then(...)` in
- * `index.ts`, into the sibling `.catch` of that chain. That `.catch`
- * discriminates `instanceof BootFatalError` to suppress the mislabelled
- * "Failed to initialize app database" wrapping and logs the BootFatalError's
- * own message, then routes through `flushAndExit()` before `app.listen()`
- * ever runs. The function-level rethrow IS pinned in test (d) below; the
+ * BootFatalError mechanism: `validateRetentionSweepConfig` does NOT call
+ * `flushAndExit()` itself. Instead it throws a `BootFatalError` which
+ * propagates out of the awaited call inside
+ * `verifyAppDbMigrations().then(...)` in `index.ts`, into the sibling
+ * `.catch` of that chain. That `.catch` discriminates
+ * `instanceof BootFatalError` to suppress the mislabelled "Failed to verify
+ * app database schema" wrapping and logs the BootFatalError's own message,
+ * then routes through `flushAndExit()` before `app.listen()` ever runs. The function-level rethrow IS pinned in test (d) below; the
  * outer-catch wiring is covered transitively at the call site, and
  * `flushAndExit()`'s flush+watchdog behaviour is covered at the helper level
  * in `tests/lib/flush-and-exit.test.ts`.
