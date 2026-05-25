@@ -77,3 +77,22 @@ Add to `backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts` (or
 - `backend/src/lib/authMessage.ts` — `buildCanonicalAuthMessage`'s `JSON.stringify(body ?? {})` body-hash semantics that allow the precomputed signature reuse.
 - `tasks-archive.md` — `BACKEND-REGISTER-RATE-LIMIT-BYIP-SKIPFAILED` entry (when it archives) has the round-2 reorder context.
 - `agents/docs/solutions/conventions/validator-limiter-ordering-depends-on-key-class-2026-05-21.md` — the canonical rule the round-2 reorder followed; this task is the same rule applied to a different bypass.
+
+## Backend implementer signal (2026-05-25)
+
+**Acceptance #1/#2 — Shape A applied (415 Content-Type guard).** `backend/src/routes/bridge.ts` `validateRegisterBody`: added an early-return at the TOP of the middleware, before any `body.<field>` access, that calls `sendError(res, 415, 'BAD_REQUEST', 'Content-Type must be application/json')` when `!req.is('application/json')`. `req.is(...)` returns `false` for `text/plain` and `null` for an absent Content-Type, so both bypass cases short-circuit. Because the guard sits inside `validateRegisterBody` (mounted `verifyHiveSignature → validateRegisterBody → registerLimiter → handler`), the 415 fires BEFORE `registerLimiter`, so the slot is never consumed and the TypeError-on-`req.body===undefined` path is dead.
+
+ErrorCode-enum note: `ErrorCode` (in `backend/src/types/api.ts`) has no `UNSUPPORTED_MEDIA_TYPE` member and `sendError`'s `code` parameter is typed to that enum. Adding a new code is an API-shape change outside this task's scope (backend agent does not change API shapes without architect coordination). I therefore used HTTP status **415** with the existing `BAD_REQUEST` code: this preserves the explicit HTTP-415 unsupported-media-type status integrators see while keeping the envelope's `code` field within the established enum. The bridge contract doc already lists `BAD_REQUEST` for `/register`.
+
+**Acceptance #3 — WHY-comment.** Extended the comment block above `validateRegisterBody` to document this third bypass class (non-JSON / absent Content-Type → `req.body === undefined` under Express 5 → `body.identifier` TypeError → 500, with the limiter never reached so no slot is consumed and nothing bounds the per-IP CPU/RPC cost) and how the guard closes it. Anchored on stable symbols (`Content-Type`, `express.json`, `req.body`, `validateRegisterBody`, `getAccounts`); no slug/round/line/SHA.
+
+**Acceptance #4 — Canaries** added to `backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts` under `describe('validateRegisterBody Content-Type guard (415 before limiter, slot untouched)')`:
+- Non-JSON Content-Type canary: 12 signed `text/plain` POSTs → all 415 (code `BAD_REQUEST`); then a full per-IP cap (10) of well-formed successes from the SAME IP all 202 → proves the 12 rejects burned no slot.
+- Missing Content-Type canary: same with the header omitted entirely → 415; same slot-untouched probe.
+- Empty-body canary: `application/json` with `{}` body → passes the Content-Type guard, 400 `BAD_REQUEST` on the presence check (pins the Express-5 empty-JSON-parse → `req.body === {}` behavior).
+
+Slot-untouched probe rationale (documented inline): this suite's limiter accounting runs through the rateLimit middleware's in-memory `memStore` fallback (FakeRedis has no EVALSHA, so the Lua path throws and the middleware falls through), so the custody-style Redis-key `rateLimitCount` probe does not reflect the counter here. The file-consistent slot-untouched assertion is response-code based: spray > the per-IP cap of pre-limiter rejects, then prove a full cap's worth of well-formed successes still go through from the same IP. Also removed a genuinely-unused `const { config }` import flagged by `@typescript-eslint/no-unused-vars` in the same file.
+
+**Verification.** `npm run typecheck` clean (src + tests). `npx eslint src/routes/bridge.ts tests/routes/bridge-register-rate-limit-skip-failed.test.ts` clean. Scoped `npx vitest run tests/routes/bridge-register-rate-limit-skip-failed.test.ts` → 6/6 pass (3 prior canaries + 3 new). **Mutation-kill:** removed the Content-Type guard and re-ran the guard describe → the non-JSON and missing-Content-Type canaries both flipped RED with `expected 500 to be 415` (the TypeError-500 path); the empty-body canary stayed green (it never depended on the guard). Restored the guard; re-ran green.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

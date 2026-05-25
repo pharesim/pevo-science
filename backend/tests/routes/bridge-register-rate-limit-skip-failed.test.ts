@@ -255,7 +255,6 @@ vi.mock('../../src/redis.js', () => ({
 // rows in afterAll via cleanupQueueRowsFor.
 
 const { createApp } = await import('../../src/app.js');
-const { config } = await import('../../src/config.js');
 const { getAppPool, closeAppPool } = await import('../../src/app-db.js');
 const { signRequestBound: signRequestBoundShared } = await import('../support/sign-request.js');
 
@@ -307,6 +306,37 @@ async function signedPost(
     .set('X-Hive-Timestamp', timestamp)
     .set('X-Forwarded-For', forwardedFor)
     .send(body);
+}
+
+// Signed POST with an explicit non-JSON (or absent) Content-Type. `express.json`
+// only parses `application/json`, so under Express 5 `req.body === undefined`
+// for these requests and `verifyHiveSignature` body-hashes `undefined ?? {}`
+// === '{}'. We therefore sign over the empty-body shape `{}` so the signature
+// matches end-to-end (cryptographic verification runs real-path here). Pass
+// `contentType: null` to omit the Content-Type header entirely (the
+// missing-header bypass); pass a string to set it (e.g. 'text/plain').
+async function signedPostNonJson(
+  path: string,
+  username: string,
+  rawPayload: string,
+  forwardedFor: string,
+  contentType: string | null,
+) {
+  const timestamp = new Date().toISOString();
+  // Server hashes the empty-body shape because the parser leaves req.body undefined.
+  const signature = signRequestBound('POST', path, {}, timestamp);
+  const req = request(app)
+    .post(path)
+    .set('X-Hive-Username', username)
+    .set('X-Hive-Signature', signature)
+    .set('X-Hive-Timestamp', timestamp)
+    .set('X-Forwarded-For', forwardedFor);
+  if (contentType === null) {
+    // Omit Content-Type entirely: send no body so supertest does not
+    // auto-attach a default Content-Type for a string payload.
+    return req.send();
+  }
+  return req.set('Content-Type', contentType).send(rawPayload);
 }
 
 beforeEach(async () => {
@@ -440,6 +470,116 @@ describe('registerLimiter slot-refund on retriable error paths (skipFailedReques
     }, TEST_IP);
     expect(blockedRes.status).toBe(429);
     expect(blockedRes.body.error.code).toBe('RATE_LIMITED');
+  });
+});
+
+describe('validateRegisterBody Content-Type guard (415 before limiter, slot untouched)', () => {
+  let tableReady = false;
+
+  beforeEach(async () => {
+    tableReady = await tableAvailable();
+  });
+
+  // Slot-untouched probe (memStore-based): this suite's limiter accounting
+  // runs through the rateLimit middleware's in-memory `memStore` fallback
+  // (FakeRedis has no EVALSHA, so the Lua path throws and the middleware
+  // falls through to memStore). The custody-style Redis-key probe does not
+  // reflect that counter, so the file-consistent slot-untouched assertion is
+  // response-code based: spray > the per-IP cap (10/hour) of pre-limiter
+  // rejects, then prove a full cap's worth of well-formed successes still go
+  // through from the SAME IP. If the rejected sprays had consumed (and not
+  // refunded) any slot, the legitimate successes would 429 before reaching 10.
+  // A fresh accredited user per success avoids BRIDGE_QUEUE_USER_CAP (5)
+  // contaminating the per-IP assertion (matches the abuse-cap canary above).
+  async function assertCapWorthOfSuccessesFromSameIp(ip: string, userPrefix: string) {
+    for (let i = 0; i < 10; i++) {
+      const username = `${userPrefix}${i}`;
+      accreditedSet.add(username);
+      const id = `2301.${String(30000 + i).padStart(5, '0')}`;
+      const okRes = await signedPost('/api/bridge/register', username, {
+        identifier: id,
+        discipline: 'CS',
+      }, ip);
+      expect(okRes.status).toBe(202);
+      expect(okRes.body.status).toBe('ok');
+    }
+  }
+
+  it('non-JSON Content-Type (text/plain): 415 before the limiter; the slot is never consumed', async () => {
+    if (!tableReady) return;
+    // Attacker holds a valid posting key; signs the empty-body canonical
+    // message and sprays text/plain payloads. express.json leaves req.body
+    // undefined; the guard 415s BEFORE registerLimiter. Mutation-kill:
+    // remove the Content-Type guard from validateRegisterBody → the
+    // body.identifier read throws a TypeError → 500 INTERNAL_ERROR, flipping
+    // the 415 assertion RED.
+    const TEST_IP = '203.0.113.10';
+    const ACCREDITED = 'registerlimiterct';
+    accreditedSet.add(ACCREDITED);
+
+    for (let i = 0; i < 12; i++) {
+      const res = await signedPostNonJson(
+        '/api/bridge/register',
+        ACCREDITED,
+        'identifier=2301.99981&discipline=CS',
+        TEST_IP,
+        'text/plain',
+      );
+      expect(res.status).toBe(415);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+    }
+
+    // Slot untouched: a full per-IP cap of well-formed successes from the
+    // same IP still go through (none of the 12 text/plain sprays burned a slot).
+    await assertCapWorthOfSuccessesFromSameIp(TEST_IP, 'registerlimiterctok');
+  });
+
+  it('missing Content-Type header: 415 before the limiter; the slot is never consumed', async () => {
+    if (!tableReady) return;
+    const TEST_IP = '203.0.113.11';
+    const ACCREDITED = 'registerlimiternoct';
+    accreditedSet.add(ACCREDITED);
+
+    for (let i = 0; i < 12; i++) {
+      const res = await signedPostNonJson(
+        '/api/bridge/register',
+        ACCREDITED,
+        '',
+        TEST_IP,
+        null,
+      );
+      expect(res.status).toBe(415);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+    }
+
+    await assertCapWorthOfSuccessesFromSameIp(TEST_IP, 'registerlimiternoctok');
+  });
+
+  it('empty body with application/json: passes the Content-Type guard and 400s on the presence check', async () => {
+    if (!tableReady) return;
+    // Express 5 parses an empty application/json body to req.body === {}. The
+    // Content-Type guard passes (it IS application/json); the existing
+    // presence check then returns a clean 400 BAD_REQUEST. Pins this so a
+    // future Express upgrade or json-parser swap can't silently flip an
+    // empty JSON body into the 415 or 500 paths.
+    const TEST_IP = '203.0.113.12';
+    const ACCREDITED = 'registerlimiterempty';
+    accreditedSet.add(ACCREDITED);
+
+    const timestamp = new Date().toISOString();
+    const signature = signRequestBound('POST', '/api/bridge/register', {}, timestamp);
+    const res = await request(app)
+      .post('/api/bridge/register')
+      .set('X-Hive-Username', ACCREDITED)
+      .set('X-Hive-Signature', signature)
+      .set('X-Hive-Timestamp', timestamp)
+      .set('X-Forwarded-For', TEST_IP)
+      .set('Content-Type', 'application/json')
+      .send('{}');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/identifier/);
   });
 });
 

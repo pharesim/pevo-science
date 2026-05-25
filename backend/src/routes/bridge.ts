@@ -204,7 +204,31 @@ const registerLimiter = rateLimit({
 // under `skipFailedRequests` — an unbounded CPU/RPC amplification surface.
 // The handler still re-derives the typed fields from `req.body`; this
 // middleware only gates the required-field presence + non-empty-string shape.
+//
+// Content-Type guard (first check): a request whose `Content-Type` is not
+// `application/json` is rejected up-front with 415, BEFORE any `body.<field>`
+// access. The only body parser mounted is `express.json` (which matches on
+// `application/json`); under Express 5 a non-JSON or absent Content-Type
+// leaves `req.body === undefined`, so the subsequent `body.identifier` read
+// would throw a TypeError that bubbles to the global error handler as 500.
+// That 500 path is itself a CPU/RPC amplification bypass distinct from the
+// malformed-JSON-body case the middleware-reorder closed: `verifyHiveSignature`
+// has already paid ECDSA recovery + a `getAccounts` RPC by the time
+// `validateRegisterBody` runs, yet the request never reaches `registerLimiter`
+// (no slot is consumed, so there is nothing to refund and nothing to bound the
+// per-IP cost). An attacker holding any valid posting key can sign a canonical
+// message with the empty-body hash (`JSON.stringify(undefined ?? {})` === '{}')
+// and replay it with fresh timestamps under non-JSON Content-Type indefinitely.
+// Failing fast on the Content-Type closes that path: the 415 short-circuits
+// before the limiter (slot untouched) and the TypeError read is dead code.
+// 415 is sent with the existing `BAD_REQUEST` error code to keep the error
+// envelope within the established code enum while preserving the HTTP-415
+// unsupported-media-type semantic that integrators expect.
 function validateRegisterBody(req: Request, res: Response, next: NextFunction): void {
+  if (!req.is('application/json')) {
+    sendError(res, 415, 'BAD_REQUEST', 'Content-Type must be application/json');
+    return;
+  }
   const body = req.body as { identifier?: unknown; discipline?: unknown };
   if (!body.identifier || typeof body.identifier !== 'string' || body.identifier.trim().length === 0) {
     sendError(res, 400, 'BAD_REQUEST', 'Field "identifier" is required');
