@@ -79,3 +79,16 @@ Fix: append `" AND recover.ts"` to the importer list so the comment matches the 
 When items 1 and 2 land, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit(s) only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-25, working tree pre-commit)
+
+Items 1 and 2 landed in `auth.ts`, both comment-only:
+
+- Item 1: the `BE-ZOD-MIGRATION-EXTENSION` docblock's `"the round-1 schemas"` phrase is now `"the earlier Zod schemas in this file"` (Shape A — behavioral anchor, round number removed).
+- Item 2: the `burnSentinel` cross-file caller-attribution comment now reads `"auth.ts AND custody.ts AND signup-verify.ts AND recover.ts"`. Confirmed `recover.ts` is the fourth importer: `import { burnSentinel } from './auth.js'` plus a `burnSentinel(...)` call in the moved `/recover/verify` handler.
+
+Verification: `npm run typecheck` clean; `npm run lint` clean on `auth.ts`; comment-only edits, no behavior change. `recover.test.ts` + `recover-two-phase.test.ts` + `auth.test.ts` pass as part of the 88/88 affected-suite run.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

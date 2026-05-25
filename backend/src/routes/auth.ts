@@ -70,8 +70,8 @@ const SignupBodySchema = z.object({
 });
 
 // BE-ZOD-MIGRATION-EXTENSION: schemas for /resend-verification,
-// /reset-request, /reset. Same flat-error pattern as the round-1
-// schemas — shape only, business validation (isEmail, isPasswordValid)
+// /reset-request, /reset. Same flat-error pattern as the earlier Zod
+// schemas in this file — shape only, business validation (isEmail, isPasswordValid)
 // continues to run after safeParse.
 const ResendVerificationBodySchema = z.object({
   email: z.string().min(1),
@@ -223,7 +223,7 @@ export async function burnSentinel(input: string, signal?: AbortSignal): Promise
     // ArgonAbortError) and any future addition extending the base.
     if (isArgonSemaphoreError(err)) throw err;
     // Cross-file caller attribution: burnSentinel is imported from auth.ts AND
-    // custody.ts AND signup-verify.ts. The `auth.burn_sentinel.*` prefix tags
+    // custody.ts AND signup-verify.ts AND recover.ts. The `auth.burn_sentinel.*` prefix tags
     // the FILE the emission lives in, not the calling route — operators
     // grepping for `auth.signup.*` or `auth.recover.*` will not match this
     // line even when the failing burn fired from a sibling-file caller. See
