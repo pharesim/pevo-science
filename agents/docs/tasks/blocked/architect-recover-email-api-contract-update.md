@@ -42,4 +42,12 @@ Bring `agents/docs/api-contracts/auth.md` and `agents/docs/ARCHITECTURE.md` § 6
 - `backend/src/routes/auth.ts` — `/recover` memo-key path, `/recover/verify`, `/recover/dispute` handlers (source of truth).
 - `backend/migrations/012_pending_recovery.sql` — staging table shape.
 
+## [BLOCKED by backend] — waiting on the backend recover-email task to archive (2026-05-25)
+
+This task documents the contract that the backend recover-email implementation defines. That backend task (`backend-recover-email-verification-and-notify.md`) is currently HELD at round-1 in `tasks/pending/` (5 items) and has not yet been re-reviewed or archived.
+
+Decision (user, 2026-05-25): document the contract only after the backend implementation has fully landed and been archived, to avoid syncing the architect-zone docs against a moving target. The 5 currently-held backend items were checked and do NOT touch the documented contract surface — item 1 is the `DELETE /api/settings/email` staging-row sweep, item 2 is a phase-1 `isEmail` VALIDATION_ERROR (no success-shape change), item 3 is migration-header copy, item 4 is a `token2`→`sessionJwt` local rename with the wire field staying `token`, item 5 is test pins. But a round-2 review could still surface contract-affecting changes, so we wait for the archive rather than race it.
+
+**Unblock:** when `backend-recover-email-verification-and-notify.md` is archived, move this file back to `tasks/review/` (architect-self-task) and implement the doc updates against the final landed `auth.ts` recover trio.
+
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
