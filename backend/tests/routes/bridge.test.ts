@@ -15,23 +15,23 @@
  * custom_json on Hive and waiting for HAF to index it. That's impractical
  * per-test when we only care about exercising the 503 misconfig guard.
  *
- * Justification for the `buildBridgeBody` mock (per root CLAUDE.md carve-out
- * clause a): the outer-catch event-discriminator spec needs `buildBridgeBody`
- * to throw a synthetic exception inside the lock-acquired body so the new
- * route-level outer try/catch is reached. Forcing the throw from a real
- * handler call would require crafting a malformed-input fixture that
- * survives the upstream `parseIdentifier` and `lookupPreprint` validation
- * but trips body construction — an indirect, brittle path that couples the
- * spec to internal validation order. Mocking the helper as a thin
- * pass-through (defaults to the real implementation; only the one spec
- * overrides it with `mockImplementationOnce`) is the deterministic surface
- * for that single failure class. The mock does NOT replace
- * `verifyHiveSignature` — requests are signed end-to-end against the real
- * middleware, so this file's auth focus is preserved.
+ * Justification for the `tryEnqueueBridgeImport` mock (per root CLAUDE.md
+ * carve-out clause a): the /register handler's outer try/catch wraps the
+ * lock-acquired body, and the only way to drive a synthetic throw INTO that
+ * catch without a real Postgres queue is to make a downstream call inside
+ * the body throw. After the queue migration the body no longer constructs
+ * the post body inline (`buildBridgeBody` now lives in the worker); the
+ * reachable in-body throw is the 202-response serialization. Mocking
+ * `tryEnqueueBridgeImport` to return an `enqueued` result with a malformed
+ * row (a `scheduled_at` that is not a Date) makes `serializeQueueRow` throw
+ * synchronously inside the outer try, so the route-level catch is exercised
+ * deterministically. The mock does NOT replace `verifyHiveSignature` —
+ * requests are signed end-to-end against the real middleware, so this
+ * file's auth focus is preserved.
  *
- * Real-path companion (carve-out clause c) for the `buildBridgeBody` mock:
- * `backend/tests/routes/bridge-haf-lag-locks.test.ts` — it exercises the
- * integrated `/register` path with real Hive-signed requests against the
+ * Real-path companion (carve-out clause c) for the `tryEnqueueBridgeImport`
+ * mock: `backend/tests/routes/bridge-haf-lag-locks.test.ts` — it exercises
+ * the integrated `/register` path with real Hive-signed requests against the
  * real `verifyHiveSignature` middleware, covering broadcast-side and
  * lock-side mutation classes (concurrent SETNX contention, HAF-503
  * fail-closed, lock TTL self-cleanup) under deterministic conditions. The
@@ -107,7 +107,11 @@ vi.mock('../../src/hive.js', async () => {
 // duplicate" (exists=false) and stub resolveToCanonical / lookupPreprint so
 // the broadcast-timeout specs don't actually hit Crossref / arXiv. The
 // unused-helper exports (parseIdentifier, buildBridgeBody, buildBridgeMetadata)
-// fall through to the real implementation.
+// fall through to the real implementation. buildBridgeBody is NOT wrapped as
+// a vi.fn here: after the queue migration it is only called by the worker
+// (`bridge-worker.ts`), never by the /register route, so mocking it would not
+// reach the route's outer-catch. The outer-catch throw is injected via the
+// `tryEnqueueBridgeImport` mock below instead.
 const { MOCK_META } = vi.hoisted(() => ({
   MOCK_META: {
     title: 'A deterministic test paper',
@@ -136,11 +140,21 @@ vi.mock('../../src/bridge.js', async () => {
       if (identifier === '2301.12345') return MOCK_META;
       return actual.lookupPreprint(identifier);
     }),
-    // Wrapped as a vi.fn() so the outer-catch event-discriminator spec can
-    // force a synthetic body-construction throw via mockImplementationOnce.
-    // Defaults to the real implementation so unrelated specs are unaffected.
-    buildBridgeBody: vi.fn().mockImplementation((...args: Parameters<typeof actual.buildBridgeBody>) =>
-      actual.buildBridgeBody(...args),
+  };
+});
+
+// Bridge-queue mock: `tryEnqueueBridgeImport` is wrapped as a vi.fn so the
+// outer-catch fall-through spec can force the route's lock-acquired body to
+// throw at 202-response serialization via mockImplementationOnce. Defaults to
+// the real implementation so unrelated specs (none currently reach enqueue,
+// but future ones might) are unaffected. The other queue exports fall through
+// to the real module.
+vi.mock('../../src/bridge-queue.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/bridge-queue.js')>('../../src/bridge-queue.js');
+  return {
+    ...actual,
+    tryEnqueueBridgeImport: vi.fn().mockImplementation(
+      (...args: Parameters<typeof actual.tryEnqueueBridgeImport>) => actual.tryEnqueueBridgeImport(...args),
     ),
   };
 });
@@ -513,5 +527,106 @@ describe('BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS — catch-block log sh
   // exception paths fire BEFORE enqueue. The broadcast-class catch sites
   // now live in the worker (`backend/src/bridge-worker.ts`) and are
   // covered through the queue model's retry/terminal-fail transitions.
+  //
+  // The route's own outer-catch fall-through (an unexpected throw escaping
+  // the lock-acquired body to the route-level try/catch) is covered by the
+  // sibling describe block below.
+});
+
+// ──────────────────────────────────────────────
+// The /register handler wraps its lock-acquired body in a route-level
+// try/catch that maps any unexpected throw to 500 INTERNAL_ERROR + an
+// `event: 'bridge.register.internal_error'` operator log. After the queue
+// migration the body no longer constructs the post inline; the reachable
+// in-body throw is the 202-response serialization. We drive that throw by
+// making `tryEnqueueBridgeImport` return an `enqueued` result whose row's
+// `scheduled_at` is not a Date, so `serializeQueueRow`'s `.toISOString()`
+// throws synchronously inside the outer try. This guards the outer-catch:
+// removing it (or changing the event tag / status / message) flips the spec
+// RED.
+// ──────────────────────────────────────────────
+
+describe('POST /api/bridge/register — outer-catch fall-through emits bridge.register.internal_error', () => {
+  const ACCREDITED_CALLER = 'accreditedoutercatch';
+
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let queueMod: any;
+
+  beforeEach(async () => {
+    sendOperations.mockClear();
+    accreditedSet.clear();
+    accreditedSet.add(ACCREDITED_CALLER);
+    // HAF unconfigured so checkExistingBridge short-circuits to exists=false
+    // and the handler proceeds into the enqueue path inside the outer try.
+    hafConfigured.value = false;
+    errorSpy = vi.spyOn(logger, 'error').mockImplementation((() => undefined) as never);
+    queueMod = await import('../../src/bridge-queue.js');
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  it('synthetic in-body throw → 500 INTERNAL_ERROR with bridge.register.internal_error log + route/identifier/username/permlink context', async () => {
+    // Malformed enqueue row: `scheduled_at` is a string, not a Date, so
+    // serializeQueueRow's `row.scheduled_at.toISOString()` throws a
+    // synchronous TypeError inside the route's outer try block.
+    (queueMod.tryEnqueueBridgeImport as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => ({
+      status: 'enqueued',
+      queuePosition: 1,
+      row: {
+        id: 1,
+        operation_kind: 'bridge_register',
+        username: ACCREDITED_CALLER,
+        identifier: '2301.12345',
+        permlink: 'bridge-arxiv-2301-12345',
+        discipline: 'CS',
+        keywords: [],
+        language: 'en',
+        state: 'pending',
+        attempts: 0,
+        // Intentionally NOT a Date — trips serializeQueueRow.
+        scheduled_at: 'not-a-date' as unknown as Date,
+        lease_expires_at: null,
+        tx_id: null,
+        error_code: null,
+        error_message: null,
+        existing_author: null,
+        existing_permlink: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+        completed_at: null,
+      },
+    }));
+
+    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
+      identifier: '2301.12345',
+      discipline: 'CS',
+    });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+    expect(res.body.error.message).toBe('Failed to register bridge paper');
+
+    // Find the catch-block log by event discriminator (not message substring,
+    // which would slip an event-field regression), then assert the non-event
+    // context fields the operator dashboard keys on.
+    const matchingCall = errorSpy.mock.calls.find((call: unknown[]) => {
+      const ctx = call[0] as Record<string, unknown> | undefined;
+      return ctx?.event === 'bridge.register.internal_error';
+    });
+    expect(matchingCall).toBeDefined();
+    const ctx = matchingCall![0] as Record<string, unknown>;
+    expect(ctx.route).toBe('bridge.register');
+    expect(ctx.identifier).toBe('2301.12345');
+    expect(ctx.username).toBe(ACCREDITED_CALLER);
+    expect(ctx.permlink).toBe('bridge-arxiv-2301-12345');
+    expect(ctx.err).toBeInstanceOf(Error);
+
+    // The malformed-serialization throw fires AFTER enqueue, so no broadcast
+    // is attempted on this path.
+    expect(sendOperations).not.toHaveBeenCalled();
+  });
 });
 
