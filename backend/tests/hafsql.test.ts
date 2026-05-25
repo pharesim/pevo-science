@@ -5,10 +5,13 @@ import {
   authorshipClaimsCteBody,
   authorsWithSupersessionSelect,
   buildWith,
+  retractedPapersCteBody,
   validPevoPaperWhere,
   validReviewWhere,
   excludeSelfReviewWhere,
+  T,
 } from '../src/hafsql.js';
+import { config } from '../src/config.js';
 import { queryWithRetry } from './support/haf-query.js';
 
 /**
@@ -1161,5 +1164,140 @@ describe('authorsWithSupersessionSelect SRF cascade-fail defense (real Postgres,
       expect(projected[0].orcid_verified).toBeNull();
       expect(projected[0].orcid_discrepancy).toBe(false);
     }
+  });
+});
+
+/**
+ * Pure param-arithmetic checks for retractedPapersCteBody — no pool needed.
+ * The body binds two params (appTag, admin account) where it once bound one
+ * (appTag), advancing nextIdx from p+1 to p+2. A desync between params.length
+ * and nextIdx misbinds every downstream $N in buildWith-composed queries
+ * (papers list, search) with no type error and no pg driver throw, which would
+ * silently undo the forgery gate. Mirrors the authorshipClaimsCteBody param
+ * arithmetic block above.
+ */
+describe('retractedPapersCteBody param arithmetic', () => {
+  it('startIdx=1: 2 params [appTag, admin], nextIdx=3', () => {
+    const frag = retractedPapersCteBody(1);
+    expect(frag.params).toHaveLength(2);
+    expect(frag.params[0]).toBe(config.appTag);
+    expect(frag.params[1]).toBe(config.hiveAdminAccount);
+    expect(frag.nextIdx).toBe(3);
+  });
+
+  it('startIdx=5: binds $5/$6 and advances nextIdx to 7', () => {
+    const frag = retractedPapersCteBody(5);
+    expect(frag.params).toHaveLength(2);
+    expect(frag.nextIdx).toBe(7);
+    // The emitted SQL must reference the allocated indices, not stale $1/$2.
+    expect(frag.sql).toContain('cj.custom_id = $5');
+    expect(frag.sql).toContain('cj.required_posting_auths ? $6');
+  });
+});
+
+/**
+ * SQL-shape canary for retractedPapersCteBody — pure unit, no pool. Pins the
+ * load-bearing forgery gate at the unit layer so a regression is caught even
+ * when the HAF pool is unavailable and the behavioral matrix below skips
+ * (defense-in-depth: pin each layer, mirroring the excludeSelfReviewWhere SQL
+ * shape / behavioral matrix pair).
+ *
+ * The gate is `required_posting_auths ? $admin`. A JSONB-operator typo
+ * (`?` -> `->>`), a revert to the single-param `custom_id`-only form, or a
+ * widen to the plural `?|` array form each re-opens the vector where anyone
+ * can suppress a victim's paper from listings/search by broadcasting a
+ * forged retract_paper custom_json. Singular `?` is correct because the admin
+ * account is singular by design (see CLAUDE.md).
+ */
+describe('retractedPapersCteBody SQL shape', () => {
+  it('emits all three conjuncts including the singular admin-auth gate', () => {
+    const frag = retractedPapersCteBody(1);
+    expect(frag.sql).toContain('cj.custom_id = $1');
+    expect(frag.sql).toContain("cj.json::jsonb ->> 'action' = 'retract_paper'");
+    expect(frag.sql).toContain('cj.required_posting_auths ? $2');
+    // Singular membership operator, not the plural array form — pinning this
+    // catches a `?` -> `?|` widen that would accept multi-key auth arrays.
+    expect(frag.sql).not.toContain('?|');
+  });
+});
+
+/**
+ * Real-Postgres behavioral matrix for the retracted-paper forgery gate. Runs
+ * the PRODUCTION retractedPapersCteBody SQL with its `FROM <custom_json view>`
+ * source redirected to a synthetic VALUES CTE of the same column shape
+ * (custom_id text, json text, required_posting_auths jsonb). Redirecting the
+ * source rather than re-deriving the predicate locally means a production
+ * revert of the gate predicate turns this test red — the structural-mirror
+ * approach used by the paper_resolved_votes / citing_papers CTE tests stays
+ * green under a production-only revert and would not satisfy that requirement.
+ *
+ * Synthetic VALUES (no chain seeds) is required here: the pevotest namespace
+ * has zero retract_paper ops on-chain, so a live-HAF test passes trivially and
+ * exercises nothing. The matrix below seeds the admin-authored and forged rows
+ * deterministically. Gates on getPool() (not isHafConfigured()) so the canary
+ * does not skip on the common HAF-flake mode — the query touches no HAF tables.
+ *
+ * The shared retractedPapersCteBody predicate is identical to the inline copies
+ * in loadRetractedPapers and isRetracted (routes/papers.ts), so one CTE-level
+ * behavioral pin plus the param-arithmetic block above locks the risk class
+ * across all three sites.
+ */
+describe('retractedPapersCteBody forgery-gate behavioral matrix (real Postgres, synthetic rows)', () => {
+  it('treats admin-authored retractions as valid and ignores forged ones', { timeout: 30_000 }, async (ctx) => {
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+
+    const admin = config.hiveAdminAccount;
+    // Each row's (author, permlink) is the only thing the CTE projects, so a
+    // distinct permlink per row makes the admit set identifiable. The label
+    // in the comment names the conjunct each row exercises.
+    const rows: ReadonlyArray<{ permlink: string; customId: string; action: string; auths: string[] }> = [
+      // admin-authored retraction → ADMITTED (the legitimate path)
+      { permlink: 'admin-retracted', customId: config.appTag, action: 'retract_paper', auths: [admin] },
+      // admin co-signed alongside another auth → ADMITTED (`?` is array
+      // membership, not exact-equality; a real co-sign requires the admin key)
+      { permlink: 'admin-cosigned', customId: config.appTag, action: 'retract_paper', auths: ['someone.else', admin] },
+      // forged by a non-admin broadcaster → REJECTED (the gate)
+      { permlink: 'forged-by-nonadmin', customId: config.appTag, action: 'retract_paper', auths: ['attacker'] },
+      // forged with empty auth array → REJECTED (the gate)
+      { permlink: 'forged-empty-auths', customId: config.appTag, action: 'retract_paper', auths: [] },
+      // admin auth but foreign custom_id → REJECTED (custom_id conjunct)
+      { permlink: 'wrong-app', customId: 'otherapp', action: 'retract_paper', auths: [admin] },
+      // admin auth but non-retraction action → REJECTED (action conjunct)
+      { permlink: 'wrong-action', customId: config.appTag, action: 'accredit', auths: [admin] },
+    ];
+
+    // Production fragment: $1 = appTag, $2 = admin account. Synthetic VALUES
+    // params start at $3. Redirect the HAF view reference to the synthetic CTE.
+    const frag = retractedPapersCteBody(1);
+    const redirected = frag.sql.replace(T.customJson, 'synthetic_cj');
+
+    const valuesSql = rows
+      .map((_, i) => `($${i * 3 + 3}::text, $${i * 3 + 4}::text, $${i * 3 + 5}::jsonb)`)
+      .join(', ');
+    const params: unknown[] = [...frag.params];
+    for (const row of rows) {
+      params.push(
+        row.customId,
+        JSON.stringify({ action: row.action, author: 'victim', permlink: row.permlink }),
+        JSON.stringify(row.auths),
+      );
+    }
+
+    const sql = `
+      WITH synthetic_cj(custom_id, json, required_posting_auths) AS (VALUES ${valuesSql}),
+      ${redirected}
+      SELECT author, permlink FROM retracted_papers ORDER BY permlink
+    `;
+    const result = await pool.query(sql, params);
+    const admitted = result.rows.map((r) => `${r.author}/${r.permlink}` as string).sort();
+
+    // Only the two admin-authored rows survive the gate. If the
+    // required_posting_auths gate is removed/weakened, the forged rows leak
+    // into the admit set and this assertion fails red.
+    expect(admitted).toEqual(['victim/admin-cosigned', 'victim/admin-retracted']);
   });
 });
