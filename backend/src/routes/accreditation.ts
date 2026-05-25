@@ -977,7 +977,7 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
   // outcomes count toward the cap.
   //
   // The pre-INCR call sits OUTSIDE the `broadcastJsonWithTimeout` try,
-  // so a `redis.eval` rejection (OOM, Lua error, connection drop) would
+  // so an `evalScript` rejection (OOM, Lua error, connection drop) would
   // propagate to Express 5's async handler → 500 INTERNAL_ERROR with no
   // retry guidance, asymmetric to the broadcast site's 502/504 envelope
   // discipline. The local try/catch returns 503 SERVICE_UNAVAILABLE with

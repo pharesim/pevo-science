@@ -30,11 +30,11 @@ import {
   getBatchReputationMap,
   getReputationWeights,
 } from './reputation.js';
-// The staging prefix is derived from `BATCH_KEY_PREFIX` (canonical prod
-// prefix `${appTag}:reputation:batch:`) in reputation.ts and re-imported
-// here so the Lua substring math, the TS-side writer, AND the reader
-// filter in `getBatchReputationMap` reference a single source of truth
-// (BACKEND-REPUTATION-SSOT round-1 hold #24, round-2 hold #7).
+// The staging prefix derives from `BATCH_KEY_PREFIX` (the canonical prod
+// prefix `${appTag}:reputation:batch:`) in reputation.ts and is re-imported
+// here so the Lua substring math, the TS-side writer, AND the reader filter
+// in `getBatchReputationMap` all reference one source of truth — the
+// staging-vs-prod swap cannot drift across the three.
 import { getAllAccreditedAccounts } from './accreditation.js';
 import { getCachedGenesisBlock, T } from './hafsql.js';
 import { evalScript } from './lib/redis-scripts.js';

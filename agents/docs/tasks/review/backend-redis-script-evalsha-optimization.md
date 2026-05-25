@@ -192,3 +192,62 @@ Per CLAUDE.md "Running Tests" carve-out clause (a) — the test file header MUST
 ### Re-review signal
 
 When items 1, 2, 3, 4, 5, 6, 7, 8 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. Items 3, 6, 7 touch the same accreditation route+test pair — bundle. Items 1, 4, 5 touch the same `lib/redis-scripts.ts` docblock — bundle. Item 2 touches `reputation-batch.ts` independently. Item 8 touches `tests/setup.ts` independently.
+
+---
+
+## Backend re-review signal (2026-05-25, working tree)
+
+Round-1 hold items 1-8 landed, plus one discovered fix (item 9) approved by the user mid-round.
+
+### Item 1 — `@internal` on `getCachedSha` + `clearScriptShaCache`
+
+Both test-only exports in `backend/src/lib/redis-scripts.ts` now carry `@internal` JSDoc. `getCachedSha`: notes production reads the cache through `evalScript`. `clearScriptShaCache`: notes a production caller would silently degrade every `evalScript` call to the EVAL fallback with no signal.
+
+### Item 2 — slug+round rot rewritten in `reputation-batch.ts`
+
+The `(BACKEND-REPUTATION-SSOT round-1 hold #24, round-2 hold #7)` citation on the `BATCH_KEY_PREFIX`-derivation comment was rewritten to anchor on the stable invariant (the Lua substring math, TS writer, and `getBatchReputationMap` reader filter all derive from one prefix so the staging-vs-prod swap cannot drift). NOTE scope: this fixes only the adjacent block the evalsha commit touched. Other `BACKEND-REPUTATION-SSOT round-N hold #M` citations elsewhere in `reputation-batch.ts` are pre-existing rot left for the dedicated `backend-anchor-rot-sweep-2026-05-21` umbrella task, per item 2's stated scope.
+
+### Item 3 — `redis.eval` → `redis.evalsha` in accreditation.test.ts docs
+
+Header mocked-surfaces list and the 503-cap spec description + leading comment now say `redis.evalsha` (the warm-path dispatch evalScript uses). Adjacent same-block refs ("cap-counter eval" → "cap-counter dispatch via evalScript"; "drives the eval rejection path" → "evalsha rejection path") updated for consistency per the audit-own-replacement convention.
+
+### Item 4 — `isNoScriptError` ioredis-coupling comment
+
+Added an inline comment naming the dependency: couples to ioredis passing Redis's server-reply error through with its `NOSCRIPT ...` prefix intact; a major ioredis upgrade rewrapping server errors would silently break the NOSCRIPT-recovery retry — revisit at ioredis upgrades.
+
+### Item 5 — "MUST" → "should" + documented exceptions
+
+Softened the module docblock's normative claim and documented the two known unmigrated lock-release CAS scripts that still call `redis.eval` directly: `routes/orcid.ts` RELEASE_LOCK_LUA and `routes/bridge.ts` BRIDGE_RELEASE_LOCK_LUA. (Verified both exist via grep — the architect's hold cited `bridge.ts`/`orcid.ts`; the actual paths are `routes/bridge.ts`/`routes/orcid.ts`. `reputation-batch.ts` CYCLE_SWAP_LUA is genuinely ad-hoc, not a violation, so it is not listed.) Migrating the two is left to a separate task.
+
+### Item 6 — stale `redis.eval` → `evalScript` in accreditation.ts comment
+
+The `incrementBroadcastAttempts` comment now says "an `evalScript` rejection" (the call site dispatches via `evalScript`, not direct `redis.eval`).
+
+### Item 7 — Redis-unavailable spec spy retargeted eval → evalsha
+
+`vi.spyOn(redis, 'eval')` → `vi.spyOn(redis, 'evalsha')` in the Redis-unavailable spec, with the comment updated to note `isRedisAvailable()` short-circuits before `evalScript` would dispatch.
+
+### Item 8 — `tests/setup.ts` comment anchored on the invariant
+
+Reworded to anchor on the test-setup invariant ("block until the SHA cache is warm before any test runs; the production-side load is asynchronous") instead of `redis.ts`'s fire-and-forget `ready`-handler implementation detail.
+
+### Item 9 (DISCOVERED — user-approved) — 503-cap spec was failing on clean HEAD
+
+While verifying item 3/6/7, the `pre-INCR ... rejection surfaces 503` spec was found RED on clean HEAD (confirmed by stashing all round-2 changes and running the file alone: 1 failed | 32 passed). Root cause: this commit's own eval→evalsha migration (`d6e0e528`) means the `/verify` limiter (`RATE_LIMIT_CHECK_AND_CONSUME`, also dispatched via `evalScript` → `evalsha`) runs BEFORE the cap-INCR and consumed the spec's `mockRejectedValueOnce`, so the intended cap-INCR rejection never fired — the broadcast was reached and the route returned 502 instead of 503.
+
+Fix (user chose "fix the spec too"): replaced the order-dependent `mockRejectedValueOnce` with a discriminator mock on BOTH `redis.eval` and `redis.evalsha` that rejects ONLY the cap-INCR call (matched by the broadcast-attempts counter key at arg index 2) and passes every other script — including the limiter's — through to real Redis. Mocking both dispatch verbs makes the spec robust to SHA-cache warmth (a sibling spec's `vi.resetModules()` can leave the cache cold, selecting the EVAL path). The `toHaveBeenCalledTimes(1)` assertion was replaced with a counter-key filter across both spies asserting the cap-INCR was attempted exactly once. Full file: 33 passed (was 32 + 1 fail); isolated `-t "rejection surfaces 503"`: passes.
+
+### Verification
+
+- `npm run typecheck` (src + tests) — clean.
+- `npm run lint` — clean (only the pre-existing unrelated `author-supersession.ts` warning).
+- `npx vitest run tests/lib/redis-scripts.test.ts` — 6 passed.
+- `npx vitest run tests/routes/accreditation.test.ts` — 33 passed (the previously-red 503-cap spec now green).
+
+### Files changed (this round)
+
+- `backend/src/lib/redis-scripts.ts` — items 1, 4, 5.
+- `backend/src/reputation-batch.ts` — item 2 (comment-only).
+- `backend/src/routes/accreditation.ts` — item 6 (comment-only).
+- `backend/tests/routes/accreditation.test.ts` — items 3, 7 (doc/spy) + item 9 (503-cap spec fix).
+- `backend/tests/setup.ts` — item 8 (comment-only).

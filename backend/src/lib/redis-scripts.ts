@@ -10,7 +10,12 @@
  * on every (re)connect.
  *
  * Direct `redis.eval` is reserved for ad-hoc one-off scripts that aren't
- * worth registry membership; shared scripts MUST go through `evalScript`.
+ * worth registry membership; shared scripts should go through `evalScript`.
+ * There is no lint backstop on this, so two lock-release CAS scripts still
+ * call `redis.eval` directly — `routes/orcid.ts` RELEASE_LOCK_LUA and
+ * `routes/bridge.ts` BRIDGE_RELEASE_LOCK_LUA — even though they duplicate the
+ * registered RELEASE_LOCK_IF_TOKEN_MATCHES semantic. Migrating them is a
+ * separate task; until then "should" is the accurate strength, not "MUST".
  */
 
 import type Redis from 'ioredis';
@@ -176,10 +181,20 @@ export type ScriptReturn = typeof _SCRIPT_RETURN_SHAPE;
 
 const scriptShaCache = new Map<SharedScriptName, string>();
 
+/**
+ * @internal Test-only accessor for the SHA cache. Production code reads the
+ * cache through `evalScript`; nothing in the production surface needs this.
+ */
 export function getCachedSha(name: SharedScriptName): string | undefined {
   return scriptShaCache.get(name);
 }
 
+/**
+ * @internal Test-only cache reset (drives the cold-cache EVAL-fallback and
+ * NOSCRIPT-recovery branches). Not a production reset API — a production
+ * caller would silently degrade every `evalScript` call to the EVAL fallback
+ * with no log or signal.
+ */
 export function clearScriptShaCache(): void {
   scriptShaCache.clear();
 }
@@ -201,6 +216,10 @@ export async function loadAllScripts(redis: Redis): Promise<void> {
 }
 
 function isNoScriptError(err: unknown): boolean {
+  // Couples to ioredis passing Redis's server-reply error through with its
+  // `NOSCRIPT ...` prefix intact. A major ioredis upgrade that rewraps
+  // server errors with a different message shape would silently break the
+  // NOSCRIPT-recovery retry below; revisit this match at ioredis upgrades.
   return err instanceof Error && err.message.startsWith('NOSCRIPT');
 }
 

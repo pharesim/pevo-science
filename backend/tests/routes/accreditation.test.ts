@@ -21,7 +21,7 @@
  * real Redis (or in-memory fallback), so the token-lifecycle assertions
  * exercise the real persistence layer.
  *
- * Per-test redis.del / redis.decr / redis.eval rejection mocks: several
+ * Per-test redis.del / redis.decr / redis.evalsha rejection mocks: several
  * specs near the bottom of this file use
  * `vi.spyOn(redis, '<verb>').mockRejectedValueOnce(...)` for one call,
  * then `mockRestore()`. Mocked surfaces:
@@ -29,8 +29,8 @@
  *     cleanup branch).
  *   - `redis.decr`: decrement-failure log path (504 timeout followed by a
  *     Redis-side rejection on the compensating decrement).
- *   - `redis.eval`: pre-INCR 503 path (Redis-side rejection on the
- *     cap-counter eval, before the broadcast site).
+ *   - `redis.evalsha`: pre-INCR 503 path (Redis-side rejection on the
+ *     cap-counter dispatch via `evalScript`, before the broadcast site).
  * The failure modes (Redis evicted to read-only mid-request, transient
  * connection drop, OOM, Lua error) are impractical to induce against the
  * real dev-mode Redis container — the deterministic single-call rejection
@@ -1003,28 +1003,46 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     expect(await redis.get(counterKey)).toBeNull();
   });
 
-  it('pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE with {retriable:true} and structured increment-failed warn', async () => {
+  it('pre-INCR redis.evalsha rejection surfaces 503 SERVICE_UNAVAILABLE with {retriable:true} and structured increment-failed warn', async () => {
     // The pre-INCR call is wrapped in a try/catch returning 503
-    // SERVICE_UNAVAILABLE so a `redis.eval` rejection (OOM, Lua error,
+    // SERVICE_UNAVAILABLE so a `redis.evalsha` rejection (OOM, Lua error,
     // connection drop) does NOT escape Express 5's async error handler as a
     // 500 INTERNAL_ERROR. Without an explicit spec, a future mutation that
     // removes the try/catch would silently regress the envelope back to 500
-    // with no operator signal. This spec drives the eval rejection path.
+    // with no operator signal. This spec drives the evalsha rejection path.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token);
     const ip = `10.8.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
 
-    // Mock redis.evalsha to reject on the very first call (the route's
-    // pre-INCR for cap counter, dispatched via evalScript with the warm
-    // SHA cache populated by setup.ts). Subsequent evalsha calls revert to
-    // default behavior. The broadcast site must NOT be reached when the
-    // pre-INCR throws. The non-NOSCRIPT error propagates straight through
-    // evalScript without triggering its re-LOAD + retry path.
-    const evalSpy = vi.spyOn(redis, 'evalsha').mockRejectedValueOnce(
-      new Error('Lua error: OOM command not allowed when used memory > maxmemory'),
-    );
+    // Reject ONLY the cap-INCR dispatch (keyed on the broadcast-attempts
+    // counter key), passing every other script through to real Redis. The
+    // /verify limiter (RATE_LIMIT_CHECK_AND_CONSUME) also dispatches via
+    // evalScript and runs BEFORE the cap-INCR, so a blanket reject would be
+    // consumed by the limiter's call, not this one. evalScript chooses
+    // evalsha (warm SHA cache) or eval (cold) at runtime, so both are
+    // intercepted; in either dispatch shape `(sha|body, numKeys, ...keys)`
+    // the first key sits at arg index 2. The broadcast site must NOT be
+    // reached when the pre-INCR throws; the non-NOSCRIPT error propagates
+    // straight through evalScript without its re-LOAD + retry path.
+    const counterKey = broadcastAttemptsKey(token);
+    const realEval = redis.eval.bind(redis) as (...a: unknown[]) => Promise<unknown>;
+    const realEvalsha = redis.evalsha.bind(redis) as (...a: unknown[]) => Promise<unknown>;
+    const rejectCapIncr =
+      (real: (...a: unknown[]) => Promise<unknown>) =>
+      (...args: unknown[]): Promise<unknown> =>
+        args[2] === counterKey
+          ? Promise.reject(
+              new Error('Lua error: OOM command not allowed when used memory > maxmemory'),
+            )
+          : real(...args);
+    const evalshaSpy = vi
+      .spyOn(redis, 'evalsha')
+      .mockImplementation(rejectCapIncr(realEvalsha) as unknown as typeof redis.evalsha);
+    const evalSpy = vi
+      .spyOn(redis, 'eval')
+      .mockImplementation(rejectCapIncr(realEval) as unknown as typeof redis.eval);
     const loggerWarnSpy = vi.spyOn(logger, 'warn');
     broadcastJsonMock.mockRejectedValue(new Error('should not reach broadcast'));
 
@@ -1042,8 +1060,14 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
       // Broadcast NOT invoked — the pre-INCR failed before the broadcast
       // site, mirroring the cap-exceeded short-circuit shape.
       expect(broadcastJsonMock).not.toHaveBeenCalled();
-      // Pre-INCR was attempted exactly once.
-      expect(evalSpy).toHaveBeenCalledTimes(1);
+      // Pre-INCR (cap counter) was attempted exactly once, across whichever
+      // dispatch evalScript chose; the limiter's own script calls land on a
+      // different key and are filtered out.
+      const capIncrCalls = [
+        ...(evalSpy.mock.calls as unknown[][]),
+        ...(evalshaSpy.mock.calls as unknown[][]),
+      ].filter((call) => call[2] === counterKey);
+      expect(capIncrCalls).toHaveLength(1);
       // Structured warn discriminator fires; mutation-sensitive call-shape
       // assertion pins the structured fields a future log-message edit
       // can't silently drop.
@@ -1056,6 +1080,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
       );
     } finally {
       evalSpy.mockRestore();
+      evalshaSpy.mockRestore();
       loggerWarnSpy.mockRestore();
     }
   });
@@ -1138,7 +1163,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     };
 
     const isAvailableSpy = vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false);
-    const evalSpy = vi.spyOn(redis, 'eval');
+    const evalSpy = vi.spyOn(redis, 'evalsha');
     const loggerWarnSpy = vi.spyOn(logger, 'warn');
 
     try {
@@ -1146,8 +1171,8 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
 
       // In-memory fallback ran → counter starts at 1 for a fresh token.
       expect(result).toBe(1);
-      // redis.eval was NOT called (isRedisAvailable() short-circuited the
-      // Redis branch into the fallback).
+      // redis.evalsha was NOT called (isRedisAvailable() short-circuited the
+      // Redis branch into the fallback before evalScript would dispatch).
       expect(evalSpy).not.toHaveBeenCalled();
       // The new symmetric warn fires with a token_hash (NOT raw token) and
       // the increment-side discriminator.

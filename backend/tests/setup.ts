@@ -21,9 +21,9 @@ beforeAll(async () => {
       await redis.ping();
       const keys = await redis.keys(`${config.appTag}:*`);
       if (keys.length > 0) await redis.del(...keys);
-      // The production `ready` handler fires `loadAllScripts` async without
-      // awaiting; tests that mock `evalsha`/`eval` need a warm SHA cache by
-      // assertion time, so block on it here.
+      // Block until the SHA cache is warm before any test runs: the
+      // production-side load is asynchronous, so tests that mock
+      // `evalsha`/`eval` need a deterministic warm cache by assertion time.
       await loadAllScripts(redis);
     } catch {
       // Redis not available — tests will use in-memory fallback
