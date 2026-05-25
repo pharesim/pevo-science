@@ -293,3 +293,35 @@ Two `[TODO Architect]` items are still pending:
 - Inline comments anchor on behavioural symbols: `getOrSet`, `epoch guard`, `single-flight coalescing`, `affiliation strip`, `PaperSummary's contract`, `PaperDetail`, `chain.length === 1`, `reconstructVersionsFromHaf swallows internal failures`. Test docstrings anchor on the listing/profile enrichment-loop shape and the per-row catch contract.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-25) — HELD PENDING FIXES (round-3)
+
+`/ce-code-review` on commit `850c32ff` (round-2 hold items 1-8) confirms all eight round-2 items are mechanically addressed: AbortSignal threading on listing+profile, `getOrSet` routing + `chain-authors:` invalidate flush, empty-versions guard, affiliation strip at consumers, single-link prebuilt short-circuit, `PaperAuthor[]` return type, warm-path and error-isolation tests. The abort→cache-poisoning concern is verified NOT present (a partial chain implies the signal aborted before `reconstructVersionsFromHaf`'s own abort short-circuit, which feeds the empty-versions guard → null → not cached; corroborated by correctness, reliability, security, adversarial). Four items block archive; all four land at the cumulative-union construction boundary or its docblocks, so they are one coherent diff.
+
+### Items
+
+1. **Broadcaster-injected keys leak into `PaperSummary.authors[]` on multi-link papers.** `buildCumulativeAuthorsForChain` builds each output entry via `{ ...w.entry }` — a full spread of the broadcaster-supplied `pevo.authors[i]` object — then overrides only `hive`/`orcid`/the supersession pair. The round-2 affiliation strip at the listing/profile consumers removes only `affiliation`; any OTHER key a broadcaster includes (e.g. `email`, `url`, arbitrary metadata) survives into `authors[]` for multi-link papers. Single-link rows use the enumerated SQL/JS projection and are immune, so the same endpoint returns divergent author-object shapes by chain length, and the cached value carries the extra keys (consumer-side strips cannot contain it). Documented `PaperSummary.authors[]` shape is `{name, hive, orcid, orcid_verified, orcid_discrepancy}`. **Fix:** enumerate the output keys at `buildCumulativeAuthorsForChain`'s return — project to exactly the contract fields plus `affiliation` (the detail surface legitimately needs `affiliation`; the listing/profile consumers keep stripping it). Add a canary asserting `Object.keys(authors[i])` on a listing/profile response equals exactly the contract set (no extra broadcaster keys) for a multi-link paper whose author entries carry an injected extra key. Cross-corroborated: api-contract (100), kieran-typescript (100), adversarial.
+
+2. **`as unknown as PaperAuthor[]` at the helper boundary contradicts the round-2 item-6 instruction.** Item 6 directed "narrow at the helper's exit boundary with a real type guard, NOT an `as` cast." The landed code instead writes `return { authors: authors as unknown as PaperAuthor[], ... }` in `buildChainCumulativeFromPosts`. `PaperAuthor.name` is required; the cumulative-union construction can emit an entry with `name: undefined`; the cast asserts otherwise. **Fix (bundled with item 1):** narrow with a real guard — `authors.filter((a): a is PaperAuthor => typeof a.name === 'string')` — at the same enumerated-projection boundary. An entry without a string `name` is not a renderable `PaperAuthor` and already yields `undefined` to every consumer; filtering it makes the failure explicit rather than type-laundered. The interface stays `PaperAuthor[]`; the round-2 profile-site cast removal stands.
+
+3. **Two new AbortController docblocks misstate the pg-v8 abort bound.** The enrichment-budget docblocks in `fetchPapersFromHaf` and the profile `/:username/papers` handler describe the budget as preventing rows from "hanging on `statement_timeout` independently," implying the `AbortSignal` cancels the in-flight `pool.query`. Per `agents/docs/solutions/conventions/pg-abortcontroller-budget-bounded-by-statement-timeout-2026-05-16.md`, pg v8.x does NOT honor `AbortSignal` mid-query — the signal only suppresses *new* query dispatch; the last in-flight query runs to `statement_timeout`. Real per-row worst case is `hafWalkerWallClockMs + statement_timeout`. **Fix (comment-only):** correct both docblocks to state the `budget + statement_timeout` bound, mirroring the framing the `findCanonicalRoot` walker setup site already carries.
+
+4. **(Low priority) Unify the `authors` / `accredited_authors` guard shapes in the listing row-map.** `authors` is gated by a truthy check on the cumulative result while `accredited_authors` is gated by an optional-chain on `chainResult` — consistent today but able to diverge under a future edit. **Fix:** gate both fields on one `chainResult && chainResult.authors.length > 0 ? chainResult : null` so they live or die together.
+
+### Acceptance for re-review
+- Items 1-4 addressed in code + the item-1 enumerated-keys canary landed.
+- Scoped vitest run on the cumulative-union + cross-surface-parity test files passes; full backend suite passes with existing scoped exclusions.
+- Self-audit on added lines: no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in production or test source.
+
+### Dismissed at architect triage (out of scope)
+- Single-link cold-path re-probe / no negative-cache sentinel — deferred per the prior architect decision in this task body (revisit on production listing-latency data).
+- Shared AbortController degrading the whole page under one slow row — intended shared-budget design (one controller per route handler = total-latency ceiling), fail-closed for the badge.
+- No post-`getOrSet` abort re-check in listing/profile (detail returns 503-retry) — intentional asymmetry: listing/profile degrade gracefully to head-meta rather than 503-ing a page of valid core data; transient and self-healing.
+- Per-row enrichment loop + affiliation-strip duplicated between listing and profile — already tracked by `backend-extract-chain-cumulative-helper-to-lib`; its acceptance should absorb the affiliation-strip into `enrichRowsWithChainAuthors`.
+- Test-comment throw-site imprecision and the `NonNullable<Awaited<ReturnType<...>>>` Map annotation — below the round-3 bar.
+
+Next re-review scopes to commits after `850c32ff`.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
