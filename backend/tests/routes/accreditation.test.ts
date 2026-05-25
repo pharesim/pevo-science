@@ -21,25 +21,36 @@
  * real Redis (or in-memory fallback), so the token-lifecycle assertions
  * exercise the real persistence layer.
  *
- * Per-test redis.del / redis.decr / redis.evalsha rejection mocks: several
- * specs near the bottom of this file use
- * `vi.spyOn(redis, '<verb>').mockRejectedValueOnce(...)` for one call,
- * then `mockRestore()`. Mocked surfaces:
- *   - `redis.del`: 502-with-deleteToken-rejection (broadcast failure
- *     cleanup branch).
- *   - `redis.decr`: decrement-failure log path (504 timeout followed by a
- *     Redis-side rejection on the compensating decrement).
- *   - `redis.evalsha`: pre-INCR 503 path (Redis-side rejection on the
- *     cap-counter dispatch via `evalScript`, before the broadcast site).
+ * Per-test Redis rejection mocks: several specs near the bottom of this
+ * file stage deterministic Redis-side failures, then `mockRestore()`. Two
+ * shapes are used:
+ *   - Single-verb `vi.spyOn(redis, '<verb>').mockRejectedValueOnce(...)`
+ *     for one call:
+ *       - `redis.del`: 502-with-deleteToken-rejection (broadcast failure
+ *         cleanup branch).
+ *       - `redis.decr`: decrement-failure log path (504 timeout followed
+ *         by a Redis-side rejection on the compensating decrement).
+ *   - Dual-verb key-discriminating `mockImplementation` on BOTH
+ *     `redis.eval` AND `redis.evalsha` for the pre-INCR 503 path: the mock
+ *     rejects ONLY the cap-counter dispatch (discriminated by the
+ *     broadcast-attempts counter key in the script args) and delegates
+ *     every other dispatch — including the `/verify` limiter's own shared
+ *     script — to a bound real-Redis call. Both verbs are mocked because
+ *     `evalScript` selects `evalsha` (warm SHA cache) or `eval` (cold) at
+ *     runtime, so a single-verb reject could miss whichever path is live;
+ *     and the discrimination is by counter key, not by call ordinal,
+ *     because the limiter (also dispatched via `evalScript`) runs before
+ *     the cap-counter INCR and a blanket reject would be consumed by it.
  * The failure modes (Redis evicted to read-only mid-request, transient
  * connection drop, OOM, Lua error) are impractical to induce against the
- * real dev-mode Redis container — the deterministic single-call rejection
- * is the only way to drive the corresponding catch paths on demand. The
- * carve-outs are narrow: only the named verb is mocked, only on that one
- * call, and the seeded token + envelope assertions still exercise real
- * Redis on the rest of the route. Real-Redis coverage of the surrounding
- * envelopes is provided by adjacent specs (e.g. the immediately preceding
- * "non-timeout broadcast error → 502 BROADCAST_FAILED").
+ * real dev-mode Redis container — the deterministic rejection is the only
+ * way to drive the corresponding catch paths on demand. The carve-outs
+ * stay narrow: the single-verb mocks touch only the named verb on one
+ * call, and the dual-verb 503 mock rejects only the cap-counter dispatch
+ * while every other script (the limiter included) runs against real Redis.
+ * Real-Redis coverage of the surrounding envelopes is provided by adjacent
+ * specs (e.g. the immediately preceding "non-timeout broadcast error → 502
+ * BROADCAST_FAILED").
  *
  * INTENTIONAL RED in this file: the cleanup-failure spec (502
  * BROADCAST_FAILED + deleteToken rejection) and the decrement-failure spec
