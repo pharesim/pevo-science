@@ -343,6 +343,31 @@ export default tseslint.config(
       'pevo/no-custom-id-block-num-floor': 'error',
     },
   },
+  {
+    // Production code (`src/`) must NOT import the anonymous-review test seam.
+    // `__test_seams` on the anonymousReview module re-exports `storeAnonMapping`
+    // / `encryptMapping`, which bypass the route-level accreditation, self-block,
+    // and rate-limit gates. Only the test file legitimately imports them, and
+    // `npm run lint` lints `src/` only — so this rule never trips on tests. A
+    // production importer would silently undermine the anonymous-review trust
+    // model; this rule turns that into a build error.
+    files: ['src/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/routes/anonymousReview', '**/routes/anonymousReview.js'],
+              importNames: ['__test_seams'],
+              message:
+                'Do not import __test_seams from routes/anonymousReview in production code. It re-exports storeAnonMapping/encryptMapping, which bypass the route-level accreditation, self-block, and rate-limit gates. The seam is for tests/ only.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );
 
 // Exported so unit tests under tests/eslint/ can drive the rules with

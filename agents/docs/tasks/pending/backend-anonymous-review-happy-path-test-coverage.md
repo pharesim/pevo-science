@@ -131,3 +131,60 @@ Fix: Remove `ANON_TTL_DAYS` from the `__test_seams` constant block in `backend/s
 When items 1-4 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect re-review scopes `/ce-code-review` to the round-2 commit only. The 4 items are mechanical edits + one ESLint rule; round-2 should be a focused small commit.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-25, commit <sha>)
+
+All four round-1 hold items landed in a single round-2 commit on
+`backend/tests/routes/anonymousReview.test.ts`,
+`backend/src/routes/anonymousReview.ts`, and `backend/eslint.config.mjs`.
+
+**Item 1 (IV-distinctness assertion).** Added a new spec under the
+`happy-path mapping round-trip` describe that calls
+`__test_seams.encryptMapping('carol')` twice on identical plaintext +
+identical key and asserts `expect(env1.iv).not.toEqual(env2.iv)`. Anchored
+on the stable `encryptMapping` / `iv` symbols (no slug/round/line/SHA).
+Expected mutation-kill: replacing `crypto.randomBytes(12)` with
+`Buffer.alloc(12)` in `encryptMapping` makes both IVs equal and flips this
+assertion RED (the prior byte-inequality spec misses it — under a constant
+nonce the ciphertext still does not contain the cleartext). Also removed the
+two vacuous hex-only `not.toContain(reviewer)` lines (architect's optional
+cleanup) from the ciphertext-inequality spec; the hex-of-utf8 and
+utf8/latin1/base64 byte-decoding checks remain.
+
+**Item 2 (stale docstring).** Rewrote the docstring on the "admits a true
+third-party accredited reviewer past the self-block gate" spec. It no longer
+describes the old 500-misconfig path; it now states the request flows through
+the full success path under the file-level config mock and anchors on the
+load-bearing `not.toBe(403)` third-party-admission invariant (carol is not
+the paper author, not self-blocked). The inline assertion comment
+("regardless of the downstream status") was left intact — it correctly
+justifies the invariant-focused assertion and is not tied to the 500 narrative.
+
+**Item 3 (ESLint guard).** Added a `no-restricted-imports` rule in
+`backend/eslint.config.mjs` scoped to `files: ['src/**/*.ts']` that flags the
+named import `__test_seams` from any path matching
+`**/routes/anonymousReview` (and `.js`). Verified by lint-probing a throwaway
+`src/__eslint_seam_probe.ts` (errored with `no-restricted-imports`) and a
+`tests/__eslint_seam_probe.ts` (clean); both probes removed, nothing
+committed. `npm run lint` (lints `src/` only) stays clean on the real tree —
+no production importer exists. Expected mutation-kill: any future `src/` file
+importing `__test_seams` from the anonymousReview module errors at lint.
+Self-references inside other route modules to their own local `__test_seams`
+const are not imports and are unaffected.
+
+**Item 4 (dead const).** Removed `ANON_TTL_DAYS` from the `__test_seams`
+export block in `backend/src/routes/anonymousReview.ts`. The production-side
+`const ANON_TTL_DAYS = 180;` declaration is unchanged (the handler uses it
+directly). The TTL test already hardcodes the ms value via
+`__test_seams.storeAnonMapping(...)` and never referenced
+`__test_seams.ANON_TTL_DAYS`, so no test edit was needed.
+
+**Verification.** From `backend/`: `npm run typecheck` clean (src + tests);
+`npm run lint` clean (0 errors; the single pre-existing unrelated
+`author-supersession.ts` warning persists, unchanged from round 1). vitest was
+NOT run per the task instruction (real Redis/crypto + concurrent-worktree
+collision risk); the parent runs the suite serially after merge.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

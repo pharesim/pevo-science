@@ -236,15 +236,17 @@ describe('POST /api/reviews/anonymous — co-author self-block normalization', (
     expect(res.body.error.message).toContain('Authors cannot review their own papers');
   });
 
-  // Control: the same flow with a true third-party reviewer succeeds past
-  // the self-block predicate. Pins that the normalization change did not
-  // over-exclude legitimate non-author reviewers. The route requires
-  // pevoAnonPostingKey downstream of the self-block check (unset in this
-  // test environment) and returns 500 — that's expected and not what this
-  // case is asserting. The load-bearing claim is that the 403 self-block
-  // does NOT fire for carol. An if-guarded `not.toContain(...)` would be
-  // vacuous on non-403 paths and miss a regression that incorrectly self-
-  // blocks a third party.
+  // Control: the same flow with a true third-party reviewer is NOT blocked by
+  // the self-block predicate. Pins that the broadcaster-side normalization did
+  // not over-exclude legitimate non-author reviewers. The file-level
+  // config mock pins `pevoAnonPostingKey` + `anonReviewEncryptionKey`, so this
+  // request now flows through the full success path (the broadcast helpers are
+  // stubbed) rather than tripping the 500-misconfig guard. The load-bearing
+  // invariant is `not.toBe(403)`: carol is neither the paper author nor a
+  // self-blocked co-author, so the 403 self-block must not fire regardless of
+  // the downstream status. Asserting `not.toBe(403)` (rather than a specific
+  // success code) keeps the spec focused on the admission invariant and robust
+  // to changes in the post-admission path.
   it('admits a true third-party accredited reviewer past the self-block gate', async () => {
     getAccreditationMock.mockResolvedValueOnce({
       name: 'Carol',
@@ -486,7 +488,6 @@ describe('POST /api/reviews/anonymous — happy-path mapping round-trip', () => 
       // hex, utf8, or base64 decoding.
       const parsed = JSON.parse(raw!) as { encrypted: string };
       const cipherBuf = Buffer.from(parsed.encrypted, 'hex');
-      expect(parsed.encrypted).not.toContain(reviewer);
       expect(parsed.encrypted).not.toContain(Buffer.from(reviewer, 'utf8').toString('hex'));
       expect(cipherBuf.toString('utf8')).not.toContain(reviewer);
       expect(cipherBuf.toString('latin1')).not.toContain(reviewer);
@@ -498,7 +499,6 @@ describe('POST /api/reviews/anonymous — happy-path mapping round-trip', () => 
       const stored = await getAnonMapping(permlink);
       expect(stored).not.toBeNull();
       const cipherBuf = Buffer.from(stored!.encrypted, 'hex');
-      expect(stored!.encrypted).not.toContain(reviewer);
       expect(stored!.encrypted).not.toContain(Buffer.from(reviewer, 'utf8').toString('hex'));
       expect(cipherBuf.toString('utf8')).not.toContain(reviewer);
       expect(cipherBuf.toString('latin1')).not.toContain(reviewer);
@@ -510,6 +510,21 @@ describe('POST /api/reviews/anonymous — happy-path mapping round-trip', () => 
     const stored = await getAnonMapping(permlink);
     const unsealed = decryptMapping(stored!.encrypted, stored!.iv, stored!.authTag, stored!.keyVersion);
     expect(unsealed).toBe(reviewer);
+  });
+
+  it('uses a fresh random IV per seal so identical plaintext yields distinct ciphertext', () => {
+    // AES-GCM is catastrophically broken under nonce (IV) reuse: encrypting
+    // the same plaintext under the same key with the same IV always produces
+    // identical ciphertext, enabling trivial known-plaintext correlation and
+    // forgery. `encryptMapping` MUST draw a fresh `crypto.randomBytes(12)` IV
+    // every call. Sealing identical plaintext twice and asserting the IVs
+    // differ mutation-kills replacing `crypto.randomBytes(12)` with a constant
+    // (e.g. `Buffer.alloc(12)`): that mutation makes both IVs equal and flips
+    // this assertion RED. The byte-inequality spec above misses this — under a
+    // constant nonce the ciphertext still does not contain the cleartext.
+    const env1 = __test_seams.encryptMapping('carol');
+    const env2 = __test_seams.encryptMapping('carol');
+    expect(env1.iv).not.toEqual(env2.iv);
   });
 
   it('returns null from the mapping store after the configured TTL elapses', async () => {

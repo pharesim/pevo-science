@@ -259,15 +259,15 @@ setInterval(() => {
 export { decryptMapping, getAnonMapping };
 
 // Test-only seam: exposes the internal mapping-store writer and the
-// hardcoded TTL constant so the happy-path test in
+// AES-GCM sealer so the happy-path test in
 // `tests/routes/anonymousReview.test.ts` can pin a sub-second expiry
 // without changing production behaviour. The route handler itself never
 // touches `__test_seams`; only the test file imports it. NOT for
-// production import.
+// production import — the no-restricted-imports rule in
+// `eslint.config.mjs` flags any import of this seam from `src/`.
 export const __test_seams = {
   storeAnonMapping,
   encryptMapping,
-  ANON_TTL_DAYS,
 } as const;
 
 export default router;
