@@ -161,3 +161,19 @@ When items 1-5 land, `git mv` this file back to `tasks/review/`. The mv itself i
 Recommendation: item 1 is the load-bearing item; items 2-4 are small and natural to bundle in the same commit; item 5 is one test file. Implementer's call on commit shape — either one bundled commit or two (code + tests).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-25, worktree)
+
+**Item 1 (Shape A chosen) — `backend/src/routes/settings.ts`.** The `DELETE /api/settings/email` transaction now runs `DELETE FROM pending_recovery WHERE username = $1` alongside the existing audit-anonymize + notification_preferences + accounts deletes. Shape A over Shape B: the email-delete path deletes the whole `accounts` row, so a surviving consumed staging row's username link is orphaned anyway and carries no forensic value once the account is gone — a single DELETE fully removes the GDPR-sensitive plaintext new_email + argon2 hash with no migration change and no NULL-column handling. Test in `backend/tests/routes/settings.test.ts`: seeds an account + a pending_recovery row, deletes the email, asserts the staging row is gone and a phase-2 `/recover/verify` on the (now-swept) verify token returns 400 INVALID_TOKEN with no account recreated. Mutation-kill: reverting the DELETE leaves the row alive and the `after.rows.length === 0` assertion fails.
+
+**Item 2 — `backend/src/routes/recover.ts`.** `RecoverBodySchema.new_email` is now `z.string().min(1).email()`, matching the change-email schema in `settings.ts`. A malformed address now 400s VALIDATION_ERROR at parse time before any staging. This also closes the `emailDomain('@evil.com')` secondary finding since the helper never sees malformed input. (Covered behaviorally by the existing schema-parse-failure path; no new dedicated spec — the email-format reject shares the generic "Invalid request body" 400 envelope already asserted on the schema.)
+
+**Item 3 — `backend/migrations/012_pending_recovery.sql`.** Stripped the stale "ADD COLUMN IF NOT EXISTS guards" sentence (copy-paste residue from migration 011); the header now reads "CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS", matching the actual idempotency mechanism in the body.
+
+**Item 4 — `backend/src/routes/recover.ts`.** Renamed the `token2` local var at the `/recover/verify` JWT-mint site to `sessionJwt`; the response FIELD name stays `token` (wire shape unchanged). `/recover/dispute` has no JWT mint, so it had no `token2` to rename.
+
+**Item 5 — `backend/tests/routes/recover-two-phase.test.ts`.** (a) Supersession contract test: phase-1, capture the first verify token, phase-1 again with a different new_email, assert exactly one pending_recovery row remains and the FIRST verify token → 400 INVALID_TOKEN with `accounts.email` unchanged. Mutation-kill: dropping the supersession DELETE leaves the first row alive and the first token applies. (b) Dispute-window expiry test (symmetric to the verify-expiry test): force-expire `dispute_expires_at`, click dispute → 400 INVALID_TOKEN, `disputed_at` stays NULL. Mutation-kill: removing the dispute expiry gate accepts the expired dispute and stamps `disputed_at`.
+
+`npm run typecheck` (src + tests) and `npm run lint` (src) both clean; the only lint output is the pre-existing unrelated warning in `src/lib/author-supersession.ts` (untouched). Per the worktree instruction, vitest was NOT run here (real shared Postgres/Redis — the parent runs it serially after merge). Migration 012 must be applied to the test DB before that run (it already is on this branch; the new settings + supersession/dispute specs query the `pending_recovery` table).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

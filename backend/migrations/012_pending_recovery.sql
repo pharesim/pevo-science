@@ -39,8 +39,8 @@
 -- usable token. The phase-2 / dispute handlers hash the presented token and
 -- look up by digest.
 --
--- Idempotent: CREATE TABLE IF NOT EXISTS + ADD COLUMN IF NOT EXISTS guards let
--- this re-apply cleanly.
+-- Idempotent: CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS let this
+-- re-apply cleanly.
 
 CREATE TABLE IF NOT EXISTS pending_recovery (
   id                   SERIAL PRIMARY KEY,

@@ -31,6 +31,7 @@
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import crypto from 'node:crypto';
 import request from 'supertest';
 import nodemailer from 'nodemailer';
 import { createApp } from '../../src/app.js';
@@ -304,6 +305,68 @@ describe('Settings email (with DB)', () => {
       [TEST_USER],
     );
     expect(prefRows.length).toBe(0);
+  });
+
+  it.skipIf(!dbReachable)('DELETE sweeps the pending_recovery staging row, and phase-2 verify on the swept row is rejected', async () => {
+    // A two-phase recovery staging row carries the would-be new email
+    // (plaintext) plus an offline-crackable argon2id hash. Under data
+    // minimization it must not outlive the deleted account. This pins that the
+    // email-delete transaction removes the row, and that a phase-2 verify
+    // presenting the (now gone) staged verify token can no longer apply a swap.
+    const pool = getAppPool()!;
+    const username = `settings_pendrec_${Date.now()}`;
+    const oldEmail = `settings_pendrec_${Date.now()}@example.com`;
+    const stagedNewEmail = `settings_pendrec_new_${Date.now()}@example.com`;
+
+    // The plaintext verify token only ever travels in the mailed link; the row
+    // stores its SHA-256. Build a token here so we can replay it at phase 2.
+    const verifyToken = crypto.randomBytes(32).toString('hex');
+    const verifyTokenHash = crypto.createHash('sha256').update(verifyToken).digest();
+    const disputeTokenHash = crypto.createHash('sha256').update(crypto.randomBytes(32)).digest();
+
+    try {
+      await pool.query(
+        `INSERT INTO accounts (email, username, verify_token) VALUES ($1, $2, NULL)`,
+        [oldEmail, username],
+      );
+      await pool.query(
+        `INSERT INTO pending_recovery
+           (username, new_email, new_password_hash,
+            verify_token_hash, verify_expires_at,
+            dispute_token_hash, dispute_expires_at)
+         VALUES ($1, $2, $3, $4, NOW() + INTERVAL '24 hours', $5, NOW() + INTERVAL '48 hours')`,
+        [username, stagedNewEmail, 'argon2-hash-placeholder', verifyTokenHash, disputeTokenHash],
+      );
+
+      // Sanity: the staging row exists before the delete.
+      const before = await pool.query('SELECT id FROM pending_recovery WHERE username = $1', [username]);
+      expect(before.rows.length).toBe(1);
+
+      const res = await request(app)
+        .delete('/api/settings/email')
+        .set('X-Hive-Username', username)
+        .send({ confirm: true });
+      expect(res.status).toBe(200);
+      expect(res.body.data.deleted).toBe(true);
+
+      // The staging row was swept by the email-delete transaction.
+      // Mutation-kill: dropping the DELETE leaves this row alive.
+      const after = await pool.query('SELECT id FROM pending_recovery WHERE username = $1', [username]);
+      expect(after.rows.length).toBe(0);
+
+      // Phase-2 verify on the (now gone) token is rejected; no account was
+      // recreated and no swap applied.
+      const p2 = await request(app).post('/api/auth/recover/verify').send({ token: verifyToken });
+      expect(p2.status).toBe(400);
+      expect(p2.body.error.code).toBe('INVALID_TOKEN');
+
+      const acct = await pool.query('SELECT id FROM accounts WHERE username = $1', [username]);
+      expect(acct.rows.length).toBe(0);
+    } finally {
+      await pool.query('DELETE FROM pending_recovery WHERE username = $1', [username]).catch(() => {});
+      await pool.query('DELETE FROM custody_audit_log WHERE username = $1', [username]).catch(() => {});
+      await pool.query('DELETE FROM accounts WHERE username = $1', [username]).catch(() => {});
+    }
   });
 
   it.skipIf(!dbReachable)(

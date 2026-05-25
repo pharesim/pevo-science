@@ -255,6 +255,75 @@ describe('two-phase memo-key recovery — full flow', () => {
     const disputeAudit = await fetchSettledAuditRows(pool, USER, 'recovery_dispute');
     expect(disputeAudit.length).toBe(1);
   });
+
+  it.skipIf(!dbReachable || !hasCustodyKey)('re-staging supersedes the prior row — the first verify token no longer applies', async () => {
+    const pool = getAppPool()!;
+
+    // Phase 1, first attempt. Capture its verify token before re-staging clears
+    // the mail capture.
+    const firstEmail = `recover2p_super1_${Date.now()}@example.com`;
+    const p1a = await request(app)
+      .post('/api/auth/recover')
+      .send({ username: USER, new_email: firstEmail, new_password: 'FirstStage1', memo_key: MEMO_KEY });
+    expect(p1a.status).toBe(200);
+    const firstVerifyToken = tokenFromMail('/recover/verify');
+    expect(firstVerifyToken).toBeTruthy();
+
+    // Phase 1 again with a DIFFERENT new email. This supersedes the prior
+    // un-consumed staging row in one transaction (delete-then-insert).
+    smtpMock.sendMail.mockClear();
+    const secondEmail = `recover2p_super2_${Date.now()}@example.com`;
+    const p1b = await request(app)
+      .post('/api/auth/recover')
+      .send({ username: USER, new_email: secondEmail, new_password: 'SecondStage1', memo_key: MEMO_KEY });
+    expect(p1b.status).toBe(200);
+
+    // Exactly one staging row survives for the username — the supersede deleted
+    // the first.
+    const { rows: stagedRows } = await pool.query(
+      'SELECT id FROM pending_recovery WHERE username = $1',
+      [USER],
+    );
+    expect(stagedRows.length).toBe(1);
+
+    // The FIRST verify token now resolves to nothing (its row was deleted).
+    const p2 = await request(app).post('/api/auth/recover/verify').send({ token: firstVerifyToken });
+    expect(p2.status).toBe(400);
+    expect(p2.body.error.code).toBe('INVALID_TOKEN');
+
+    // Account email unchanged — the stale first-attempt swap did not apply.
+    const acct = await pool.query('SELECT email FROM accounts WHERE username = $1', [USER]);
+    expect(acct.rows[0].email).toBe(OLD_EMAIL);
+  });
+
+  it.skipIf(!dbReachable || !hasCustodyKey)('expired dispute link is rejected — disputed_at stays NULL', async () => {
+    const pool = getAppPool()!;
+    const newEmail = `recover2p_dispexp_${Date.now()}@example.com`;
+    const p1 = await request(app)
+      .post('/api/auth/recover')
+      .send({ username: USER, new_email: newEmail, new_password: 'DispExpire1', memo_key: MEMO_KEY });
+    expect(p1.status).toBe(200);
+
+    const disputeToken = tokenFromMail('/recover/dispute');
+    expect(disputeToken).toBeTruthy();
+
+    // Force-expire the dispute window (symmetric to the verify-expiry path).
+    await pool.query(
+      `UPDATE pending_recovery SET dispute_expires_at = NOW() - INTERVAL '1 minute' WHERE username = $1`,
+      [USER],
+    );
+
+    const disp = await request(app).post('/api/auth/recover/dispute').send({ token: disputeToken });
+    expect(disp.status).toBe(400);
+    expect(disp.body.error.code).toBe('INVALID_TOKEN');
+
+    // The expired dispute did not stamp disputed_at.
+    const { rows } = await pool.query(
+      'SELECT disputed_at FROM pending_recovery WHERE username = $1',
+      [USER],
+    );
+    expect(rows[0].disputed_at).toBeNull();
+  });
 });
 
 // ── ORCID recovery severed after upgrade-to-self-custody (state D) ──

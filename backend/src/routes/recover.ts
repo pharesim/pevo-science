@@ -23,7 +23,12 @@ const router = Router();
 
 const RecoverBodySchema = z.object({
   username: z.string().min(1),
-  new_email: z.string().min(1),
+  // Email-format validation at the schema layer so a malformed address is
+  // rejected with 400 VALIDATION_ERROR before any staging happens. Without
+  // it a non-email string could be staged at phase 1 and a forged phase-2
+  // token would set accounts.email to garbage. Mirrors the change-email
+  // schema in settings.ts (z.string().email()).
+  new_email: z.string().min(1).email(),
   // Non-empty when present: ''→parse-reject, null/undefined→optional.
   // The previous shape `z.string().optional().nullable()` also accepted
   // empty strings, which the downstream `passwordProvided` guard
@@ -544,14 +549,14 @@ router.post('/recover/verify', recoverLimiter, async (req: Request, res: Respons
     }
 
     const custody = account.upgraded_at ? 'self' : (account.custody || 'light');
-    const token2 = jwt.sign(
+    const sessionJwt = jwt.sign(
       { sub: account.username, custody },
       config.sessionSecret,
       { expiresIn: SESSION_EXPIRY },
     );
     const expiresAt = new Date(Date.now() + SESSION_EXPIRY_MS).toISOString();
 
-    sendOk(res, { token: token2, expires_at: expiresAt, custody, username: account.username });
+    sendOk(res, { token: sessionJwt, expires_at: expiresAt, custody, username: account.username });
   } catch (err) {
     logger.error(
       { event: 'auth.recover_verify.failed', route: 'auth.recover-verify', err },

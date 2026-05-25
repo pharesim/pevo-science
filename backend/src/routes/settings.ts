@@ -579,6 +579,16 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
         'UPDATE custody_audit_log SET username = NULL, user_agent = NULL, session_id = NULL WHERE username = $1',
         [username],
       );
+      // Remove any two-phase recovery staging row for this username. A staging
+      // row carries a third-party plaintext email (the would-be new address)
+      // and an offline-crackable argon2id password hash; under data
+      // minimization neither may outlive the deleted account. The whole
+      // accounts row is removed below, so the consumed staging row's username
+      // link would be orphaned anyway — there is no forensic value in keeping
+      // it once the account is gone. Deleting it also closes the stale-bind
+      // hijack: a re-signed-up username can no longer have an old staged swap
+      // applied to it via phase-2 verify.
+      await client.query('DELETE FROM pending_recovery WHERE username = $1', [username]);
       await client.query('DELETE FROM notification_preferences WHERE username = $1', [username]);
       await client.query('DELETE FROM accounts WHERE username = $1', [username]);
 
