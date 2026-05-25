@@ -278,3 +278,22 @@ Test addition (mutation-kill the inner try/catch):
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Backend re-review signal (2026-05-25, this branch HEAD)
+
+Round-4 hold item 1 (P1, reliability) landed.
+
+**Item 1 (P1, reliability) — SMTP-fail rollback inner try/catch.** `backend/src/routes/settings.ts`, `POST /api/settings/email` SMTP-fail catch block. Wrapped both rollback queries (the Add-flow DELETE and the Change-flow token-scoped restore UPDATE) in a single inner `try/catch`. On rollback failure the inner catch emits a distinct `settings.email_post.smtp_fail_rollback_failed` warn carrying the same field shape as the sibling `smtp_send_failed` warn (`{ event, route, email_hash, username, err }`), then falls through to the uniform 200 return. The new discriminator fires ONLY on the rollback-failure path (inner catch), so the normal SMTP-fail path still emits exactly one warn — logging-minimal posture preserved. Comment anchors the rationale on the inner-try invariant (status-code oracle re-opening on escaped rollback throw); no task-slug / round-number / line-number / SHA citations introduced.
+
+**Test (mutation-kill).** `backend/tests/routes/settings-email-fresh-auth.test.ts`, new spec in the existing concurrent-overwrite describe block: `'rollback query throws → 200 (not 500) + smtp_fail_rollback_failed warn fires'`. Queues a one-shot SMTP rejection on the hoisted `smtpMock.sendMail`, then spies on the shared `pool.query` to reject ONLY the token-scoped restore UPDATE (matched on `SET pending_email` + `pending_email_token = $5`, passing every other statement through to the real DB) with a Postgres-like deadlock error. Asserts status `200` (not 500) AND that both `settings.email_post.smtp_send_failed` and `settings.email_post.smtp_fail_rollback_failed` warns fire. Expected mutation-kill: removing the inner `try/catch` lets the rollback throw escape to the outer error handler → response flips to `500` and the `smtp_fail_rollback_failed` warn never fires → both assertions go RED.
+
+**Verification (from `backend/`):**
+- `npm run typecheck` (`:src` + `:tests`): clean.
+- `npm run lint` (`eslint src/`): no errors/warnings on touched files (one pre-existing unrelated warning in `src/lib/author-supersession.ts`, outside this change).
+- Vitest NOT run in-worktree per instructions (real-Postgres suite collides with sibling worktrees); the parent runs the authoritative serial suite after merge. Expected: all prior specs in `settings-email-fresh-auth.test.ts` unaffected (default `sendMail` still resolves; the new `pool.query` spy is scoped to one test and `mockRestore`d in `finally`), plus the new rollback-throw spec passes.
+
+**Deviations:** None. Touched only the SMTP-fail catch block and added one test; prior-round work untouched.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;

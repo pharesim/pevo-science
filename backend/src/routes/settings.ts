@@ -338,35 +338,65 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
       // concurrent change-email request that already overwrote the row
       // sees the restore no-op here, intended: don't clobber its in-flight
       // state.
-      if (existing.length === 0) {
-        await pool.query('DELETE FROM accounts WHERE username = $1 AND verify_token = $2', [username, token]);
-      } else {
-        const prior = existing[0];
-        const restoreResult = await pool.query(
-          `UPDATE accounts
-             SET pending_email = $1,
-                 pending_email_token = $2,
-                 pending_email_expires_at = $3
-             WHERE username = $4 AND pending_email_token = $5`,
-          [prior.pending_email, prior.pending_email_token, prior.pending_email_expires_at, username, token],
-        );
-        // Observability: distinguish "rolled back successfully" from
-        // "raced — a concurrent change-email request already overwrote the
-        // row so this restore's token-scoped WHERE no-op'd." Operators
-        // responding to an SMTP-outage incident otherwise can't tell the
-        // two cases apart from the single smtp_send_failed warn above.
-        // Fires only on the race path — normal SMTP-fail emits one warn.
-        if (restoreResult.rowCount === 0) {
-          logger.warn(
-            {
-              event: 'settings.email_post.smtp_fail_restore_raced',
-              route: 'settings.email-post',
-              email_hash: hashEmailForLogs(email),
-              username,
-            },
-            'SMTP-fail restore skipped — concurrent change-email request already overwrote pending_email',
+      //
+      // The rollback query is itself wrapped in an inner try/catch: if the
+      // rollback throws (Postgres deadlock, statement timeout, transient
+      // pool blip), the error must NOT escape to the outer 500 handler.
+      // Letting it escape would convert the uniform-200 SMTP-fail semantic
+      // into a 500 for some inputs and not others, re-opening the
+      // status-code enumeration oracle that the catch-warn-200 shape closes
+      // (an attacker who can induce rollback contention could drive the 500
+      // branch differentially). On rollback failure we emit a distinct warn
+      // discriminator and fall through to the same uniform 200. The
+      // discriminator fires ONLY on the rollback-failure path, preserving
+      // the logging-minimal posture on the normal SMTP-fail path.
+      try {
+        if (existing.length === 0) {
+          await pool.query('DELETE FROM accounts WHERE username = $1 AND verify_token = $2', [username, token]);
+        } else {
+          const prior = existing[0];
+          const restoreResult = await pool.query(
+            `UPDATE accounts
+               SET pending_email = $1,
+                   pending_email_token = $2,
+                   pending_email_expires_at = $3
+               WHERE username = $4 AND pending_email_token = $5`,
+            [prior.pending_email, prior.pending_email_token, prior.pending_email_expires_at, username, token],
           );
+          // Observability: distinguish "rolled back successfully" from
+          // "raced — a concurrent change-email request already overwrote the
+          // row so this restore's token-scoped WHERE no-op'd." Operators
+          // responding to an SMTP-outage incident otherwise can't tell the
+          // two cases apart from the single smtp_send_failed warn above.
+          // Fires only on the race path — normal SMTP-fail emits one warn.
+          if (restoreResult.rowCount === 0) {
+            logger.warn(
+              {
+                event: 'settings.email_post.smtp_fail_restore_raced',
+                route: 'settings.email-post',
+                email_hash: hashEmailForLogs(email),
+                username,
+              },
+              'SMTP-fail restore skipped — concurrent change-email request already overwrote pending_email',
+            );
+          }
         }
+      } catch (rollbackErr) {
+        // Rollback itself failed. Swallow it so the SMTP-fail path stays
+        // uniform 200 (see the inner-try rationale above); emit a distinct
+        // discriminator so an operator can see the row was left carrying
+        // pending-email state with no deliverable verify link. Mirrors the
+        // sibling smtp_send_failed warn's field shape.
+        logger.warn(
+          {
+            event: 'settings.email_post.smtp_fail_rollback_failed',
+            route: 'settings.email-post',
+            email_hash: hashEmailForLogs(email),
+            username,
+            err: rollbackErr,
+          },
+          'SMTP-fail rollback query failed',
+        );
       }
       // Fall through to the uniform 200 below — do NOT return 500.
     }

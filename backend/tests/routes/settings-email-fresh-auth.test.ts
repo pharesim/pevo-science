@@ -1065,6 +1065,79 @@ describe.skipIf(!dbReachable)(
       expect(rows[0].pending_email_token).toBe(TOKEN_C);
     });
 
+    it('rollback query throws → 200 (not 500) + smtp_fail_rollback_failed warn fires', async () => {
+      // Mutation-kill the inner try/catch around the SMTP-fail rollback.
+      // Trigger an SMTP send failure, then make the rollback restore UPDATE
+      // itself reject with a Postgres-like error. The inner try/catch must
+      // swallow the rollback throw so the response stays uniform 200; if the
+      // throw escaped to the outer error handler the route would 500,
+      // re-opening the status-code enumeration oracle the uniform-200 SMTP-
+      // fail shape closes. A regression removing the inner try/catch flips
+      // both assertions red (status becomes 500, the rollback-failed warn
+      // never fires).
+      const proof = await issueFreshAuthToken(
+        STATE_A_USER,
+        'password',
+        changeEmailFreshAuthTarget(STATE_A_USER),
+      );
+
+      // SMTP fails so the route enters the rollback path.
+      smtpMock.sendMail.mockRejectedValueOnce(new Error('SMTP connection refused'));
+
+      // Make the Change-flow restore UPDATE reject. Spy on the shared pool's
+      // query: pass every statement through to the real DB EXCEPT the
+      // token-scoped restore UPDATE, which we force to reject with a
+      // Postgres-like error simulating a deadlock / pool blip during
+      // rollback.
+      const pool = getAppPool()!;
+      const realQuery = pool.query.bind(pool) as (...a: unknown[]) => Promise<unknown>;
+      const rollbackImpl = (...args: unknown[]): Promise<unknown> => {
+        const sql = typeof args[0] === 'string' ? args[0] : '';
+        if (sql.includes('SET pending_email') && sql.includes('pending_email_token = $5')) {
+          return Promise.reject(
+            Object.assign(new Error('deadlock detected'), { code: '40P01' }),
+          );
+        }
+        return realQuery(...args);
+      };
+      const querySpy = vi
+        .spyOn(pool, 'query')
+        .mockImplementation(rollbackImpl as never);
+
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(
+        () => undefined as unknown as void,
+      );
+
+      try {
+        const res = await request(app)
+          .post('/api/settings/email')
+          .set('Authorization', bearerFor(STATE_A_USER))
+          .set('X-Hive-Username', STATE_A_USER)
+          .send({ email: NEW_EMAIL_B, fresh_auth_proof: proof.token });
+
+        // Uniform 200 — the rollback throw was swallowed by the inner catch.
+        expect(res.status).toBe(200);
+
+        // Both warn emissions present:
+        //   1. settings.email_post.smtp_send_failed (always on SMTP fail)
+        //   2. settings.email_post.smtp_fail_rollback_failed (only when the
+        //      rollback query itself throws)
+        const events = warnSpy.mock.calls
+          .map((call) => {
+            const [obj] = call;
+            return obj && typeof obj === 'object'
+              ? (obj as { event?: string }).event
+              : undefined;
+          })
+          .filter(Boolean);
+        expect(events).toContain('settings.email_post.smtp_send_failed');
+        expect(events).toContain('settings.email_post.smtp_fail_rollback_failed');
+      } finally {
+        warnSpy.mockRestore();
+        querySpy.mockRestore();
+      }
+    });
+
     it('concurrent overwrite mid-flight → smtp_fail_restore_raced warn fires (distinct from smtp_send_failed)', async () => {
       // Observability pin: when the restore UPDATE no-ops (race path),
       // the route emits a second warn with a distinct event discriminator
