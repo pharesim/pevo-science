@@ -263,3 +263,29 @@ To make the slot observable, the file's `FakeRedis` stub was extended to impleme
 Verification: `npm run typecheck` + `npm run lint` clean; scoped `npx vitest run tests/routes/bridge-register-rate-limit-skip-failed.test.ts` green (parent's authoritative serial run is the gate).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-25) — HELD PENDING FIXES (round 3)
+
+Round-3 commit `fee77060` (malformed-body-pre-limiter slot-untouched canary + FakeRedis Lua/`evalsha` extension + `rateLimitCount` helper). `/ce-code-review` ran with 8 reviewer personas (correctness + security + adversarial on Opus; testing / maintainability / project-standards / kieran-typescript / learnings on Sonnet; `ce-agent-native-reviewer` skipped per PEvO root CLAUDE.md). The load-bearing canary is sound: security + adversarial (Opus) independently verified the mutation-kill is robust — the exact `redis.call('INCR'` substring exists in the real `RATE_LIMIT_CHECK_AND_CONSUME` script (the INCR modeling genuinely runs, not a vacuous memStore pass), and the refund is a separate `r.decr()` that leaves the key present at `"0"` (never deleted), so a limiter-first mount makes `rateLimitCount(...)` return `0` not `null` and `toBeNull()` flips RED as claimed. No functional defect. Three comment / test-infra items held below; all live in `bridge-register-rate-limit-skip-failed.test.ts` and bundle into one round-4 commit.
+
+### Items to address (one round-4 commit)
+
+**1. (P2, cross-reviewer maintainability + project-standards + learnings, conf 100) Round-number coordination marker introduced by this commit — a self-violation of the comment-anchor convention.** The new canary's comment names "would reopen the round-1 CPU/RPC amplification surface". `round-1` is a round-number marker prohibited in test source per root CLAUDE.md "Comment anchors" and `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` — the same rot class the sibling cluster task (`backend-ratelimit-test-anchor-cleanup`, archived this pass) just stripped from `rateLimit.test.ts`. Fix: replace `round-1` with a behavioral phrase (e.g. "the pre-limiter CPU/RPC amplification surface" or "the ECDSA + `getAccounts`-RPC amplification surface that limiter-after-validation closes"). Do NOT substitute another rot form (slug, SHA, line number) per the self-audit rule.
+
+**2. (P2, cross-reviewer correctness + maintainability + adversarial, conf 100) FakeRedis Lua dispatch keys on a non-unique substring.** The `eval` dispatcher branches on `lua.includes("redis.call('INCR'")`, which matches BOTH `RATE_LIMIT_CHECK_AND_CONSUME_LUA` and `INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA` (the accreditation-verify limiter script). Dormant today — no accreditation-INCR script reaches this file's FakeRedis — but a latent trap: a future spec exercising that script would misroute into the rate-limit branch and receive a wrong-shaped `[count, pttl]` tuple with `windowMs = NaN`. Fix: dispatch on a rate-limit-unique token (e.g. a `PEXPIRE` substring, or the `{0, pttl}` / `{1, 0}` two-element return contract) so the two scripts are unambiguously distinguished.
+
+**3. (P2, maintainability, conf 75 — architect-verified) Stale comment rendered false by this commit.** The `validateRegisterBody Content-Type guard` describe block's "Slot-untouched probe (memStore-based)" comment claims "FakeRedis has no EVALSHA, so the Lua path throws and the middleware falls through to memStore". This commit ADDED `evalsha` to FakeRedis, so that rationale is now false — the Content-Type suite's limiter accounting now runs through the FakeRedis Lua path, not the memStore fallback. The suite's response-code-based assertion still holds (no behavior break), but the comment misleads the next reader about which path executes. Fix: update the comment to state that FakeRedis now implements `evalsha` / the rate-limit Lua, and re-justify why the response-code probe is used here (or switch it to the `rateLimitCount` key probe now that the Lua path is live, if that is simpler).
+
+### Findings dismissed at triage (no action)
+
+- `rateLimitCount` helper duplicated vs the `custody-limiter-cpu-amplification` sibling with divergent NaN-handling (maintainability P2) — per-file test helpers are accepted under PEvO test norms; the divergence is minor.
+- `rateLimitCount` returns `Number(raw)` → NaN for a non-numeric value (kieran P3, conf 50, unreachable today); `script()` returns `'OK'` for unknown subcommands (kieran, conf 50); positional anchors "lock TTL note above" (FakeRedis `eval` comment) and "abuse-cap canary above" (Content-Type block) crossing container boundaries (project-standards, conf 50); trust-proxy behavioral specs run on bare `express()` not `createApp()` (adversarial, conf 25, contrived). All below the confidence gate / advisory.
+- File header still names `409 LOCK_HELD` as a retriable case (testing P3) — pre-existing drift from the bridge-queue migration, not introduced by this commit; same class already dismissed in round-2.
+
+### Re-review signal
+
+When items 1-3 land in one round-4 commit, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The mv is the re-review signal; round-4 review scopes `/ce-code-review` to that commit only. Use a bare `backend:` / `backend(scope):` prefix so the zone-audit hook fires. The architect's `[TODO Architect]` to update `agents/docs/api-contracts/bridge.md` § POST /api/bridge/register Errors remains pending — it lands at archive.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
