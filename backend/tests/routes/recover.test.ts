@@ -65,6 +65,7 @@ async function cleanup() {
   if (!dbReachable) return;
   const pool = getAppPool()!;
   try {
+    await pool.query('DELETE FROM pending_recovery WHERE username LIKE $1', ['recover_%']);
     await pool.query('DELETE FROM custody_audit_log WHERE username LIKE $1', ['recover_%']);
     await pool.query('DELETE FROM accounts WHERE username LIKE $1', ['recover_%']);
   } catch { /* ignore */ }
@@ -216,9 +217,20 @@ describe('POST /api/auth/recover — with DB', () => {
     await pool.query('DELETE FROM accounts WHERE username = $1', [otherUser]);
   });
 
-  it.skipIf(!dbReachable || !hasCustodyKey)('succeeds with correct memo key', async () => {
+  it.skipIf(!dbReachable || !hasCustodyKey)('correct memo key STAGES the swap (phase 1) without applying it', async () => {
+    // Two-phase memo-key recovery: a verified memo key stages the swap but
+    // does NOT apply it (no email/password change, no JWT) until the new
+    // mailbox proves control via the phase-2 verify link. This test asserts
+    // the staging behavior; the full phase-2 apply path is covered by the
+    // dedicated `recover-two-phase.test.ts` suite (which mocks SMTP to capture
+    // the verify token, since this real-infra suite cannot read a mailbox).
     const newEmail = `recovered_${Date.now()}@example.com`;
     const newPassword = 'RecoveredPass1';
+
+    const pool = getAppPool()!;
+    // Clear any prior staged row so the staged-row count assertion is ground
+    // truth across vitest retries.
+    await pool.query('DELETE FROM pending_recovery WHERE username = $1', [TEST_USER]).catch(() => {});
 
     const res = await request(app)
       .post('/api/auth/recover')
@@ -229,38 +241,35 @@ describe('POST /api/auth/recover — with DB', () => {
         memo_key: TEST_MEMO_KEY,
       });
     expect(res.status).toBe(200);
-    expect(res.body.data.token).toBeDefined();
-    expect(res.body.data.username).toBe(TEST_USER);
-    expect(res.body.data.custody).toBe('light');
-    expect(res.body.data.expires_at).toBeDefined();
+    // Phase-1 envelope: no JWT, recovery marked pending_verification.
+    expect(res.body.data.recovery).toBe('pending_verification');
+    expect(res.body.data.token).toBeUndefined();
 
-    // Verify DB was updated
-    const pool = getAppPool()!;
+    // The account email + password must be UNCHANGED at phase 1.
     const { rows } = await pool.query(
       'SELECT email, sessions_invalidated_at FROM accounts WHERE username = $1',
       [TEST_USER],
     );
-    expect(rows[0].email).toBe(newEmail);
-    expect(rows[0].sessions_invalidated_at).not.toBeNull();
+    expect(rows[0].email).toBe(TEST_EMAIL);
+    expect(rows[0].sessions_invalidated_at).toBeNull();
 
-    // Verify new password works
-    const loginRes = await request(app)
-      .post('/api/auth/login')
-      .send({ username: TEST_USER, password: newPassword });
-    expect(loginRes.status).toBe(200);
-    expect(loginRes.body.data.token).toBeDefined();
-
-    // Verify old password fails
+    // Old password STILL works — the swap has not applied.
     const oldLoginRes = await request(app)
       .post('/api/auth/login')
       .send({ username: TEST_USER, password: TEST_PASSWORD });
-    expect(oldLoginRes.status).toBe(401);
+    expect(oldLoginRes.status).toBe(200);
 
-    // Verify audit log. `fetchSettledAuditRows` polls + settles to handle the
-    // fire-and-forget SELECT-INSERT race; combined with the `beforeEach` reset
-    // above, a count of 1 is ground truth.
-    const auditRows = await fetchSettledAuditRows(pool, TEST_USER, 'account_recovery');
-    expect(auditRows.length).toBe(1);
+    // A staging row was written (un-consumed, not disputed).
+    const { rows: staged } = await pool.query(
+      'SELECT new_email, consumed_at, disputed_at FROM pending_recovery WHERE username = $1',
+      [TEST_USER],
+    );
+    expect(staged.length).toBe(1);
+    expect(staged[0].new_email).toBe(newEmail);
+    expect(staged[0].consumed_at).toBeNull();
+    expect(staged[0].disputed_at).toBeNull();
+
+    await pool.query('DELETE FROM pending_recovery WHERE username = $1', [TEST_USER]).catch(() => {});
   });
 
   it.skipIf(!dbReachable || !hasCustodyKey)('rejects ORCID recovery when account has no ORCID', async () => {
@@ -331,6 +340,7 @@ describe('SEC-004-BE: optional password on recovery', () => {
   afterAll(async () => {
     if (!dbReachable) return;
     const pool = getAppPool()!;
+    await pool.query('DELETE FROM pending_recovery WHERE username = $1', [NULL_USER]).catch(() => {});
     await pool.query('DELETE FROM custody_audit_log WHERE username = $1', [NULL_USER]).catch(() => {});
     await pool.query('DELETE FROM accounts WHERE username = $1', [NULL_USER]).catch(() => {});
   });
@@ -387,8 +397,10 @@ describe('SEC-004-BE: optional password on recovery', () => {
     expect(rows[0].password_hash).toBeNull();
   });
 
-  it.skipIf(!dbReachable || !hasCustodyKey)('seed-phrase recovery on null-hash account still works (regression guard)', async () => {
+  it.skipIf(!dbReachable || !hasCustodyKey)('seed-phrase recovery on null-hash account STAGES (does not apply at phase 1)', async () => {
     await clearRateLimitKeys(['auth-recover', 'auth-login']);
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM pending_recovery WHERE username = $1', [NULL_USER]).catch(() => {});
     const newEmail = `recover_null_seed_${Date.now()}@example.com`;
     const newPassword = 'SeedRecovered1';
     const res = await request(app)
@@ -400,19 +412,26 @@ describe('SEC-004-BE: optional password on recovery', () => {
         memo_key: NULL_MEMO,
       });
     expect(res.status).toBe(200);
+    expect(res.body.data.recovery).toBe('pending_verification');
 
-    const pool = getAppPool()!;
+    // password_hash is still NULL at phase 1 — the staged hash lives in
+    // pending_recovery, not on the account, until the new email is verified.
     const { rows } = await pool.query<{ password_hash: string | null }>(
       'SELECT password_hash FROM accounts WHERE username = $1',
       [NULL_USER],
     );
-    expect(rows[0].password_hash).not.toBeNull();
+    expect(rows[0].password_hash).toBeNull();
 
-    // Password login now works on the previously null-hash account
-    const loginRes = await request(app)
-      .post('/api/auth/login')
-      .send({ username: NULL_USER, password: newPassword });
-    expect(loginRes.status).toBe(200);
+    // A staging row carries the pre-hashed new password.
+    const { rows: staged } = await pool.query<{ new_password_hash: string | null; new_email: string }>(
+      'SELECT new_password_hash, new_email FROM pending_recovery WHERE username = $1',
+      [NULL_USER],
+    );
+    expect(staged.length).toBe(1);
+    expect(staged[0].new_password_hash).not.toBeNull();
+    expect(staged[0].new_email).toBe(newEmail);
+
+    await pool.query('DELETE FROM pending_recovery WHERE username = $1', [NULL_USER]).catch(() => {});
   });
 });
 
