@@ -100,3 +100,64 @@ This task adds two new routes and changes the `/recover` response contract; per 
 ### Note for the parent's serial run
 
 `backend/migrations/012_pending_recovery.sql` must be applied to the test DB (`./deploy.sh migrate`) before running the new `recover-two-phase.test.ts` and the updated `recover.test.ts` — they query/cleanup the `pending_recovery` table. The migration probe (`verifyAppDbMigrations`) runs only at production boot (`index.ts`), NOT in `createApp()`, so it will not fail the test suite, but the table must exist for the assertions.
+
+---
+
+## Architect re-review (2026-05-25, round-1) — HELD PENDING FIXES
+
+`/ce-code-review` on commits `b3c1a46b..59ba977c` (10 reviewers: correctness + security + adversarial on Opus; testing / reliability / data-migrations / maintainability / project-standards / kieran-typescript / api-contract / learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All four acceptance criteria — two-phase memo-key, notify-old-email + dispute, audit-log forensics, ORCID-after-upgrade severance via gate — land in intent. Five items held; many race / oracle findings dismissed under the unifying rationale that a seed-phrase holder already has full account access via client-derived owner/active keys (per ARCHITECTURE.md § 6.1 light-account key derivation), so the dispute defense is best-effort recoverability UX, not a load-bearing security boundary; race-class hardening against an attacker who already controls the account does not change the threat picture. API-contract doc updates filed as a separate architect-self-task at `tasks/review/architect-recover-email-api-contract-update.md`. Two organizational follow-ups filed at `tasks/pending/backend-log-pii-helper-consolidation.md` and `tasks/pending/backend-extract-recover-from-auth-ts.md`.
+
+### Items held (must fix before archive)
+
+**1. (P1, GDPR/CNPD, 3 reviewers: security + adversarial + correctness) `pending_recovery` rows survive account deletion with plaintext `new_email` + argon2 hash; `DELETE /api/settings/email` does not sweep the table.** PEvO operates in Portugal under CNPD supervision. An un-consumed staging row at email-delete time leaves a third-party plaintext email (the would-be new email) persisting indefinitely, soft-linked to the deleted username. The argon2id hash on the row is also offline-crackable if the DB leaks. The original implementer signal claimed the consumed staging row is the durable forensic record and that the email-delete sweep does not touch `pending_recovery` by design — but the reasoning only covers *consumed* rows. Un-consumed rows hold the plaintext new_email + new_password_hash with no completed swap to record.
+
+Two acceptable fix shapes — implementer's choice:
+
+- **Shape A — DELETE in the email-delete tx.** Add `DELETE FROM pending_recovery WHERE username = $1` to the email-delete transaction in `backend/src/routes/settings.ts`. Removes the staging row entirely. Simpler; an un-consumed row has no forensic value (no swap completed), so the original signal's forensic-survival claim still holds for consumed rows that happen to be in the same username scope (assuming the username is reused by a different account, but in practice consumed rows for a deleted username are themselves audit-only).
+- **Shape B — NULL plaintext fields, preserve timestamps + digests.** Add an UPDATE that NULLs `new_email` + `new_password_hash` for the deleted-username rows while keeping the forensic timestamps + `request_ip_hash` + `old_email_hash` digests. Preserves the "forensic survival" claim from the original signal for ALL rows (consumed and un-consumed alike).
+
+This fix also closes the **stale-bind hijack** secondary finding (a deleted username could be re-signed-up via the light-account flow, then phase-2 verify applies the staged swap to the new account — no longer possible if the staging row is gone or its plaintext fields are NULL).
+
+**Tests**: assert the email-delete tx clears (Shape A) or NULLs (Shape B) the `pending_recovery` rows for the deleted username, AND that subsequent phase-2 verify on the now-deleted/scrubbed row returns 400 INVALID_TOKEN with `accounts.email` unchanged. Mutation-kill: reverting the new DELETE/UPDATE leaves the row intact; the post-delete state assertion fails.
+
+**2. (P3, conf 75, correctness) `RecoverBodySchema.new_email` lacks `isEmail` validation.** Pre-existing in `/recover` before this task, but the two-phase staging makes the path more reachable. A non-email string passes phase-1 validation, gets staged, the verify-mail send throws inside the catch (route still 200s), and a forged phase-2 token would set `accounts.email = 'not-an-email'`. Fix: add an `isEmail` (or Zod `email()`) check at the same point signup does it, returning 400 VALIDATION_ERROR on mismatch.
+
+This also closes the **`emailDomain('@evil.com')` returns `'evil.com'`** secondary finding (if `isEmail` rejects malformed input upstream, the helper never sees it).
+
+**3. (P3 cosmetic, conf 80) Migration 012 header sentence references "ADD COLUMN IF NOT EXISTS guards" that do not exist in the body.** Copy-paste residue from migration 011. Strip the sentence. The migration IS idempotent via `CREATE TABLE / INDEX IF NOT EXISTS` — header should match.
+
+**4. (P3 style) `token2` local-var naming in `/recover/verify` and `/recover/dispute` JWT-mint sites.** Disambiguation-shaped name (every other JWT binding in `auth.ts` uses `const token = jwt.sign(...)`). Rename to `sessionJwt` and keep the response field name `token` so the wire shape is unchanged. 30-second rename.
+
+**5. (testing) Two coverage pins on the supersession + dispute-window invariants.**
+
+  a. **Supersession contract test**: phase-1, then phase-1 again with a different `new_email`; phase-2 with the FIRST verify token should return 400 INVALID_TOKEN, `accounts.email` unchanged, exactly one `pending_recovery` row present for the username. Pins the documented supersession invariant. Mutation-kill: dropping the supersession DELETE leaves the first row alive; the first verify token still applies and the swap lands.
+
+  b. **Dispute-window expiry, symmetric to verify-expiry test**: force-expire `dispute_expires_at`, click dispute → 400 INVALID_TOKEN, `disputed_at` still NULL. Mirrors the existing verify-expiry test. Mutation-kill: removing the expiry gate accepts the expired dispute click and stamps `disputed_at`.
+
+### Items dismissed at architect triage
+
+Many race / oracle findings dismissed under the unifying rationale stated above (seed-phrase holder already controls the account):
+
+- Phase-1 supersession DELETE clobbers in-flight DISPUTED rows (defeats dispute by re-staging).
+- Phase-2 double-consume race (concurrent same-token clicks → duplicate audit row; account UPDATE idempotent).
+- Phase-2 upgrade TOCTOU (SELECT-then-UPDATE without `AND upgraded_at IS NULL` in the WHERE).
+- Dispute-vs-verify TOCTOU (dispute lands between phase-2 SELECT and UPDATE).
+- Concurrent phase-1 supersession at READ COMMITTED can leave 2 un-consumed rows (both still require valid memo-key proof; loser expires).
+- Phase-2 409 DUPLICATE / upgraded / deleted branches leave the verify token valid until expiry (token-holder can retry once external state flips, within ~48h TTL).
+- ORCID-then-seed chain — dispute mail goes to the attacker after a prior ORCID-recover rebound the account's email field (attacker already won via the prior step).
+- Phase-2 message-body distinguishability (consumed vs invalid-or-expired; only observable to legit token-holder at 256-bit entropy).
+- Dispute audit-row INSERT is not idempotent (double-click writes two rows; staging-row UPDATE itself is idempotent via COALESCE) — minor forensic noise.
+
+### Filed as new tasks (out of scope for this archive)
+
+- `tasks/review/architect-recover-email-api-contract-update.md` — architect-self-task bundling `/api/auth/recover` memo-key breaking response shape, the two new endpoint contracts, ARCHITECTURE.md § 6.4 Recover row, and the dispute-mail PII convention.
+- `tasks/pending/backend-log-pii-helper-consolidation.md` — `forensicDigest` belongs in `lib/log-pii.ts` alongside `hashUserAgentForAudit` (currently duplicated body-for-body).
+- `tasks/pending/backend-extract-recover-from-auth-ts.md` — `auth.ts` at ~1700 lines after this landing; the recover trio (~565 lines) is the natural extraction.
+
+### Re-review signal
+
+When items 1-5 land, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+Recommendation: item 1 is the load-bearing item; items 2-4 are small and natural to bundle in the same commit; item 5 is one test file. Implementer's call on commit shape — either one bundled commit or two (code + tests).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
