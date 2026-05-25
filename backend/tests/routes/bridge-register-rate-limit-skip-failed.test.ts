@@ -176,7 +176,61 @@ class FakeRedis {
     return this.store.delete(key) ? 1 : 0;
   }
 
-  async eval(_lua: string, _numKeys: number, key: string, expected: string) {
+  // Maps a fake SHA back to its script body so `evalsha` can dispatch the
+  // same way `eval` does. Warmed by `script('LOAD', body)`, which the global
+  // `tests/setup.ts` `loadAllScripts(getRedis())` call invokes for every
+  // shared script. Without a working `script`/`evalsha` pair the middleware's
+  // `evalScript` (EVALSHA-first) would throw and fall through to its
+  // in-process `memStore`, leaving the limiter counter invisible to a
+  // FakeRedis-key probe.
+  loadedScripts = new Map<string, string>();
+
+  async script(cmd: string, body: string) {
+    if (cmd.toUpperCase() === 'LOAD') {
+      const sha = `fakesha:${this.loadedScripts.size}:${body.length}`;
+      this.loadedScripts.set(sha, body);
+      return sha;
+    }
+    return 'OK';
+  }
+
+  async evalsha(sha: string, numKeys: number, ...rest: string[]) {
+    const body = this.loadedScripts.get(sha);
+    if (body === undefined) {
+      // Mirror real Redis: unknown SHA → NOSCRIPT so `evalScript` reloads + retries.
+      throw new Error('NOSCRIPT No matching script. Please use EVAL.');
+    }
+    return this.eval(body, numKeys, ...rest);
+  }
+
+  // Dispatch on the script body so the rate-limit middleware's Redis path is
+  // exercised for real (rather than throwing and falling through to the
+  // middleware's in-memory `memStore`). This makes the per-IP slot counter
+  // observable as a FakeRedis key, so the malformed-body-pre-limiter canary
+  // can assert `rateLimitCount(...) → null` (key absent ⇒ limiter never
+  // touched) the same way the `custody-limiter-cpu-amplification` sibling
+  // does — distinguishing "never INCR'd" from "INCR'd then refunded to 0".
+  // Two scripts reach here:
+  //   * RATE_LIMIT_CHECK_AND_CONSUME — INCR; if count > max, DECR + return
+  //     {0, pttl} (429); else PEXPIRE + return {1, 0} (pass). TTL is not
+  //     honored in real time (specs clear `store` in beforeEach), matching
+  //     the lock TTL note above.
+  //   * BRIDGE_RELEASE_LOCK_LUA — compare-token DEL (the original CAS form).
+  async eval(lua: string, _numKeys: number, ...rest: string[]) {
+    const [key, ...args] = rest;
+    if (lua.includes("redis.call('INCR'")) {
+      const max = Number(args[0]);
+      const windowMs = Number(args[1]);
+      const count = (parseInt(this.store.get(key) ?? '0', 10) || 0) + 1;
+      this.store.set(key, String(count));
+      if (count > max) {
+        this.store.set(key, String(count - 1));
+        return [0, windowMs];
+      }
+      return [1, 0];
+    }
+    // BRIDGE_RELEASE_LOCK_LUA: compare-token DEL. args[0] is the expected nonce.
+    const expected = args[0];
     const current = this.store.get(key);
     if (current === expected) {
       this.store.delete(key);
@@ -255,6 +309,7 @@ vi.mock('../../src/redis.js', () => ({
 // rows in afterAll via cleanupQueueRowsFor.
 
 const { createApp } = await import('../../src/app.js');
+const { config } = await import('../../src/config.js');
 const { getAppPool, closeAppPool } = await import('../../src/app-db.js');
 const { signRequestBound: signRequestBoundShared } = await import('../support/sign-request.js');
 
@@ -282,6 +337,19 @@ async function tableAvailable(): Promise<boolean> {
 
 function signRequestBound(method: string, fullPath: string, body: Record<string, unknown>, timestamp: string): string {
   return signRequestBoundShared(TEST_PRIVATE_KEY, method, fullPath, body, timestamp);
+}
+
+// Read the per-(limiter-name, key) rate-limit slot count out of the FakeRedis
+// store. Returns null when the key is ABSENT (the limiter middleware never ran
+// for this key, so it was never INCR'd) — the slot-untouched invariant the
+// malformed-body-pre-limiter canary asserts. The key shape mirrors the
+// middleware's `${appTag}:rl:${name}:` prefix. Synchronous because FakeRedis
+// holds its data in a plain in-process Map (no awaitable round-trip), unlike
+// the real-Redis `rateLimitCount` in `custody-limiter-cpu-amplification.test.ts`.
+function rateLimitCount(name: string, key: string): number | null {
+  const raw = fakeRedis.store.get(`${config.appTag}:rl:${name}:${key}`);
+  if (raw === undefined) return null;
+  return Number(raw);
 }
 
 // Each spec receives a unique simulated client IP via X-Forwarded-For so the
@@ -470,6 +538,56 @@ describe('registerLimiter slot-refund on retriable error paths (skipFailedReques
     }, TEST_IP);
     expect(blockedRes.status).toBe(429);
     expect(blockedRes.body.error.code).toBe('RATE_LIMITED');
+  });
+
+  it('malformed body (empty-string identifier) 400s BEFORE the limiter; the slot is never consumed', async () => {
+    if (!tableReady) return;
+    // Load-bearing invariant of the middleware order
+    // (verifyHiveSignature → validateRegisterBody → registerLimiter): a
+    // malformed body short-circuits at validateRegisterBody BEFORE
+    // registerLimiter, so the per-IP slot is never acquired. The three
+    // refund-path canaries above all send well-formed bodies and exercise
+    // the slot-acquired-then-decremented path, not this pre-limiter
+    // short-circuit path; a refactor reverting the mount to
+    // limiter-before-validation would reopen the round-1 CPU/RPC
+    // amplification surface while leaving those three green.
+    //
+    // Content-Type is application/json so the request passes the
+    // Content-Type guard at the top of validateRegisterBody and reaches
+    // the field-presence check (the empty-string identifier 400s there).
+    //
+    // Slot-untouched probe — mirrors the `custody-limiter-cpu-amplification`
+    // sibling's `rateLimitCount(...) → toBeNull()` contract. `rateLimitCount`
+    // reads the per-IP limiter key out of the FakeRedis store, which the
+    // rate-limit middleware writes only when it actually runs (FakeRedis
+    // implements the RATE_LIMIT_CHECK_AND_CONSUME Lua, so the middleware uses
+    // its Redis path rather than the memStore fallback). A null result means
+    // the key was never created — the limiter was never reached, so the slot
+    // was never INCR'd. That distinguishes:
+    //   - Correct order (`verifyHiveSignature → validateRegisterBody →
+    //     registerLimiter`): the malformed body 400s at validateRegisterBody
+    //     BEFORE the limiter → key absent → rateLimitCount === null.
+    //   - Mutation order (`registerLimiter → verifyHiveSignature →
+    //     validateRegisterBody`, limiter first): the limiter INCRs the key
+    //     before validation runs; under skipFailedRequests the 400 refunds
+    //     (DECRs) the slot, leaving the key present at "0" — NOT absent. So
+    //     rateLimitCount === 0, not null, and `toBeNull()` flips RED. The
+    //     three refund-path canaries stay green (they read no key probe and
+    //     assert response codes the Redis path reproduces identically).
+    const TEST_IP = '203.0.113.4';
+    const ACCREDITED = 'registerlimitermalformed';
+    accreditedSet.add(ACCREDITED);
+
+    const failRes = await signedPost('/api/bridge/register', ACCREDITED, {
+      identifier: '',
+      discipline: 'CS',
+    }, TEST_IP);
+    expect(failRes.status).toBe(400);
+    expect(failRes.body.error.code).toBe('BAD_REQUEST');
+    expect(failRes.body.error.message).toMatch(/identifier/);
+
+    // The limiter was never reached, so the per-IP slot key was never written.
+    expect(rateLimitCount('bridge-register', TEST_IP)).toBeNull();
   });
 });
 

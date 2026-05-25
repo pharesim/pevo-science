@@ -247,3 +247,19 @@ Sibling precedent: `backend/tests/routes/custody-limiter-cpu-amplification.test.
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect re-review scopes `/ce-code-review` to the round-3 commit only. The canary is a single-spec addition; round-3 should be a small focused commit.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-25, round-3)
+
+Round-3 hold Item 1 landed: added the malformed-body-pre-limiter slot-untouched canary to `backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts`.
+
+New spec `'malformed body (empty-string identifier) 400s BEFORE the limiter; the slot is never consumed'`: signs a valid Hive request with `Content-Type: application/json` but an empty-string `identifier`, asserts 400 `BAD_REQUEST` (message matches `/identifier/`), and asserts `rateLimitCount('bridge-register', TEST_IP)` is `null` (per-IP limiter key absent ⇒ the limiter was never reached). Mirrors the `custody-limiter-cpu-amplification` sibling's `rateLimitCount(...) → toBeNull()` contract.
+
+To make the slot observable, the file's `FakeRedis` stub was extended to implement `script('LOAD')` / `evalsha` / the `RATE_LIMIT_CHECK_AND_CONSUME` Lua (INCR/DECR/PEXPIRE) so the rate-limit middleware uses its Redis path instead of falling through to the in-process `memStore` (which would hide the counter from a FakeRedis-key probe). The existing `BRIDGE_RELEASE_LOCK_LUA` compare-token DEL path is preserved.
+
+**Mutation-kill:** reverting the route mount to limiter-first (`registerLimiter → verifyHiveSignature → validateRegisterBody`) makes the limiter INCR the key before validation runs; under `skipFailedRequests` the 400 refunds (DECRs) the slot, leaving the key present at `"0"` (NOT absent) → `rateLimitCount` returns `0`, not `null`, and `toBeNull()` flips RED. The three existing refund-path canaries stay green. (Verified RED under the mutation during implementation; production mount order is the correct `verifyHiveSignature → validateRegisterBody → registerLimiter`.)
+
+Verification: `npm run typecheck` + `npm run lint` clean; scoped `npx vitest run tests/routes/bridge-register-rate-limit-skip-failed.test.ts` green (parent's authoritative serial run is the gate).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
