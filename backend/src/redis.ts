@@ -22,18 +22,11 @@ let queueOverThreshold = false;
 const OFFLINE_QUEUE_WARN_THRESHOLD = 10_000;
 const QUEUE_WATCHDOG_INTERVAL_MS = 30_000;
 
-// Per-command latency ceiling. A Redis server that accepts the connection
-// but stalls on an individual command (Lua cache pressure under OOM, half-
-// open socket post-network-partition, NOSCRIPT recovery against a flushed
-// scripts cache) would otherwise hang the awaiting caller indefinitely:
-// `maxRetriesPerRequest` governs connection-level retry, not per-command
-// timeout. 5000ms is generous vs. steady-state command durations on the
-// hot paths (accreditation /verify pre-INCR, reputation-batch lock
-// release — both well under 100ms) while bounding worst-case stalls to a
-// magnitude operators and HTTP clients can act on. Timed-out commands
-// reject with an ioredis-side timeout error and route through callers'
-// existing catch handlers (e.g. the accreditation /verify pre-INCR 503
-// SERVICE_UNAVAILABLE branch).
+// Per-command latency ceiling. Distinct from `maxRetriesPerRequest`, which
+// bounds connection-level retry rather than the duration of an individual
+// command: without this, a command against a connected-but-stalled Redis
+// hangs the awaiting caller indefinitely. Timed-out commands reject (and
+// route through callers' existing catch handlers) instead of hanging.
 const REDIS_COMMAND_TIMEOUT_MS = 5_000;
 
 // Reconnect backoff: linear ramp (200ms per attempt) capped at 5s,

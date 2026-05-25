@@ -85,3 +85,34 @@ Round-1 hold from `/ce-code-review` fan-out (6 personas — adversarial and kier
 4. **`afterEach` teardown disconnects a different module instance than `beforeEach` constructed.** The hook dynamically re-imports the module after `beforeEach` already called `vi.resetModules()`. Result: `disconnectRedis()` runs on a fresh module instance with no client, while the one the test actually built leaks. The canary doesn't reach a state where this matters today, but the teardown is structurally wrong and the next test that adds command-dispatch coverage will inherit the leak. Either (a) store the module reference from the test-body import in a shared variable and have `afterEach` call `disconnectRedis` on that reference, or (b) move `vi.resetModules()` to `afterEach` after teardown, not `beforeEach`.
 
 Suppressed (anchor 50, did not survive gate): `REDIS_URL`-absent guard advisory (testing); literal `5000` backoff-cap coincidence with `commandTimeout` value (maintainability, pre-existing). Residual_risks recorded but not held: `commandTimeout` vs `MaxRetriesPerRequestError` class confusion in caller catch handlers; NOSCRIPT recovery's two-budget ~10s worst-case; offline-queued commands timing out at 5s mid-reconnect. All are documented behavior and don't block this commit.
+
+## Backend re-review signal (2026-05-25, working tree)
+
+Round-1 hold items 1-4 landed.
+
+### Item 1 — carve-out label corrected to clause-(a) + explicit clause-(c) companion
+
+The mocking-justification block in `backend/tests/lib/redis-command-timeout.test.ts` was mislabeled `clause-(c)`; its content is the impractical-real-path justification, i.e. `clause-(a)`. Relabeled to `clause-(a)`. Added a separate, explicitly-labeled `Carve-out clause-(c) (real-path companion):` paragraph citing the accreditation `/verify` Redis-rejection spec by behavioral description (asserts 503 SERVICE_UNAVAILABLE when the pre-INCR cap-enforcement script rejects) — no line number, and anchored on the 503 behavior rather than the `eval`/`evalsha` method name (which is in flux under the sibling evalsha task).
+
+### Item 2 — `REDIS_COMMAND_TIMEOUT_MS` docblock trimmed
+
+Cut the failure-mode enumeration (Lua-cache OOM, half-open socket, NOSCRIPT recovery), the hot-path latency comparisons, and the route names. Trimmed to the two non-obvious facts: `commandTimeout` bounds per-command latency (distinct from `maxRetriesPerRequest`, which bounds connection-level retry); timed-out commands reject rather than hang.
+
+### Item 3 — duplicated failure-mode theory removed from the test docblock
+
+The Lua-cache-OOM / half-open-socket / NOSCRIPT-recovery preamble that duplicated the production comment verbatim was removed from the test header. The test docblock now carries only the test-specific carve-out justification + companion citation. With item 2's source-side trim, the two sides no longer share the prose that would have drifted.
+
+### Item 4 — teardown disconnects the exact module instance the test built
+
+Took the architect's option (a): added a `let redisModule` capture in the describe block, assigned it in each test body's dynamic import (`redisModule = await import(...)`), and `afterEach` now calls `redisModule.disconnectRedis()` on that captured reference instead of issuing a second `await import(...)` registry lookup. `redisModule` is reset to `null` in `beforeEach`. Removes any dependence on registry-cache timing.
+
+### Verification
+
+- `npm run typecheck` (src + tests) — clean.
+- `npm run lint` — clean (only the pre-existing unrelated `author-supersession.ts` warning).
+- `npx vitest run tests/lib/redis-command-timeout.test.ts` (docker-network Redis/Postgres IPs) — 2 passed, 0 failed.
+
+### Files changed (this round)
+
+- `backend/src/redis.ts` — item 2 (docblock trim). NOTE: this file was also touched by the sibling `backend-redis-client-permanent-bailout` round-1 commit landed just prior; the two commits are disjoint hunks (that one: `redisRetryStrategy`/`logStatusTransition`/`reconnectOnError`; this one: the `REDIS_COMMAND_TIMEOUT_MS` docblock).
+- `backend/tests/lib/redis-command-timeout.test.ts` — items 1, 3 (docblock), 4 (teardown).

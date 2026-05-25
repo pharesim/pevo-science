@@ -1,26 +1,22 @@
 /**
  * Constructor-options canary for the ioredis client.
  *
- * Pins that `getRedis()` constructs its `ioredis.Redis` client with
- * `commandTimeout` set to a finite, positive number. The production
- * concern: every command inherits the absence of a per-command timeout
- * otherwise, and a Redis server that accepts the connection but stalls
- * on an individual command (Lua cache pressure under OOM, half-open
- * socket, NOSCRIPT recovery against a flushed scripts cache) hangs the
- * awaiting caller indefinitely. `maxRetriesPerRequest` governs
- * connection-level retry, not per-command timeout.
+ * Pins that `getRedis()` constructs its `ioredis.Redis` client with a
+ * finite, positive `commandTimeout`, and keeps `maxRetriesPerRequest`
+ * alongside it.
  *
- * Mocking justification (carve-out clause-(c)): inducing a real
+ * Carve-out clause-(a) (mocking justification): inducing a real
  * stalled-but-connected Redis is impractical in the dev-mode Docker
- * container — the failure mode requires Lua-cache-OOM or a half-open
- * socket that the real container does not produce on demand. The
- * options-shape canary at constructor time is the deterministic proof
- * that the production code passes `commandTimeout` to ioredis. The
- * mock target is the ioredis constructor only; no auth/permission
- * middleware is involved at this layer. Companion real-path coverage
- * for ioredis command-rejection routing (the OOM-rejection spec in
- * accreditation.test.ts) exercises the catch handler that absorbs the
- * timeout error class when it fires in production.
+ * container — that failure mode does not occur on demand. So the
+ * deterministic proof that production passes `commandTimeout` to ioredis
+ * is an options-shape assertion at constructor time. The mock target is
+ * the ioredis constructor only; no auth/permission middleware runs here.
+ *
+ * Carve-out clause-(c) (real-path companion): the accreditation `/verify`
+ * Redis-rejection spec — which asserts a 503 SERVICE_UNAVAILABLE when the
+ * pre-INCR cap-enforcement script rejects — exercises, against the
+ * integrated route, the catch handler that absorbs the command-rejection
+ * error class (including a timeout) when it fires in production.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -48,21 +44,24 @@ vi.mock('../../src/lib/redis-scripts.js', () => ({
 }));
 
 describe('redis.ts constructor options', () => {
+  // The exact module instance the test imported and built a client on.
+  // Captured so teardown disconnects that client rather than a fresh
+  // registry lookup that would have no client to release.
+  let redisModule: typeof import('../../src/redis.js') | null = null;
+
   beforeEach(() => {
     constructorCalls = [];
+    redisModule = null;
     vi.resetModules();
   });
 
   afterEach(async () => {
-    // Tear down the cached client between tests so the next test's
-    // `vi.resetModules()` produces a fresh constructor call.
-    const mod = await import('../../src/redis.js');
-    await mod.disconnectRedis();
+    if (redisModule) await redisModule.disconnectRedis();
   });
 
   it('passes a finite positive commandTimeout to new Redis(...)', async () => {
-    const { getRedis } = await import('../../src/redis.js');
-    const client = getRedis();
+    redisModule = await import('../../src/redis.js');
+    const client = redisModule.getRedis();
 
     expect(client).not.toBeNull();
     expect(constructorCalls).toHaveLength(1);
@@ -79,8 +78,8 @@ describe('redis.ts constructor options', () => {
   });
 
   it('keeps maxRetriesPerRequest alongside commandTimeout (defense in depth)', async () => {
-    const { getRedis } = await import('../../src/redis.js');
-    getRedis();
+    redisModule = await import('../../src/redis.js');
+    redisModule.getRedis();
 
     expect(constructorCalls).toHaveLength(1);
     const options = constructorCalls[0]!.options;
