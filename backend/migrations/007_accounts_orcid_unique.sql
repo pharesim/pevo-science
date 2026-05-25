@@ -35,11 +35,31 @@ DECLARE
   dup_count INTEGER;
   dup_sample TEXT;
 BEGIN
-  -- Detect duplicate non-null ORCIDs. The COALESCE on string_agg avoids
-  -- returning NULL when the cross-product is empty (rare but possible if a
-  -- row is concurrently deleted between the count and the sample).
+  -- Detect duplicate non-null ORCIDs. Two separate passes over the (small,
+  -- light-account-dominated) accounts table:
+  --   1. An uncapped scalar COUNT(*) over the duplicate-ORCID groups gives the
+  --      TRUE magnitude the operator must resolve. This count must NOT be
+  --      derived from the LIMIT-capped sample query below, or it under-reports
+  --      at >50 duplicate groups (the LIMIT would cap the count, not just the
+  --      sample) and the fail-loud message silently misleads the operator.
+  --   2. A LIMIT 50 capped query builds the sample-message string so the
+  --      RAISE EXCEPTION payload stays bounded even when many groups collide.
+  -- The two queries scan the same predicate; on PEvO's table size the extra
+  -- pass is trivial.
+  SELECT COUNT(*)
+  INTO dup_count
+  FROM (
+    SELECT orcid
+    FROM accounts
+    WHERE orcid IS NOT NULL
+    GROUP BY orcid
+    HAVING COUNT(*) > 1
+  ) all_dups;
+
+  -- The COALESCE on string_agg avoids returning NULL when the capped set is
+  -- empty (rare but possible if a row is concurrently deleted between the
+  -- count and the sample).
   SELECT
-    COUNT(*),
     COALESCE(
       string_agg(
         format('orcid=%L usernames=[%s]', orcid, usernames),
@@ -48,7 +68,7 @@ BEGIN
       ),
       ''
     )
-  INTO dup_count, dup_sample
+  INTO dup_sample
   FROM (
     SELECT
       orcid,

@@ -14,7 +14,11 @@
  *       exception, transaction rolls back, index not created) when run against
  *       a schema state that already contains duplicate non-null ORCIDs. This
  *       is the surface-or-fail behaviour acceptance criterion 4 of the task
- *       requires.
+ *       requires. This sub-test also pins that the RAISE EXCEPTION reports the
+ *       TRUE (uncapped) duplicate-group count, not the LIMIT-50 sample cap:
+ *       it seeds 51+ distinct duplicate ORCIDs and asserts the count phrasing
+ *       carries the real magnitude (>= 51). Reverting the migration to the
+ *       single capped-COUNT query makes that assertion report 50 and flip RED.
  *
  * Mock-carve-out: none. All assertions run against real Postgres via the
  * shared `getAppPool()` test connection. The migration body is loaded from
@@ -162,9 +166,20 @@ describe.skipIf(!dbReachable)('migration 007 — accounts_orcid_unique', () => {
     ).resolves.toBeDefined();
   });
 
-  it('migration body fails loud with RAISE EXCEPTION when duplicates exist in the schema state', async () => {
+  it('migration body fails loud with RAISE EXCEPTION reporting the TRUE (uncapped) duplicate count', async () => {
     const pool = getAppPool()!;
-    const orcid = `0002-0002-0002-${(RUN_ID % 10000).toString().padStart(4, '0')}`;
+    // Seed more than the LIMIT-50 sample cap of distinct duplicate-ORCID
+    // groups so this test pins that the RAISE reports the true magnitude
+    // rather than the capped sample size. The migration computes dup_count
+    // from an uncapped COUNT(*) over the GROUP BY ... HAVING COUNT(*) > 1 set
+    // (Shape A: split queries) and only the sample string is LIMIT-50 capped.
+    // Reverting to the single capped query (LIMIT 50 feeding the outer
+    // COUNT(*)) makes this report 50 and flip RED.
+    const DUP_GROUP_COUNT = 51;
+    // The first group's ORCID is asserted to appear in the sample message;
+    // since the sample is ORDER BY orcid and capped at 50, use a low-sorting
+    // ORCID so it lands inside the first-50 window deterministically.
+    const sampledOrcid = `0002-0002-0002-${(RUN_ID % 10000).toString().padStart(4, '0')}`;
     // Use a single connection for the entire reproduction so SAVEPOINT and
     // ROLLBACK TO SAVEPOINT bracket the same session. Without `pool.connect`
     // each pool.query may pick a different connection and the savepoint is
@@ -178,14 +193,24 @@ describe.skipIf(!dbReachable)('migration 007 — accounts_orcid_unique', () => {
         // INDEX has work to do AND the DO block's duplicate scan finds
         // something to RAISE on.
         await client.query('DROP INDEX IF EXISTS accounts_orcid_unique');
-        await client.query(
-          `INSERT INTO accounts (email, orcid) VALUES ($1, $2)`,
-          [`${EMAIL_PREFIX}dup1@example.com`, orcid],
-        );
-        await client.query(
-          `INSERT INTO accounts (email, orcid) VALUES ($1, $2)`,
-          [`${EMAIL_PREFIX}dup2@example.com`, orcid],
-        );
+        // Seed DUP_GROUP_COUNT distinct duplicate ORCIDs, each as a pair of
+        // rows, so the true duplicate-group count is DUP_GROUP_COUNT (> 50).
+        for (let i = 0; i < DUP_GROUP_COUNT; i++) {
+          // Zero-pad the group index into the trailing block so all ORCIDs are
+          // distinct and well-ordered. The first group reuses sampledOrcid.
+          const groupOrcid =
+            i === 0
+              ? sampledOrcid
+              : `0002-0002-${i.toString().padStart(4, '0')}-${(RUN_ID % 10000).toString().padStart(4, '0')}`;
+          await client.query(
+            `INSERT INTO accounts (email, orcid) VALUES ($1, $2)`,
+            [`${EMAIL_PREFIX}dup${i}a@example.com`, groupOrcid],
+          );
+          await client.query(
+            `INSERT INTO accounts (email, orcid) VALUES ($1, $2)`,
+            [`${EMAIL_PREFIX}dup${i}b@example.com`, groupOrcid],
+          );
+        }
         let caught: unknown;
         try {
           await client.query(MIGRATION_SQL);
@@ -194,12 +219,20 @@ describe.skipIf(!dbReachable)('migration 007 — accounts_orcid_unique', () => {
         }
         expect(caught).toBeDefined();
         // The DO block's RAISE EXCEPTION message includes the duplicate
-        // count and a sample line. Operators rely on the sample to know
-        // which ORCID to resolve manually, so the test pins both the
-        // count phrasing and the orcid value's presence in the message.
+        // count and a sample line. Operators rely on the count to know how
+        // many ORCIDs to resolve and the sample to know which ones, so the
+        // test pins the true (uncapped) count, the count phrasing, and the
+        // first ORCID's presence in the (capped) sample.
         const errMsg = (caught as Error).message;
         expect(errMsg).toMatch(/duplicate ORCID/i);
-        expect(errMsg).toContain(orcid);
+        // True magnitude: the migration must report DUP_GROUP_COUNT, NOT the
+        // LIMIT-50 sample cap. Parse the leading integer the RAISE emits
+        // ("... <N> duplicate ORCID(s) found ...") and assert it equals the
+        // seeded group count. Mutation-kill: capped-COUNT form reports 50.
+        const reportedCount = Number(/(\d+) duplicate ORCID/i.exec(errMsg)?.[1]);
+        expect(reportedCount).toBe(DUP_GROUP_COUNT);
+        expect(reportedCount).toBeGreaterThan(50);
+        expect(errMsg).toContain(sampledOrcid);
       } finally {
         // ROLLBACK restores the original schema state (DROP INDEX is
         // reverted, the duplicate rows disappear) so subsequent tests in

@@ -119,3 +119,26 @@ Test addition (mutation-kill the new shape): seed 51+ distinct duplicate ORCIDs 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Backend re-review signal (2026-05-25, round-2 fix at branch HEAD)
+
+Item 1 landed via **Shape A (split queries)**.
+
+`backend/migrations/007_accounts_orcid_unique.sql` — the DO block now computes `dup_count` from a dedicated uncapped scalar `SELECT COUNT(*)` over the `GROUP BY orcid HAVING COUNT(*) > 1` duplicate-group set (no `LIMIT`), giving the TRUE magnitude. A second, separate `SELECT string_agg(...) ... LIMIT 50` builds only the bounded sample string. The `RAISE EXCEPTION` reports the uncapped `dup_count` and shows the first 50 groups in the sample, so the operator-facing fail-loud message no longer under-reports at >50 duplicate-ORCID groups. The `CREATE UNIQUE INDEX IF NOT EXISTS accounts_orcid_unique ... WHERE orcid IS NOT NULL` idempotency and the rest of the migration are unchanged.
+
+`backend/tests/migrations/accounts-orcid-unique.test.ts` — the migration-body RAISE sub-test (formerly seeding one duplicate ORCID) now seeds 51 distinct duplicate-ORCID groups (each a pair of rows) inside the DROP-INDEX + INSERT + apply-migration-body transaction, then ROLLBACKs. It parses the integer the RAISE emits and asserts it equals 51 (and `> 50`), plus that the first (low-sorting) ORCID still appears in the capped sample. Mutation-kill: reverting to the single capped-COUNT query (`LIMIT 50` feeding the outer `COUNT(*)`) makes the reported count read 50, flipping the `toBe(51)` / `toBeGreaterThan(50)` assertions RED.
+
+Verification:
+- `cd backend && source ~/.nvm/nvm.sh && nvm use 20 && npm run typecheck && npm run lint` — both clean (lint's lone warning is the pre-existing unused-eslint-disable in `src/lib/author-supersession.ts`, untouched here).
+- vitest NOT run in-worktree (the suite mutates the shared real-Postgres `accounts` table/index inside transactions; concurrent worktree runs would collide). Parent runs it serially after merge with:
+
+  ```bash
+  cd backend && source ~/.nvm/nvm.sh && nvm use 20 && \
+  REDIS_URL="redis://:$(grep REDIS_PASSWORD ../.env | cut -d= -f2)@$(docker inspect pevo-redis-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'):6379" \
+  APP_DATABASE_URL="postgresql://pevo:pevo_dev@$(docker inspect pevo-postgres-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'):5432/pevo_app" \
+  npx vitest run tests/migrations/accounts-orcid-unique.test.ts
+  ```
+
+  Expected: 5/5 pass; the migration-body RAISE test reports a true count of 51 (not 50).
