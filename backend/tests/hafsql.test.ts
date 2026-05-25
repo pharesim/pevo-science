@@ -3,6 +3,7 @@ import { getPool, isHafConfigured } from '../src/db.js';
 import {
   activeAccreditationsCteBody,
   authorshipClaimsCteBody,
+  authorsWithSupersessionSelect,
   buildWith,
   validPevoPaperWhere,
   validReviewWhere,
@@ -544,11 +545,20 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
   //   (2) array-of-non-objects elements (bare strings, integers, null,
   //       objects-without-'hive'-key) — the tightened EXISTS predicate
   //       requires jsonb_typeof(auth) = 'object' AND auth ->> 'hive' = ...
-  //       so a named-string co-author (`authors: ["alice","bob"]`) is NOT
-  //       admitted as a non-self reviewer. Without the object-type guard,
-  //       `auth ->> 'hive'` on a JSONB string returns NULL, NULL = c.author
-  //       is NULL (not TRUE), EXISTS returns 0 rows, NOT EXISTS admits
-  //       every reviewer.
+  //       This guard is a cascade-fail defense, NOT a co-author admission
+  //       tightening. Under `authors: ["alice","bob"]`, bob (named as a
+  //       bare string, NOT as an object with a `hive` key) IS admitted as
+  //       a non-self reviewer: the object-type filter rejects the bare
+  //       strings, EXISTS yields 0 rows, NOT EXISTS evaluates TRUE, and
+  //       bob passes the second conjunct of `excludeSelfReviewWhere`. This
+  //       is INTENTIONAL per
+  //       `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`:
+  //       a PEvO co-author entry is a well-formed object with a `hive`
+  //       key, not a free-text identity claim. Treating bare strings as
+  //       co-author identity would let anyone broadcast a non-paper post
+  //       with `authors: [target]` to lock `target` out of reviewing. The
+  //       assertion below pins bob as admitted; the comment block at the
+  //       array-of-non-objects loop expands the rationale.
   //
   // Both failure modes carry hidden-by-`jsonb_typeof`-or-EXISTS-fall-through
   // semantics that look correct until the chain produces the specific shape.
@@ -750,9 +760,12 @@ describe('authorshipClaimsCteBody hive-username auto-accept normalization (real 
  * against synthetic VALUES() rows under real Postgres, asserting:
  *   (1) malformed top-level shapes (null/string/integer/object) do NOT raise
  *       and admit the third-party voter as expected
- *   (2) the inner `jsonb_typeof(a) = 'object'` guard mirrors
- *       `excludeSelfReviewWhere`'s object-type tightening so bare-string
- *       elements don't admit a named-string co-author voter
+ *   (2) the inner `jsonb_typeof(a) = 'object'` guard is a cascade-fail
+ *       defense (it prevents `jsonb_array_elements` and `->> 'hive'` from
+ *       operating on scalar elements), NOT a co-author admission
+ *       tightening. Bare-string elements (`authors: ["alice","bob"]`) ARE
+ *       admitted as non-self voters — they are not identity claims per
+ *       `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`
  *
  * Carve-out clause-(c): synthetic-VALUES is justified because seeding the
  * full reputation cycle's `user_papers` + `paper_latest_votes` chain with
@@ -953,10 +966,20 @@ describe('citing_papers CROSS JOIN LATERAL cascade-fail defense (real Postgres, 
       return;
     }
 
-    // Mirror of the production CTE's CROSS JOIN LATERAL shape at
-    // reputation.ts:citing_papers. Synthetic input substitutes a one-row
-    // `citing` relation with controlled json_metadata so we exercise the
-    // CASE-WHEN array guard at the SRF argument position.
+    // Mirror of the production CTE's CROSS JOIN LATERAL shape at the
+    // `citing_papers` CTE in reputation.ts. Synthetic input substitutes a
+    // one-row `citing` relation with controlled json_metadata so we
+    // exercise the CASE-WHEN array guard at the SRF argument position.
+    //
+    // Drift-reach: a production-side revert of the CASE-WHEN guard at the
+    // `citing_papers` CTE leaves this test green — the behavioral test
+    // exercises this inlined SQL string, not the production source. The
+    // structural canary that pins the production site against drift lives
+    // in the `excludeSelfReviewWhere-callsite-canaries.test.ts`-style
+    // coverage (the same drift-reach gap acknowledged on `subqueryShape`
+    // above). The parallel `authorsWithSupersessionSelect` cascade-fail
+    // test below calls the production helper directly, so its mutation
+    // reach does extend to the production source.
     const lateralShape = `
       CROSS JOIN LATERAL jsonb_array_elements(
         CASE WHEN jsonb_typeof(citing.json_metadata -> $1 -> 'citations') = 'array'
@@ -1011,5 +1034,132 @@ describe('citing_papers CROSS JOIN LATERAL cascade-fail defense (real Postgres, 
     const result = await pool.query(sql, ['pevotest', wellFormed]);
     const cited = result.rows.map((r) => r.cited_author as string);
     expect(cited).toEqual(['alice', 'bob']);
+  });
+});
+
+/**
+ * Pin the cascade-fail defense at the `authorsWithSupersessionSelect`
+ * helper in backend/src/hafsql.ts. The helper projects the per-author
+ * supersession block on `/api/papers` (list) and `/api/papers/:author/
+ * :permlink` (detail) via `jsonb_array_elements(... -> 'authors') WITH
+ * ORDINALITY`. Without a CASE-WHEN `jsonb_typeof = 'array'` guard at the
+ * SRF argument position, a paper whose chain `pevo.authors` is a non-array
+ * JSONB (null, string, integer, object) raises "cannot extract elements
+ * from a scalar" and the entire paper-listing request crashes site-wide.
+ *
+ * Unlike the `paper_resolved_votes` / `citing_papers` behavioral tests
+ * above (which exercise an INLINED mirror of the production SQL and so
+ * have no production-source mutation reach), this test calls the
+ * production helper directly. A revert of the CASE-WHEN guard inside
+ * `authorsWithSupersessionSelect` fails this test red — the mutation reach
+ * extends to the production source.
+ *
+ * Carve-out clause-(c): synthetic-VALUES is justified because seeding the
+ * public HAF corpus with a paper carrying malformed `pevo.authors` per
+ * shape per test is impractical; the assertion (cascade-fail defense +
+ * COALESCE empty-vs-populated shape) is exactly what the carve-out is for.
+ * Per the convention that bare-string `authors[]` entries are NOT identity
+ * claims (`pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`),
+ * a well-formed-object author with a `hive` key enriches normally while
+ * malformed/scalar shapes collapse to an empty projected array.
+ *
+ * See conventions:
+ *   - pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12
+ */
+describe('authorsWithSupersessionSelect SRF cascade-fail defense (real Postgres, synthetic rows)', () => {
+  // Synthetic VALUES() against app Postgres — no HAF queries. Gate on
+  // getPool() availability rather than isHafConfigured() so the canary
+  // does not skip on the common HAF-flake mode.
+  it('does not throw on malformed pevo.authors and projects the expected authors', { timeout: 30_000 }, async (ctx) => {
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+
+    // The helper requires `active_accreditations` to be in scope. An empty
+    // accreditation set suffices for the cascade-fail assertion: the
+    // LEFT JOIN finds no match, so every projected author carries
+    // orcid_verified=null / orcid_discrepancy=false. The load-bearing
+    // assertion is that the SRF does not raise on malformed authors[].
+    const projection = authorsWithSupersessionSelect('c', '$1');
+    const withEmptyAccred = `
+      WITH active_accreditations(account, orcid) AS (
+        SELECT NULL::text, NULL::text WHERE false
+      )
+    `;
+
+    // (1) Non-array top-level shapes. Without the SRF-argument guard,
+    // jsonb_array_elements would raise on each shape and crash the listing
+    // request. The CASE-WHEN substitutes '[]'::jsonb, the jsonb_agg returns
+    // SQL NULL, and the outer COALESCE collapses it to '[]'::jsonb.
+    const nonArrayShapes: ReadonlyArray<readonly [string, string]> = [
+      ['authors_jsonb_null', JSON.stringify({ pevotest: { type: 'paper', authors: null } })],
+      ['authors_string', JSON.stringify({ pevotest: { type: 'paper', authors: 'alice' } })],
+      ['authors_integer', JSON.stringify({ pevotest: { type: 'paper', authors: 42 } })],
+      ['authors_object', JSON.stringify({ pevotest: { type: 'paper', authors: { hive: 'alice' } } })],
+    ];
+
+    for (const [shapeLabel, meta] of nonArrayShapes) {
+      const sql = `
+        ${withEmptyAccred}, paper(json_metadata) AS (SELECT $2::jsonb)
+        SELECT (${projection}) AS authors_with_supersession
+        FROM paper c
+      `;
+      const result = await pool.query(sql, ['pevotest', meta]);
+      // Must NOT throw. Empty projected authors array for every non-array
+      // top-level shape (the SRF saw '[]'::jsonb).
+      expect(result.rows[0].authors_with_supersession, `non-array shape: ${shapeLabel}`).toEqual([]);
+    }
+
+    // (2) Array-of-non-objects elements — must NOT raise, and bare-string
+    // / null / object-without-'hive' elements project with null name/hive/
+    // orcid (the ->> field accessors yield NULL on non-object or
+    // missing-key elements). The cascade-fail guard is at the SRF arg
+    // position; the element-shape handling is downstream and benign.
+    const arrayOfNonObjects = JSON.stringify({
+      pevotest: { type: 'paper', authors: ['alice', null, { name: 'nohive' }] },
+    });
+    {
+      const sql = `
+        ${withEmptyAccred}, paper(json_metadata) AS (SELECT $2::jsonb)
+        SELECT (${projection}) AS authors_with_supersession
+        FROM paper c
+      `;
+      const result = await pool.query(sql, ['pevotest', arrayOfNonObjects]);
+      const projected = result.rows[0].authors_with_supersession as Array<Record<string, unknown>>;
+      // Three elements enumerated (the SRF did not raise); each carries a
+      // null hive (no JOIN match), orcid_discrepancy=false.
+      expect(projected).toHaveLength(3);
+      for (const author of projected) {
+        expect(author.orcid_discrepancy).toBe(false);
+        expect(author.orcid_verified).toBeNull();
+      }
+    }
+
+    // (3) Well-formed control — a single object author with a hive key
+    // projects its name/hive/orcid normally. With no matching
+    // accreditation, orcid_verified is null and orcid_discrepancy false.
+    const wellFormed = JSON.stringify({
+      pevotest: {
+        type: 'paper',
+        authors: [{ name: 'Alice A.', hive: 'alice', orcid: '0000-0001-1234-5678' }],
+      },
+    });
+    {
+      const sql = `
+        ${withEmptyAccred}, paper(json_metadata) AS (SELECT $2::jsonb)
+        SELECT (${projection}) AS authors_with_supersession
+        FROM paper c
+      `;
+      const result = await pool.query(sql, ['pevotest', wellFormed]);
+      const projected = result.rows[0].authors_with_supersession as Array<Record<string, unknown>>;
+      expect(projected).toHaveLength(1);
+      expect(projected[0].name).toBe('Alice A.');
+      expect(projected[0].hive).toBe('alice');
+      expect(projected[0].orcid).toBe('0000-0001-1234-5678');
+      expect(projected[0].orcid_verified).toBeNull();
+      expect(projected[0].orcid_discrepancy).toBe(false);
+    }
   });
 });

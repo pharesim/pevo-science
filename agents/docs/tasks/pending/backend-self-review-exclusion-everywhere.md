@@ -614,3 +614,33 @@ All 6 round-4 hold items addressed in a single commit. Parent re-took over after
 ### Re-review signal
 
 When items 1, 2, 3, 4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. Items 1 + 2 + 4 all touch `hafsql.test.ts` — bundle. Item 3 adds a new test in the same file but is a substantive addition; can be in the same commit if scope is manageable.
+
+---
+
+## Backend re-review signal (2026-05-25, round-6)
+
+All 4 round-5 hold items (Architect re-review 2026-05-21 round 5) addressed in a single commit touching only `backend/tests/hafsql.test.ts`. Items 2+4 are comment-only; item 1 was already satisfied at HEAD; item 3 is a substantive new behavioral test.
+
+**Item 1 [P2] — already satisfied at HEAD (no edit needed).** The hold cited a `"Round-4 hold #1:"` prefix opening the `citing_papers CROSS JOIN LATERAL cascade-fail defense` describe block's docstring. At the current HEAD that docstring already opens with the behavioral description directly ("Pin the cascade-fail defense at the `citing_papers` CTE in backend/src/reputation.ts ..."), with no round-number anchor. Verified by `grep -nE "Round-[0-9]|round-[0-9]|hold #|hold item #" tests/hafsql.test.ts` → no matches anywhere in the file. The coordination anchor the architect flagged is not present, so there was nothing to remove. (Either a prior pass removed it without a signal-block entry, or the cited line numbers drifted off a state that was never committed; either way the current file is clean.)
+
+**Item 2 [P2] — comment fix at two sites.** Rewrote the round-4 misframing ("named-string co-author is NOT admitted as a non-self reviewer") at both places it survived:
+- The header comment block above the `excludeSelfReviewWhere` malformed-shapes behavioral matrix (the `(2) array-of-non-objects elements` bullet) — now states the `jsonb_typeof(auth) = 'object'` guard is a cascade-fail defense, NOT a co-author admission tightening, and that bare-string entries (`authors: ["alice","bob"]`) ARE admitted as non-self reviewers per `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28` (treating bare strings as identity would enable a denial-of-review attack via malformed-metadata broadcast). This matches the assertion below it (`expect(admitted).toEqual(['bob_named_as_string', 'third_party'])` — bob IS admitted).
+- The `paper_resolved_votes` describe-block docstring's `(2)` bullet, which carried the same misframing ("so bare-string elements don't admit a named-string co-author voter") — rewritten to the cascade-fail-defense framing with the same convention cross-reference. The test assertion is unchanged; only the prose now matches the pinned behavior.
+
+**Item 3 [P2] — new behavioral test for `authorsWithSupersessionSelect` cascade-fail defense.** Added `authorsWithSupersessionSelect` to the imports and a new `describe('authorsWithSupersessionSelect SRF cascade-fail defense (real Postgres, synthetic rows)')` block. Unlike the `paper_resolved_votes` / `citing_papers` tests (which exercise an inlined SQL mirror with no production-source reach), this test calls the production helper directly via `authorsWithSupersessionSelect('c', '$1')`, so its mutation reach extends to the production source. Synthetic VALUES + app Postgres, gated only on `getPool()` availability (not `isHafConfigured()`, per the round-4 item-5 skip-mode lesson). Three arms:
+- (1) Non-array top-level shapes (`authors: null`, `'alice'`, `42`, `{hive:'alice'}`): the helper does NOT raise; the COALESCE collapses the SQL-NULL `jsonb_agg` to `[]`. Asserts empty projected array per shape.
+- (2) Array-of-non-objects (`['alice', null, {name:'nohive'}]`): does NOT raise; all three elements project with `orcid_verified=null` / `orcid_discrepancy=false` (no JOIN match against the empty accreditation set).
+- (3) Well-formed control (single object author with `hive` key): projects name/hive/orcid normally; `orcid_verified=null` / `orcid_discrepancy=false` against the empty accreditation set.
+
+An empty `active_accreditations` CTE is constructed inline (`SELECT NULL::text, NULL::text WHERE false`) because the helper requires that CTE in scope; the empty set suffices for the cascade-fail assertion (the load-bearing claim is "SRF does not raise on malformed authors[]").
+
+**Item 4 [P2] — drift-reach acknowledgment on `lateralShape`.** Added the drift-reach note to the `lateralShape` constant's comment in the `citing_papers` test, matching the depth of the sibling `subqueryShape` block's acknowledgment: a production-side revert of the CASE-WHEN guard at the `citing_papers` CTE leaves this test green because it exercises the inlined SQL string, not the production source; the structural canary for the production site lives in `excludeSelfReviewWhere-callsite-canaries.test.ts`-style coverage. Also notes that the new item-3 `authorsWithSupersessionSelect` test (which calls the production helper directly) DOES have production-source mutation reach, unlike the inlined-SQL tests.
+
+**Verification:**
+- `npm run typecheck` clean (src + tests).
+- `npm run lint` clean (0 errors; 1 pre-existing unused-eslint-disable warning in `src/lib/author-supersession.ts`, untouched by this task).
+- Vitest deferred to the parent's authoritative serial run — real-Postgres tests collide with sibling worktrees.
+
+**Expected mutation-kill:**
+- Item 3 is the only new executable assertion. Reverting the CASE-WHEN `jsonb_typeof = 'array'` guard at the SRF argument position inside `authorsWithSupersessionSelect` (back to a bare `jsonb_array_elements(c.json_metadata -> $1 -> 'authors')`) makes arm (1) raise `cannot extract elements from a scalar` on the first non-array shape → the test fails red. This closes the asymmetric-coverage gap the architect flagged (item 1's `citing_papers` fix had a behavioral canary; item 2's `authorsWithSupersessionSelect` fix did not).
+- Items 1, 2, 4 are comment-only / no-op and carry no new mutation-kill; they close documentation-accuracy regressions (self-contradicting reader traps + a missing drift-reach acknowledgment).
