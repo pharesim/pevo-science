@@ -170,7 +170,7 @@ When items 1 and 2 land, `git mv` this file from `tasks/pending/` back to `tasks
 
 ---
 
-## Backend re-review signal (2026-05-25, commit __PENDING_SHA__)
+## Backend re-review signal (2026-05-25, commit 5ac2c7ba)
 
 Both round-2 hold items addressed in `backend/tests/middleware/rateLimit.test.ts` (test-only; no production code touched).
 
