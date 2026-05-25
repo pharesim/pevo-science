@@ -44,7 +44,14 @@
  *   under test independent of whether the JWT cryptographically verifies.
  *   nodemailer is also mocked so the route's sendVerificationEmail()
  *   resolves without live SMTP — SMTP shape is covered by
- *   `lib/smtp.test.ts`.
+ *   `lib/smtp.test.ts`. The shared app pool's `query` is mocked per-spec in
+ *   the SMTP-fail rollback-throw tests: a `vi.spyOn(pool, 'query')` selectively
+ *   rejects ONLY the rollback statement under test (the Change-flow restore
+ *   UPDATE or the Add-flow DELETE) while passing every other statement through
+ *   to the real DB, so the route's inner rollback try/catch is exercised
+ *   without inducing a real Postgres deadlock per-test (which would be
+ *   non-deterministic and slow). The spy is `mockRestore`d in a `finally` so
+ *   it never bleeds into sibling specs.
  *
  *   (b) verifyHiveSignature is mocked via `MOCK_VERIFY_SIGNATURE`; this is
  *   a non-auth-focused suite (the fresh-auth body-proof gate is the
@@ -119,6 +126,24 @@ const { clearRateLimitKeys } = await import('../support/redis-helpers.js');
 const { logger } = await import('../../src/logger.js');
 
 const app = createApp();
+
+// Search a `logger.warn` spy's call list for the first call whose structured
+// fields carry the given `event` discriminator, returning that fields object
+// (the warn's first arg) or undefined. Mirrors the `findEvent` helper in
+// `settings.test.ts`, used to assert full warn-payload shape via
+// `toMatchObject` rather than extracting `.event` alone.
+function findWarnEvent(
+  spy: ReturnType<typeof vi.spyOn>,
+  event: string,
+): Record<string, unknown> | undefined {
+  for (const call of spy.mock.calls) {
+    const [obj] = call;
+    if (obj && typeof obj === 'object' && (obj as { event?: string }).event === event) {
+      return obj as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
 
 const RUN_ID = Date.now();
 
@@ -1088,12 +1113,20 @@ describe.skipIf(!dbReachable)(
       // query: pass every statement through to the real DB EXCEPT the
       // token-scoped restore UPDATE, which we force to reject with a
       // Postgres-like error simulating a deadlock / pool blip during
-      // rollback.
+      // rollback. Discriminate the restore UPDATE on non-positional
+      // invariants — the SET-column names plus a WHERE-clause regex that
+      // ignores placeholder ordinals — so the matcher survives a future
+      // column add/remove that shifts the $N positions.
       const pool = getAppPool()!;
       const realQuery = pool.query.bind(pool) as (...a: unknown[]) => Promise<unknown>;
       const rollbackImpl = (...args: unknown[]): Promise<unknown> => {
         const sql = typeof args[0] === 'string' ? args[0] : '';
-        if (sql.includes('SET pending_email') && sql.includes('pending_email_token = $5')) {
+        const isRestoreUpdate =
+          sql.includes('SET pending_email') &&
+          sql.includes('pending_email_token =') &&
+          sql.includes('pending_email_expires_at') &&
+          /WHERE username = \$\d+ AND pending_email_token = \$\d+/i.test(sql);
+        if (isRestoreUpdate) {
           return Promise.reject(
             Object.assign(new Error('deadlock detected'), { code: '40P01' }),
           );
@@ -1122,19 +1155,107 @@ describe.skipIf(!dbReachable)(
         //   1. settings.email_post.smtp_send_failed (always on SMTP fail)
         //   2. settings.email_post.smtp_fail_rollback_failed (only when the
         //      rollback query itself throws)
-        const events = warnSpy.mock.calls
-          .map((call) => {
-            const [obj] = call;
-            return obj && typeof obj === 'object'
-              ? (obj as { event?: string }).event
-              : undefined;
-          })
-          .filter(Boolean);
-        expect(events).toContain('settings.email_post.smtp_send_failed');
-        expect(events).toContain('settings.email_post.smtp_fail_rollback_failed');
+        // The rollback-failed payload locks the full operator-actionable
+        // field shape (route, email_hash, username, err: Error) so a
+        // regression dropping any of those fields fails this spec.
+        const sendFailed = findWarnEvent(warnSpy, 'settings.email_post.smtp_send_failed');
+        const rollbackFailed = findWarnEvent(
+          warnSpy,
+          'settings.email_post.smtp_fail_rollback_failed',
+        );
+        expect(sendFailed).toBeDefined();
+        expect(rollbackFailed).toMatchObject({
+          event: 'settings.email_post.smtp_fail_rollback_failed',
+          route: 'settings.email-post',
+          email_hash: expect.any(String),
+          username: STATE_A_USER,
+          err: expect.any(Error),
+        });
       } finally {
         warnSpy.mockRestore();
         querySpy.mockRestore();
+      }
+    });
+
+    it('Add-flow DELETE rollback throws → 200 (not 500) + smtp_fail_rollback_failed warn fires', async () => {
+      // Sibling of the Change-flow rollback-throw spec, targeting the OTHER
+      // arm of the SMTP-fail inner try/catch: the Add-flow no-row branch
+      // INSERTs a new row, then on SMTP failure DELETEs it back out. Force
+      // that DELETE itself to reject so the inner catch must swallow the
+      // throw and keep the response uniform 200; if it escaped to the outer
+      // error handler the route would 500, re-opening the status-code
+      // enumeration oracle. A per-branch refactor that splits the try/catch
+      // and drops only the Add-flow DELETE wrapper escapes the Change-flow
+      // spec but flips both assertions here red (status becomes 500, the
+      // rollback-failed warn never fires).
+      //
+      // Add-flow is the no-existing-row branch: reach it via the Keychain
+      // path (no Bearer header → signature auth) for a username with no
+      // accounts row, so the route INSERTs rather than UPDATEs.
+      const pool = getAppPool()!;
+      // Ensure NO_ROW_USER has no row so the INSERT branch is taken; clean
+      // up afterward since this describe block's beforeEach doesn't.
+      await pool.query('DELETE FROM accounts WHERE username = $1', [NO_ROW_USER]).catch(() => {});
+
+      // SMTP fails so the route enters the rollback path.
+      smtpMock.sendMail.mockRejectedValueOnce(new Error('SMTP connection refused'));
+
+      // Pass every statement through to the real DB EXCEPT the Add-flow
+      // DELETE rollback, which we force to reject. Discriminate on the
+      // DELETE target table plus the verify_token column reference unique to
+      // the Add-flow rollback statement (the Change-flow restore is an
+      // UPDATE and never matches this).
+      const realQuery = pool.query.bind(pool) as (...a: unknown[]) => Promise<unknown>;
+      const rollbackImpl = (...args: unknown[]): Promise<unknown> => {
+        const sql = typeof args[0] === 'string' ? args[0] : '';
+        const isAddFlowDelete =
+          sql.includes('DELETE FROM accounts') && sql.includes('verify_token');
+        if (isAddFlowDelete) {
+          return Promise.reject(
+            Object.assign(new Error('deadlock detected'), { code: '40P01' }),
+          );
+        }
+        return realQuery(...args);
+      };
+      const querySpy = vi
+        .spyOn(pool, 'query')
+        .mockImplementation(rollbackImpl as never);
+
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(
+        () => undefined as unknown as void,
+      );
+
+      try {
+        const res = await request(app)
+          .post('/api/settings/email')
+          .set('X-Hive-Username', NO_ROW_USER)
+          .send({ email: NEW_EMAIL_NOROW });
+
+        // Uniform 200 — the DELETE rollback throw was swallowed by the inner
+        // catch.
+        expect(res.status).toBe(200);
+
+        // Both warn emissions present, with the rollback-failed payload
+        // locking the full operator-actionable field shape.
+        const sendFailed = findWarnEvent(warnSpy, 'settings.email_post.smtp_send_failed');
+        const rollbackFailed = findWarnEvent(
+          warnSpy,
+          'settings.email_post.smtp_fail_rollback_failed',
+        );
+        expect(sendFailed).toBeDefined();
+        expect(rollbackFailed).toMatchObject({
+          event: 'settings.email_post.smtp_fail_rollback_failed',
+          route: 'settings.email-post',
+          email_hash: expect.any(String),
+          username: NO_ROW_USER,
+          err: expect.any(Error),
+        });
+      } finally {
+        warnSpy.mockRestore();
+        querySpy.mockRestore();
+        // The DELETE rollback was forced to throw, so the INSERTed row
+        // survives; remove it with a direct (un-spied) query.
+        await pool.query('DELETE FROM accounts WHERE username = $1', [NO_ROW_USER]).catch(() => {});
       }
     });
 

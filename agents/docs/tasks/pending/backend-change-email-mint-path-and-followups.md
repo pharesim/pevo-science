@@ -334,3 +334,24 @@ When items 1-4 land, `git mv` this file back to `tasks/review/`. The mv itself i
 Recommendation: items 1-4 all touch `backend/tests/routes/settings-email-fresh-auth.test.ts` (one new spec + one test-file header edit + one matcher rewrite + one assertion shape change in the round-4 spec). The natural shape is one bundled commit on the test file alone.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-25, worktree)
+
+All four round-5 items landed in `backend/tests/routes/settings-email-fresh-auth.test.ts` (test-only; no production source touched).
+
+**Item 1 (P2 — Add-flow DELETE rollback-throw mutation-kill).** Added a sibling spec to the SMTP-fail rollback describe block that exercises the OTHER arm of the inner try/catch: the Add-flow no-existing-row branch. Reaches the INSERT path via the Keychain (no-Bearer → signature) auth for a username with no `accounts` row, queues a one-shot `smtpMock.sendMail` rejection, and spies on the shared `pool.query` to reject ONLY the Add-flow DELETE rollback (matched on `DELETE FROM accounts` plus the `verify_token` column reference, both stable invariants of the production `DELETE FROM accounts WHERE username = $1 AND verify_token = $2`), passing every other statement through to the real DB. Asserts status 200 (not 500) AND that both `settings.email_post.smtp_send_failed` and `settings.email_post.smtp_fail_rollback_failed` warns fire. Mutation-kill: a per-branch refactor that splits the try/catch and drops only the Add-flow DELETE wrapper escapes the existing Change-flow spec but flips this spec's status assertion to 500 and the rollback-failed warn never fires — both assertions go RED. The spy is `mockRestore`d and the surviving INSERTed row deleted in `finally`.
+
+**Item 2 (P3 — header carve-out clause (a) inventory).** Extended the file-header clause (a) inventory to name the new `pool.query` mock target: the per-spec selective rejection scope (Change-flow restore UPDATE / Add-flow DELETE), the rationale (exercise the inner rollback try/catch without inducing a real Postgres deadlock per-test), the default pass-through-to-real-DB behavior, and the `mockRestore` in `finally`.
+
+**Item 3 (P3 — re-anchor matcher off the `$5` ordinal).** The existing Change-flow rollback-throw spec's query-spy matcher no longer keys on `pending_email_token = $5`. It now requires all three SET-column substrings (`SET pending_email`, `pending_email_token =`, `pending_email_expires_at`) plus a placeholder-index-agnostic WHERE-clause regex `/WHERE username = \$\d+ AND pending_email_token = \$\d+/i`, sanity-checked against the production restore UPDATE string. A future column add/remove that shifts the `$N` positions no longer silently de-matches the spy.
+
+**Item 4 (P3 — strengthen rollback-failed warn-payload assertion).** Added a module-level `findWarnEvent` helper (mirrors `settings.test.ts`'s `findEvent`) and changed both rollback-throw specs from extracting `.event` alone to `toMatchObject({ event, route: 'settings.email-post', email_hash: expect.any(String), username: <the spec's user>, err: expect.any(Error) })`, matching the production warn payload shape. A regression dropping `err`, `email_hash`, `username`, or `route` from the payload now fails the spec.
+
+**Verification (from `backend/`):**
+- `npm run typecheck` (`:src` + `:tests`): clean.
+- `npm run lint` (`eslint src/`): no new findings; the edited test file lints clean via `npx eslint` (one pre-existing unrelated warning in `src/lib/author-supersession.ts`, outside this change).
+- Vitest NOT run in-worktree per instructions (real-Postgres/Redis suite collides with sibling worktrees); the parent runs the authoritative serial suite after merge. Expected: all prior specs unaffected (default `sendMail` resolves; both `pool.query` spies are per-spec and `mockRestore`d in `finally`), plus the two strengthened specs and the new Add-flow spec pass.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
