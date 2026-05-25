@@ -311,7 +311,7 @@ function buildCumulativeAuthorsForChain(
   accreditedAccounts: Set<string>,
   accreditedOrcids: Map<string, string | null>,
   accreditationOrcidStatus: Map<string, { orcid: string | null; status: AccreditationStatus }>,
-): Array<Record<string, unknown>> {
+): PaperAuthor[] {
   // Per-(rootAuthor, rootPermlink, hive) dedup set for the
   // `orcid_claim_mismatch` audit emission. The cumulative-union loop iterates
   // chain posts and resolves one winning entry per hive; the audit only
@@ -558,8 +558,36 @@ function buildCumulativeAuthorsForChain(
     out.orcid_verified = supersession.orcid_verified;
     out.orcid_discrepancy = supersession.orcid_discrepancy;
 
-    return out;
-  });
+    // Enumerated projection to exactly PaperSummary's contract fields plus
+    // `affiliation`. The detail surface legitimately renders `affiliation`;
+    // the listing/profile consumers strip it. Dropping every other key a
+    // broadcaster may inject into `pevo.authors[i]` (email, url, arbitrary
+    // metadata) keeps multi-link `authors[]` shape-identical to the
+    // single-link SQL/JS projection, which only ever emits the enumerated
+    // set. Without it the same endpoint returns wider author objects on
+    // multi-link papers and the extra keys survive into the per-root cache.
+    const projected: Record<string, unknown> = {
+      name: out.name,
+      hive: out.hive,
+      orcid: out.orcid,
+      orcid_verified: out.orcid_verified,
+      orcid_discrepancy: out.orcid_discrepancy,
+    };
+    if (out.affiliation !== undefined) projected.affiliation = out.affiliation;
+    return projected;
+  })
+    // Real type-guard narrowing (not an `as` cast). The guaranteed-present
+    // field on every cumulative-union entry is `hive`: it is the dedup key,
+    // normalised to a string when the winning entry is selected, and entries
+    // with a null hive were skipped before they could win. `name` is NOT a
+    // safe discriminator here — PEvO author entries are routinely hive-only
+    // (`{hive}` with no `name`), so filtering on `name` would drop those
+    // legitimate authors,
+    // breaking the "authors can't be dropped" invariant this surface upholds.
+    // The predicate asserts the intersection so it stays assignable to the
+    // map output's `Record<string, unknown>` element type; the surviving
+    // array narrows to PaperAuthor[].
+    .filter((a): a is Record<string, unknown> & PaperAuthor => typeof a.hive === 'string');
 }
 
 /**
@@ -683,20 +711,12 @@ function buildChainCumulativeFromPosts(
   const accredited = authors
     .map((a) => normalizeHiveAccount(a.hive))
     .filter((hive): hive is string => hive !== null && options.accreditedAccounts.has(hive));
-  // Boundary narrowing: `buildCumulativeAuthorsForChain` returns a looser
-  // `Array<Record<string, unknown>>` because it threads broadcaster-supplied
-  // author objects through the cumulative-union dedup. Entries that survived
-  // the union construction have a normalised `hive` (the dedup key) and the
-  // supersession projection populated the `orcid_verified`/`orcid_discrepancy`
-  // pair. `PaperAuthor.name` is structurally required, but in practice every
-  // entry the construction emits has `name` from the broadcaster's
-  // `pevo.authors[i]` payload (the API contract requires it). The single
-  // `as unknown as PaperAuthor[]` here is the TS-prescribed narrowing for
-  // structurally-trusted object literals — the same pattern `toPaperSummary`
-  // in helpers.ts uses for the head-meta projection. Consumers downstream
-  // get a typed value; only one boundary cast, not a fan-out of casts at
-  // every call site.
-  return { authors: authors as unknown as PaperAuthor[], accredited_authors: accredited };
+  // `authors` is already `PaperAuthor[]`. `buildCumulativeAuthorsForChain`
+  // enumerates each output entry to the contract fields and narrows with a
+  // real type guard (`typeof a.hive === 'string'`) at its return boundary,
+  // so no cast is needed here and broadcaster-injected keys cannot reach the
+  // consumers or the per-root cache.
+  return { authors, accredited_authors: accredited };
 }
 
 async function computeChainCumulativeFromHaf(
@@ -1020,12 +1040,15 @@ async function fetchPapersFromHaf(
     // row-author-scoped (singular bool used for filter/sort).
     //
     // Wall-clock budget: each per-row helper threads the same `AbortSignal`
-    // bounded by `config.hafWalkerWallClockMs`. Without this, a degraded HAF
-    // could leave each row's chain walk hanging on the 30s
-    // `statement_timeout` per query for the full MAX_HOPS depth; `Promise.all`
-    // parallelises across rows but each row's tail can hang independently.
-    // Mirrors the pattern in `fetchPaperDetailFromHaf` and the `/retract`
-    // handler.
+    // bounded by `config.hafWalkerWallClockMs`. The signal stops NEW queries
+    // from being dispatched once the budget fires; it does NOT cancel an
+    // in-flight `pool.query` — pg v8.x has no `AbortSignal` integration, so
+    // the last query a row issued runs to PostgreSQL's `statement_timeout`
+    // (30s). Real per-row worst case = `hafWalkerWallClockMs` +
+    // `statement_timeout`; `Promise.all` parallelises across rows so the page
+    // is bounded by the slowest row's sum, not their total. Mirrors the
+    // budget pattern in `fetchPaperDetailFromHaf`, the canonical-root walker,
+    // and the `/retract` handler.
     const enrichmentAbort = new AbortController();
     const enrichmentBudget = setTimeout(() => enrichmentAbort.abort(), config.hafWalkerWallClockMs);
     const chainAuthorsByKey = new Map<string, ChainCumulativeAuthorsResult>();
@@ -1093,8 +1116,14 @@ async function fetchPapersFromHaf(
       // union path strips inline here so both branches emit the same shape.
       // Stripping at the consumer (not in the helper) preserves the detail
       // surface's legitimate use of `affiliation` on `PaperDetail.authors[]`.
-      const cumulativeAuthors = chainResult?.authors
-        ? chainResult.authors.map((a) => {
+      // Single guard so `authors` and `accredited_authors` are taken from the
+      // cumulative result together or fall back together. The `length > 0`
+      // check also routes an empty cumulative array (e.g. a chain whose posts
+      // carry no valid-hive author entries) back to the head-meta projection
+      // instead of serving an empty authors list.
+      const cumulative = chainResult && chainResult.authors.length > 0 ? chainResult : null;
+      const cumulativeAuthors = cumulative
+        ? cumulative.authors.map((a) => {
             const { affiliation: _affiliation, ...rest } = a;
             return rest;
           })
@@ -1125,7 +1154,7 @@ async function fetchPapersFromHaf(
         author_reputation: accreditedSet.has(r.author as string)
           ? (batchScores.get(r.author as string) ?? 0)
           : 0,
-        accredited_authors: chainResult?.accredited_authors ?? headAccreditedAuthors,
+        accredited_authors: cumulative ? cumulative.accredited_authors : headAccreditedAuthors,
         source_type: isBridge
           ? ((pevo.source as Record<string, unknown>)?.type as 'arxiv' | 'crossref') || 'arxiv'
           : 'native',

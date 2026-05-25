@@ -231,4 +231,55 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
     expect((result!.authors as Array<{ hive?: string }>).map((a) => a.hive).sort()).toEqual(['alice', 'bob', 'carol']);
     expect(result!.accredited_authors).toEqual(['bob']);
   });
+
+  it('projects multi-link authors[] to the enumerated contract shape, dropping broadcaster-injected keys', async () => {
+    // buildCumulativeAuthorsForChain threads the broadcaster's pevo.authors[i]
+    // through the cumulative-union dedup, then projects each output entry to
+    // exactly the PaperSummary contract fields plus affiliation. Any other key
+    // a broadcaster injects (email, url, arbitrary metadata) must NOT survive
+    // into authors[] — otherwise multi-link papers return wider author objects
+    // than single-link rows (which use the enumerated SQL/JS projection), and
+    // the extra keys leak into the per-root cache where consumer-side strips
+    // cannot reach them. alice's winning entry (her root self-claim) carries an
+    // affiliation plus injected email/url; bob's winning entry (his self-claim
+    // continuation) carries neither.
+    const chainPosts = [
+      {
+        author: 'alice',
+        permlink: 'p1',
+        pevo: {
+          type: 'paper',
+          authors: [
+            { name: 'Alice A', hive: 'alice', affiliation: 'Uni A', email: 'alice@example.com', url: 'https://alice.example' },
+            { name: 'Bob B', hive: 'bob', email: 'bob@example.com' },
+          ],
+        },
+      },
+      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Bob B', hive: 'bob' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', {
+      accreditedAccounts: new Set(['alice', 'bob']),
+      accreditedOrcids: new Map(),
+      accreditationOrcidStatus: new Map(),
+      prebuiltChainPosts: chainPosts,
+    });
+    expect(result).not.toBeNull();
+    const byHive = new Map(result!.authors.map((a) => [a.hive, a] as const));
+
+    // No broadcaster-injected key survives on any entry.
+    for (const author of result!.authors) {
+      expect(author).not.toHaveProperty('email');
+      expect(author).not.toHaveProperty('url');
+    }
+
+    // alice carried an affiliation → enumerated set is the contract fields
+    // plus affiliation (the detail surface renders it; listing/profile strip).
+    expect(Object.keys(byHive.get('alice')!).sort()).toEqual(
+      ['affiliation', 'hive', 'name', 'orcid', 'orcid_discrepancy', 'orcid_verified'],
+    );
+    // bob carried no affiliation → exactly the PaperSummary contract set.
+    expect(Object.keys(byHive.get('bob')!).sort()).toEqual(
+      ['hive', 'name', 'orcid', 'orcid_discrepancy', 'orcid_verified'],
+    );
+  });
 });

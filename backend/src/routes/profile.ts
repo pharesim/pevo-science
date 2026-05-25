@@ -399,10 +399,14 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
       // absorbs warm pages; cold pages walk in parallel.
       //
       // Wall-clock budget: per-row helpers thread the same `AbortSignal`
-      // bounded by `config.hafWalkerWallClockMs` so a degraded HAF cannot
-      // leave individual rows' chain walks hanging on `statement_timeout`
-      // independently of each other. Mirrors the listing enrichment in
-      // `fetchPapersFromHaf` and the detail handler's walker budget.
+      // bounded by `config.hafWalkerWallClockMs`. The signal stops NEW
+      // queries from being dispatched once the budget fires; it does NOT
+      // cancel an in-flight `pool.query` (pg v8.x has no `AbortSignal`
+      // integration), so the last query a row issued runs to PostgreSQL's
+      // `statement_timeout` (30s). Real per-row worst case =
+      // `hafWalkerWallClockMs` + `statement_timeout`. Mirrors the listing
+      // enrichment in `fetchPapersFromHaf` and the detail handler's walker
+      // budget.
       const enrichmentAbort = new AbortController();
       const enrichmentBudget = setTimeout(() => enrichmentAbort.abort(), config.hafWalkerWallClockMs);
       const chainAuthorsByKey = new Map<string, ChainCumulativeAuthorsResult>();

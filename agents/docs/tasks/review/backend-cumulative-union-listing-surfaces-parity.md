@@ -325,3 +325,31 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 Next re-review scopes to commits after `850c32ff`.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (round-3, working tree pre-commit)
+
+All four round-3 items landed. **One item required a corrected discriminator from the architect's prescription — flagged below for explicit re-review.**
+
+**Item 1 — enumerated projection, broadcaster-injected keys dropped.** `buildCumulativeAuthorsForChain`'s per-entry `return` now projects to exactly `{ name, hive, orcid, orcid_verified, orcid_discrepancy }` plus `affiliation` when present, instead of spreading the full broadcaster `pevo.authors[i]`. Any other key a broadcaster injects (`email`, `url`, arbitrary metadata) is dropped, so multi-link `authors[]` is shape-identical to the single-link SQL/JS projection and the per-root cache cannot carry extra keys. The detail surface keeps `affiliation` (it renders it); the listing/profile consumers still strip it. New canary in `papers-cumulative-cross-surface-parity-mocked.test.ts` asserts `Object.keys(authors[i])` equals exactly the enumerated set (no injected key) for a multi-link paper whose entries carry `email`/`url`.
+
+**Item 2 — `as unknown as PaperAuthor[]` cast removed; real type guard added. DEVIATION from the prescribed discriminator field.** The hold prescribed `.filter((a): a is PaperAuthor => typeof a.name === 'string')`. That discriminator drops every **hive-only** author entry (`{hive}` with no `name`) — which is the routine PEvO author-entry shape, not an exotic one. Applied literally it broke 14 existing tests across `papers-cumulative-orcid-audit`, the mocked parity file, and the canonical/profile suites (all fixtures use hive-only entries like `{hive: 'alice'}`), and it directly violates this task's core "authors can't be dropped" invariant — dropping a nameless co-author is a strictly worse version of the bug this surface exists to prevent. The hold's stated rationale ("an entry without a string `name` is not a renderable PaperAuthor and already yields `undefined` to every consumer") does not hold for PEvO: hive-only entries were served fine pre-change (the old `as unknown as` cast laundered the absent `name`), and the frontend renders them via the hive handle.
+
+Per user triage, the guard discriminates on **`hive`** — the dedup key, guaranteed a normalised string on every cumulative-union entry (null-hive entries are skipped before they can win) — not `name`: `.filter((a): a is Record<string, unknown> & PaperAuthor => typeof a.hive === 'string')`. This still satisfies item 2's intent (a real runtime type guard, no `as` cast; the `Record<string, unknown> & PaperAuthor` intersection keeps the predicate assignable to the map output's element type) while preserving every legitimate author. **Architect: please confirm the `hive` discriminator, or rule on whether `PaperAuthor.name` should instead become optional in `types/domain.ts` to model the hive-only reality (a wider change deferred from this hold; would let the guard drop entirely).**
+
+**Item 3 — AbortController docblocks corrected (comment-only).** Both the listing (`fetchPapersFromHaf`) and profile (`/:username/papers`) enrichment-budget docblocks now state that the signal stops NEW query dispatch but does NOT cancel an in-flight `pool.query` (pg v8.x has no `AbortSignal`), so the real per-row worst case is `hafWalkerWallClockMs + statement_timeout`. Mirrors the framing on the canonical-root walker setup site and the `pg-abortcontroller-budget-bounded-by-statement-timeout` convention.
+
+**Item 4 — listing guards unified (listing only).** A single `const cumulative = chainResult && chainResult.authors.length > 0 ? chainResult : null;` now gates both `authors` and `accredited_authors` in the `fetchPapersFromHaf` row-map, so they take the cumulative result together or fall back to head-meta together. The `length > 0` check also routes an empty cumulative array back to head-meta. Profile's enrichment already gates both fields under one `if`, so per the hold's scope it was left untouched.
+
+### Verification
+
+- `npm run typecheck` (src + tests) clean; `npm run lint` clean on touched files (the pre-existing `author-supersession.ts` unused-eslint-disable warning is unrelated and untouched).
+- Scoped vitest: `papers-cumulative-cross-surface-parity-mocked` + `papers-canonical-root-walker` + `continuation-author-gate` + `papers-canonical-orcid-resolution` + `profile-papers-supersession` + `profile-papers-cid-validate` + `papers-cumulative-orcid-audit` → 110 passed.
+- Real-HAF: `papers.test.ts` (cross-surface parity canary) + `profile.test.ts` → 20 passed, 1 skipped (the pre-existing skip).
+
+### Self-audit on added lines
+
+No task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in production or test source. Inline comments anchor on behavioural symbols: `PaperSummary`'s contract set, the `hive` dedup key, `buildCumulativeAuthorsForChain`, the single-flight `getOrSet`, `statement_timeout`, the canonical-root walker. The item-2 discriminator rationale is documented at the filter site (why `hive` not `name`).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
