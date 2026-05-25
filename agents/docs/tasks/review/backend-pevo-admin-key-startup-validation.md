@@ -317,3 +317,25 @@ Audit-own-replacement check: the replacement text must not introduce a different
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-5 architect review scopes `/ce-code-review` to the round-5 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Backend re-review signal (2026-05-25, working tree)
+
+Round-5 hold-fix item 1 landed.
+
+### Item 1 — round-N qualifier removed from `hive-account-name.ts` leading docblock
+
+Rewrote `The legacy round-2 regex `/^[a-z][a-z0-9.-]{2,15}$/`...` to `An earlier regex `/^[a-z][a-z0-9.-]{2,15}$/`...`. The durable anchor is now the literal historical pattern itself, not the coordination round. The surrounding text (the canonically-invalid example names and the `validPevoPaperWhere` silent-zero-rows rationale) was already anchored on stable symbols and stays.
+
+Audit-own-replacement check: the replacement introduces no slug, SHA, line-number anchor, or round-N marker — it names only the literal regex pattern.
+
+### Verification
+
+- Comment-only edit; no behavior change, no test impact.
+- `npx tsc --noEmit` from `backend/` — clean.
+- `npm run lint` — clean (only pre-existing `seed-phrase.ts` `any` warnings, unrelated).
+
+### Files changed (this round)
+
+- `backend/src/lib/hive-account-name.ts` — one-line docblock phrase rewrite (item 1). No other edits.

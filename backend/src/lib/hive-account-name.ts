@@ -11,7 +11,7 @@
  *   - Each segment is 3 to 16 chars long.
  *   - The overall account name is at most 16 chars (witness-imposed cap).
  *
- * The legacy round-2 regex `/^[a-z][a-z0-9.-]{2,15}$/` accepted canonically-invalid
+ * An earlier regex `/^[a-z][a-z0-9.-]{2,15}$/` accepted canonically-invalid
  * names like `pevo.` (trailing dot), `a..b` (consecutive dots), `a-bc-` (trailing
  * hyphen), and `.abc` (leading dot). Those configured values would survive boot
  * and silently mismatch every chain query that pins on the account name (e.g.
