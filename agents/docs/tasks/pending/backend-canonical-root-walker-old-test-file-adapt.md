@@ -45,3 +45,28 @@ Backend may pick this up any time after `backend-canonical-root-walker-cumulativ
 ## Source
 
 - `/ce-code-review` maintainability M1 (confidence 100), testing T1, security TG-02 — cross-corroborated during round-1 review of `backend-canonical-root-walker-cumulative-aware` (2026-05-21).
+
+---
+
+## Architect review (2026-05-25) — HELD PENDING FIXES (round-1)
+
+`/ce-code-review` on commit `4b78bc5d` confirms the acceptance criteria are met: the full `canonical-root-walker.test.ts` file runs green with no scoped exclusion (22/22), no test asserts the removed `canonical_root_walker_unauthorized_hop` event, retained mutation-kill comments describe the live `null`-return paths, and comment-anchor + mock-carve-out conventions hold. Two focused test-correctness items block archive; both are in this file and small.
+
+### Items
+
+1. **The "negative-cache memo" test asserts deduplication vacuously.** It asserts the per-request `fetchHeadAuthorizedAuthors` lookup count for `alice/v1` equals 1 to prove the no-rows memoize-null path deduplicates. But in this fixture `alice/v1` is looked up exactly once regardless of memoization: `findCanonicalRoot` returns null (membership fails — `bob/v2` not in the chain), so the route proceeds with `bob/v2` coords and the detail-surface walk queries `bob/v2`, never re-hitting `alice/v1`. The assertion passes whether or not the memoize-null branch exists, so it does not kill the regression it claims to guard. **Fix:** change the fixture so `bob/v2` IS admitted (forward verify includes it → canonical root resolves to `alice/v1`), so the detail-surface walk also calls `fetchHeadAuthorizedAuthors` for `alice/v1`; return zero rows on that head-authors lookup to exercise the no-rows memoize-null path specifically (with the memo: count stays 1; without it: 2). Mirror the dedup shape the catch-block and version-path memo tests in the same family already use.
+
+2. **`isForwardWalkContinuationProbe` discriminator collides with the enrichment votes sub-query, undocumented.** Its regex matches both the `resolveContinuationChain` forward-walk probe (intended) and the enrichment votes sub-query — both carry `c.author = ANY($4::text[])`. Benign today because every responder returns `{ rows: [] }` for this match, but the sibling discriminators (`isInitialBackwardProbe`, `isHeadAuthorsLookup`) carry explicit BRITTLENESS WARNING comments and this one does not; a future test seeding a non-empty votes fixture via a separate discriminator would have it silently swallowed. **Fix:** either narrow the discriminator (the forward-walk probe also joins the comment-ops table, which the votes query does not) or add a BRITTLENESS WARNING comment matching the sibling style.
+
+### Acceptance for re-review
+- Both items addressed; the full `canonical-root-walker.test.ts` file still runs green with no scoped exclusion.
+- Self-audit on changed lines: no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors.
+
+### Dismissed at architect triage (out of scope)
+- Adapt-vs-delete of the "legitimate self-continuation" / "legitimate co-author continuation" positive-path tests — the task granted adapt-vs-delete latitude; the implementer's documented choice to adapt is accepted (they pin the simplest backward→forward path from a 1-hop leaf, which the 3-link reproducer and the forward-only continuation-author-gate file do not exactly cover).
+- Wall-clock fail-CLOSED test not asserting HTTP 503 status — corroborating only; the 503 is already pinned by a sibling test in this file.
+- Solution-file path citation in a comment — the sanctioned anchoring form (solution docs persist), distinct from the prohibited task-slug/SHA/line-number anchors.
+
+Next re-review scopes to commits after `4b78bc5d`.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
