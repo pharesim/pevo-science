@@ -18,7 +18,12 @@ import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 import { runWithArgon2Slot, ShuttingDownError, isArgonSemaphoreError } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
-import { hashEmailForLogs, maskEmail, safeHashEmailForLogs } from '../lib/log-pii.js';
+import {
+  hashEmailForLogs,
+  maskEmail,
+  safeHashEmailForLogs,
+  sha256HexDigest,
+} from '../lib/log-pii.js';
 import { createSmtpTransporter } from '../lib/smtp.js';
 import { mintBinding, setBindingCookie } from '../signup-session-binding.js';
 
@@ -114,16 +119,6 @@ const MAX_LOGIN_FAILURES = 20;
 // remainder of the 48h via the audit trail.
 const RECOVERY_VERIFY_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RECOVERY_DISPUTE_TOKEN_EXPIRY_MS = 48 * 60 * 60 * 1000; // 48 hours
-
-// Full SHA-256 hex digest for at-rest forensic storage (old-email digest,
-// requesting-IP digest) in the recovery audit/staging path. Distinct from
-// `hashEmailForLogs` (12-char, log-correlation only): a row persisted in
-// `pending_recovery` / referenced from an incident triage needs collision
-// resistance, not a compact correlator. Mirrors the full-digest rationale on
-// `hashUserAgentForAudit` in custody.ts.
-function forensicDigest(value: string): string {
-  return crypto.createHash('sha256').update(value).digest('hex');
-}
 
 // Extract the DOMAIN of an email for the old-email notification. The
 // notification names only the new email's domain, never the full address, so a
@@ -1264,9 +1259,9 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
       const disputeTokenHash = crypto.createHash('sha256').update(disputeToken).digest();
       const verifyExpiresAt = new Date(Date.now() + RECOVERY_VERIFY_TOKEN_EXPIRY_MS);
       const disputeExpiresAt = new Date(Date.now() + RECOVERY_DISPUTE_TOKEN_EXPIRY_MS);
-      const requestIpHash = req.ip ? forensicDigest(req.ip) : null;
+      const requestIpHash = req.ip ? sha256HexDigest(req.ip) : null;
       const oldEmail = account.email;
-      const oldEmailHash = oldEmail ? forensicDigest(oldEmail) : null;
+      const oldEmailHash = oldEmail ? sha256HexDigest(oldEmail) : null;
 
       // A new staging request supersedes any prior un-consumed one for this
       // username (re-issued link, changed-mind on the new address). Delete

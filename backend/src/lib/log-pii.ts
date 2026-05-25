@@ -94,6 +94,24 @@ export function hashTokenForLogs(token: string): string {
 }
 
 /**
+ * Full (untruncated) SHA-256 hex digest of an arbitrary string.
+ *
+ * Distinct from the truncated `hashEmailForLogs` / `hashTokenForLogs`
+ * correlators: those sacrifice collision resistance for a compact 12-char
+ * log field, whereas this returns the full 64-char digest for at-rest
+ * forensic/audit storage where collision resistance is load-bearing (an
+ * incident triage joining on the digest must not see distinct inputs alias).
+ *
+ * Callers needing nullable-input handling (e.g. a header that may be absent,
+ * empty, or non-string) should wrap this in a domain-specific guard that
+ * returns `undefined` for the absent case rather than threading the guard
+ * through here — the digest itself is total over `string`.
+ */
+export function sha256HexDigest(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/**
  * Partially-redacted email for user-facing confirmation messages.
  *
  * Distinct from `hashEmailForLogs` (operator-log correlation, fully opaque).

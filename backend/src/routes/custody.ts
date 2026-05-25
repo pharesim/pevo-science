@@ -29,6 +29,7 @@ import {
   type FreshAuthTarget,
   type FreshAuthTargetAction,
 } from '../lib/fresh-auth.js';
+import { sha256HexDigest } from '../lib/log-pii.js';
 import {
   embedIdempotencyKey,
   lookupCustodyBroadcastIdempotency,
@@ -202,7 +203,7 @@ function bearerSessionId(req: Request): string | null {
  *  not for `bearerSessionId`'s compact correlator. */
 export function hashUserAgentForAudit(value: unknown): string | undefined {
   if (typeof value !== 'string' || value.length === 0) return undefined;
-  return crypto.createHash('sha256').update(value).digest('hex');
+  return sha256HexDigest(value);
 }
 
 /** Result discriminator for `findConsentOpsInBundle`. The single-consent rule
