@@ -297,3 +297,40 @@ Round-4 hold item 1 (P1, reliability) landed.
 **Deviations:** None. Touched only the SMTP-fail catch block and added one test; prior-round work untouched.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Architect re-review (2026-05-25, round-4 → round-5) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `de2be0a6` (always-on personas + security/adversarial/reliability/kieran-typescript). The round-4 held item (P1 reliability — inner try/catch around rollback queries) lands correctly: inner try wraps BOTH the Add-flow DELETE and the Change-flow restore UPDATE; on inner catch emits `settings.email_post.smtp_fail_rollback_failed` warn with the same field shape as the sibling `smtp_send_failed`; falls through to the uniform 200 envelope (Option A from `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` preserved). Test mutation-kill is verified for wholesale removal of the inner try (six reviewers concur). Four items held — all clustered on asymmetric test coverage and weak payload-shape assertions on the new spec.
+
+### Items held (must fix before archive)
+
+**1. (P2, conf 60-80, 6 reviewers: adversarial + testing + security + reliability + kieran-typescript + maintainability) Add-flow DELETE rollback-throw path is not separately mutation-killed.** The new spec's SQL spy matcher (`'SET pending_email'` + `'pending_email_token = $5'`) targets only the Change-flow restore UPDATE. The wholesale "remove inner try" mutation IS killed by the existing assertion, but a per-branch refactor that splits the try/catch and drops only the Add-flow DELETE wrapper escapes to the outer 500 handler and this test still passes green.
+
+Fix: add a sibling spec in the same describe block that forces the Add-flow DELETE rollback to reject. Queue a one-shot SMTP rejection on the hoisted `smtpMock.sendMail`; spy on `pool.query` and reject ONLY the `DELETE FROM accounts WHERE username = ...` rollback statement (matched on `'DELETE FROM accounts'` + a non-positional invariant such as the `verify_token` column reference); assert status 200 (not 500) AND that both `settings.email_post.smtp_send_failed` AND `settings.email_post.smtp_fail_rollback_failed` warns fire. Mutation-kill: removing the inner try/catch wrapper around the Add-flow DELETE flips status to 500 and the rollback_failed warn never fires.
+
+**2. (P3, conf 55, project-standards + testing) Test-file header doesn't list `pool.query` mock under carve-out clause (a).** The round-4 spec uses per-test `vi.spyOn(pool, 'query').mockImplementation(...)` selectively rejecting the rollback restore UPDATE. The file-level header inventory at carve-out clause (a) names nodemailer + `MOCK_VERIFY_SIGNATURE` but does not enumerate the new `pool.query` mock target. The intra-spec comment names the why; the convention names the file-header inventory.
+
+Fix: extend the carve-out clause (a) inventory block in the file header to add a `pool.query` mock entry — one sentence naming the mock target, the per-spec selective rejection scope (rollback restore UPDATE / Add-flow DELETE), the rationale (exercise the inner try/catch path without inducing a real Postgres deadlock per-test), the default pass-through behavior, and the `mockRestore` in `finally`.
+
+**3. (P3, conf 70, maintainability) Test query-spy matcher anchors on the `$5` positional parameter.** `sql.includes('pending_email_token = $5')` discriminates the rollback UPDATE via an incidental ordinal — the same anchor-rot class as a line number. If the restore UPDATE ever gains or loses a SET column, the position shifts, the spy no longer matches the rollback statement, the real query runs, the rollback_failed warn never fires, and the test passes-but-meaningless.
+
+Fix: re-anchor on a non-positional invariant. Either combine column-name substrings unique to the restore UPDATE (e.g., assert all three of `SET pending_email`, `pending_email_token =`, `pending_email_expires_at` appear) or use a regex on the WHERE clause text that ignores the placeholder index (`/WHERE username = \$\d+ AND pending_email_token = \$\d+/i`). Sanity-check the new matcher against the actual production query string before landing.
+
+**4. (P3, conf 80, adversarial) Rollback-failed warn payload-shape mutations survive.** The new spec extracts only `(obj as { event?: string }).event` from `warnSpy.mock.calls`. A regression that drops `err`, `email_hash`, or `username` from the warn payload still passes the test. The sibling pin at `backend/tests/routes/settings.test.ts` (Add-flow `smtp_send_failed` log-shape spec) uses `findEvent` + `toMatchObject` to lock the full payload shape — mirror that.
+
+Fix: change the assertion shape to `toMatchObject({ event: 'settings.email_post.smtp_fail_rollback_failed', route: '...', email_hash: expect.any(String), username: STATE_A_USER, err: expect.any(Error) })`. Closes the operator-actionable-field mutation class without coupling to incidental field order or extra fields.
+
+### Items dismissed at architect triage
+
+- `"see the inner-try rationale above"` relative-positional anchor in the SMTP-fail catch comment block — same-block intra-comment reference falls within the `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` stable-named-container carve-out. Reviewer confidence 35; below actionable bar.
+- SMTP-fail catch ~80 lines with nested try/catch — kieran-typescript + maintainability noted the edge-of-scannability concern but recommended dismiss; revisit when a third rollback branch arrives. Premature abstraction with one consumer is anti-PEvO.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-5 architect review scopes `/ce-code-review` to the round-5 commit only.
+
+Recommendation: items 1-4 all touch `backend/tests/routes/settings-email-fresh-auth.test.ts` (one new spec + one test-file header edit + one matcher rewrite + one assertion shape change in the round-4 spec). The natural shape is one bundled commit on the test file alone.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
