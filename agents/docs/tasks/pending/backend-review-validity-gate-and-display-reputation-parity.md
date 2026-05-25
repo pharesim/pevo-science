@@ -661,3 +661,22 @@ The clause-(c) real-path companion for the cryptographic-verification risk class
 ### Re-review signal
 
 When item 1 lands, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Single-item hold; one focused commit touching only `notifications-arm-sql-shape.test.ts`.
+
+---
+
+## Backend re-review signal (2026-05-25, round-7)
+
+Round-6's sole hold item (item 1, P2 — Architect re-review 2026-05-21 round 6) addressed in a single focused commit touching only `backend/tests/routes/notifications-arm-sql-shape.test.ts`. No behavioral change — clause-(b) header docstring rewrite.
+
+**Item 1 [P2]** — clause-(b) header at `notifications-arm-sql-shape.test.ts` (the `(b)` paragraph inside the file's leading docblock) rewritten to drop the round-6 under-claim ("No real-`verifyHiveSignature` integration test currently exists in the notifications domain ... a real-signature companion for `/api/notifications` is a follow-up (no separate task filed yet)") and cite `auth.test.ts` as the real-path clause-(c) companion. The new wording states that `auth.test.ts` does NOT hoist `MOCK_VERIFY_SIGNATURE`, stubs `getAccounts` to publish a deterministic test public key so real `verifyHiveSignature` runs end-to-end, and pins the cross-endpoint-replay rejection and malformed-signature rejection paths for `/api/notifications` against signed requests. The narrower residual gap — a real-signature successful authentication test that proceeds to HAF on `/api/notifications` — is flagged as not currently covered. The "no separate task filed yet" coordination phrasing is dropped per CLAUDE.md "Comment anchors" (coordination state in test source rots).
+
+Verified the architect's factual claims against `auth.test.ts` before writing the header: `grep -n MOCK_VERIFY_SIGNATURE tests/routes/auth.test.ts` shows only a comment mention (not a `vi.mock` hoist); `getAccounts` is stubbed at the `vi.mock('../../src/hive.js')` site to publish a deterministic public key; `/api/notifications?since_block=1` is exercised at six request sites; the cross-endpoint-replay rejection test ("rejects a signature produced against a different path") and the malformed-signature 401 test ("returns 401 with malformed Hive signature (real middleware runs)") both target `/api/notifications`.
+
+**Verification:**
+- `npm run typecheck` clean (src + tests).
+- `npm run lint` clean (0 errors; 1 pre-existing unused-eslint-disable warning in `src/lib/author-supersession.ts`, unrelated to this docstring change).
+- Vitest deferred to the parent's authoritative serial run — real-Postgres/HAF tests collide with sibling worktrees.
+
+**Expected mutation-kill:** none new — this is a comment-only correction with no executable assertion. The three existing captured-SQL canaries (INNER JOIN to `${T.comments} p`, `validPevoPaperWhere` paper-class predicate, per-arm `co.author != $1` counted occurrences) are unchanged; the rewrite does not perturb the gate behavior the file pins. The fix closes the documentation-accuracy regression the architect flagged (under-claim about real-path companion coverage), not a code defect.
+
+**Items NOT touched:** architect-zone carry-forwards remain pending at archive (`agents/docs/reputation-algorithm.md` lines describing pre-task unprefixed keys / numeric-string values / `active_accounts` CTE name; `agents/docs/ARCHITECTURE.md` pre-task SSoT state; `test-mock-carve-out-clause-c-2026-05-04.md` clause-(b) wording refresh). The canary-list round-number references at the file's lower docblock (canaries 1-3 enumeration) were left untouched — outside this single-item hold's cited scope.
