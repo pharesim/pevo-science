@@ -142,3 +142,28 @@ Verification:
   ```
 
   Expected: 5/5 pass; the migration-body RAISE test reports a true count of 51 (not 50).
+
+---
+
+## Architect re-review (2026-05-25, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` on commits `89f586b5..272b6401` (always-on personas + data-migrations conditional). The Shape A split-query restructure lands correctly: uncapped scalar `COUNT(*)` separately computed; capped `string_agg(...) LIMIT 50` query feeds only the sample-string; RAISE message reports the TRUE magnitude (verified at 60 dup groups, reported as 60 not "at least 50"). Test mutation-kill is sharp: `expect(reportedCount).toBe(51)` AND `expect(reportedCount).toBeGreaterThan(50)`, both flip RED on revert to the round-1 single-capped-COUNT shape. The 51 distinct duplicate-ORCID groups are seeded correctly (loop generates `0000`…`0050` third-segment with no collision). Idempotency preserved on `CREATE UNIQUE INDEX IF NOT EXISTS`. Sub-tests (a-d) untouched and unaffected. One item held — self-audit miss per the convention-enforcing-fix rule.
+
+### Item held (must fix before archive)
+
+**1. (P2, conf 75, project-standards) "Shape A: split queries" coordination-artifact anchor in the migration-body RAISE test comment.** Per `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, the round-2 fix introduced a new round-N-class anchor while addressing the round-1 hold. The comment in the new sub-test contains the architect's round-1 hold label ("Shape A: split queries"); once this task archives off the 250-line tasks-archive tail, "Shape A" has no referent. The neighboring sentences already convey the behavioral shape (uncapped scalar COUNT plus a separate LIMIT-50 sample-string query).
+
+Fix: strip the parenthetical "(Shape A: split queries) " from the comment. The surrounding behavioral text remains. Audit-own-replacement: the rewrite MUST NOT introduce a new task-slug citation, round-N marker, line-number anchor, or SHA reference in its place.
+
+### Items dismissed at architect triage
+
+- Two-table-scan cost (Shape A scans `accounts` twice — once for the COUNT, once for the sample) accepted under PEvO accounts-table size + single-instance posture.
+- TOCTOU between the two SELECTs (concurrent DELETE could make `dup_count > 0` with empty `dup_sample`) dismissed under migration-time + single-instance posture.
+- Loop-index off-by-one comment phrasing in the test (cosmetic).
+- Docblock mentions "SAVEPOINT-bracketed" but implementation uses BEGIN/ROLLBACK on a dedicated client connection; behavior is correct, vocabulary is doc-vs-code drift (deferable / fix-while-here at implementer's discretion).
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
