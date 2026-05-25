@@ -178,8 +178,11 @@ describe.skipIf(!dbReachable)('migration 007 — accounts_orcid_unique', () => {
     const DUP_GROUP_COUNT = 51;
     // The first group's ORCID is asserted to appear in the sample message;
     // since the sample is ORDER BY orcid and capped at 50, use a low-sorting
-    // ORCID so it lands inside the first-50 window deterministically.
-    const sampledOrcid = `0002-0002-0002-${(RUN_ID % 10000).toString().padStart(4, '0')}`;
+    // ORCID so it lands inside the first-50 window deterministically. The
+    // third segment is `0000` so it cannot collide with the loop-generated
+    // groups below (which use the 1-based index `0001`..`00NN` there); a
+    // collision would merge two groups and under-count the seeded total.
+    const sampledOrcid = `0002-0002-0000-${(RUN_ID % 10000).toString().padStart(4, '0')}`;
     // Use a single connection for the entire reproduction so SAVEPOINT and
     // ROLLBACK TO SAVEPOINT bracket the same session. Without `pool.connect`
     // each pool.query may pick a different connection and the savepoint is
