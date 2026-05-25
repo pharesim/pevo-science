@@ -45,3 +45,9 @@ Land this after `backend-cumulative-union-listing-surfaces-parity` archives so t
 ## Source
 
 - `/ce-code-review` maintainability M1 (route-to-route import, confidence 90) + M3 (per-row enrichment loop duplicated, confidence 85) during round-1 review of `backend-cumulative-union-listing-surfaces-parity` (2026-05-21).
+
+## [BLOCKED by Architect] (2026-05-25)
+
+Held out of the P0/P1/P2 backend batch. This task's own Coordination section requires it to land *after* `backend-cumulative-union-listing-surfaces-parity` archives, so the cumulative-union helper is at its final post-review shape. That parent task is currently in `agents/docs/tasks/review/` (awaiting architect review), NOT archived. Landing the extraction now risks merge conflicts in the same `papers.ts` function block if the architect holds the parent back with `papers.ts`-touching fixes.
+
+Unblock condition: architect archives `backend-cumulative-union-listing-surfaces-parity`. At that point the helper shape is final; architect `git mv`s this file back to `pending/` and backend can extract `resolveChainCumulativeAuthors` + `enrichRowsWithChainAuthors` into `backend/src/lib/chain-cumulative.ts` without churn.
