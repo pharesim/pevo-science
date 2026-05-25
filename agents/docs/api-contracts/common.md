@@ -197,11 +197,11 @@ Rate limit state may be stored in-memory (development) or Redis (production). Wh
 
 #### Trusted Proxy Chain
 
-Per-IP rate-limit keys are derived from `req.ip` with Express `trust proxy = 1`. The production topology assumes exactly one trusted proxy hop (nginx on the host, terminating TLS and forwarding to the backend on `127.0.0.1:3001`). `X-Forwarded-For` values from untrusted upstreams are not honored — only the left-most value prepended by the trusted nginx hop is used.
+Per-IP rate-limit keys are derived from `req.ip` with Express `trust proxy = 1`. The production topology assumes exactly one trusted proxy hop (nginx on the host, terminating TLS and forwarding to the backend on `127.0.0.1:3001`). `X-Forwarded-For` values injected by untrusted upstreams are not honored. With one trusted hop, Express skips the trusted nginx address and uses the client IP that nginx records, so a caller cannot mint a fresh per-IP rate-limit bucket by spoofing the header.
 
 If a CDN (Cloudflare, Fastly) is introduced in front of nginx later, the `trust proxy` value increases to `2` or is replaced with an explicit CIDR allowlist. Do not trust arbitrary `X-Forwarded-For` chains.
 
-**Residual:** Attackers with a legitimate IPv6 /64 block can still rotate source IPs per-request under IPv6. Closing that requires keying on a broader CIDR or on session/account — out of scope for the current rate-limit shape.
+**Residual:** Attackers with a legitimate IPv6 /64 block can still rotate source IPs per-request under IPv6. Closing that requires keying on a broader CIDR or on session/account, which is out of scope for the current rate-limit shape.
 
 ### API Versioning
 
