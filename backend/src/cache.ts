@@ -27,12 +27,22 @@
  *
  * Invalidation-during-flight: an in-flight fetcher that started BEFORE
  * an `invalidate*` / `clear*` call must not silently re-cache its
- * pre-invalidation snapshot on resolution. An `epoch` counter is bumped
- * by every invalidation method; `getOrSet` captures the epoch at
- * fetcher start and skips the cache-write on resolution if the epoch
- * has advanced. In-flight callers still receive the resolved value
- * (the request that triggered the fetcher gets data), but the cache
- * stays cold so the next caller picks up fresh post-invalidation data.
+ * pre-invalidation snapshot on resolution. Two per-tier epoch counters
+ * — `volatileEpoch` and `stableEpoch` — track invalidations by the tier
+ * they actually flush. `clearVolatile()` (the 3s block-watcher tick)
+ * deletes only non-stable entries, so it bumps ONLY `volatileEpoch`;
+ * stable entries it never touches must keep their in-flight writes.
+ * `clear()` flushes everything, so it bumps BOTH. `invalidate(key)` and
+ * `invalidatePrefix(prefix)` target specific keys regardless of
+ * stable-ness, so they bump BOTH. `getOrSet` captures both counters at
+ * fetcher start; on resolution it gates its cache-write on the counter(s)
+ * relevant to the entry's tier: a non-stable entry requires BOTH counters
+ * unchanged, a stable entry requires only `stableEpoch` unchanged (a
+ * concurrent `clearVolatile()` advancing `volatileEpoch` must not suppress
+ * the stable write). In-flight callers still receive the resolved value
+ * (the request that triggered the fetcher gets data), but the cache stays
+ * cold for the affected tier so the next caller picks up fresh
+ * post-invalidation data.
  */
 import { getRedis } from './redis.js';
 import { config } from './config.js';
@@ -50,11 +60,16 @@ export class QueryCache {
   // Single-flight: in-flight fetcher promises keyed by the prefixed cache
   // key (`${config.appTag}:cache:<routeKey>`). See class-level docblock.
   private inflight = new Map<string, Promise<unknown>>();
-  // Invalidation epoch: bumped by every `invalidate*` / `clear*` method.
-  // `getOrSet` captures the value at fetcher start and skips the cache
-  // write on resolution if the epoch has advanced (the snapshot is stale
-  // by construction). See class-level docblock.
-  private epoch = 0;
+  // Per-tier invalidation epochs. `volatileEpoch` is bumped by every
+  // method that flushes non-stable entries (`clearVolatile`, plus
+  // `clear`/`invalidate`/`invalidatePrefix` which can target either tier).
+  // `stableEpoch` is bumped only by methods that flush stable entries
+  // (`clear`/`invalidate`/`invalidatePrefix` — NOT `clearVolatile`, which
+  // never deletes stable entries). `getOrSet` captures both at fetcher
+  // start and gates its cache-write on the counter(s) for the entry's
+  // tier. See class-level docblock.
+  private volatileEpoch = 0;
+  private stableEpoch = 0;
   private defaultTtlMs: number;
   private prefix: string;
 
@@ -120,10 +135,13 @@ export class QueryCache {
    * tick and reduces (does not eliminate) duplication during the
    * Redis-probe window. See class-level docblock.
    *
-   * Invalidation-during-flight: the epoch captured at fetcher start
-   * is compared on resolution; if any `invalidate*` / `clear*` ran
-   * meanwhile, the cache-write is skipped so the next caller does not
-   * see the pre-invalidation snapshot.
+   * Invalidation-during-flight: the per-tier epochs captured at fetcher
+   * start are compared on resolution. A non-stable entry skips its
+   * cache-write if EITHER `volatileEpoch` or `stableEpoch` advanced; a
+   * stable entry skips only if `stableEpoch` advanced (so a concurrent
+   * `clearVolatile()` block tick, which bumps only `volatileEpoch`, does
+   * not suppress a stable write the volatile flush never touched). See
+   * class-level docblock.
    *
    * @param stable - If true, this entry survives block-change cache clears (use for slow-changing data like reputation, WoT threshold, stats).
    */
@@ -139,14 +157,23 @@ export class QueryCache {
       return existing;
     }
 
-    // Capture epoch at fetcher start. If `invalidate*` / `clear*` bumps
-    // it before this promise resolves, the snapshot is stale and the
-    // cache-write below is skipped.
-    const capturedEpoch = this.epoch;
+    // Capture both per-tier epochs at fetcher start. On resolution the
+    // cache-write is gated on the counter(s) for this entry's tier:
+    //   - stable entry: only `stableEpoch` must be unchanged (a
+    //     concurrent `clearVolatile()` bumps only `volatileEpoch` and
+    //     never deletes stable entries, so it must not suppress this
+    //     write).
+    //   - non-stable entry: BOTH counters must be unchanged.
+    const capturedVolatileEpoch = this.volatileEpoch;
+    const capturedStableEpoch = this.stableEpoch;
     const promise = (async (): Promise<T> => {
       try {
         const data = await fn();
-        if (data !== null && data !== undefined && capturedEpoch === this.epoch) {
+        const notInvalidated = stable
+          ? capturedStableEpoch === this.stableEpoch
+          : capturedVolatileEpoch === this.volatileEpoch &&
+            capturedStableEpoch === this.stableEpoch;
+        if (data !== null && data !== undefined && notInvalidated) {
           await this.set(key, data, ttlMs, stable);
         }
         return data;
@@ -221,12 +248,14 @@ export class QueryCache {
   }
 
   async invalidate(key: string): Promise<void> {
-    // Bump epoch BEFORE the actual delete so any in-flight fetcher that
-    // resolves between now and the delete sees the advanced epoch and
-    // skips its cache-write. Ordering matters: a fetcher resolving with
-    // a pre-bump captured epoch but writing after the bump-and-delete
-    // would otherwise undo the flush silently.
-    this.epoch++;
+    // Bump BOTH epochs BEFORE the actual delete: `invalidate(key)`
+    // targets a specific key regardless of its tier, so an in-flight
+    // fetcher for that key in either tier must skip its cache-write.
+    // Ordering matters: a fetcher resolving with a pre-bump captured
+    // epoch but writing after the bump-and-delete would otherwise undo
+    // the flush silently.
+    this.volatileEpoch++;
+    this.stableEpoch++;
     const redis = getRedis();
     if (redis) {
       try { await redis.del(this.prefix + key); } catch (err) { logger.debug({ err, key }, 'Redis cache invalidate failed'); }
@@ -251,10 +280,11 @@ export class QueryCache {
    * non-blocking iteration so this is safe to call with broad prefixes.
    */
   async invalidatePrefix(keyPrefix: string): Promise<void> {
-    // Bump epoch first so in-flight fetchers under this prefix skip
-    // their cache-writes on resolution (see `invalidate` for ordering
-    // rationale and class-level docblock).
-    this.epoch++;
+    // Bump BOTH epochs first so in-flight fetchers under this prefix in
+    // either tier skip their cache-writes on resolution (see `invalidate`
+    // for ordering rationale and class-level docblock).
+    this.volatileEpoch++;
+    this.stableEpoch++;
     const fullPrefix = this.prefix + keyPrefix;
     const redis = getRedis();
     if (redis) {
@@ -318,9 +348,11 @@ export class QueryCache {
 
   /** Clear ALL entries including stable ones. */
   async clear(): Promise<void> {
-    // Bump epoch first so in-flight fetchers skip their cache-writes
-    // on resolution (see `invalidate` for ordering rationale).
-    this.epoch++;
+    // Bump BOTH epochs first: `clear()` flushes every tier, so in-flight
+    // fetchers for stable AND non-stable entries must skip their
+    // cache-writes on resolution (see `invalidate` for ordering rationale).
+    this.volatileEpoch++;
+    this.stableEpoch++;
     const redis = getRedis();
     if (redis) {
       try {
@@ -334,9 +366,13 @@ export class QueryCache {
 
   /** Clear only volatile (non-stable) entries. Called on new block. */
   async clearVolatile(): Promise<void> {
-    // Bump epoch first so in-flight fetchers skip their cache-writes
-    // on resolution (see `invalidate` for ordering rationale).
-    this.epoch++;
+    // Bump ONLY `volatileEpoch` first: this method deletes only non-stable
+    // entries, so an in-flight fetcher for a STABLE key (whose entry is
+    // never touched here) must still be allowed to write on resolution.
+    // Bumping `stableEpoch` here would suppress stable writes on every 3s
+    // block-watcher tick, defeating the `stable: true` contract under load
+    // (see `invalidate` for ordering rationale).
+    this.volatileEpoch++;
     const redis = getRedis();
     if (redis) {
       try {

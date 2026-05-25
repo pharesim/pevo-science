@@ -231,3 +231,33 @@ Add a unit spec: `'clearVolatile() during an in-flight STABLE fetcher does NOT p
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect re-review scopes `/ce-code-review` to the round-3 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-25, round-3 fix at branch HEAD)
+
+Item 1 landed: separate per-tier epoch counters replace the single shared epoch.
+
+### Per-tier-counter fix
+
+`backend/src/cache.ts`:
+- Replaced `private epoch = 0` with `private volatileEpoch = 0` and `private stableEpoch = 0`.
+- `clearVolatile()` bumps ONLY `volatileEpoch` (it deletes only non-stable entries, so a stable entry's in-flight fetcher must still be allowed to write on resolution).
+- `clear()` bumps BOTH (flushes every tier).
+- `invalidate(key)` and `invalidatePrefix(prefix)` bump BOTH (they target specific keys regardless of stable-ness).
+- All four methods keep the round-2 bump-BEFORE-delete ordering.
+- `getOrSet` captures BOTH counters at fetcher start. The post-fetch `this.set` write is gated on the counter(s) for the entry's tier: a stable entry requires only `capturedStableEpoch === this.stableEpoch`; a non-stable entry requires `capturedVolatileEpoch === this.volatileEpoch && capturedStableEpoch === this.stableEpoch`. In-flight callers still receive the resolved value; null/undefined still skips the write; the in-flight slot still clears in `finally`.
+- Class-level docblock "Invalidation-during-flight" paragraph and `getOrSet` JSDoc rewritten for the per-tier-counter design. Comments anchor on stable symbols (`volatileEpoch`, `stableEpoch`, `clearVolatile`, the `stable` tier) — no task-slug/round/line/SHA citations.
+
+### New STABLE-key unit spec
+
+`backend/tests/lib/cache.test.ts`: added `'clearVolatile() during an in-flight STABLE fetcher does NOT prevent the post-resolution cache write'`. Slow `stable: true` fetcher (50ms setTimeout) starts; ~10ms later (after the in-flight slot is registered) `cache.clearVolatile()` runs; the fetcher resolves; the in-flight caller receives the value AND `cache.get('stable-key')` returns the value (NOT undefined). The round-2 non-stable invalidation-race spec still asserts `cache.get('race-key')` is `undefined` after `invalidate()` — both pass.
+
+### Verification
+
+- `npm run typecheck` from `backend/`: clean.
+- `npm run lint` from `backend/`: clean for changed files (only the pre-existing `author-supersession.ts` unused-eslint-disable warning, outside this task's zone).
+- Scoped `npx vitest run tests/lib/cache.test.ts` (pure in-process, in-memory fallback, no real Redis/HAF): 6/6 pass.
+- Mutation-kill confirmed: adding `this.stableEpoch++` to `clearVolatile()` (collapsing back to a shared-counter shape so the volatile tick advances the counter the stable gate reads) flips the new STABLE-key spec RED — the suppressed stable write makes `cache.get('stable-key')` return undefined. Reverting restores 6/6 green. The other 5 specs (including the round-2 non-stable invalidation-race spec) stay green under the probe.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

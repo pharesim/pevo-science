@@ -149,6 +149,42 @@ describe('QueryCache.getOrSet — single-flight coalescing', () => {
     expect(await cache.get('race-key')).toBeUndefined();
   });
 
+  it('clearVolatile() during an in-flight STABLE fetcher does NOT prevent the post-resolution cache write', async () => {
+    // The 3s block-watcher calls `clearVolatile()`, which deletes only
+    // non-stable entries and bumps ONLY `volatileEpoch`. A stable-key
+    // fetcher in flight when that tick fires must STILL write on
+    // resolution — its entry was never deleted by the volatile flush.
+    //
+    // Mutation-kill: collapsing the per-tier counters back to a single
+    // shared epoch (so `clearVolatile()` advances the counter the stable
+    // gate reads) flips this assertion RED — the stable write is
+    // suppressed and `cache.get('stable-key')` returns undefined.
+    const fetcher = vi.fn().mockImplementation(async () => {
+      // Slow enough that the clearVolatile() below runs before this
+      // resolves, but short enough that the test stays fast.
+      await new Promise((r) => setTimeout(r, 50));
+      return { value: 'stable-value' };
+    });
+
+    // Kick off the in-flight STABLE fetcher (do NOT await yet).
+    const inflightCall = cache.getOrSet('stable-key', fetcher, undefined, true);
+
+    // While the fetcher is in flight, a block tick clears volatile
+    // entries. Short delay so the in-flight slot is registered before
+    // the awaited 50ms timeout fires.
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.clearVolatile();
+
+    // The in-flight caller receives the value.
+    const inflightResult = await inflightCall;
+    expect(inflightResult).toEqual({ value: 'stable-value' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Post-condition: the stable entry WAS written. `clearVolatile()`
+    // never deletes stable entries, so the write must survive.
+    expect(await cache.get('stable-key')).toEqual({ value: 'stable-value' });
+  });
+
   it('in-flight map entry is cleared on fetcher throw (next call retries fresh)', async () => {
     // First wave: fetcher throws. All concurrent awaiters see the
     // rejection AND the slot is cleared so a subsequent call retries
