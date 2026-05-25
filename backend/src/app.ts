@@ -31,6 +31,7 @@ import wotRouter from './routes/wot.js';
 import notificationsRouter from './routes/notifications.js';
 import bridgeRouter from './routes/bridge.js';
 import authRouter from './routes/auth.js';
+import recoverRouter from './routes/recover.js';
 import signupVerifyRouter from './routes/signup-verify.js';
 import custodyRouter from './routes/custody.js';
 import contactRouter from './routes/contact.js';
@@ -140,6 +141,7 @@ export function createApp() {
   app.use('/api/wot', readLimiter, wotRouter);
   app.use('/api/notifications', notificationLimiter, notificationsRouter);
   app.use('/api/auth', authRouter);
+  app.use('/api/auth', recoverRouter);
   app.use('/api/auth', signupVerifyRouter);
   app.use('/api/custody', custodyRouter);
   app.use('/api/bridge', bridgeRouter);
