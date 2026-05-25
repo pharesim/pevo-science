@@ -1,39 +1,60 @@
 /**
- * Canonical-root backward walker author-gate + depth-cap canary tests.
+ * Canonical-root backward-walker DoS-bound + START-gate + fail-CLOSED
+ * canary tests.
  *
- * Pins the gates added in BACKEND-CANONICAL-ROOT-WALKER-AUTHOR-GATE:
- *   1. Author-consent gate. At every backward hop in `findCanonicalRoot`,
- *      the post we walk FROM (the child claiming a `continues` predecessor)
- *      must be authored by an account in the predecessor's
- *      `pevo.authors[]` (or bridge-paper Option b set). If not, the walk
- *      stops at the child node — the URL displays the attacker's own
- *      content, not the predecessor's.
- *   2. Depth cap. The walker bounds at `CANONICAL_ROOT_MAX_HOPS = 10` and
- *      emits a structured warn `event: 'canonical_root_walker_depth_exceeded'`
- *      so operators can detect attacker-induced amplification.
- *   3. Per-request memoization: the per-`(author, permlink)` metadata
- *      fetched by the backward walker is reused by the forward walker
- *      (`resolveContinuationChain` via `fetchPaperDetailFromHaf`) within a
- *      single request.
+ * `findCanonicalRoot` resolves a leaf's canonical root in four steps:
+ *   1. Backward unconstrained walk of `pevo.continues` pointers to a
+ *      candidate root R. No per-hop author-consent gate on this pass; the
+ *      walk retains only the DoS defenses (cycle detection via a per-call
+ *      `Set<string>` keyed on `${author}/${permlink}`, and the
+ *      `CANONICAL_ROOT_MAX_HOPS` depth cap) plus the START gate (SQL
+ *      `validPevoPaperWhere` filter + JS `isPevoAnyPaper` re-check +
+ *      `cont_author`/`cont_permlink` string-narrowing).
+ *   2. Forward verify by calling `resolveContinuationChain(R)` (the
+ *      cumulative-aware forward walker — the SSoT for chain membership).
+ *   3. Membership check (fail-CLOSED): if the leaf is not in the forward
+ *      walker's admit-set, return null so the URL displays only the leaf's
+ *      own content, never an attacker-pointed predecessor's. Emits
+ *      `canonical_root_walker_membership_failed`.
+ *   4. Cache the resolved `(leaf → root | null)` mapping.
  *
- * Threat model: any Hive account can post a comment with
- * `pevo.continues = {alice, paper-v1}` pointing at a real paper and
- * `pevo.type = 'paper'`. Without the gate, navigating to
- * `/api/papers/attacker/fake-paper` walks back through the attacker's
- * pointer and surfaces alice's content under the attacker's URL — a
- * phishing pretext. The gate breaks the chain at the unauthorized hop and
- * returns the attacker's own post as canonical.
+ * This file pins the behaviours that the sibling
+ * `papers-canonical-root-walker.test.ts` canary does NOT cover:
+ *   - The START gate's three bail reasons (`sql_filter_or_missing`,
+ *     `js_is_pevo_any_paper`, `cont_columns_invalid`) and the IS NOT NULL
+ *     SQL guard on the initial probe.
+ *   - DoS bounds: depth cap (probe-count ceiling + `maxHops` payload field),
+ *     3-node cycle detection (proves the visited-Set is a real set, not a
+ *     last-node check), and the depth-cap-vs-wall-clock priority ordering.
+ *   - Wall-clock budget abort during the backward walk (503 + retriable
+ *     wire signal) and the abort path's fail-CLOSED return to the URL
+ *     coords (never the attacker-pointed `pevo.continues` target).
+ *   - The loop-continuation probe's IS NOT NULL filter.
+ *   - The no-pool bail and the outer-catch structured event.
+ *   - Per-request memo sharing of `fetchHeadAuthorizedAuthors` results
+ *     across the request's forward-walker calls, including the negative
+ *     (null) memo and the catch-block memo.
+ *   - Legitimate self- and co-author continuations resolving to root via
+ *     forward verify, and the bridge-paper Option-b backward case (both
+ *     admitted and fail-CLOSED).
  *
  * **Carve-out (per CLAUDE.md "Running Tests"):** these tests mock
  * `getPool()` to capture the SQL string and seed deterministic head/
  * predecessor rows. Real HAF cannot be seeded with a spoofed continuation
- * authored by an unaccredited account on demand. Per CLAUDE.md clauses
- * (a)/(b)/(c):
- *   (a) justification documented above (deterministic spoofed-continuation
- *       seeding is impractical against the public HAF DB),
- *   (b) `verifyHiveSignature` and other middleware are NOT mocked,
- *   (c) real-HAF integration is filed as a follow-up alongside the sibling
- *       continuation-author-gate canary file.
+ * authored by an unaccredited account, an attacker-posted cycle, or a slow
+ * HAF tail on demand. Per CLAUDE.md clauses (a)/(b)/(c):
+ *   (a) justification documented above (deterministic seeding of spoofed
+ *       continuations, cycles, and degraded-HAF timing is impractical
+ *       against the public HAF DB),
+ *   (b) `verifyHiveSignature` and other middleware are NOT mocked —
+ *       `/api/papers/:author/:permlink` is a public GET route that does not
+ *       authenticate, so cryptographic verification is irrelevant to these
+ *       chain-resolution assertions,
+ *   (c) real-HAF integration of the cumulative forward walker is exercised
+ *       in `tests/routes/papers.test.ts` and the continuation gate in
+ *       `tests/routes/continuation-author-gate.test.ts`. The same risk
+ *       class (chain resolution against the cumulative admit-set) is caught
+ *       integratively there.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
@@ -72,11 +93,9 @@ beforeEach(async () => {
 });
 
 // Spy-cleanup safety net: restores every vi.spyOn(...) installed in an
-// it() body regardless of whether assertions in that body threw. Inline
-// `*.mockRestore()` calls scattered through the file are now redundant
-// with this guard, but harmless. The pool mock (`getPoolMock`) is a
-// vi.fn() (not a spy) — it is reset and re-wired by `beforeEach` above,
-// not by `vi.restoreAllMocks()`.
+// it() body regardless of whether assertions in that body threw. The pool
+// mock (`getPoolMock`) is a vi.fn() (not a spy) — it is reset and re-wired
+// by `beforeEach` above, not by `vi.restoreAllMocks()`.
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -90,15 +109,16 @@ function installResponder(handler: (sql: string, params: unknown[]) => Promise<{
 
 /**
  * Recognise the "look up THIS post's continues pointer" SQL emitted by
- * `findCanonicalRoot`. Two shapes exist:
+ * `findCanonicalRoot`'s backward walk. Two shapes exist:
  *
- *   - Initial: `AS cont_author` AND `IS NOT NULL` (only return rows that
- *     actually have a `continues` field).
- *   - Subsequent: `AS cont_author` without the `IS NOT NULL` predicate
- *     (we want to know whether the predecessor ALSO has a continues
- *     pointer, so a NULL is the natural "this is the root" signal).
+ *   - Initial probe: selects the START-row identity columns
+ *     `c.author, c.json_metadata` plus cont_author/cont_permlink (the
+ *     START row's own author + metadata feed the type-spoof gate's JS-side
+ *     `isPevoAnyPaper` re-check).
+ *   - Loop-continuation probe: selects ONLY cont_author/cont_permlink (we
+ *     only need the predecessor's cont pointer to advance the walk).
  *
- * Both shapes are part of the backward walker.
+ * Both shapes carry the `'continues' IS NOT NULL` predicate.
  */
 function isBackwardWalkContinuesProbe(sql: string): boolean {
   return /AS\s+cont_author/.test(sql) && /AS\s+cont_permlink/.test(sql);
@@ -107,79 +127,61 @@ function isBackwardWalkContinuesProbe(sql: string): boolean {
 /**
  * Discriminate the initial backward-walker probe (which selects the
  * START-row identity columns `c.author, c.json_metadata` plus
- * cont_author/cont_permlink) from the subsequent loop-continuation
- * probe (which selects ONLY cont_author/cont_permlink).
+ * cont_author/cont_permlink) from the loop-continuation probe (which
+ * selects ONLY cont_author/cont_permlink).
  *
- * Detection key: the `c.author, c.json_metadata,` SELECT-clause prefix
- * is unique to the initial probe (it needs the START row's own author
- * and metadata for the type-spoof gate's JS-side `isPevoAnyPaper`
- * re-check; the loop probe only needs the predecessor's cont pointer).
- *
- * Previous iterations of this helper used the `'continues' IS NOT NULL`
- * predicate as the discriminator because, pre-2026-05-11, only the
- * initial probe carried that predicate. BACKEND-HAF-WALKER-WALL-CLOCK-
- * BUDGET landed the IS NOT NULL bundle on the loop probe too (mirroring
- * the SQL-side-SSoT discipline across both probes), so IS NOT NULL no
- * longer discriminates. The SELECT-clause discriminator is what
- * semantically defines "initial probe" today.
+ * Detection key: the `c.author, c.json_metadata,` SELECT-clause prefix is
+ * unique to the initial probe (it needs the START row's own author and
+ * metadata for the type-spoof gate's JS-side `isPevoAnyPaper` re-check;
+ * the loop probe only needs the predecessor's cont pointer).
  *
  * **BRITTLENESS WARNING** — the regex matches a column-list prefix
- * (`SELECT c.author, c.json_metadata,` with a trailing comma). Any
- * future SQL refactor that:
- *   - reorders the initial probe's SELECT columns,
- *   - inserts a 3rd column between `c.author` and `c.json_metadata`,
- *   - drops the trailing comma (e.g., projecting just the two columns),
- *   - or normalizes whitespace differently
- * will silently break the discriminator → mock returns the wrong fixture
- * → canaries using `isInitialBackwardProbe` pass for the wrong reason
- * (false GREEN). The same brittleness class as the `/'type'/.test(sql)`
- * discriminator elsewhere in this file. If this canary or the
- * layer-pinning canaries that depend on its dispatch start failing red
+ * (`SELECT c.author, c.json_metadata,` with a trailing comma). Any future
+ * SQL refactor that reorders the initial probe's SELECT columns, inserts a
+ * 3rd column between `c.author` and `c.json_metadata`, drops the trailing
+ * comma, or normalizes whitespace differently will silently break the
+ * discriminator → mock returns the wrong fixture → canaries depending on
+ * its dispatch pass for the wrong reason (false GREEN). If this canary or
+ * the layer-pinning canaries that depend on its dispatch start failing red
  * after such a refactor, the security property is NOT regressed — the
- * discriminator needs updating, not the production gate. Update both
- * this function AND `isHeadAuthorsLookup` (next) in the same change so
- * they stay mutually exclusive.
+ * discriminator needs updating, not the production gate. Update both this
+ * function AND `isHeadAuthorsLookup` (next) in the same change so they stay
+ * mutually exclusive.
  */
 function isInitialBackwardProbe(sql: string): boolean {
   return /SELECT\s+c\.author,\s+c\.json_metadata,/.test(sql);
 }
 
 /** Recognise the head authorized-authors lookup
- *  (`fetchHeadAuthorizedAuthors`'s SQL). */
+ *  (`fetchHeadAuthorizedAuthors`'s SQL — fired by the forward verify step,
+ *  NOT the backward walk). */
 function isHeadAuthorsLookup(sql: string): boolean {
   return /SELECT\s+c\.author,\s+c\.json_metadata/.test(sql)
     && /parent_permlink\s*=\s*\$3/.test(sql)
     && !/AS\s+cont_author/.test(sql);
 }
 
-/**
- * Per-test mock-config primitive for type-spoof START tests.
+/** Forward-walker continuation probe (the cumulative-admit-set chain-walk
+ *  SQL in `resolveContinuationChain`). */
+function isForwardWalkContinuationProbe(sql: string): boolean {
+  return /c\.author\s*=\s*ANY\(\$4::text\[\]\)/.test(sql);
+}
+
+/** Per-test mock-config primitive for type-spoof START tests.
  *
- * `startProbeMode` selects how the responder behaves for the spoof
- * START row:
+ *   - `'with_filter'`: faithful-mock mode. The responder SQL-inspects the
+ *     production initial probe and mirrors what real HAF would return: zero
+ *     rows when the `validPevoPaperWhere` filter is present (HEAD), or the
+ *     spoof row when the filter has been reverted (mutation). This is what
+ *     makes the SQL-filter canary fail red on a SQL-filter mutation.
  *
- *   - `'with_filter'`: faithful-mock mode. The responder SQL-inspects
- *     the production initial probe and mirrors what real HAF would
- *     return: zero rows when the `validPevoPaperWhere` filter is
- *     present (HEAD), or the spoof row when the filter has been
- *     reverted (mutation). This mode is what makes the SQL-filter
- *     canary fail red on a SQL-filter mutation: the mock observes
- *     filter-absent and returns the spoof row, so the walker bails at
- *     the JS-side check with `reason: 'js_is_pevo_any_paper'` instead
- *     of the asserted `reason: 'sql_filter_or_missing'`.
+ *   - `'without_filter'`: force-feed mode. The responder ALWAYS returns the
+ *     spoof row, regardless of production SQL state. This isolates the
+ *     JS-side `isPevoAnyPaper` check as the gate under test.
  *
- *   - `'without_filter'`: force-feed mode. The responder ALWAYS
- *     returns the spoof row, regardless of production SQL state. This
- *     isolates the JS-side `isPevoAnyPaper` check as the gate under
- *     test. On HEAD the JS check fires; on JS-check revert the walker
- *     proceeds past the spoof row and the canary fails red.
- *
- * The two layers are kept SEPARATE in two distinct tests so a mutation
- * to either layer (drop SQL filter; or drop JS re-check) fails red on
- * exactly one canary while the other stays green. The earlier combined-
- * layer canary inspected SQL with a regex inside the responder and
- * conflated the two layers; the per-canary `mode` flag here lets each
- * test pin a single layer cleanly.
+ * The two layers are kept SEPARATE in two distinct tests so a mutation to
+ * either layer (drop SQL filter; or drop JS re-check) fails red on exactly
+ * one canary while the other stays green.
  */
 type StartProbeMode = 'with_filter' | 'without_filter';
 
@@ -222,88 +224,12 @@ function pevoPaperRow(
   };
 }
 
-describe('GET /api/papers/:author/:permlink — backward canonical-root walker author-gate', () => {
-  it('phishing pretext: attacker post pointing at alice does NOT redirect to alice\'s content', async () => {
-    // attacker/fake-paper claims pevo.continues = {alice, paper-v1} and
-    // pevo.type = 'paper'. Without the gate, findCanonicalRoot walks back
-    // to alice/paper-v1 and the URL displays alice's paper. The author-
-    // consent gate breaks the chain at the attacker→alice hop because
-    // attacker is NOT in alice's pevo.authors[].
-    const aliceMeta = pevoPaperJsonMeta(['alice']);
-    const attackerRow = pevoPaperRow('attacker', 'fake-paper', ['attacker'], {
-      continues: { author: 'alice', permlink: 'paper-v1' },
-    });
-
-    installResponder(async (sql, params) => {
-      // Backward-walker continues-probe: returns this post's continues.
-      if (isBackwardWalkContinuesProbe(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'attacker' && p === 'fake-paper') {
-          // The round-2 START gate adds c.author + c.json_metadata to the
-          // initial probe so the JS-side isPevoAnyPaper re-check can run.
-          return {
-            rows: [{
-              author: 'attacker',
-              json_metadata: attackerRow.json_metadata,
-              cont_author: 'alice',
-              cont_permlink: 'paper-v1',
-            }],
-          };
-        }
-        if (a === 'alice' && p === 'paper-v1') {
-          // alice has no continues (she's the root) — but the gate should
-          // reject the hop before this query fires.
-          return { rows: [{ cont_author: null, cont_permlink: null }] };
-        }
-        return { rows: [] };
-      }
-      // Head authorized-authors lookup for the predecessor (alice/paper-v1):
-      // attacker is NOT in this set, so the gate rejects the hop.
-      if (isHeadAuthorsLookup(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'alice' && p === 'paper-v1') {
-          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
-        }
-        if (a === 'attacker' && p === 'fake-paper') {
-          return { rows: [{ author: 'attacker', json_metadata: attackerRow.json_metadata }] };
-        }
-        return { rows: [] };
-      }
-      // Paper detail fetch
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        const a = params[0];
-        if (a === 'attacker') return { rows: [attackerRow] };
-        return { rows: [] };
-      }
-      return { rows: [] };
-    });
-
-    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-
-    const res = await request(app).get('/api/papers/attacker/fake-paper');
-    expect(res.status).toBe(200);
-    const detail = res.body?.data;
-    expect(detail).toBeDefined();
-    // The URL must resolve to the ATTACKER's own content, NOT alice's.
-    expect(detail.author).toBe('attacker');
-    expect(detail.permlink).toBe('fake-paper');
-
-    // The walker emitted the unauthorized-hop event.
-    const events = warnSpy.mock.calls
-      .map((c) => (c[0] as { event?: string } | undefined)?.event)
-      .filter(Boolean);
-    expect(events).toContain('canonical_root_walker_unauthorized_hop');
-
-    warnSpy.mockRestore();
-  });
-
+describe('GET /api/papers/:author/:permlink — canonical-root backward-walker DoS bounds + fail-CLOSED', () => {
   it('DoS amplifier: 11-hop chain stops at depth cap with structured warn', async () => {
-    // Build a self-continuation chain v0 ← v1 ← v2 ← ... ← v11. All hops
-    // are author-authorized (alice continues alice), so only the depth cap
-    // stops the walk. Without the cap an attacker could induce arbitrarily
-    // many SQL queries per request.
+    // Build a self-continuation chain v0 ← v1 ← v2 ← ... ← v11. The
+    // backward walk is unconstrained, so only the depth cap stops it.
+    // Without the cap an attacker could induce arbitrarily many SQL
+    // queries per request.
     const N = 11;
     const aliceMeta = pevoPaperJsonMeta(['alice']);
 
@@ -318,9 +244,6 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         if (i === 0) {
           return { rows: [{ cont_author: null, cont_permlink: null }] };
         }
-        // Initial probe (round-2 SQL: carries `IS NOT NULL` predicate)
-        // returns the start-row fields. Subsequent loop-continuation probes
-        // return only cont_author / cont_permlink.
         if (isInitialBackwardProbe(sql)) {
           return {
             rows: [{
@@ -333,12 +256,16 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         }
         return { rows: [{ cont_author: 'alice', cont_permlink: `v${i - 1}` }] };
       }
-      // Head authorized-authors lookup: every paper in the chain admits
-      // alice as a continuator.
+      // Forward verify: not load-bearing here (the depth cap fires during
+      // the backward walk before a clean root is reached). Return empty so
+      // the membership check fail-CLOSES; the assertions below are about
+      // the depth event and probe count, not the resolution.
       if (isHeadAuthorsLookup(sql)) {
         return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
       }
-      // Paper detail at the top of the chain (resolved canonical).
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
         return { rows: [pevoPaperRow('alice', params[1] as string, ['alice'])] };
       }
@@ -365,84 +292,63 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     warnSpy.mockRestore();
   });
 
-  it('detects 2-node cycle (alice/v1 → bob/v1 → alice/v1) on backward walk and stops with cycle event', async () => {
-    // Attacker-posted cycle: alice and bob are mutually in each other's
-    // pevo.authors[] (mutual vouch), so the unauthorized-hop gate admits
-    // both directions. Without cycle detection the walker would run to
-    // CANONICAL_ROOT_MAX_HOPS=10 on a 2-cycle; with visited-Set the walker
-    // short-circuits at the first advancement that revisits a node.
+  it('depth-cap warn carries maxHops field and omits hopIndex', async () => {
+    // The depth_exceeded warn carries `maxHops` (documents the cap). It
+    // deliberately omits `hopIndex` because on this event the two fields
+    // would be the same constant by construction — the event name itself
+    // signals "we hit the cap", and `maxHops` documents the value.
     //
-    // Mutation kill: remove the `visited` Set check inside the loop. The
-    // walker then advances 10 times alternating alice ↔ bob → emits
-    // `canonical_root_walker_depth_exceeded` instead of
-    // `canonical_root_walker_cycle_detected`, failing both the
-    // `expect(events).toContain('...cycle_detected')` AND the
-    // `expect(events).not.toContain('...depth_exceeded')` assertion red.
-    const mutualMeta = pevoPaperJsonMeta(['alice', 'bob']);
+    // Mutation-kill: drop the `maxHops` field; this canary fails red.
+    const N = 11;
+    const aliceMeta = pevoPaperJsonMeta(['alice']);
 
     installResponder(async (sql, params) => {
       if (isBackwardWalkContinuesProbe(sql)) {
         const a = params[0];
-        const p = params[1];
-        if (isInitialBackwardProbe(sql)) {
-          // START = alice/v1, cont = bob/v1.
-          if (a === 'alice' && p === 'v1') {
-            return {
-              rows: [{
-                author: 'alice',
-                json_metadata: pevoPaperRow('alice', 'v1', ['alice', 'bob']).json_metadata,
-                cont_author: 'bob',
-                cont_permlink: 'v1',
-              }],
-            };
-          }
-          return { rows: [] };
-        }
-        // Loop-continuation probes: bob/v1 → alice/v1, alice/v1 → bob/v1.
-        if (a === 'bob' && p === 'v1') {
-          return { rows: [{ cont_author: 'alice', cont_permlink: 'v1' }] };
-        }
-        if (a === 'alice' && p === 'v1') {
-          return { rows: [{ cont_author: 'bob', cont_permlink: 'v1' }] };
-        }
-        return { rows: [] };
-      }
-      // Both alice/v1 and bob/v1 admit each other as continuators.
-      if (isHeadAuthorsLookup(sql)) {
-        const a = params[0];
-        if (a === 'alice' || a === 'bob') {
-          return { rows: [{ author: a, json_metadata: mutualMeta }] };
-        }
-        return { rows: [] };
-      }
-      // Paper-detail SELECT for whichever node is returned as canonical.
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        const a = params[0] as string;
         const p = params[1] as string;
-        return { rows: [pevoPaperRow(a, p, ['alice', 'bob'])] };
+        if (a !== 'alice') return { rows: [] };
+        const m = /^v(\d+)$/.exec(p);
+        if (!m) return { rows: [] };
+        const i = Number(m[1]);
+        if (i === 0) {
+          return { rows: [{ cont_author: null, cont_permlink: null }] };
+        }
+        if (isInitialBackwardProbe(sql)) {
+          return {
+            rows: [{
+              author: 'alice',
+              json_metadata: pevoPaperRow('alice', p, ['alice']).json_metadata,
+              cont_author: 'alice',
+              cont_permlink: `v${i - 1}`,
+            }],
+          };
+        }
+        return { rows: [{ cont_author: 'alice', cont_permlink: `v${i - 1}` }] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+      }
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', params[1] as string, ['alice'])] };
       }
       return { rows: [] };
     });
 
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-
-    const res = await request(app).get('/api/papers/alice/v1');
+    const res = await request(app).get(`/api/papers/alice/v${N}`);
     expect(res.status).toBe(200);
 
-    const events = warnSpy.mock.calls
-      .map((c) => c[0] as { event?: string; hopIndex?: number; cycleAuthor?: string; cyclePermlink?: string } | undefined)
-      .filter(Boolean);
-
-    // The cycle event fired.
-    const cycleEvents = events.filter((e) => e?.event === 'canonical_root_walker_cycle_detected');
-    expect(cycleEvents.length).toBeGreaterThan(0);
-    // And the depth-cap event did NOT (cycle detection short-circuits first).
-    const depthEvents = events.filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
-    expect(depthEvents.length).toBe(0);
-
-    // Backward continues-probe count is bounded well below the depth cap.
-    const probeCount = captured.filter((c) => isBackwardWalkContinuesProbe(c.sql)).length;
-    expect(probeCount).toBeLessThan(10);
+    const depthEvents = warnSpy.mock.calls
+      .map((c) => c[0] as { event?: string; maxHops?: number; hopIndex?: number } | undefined)
+      .filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
+    expect(depthEvents.length).toBeGreaterThan(0);
+    // maxHops = CANONICAL_ROOT_MAX_HOPS (10).
+    expect(depthEvents[0]?.maxHops).toBe(10);
+    // hopIndex is intentionally absent on depth_exceeded.
+    expect(depthEvents[0]?.hopIndex).toBeUndefined();
 
     warnSpy.mockRestore();
   });
@@ -450,12 +356,12 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   it('detects 3-node cycle (alice/v1 → bob/v1 → carol/v1 → alice/v1) on backward walk', async () => {
     // 3-node cycle verifies the visited Set is real (not a "back-edge to
     // immediate predecessor" check that would pass on a 2-cycle but miss
-    // an N-cycle). Without a proper Set, a 3-cycle is indistinguishable
-    // from a legitimate deep chain until depth cap fires.
+    // an N-cycle). The sibling canary file already pins the 2-node case;
+    // this canary pins that the Set is a true set.
     //
-    // Mutation kill: replace `visited.has(visitedKey)` with a "last node"
-    // check (only remembers the immediately previous node) → 3-cycle
-    // walks to depth cap → cycle_detected event count drops to 0.
+    // Mutation-kill: replace `visited.has(visitedKey)` with a "last node"
+    // check (only remembers the immediately previous node) → 3-cycle walks
+    // to depth cap → cycle_detected event count drops to 0.
     const mutualMeta = pevoPaperJsonMeta(['alice', 'bob', 'carol']);
 
     installResponder(async (sql, params) => {
@@ -494,6 +400,11 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         }
         return { rows: [] };
       }
+      // Forward verify after the cycle break: not load-bearing for the
+      // cycle-event assertions.
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
         const a = params[0] as string;
         const p = params[1] as string;
@@ -523,26 +434,22 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   });
 
   it('wall-clock budget: aborts mid-walk on slow HAF, emits canonical_root_walker_wall_clock_exceeded', async () => {
-    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 canary.
-    //
     // Each pool.query takes ~80ms (longer than the per-test budget of
-    // 50ms). The walker fires the initial probe + at least one loop
-    // iteration's worth of SQL before the budget controller aborts;
-    // the iteration-boundary `if (signal?.aborted)` check then emits the
-    // wall-clock warn and returns the deepest verified node.
+    // 50ms). The walker fires the initial probe before the budget
+    // controller aborts; the iteration-boundary `if (signal?.aborted)`
+    // check then emits the wall-clock warn and returns null.
     //
-    // Mutation-kill: remove the iteration-boundary `signal?.aborted`
-    // check in `findCanonicalRoot` → walker runs to depth cap regardless
-    // of budget → wall-clock event never fires → canary fails red on
-    // `events.length > 0`.
+    // Mutation-kill: remove the iteration-boundary `signal?.aborted` check
+    // in `findCanonicalRoot` → walker runs to depth cap regardless of
+    // budget → wall-clock event never fires → canary fails red.
     const N = 6; // depth deeper than where we expect abort to fire
     const aliceMeta = pevoPaperJsonMeta(['alice']);
 
     installResponder(async (sql, params) => {
       // Slow every backward-walker query to 80ms. The budget (set below)
-      // is 50ms, so even the initial probe consumes the budget by the
-      // time it returns; the next iteration's `signal?.aborted` check
-      // fires before the loop body issues further SQL.
+      // is 50ms, so even the initial probe consumes the budget by the time
+      // it returns; the next iteration's `signal?.aborted` check fires
+      // before the loop body issues further SQL.
       await new Promise((r) => setTimeout(r, 80));
       if (isBackwardWalkContinuesProbe(sql)) {
         const p = params[1] as string;
@@ -584,15 +491,12 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     try {
       const res = await request(app).get(`/api/papers/alice/v${N}`);
       // Walker-aborted requests surface as 503 SERVICE_UNAVAILABLE so
-      // HTTP-status-only monitors catch degraded HAF independently of
-      // the warn log. The pre-fix shape returned 200 with possibly-
-      // incorrect cached data; the abort wasn't visible at the HTTP
-      // layer.
+      // HTTP-status-only monitors catch degraded HAF independently of the
+      // warn log.
       expect(res.status).toBe(503);
-      // details.retriable: true is the wire signal the SPA's HAF-503
-      // retry loop keys on. A regression dropping the 5th sendError
-      // argument would emit a non-retriable 503 and the SPA would
-      // surface a non-actionable error message to the user.
+      // details.retriable: true is the wire signal the SPA's HAF-503 retry
+      // loop keys on. A regression dropping the retriable flag would emit a
+      // non-retriable 503 and the SPA would surface a non-actionable error.
       expect(res.body.error.details?.retriable).toBe(true);
 
       const wallClockEvents = warnSpy.mock.calls
@@ -600,17 +504,16 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         .filter((e) => e?.event === 'canonical_root_walker_wall_clock_exceeded');
       expect(wallClockEvents.length).toBeGreaterThan(0);
       // The warn payload carries the iteration index where the abort
-      // tripped and how long the walker had been running. Both fields
-      // are operator-actionable signals; their presence is the mutation-
-      // kill discriminator for "walker silently exited without emitting
-      // an event tag".
+      // tripped and how long the walker had been running. Both fields are
+      // operator-actionable signals; their presence is the mutation-kill
+      // discriminator for "walker silently exited without emitting an
+      // event tag".
       expect(wallClockEvents[0]?.hopIndex).toBeGreaterThanOrEqual(0);
       expect(wallClockEvents[0]?.elapsedMs).toBeGreaterThan(0);
 
-      // The walker did NOT exit via the depth cap. With slow HAF the
-      // budget must fire first, otherwise the wall-clock signal is
-      // redundant. This pairs with the depth-cap-fires-first canary
-      // below.
+      // The walker did NOT exit via the depth cap. With slow HAF the budget
+      // must fire first, otherwise the wall-clock signal is redundant. This
+      // pairs with the depth-cap-fires-first canary below.
       const depthEvents = warnSpy.mock.calls
         .map((c) => c[0] as { event?: string } | undefined)
         .filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
@@ -621,38 +524,37 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   });
 
   it('wall-clock abort fail-CLOSES to URL coords, not attacker-controlled pevo.continues target (P1 security)', async () => {
-    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET round-2 hold item 1 canary.
-    //
     // PHISHING SCENARIO: attacker posts /api/papers/attacker/spoof-paper
     // carrying `pevo.continues = {alice, real-paper}` pointing at alice's
     // real content. Under degraded HAF where the initial probe takes long
-    // enough to trip the wall-clock budget BEFORE the iter-0
-    // author-consent gate (`fetchHeadAuthorizedAuthors`) runs, the
-    // walker's mid-walk abort path returns canonical coords.
+    // enough to trip the wall-clock budget BEFORE the forward verify runs,
+    // the walker's abort path returns null.
     //
-    // - Pre-fix (defect): return { author: currentAuthor, permlink: currentPermlink }
-    //   where current is sourced from startRow.cont_author/cont_permlink =
-    //   the attacker's spoof target. Route handler then sets
-    //   author=alice/permlink=real-paper and the response surfaces alice's
-    //   content under /api/papers/attacker/spoof-paper. Phishing complete.
+    // - Correct (post-rewrite): the abort path returns null. The route
+    //   handler treats a null canonical root identically to "not a
+    //   continuation" — it keeps the URL coords (attacker/spoof-paper) and
+    //   the subsequent paper-detail fetch stays on the attacker's own
+    //   coords (safe — surfaces the attacker's own content or 404). The
+    //   attacker-pointed predecessor (alice/real-paper) is NEVER surfaced.
     //
-    // - Post-fix (correct): return { author: childAuthor, permlink: childPermlink }
-    //   where child at iter-0 === (URL author, URL permlink) from route
-    //   params. Response stays on attacker's own coords (safe — surfaces
-    //   the attacker's own content or 404).
+    // - Defect class this guards: an abort path that returned the
+    //   deepest-walked node (sourced from the attacker's spoof target)
+    //   would set author=alice/permlink=real-paper and surface alice's
+    //   content under the attacker's URL. Phishing.
     //
-    // Mutation-kill: revert papers.ts iter-0 abort return from
-    // childAuthor/childPermlink back to currentAuthor/currentPermlink →
-    // the captured paper-detail SQL params switch from
-    // ['attacker', 'spoof-paper', …] to ['alice', 'real-paper', …] →
-    // canary fails RED on the predecessor-coord assertions below.
+    // Mutation-kill: change the wall-clock abort return from `null` to the
+    // current backward-walk node (`{ author: currentAuthor, permlink:
+    // currentPermlink }`, sourced from the attacker's spoof target) → the
+    // captured paper-detail SQL params switch from ['attacker',
+    // 'spoof-paper', …] to ['alice', 'real-paper', …] → canary fails RED
+    // on the predecessor-coord assertions below.
     //
-    // Observable layer: the WALKER's return is private (findCanonicalRoot
-    // is not exported), but the route handler immediately rewrites
-    // (author, permlink) from canonicalRoot and passes the result to
+    // Observable layer: the walker's return is private (findCanonicalRoot
+    // is not exported), but the route handler rewrites (author, permlink)
+    // from the canonical root and passes the result to
     // fetchPaperDetailFromHaf, which issues a `SELECT c.author, c.permlink,
-    // c.title, …` query. The captured params on that query are the
-    // walker's return value lifted to the SQL layer.
+    // c.title, …` query. The captured params on that query are the walker's
+    // return value lifted to the SQL layer.
     const aliceMeta = pevoPaperJsonMeta(['alice']);
 
     installResponder(async (sql, params) => {
@@ -700,16 +602,11 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         .filter((e) => e?.event === 'canonical_root_walker_wall_clock_exceeded');
       expect(wallClockEvents.length).toBeGreaterThan(0);
 
-      // CRITICAL — security assertion. After the walker's abort, the
-      // route handler may have called fetchPaperDetailFromHaf with the
-      // walker's returned coords. Filter the captured SQL probes for the
-      // paper-detail SELECT (issued by fetchPaperDetailFromHaf) and
-      // assert NONE of them was issued with alice's coords. Pre-fix the
-      // SQL would land as ['alice', 'real-paper', …]; post-fix the
-      // walker returns ['attacker', 'spoof-paper'] so any subsequent
-      // detail fetch stays on the attacker's own coords (or never runs
-      // because fetchPaperDetailFromHaf short-circuits on the aborted
-      // signal at its end and returns null).
+      // CRITICAL — security assertion. After the walker's abort returns
+      // null, the route handler keeps the URL coords. Filter the captured
+      // SQL probes for the paper-detail SELECT and assert NONE of them was
+      // issued with alice's coords: a regression returning the spoof target
+      // would land as ['alice', 'real-paper', …].
       const detailQueries = captured.filter((c) =>
         /SELECT\s+c\.author,\s+c\.permlink,\s+c\.title/.test(c.sql)
       );
@@ -724,29 +621,20 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   });
 
   it('loop-continuation probe carries IS NOT NULL filter (mirrors initial probe)', async () => {
-    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance addition canary
-    // (from canonical-walker round-2 triage 2026-05-06, adversarial
-    // finding adv-loop-continuation-sql-no-continues-not-null conf 80).
-    //
-    // The initial probe at findCanonicalRoot's entry has carried
-    // `c.json_metadata -> $3 -> 'continues' IS NOT NULL` since the
-    // round-2 type-spoof START gate. The loop-continuation probe
-    // emitted no such predicate until this task — letting the SQL gate
-    // and the JS-side `!cont_author` post-check drift on the same
+    // Both the initial probe and the loop-continuation probe carry
+    // `c.json_metadata -> $3 -> 'continues' IS NOT NULL`, so the SQL gate
+    // and the JS-side `!cont_author` post-check stay aligned on the same
     // semantic property ("does this post have a continues pointer?").
-    // The bundle aligns the two probes; this canary pins the alignment.
     //
     // Loop semantics: the walker tracks (currentAuthor, currentPermlink)
-    // OUTSIDE the SQL result (advanced at the END of each iteration
-    // from parentRow.cont_author/cont_permlink), so the 0-row case
-    // (root has no continues → SQL filter rejects) correctly returns
-    // the predecessor accumulated so far — identical to the pre-bundle
-    // `!parentRow.cont_author` JS bail.
+    // OUTSIDE the SQL result (advanced at the END of each iteration from
+    // parentRow.cont_author/cont_permlink), so the 0-row case (root has no
+    // continues → SQL filter rejects) correctly returns the predecessor
+    // accumulated so far.
     //
     // Mutation-kill: remove the `AND c.json_metadata -> $3 -> 'continues'
-    // IS NOT NULL` clause from the loop probe → some captured loop-
-    // continues probes (the parent-continues SQL inside the for-loop)
-    // do NOT carry the predicate → assertion fails red.
+    // IS NOT NULL` clause from the loop probe → some captured loop-continues
+    // probes do NOT carry the predicate → assertion fails red.
     const N = 3; // 3-hop chain → at least 2 loop-continues probes fire
     const aliceMeta = pevoPaperJsonMeta(['alice']);
 
@@ -775,6 +663,9 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
       if (isHeadAuthorsLookup(sql)) {
         return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
       }
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
         return { rows: [pevoPaperRow('alice', params[1] as string, ['alice'])] };
       }
@@ -784,11 +675,8 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     const res = await request(app).get(`/api/papers/alice/v${N}`);
     expect(res.status).toBe(200);
 
-    // Identify the loop-continuation probes: continues-probe shape but
-    // NOT the initial-probe shape (the initial probe's SELECT prefix
-    // `c.author, c.json_metadata,` is its semantic discriminator —
-    // see isInitialBackwardProbe). After this bundle, every loop probe
-    // must carry the IS NOT NULL predicate.
+    // Identify the loop-continuation probes: continues-probe shape but NOT
+    // the initial-probe shape. Each must carry the IS NOT NULL predicate.
     const loopProbes = captured.filter(
       (c) => isBackwardWalkContinuesProbe(c.sql) && !isInitialBackwardProbe(c.sql),
     );
@@ -799,20 +687,18 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   });
 
   it('depth cap fires before wall-clock when budget is generous (orthogonal signal pinning)', async () => {
-    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 paired canary.
-    //
-    // Asserts the orthogonal failure mode: under FAST HAF + LONG budget
-    // + DEEP chain, the depth cap is what stops the walker, NOT the
-    // wall-clock budget. The two signals must be cleanly separable;
-    // observability dashboards filter on `event` to distinguish
-    // "attacker-induced amplification" (depth-exceeded) from
-    // "degraded-HAF tail" (wall-clock-exceeded).
+    // Asserts the orthogonal failure mode: under FAST HAF + LONG budget +
+    // DEEP chain, the depth cap is what stops the walker, NOT the wall-clock
+    // budget. The two signals must be cleanly separable; observability
+    // dashboards filter on `event` to distinguish "attacker-induced
+    // amplification" (depth-exceeded) from "degraded-HAF tail"
+    // (wall-clock-exceeded).
     //
     // Mutation-kill: invert the priority order (check depth cap before
     // wall-clock budget at the loop top) → with a fast responder the
     // depth-cap canary still passes here, but the slow-responder canary
-    // above stops emitting the wall-clock event because the depth cap
-    // exits first. The two canaries together pin the priority.
+    // above stops emitting the wall-clock event because the depth cap exits
+    // first. The two canaries together pin the priority.
     const N = 11; // > CANONICAL_ROOT_MAX_HOPS (10)
     const aliceMeta = pevoPaperJsonMeta(['alice']);
 
@@ -840,6 +726,9 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
       if (isHeadAuthorsLookup(sql)) {
         return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
       }
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
         return { rows: [pevoPaperRow('alice', params[1] as string, ['alice'])] };
       }
@@ -848,8 +737,8 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
 
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
-    // Generous budget (30s) ensures fast queries can't trip the
-    // wall-clock signal even with 10 hops × 2 SQL each.
+    // Generous budget (30s) ensures fast queries can't trip the wall-clock
+    // signal even with 10 hops × 2 SQL each.
     const originalBudget = config.hafWalkerWallClockMs;
     (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 30000;
     try {
@@ -870,12 +759,14 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     }
   });
 
-  it('legitimate self-continuation: alice/v2 → alice/v1 walks all the way to root', async () => {
+  it('legitimate self-continuation: alice/v2 → alice/v1 walks to root via forward verify', async () => {
     // alice/v1 (root) ← alice/v2. Asking for alice/v2 must canonicalize to
-    // alice/v1 because the hop is author-authorized (alice in alice's
-    // pevo.authors[]).
+    // alice/v1: the backward walk reaches alice/v1, the forward verify
+    // admits the alice/v1 → alice/v2 chain (alice is in alice's authors),
+    // and the membership check confirms alice/v2 is in the chain.
     const aliceMeta = pevoPaperJsonMeta(['alice']);
     const v1Row = pevoPaperRow('alice', 'v1', ['alice']);
+    const v2Meta = pevoPaperRow('alice', 'v2', ['alice'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata;
 
     installResponder(async (sql, params) => {
       if (isBackwardWalkContinuesProbe(sql)) {
@@ -885,17 +776,30 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
           return {
             rows: [{
               author: 'alice',
-              json_metadata: pevoPaperRow('alice', 'v2', ['alice'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata,
+              json_metadata: v2Meta,
               cont_author: 'alice',
               cont_permlink: 'v1',
             }],
           };
         }
-        if (p === 'v1') return { rows: [{ cont_author: null, cont_permlink: null }] };
+        // alice/v1 is the root — no continues.
+        if (a === 'alice' && p === 'v1') return { rows: [] };
         return { rows: [] };
       }
       if (isHeadAuthorsLookup(sql)) {
-        return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') {
+          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        }
+        return { rows: [] };
+      }
+      // Forward verify from alice/v1 admits alice/v2.
+      if (isForwardWalkContinuationProbe(sql)) {
+        if (params[0] === 'alice' && params[1] === 'v1') {
+          return { rows: [{ author: 'alice', permlink: 'v2', block_num: 200, json_metadata: v2Meta }] };
+        }
+        return { rows: [] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
         const p = params[1];
@@ -913,12 +817,17 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(detail.permlink).toBe('v1');
   });
 
-  it('legitimate co-author continuation: bob/v2 → alice/v1 admitted (bob is in alice\'s authors)', async () => {
+  it('legitimate co-author continuation: bob/v2 → alice/v1 admitted via forward verify', async () => {
     // alice/v1 has pevo.authors=[alice, bob]. bob posts v2 with
     // pevo.continues={alice, v1}. Asking for bob/v2 must canonicalize to
-    // alice/v1 because bob is in alice's authorized-authors set.
+    // alice/v1: the backward walk reaches alice/v1, the forward verify
+    // admits bob/v2 (bob is in alice's cumulative authors), and the
+    // membership check confirms bob/v2 is in the chain. Enters at the leaf
+    // (bob/v2) rather than the root, exercising the backward-then-forward
+    // path the sibling forward-walker tests do not.
     const aliceMeta = pevoPaperJsonMeta(['alice', 'bob']);
     const aliceRow = pevoPaperRow('alice', 'v1', ['alice', 'bob']);
+    const bobV2Meta = pevoPaperRow('bob', 'v2', ['bob'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata;
 
     installResponder(async (sql, params) => {
       if (isBackwardWalkContinuesProbe(sql)) {
@@ -928,13 +837,13 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
           return {
             rows: [{
               author: 'bob',
-              json_metadata: pevoPaperRow('bob', 'v2', ['bob'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata,
+              json_metadata: bobV2Meta,
               cont_author: 'alice',
               cont_permlink: 'v1',
             }],
           };
         }
-        if (a === 'alice' && p === 'v1') return { rows: [{ cont_author: null, cont_permlink: null }] };
+        if (a === 'alice' && p === 'v1') return { rows: [] };
         return { rows: [] };
       }
       if (isHeadAuthorsLookup(sql)) {
@@ -942,6 +851,12 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         const p = params[1];
         if (a === 'alice' && p === 'v1') {
           return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (isForwardWalkContinuationProbe(sql)) {
+        if (params[0] === 'alice' && params[1] === 'v1') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 200, json_metadata: bobV2Meta }] };
         }
         return { rows: [] };
       }
@@ -961,16 +876,18 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(detail.permlink).toBe('v1');
   });
 
-  it('per-request memo: head-authors lookup for the canonical root fires once across backward + forward walks', async () => {
+  it('per-request memo: head-authors lookup for the canonical root fires once across forward-verify + detail walks', async () => {
     // Prove the per-request memo: a single request that triggers BOTH the
-    // backward walker (`findCanonicalRoot`) AND the forward walker
-    // (`resolveContinuationChain` via `fetchPaperDetailFromHaf`) must not
-    // re-fetch the canonical root's metadata.
+    // backward walker's forward verify (`findCanonicalRoot` → step 2
+    // `resolveContinuationChain`) AND the detail-surface forward walk
+    // (`fetchPaperDetailFromHaf`) must not re-fetch the canonical root's
+    // metadata.
     //
     // Setup: bob/v2 → alice/v1. bob's URL canonicalises to alice/v1, then
-    // the route hander forward-walks from alice/v1.
+    // the route handler forward-walks from alice/v1.
     const aliceMeta = pevoPaperJsonMeta(['alice', 'bob']);
     const aliceRow = pevoPaperRow('alice', 'v1', ['alice', 'bob']);
+    const bobV2Meta = pevoPaperRow('bob', 'v2', ['bob'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata;
 
     let aliceHeadLookupCount = 0;
 
@@ -978,8 +895,10 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
       if (isBackwardWalkContinuesProbe(sql)) {
         const a = params[0];
         const p = params[1];
-        if (a === 'bob' && p === 'v2') return { rows: [{ author: 'bob', json_metadata: pevoPaperRow('bob', 'v2', ['bob'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata, cont_author: 'alice', cont_permlink: 'v1' }] };
-        if (a === 'alice' && p === 'v1') return { rows: [{ cont_author: null, cont_permlink: null }] };
+        if (a === 'bob' && p === 'v2') {
+          return { rows: [{ author: 'bob', json_metadata: bobV2Meta, cont_author: 'alice', cont_permlink: 'v1' }] };
+        }
+        if (a === 'alice' && p === 'v1') return { rows: [] };
         return { rows: [] };
       }
       if (isHeadAuthorsLookup(sql)) {
@@ -988,6 +907,12 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         if (a === 'alice' && p === 'v1') {
           aliceHeadLookupCount += 1;
           return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (isForwardWalkContinuationProbe(sql)) {
+        if (params[0] === 'alice' && params[1] === 'v1') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 200, json_metadata: bobV2Meta }] };
         }
         return { rows: [] };
       }
@@ -1003,46 +928,24 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     const res = await request(app).get('/api/papers/bob/v2');
     expect(res.status).toBe(200);
 
-    // Backward walker fetches alice/v1's authors once. Forward walker
-    // (resolveContinuationChain) hits the memo and does NOT re-fetch.
-    // The exact count is 1 — any value >1 means the memo failed.
+    // The forward verify fetches alice/v1's authors once; the detail-surface
+    // forward walk hits the memo and does NOT re-fetch. The exact count is 1
+    // — any value >1 means the memo failed.
     expect(aliceHeadLookupCount).toBe(1);
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // Round-2 hold-block additions
+  // START-gate layer-pinning canaries
   // ────────────────────────────────────────────────────────────────────
 
   /**
-   * Shared spoof-START responder. SQL-inspects the initial probe to
-   * decide whether to return zero rows (SQL filter would have rejected
-   * the spoof) or the spoof row (SQL filter absent → JS check must be
-   * the gate). This makes the mock FAITHFUL: when production reverts
-   * the SQL filter, the mock observes the absence and returns the spoof
-   * row, exercising the JS path; when production has the SQL filter,
-   * the mock returns zero rows and the SQL path fires.
-   *
-   * The two canaries below share this responder but assert DIFFERENT
-   * `reason` events:
-   *
-   *   - SQL canary asserts `reason: 'sql_filter_or_missing'`. On main
-   *     (SQL filter present) the mock returns zero rows → walker emits
-   *     that reason → assertion holds. Mutation-kill: revert SQL filter
-   *     in papers.ts → mock now observes filter-absent and returns
-   *     spoof row → walker emits `js_is_pevo_any_paper` instead → SQL
-   *     canary FAILS RED.
-   *   - JS canary asserts `reason: 'js_is_pevo_any_paper'`. On main
-   *     (SQL filter present) the SQL layer is the gate, so the mock
-   *     returns zero rows and the walker emits `sql_filter_or_missing`,
-   *     which means the JS canary cannot pass on green main with the
-   *     same responder. So the JS canary uses `mode: 'without_filter'`
-   *     to FORCE the responder to return the spoof row regardless of
-   *     production SQL state — letting the JS check be the observed
-   *     gate. Mutation-kill: drop the `!isPevoAnyPaper(...)` check in
-   *     papers.ts → walker doesn't reject the spoof START → no
-   *     `js_is_pevo_any_paper` event → JS canary FAILS RED. On SQL-
-   *     filter revert (orthogonal mutation): mock still forces spoof
-   *     row → JS check still fires → JS canary stays GREEN.
+   * Shared spoof-START responder. SQL-inspects the initial probe to decide
+   * whether to return zero rows (SQL filter would have rejected the spoof)
+   * or the spoof row (SQL filter absent → JS check must be the gate). This
+   * makes the mock FAITHFUL: when production reverts the SQL filter, the
+   * mock observes the absence and returns the spoof row, exercising the JS
+   * path; when production has the SQL filter, the mock returns zero rows
+   * and the SQL path fires.
    */
   function installTypeSpoofStartResponder(mode: StartProbeMode) {
     const aliceMeta = pevoPaperJsonMeta(['alice', 'bob']);
@@ -1070,11 +973,8 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
             // Faithful-mock semantics: respond as real HAF would.
             // - Production SQL has the validPevoPaperWhere filter →
             //   pevo.type='review' rejected at SQL layer → 0 rows.
-            // - Production SQL has had the filter reverted → row passes
-            //   the SQL layer → mock returns the spoof row.
-            // This makes the SQL-canary fail red on SQL-filter revert:
-            // walker emits `js_is_pevo_any_paper` instead of expected
-            // `sql_filter_or_missing`.
+            // - Production SQL has had the filter reverted → row passes the
+            //   SQL layer → mock returns the spoof row.
             // Detection key: the `'type'` literal appears in
             // `validPevoPaperWhere` (`(c.json_metadata -> $3 ->> 'type') =
             // 'paper'`) but does NOT appear elsewhere in the initial probe
@@ -1083,29 +983,26 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
             // marker for filter presence on this specific probe.
             //
             // BRITTLENESS WARNING: this discriminator assumes
-            // `validPevoPaperWhere` emits the literal `'type'` inline in
-            // the rendered SQL. A future SQL-builder sweep that
-            // parametrizes literals (`$N` placeholders for `'type'`,
-            // `'paper'`, `'bridge_paper'`, etc.) would break the regex
-            // match → mock returns the spoof row in `with_filter` mode →
-            // SQL canary fails RED on a refactor that did NOT regress
-            // security. This is a FALSE ALARM: the discriminator needs
-            // updating, the gate is intact. Do not "fix" by relaxing the
-            // regex — that opens room for a real `validPevoPaperWhere`
-            // drop to slip through later.
+            // `validPevoPaperWhere` emits the literal `'type'` inline in the
+            // rendered SQL. A future SQL-builder sweep that parametrizes
+            // literals (`$N` placeholders for `'type'`, `'paper'`, etc.)
+            // would break the regex match → mock returns the spoof row in
+            // `with_filter` mode → SQL canary fails RED on a refactor that
+            // did NOT regress security. This is a FALSE ALARM: the
+            // discriminator needs updating, the gate is intact. Do not "fix"
+            // by relaxing the regex — that opens room for a real
+            // `validPevoPaperWhere` drop to slip through later.
             if (/'type'/.test(sql)) {
               return { rows: [] };
             }
             return { rows: [spoofRow] };
           }
           // 'without_filter': force-feed the spoof row regardless of
-          // production SQL state. This isolates the JS-side
-          // `isPevoAnyPaper` check as the gate under test. Mutation-
-          // kill on the JS check: walker doesn't reject → no
-          // `js_is_pevo_any_paper` event → JS canary fails.
+          // production SQL state. This isolates the JS-side `isPevoAnyPaper`
+          // check as the gate under test.
           return { rows: [spoofRow] };
         }
-        if (a === 'alice' && p === 'v1') return { rows: [{ cont_author: null, cont_permlink: null }] };
+        if (a === 'alice' && p === 'v1') return { rows: [] };
         return { rows: [] };
       }
       if (isHeadAuthorsLookup(sql)) {
@@ -1116,13 +1013,16 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         }
         return { rows: [] };
       }
-      // Paper detail fetch. With the gate present (either layer), the
-      // walker rejects the START, no canonicalisation; bob/spoof-review's
-      // own detail SQL (which itself runs validPevoPaperWhere) returns no
-      // row → 404. alice/v1's row is wired up so a mutation that surfaces
-      // the gate failure (walker proceeds → canonicalises to alice/v1)
-      // results in 200 with alice's content under bob's URL, exactly the
-      // failure mode the gate prevents.
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
+      // Paper detail fetch. With the gate present (either layer), the walker
+      // rejects the START, no canonicalisation; bob/spoof-review's own
+      // detail SQL (which itself runs validPevoPaperWhere) returns no row →
+      // 404. alice/v1's row is wired up so a mutation that surfaces the gate
+      // failure (walker proceeds → canonicalises to alice/v1) results in 200
+      // with alice's content under bob's URL, exactly the failure mode the
+      // gate prevents.
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
         const a = params[0];
         const p = params[1];
@@ -1137,25 +1037,23 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     // Layer-pinning canary 1 of 2. Pins the SQL-side validPevoPaperWhere
     // filter on `findCanonicalRoot`'s initial probe. The faithful-mock
     // SQL-inspects the production probe: when the filter predicate is
-    // present (HEAD), the mock returns zero rows; when reverted, it
-    // returns the spoof row.
+    // present (HEAD), the mock returns zero rows; when reverted, it returns
+    // the spoof row.
     //
-    // On HEAD: SQL filter present → mock returns 0 rows → walker bails
-    // at `result.rows.length === 0` and emits
-    // `reason: 'sql_filter_or_missing'`. Test passes.
+    // On HEAD: SQL filter present → mock returns 0 rows → walker bails at
+    // `result.rows.length === 0` and emits `reason: 'sql_filter_or_missing'`.
     //
-    // Mutation-kill: revert the SQL filter (drop the
-    // `validPevoPaperWhere(...)` predicate from the initial probe's
-    // WHERE clause) → the mock observes filter-absent and returns the
-    // spoof row → walker reaches the JS-side `!isPevoAnyPaper(...)`
-    // check, bails there with `reason: 'js_is_pevo_any_paper'` →
-    // assertion `reason === 'sql_filter_or_missing'` fails RED.
+    // Mutation-kill: revert the SQL filter (drop the `validPevoPaperWhere(...)`
+    // predicate from the initial probe's WHERE clause) → the mock observes
+    // filter-absent and returns the spoof row → walker reaches the JS-side
+    // `!isPevoAnyPaper(...)` check, bails there with
+    // `reason: 'js_is_pevo_any_paper'` → assertion
+    // `reason === 'sql_filter_or_missing'` fails RED.
     //
-    // NOTE: spy intercepts before pino's level filter; see
-    // pino-spy-level-filter-ordering-trap-2026-05-07.md. This canary's
-    // green tick does NOT imply production visibility at LOG_LEVEL=info
-    // — sql_filter_or_missing fires on every benign 404 lookup, so it
-    // emits at debug deliberately (warn would drown signal in noise).
+    // Spy level: this reason emits at debug because sql_filter_or_missing
+    // fires on every benign 404 lookup of a non-PEvO post (warn would drown
+    // signal in noise). See
+    // `agents/docs/solutions/conventions/pino-spy-level-filter-ordering-trap-2026-05-07.md`.
     const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
 
     installTypeSpoofStartResponder('with_filter');
@@ -1177,29 +1075,24 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
 
   it('rejects type-spoof START via JS isPevoAnyPaper (js_is_pevo_any_paper)', async () => {
     // Layer-pinning canary 2 of 2. Pins the JS-side defense-in-depth
-    // re-check. The mock force-feeds the spoof row regardless of
-    // production SQL state (mode `'without_filter'`), so the JS
-    // `isPevoAnyPaper` check is the ONLY observed gate. The walker
-    // bails at the `!isPevoAnyPaper(startMeta, startRow.author)` branch.
+    // re-check. The mock force-feeds the spoof row regardless of production
+    // SQL state (mode `'without_filter'`), so the JS `isPevoAnyPaper` check
+    // is the ONLY observed gate. The walker bails at the
+    // `!isPevoAnyPaper(startMeta, startRow.author)` branch.
     //
-    // On HEAD: mock returns spoof row → walker reaches the JS check →
-    // emits `reason: 'js_is_pevo_any_paper'`. Test passes.
+    // On HEAD: mock returns spoof row → walker reaches the JS check → emits
+    // `reason: 'js_is_pevo_any_paper'`.
     //
-    // Mutation-kill: drop the JS re-check
-    // (`if (typeof startRow.author !== 'string' || !isPevoAnyPaper(...))`)
-    // → walker proceeds past the spoof row → canonicalises to alice/v1
-    // → no `js_is_pevo_any_paper` event → assertion FAILS RED. The
-    // surfaced URL would also show alice's content (status 200,
-    // detail.author === 'alice') — the exact phishing pretext the gate
-    // prevents.
+    // Mutation-kill: drop the JS re-check (`if (typeof startRow.author !==
+    // 'string' || !isPevoAnyPaper(...))`) → walker proceeds past the spoof
+    // row → no `js_is_pevo_any_paper` event → assertion FAILS RED.
     //
-    // Orthogonal-mutation green: revert ONLY the SQL filter (NOT the
-    // JS check) → mock still force-feeds spoof row → JS check still
-    // fires → event still emits → JS canary stays GREEN.
+    // Orthogonal-mutation green: revert ONLY the SQL filter (NOT the JS
+    // check) → mock still force-feeds spoof row → JS check still fires →
+    // event still emits → JS canary stays GREEN.
     //
-    // Spy level: warn (per the level-discipline split documented in
-    // findCanonicalRoot — js_is_pevo_any_paper is a rare attack-signal
-    // path that warrants operator alerting, distinct from the noisy
+    // Spy level: warn (js_is_pevo_any_paper is a rare attack-signal path
+    // that warrants operator alerting, distinct from the noisy
     // sql_filter_or_missing 404 path which stays at debug).
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
@@ -1219,25 +1112,23 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   });
 
   it('rejects START with invalid cont_author/cont_permlink columns (cont_columns_invalid)', async () => {
-    // Layer-pinning canary 3 of 4 (round-2 hold item 4). Pins the
-    // cont_author / cont_permlink runtime narrowing branch in
+    // Pins the cont_author / cont_permlink runtime narrowing branch in
     // findCanonicalRoot. The branch fires when HAF returns a row that
     // satisfies the SQL gate AND the JS isPevoAnyPaper re-check, but the
     // cont_author / cont_permlink columns are non-string (e.g. null).
     //
-    // Setup: force-feed a row that LOOKS like a valid PEvO paper
-    // (alice / valid pevoPaperJsonMeta) so the SQL filter and the JS
-    // isPevoAnyPaper re-check both pass. cont_author / cont_permlink are
-    // null. The narrowing branch must reject and emit
-    // `reason: 'cont_columns_invalid'`.
+    // Setup: force-feed a row that LOOKS like a valid PEvO paper (alice /
+    // valid pevoPaperJsonMeta) so the SQL filter and the JS isPevoAnyPaper
+    // re-check both pass. cont_author / cont_permlink are null. The
+    // narrowing branch must reject and emit `reason: 'cont_columns_invalid'`.
     //
     // The IS NOT NULL SQL guard normally prevents real HAF from returning
     // such a row, but the branch is real defense-in-depth. Mutation-kill:
-    // remove the typeof guard → walker would proceed past the row →
-    // event would not fire → assertion FAILS RED.
+    // remove the typeof guard → walker would proceed past the row → event
+    // would not fire → assertion FAILS RED.
     //
-    // Spy level: warn (per the level-discipline split — cont_columns_invalid
-    // is a rare HAF data-integrity surprise that warrants alerting).
+    // Spy level: warn (cont_columns_invalid is a rare HAF data-integrity
+    // surprise that warrants alerting).
     const aliceMeta = pevoPaperJsonMeta(['alice']);
     const aliceRow = pevoPaperRow('alice', 'v1', ['alice']);
 
@@ -1267,6 +1158,9 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         }
         return { rows: [] };
       }
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
         const a = params[0];
         const p = params[1];
@@ -1279,8 +1173,8 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
     const res = await request(app).get('/api/papers/alice/v1');
-    // alice/v1 still resolves (the walker bails returning null, route
-    // falls through to direct paper-detail fetch which succeeds).
+    // alice/v1 still resolves (the walker bails returning null, route falls
+    // through to direct paper-detail fetch which succeeds).
     expect(res.status).toBe(200);
 
     const events = warnSpy.mock.calls
@@ -1293,51 +1187,41 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   });
 
   it('pins SQL IS NOT NULL guard on initial probe (no cont_columns_invalid on benign non-continuation lookup)', async () => {
-    // Layer-pinning canary 5 of 5 (round-2 hold item 4). Pins the
-    // `c.json_metadata -> $3 -> 'continues' IS NOT NULL` SQL predicate
-    // on `findCanonicalRoot`'s initial probe. Without this guard, every
-    // benign paper-detail lookup of a non-continuation paper would pass
-    // the SQL `validPevoPaperWhere` filter (it IS a valid PEvO paper),
-    // pass the JS `isPevoAnyPaper` re-check, and bail at the
-    // `cont_author` / `cont_permlink` runtime narrowing branch — emitting
+    // Pins the `c.json_metadata -> $3 -> 'continues' IS NOT NULL` SQL
+    // predicate on `findCanonicalRoot`'s initial probe. Without this guard,
+    // every benign paper-detail lookup of a non-continuation paper would
+    // pass the SQL `validPevoPaperWhere` filter (it IS a valid PEvO paper),
+    // pass the JS `isPevoAnyPaper` re-check, and bail at the cont_author /
+    // cont_permlink runtime narrowing branch — emitting
     // `canonical_root_walker_start_invalid` warn events with reason
-    // `cont_columns_invalid` on every page load. The IS NOT NULL guard
-    // is what keeps the walker scoped to actual continuation rows.
+    // `cont_columns_invalid` on every page load. The IS NOT NULL guard keeps
+    // the walker scoped to actual continuation rows.
     //
-    // Faithful-mock semantics — SQL-inspects the production initial
-    // probe for the `IS NOT NULL` predicate:
-    //   - HEAD (guard present): return 0 rows (mimicking real HAF
-    //     excluding alice/v1, which has no continues field). Walker
-    //     bails sql_filter_or_missing at debug → warn spy sees no
-    //     cont_columns_invalid → assertion `events.toHaveLength(0)`
-    //     holds. Route falls through to direct paper-detail fetch and
-    //     surfaces alice/v1 (200).
-    //   - Mutation E (drop the IS NOT NULL predicate): mock observes
-    //     guard absent → returns alice/v1 row with cont_author=null,
-    //     cont_permlink=null (the SQL projection ->>'author' against
-    //     missing JSON keys yields NULL in real HAF). Walker passes SQL
-    //     filter, passes JS isPevoAnyPaper, bails cont_columns_invalid
-    //     at warn → warn spy captures the event → assertion FAILS RED.
+    // Faithful-mock semantics — SQL-inspects the production initial probe
+    // for the `IS NOT NULL` predicate:
+    //   - HEAD (guard present): return 0 rows (mimicking real HAF excluding
+    //     alice/v1, which has no continues field). Walker bails
+    //     sql_filter_or_missing at debug → warn spy sees no
+    //     cont_columns_invalid → assertion `events.toHaveLength(0)` holds.
+    //     Route falls through to direct paper-detail fetch (200).
+    //   - Mutation (drop the IS NOT NULL predicate): mock observes guard
+    //     absent → returns alice/v1 row with cont_author=null,
+    //     cont_permlink=null (the SQL projection ->>'author' against missing
+    //     JSON keys yields NULL in real HAF). Walker passes SQL filter,
+    //     passes JS isPevoAnyPaper, bails cont_columns_invalid at warn →
+    //     warn spy captures the event → assertion FAILS RED.
     //
-    // Note on status assertion: both HEAD and Mutation E surface 200
+    // Note on status assertion: both HEAD and the mutation surface 200
     // (alice/v1 is served by direct paper-detail fall-through after the
-    // walker returns null in both states). The discriminating signal is
-    // the warn-event presence below, not the response code.
+    // walker returns null in both states). The discriminating signal is the
+    // warn-event presence below, not the response code.
     //
-    // Orthogonal-mutation green-stays-green:
-    //   - Mutation A (drop validPevoPaperWhere): IS NOT NULL still
-    //     excludes alice/v1 (no continues) → 0 rows → no warn event.
-    //   - Mutations B / C / D (JS check, cont_columns narrowing,
-    //     no_pool warn): unreachable from the 0-rows path the mock
-    //     returns on HEAD.
-    //
-    // BRITTLENESS CAVEAT (mirrors item 3 on the SQL-filter discriminator):
-    // a future SQL-builder sweep that parametrizes the `'continues'`
-    // literal (`$N` placeholder) would break the regex match → mock
-    // would observe guard-absent on HEAD → returns the null-cont row →
-    // canary FAILS RED on a refactor that did NOT regress security.
-    // False alarm: the discriminator needs updating, the gate is
-    // intact. Do not "fix" by relaxing the regex.
+    // BRITTLENESS CAVEAT: a future SQL-builder sweep that parametrizes the
+    // `'continues'` literal (`$N` placeholder) would break the regex match →
+    // mock would observe guard-absent on HEAD → returns the null-cont row →
+    // canary FAILS RED on a refactor that did NOT regress security. False
+    // alarm: the discriminator needs updating, the gate is intact. Do not
+    // "fix" by relaxing the regex.
     const aliceMeta = pevoPaperJsonMeta(['alice']);
     const aliceRow = pevoPaperRow('alice', 'v1', ['alice']);
 
@@ -1352,7 +1236,7 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
             // continues field). Mock returns 0 rows.
             return { rows: [] };
           }
-          // Guard absent (Mutation E) → real HAF returns the row with
+          // Guard absent (mutation) → real HAF returns the row with
           // null-projected cont_* columns. Mock returns same shape.
           return {
             rows: [{
@@ -1371,6 +1255,9 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         if (a === 'alice' && p === 'v1') {
           return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
         }
+        return { rows: [] };
+      }
+      if (isForwardWalkContinuationProbe(sql)) {
         return { rows: [] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
@@ -1399,21 +1286,17 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   });
 
   it('emits canonical_root_walker_no_pool when HAF pool is unavailable', async () => {
-    // Layer-pinning canary 4 of 4 (round-2 hold item 5). Pins the
-    // no-pool bail in findCanonicalRoot. beforeEach always wires a valid
-    // pool; this canary explicitly nulls it for one request.
+    // Pins the no-pool bail in findCanonicalRoot. beforeEach always wires a
+    // valid pool; this canary explicitly nulls it for one request.
     //
     // HAF unavailability falls through to other paths (the route's other
-    // walkers and the direct paper-detail fetch), so the response is not
-    // a 5xx — it's an ordinary 404 from the rest of the lookup pipeline
+    // walkers and the direct paper-detail fetch), so the response is not a
+    // 5xx — it's an ordinary 404 from the rest of the lookup pipeline
     // failing to find anything without HAF.
     //
-    // Mutation-kill: drop the no-pool early-return → walker would attempt
-    // pool.query() on null and crash → not a clean event-tag mutation,
-    // but removing the LOG line itself fails this canary RED.
+    // Mutation-kill: removing the LOG line itself fails this canary RED.
     //
-    // Spy level: warn (per the level-discipline split — no_pool is a
-    // rare infra-failure path worth alerting).
+    // Spy level: warn (no_pool is a rare infra-failure path worth alerting).
     getPoolMock.mockReturnValue(null);
 
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
@@ -1430,308 +1313,24 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(events.length).toBeGreaterThan(0);
 
     warnSpy.mockRestore();
-    // The pool mock is reset by `beforeEach` before the next test runs,
-    // so restoring it here is not required for isolation. We re-wire it
-    // anyway in case future additions to this it() body assert against
-    // a live pool after the no-pool branch.
+    // The pool mock is reset by `beforeEach` before the next test runs, so
+    // restoring it here is not required for isolation. We re-wire it anyway
+    // in case future additions to this it() body assert against a live pool
+    // after the no-pool branch.
     getPoolMock.mockReturnValue({
       query: hafQueryMock,
       connect: async () => ({ query: hafQueryMock, release: () => {} }),
     });
   });
 
-  it('rejects type-spoof at intermediate hop (chain bob/v3 → bob/v2 [type=review] → alice/v1)', async () => {
-    // Round-2 hold item 2: chain bob/v3 (paper, continues bob/v2) →
-    // bob/v2 (review, continues alice/v1) → alice/v1 (paper). bob is
-    // vouched in alice's authors. Expected: walker stops at the bob/v2
-    // hop (type-spoof) and returns bob/v3 as canonical, NOT alice/v1.
-    //
-    // Strategy here: the gate's hop-validation depends on
-    // fetchHeadAuthorizedAuthors, which itself uses isPevoAnyPaper to
-    // narrow predecessors. bob/v2 with type='review' fails isPevoAnyPaper
-    // (line 865) → fetchHeadAuthorizedAuthors returns null → the walker
-    // rejects the hop at the unauthorized-hop gate (line 1093).
-    const aliceMeta = pevoPaperJsonMeta(['alice', 'bob']);
-    const bobV2Meta = {
-      app: `${config.appTag}/test`,
-      [config.appTag]: {
-        type: 'review',
-        continues: { author: 'alice', permlink: 'v1' },
-      },
-    };
-    const bobV3Row = pevoPaperRow('bob', 'v3', ['bob'], { continues: { author: 'bob', permlink: 'v2' } });
-
-    installResponder(async (sql, params) => {
-      if (isBackwardWalkContinuesProbe(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'bob' && p === 'v3') {
-          return {
-            rows: [{ author: 'bob', json_metadata: bobV3Row.json_metadata, cont_author: 'bob', cont_permlink: 'v2' }],
-          };
-        }
-        if (a === 'bob' && p === 'v2') {
-          return { rows: [{ cont_author: 'alice', cont_permlink: 'v1' }] };
-        }
-        if (a === 'alice' && p === 'v1') {
-          return { rows: [{ cont_author: null, cont_permlink: null }] };
-        }
-        return { rows: [] };
-      }
-      if (isHeadAuthorsLookup(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'bob' && p === 'v2') {
-          // bob/v2 is type=review; isPevoAnyPaper rejects it → returns null.
-          return { rows: [{ author: 'bob', json_metadata: bobV2Meta }] };
-        }
-        if (a === 'alice' && p === 'v1') {
-          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
-        }
-        return { rows: [] };
-      }
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'bob' && p === 'v3') return { rows: [bobV3Row] };
-        return { rows: [] };
-      }
-      return { rows: [] };
-    });
-
-    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-    const res = await request(app).get('/api/papers/bob/v3');
-    expect(res.status).toBe(200);
-    const detail = res.body?.data;
-    // Walker stopped at the bob/v2 type-spoof hop. Returns bob/v3 as
-    // canonical (the URL post stays the URL post; alice's content is NOT
-    // surfaced).
-    expect(detail.author).toBe('bob');
-    expect(detail.permlink).toBe('v3');
-    expect(detail.author).not.toBe('alice');
-
-    // Walker emitted unauthorized-hop with hopIndex set (round-2 item 6).
-    const hopEvents = warnSpy.mock.calls
-      .map((c) => c[0] as { event?: string; hopIndex?: number } | undefined)
-      .filter((e) => e?.event === 'canonical_root_walker_unauthorized_hop');
-    expect(hopEvents.length).toBeGreaterThan(0);
-    expect(hopEvents[0]?.hopIndex).toBe(0);
-
-    warnSpy.mockRestore();
-  });
-
-  it('admits legitimate paper continuation (no type-spoof): bob (vouched) posts type=paper continuation', async () => {
-    // Regression coverage for the gate's positive case: bob (vouched in
-    // alice's authors) posts bob/v2 with pevo.type='paper' and
-    // continues={alice, v1}. Walker walks back, returns alice/v1 as
-    // canonical. This is the legitimate co-author continuation flow that
-    // the type-spoof gate must not break.
-    const aliceMeta = pevoPaperJsonMeta(['alice', 'bob']);
-    const aliceRow = pevoPaperRow('alice', 'v1', ['alice', 'bob']);
-    const bobV2Meta = {
-      app: `${config.appTag}/test`,
-      [config.appTag]: {
-        type: 'paper',
-        authors: [{ hive: 'bob' }],
-        continues: { author: 'alice', permlink: 'v1' },
-      },
-    };
-
-    installResponder(async (sql, params) => {
-      if (isBackwardWalkContinuesProbe(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'bob' && p === 'v2') {
-          return {
-            rows: [{ author: 'bob', json_metadata: bobV2Meta, cont_author: 'alice', cont_permlink: 'v1' }],
-          };
-        }
-        if (a === 'alice' && p === 'v1') {
-          return { rows: [{ cont_author: null, cont_permlink: null }] };
-        }
-        return { rows: [] };
-      }
-      if (isHeadAuthorsLookup(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'alice' && p === 'v1') {
-          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
-        }
-        return { rows: [] };
-      }
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'alice' && p === 'v1') return { rows: [aliceRow] };
-        return { rows: [] };
-      }
-      return { rows: [] };
-    });
-
-    const res = await request(app).get('/api/papers/bob/v2');
-    expect(res.status).toBe(200);
-    const detail = res.body?.data;
-    expect(detail.author).toBe('alice');
-    expect(detail.permlink).toBe('v1');
-  });
-
-  it('memo threading: ?version=N path shares memo across backward walker + reconstructVersionsFromHaf', async () => {
-    // Round-2 hold item 3 (P2): the `?version=N` cache-miss branch (route
-    // handler line 1439) calls `reconstructVersionsFromHaf`, which itself
-    // forward-walks via `resolveContinuationChain` → `fetchHeadAuthorizedAuthors`.
-    // Without memo threading, the canonical-walker's lookup of alice/v1's
-    // head authors and the reconstruct path's lookup of alice/v1 fire
-    // SEPARATELY — two queries instead of one. With memo threading, the
-    // second hits the memo and does NOT re-issue SQL.
-    //
-    // Mutation-kill: revert the memo-threading change (drop the memo
-    // parameter from `reconstructVersionsFromHaf`'s call to
-    // `resolveContinuationChain`) and the count rises to 2+.
-    const aliceMeta = pevoPaperJsonMeta(['alice', 'bob']);
-    const aliceRow = pevoPaperRow('alice', 'v1', ['alice', 'bob']);
-
-    let aliceHeadLookupCount = 0;
-
-    installResponder(async (sql, params) => {
-      if (isBackwardWalkContinuesProbe(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'bob' && p === 'v2') {
-          const bobMeta = pevoPaperRow('bob', 'v2', ['bob'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata;
-          return { rows: [{ author: 'bob', json_metadata: bobMeta, cont_author: 'alice', cont_permlink: 'v1' }] };
-        }
-        if (a === 'alice' && p === 'v1') return { rows: [{ cont_author: null, cont_permlink: null }] };
-        return { rows: [] };
-      }
-      if (isHeadAuthorsLookup(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'alice' && p === 'v1') {
-          aliceHeadLookupCount += 1;
-          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
-        }
-        return { rows: [] };
-      }
-      // Paper detail fetch (this path takes the ?version=N branch which
-      // doesn't hit fetchPaperDetailFromHaf — it goes through
-      // reconstructVersionsFromHaf directly).
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'alice' && p === 'v1') return { rows: [aliceRow] };
-        return { rows: [] };
-      }
-      // The reconstruct-versions SQL: ROW_NUMBER + body-replay path.
-      if (sql.includes('ROW_NUMBER()') && sql.includes('OVER (ORDER BY co.block_num)')) {
-        return {
-          rows: [
-            {
-              version_number: 1,
-              block_num: 100,
-              author: 'alice',
-              permlink: 'v1',
-              title: 't',
-              body: 'abstract\n\n---\n\nbody',
-              created: '2026-01-01T00:00:00.000Z',
-              json_metadata: aliceRow.json_metadata,
-            },
-          ],
-        };
-      }
-      // Forward chain-walk SQL (continues-pointer equality).
-      if (/'continues'\s*->>\s*'author'\s*=\s*\$1/.test(sql)) {
-        return { rows: [] };
-      }
-      return { rows: [] };
-    });
-
-    const res = await request(app).get('/api/papers/bob/v2?version=1');
-    expect(res.status).toBe(200);
-    // Memo threading: backward walker fetches alice/v1 ONCE. The
-    // reconstruct path inside the cache-miss branch shares the memo and
-    // does NOT re-fetch.
-    expect(aliceHeadLookupCount).toBe(1);
-  });
-
-  it('catch-block memo: HAF error during head-authors lookup memoizes null and is NOT re-fetched in same request', async () => {
-    // Round-2 hold item 4 (P2): when `fetchHeadAuthorizedAuthors` catches
-    // an exception, it must memoize null before returning. The
-    // documented contract on lines 826-827 says "Both null and Set
-    // results are cached"; the catch path was the gap.
-    //
-    // Setup: URL = alice/v1 (no continues). Route flow:
-    //   1. findCanonicalRoot(alice, v1) — alice/v1 has no continues,
-    //      returns null. No head-authors lookup.
-    //   2. fetchPaperDetailFromHaf(alice, v1, memo) → calls
-    //      resolveContinuationChain(alice, v1, memo) →
-    //      fetchHeadAuthorizedAuthors(alice, v1, memo). FIRST CALL.
-    //      Mock throws → catch memoizes null → returns null.
-    //   3. fetchPaperDetailFromHaf's SQL also returns no row (so
-    //      returns null overall).
-    //   4. Route falls through to reconstructVersionsFromHaf(alice, v1,
-    //      undefined, memo) → calls resolveContinuationChain(alice, v1,
-    //      memo) → fetchHeadAuthorizedAuthors(alice, v1, memo). SECOND
-    //      CALL. With catch-memo: hits memoized null, no SQL. Without
-    //      catch-memo: re-issues SQL, throws again.
-    //
-    // Mutation-kill: remove `memo?.set(key, null)` from the catch block;
-    // count rises 1 → 2.
-    let aliceHeadLookupCount = 0;
-
-    installResponder(async (sql, params) => {
-      if (isBackwardWalkContinuesProbe(sql)) {
-        return { rows: [] };
-      }
-      if (isHeadAuthorsLookup(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'alice' && p === 'v1') {
-          aliceHeadLookupCount += 1;
-          // Always throw — without catch-memo, every call re-fires.
-          // With catch-memo, only the first call sees the throw; the
-          // second hits the memoized null.
-          throw new Error('simulated HAF degraded');
-        }
-        return { rows: [] };
-      }
-      // fetchPaperDetailFromHaf SQL: no row for alice/v1 (so returns
-      // null and route falls through to reconstructVersionsFromHaf).
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [] };
-      }
-      // Forward chain-walk SQL: nothing to admit.
-      if (/'continues'\s*->>\s*'author'\s*=\s*\$1/.test(sql)) {
-        return { rows: [] };
-      }
-      // Reconstruct-versions SQL: empty.
-      if (sql.includes('ROW_NUMBER()') && sql.includes('OVER (ORDER BY co.block_num)')) {
-        return { rows: [] };
-      }
-      return { rows: [] };
-    });
-
-    const errSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
-    const res = await request(app).get('/api/papers/alice/v1');
-    expect(res.status).toBeGreaterThanOrEqual(200);
-
-    // First call threw → catch memoizes null. The reconstructVersionsFromHaf
-    // fallback's resolveContinuationChain hits the memo and does NOT
-    // re-fire SQL. Count stays at 1. Mutation-kill: drop memo?.set in
-    // the catch block; count rises to 2 (re-throw on second call).
-    expect(aliceHeadLookupCount).toBe(1);
-
-    errSpy.mockRestore();
-  });
-
   it('outer walker catch emits structured event (canonical_root_walker_error) with start context', async () => {
-    // Round-2 hold item 5 (P2 observability): the outer walker catch
-    // must emit `event: 'canonical_root_walker_error'` with
-    // (startAuthor, startPermlink) so operators can distinguish
-    // walker-errored from walker-completed. Without the event tag,
-    // the warn is generic and ungrep-able.
+    // The outer walker catch must emit `event: 'canonical_root_walker_error'`
+    // with (startAuthor, startPermlink) so operators can distinguish
+    // walker-errored from walker-completed. Without the event tag, the warn
+    // is generic and ungrep-able.
     //
-    // Mutation-kill: drop the event tag from the outer catch; this
-    // canary fails red.
+    // Mutation-kill: drop the event tag from the outer catch; this canary
+    // fails red.
     installResponder(async (sql) => {
       if (isBackwardWalkContinuesProbe(sql)) {
         // Throw to trigger the outer catch.
@@ -1754,79 +1353,16 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     errSpy.mockRestore();
   });
 
-  it('depth-cap warn carries maxHops field (round-3 item 2: dropped duplicate hopIndex)', async () => {
-    // Round-2 hold item 6 (P3 observability) added a hop-position field to both
-    // `unauthorized_hop` and `depth_exceeded` warns for cross-event taxonomy
-    // consistency. Round-3 hold item 2 (P3 maintainability) noted that on
-    // `depth_exceeded` the two fields (`hopIndex` and `maxHops`) are the
-    // same constant by construction — `hopIndex` was dropped from this
-    // event only. `maxHops` documents the cap; the event name itself
-    // signals "we hit the cap". `hopIndex` retains its meaningful
-    // varying-value role on `unauthorized_hop` (asserted in the
-    // type-spoof-intermediate canary above).
-    //
-    // Mutation-kill: drop the `maxHops` field; this canary fails.
-    const N = 11;
-    const aliceMeta = pevoPaperJsonMeta(['alice']);
-
-    installResponder(async (sql, params) => {
-      if (isBackwardWalkContinuesProbe(sql)) {
-        const a = params[0];
-        const p = params[1] as string;
-        if (a !== 'alice') return { rows: [] };
-        const m = /^v(\d+)$/.exec(p);
-        if (!m) return { rows: [] };
-        const i = Number(m[1]);
-        if (i === 0) {
-          return { rows: [{ cont_author: null, cont_permlink: null }] };
-        }
-        // Initial probe shape (carries `IS NOT NULL` predicate): include
-        // the start-row fields. Subsequent probe shape: just cont_author /
-        // cont_permlink.
-        if (isInitialBackwardProbe(sql)) {
-          return {
-            rows: [{
-              author: 'alice',
-              json_metadata: pevoPaperRow('alice', p, ['alice']).json_metadata,
-              cont_author: 'alice',
-              cont_permlink: `v${i - 1}`,
-            }],
-          };
-        }
-        return { rows: [{ cont_author: 'alice', cont_permlink: `v${i - 1}` }] };
-      }
-      if (isHeadAuthorsLookup(sql)) {
-        return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
-      }
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', params[1] as string, ['alice'])] };
-      }
-      return { rows: [] };
-    });
-
-    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-    const res = await request(app).get(`/api/papers/alice/v${N}`);
-    expect(res.status).toBe(200);
-
-    const depthEvents = warnSpy.mock.calls
-      .map((c) => c[0] as { event?: string; maxHops?: number; hopIndex?: number } | undefined)
-      .filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
-    expect(depthEvents.length).toBeGreaterThan(0);
-    // maxHops = CANONICAL_ROOT_MAX_HOPS (10).
-    expect(depthEvents[0]?.maxHops).toBe(10);
-    // Round-3 item 2: hopIndex explicitly dropped from depth_exceeded.
-    expect(depthEvents[0]?.hopIndex).toBeUndefined();
-
-    warnSpy.mockRestore();
-  });
+  // ────────────────────────────────────────────────────────────────────
+  // Bridge-paper Option-b backward cases
+  // ────────────────────────────────────────────────────────────────────
 
   it('bridge-paper Option-b backward case: bridge_account/v2 → bridge_account/v1 admitted', async () => {
-    // The bridge-paper branch in `extractAuthorizedContinuationAuthors`
-    // is currently exercised only by forward-walker canaries. Cover the
-    // backward walker too: when bridge_account posts v2 of a bridge
-    // paper continuing bridge_account/v1, the walker admits the hop
-    // because bridge_account is in the bridge-paper Option-b authorized
-    // set ({bridgeAccount}).
+    // When bridge_account posts v2 of a bridge paper continuing
+    // bridge_account/v1, the walker resolves to bridge_account/v1: the
+    // backward walk reaches v1, and the forward verify admits the hop
+    // because bridge_account is in the bridge-paper Option-b authorized set
+    // ({bridgeAccount}).
     const bridgeAcc = config.hiveBridgeAccount;
     const bridgePaperV1Meta = {
       app: `${config.appTag}/test`,
@@ -1863,7 +1399,7 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
           };
         }
         if (a === bridgeAcc && p === 'bridge-v1') {
-          return { rows: [{ cont_author: null, cont_permlink: null }] };
+          return { rows: [] };
         }
         return { rows: [] };
       }
@@ -1872,6 +1408,14 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         const p = params[1];
         if (a === bridgeAcc && p === 'bridge-v1') {
           return { rows: [{ author: bridgeAcc, json_metadata: bridgePaperV1Meta }] };
+        }
+        return { rows: [] };
+      }
+      // Forward verify from bridge/v1 admits bridge/v2 (bridge account is in
+      // the Option-b set).
+      if (isForwardWalkContinuationProbe(sql)) {
+        if (params[0] === bridgeAcc && params[1] === 'bridge-v1') {
+          return { rows: [{ author: bridgeAcc, permlink: 'bridge-v2', block_num: 200, json_metadata: bridgeV2Meta }] };
         }
         return { rows: [] };
       }
@@ -1892,11 +1436,14 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(detail.permlink).toBe('bridge-v1');
   });
 
-  it('bridge-paper Option-b backward case: attacker/v2 → bridge_account/v1 REJECTED', async () => {
+  it('bridge-paper Option-b backward case: attacker/v2 → bridge_account/v1 fail-CLOSED', async () => {
     // Bridge-paper authorized set is {bridgeAccount}, NOT pevo.authors[].hive.
     // So an outsider posting `attacker/v2` with continues={bridgeAcc, v1}
-    // and pevo.type='paper' must be rejected: attacker is not in the
-    // bridge paper's Option-b set.
+    // and pevo.type='paper' must NOT canonicalise to the bridge paper: the
+    // backward walk reaches bridge/v1, but the forward verify from bridge/v1
+    // only admits the bridge account, so attacker/v2 is not in the chain.
+    // The membership check fail-CLOSES to attacker/v2 and emits
+    // `canonical_root_walker_membership_failed`.
     const bridgeAcc = config.hiveBridgeAccount;
     const bridgePaperV1Meta = {
       app: `${config.appTag}/test`,
@@ -1924,7 +1471,7 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
           };
         }
         if (a === bridgeAcc && p === 'bridge-v1') {
-          return { rows: [{ cont_author: null, cont_permlink: null }] };
+          return { rows: [] };
         }
         return { rows: [] };
       }
@@ -1934,6 +1481,11 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         if (a === bridgeAcc && p === 'bridge-v1') {
           return { rows: [{ author: bridgeAcc, json_metadata: bridgePaperV1Meta }] };
         }
+        return { rows: [] };
+      }
+      // Forward verify from bridge/v1: only the bridge account is admitted,
+      // so attacker/v2 is excluded from the returned chain.
+      if (isForwardWalkContinuationProbe(sql)) {
         return { rows: [] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
@@ -1960,8 +1512,8 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     const res = await request(app).get('/api/papers/attacker/v2');
     expect(res.status).toBe(200);
     const detail = res.body?.data;
-    // The walker REJECTED the hop: attacker is not in the bridge paper's
-    // Option-b authorized set ({bridgeAccount}). URL stays at attacker/v2.
+    // The walker fail-CLOSED: attacker is not in the bridge paper's Option-b
+    // authorized set ({bridgeAccount}). URL stays at attacker/v2.
     expect(detail.author).toBe('attacker');
     expect(detail.permlink).toBe('v2');
     expect(detail.author).not.toBe(bridgeAcc);
@@ -1969,27 +1521,172 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     const events = warnSpy.mock.calls
       .map((c) => (c[0] as { event?: string } | undefined)?.event)
       .filter(Boolean);
-    expect(events).toContain('canonical_root_walker_unauthorized_hop');
+    expect(events).toContain('canonical_root_walker_membership_failed');
 
     warnSpy.mockRestore();
   });
 
-  it('negative-cache memo: early-return null paths (no row / non-string author / non-paper type) are memoized', async () => {
-    // Round-2 hold item 4 cross-cutting: the documented contract on
-    // lines 826-827 of papers.ts says "Both null and Set results are
-    // cached". The implementation memoizes null at four sites:
-    //   - line 852 (no rows)
-    //   - line 861 (non-string author)
-    //   - line 866 (non-PEvO paper)
-    //   - the catch block (round-2 item 4)
-    // Pin the contract at the early-return paths: a missing-row lookup
-    // memoizes null; a second within-request lookup hits the memo and
-    // does NOT re-fire SQL.
+  // ────────────────────────────────────────────────────────────────────
+  // Per-request memo canaries (fetchHeadAuthorizedAuthors result sharing)
+  // ────────────────────────────────────────────────────────────────────
+
+  it('memo threading: ?version=N path shares memo across forward verify + reconstructVersionsFromHaf', async () => {
+    // The `?version=N` cache-miss branch calls `reconstructVersionsFromHaf`,
+    // which itself forward-walks via `resolveContinuationChain` →
+    // `fetchHeadAuthorizedAuthors`. Without memo threading, the canonical
+    // walker's forward verify of alice/v1's head authors and the reconstruct
+    // path's lookup of alice/v1 fire SEPARATELY — two queries instead of
+    // one. With memo threading, the second hits the memo and does NOT
+    // re-issue SQL.
     //
-    // Strategy: trigger a backward-walker call that fetches alice/v1's
-    // head-authors twice. First fetch returns no rows → memoizes null.
-    // The forward walker shares the memo via the route handler's
-    // memoizes; so the second within-request lookup must hit the memo.
+    // Mutation-kill: revert the memo-threading change (drop the memo
+    // parameter from `reconstructVersionsFromHaf`'s call to
+    // `resolveContinuationChain`) and the count rises to 2+.
+    const aliceMeta = pevoPaperJsonMeta(['alice', 'bob']);
+    const aliceRow = pevoPaperRow('alice', 'v1', ['alice', 'bob']);
+    const bobMeta = pevoPaperRow('bob', 'v2', ['bob'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata;
+
+    let aliceHeadLookupCount = 0;
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'bob' && p === 'v2') {
+          return { rows: [{ author: 'bob', json_metadata: bobMeta, cont_author: 'alice', cont_permlink: 'v1' }] };
+        }
+        if (a === 'alice' && p === 'v1') return { rows: [] };
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') {
+          aliceHeadLookupCount += 1;
+          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        }
+        return { rows: [] };
+      }
+      // Forward verify and reconstruct-path forward walk: no further
+      // continuation past v1 in this fixture.
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
+      // Paper detail fetch.
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') return { rows: [aliceRow] };
+        return { rows: [] };
+      }
+      // The reconstruct-versions SQL: ROW_NUMBER + body-replay path.
+      if (sql.includes('ROW_NUMBER()') && sql.includes('OVER (ORDER BY co.block_num)')) {
+        return {
+          rows: [
+            {
+              version_number: 1,
+              block_num: 100,
+              author: 'alice',
+              permlink: 'v1',
+              title: 't',
+              body: 'abstract\n\n---\n\nbody',
+              created: '2026-01-01T00:00:00.000Z',
+              json_metadata: aliceRow.json_metadata,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/bob/v2?version=1');
+    expect(res.status).toBe(200);
+    // Memo threading: the forward verify fetches alice/v1 ONCE. The
+    // reconstruct path inside the cache-miss branch shares the memo and does
+    // NOT re-fetch.
+    expect(aliceHeadLookupCount).toBe(1);
+  });
+
+  it('catch-block memo: HAF error during head-authors lookup memoizes null and is NOT re-fetched in same request', async () => {
+    // When `fetchHeadAuthorizedAuthors` catches an exception, it must
+    // memoize null before returning, so a single request's repeated lookups
+    // of the same key do not re-fire the failing query under degraded HAF.
+    //
+    // Setup: URL = alice/v1 (no continues). Route flow:
+    //   1. findCanonicalRoot(alice, v1) — alice/v1 has no continues, returns
+    //      null. No head-authors lookup from the backward walk.
+    //   2. fetchPaperDetailFromHaf(alice, v1, memo) → calls
+    //      resolveContinuationChain(alice, v1, memo) →
+    //      fetchHeadAuthorizedAuthors(alice, v1, memo). FIRST CALL. Mock
+    //      throws → catch memoizes null → returns null.
+    //   3. fetchPaperDetailFromHaf's SQL also returns no row (so returns
+    //      null overall).
+    //   4. Route falls through to reconstructVersionsFromHaf(alice, v1,
+    //      undefined, memo) → calls resolveContinuationChain(alice, v1,
+    //      memo) → fetchHeadAuthorizedAuthors(alice, v1, memo). SECOND CALL.
+    //      With catch-memo: hits memoized null, no SQL. Without catch-memo:
+    //      re-issues SQL, throws again.
+    //
+    // Mutation-kill: remove `memo?.set(key, null)` from the catch block;
+    // count rises 1 → 2.
+    let aliceHeadLookupCount = 0;
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') {
+          aliceHeadLookupCount += 1;
+          // Always throw — without catch-memo, every call re-fires. With
+          // catch-memo, only the first call sees the throw; the second hits
+          // the memoized null.
+          throw new Error('simulated HAF degraded');
+        }
+        return { rows: [] };
+      }
+      // fetchPaperDetailFromHaf SQL: no row for alice/v1 (so returns null
+      // and route falls through to reconstructVersionsFromHaf).
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [] };
+      }
+      // Forward chain-walk SQL: nothing to admit.
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
+      // Reconstruct-versions SQL: empty.
+      if (sql.includes('ROW_NUMBER()') && sql.includes('OVER (ORDER BY co.block_num)')) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const errSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const res = await request(app).get('/api/papers/alice/v1');
+    expect(res.status).toBeGreaterThanOrEqual(200);
+
+    // First call threw → catch memoizes null. The reconstructVersionsFromHaf
+    // fallback's resolveContinuationChain hits the memo and does NOT re-fire
+    // SQL. Count stays at 1. Mutation-kill: drop memo?.set in the catch
+    // block; count rises to 2 (re-throw on second call).
+    expect(aliceHeadLookupCount).toBe(1);
+
+    errSpy.mockRestore();
+  });
+
+  it('negative-cache memo: early-return null paths (no row / non-string author / non-paper type) are memoized', async () => {
+    // `fetchHeadAuthorizedAuthors` memoizes null at its early-return paths
+    // (no rows, non-string author, non-PEvO paper) as well as on success.
+    // Pin the contract at the no-rows path: a missing-row lookup memoizes
+    // null; a second within-request lookup hits the memo and does NOT
+    // re-fire SQL.
+    //
+    // Strategy: trigger a forward-verify call that fetches alice/v1's
+    // head-authors. First fetch returns no rows → memoizes null. The
+    // detail-surface forward walk shares the memo via the route handler, so
+    // the second within-request lookup hits the memo.
     let aliceHeadLookupCount = 0;
     const bobV2Meta = pevoPaperRow('bob', 'v2', ['bob'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata;
 
@@ -2008,14 +1705,17 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         if (a === 'alice' && p === 'v1') {
           aliceHeadLookupCount += 1;
           // No rows → fetchHeadAuthorizedAuthors hits the no-rows
-          // early-return at line 852 and memoizes null.
+          // early-return and memoizes null.
           return { rows: [] };
         }
         return { rows: [] };
       }
-      // No paper detail row for alice/v1 (since it doesn't exist), so
-      // bob/v2 detail fetch returns nothing meaningful — the request
-      // ends in 404. What matters is the lookup count.
+      if (isForwardWalkContinuationProbe(sql)) {
+        return { rows: [] };
+      }
+      // No paper detail row for alice/v1 (since it doesn't exist), so bob/v2
+      // detail fetch returns nothing meaningful — the request ends in 404.
+      // What matters is the lookup count.
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
         return { rows: [] };
       }
@@ -2025,50 +1725,32 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     const res = await request(app).get('/api/papers/bob/v2');
     expect(res.status).toBeGreaterThanOrEqual(200);
 
-    // The walker fetched alice/v1 once (initial backward-walk
-    // unauthorized-hop check). The forward walker via
-    // fetchPaperDetailFromHaf shares the same memo and does NOT
+    // The forward verify fetched alice/v1 once and memoized null. The
+    // detail-surface forward walk shares the same memo and does NOT
     // re-fetch alice/v1's missing row.
     expect(aliceHeadLookupCount).toBe(1);
   });
 
-  it('memo threading: /enrichment shares memo across resolveVersionsFromHaf forward-walk (round-3 item 1)', async () => {
-    // Round-3 hold item 1 (P2): `resolveVersionsFromHaf` is the third
-    // call site of `reconstructVersionsFromHaf`; round-2 threaded memo
-    // through the `?version=N` and metadata-restored fallback call
-    // sites in GET /:author/:permlink but missed this one in
-    // `fetchEnrichmentFromHaf`. Round-3 closes that gap by adding a
-    // `memo?: HeadAuthorsMemo` parameter to `resolveVersionsFromHaf`,
-    // constructing a memo at the top of `fetchEnrichmentFromHaf`, and
-    // threading it into both the inner `reconstructVersionsFromHaf`
-    // and downstream `resolveContinuationChain` →
-    // `fetchHeadAuthorizedAuthors` lookups.
+  it('memo threading: /enrichment shares memo across resolveVersionsFromHaf forward-walk', async () => {
+    // `resolveVersionsFromHaf` (the `/enrichment` call site of
+    // `reconstructVersionsFromHaf`) participates in the per-request memo via
+    // a threaded `memo?` parameter, so the head-authors lookup for the chain
+    // root fires once across the /enrichment request.
     //
-    // Setup: hit /enrichment for alice/v1 with a forward chain
-    // alice/v1 → alice/v2. The route flow:
-    //   1. fetchEnrichmentFromHaf(alice, v1) constructs headAuthorsMemo.
-    //   2. resolveVersionsFromHaf(alice, v1, memo) →
-    //      reconstructVersionsFromHaf(alice, v1, undefined, memo) →
-    //      resolveContinuationChain(alice, v1, memo) →
-    //      fetchHeadAuthorizedAuthors(pool, alice, v1, memo). Count = 1.
+    // Setup: hit /enrichment for alice/v1. The route flow constructs a
+    // headAuthorsMemo at the top of `fetchEnrichmentFromHaf`, threads it into
+    // resolveVersionsFromHaf → reconstructVersionsFromHaf →
+    // resolveContinuationChain → fetchHeadAuthorizedAuthors. Count = 1.
     //
-    // Mutation-kill semantics: this canary asserts the head-authors
-    // lookup count for alice/v1 is exactly 1 across the /enrichment
-    // request. The dual-consumer dedup mutation-kill (count 1→2 on
-    // memo-arg revert) is covered by the existing `?version=N` and
-    // catch-block memo canaries in this file (lines 648 and 726),
-    // which exercise scenarios where two consumers within one request
-    // share the memo. /enrichment has only one consumer of
-    // fetchHeadAuthorizedAuthors today (resolveVersionsFromHaf via
-    // reconstructVersionsFromHaf via resolveContinuationChain), so
-    // strict count 1→2 mutation-kill is not observable in /enrichment
-    // alone. This canary instead pins (a) the integration path stays
-    // wired (fetchEnrichmentFromHaf → resolveVersionsFromHaf →
-    // reconstructVersionsFromHaf → memo all the way down), and (b)
-    // any future second consumer added to fetchEnrichmentFromHaf that
-    // looks up alice/v1's authors will share the memo and not double-
-    // fetch — covered by the existing `?version=N` canary's mutation-
-    // kill on the broader contract.
+    // /enrichment has only one consumer of fetchHeadAuthorizedAuthors today,
+    // so a strict count 1→2 mutation-kill is not observable in /enrichment
+    // alone (the dual-consumer dedup mutation-kill is covered by the
+    // `?version=N` and catch-block memo canaries above). This canary pins
+    // (a) the integration path stays wired (fetchEnrichmentFromHaf →
+    // resolveVersionsFromHaf → reconstructVersionsFromHaf → memo all the way
+    // down), and (b) any future second consumer added to
+    // fetchEnrichmentFromHaf that looks up the root's authors will share the
+    // memo and not double-fetch.
     const aliceMeta = pevoPaperJsonMeta(['alice']);
     const aliceRow = pevoPaperRow('alice', 'v1', ['alice']);
 
@@ -2088,7 +1770,7 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         return { rows: [] };
       }
       // Forward chain-walk SQL: alice/v1 has no continuation in this fixture.
-      if (/'continues'\s*->>\s*'author'\s*=\s*\$1/.test(sql)) {
+      if (isForwardWalkContinuationProbe(sql)) {
         return { rows: [] };
       }
       // Reconstruct-versions ROW_NUMBER SQL: a single row for alice/v1.
@@ -2114,9 +1796,9 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
 
     const res = await request(app).get('/api/papers/alice/v1/enrichment');
     expect(res.status).toBe(200);
-    // resolveVersionsFromHaf participates in the per-request memo via
-    // the new `memo?` parameter (round-3 item 1). The single forward-
-    // walker lookup of alice/v1's authors fires once.
+    // resolveVersionsFromHaf participates in the per-request memo via the
+    // threaded `memo?` parameter. The single forward-walker lookup of
+    // alice/v1's authors fires once.
     expect(aliceHeadLookupCount).toBe(1);
   });
 });
