@@ -71,3 +71,17 @@ Brief inline comment at the ioredis constructor explaining what `commandTimeout`
 - `backend/src/routes/accreditation.ts` — accreditation verify hot path.
 - `backend/src/reputation-batch.ts` — reputation cycle lock acquire/release.
 - ioredis docs: `commandTimeout` semantics.
+
+## Architect re-review (2026-05-25) — HELD PENDING FIXES:
+
+Round-1 hold from `/ce-code-review` fan-out (6 personas — adversarial and kieran-typescript dropped for the smaller 15-line source surface):
+
+1. **Test header labels carve-out as `clause-(c)` but content is `clause-(a)`.** Per root `CLAUDE.md`'s three-clause test-mock carve-out framework: clause-(a) is the impractical-real-path justification, clause-(c) is the real-path-companion citation. The current header conflates them under a single `clause-(c)` label. Relabel the justification block to `clause-(a)`, then add a separate `Real-path companion (clause-(c)):` sentence citing the accreditation pre-INCR `redis.eval` rejection spec by function description (do not cite by line number — anchor-stability rule).
+
+2. **`REDIS_COMMAND_TIMEOUT_MS` docblock is disproportionately large for a configuration constant.** It currently enumerates failure modes (Lua-cache OOM, half-open socket, NOSCRIPT recovery), hot-path latency comparisons (accreditation `/verify`, reputation-batch lock), and route names — most of which belongs in the commit message or a `solutions/` entry. Trim to two non-obvious facts: `commandTimeout` bounds per-command latency (distinct from `maxRetriesPerRequest` which governs connection-level retry); timed-out commands reject rather than hang.
+
+3. **Test docblock duplicates production-comment failure-mode theory verbatim.** Lines covering Lua-cache OOM / half-open sockets / NOSCRIPT recovery appear in both `backend/src/redis.ts` and the test header. Two copies of the same prose drift on the first future edit to either side. Remove the failure-mode preamble from the test docblock; keep the carve-out justification and companion citation (those are test-specific). The trim in item 2 narrows the source-side surface too, leaving less to drift against.
+
+4. **`afterEach` teardown disconnects a different module instance than `beforeEach` constructed.** The hook dynamically re-imports the module after `beforeEach` already called `vi.resetModules()`. Result: `disconnectRedis()` runs on a fresh module instance with no client, while the one the test actually built leaks. The canary doesn't reach a state where this matters today, but the teardown is structurally wrong and the next test that adds command-dispatch coverage will inherit the leak. Either (a) store the module reference from the test-body import in a shared variable and have `afterEach` call `disconnectRedis` on that reference, or (b) move `vi.resetModules()` to `afterEach` after teardown, not `beforeEach`.
+
+Suppressed (anchor 50, did not survive gate): `REDIS_URL`-absent guard advisory (testing); literal `5000` backoff-cap coincidence with `commandTimeout` value (maintainability, pre-existing). Residual_risks recorded but not held: `commandTimeout` vs `MaxRetriesPerRequestError` class confusion in caller catch handlers; NOSCRIPT recovery's two-budget ~10s worst-case; offline-queued commands timing out at 5s mid-reconnect. All are documented behavior and don't block this commit.
