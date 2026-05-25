@@ -172,7 +172,7 @@ describe.skipIf(!dbReachable)('migration 007 — accounts_orcid_unique', () => {
     // groups so this test pins that the RAISE reports the true magnitude
     // rather than the capped sample size. The migration computes dup_count
     // from an uncapped COUNT(*) over the GROUP BY ... HAVING COUNT(*) > 1 set
-    // (Shape A: split queries) and only the sample string is LIMIT-50 capped.
+    // and only the sample string is LIMIT-50 capped.
     // Reverting to the single capped query (LIMIT 50 feeding the outer
     // COUNT(*)) makes this report 50 and flip RED.
     const DUP_GROUP_COUNT = 51;

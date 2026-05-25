@@ -167,3 +167,15 @@ Fix: strip the parenthetical "(Shape A: split queries) " from the comment. The s
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-25, branch HEAD)
+
+Round-3 hold item 1 landed.
+
+**Item 1 (P2, project-standards) — coordination-artifact anchor in the migration-body RAISE test comment.** `backend/tests/migrations/accounts-orcid-unique.test.ts` — stripped the parenthetical that carried the architect's round-1 hold label from the comment above the `DUP_GROUP_COUNT` seed in the migration-body RAISE sub-test. The behavioral sentences are unchanged: the comment still states that the migration computes `dup_count` from an uncapped `COUNT(*)` over the `GROUP BY ... HAVING COUNT(*) > 1` set while only the sample string is LIMIT-50 capped, and that reverting to a single capped query flips the test RED. Audit-own-replacement clear: no task-slug citation, round-N marker, line-number anchor, or SHA introduced in place of the removed label. The dismissed SAVEPOINT-vocabulary docblock drift (a triage dismissal, not a held item) was left untouched to keep this round scoped to item 1.
+
+**Verification:** `cd backend && npm run typecheck` clean; comment-only test change. Vitest run serially by the parent after the concurrent backend fan-out merges (the suite mutates the shared real-Postgres `accounts` table/index inside transactions; concurrent worktree runs collide). Expected: 5/5 in `tests/migrations/accounts-orcid-unique.test.ts` unaffected (comment-only edit, no assertion or seed change).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
