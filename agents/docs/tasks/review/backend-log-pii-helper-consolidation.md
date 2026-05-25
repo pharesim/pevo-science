@@ -79,3 +79,30 @@ The first list minus the second is the set of unconsolidated sites. If `bearerSe
 When item 1 lands (plus any other sites the two-grep audit surfaces), `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit(s) only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-25, working tree pre-commit)
+
+Item 1 landed. `bearerSessionId` in `custody.ts` now delegates to `sha256HexDigest(token).slice(0, 16)`; the raw `createHash('sha256').update(token).digest('hex')` body is gone, and the `.slice(0, 16)` compact-correlator truncation stays at the call site per the hold note. The `crypto` import is retained (still used by `crypto.timingSafeEqual` elsewhere in the file).
+
+Two-grep audit run per `wrapping-primitive-exhaustive-call-site-audit`. Within this task's consolidation scope (`auth.ts` + `custody.ts`), `bearerSessionId` was the only remaining unconsolidated site; it is now fixed, so the consolidation is complete for the files this task touched.
+
+The audit also surfaced pre-existing inline `sha256`-hex-over-a-string sites in other files that match `sha256HexDigest`'s contract but were never call sites of `forensicDigest` / `hashUserAgentForAudit` / `bearerSessionId` and are out of scope for this focused dedup:
+
+- `routes/search.ts` (cache key, truncated `.slice(0,32)`)
+- `routes/papers.ts` (cache key, truncated `.slice(0,32)`)
+- `routes/orcid.ts` (×2, `evidence_hash`)
+- `routes/signup-verify.ts` (×2, `evidenceHash`)
+- `routes/accreditation.ts` (×3: token digest, `evidenceHash`, `idempotencyKey`)
+- `routes/anonymousReview.ts` (`attestationId`)
+- `lib/idempotency.ts` (idempotency cache key)
+- `lib/fresh-auth.ts` (concat digest)
+
+Non-matching sites correctly stay inline (not contract matches): `app.ts` (`.digest('base64')`, CSP hash), `signup-session-binding.ts` (×2) and `recover.ts` (×4) (`.digest()` → Buffer for `timingSafeEqual` / buffer comparison, no hex encoding).
+
+Recommend a separate codebase-wide `sha256HexDigest` adoption sweep (or folding into the existing string-helper adoption sweep) rather than expanding this focused dedup task. Flagging for architect triage per the hold note's "surface them in the next-round commit message."
+
+Verification: `npm run typecheck` clean; `npm run lint` clean on the touched file (one pre-existing unrelated warning in `author-supersession.ts`, untouched); `custody*` + `recover*` + `auth` suites 88/88 pass, including the `custody-user-agent-hash` pinned-vector test that guards byte-identical hash output.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

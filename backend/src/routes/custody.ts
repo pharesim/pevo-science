@@ -187,7 +187,7 @@ function bearerSessionId(req: Request): string | null {
   if (typeof auth !== 'string' || !auth.startsWith('Bearer ')) return null;
   const token = auth.slice('Bearer '.length).trim();
   if (token.length === 0) return null;
-  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+  return sha256HexDigest(token).slice(0, 16);
 }
 
 /** SHA-256 hash of the User-Agent header for audit-log storage. Returns
