@@ -213,6 +213,7 @@ export const redisStubFactory: () => typeof import('../../src/redis.js') = () =>
   getRedis: () => null,
   isRedisAvailable: () => false,
   disconnectRedis: async () => {},
+  redisRetryStrategy: (times: number) => Math.min(times * 200, 5000),
 });
 
 /**

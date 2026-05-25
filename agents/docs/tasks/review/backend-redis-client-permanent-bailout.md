@@ -81,3 +81,35 @@ Round-1 hold from `/ce-code-review` fan-out (8 personas; item 1 corroborated by 
 
 Synthetic-close test tautology (P3 adversarial flag) is **dismissed** — the test catches the targeted regression (close handler nulling the cache) even if the assertion is thin; the real disconnect/reconnect/round-trip test covers the substantive risk class.
 
+## Backend re-review signal (2026-05-25, working tree)
+
+Round-1 hold items 1-4 landed.
+
+### Item 1 — retryStrategy test pins the production curve, not ioredis defaults
+
+Extracted the production strategy into an exported named function `redisRetryStrategy(times)` in `backend/src/redis.ts` (returns `Math.min(times * 200, 5000)`) and wired it into the constructor via `retryStrategy: redisRetryStrategy`. The first spec in `backend/tests/redis-reconnect.test.ts` now imports `redisRetryStrategy` and asserts against it directly — no more throwaway probe client. The throwaway `new Redis(...)` and the `import Redis from 'ioredis'` (now unused) were removed. The spec asserts every probed `times` returns a positive number ≤ 5000 (catches the `null`/`undefined` permanent-bailout regression) plus three curve-shape pins (`redisRetryStrategy(1) === 200`, `(10) === 2000`, `(5000) === 5000` capped) so a multiplier/cap change is also caught. The exported-function docblock explains why probe-client introspection silently reads ioredis's default curve. Carve-out docblock clause (a) updated: the retryStrategy spec is now a direct unit assertion (no carve-out); only the synthetic-close spec retains the (a) justification.
+
+### Item 2 — dead `else` collapsed in `logStatusTransition`
+
+`else if (event === 'reconnecting' || event === 'end')` + trailing `else` collapsed to `if (event === 'ready' || event === 'connect') logger.info(...); else logger.warn(...);`. Verified at runtime in the test output: `connect`/`ready` log at level 30 (info), `reconnecting`/`end` at level 40 (warn).
+
+### Item 3 — `reconnecting` callback cast made visible
+
+Changed `client.on('reconnecting', (delay: number) => ...)` to `(...args: unknown[]) => { const delay = args[0] as number | undefined; ... }` with an inline comment naming ioredis's `cb: () => void` overload mismatch. Runtime-verified: the `reconnecting` log line in the test shows `delay:200`.
+
+### Item 4 — `reconnectOnError` comment corrected
+
+Rewrote the comment to state that the command hitting the READONLY reply still rejects (`true` reconnects without re-sending; `2` would re-send), and only subsequent commands route to the new primary. Notes the hook is largely inert in single-instance PEvO (no failover).
+
+### Verification
+
+- `npm run typecheck` (src + tests) — clean. (Added `redisRetryStrategy` to the typed `redisStubFactory` in `tests/support/argon2-error-mocks.ts`, which is annotated `: typeof import('../../src/redis.js')` and so must satisfy the full module shape.)
+- `npm run lint` — clean (only a pre-existing unrelated warning in `author-supersession.ts`).
+- `npx vitest run tests/redis-reconnect.test.ts` (docker-network Redis/Postgres IPs) — 3 passed, 0 failed.
+
+### Files changed (this round)
+
+- `backend/src/redis.ts` — items 1 (export `redisRetryStrategy` + wire), 2 (collapse else), 3 (reconnecting cast), 4 (comment).
+- `backend/tests/redis-reconnect.test.ts` — item 1 (direct assertion + carve-out docblock update).
+- `backend/tests/support/argon2-error-mocks.ts` — add `redisRetryStrategy` to the typed redis stub factory (typecheck consequence of the new export).
+

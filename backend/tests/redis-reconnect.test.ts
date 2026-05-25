@@ -3,15 +3,13 @@
  *
  * **Carve-out (per root CLAUDE.md "Running Tests"):**
  *
- * (a) Two pieces of the surface are non-trivial to exercise without
- *     targeted setup: (i) the `retryStrategy` pure-function assertion is
- *     read off a fresh client's options rather than waiting for a real
- *     server to drop connections so the curve can be observed; (ii) the
- *     close-handler / cached-reference invariant is verified by emitting
- *     a synthetic `close` event on the shared client because forcing the
- *     real connection to close mid-suite would race the other Redis-
- *     touching tests in the file. Neither involves auth middleware, so
- *     clause (b) does not apply.
+ * (a) The close-handler / cached-reference invariant (second spec) is
+ *     verified by emitting a synthetic `close` event on the shared client
+ *     because forcing the real connection to close mid-suite would race
+ *     the other Redis-touching tests in the file. The first spec is a
+ *     direct unit assertion on the exported `redisRetryStrategy` (no
+ *     mocking, no probe-client introspection), so it carries no carve-out.
+ *     Neither spec involves auth middleware, so clause (b) does not apply.
  * (b) `verifyHiveSignature` is not in scope here — these specs do not
  *     touch the HTTP surface or any signed-request path.
  * (c) The integration-shaped third spec exercises the real reconnect
@@ -23,8 +21,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import Redis from 'ioredis';
-import { getRedis } from '../src/redis.js';
+import { getRedis, redisRetryStrategy } from '../src/redis.js';
 import { config } from '../src/config.js';
 
 const redis = getRedis();
@@ -41,28 +38,25 @@ describe.skipIf(skipIfNoRedis)('redis client reconnect behavior', () => {
     }
   });
 
-  it('retryStrategy returns a finite backoff for every retry count (no permanent bailout)', () => {
-    // Build a throwaway client purely to inspect the configured retryStrategy.
-    // `lazyConnect: true` plus an unreachable URL keeps it from holding a real socket;
-    // the strategy is a pure function on the options bag.
-    const probe = new Redis('redis://127.0.0.1:1', { lazyConnect: true });
-    try {
-      const strategy = (probe.options as { retryStrategy?: (times: number) => number | void | null }).retryStrategy;
-      expect(typeof strategy).toBe('function');
-      if (!strategy) throw new Error('retryStrategy not configured');
-      // Probe a representative sample including values far past the prior
-      // hard-bailout threshold. None should return null/void — those values
-      // tell ioredis to stop reconnecting permanently.
-      for (const times of [1, 2, 3, 4, 5, 10, 50, 500, 5000]) {
-        const result = strategy(times);
-        expect(typeof result).toBe('number');
-        expect(result as number).toBeGreaterThan(0);
-        // Backoff stays bounded so we don't sleep for hours between retries.
-        expect(result as number).toBeLessThanOrEqual(10_000);
-      }
-    } finally {
-      probe.disconnect();
+  it('redisRetryStrategy returns a finite, bounded backoff for every retry count (no permanent bailout)', () => {
+    // Assert against the exported production strategy directly. Reading
+    // `retryStrategy` off a probe client's options would silently resolve
+    // to ioredis's default curve and pass even if the `times > N -> null`
+    // permanent-bailout regression were reintroduced in the production
+    // function — the exact failure mode this spec exists to catch.
+    for (const times of [1, 2, 3, 4, 5, 10, 50, 500, 5000]) {
+      const result = redisRetryStrategy(times);
+      // A number (never null/undefined) keeps ioredis reconnecting forever.
+      expect(typeof result).toBe('number');
+      expect(result).toBeGreaterThan(0);
+      // Bounded so reconnect attempts never sleep beyond the configured cap.
+      expect(result).toBeLessThanOrEqual(5000);
     }
+    // Pin the curve shape at representative points so a multiplier or cap
+    // change is caught, not just the null-bailout regression.
+    expect(redisRetryStrategy(1)).toBe(200);
+    expect(redisRetryStrategy(10)).toBe(2000);
+    expect(redisRetryStrategy(5000)).toBe(5000); // capped
   });
 
   it('module-scoped client survives a synthetic close event without being nulled', () => {

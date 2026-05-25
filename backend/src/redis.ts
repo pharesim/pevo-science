@@ -36,6 +36,20 @@ const QUEUE_WATCHDOG_INTERVAL_MS = 30_000;
 // SERVICE_UNAVAILABLE branch).
 const REDIS_COMMAND_TIMEOUT_MS = 5_000;
 
+// Reconnect backoff: linear ramp (200ms per attempt) capped at 5s,
+// returned for every retry count. Exported so the reconnect test can pin
+// the production curve directly instead of introspecting a probe client's
+// options bag — a probe with no `retryStrategy` set silently reports
+// ioredis's built-in default (`Math.min(times * 50, 2000)`), which would
+// pass even if the permanent-bailout regression (returning `null` past a
+// fixed retry count) were reintroduced here. A finite backoff for every
+// `times` is the invariant: any `null`/`undefined` return tells ioredis to
+// stop reconnecting permanently, turning a transient blip into a restart-
+// only recovery.
+export function redisRetryStrategy(times: number): number {
+  return Math.min(times * 200, 5000);
+}
+
 function logStatusTransition(client: Redis, event: string, detail?: Record<string, unknown>): void {
   // Skip if the client emitted the same event twice in a row (e.g. two
   // `reconnecting` events back-to-back during a flap). Transition logs
@@ -45,8 +59,6 @@ function logStatusTransition(client: Redis, event: string, detail?: Record<strin
   const payload = { event, status: client.status, ...(detail ?? {}) };
   if (event === 'ready' || event === 'connect') {
     logger.info(payload, 'redis status');
-  } else if (event === 'reconnecting' || event === 'end') {
-    logger.warn(payload, 'redis status');
   } else {
     logger.warn(payload, 'redis status');
   }
@@ -107,12 +119,14 @@ export function getRedis(): Redis | null {
     // Indefinite reconnect backoff. ioredis handles transient
     // disconnects natively; a finite cap (the prior `times > 3`
     // bailout) turned blips into permanent degradation.
-    retryStrategy(times) {
-      return Math.min(times * 200, 5000);
-    },
-    // Trigger reconnect on READONLY errors so a Sentinel/primary
-    // failover flips the client to the new primary rather than
-    // returning errors until manual restart.
+    retryStrategy: redisRetryStrategy,
+    // On a READONLY error (primary/replica role flip) return `true` to
+    // trigger a reconnect. The command that hit the READONLY reply still
+    // rejects — `true` reconnects without re-sending it (returning `2`
+    // would re-send) — but subsequent commands route to the new primary
+    // instead of erroring until a manual restart. Largely inert in
+    // single-instance PEvO, which has no failover; kept correct in case a
+    // replica is ever added.
     reconnectOnError(err) {
       if (err.message.startsWith('READONLY')) return true;
       return false;
@@ -138,7 +152,12 @@ export function getRedis(): Redis | null {
     });
   });
 
-  client.on('reconnecting', (delay: number) => {
+  client.on('reconnecting', (...args: unknown[]) => {
+    // ioredis emits the next-retry delay as the first arg, but its typed
+    // `on('reconnecting', cb)` overload declares `cb: () => void`. Receive
+    // via rest args and narrow explicitly so the cast is visible and a
+    // future signature change is caught rather than absorbed by `any`.
+    const delay = args[0] as number | undefined;
     logStatusTransition(client, 'reconnecting', { delay });
   });
 
