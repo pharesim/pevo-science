@@ -134,18 +134,20 @@ describe('rateLimit middleware', () => {
   });
 
   // Regression: createApp() in src/app.ts MUST configure `trust proxy = 1` so
-  // that nginx's appended XFF value becomes req.ip in production. The two
-  // tests above verify byIp() against ad-hoc bare express() apps; this one
-  // pins the actual production app factory's setting so a refactor that
-  // removes `app.set('trust proxy', 1)` from app.ts fails loudly here rather
-  // than surfacing as a confusing "premature 429 under XFF rotation" tripwire
-  // elsewhere. Express may return either `1` or `true` for the numeric-1
-  // setting depending on version; either is acceptable, only `false`/`0` or
-  // an unrelated value is a regression.
+  // that nginx's appended XFF value becomes req.ip in production. The `byIp
+  // with trust proxy=1 honors first-in-chain X-Forwarded-For` and `byIp
+  // without trust proxy ignores X-Forwarded-For (spoof guard)` tests use bare
+  // `express()` apps; this one pins the actual production app factory's setting
+  // so a refactor that removes `app.set('trust proxy', 1)` from app.ts fails
+  // loudly here rather than surfacing as a confusing "premature 429 under XFF
+  // rotation" tripwire elsewhere. The assertion pins the literal `1` exactly:
+  // `true` would mean "trust ALL X-Forwarded-For values unconditionally" — the
+  // spoof vector this task closes — so a refactor swapping `1` for `true` must
+  // flip this red, not pass.
   it('createApp() sets trust proxy to one hop', () => {
     const app = createApp();
     const trustProxy = app.get('trust proxy');
-    expect(trustProxy === 1 || trustProxy === true).toBe(true);
+    expect(trustProxy).toBe(1);
   });
 
   // ─── skipFailedRequests + atomic Lua check (round-3 hold items 1+2) ───

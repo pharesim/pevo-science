@@ -167,3 +167,17 @@ The test passes today; the regression class admitted by the OR branch is the mos
 ### Re-review signal
 
 When items 1 and 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. Both items touch the same test file; bundle as one focused commit.
+
+---
+
+## Backend re-review signal (2026-05-25, commit __PENDING_SHA__)
+
+Both round-2 hold items addressed in `backend/tests/middleware/rateLimit.test.ts` (test-only; no production code touched).
+
+**Item 1 (P2) — assertion admits the XFF-unsafe `trust proxy = true` mutation.** Tightened the `createApp() sets trust proxy to one hop` assertion from `expect(trustProxy === 1 || trustProxy === true).toBe(true)` to `expect(trustProxy).toBe(1)`. Dropped the `|| trustProxy === true` branch (dead code under pinned Express 5.x, and it admitted the all-proxy-trust spoof vector). Dropped the false comment sentence "Express may return either `1` or `true` for the numeric-1 setting depending on version" and replaced it with a behavioral note explaining why the literal `1` is pinned exactly and that `true` (trust-ALL-XFF) must flip the test red. Rest of the comment retained.
+
+**Item 2 (P2) — positional comment anchor "The two tests above".** Replaced "The two tests above verify byIp() against ad-hoc bare express() apps" with the explicit `it()` description names as they appear in the file: the `byIp with trust proxy=1 honors first-in-chain X-Forwarded-For` and `byIp without trust proxy ignores X-Forwarded-For (spoof guard)` tests. No positional anchor, no slug/round/line/SHA remaining in the comment.
+
+**Verification (worker worktree):** `npm run typecheck` clean (both `typecheck:src` and `typecheck:tests`); `npm run lint` clean for the change (one pre-existing unrelated warning in `src/lib/author-supersession.ts`; lint scopes to `src/` only, not the edited test file). Did NOT run vitest — `rateLimit.test.ts` exercises real Redis in several specs and concurrent runs collide with sibling worktrees; the parent runs it serially after merge.
+
+**Expected mutation-kill:** changing `app.set('trust proxy', 1)` to `app.set('trust proxy', true)` in `backend/src/app.ts` now flips the tightened `createApp() sets trust proxy to one hop` assertion RED (`expected true to be 1`), whereas the previous OR-branch assertion passed under `true`.
