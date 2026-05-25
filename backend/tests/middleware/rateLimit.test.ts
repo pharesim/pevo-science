@@ -150,21 +150,25 @@ describe('rateLimit middleware', () => {
     expect(trustProxy).toBe(1);
   });
 
-  // ─── skipFailedRequests + atomic Lua check (round-3 hold items 1+2) ───
+  // ─── skipFailedRequests + atomic Lua check ───
   //
-  // Round-2 left two coupled bugs on the `skipFailedRequests` Redis path:
+  // The `skipFailedRequests` Redis path is implemented as a single atomic
+  // Lua EVAL rather than a GET → next() → deferred-INCR sequence. The
+  // tests below pin two invariants that a non-atomic implementation
+  // silently violates:
   //
-  //   1. PEXPIRE was conditional on `count === 1`. Concurrent post-success
-  //      INCRs after count=1 left the key with no TTL → permanent lockout.
-  //   2. The GET → next() → deferred-INCR pattern was non-atomic: two
-  //      concurrent requests for the same key both saw count=0, both
-  //      passed `>= max`, both ran the handler, both incremented on
-  //      finish → overshoot above `max`.
+  //   1. TTL-on-key: PEXPIRE fires on every successful pass, not only when
+  //      `count === 1`. A conditional-PEXPIRE implementation lets
+  //      concurrent post-success INCRs race past count=1 before the
+  //      PEXPIRE lands, leaving the key with no TTL → permanent lockout.
+  //   2. No overshoot above `max`: the INCR, the `<= max` check, and the
+  //      DECR-on-overflow all run inside one Lua script. A GET-then-check-
+  //      then-INCR sequence lets two concurrent requests both observe
+  //      count=0, both pass the `>= max` gate, both run the handler, and
+  //      both increment on finish — overshooting `max`.
   //
-  // Round-3 replaces both with an atomic Lua EVAL (INCR → check ≤ max →
-  // DECR-on-overflow + return 429; PEXPIRE unconditional on success;
-  // DECR on `res.on('finish')` when status >= 400). These tests pin the
-  // resulting properties.
+  // The script also DECRs on `res.on('finish')` when status >= 400 (the
+  // failed-request refund). These tests pin the resulting properties.
 
   async function waitForRedisReady(timeoutMs = 1000): Promise<boolean> {
     const r = getRedis();
@@ -213,10 +217,10 @@ describe('rateLimit middleware', () => {
       expect(res.status).toBe(200);
     }
 
-    // CRITICAL: the key must have a TTL. The round-2 bug left the key
-    // with no TTL (permanent lockout) when concurrent INCRs raced past
-    // count==1 before PEXPIRE landed. The atomic Lua PEXPIREs every
-    // successful pass.
+    // CRITICAL: the key must have a TTL. A conditional-PEXPIRE (only on
+    // count==1) implementation leaves the key with no TTL (permanent
+    // lockout) when concurrent INCRs race past count==1 before the
+    // PEXPIRE lands. The atomic Lua PEXPIREs every successful pass.
     const pttl = await redis.pttl(redisKey);
     expect(pttl).toBeGreaterThan(0);
     expect(pttl).toBeLessThanOrEqual(60_000);
@@ -259,17 +263,18 @@ describe('rateLimit middleware', () => {
     await redis.del(redisKey).catch(() => {});
   });
 
-  // Round-4 → round-5 regression: the original refund gate `res.statusCode < 400`
-  // missed pre-status TCP-abort. A client disconnecting during a pending `await`
-  // (e.g. a slow Hive RPC) fires `'close'` with `res.statusCode` still at the
-  // Node.js default of 200 and `res.writableEnded` false. The old gate skipped
-  // the refund and permanently consumed the slot for the full window — exactly
-  // the DoS scenario `skipFailedRequests` exists to prevent. The round-5 fix
-  // widens the gate to `statusCode < 400 && writableEnded`; this test pins it
-  // against any future revert to a status-only check. It also exercises the
-  // Redis-path once-guard (vs. the in-memory `indexOf` dedup) — abort during a
-  // pending await is the only realistic trigger for both `'close'` and `'finish'`
-  // firing in non-clean order, which the once-guard exists to handle.
+  // Refund gate must be `statusCode < 400 && writableEnded`, not status-only.
+  // A status-only gate (`res.statusCode < 400`) misses pre-status TCP-abort:
+  // a client disconnecting during a pending `await` (e.g. a slow Hive RPC)
+  // fires `'close'` with `res.statusCode` still at the Node.js default of 200
+  // and `res.writableEnded` false. A status-only gate would treat that as a
+  // success, skip the refund, and permanently consume the slot for the full
+  // window — exactly the DoS scenario `skipFailedRequests` exists to prevent.
+  // This test pins the `writableEnded` conjunct against any future revert to a
+  // status-only check. It also exercises the Redis-path once-guard (vs. the
+  // in-memory `indexOf` dedup) — abort during a pending await is the only
+  // realistic trigger for both `'close'` and `'finish'` firing in non-clean
+  // order, which the once-guard exists to handle.
   it('skipFailedRequests refunds slot on pre-status TCP-abort during pending await', async () => {
     const ready = await waitForRedisReady();
     if (!ready) return;
@@ -281,9 +286,9 @@ describe('rateLimit middleware', () => {
 
     // Handler awaits long enough that the client can disconnect before any
     // response status is set. `res.statusCode` stays at its Node default
-    // (200) and `res.writableEnded` stays false — the round-4-only gate
-    // (statusCode < 400) would skip the refund; the round-5 gate (also
-    // requires writableEnded) refunds.
+    // (200) and `res.writableEnded` stays false — a status-only gate
+    // (statusCode < 400) would skip the refund; the `statusCode < 400 &&
+    // writableEnded` gate refunds.
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
