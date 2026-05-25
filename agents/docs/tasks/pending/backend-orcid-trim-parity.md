@@ -157,3 +157,27 @@ Fix shape:
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) &lt;noreply@anthropic.com&gt;
+
+---
+
+## Backend re-review signal (2026-05-25, round-3)
+
+Round-2→round-3's sole hold item (item 1, P1 — Architect re-review 2026-05-21) addressed in a single commit touching `backend/src/reputation.ts` + a new behavioral test file.
+
+**Item 1 [P1]** — widened the reputation cycle's ORCID auto-accept arm in the `accepted_claims` CTE inside `computeReputationBatch` (`reputation.ts`). The raw byte-equality `(c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'orcid') = co.orcid` is now `BTRIM(c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') = co.orcid`. Only the broadcaster-controlled chain side is BTRIM-wrapped; `co.orcid` (from `claimer_orcids`, sourced from `accredit`/`revoke` custom_json — the canonical attested ORCID) stays raw, mirroring the `aa.orcid` side in `authorshipClaimsCteBody`. Imported `CHAIN_ORCID_BTRIM_CHARSET` from `hafsql.js` into `reputation.ts`. A block comment above the arm explains the cross-surface split the wrapper closes (padded claim auto-accepts on the read surfaces but byte-mismatches in the cycle → co-author loses reputation credit every cycle), anchored on stable symbols (`authorshipClaimsCteBody`, `authorsWithSupersessionSelect`, `CHAIN_ORCID_BTRIM_CHARSET`) — no round/slug/line-number citations.
+
+**Dual-grep audit at signal-write-time (per the convention's rule 12):**
+- SQL side `grep -rnE "BTRIM\b" backend/src/` and `grep -rnE -e "->>[[:space:]]*'orcid'" backend/src/`: every BTRIM-on-chain-orcid site references `CHAIN_ORCID_BTRIM_CHARSET` — `hafsql.ts` (authorshipClaimsCteBody arm + authorsWithSupersessionSelect NULLIF + authorsWithSupersessionSelect `<>`) and the new `reputation.ts` arm. The other `->> 'orcid'` sites (`hafsql.ts` claimer/accred CTE, `reputation.ts:claimer_orcids`, `routes/orcid.ts` binding probes, `routes/accreditations.ts`) all read the accreditation-attested (authority-filtered `accredit`/`revoke`) ORCID, NOT a broadcaster-controlled paper-metadata chain claim — correctly raw, out of scope.
+- JS side `grep -rn -e "\.trim(" backend/src/` and `grep -rn -e "chainOrcid" backend/src/`: the JS chain-orcid comparison/override path (`routes/papers.ts` `claimedOrcidNormalized`) uses `trimAsciiCWhitespace`. `computeSupersession`'s `chainOrcid.trim()` (`lib/author-supersession.ts`) is the INTENTIONAL JS reference per the task's adopted design (SQL matches JS on the common ASCII case); the architect's round-2→3 P3-advisory dismissal explicitly acknowledges this `.trim()` stays as-is with the documented extended-Unicode residual gap. No JS chain-orcid trim site is on the raw-compare path post-fix.
+
+**Behavioral test** — new file `backend/tests/routes/reputation-orcid-auto-accept-trim-canary.test.ts`. Synthetic-VALUES against real Postgres (carve-out clause-(c) header documents why a full real-HAF reputation-cycle seed is impractical). It interpolates the production `CHAIN_ORCID_BTRIM_CHARSET` constant into the auto-accept arm's equality predicate and asserts three cases:
+1. A tab-prefixed chain orcid claim (`'\t' + attested`) auto-accepts (matches) — the abuse vector the fix closes.
+2. An unpadded claim auto-accepts (control — BTRIM does not over-strip a clean value).
+3. A genuinely different ORCID does NOT auto-accept (control — BTRIM normalizes whitespace only, not identity).
+
+**Verification:**
+- `npm run typecheck` clean (src + tests).
+- `npm run lint` clean (0 errors; 1 pre-existing unused-eslint-disable warning in `src/lib/author-supersession.ts`, untouched).
+- Vitest deferred to the parent's authoritative serial run — real-Postgres tests collide with sibling worktrees.
+
+**Expected mutation-kill:** reverting the new BTRIM widening at the `reputation.ts` ORCID auto-accept arm back to a raw `=` makes case (1) fail red — the tab-padded value byte-mismatches the attested ORCID and `accepted` returns false instead of the asserted true. A charset drift (e.g. `E'\v'` parsing as literal `v` byte 0x76 instead of `\x0B`) is also caught: the constant is interpolated from production, so the test exercises the same bytes-on-the-wire the production arm uses.
