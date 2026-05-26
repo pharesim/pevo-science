@@ -139,6 +139,8 @@ Verify the email token from a signup. Marks the account as confirmed and returns
 
 The `auth_token` is used in the subsequent `/api/auth/confirm` (new account) or `/api/auth/link` (existing Hive account) step.
 
+**Sets cookie:** `pevo_signup_session` (httpOnly, `sameSite=lax`, `secure` in production, `path=/api/auth`, max-age 24h). This binding cookie is required by the subsequent `/api/auth/confirm` and `/api/auth/link` calls. The `auth_token` alone is not sufficient. Same-origin XHRs must send credentials so the cookie is stored from `Set-Cookie` and re-sent.
+
 **Errors:**
 - `VALIDATION_ERROR` — missing or invalid token
 - `BAD_REQUEST` — token not found or expired
@@ -167,6 +169,8 @@ Resume an interrupted signup when the user has already verified their email but 
   "auth_token": "confirmed:abc123..."
 }
 ```
+
+**Sets cookie:** `pevo_signup_session` (httpOnly, `sameSite=lax`, `secure` in production, `path=/api/auth`, max-age 24h), the same binding cookie minted by `/api/auth/verify`. A `PENDING_SIGNUP` user who arrives via the login redirect re-verifies their password here to obtain a fresh cookie before `/api/auth/confirm` or `/api/auth/link` will accept the request.
 
 **Rate limit:** 5 requests per IP per hour.
 
@@ -201,6 +205,8 @@ Create a new Hive account and complete the signup. The client generates a BIP39 
 - `auth_token` — the token returned by `/api/auth/verify` or `/api/auth/resume-signup`
 - `username` must be Hive-compatible (3-16 chars, lowercase a-z, 0-9, dots/hyphens)
 - All six key fields are required. Public keys must be valid `STM`-prefixed keys.
+
+**Requires cookie:** the `pevo_signup_session` binding cookie minted by `/api/auth/verify` or `/api/auth/resume-signup`. The request is rejected without it. The `auth_token` is the row-lookup credential, not the authorization proof, so it is not sufficient on its own. The SPA sends the cookie via `credentials: 'same-origin'`.
 
 **Response `data`:**
 
@@ -241,6 +247,8 @@ Link an existing Hive account to a verified PEvO signup. Requires Keychain signa
 ```
 
 The Hive username is extracted from the Keychain signature headers, not from the body.
+
+**Requires cookie:** the `pevo_signup_session` binding cookie minted by `/api/auth/verify` or `/api/auth/resume-signup`. The request is rejected without it. The `auth_token` is the row-lookup credential, not the authorization proof, so it is not sufficient on its own. This is in addition to the Keychain signature headers. The SPA sends the cookie via `credentials: 'same-origin'`.
 
 **Response `data`:**
 
@@ -297,7 +305,7 @@ Password-based login for light accounts.
 - `UNAUTHORIZED` — invalid credentials
 - `NO_PASSWORD_SET` (403) — account has `password_hash IS NULL` (ORCID-only signup, or ORCID recovery that skipped password). The UI should direct the user to sign in with ORCID or recover via seed phrase. Message: `"Account has no password; sign in with ORCID or recover via seed phrase"`. Distinct from 401 on purpose — collapsing this into "invalid credentials" would make password login indistinguishable from the wrong-password case and hide the correct remediation path from legitimate users. Backend implementation note (advisory, not contract): the null-hash branch burns a sentinel `argon2.verify` against a module-load-computed argon2id hash before returning the 403, so its wall-time matches the real-hash verify path. This closes the per-request timing oracle that would otherwise let an unauthenticated attacker enumerate ORCID-only accounts (~1ms vs ~100ms before the equalization). The status-code axis (403 vs 401) is an accepted tradeoff — the feature-distinct error is UX-valuable for legitimate ORCID users, and status-code oracles are weaker than the prior 100x timing gap.
 - `ACCOUNT_LOCKED` (403) — too many failed attempts
-- `PENDING_SIGNUP` (409) — email verified but signup not completed. Response includes `auth_token` and `email` to resume.
+- `PENDING_SIGNUP` (409): email verified but signup not completed. Response `data` contains `{ email }` only. The `auth_token` is NOT returned here (it is the row-lookup credential for `/confirm` and `/link`, and returning it in the login response leaked it via referer/proxy logs). To resume, route the user to `/api/auth/resume-signup` (password re-verify), which mints the binding cookie and returns a fresh `auth_token` in its response body.
 - `PENDING_UNVERIFIED` (409) — email not yet verified
 - `SIGNUP_EXPIRED` (410) — signup expired, user must re-register
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
