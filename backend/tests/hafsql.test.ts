@@ -443,9 +443,11 @@ describe('excludeSelfReviewWhere SQL shape', () => {
  *   4. Review on a paper with empty authors[] still excludes the
  *      paper_author (the parent-author conjunct fires independent of
  *      the co-author EXISTS)
- *   5. Co-author with case-different hive name → admitted (the helper
- *      matches on exact string; case normalization is upstream — pin
- *      the contract to make future changes explicit)
+ *   5. Co-author with a case-different hive name → excluded: the helper
+ *      canonicalizes the broadcast hive via LOWER(TRIM(...)) + the
+ *      Hive-account charset regex before matching, so a {hive: 'Bob'}
+ *      author entry is recognized as the lowercase 'bob' reviewer and
+ *      its self-review is excluded.
  */
 describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic rows)', () => {
   it.skipIf(!isHafConfigured())('admits non-author reviews and excludes self/co-author reviews', { timeout: 30_000 }, async (ctx) => {
