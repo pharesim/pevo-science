@@ -70,3 +70,23 @@ Backend may pick this up any time after `backend-canonical-root-walker-cumulativ
 Next re-review scopes to commits after `4b78bc5d`.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-26, working tree)
+
+Both hold items landed in `backend/tests/routes/canonical-root-walker.test.ts`. `npm run typecheck` (src + tests) and `npm run lint` clean (only the pre-existing unrelated `src/lib/author-supersession.ts` warning). Vitest is run by the parent serially against real Postgres/Redis.
+
+**Item 1 — negative-cache memo test was indeed vacuous; rewritten to a real 1-vs-2 mutation-kill.** Confirmed the prior fixture (URL `bob/v2` continuing from `alice/v1`, empty `alice/v1` head-authors) looked up `alice/v1` exactly once regardless of the memo: empty head-authors fails `bob/v2`'s forward-verify membership, so `findCanonicalRoot` returns null, the route proceeds on `bob/v2` coords, and the detail walk never re-hits `alice/v1`. Rewrote it to mirror the catch-block memo canary's dual-consumer shape: URL = `alice/v1` (no continues), the `alice/v1` head-authors lookup returns no rows (exercising the no-rows early-return memoize-null path), `fetchPaperDetailFromHaf`'s own SELECT returns no row so the route falls through to `reconstructVersionsFromHaf`, and the second `resolveContinuationChain` → `fetchHeadAuthorizedAuthors` lookup either hits the memo (count stays 1) or re-fires (count 2). Mutation-kill: remove `memo?.set(key, null)` from the no-rows early-return in `fetchHeadAuthorizedAuthors`; count rises 1 → 2. The test title was narrowed to the no-rows path (the only early-return the fixture actually exercises) rather than the prior title's three-path claim.
+
+  **Deviation surfaced for architect confirmation:** the hold's literal item-1 prescription ("change the fixture so `bob/v2` IS admitted → canonical root resolves to `alice/v1` ... return zero rows on that head-authors lookup") is internally inconsistent against the cumulative-admit walker — admitting `bob/v2` requires `alice/v1`'s head-authors to be non-empty and to contain `bob`, which contradicts "zero rows on that head-authors lookup" (they are the same lookup, memoized to one value per request). I implemented the prescription's stated intent ("mirror the dedup shape the catch-block and version-path memo tests use", non-vacuous no-rows memoize-null mutation-kill) via the catch-block test's two-route-path mechanism instead of the contradictory bob/v2-admitted fixture.
+
+**Item 2 — added a BRITTLENESS WARNING to `isForwardWalkContinuationProbe` (the architect's option 2).**
+
+  **Deviation surfaced for architect confirmation:** the hold's item-2 collision premise ("the regex matches both the `resolveContinuationChain` forward-walk probe and the enrichment votes sub-query — both carry `c.author = ANY($4::text[])`") does NOT hold against current production source. In `backend/src/routes/papers.ts`: the forward-walk probe is the only site with `c.author = ANY($4::text[])`; the `/enrichment` review-set query binds its `c.author = ANY(...)` predicate to `$5` and its `v.voter = ANY(...)` vote sub-query to `$4` (i.e. `$4` is `v.voter`, a different column, not `c.author`). So there is no live collision today. Rather than narrow the discriminator for a non-existent collision, I documented the genuine brittleness (the regex pins both `c.author` AND the `$4` bind position; a future bind-renumbering refactor could create a miss or a false match) in a WARNING matching the `isInitialBackwardProbe` / `isHeadAuthorsLookup` sibling style, and noted that narrowing on the probe's `JOIN comment_ops` / `co.block_num` selection is the durable fix if a collision ever materializes.
+
+**Process note:** this fix was implemented directly in the main checkout by the orchestrating backend agent. The fan-out worker that originally picked this task branched from a stale worktree base (~84 commits behind `main`) and its commit could not be trusted to apply against current source — at that base `isForwardWalkContinuationProbe` lived in a different file and the test fixtures differed. The work here is against current `main`.
+
+Self-audit on changed lines: no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

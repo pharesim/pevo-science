@@ -162,7 +162,25 @@ function isHeadAuthorsLookup(sql: string): boolean {
 }
 
 /** Forward-walker continuation probe (the cumulative-admit-set chain-walk
- *  SQL in `resolveContinuationChain`). */
+ *  SQL in `resolveContinuationChain`).
+ *
+ *  **BRITTLENESS WARNING** — the regex keys on `c.author = ANY($4::text[])`,
+ *  pinning BOTH the column (`c.author`) AND the bind position (`$4`). It is
+ *  unique to the forward-walk probe today only by coincidence of bind
+ *  numbering: the `/enrichment` review-set query binds its `c.author = ANY(...)`
+ *  predicate to `$5` and its `v.voter = ANY(...)` vote sub-query to `$4`, so
+ *  neither collides with this `c.author = ANY($4)` shape. A future SQL refactor
+ *  that renumbers binds — shifting the forward-walk probe's cumulative-author
+ *  array off `$4`, or moving the enrichment review-author predicate onto `$4` —
+ *  would silently break this discriminator (a miss → the mock returns the wrong
+ *  fixture; or a false match → an enrichment query misrouted into the
+ *  forward-walk branch). If canaries depending on this dispatch start failing
+ *  after a bind-renumbering refactor, the discriminator needs updating, not the
+ *  production walker. The durable narrowing, should a collision ever
+ *  materialize, is to also require the probe's `JOIN comment_ops` /
+ *  `co.block_num` selection, which the enrichment query does not have. Keep
+ *  this mutually exclusive with `isInitialBackwardProbe` / `isHeadAuthorsLookup`
+ *  if their regexes change. */
 function isForwardWalkContinuationProbe(sql: string): boolean {
   return /c\.author\s*=\s*ANY\(\$4::text\[\]\)/.test(sql);
 }
@@ -1676,27 +1694,36 @@ describe('GET /api/papers/:author/:permlink — canonical-root backward-walker D
     errSpy.mockRestore();
   });
 
-  it('negative-cache memo: early-return null paths (no row / non-string author / non-paper type) are memoized', async () => {
-    // `fetchHeadAuthorizedAuthors` memoizes null at its early-return paths
-    // (no rows, non-string author, non-PEvO paper) as well as on success.
-    // Pin the contract at the no-rows path: a missing-row lookup memoizes
-    // null; a second within-request lookup hits the memo and does NOT
-    // re-fire SQL.
+  it('negative-cache memo: no-rows early-return memoizes null and is NOT re-fetched in same request', async () => {
+    // `fetchHeadAuthorizedAuthors` memoizes null at its no-rows early-return
+    // (a missing head row), not only on success or in the catch block. Pin
+    // that contract with the same dual-consumer dedup shape the catch-block
+    // memo canary uses, so the count is a real 1-vs-2 mutation-kill rather
+    // than a single unconditional lookup.
     //
-    // Strategy: trigger a forward-verify call that fetches alice/v1's
-    // head-authors. First fetch returns no rows → memoizes null. The
-    // detail-surface forward walk shares the memo via the route handler, so
-    // the second within-request lookup hits the memo.
+    // Setup: URL = alice/v1 (no continues). Route flow:
+    //   1. findCanonicalRoot(alice, v1) — alice/v1 has no continues, returns
+    //      null. No head-authors lookup from the backward walk.
+    //   2. fetchPaperDetailFromHaf(alice, v1, memo) →
+    //      resolveContinuationChain(alice, v1, memo) →
+    //      fetchHeadAuthorizedAuthors(alice, v1, memo). FIRST CALL. Mock
+    //      returns no rows → no-rows early-return memoizes null → returns
+    //      null.
+    //   3. fetchPaperDetailFromHaf's own SQL also returns no row, so it
+    //      returns null and the route falls through to
+    //      reconstructVersionsFromHaf.
+    //   4. reconstructVersionsFromHaf(alice, v1, undefined, memo) →
+    //      resolveContinuationChain(alice, v1, memo) →
+    //      fetchHeadAuthorizedAuthors(alice, v1, memo). SECOND CALL. With the
+    //      no-rows memoize-null: hits the memo, no SQL. Without it: re-issues
+    //      the no-rows query.
+    //
+    // Mutation-kill: remove `memo?.set(key, null)` from the no-rows
+    // early-return; count rises 1 → 2.
     let aliceHeadLookupCount = 0;
-    const bobV2Meta = pevoPaperRow('bob', 'v2', ['bob'], { continues: { author: 'alice', permlink: 'v1' } }).json_metadata;
 
     installResponder(async (sql, params) => {
       if (isBackwardWalkContinuesProbe(sql)) {
-        const a = params[0];
-        const p = params[1];
-        if (a === 'bob' && p === 'v2') {
-          return { rows: [{ author: 'bob', json_metadata: bobV2Meta, cont_author: 'alice', cont_permlink: 'v1' }] };
-        }
         return { rows: [] };
       }
       if (isHeadAuthorsLookup(sql)) {
@@ -1710,24 +1737,29 @@ describe('GET /api/papers/:author/:permlink — canonical-root backward-walker D
         }
         return { rows: [] };
       }
+      // fetchPaperDetailFromHaf SQL: no row for alice/v1 (so it returns null
+      // and the route falls through to reconstructVersionsFromHaf).
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [] };
+      }
+      // Forward chain-walk SQL: nothing to admit.
       if (isForwardWalkContinuationProbe(sql)) {
         return { rows: [] };
       }
-      // No paper detail row for alice/v1 (since it doesn't exist), so bob/v2
-      // detail fetch returns nothing meaningful — the request ends in 404.
-      // What matters is the lookup count.
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+      // Reconstruct-versions SQL: empty.
+      if (sql.includes('ROW_NUMBER()') && sql.includes('OVER (ORDER BY co.block_num)')) {
         return { rows: [] };
       }
       return { rows: [] };
     });
 
-    const res = await request(app).get('/api/papers/bob/v2');
+    const res = await request(app).get('/api/papers/alice/v1');
     expect(res.status).toBeGreaterThanOrEqual(200);
 
-    // The forward verify fetched alice/v1 once and memoized null. The
-    // detail-surface forward walk shares the same memo and does NOT
-    // re-fetch alice/v1's missing row.
+    // First lookup returned no rows → memoized null. The
+    // reconstructVersionsFromHaf fallback's resolveContinuationChain hits the
+    // memo and does NOT re-fire SQL. Count stays at 1. Mutation-kill: drop
+    // memo?.set in the no-rows early-return; count rises to 2.
     expect(aliceHeadLookupCount).toBe(1);
   });
 
