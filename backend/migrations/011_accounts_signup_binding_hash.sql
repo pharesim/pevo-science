@@ -11,9 +11,10 @@
 -- The fix binds the auth_token to the browser session that initiated the
 -- signup. The session-binding secret is a 32-byte random value stored in an
 -- httpOnly cookie (`pevo_signup_session`); the SHA-256 of that value is
--- written to `signup_binding_hash` on the same `accounts` row at the
--- ceremony that mints the auth_token (`/signup`, `/verify`, `/resume-signup`,
--- and the `PENDING_SIGNUP` login branch). `/confirm` and `/link` then require
+-- written to `signup_binding_hash` on the same `accounts` row at each
+-- binding-minting ceremony: the ORCID-direct branch of `/signup`, `/verify`,
+-- and `/resume-signup`. (The `PENDING_SIGNUP` branch of `/login` mints
+-- nothing — it returns only the email.) `/confirm` and `/link` then require
 -- both the cookie AND a matching DB hash before proceeding.
 --
 -- The column is nullable for two reasons:
@@ -42,10 +43,11 @@
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS signup_binding_hash BYTEA;
 
 COMMENT ON COLUMN accounts.signup_binding_hash IS
-  'SHA-256 of the `pevo_signup_session` httpOnly cookie value minted at every '
-  'auth_token-issuing ceremony (signup, verify, resume-signup, and the '
-  'PENDING_SIGNUP login branch). The /confirm and /link handlers reject any '
-  'request whose cookie hash does not equal this column. NULL means no '
+  'SHA-256 of the `pevo_signup_session` httpOnly cookie value minted at each '
+  'binding ceremony (the ORCID-direct branch of signup, verify, and '
+  'resume-signup; the PENDING_SIGNUP login branch mints nothing). The '
+  '/confirm and /link handlers reject any request whose cookie hash does not '
+  'equal this column. NULL means no '
   'binding was minted for this row — pre-migration in-flight signups, '
   'ORCID-only rows that never reached a binding ceremony, or post-completion '
   'rows. Stored as raw bytes (BYTEA, 32 bytes) rather than hex TEXT to mirror '

@@ -708,17 +708,22 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       [auth_token],
     );
 
-    // Stuck-account recovery detection (BACKEND-SIGNUP-VERIFY-STUCK-ACCOUNT
-    // -RECOVERY, Option C). Symmetric to /confirm: if a prior /link attempt
-    // consumed the verify_token (pg activation step) but the accreditation
-    // broadcast failed, the user is locked out by the verify_token lookup
-    // failing. Recover by username-keyed fallback. Auth proof comes from
-    // the verifyHiveSignature middleware above (the user proved they own
-    // the Hive account by signing the request), so no additional key-
-    // ownership check is needed here.
+    // Stuck-account recovery detection (Option C). Symmetric to /confirm: if
+    // a prior /link attempt consumed the verify_token (pg activation step)
+    // but the accreditation broadcast failed, the user is locked out by the
+    // verify_token lookup failing. Recover by username-keyed fallback.
+    //
+    // This fallback bypasses the session-binding check below, so it is gated
+    // on a FRESH Keychain signature (`hiveAuthMethod === 'signature'`), not a
+    // replayable Bearer JWT. verifyHiveSignature accepts both, and a
+    // self-custody account can hold a session JWT; without this gate a stolen
+    // JWT for a stuck self-custody row would reach the binding bypass and
+    // broadcast the accreditation link with no fresh proof. A fresh signature
+    // is the per-request ownership proof that justifies skipping the binding;
+    // a JWT is not, so JWT callers fall through to the no-row 400 reject.
     let account: LinkRow | null = rows[0] ?? null;
     let resumeStuck = false;
-    if (!account) {
+    if (!account && req.hiveAuthMethod === 'signature') {
       const stuckLookup = await pool.query<LinkRow>(
         `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
          FROM accounts

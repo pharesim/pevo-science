@@ -7,20 +7,31 @@ import type { Request, Response } from 'express';
  * Possession of an `accounts.verify_token` value (random hex during the
  * pre-email-verify window; `confirmed:…` after `/api/auth/verify`) was the
  * sole credential for `/api/auth/confirm` and `/api/auth/link`. That made
- * the token capability-equivalent to a password: anyone who could read a
- * mailbox, observe a Referer header, or pull the token out of a login error
- * body could complete the signup with their own browser-controlled Hive
- * keys.
+ * the token capability-equivalent to a password: once the post-verification
+ * `confirmed:…` token leaked — via a Referer header, a login error body, or
+ * a log line — anyone could complete the signup with their own
+ * browser-controlled Hive keys.
+ *
+ * Scope note: this binding does NOT close mailbox-read takeover. The
+ * `/api/auth/verify` step re-mints a binding cookie for whoever presents the
+ * emailed verification token, so an attacker who can read the mailbox can
+ * verify and bind their own session. Email verification inherently trusts
+ * mailbox possession; the binding closes the post-verification leak vectors
+ * (Referer / login-error-body / log) on the `confirmed:…` token, not the
+ * mailbox itself.
  *
  * The fix binds the auth_token to the browser session that initiated the
  * signup. Mechanism:
  *
- *   1. At every auth_token-issuing ceremony (`/api/auth/signup`,
- *      `/api/auth/verify`, `/api/auth/resume-signup`, and the
- *      `PENDING_SIGNUP` branch of `/api/auth/login`), the server generates a
- *      32-byte random binding value, sets it in an httpOnly cookie
- *      (`pevo_signup_session`), and stores its SHA-256 hash on the
- *      `accounts.signup_binding_hash` column for the same row.
+ *   1. At every binding-minting ceremony — the ORCID-direct branch of
+ *      `/api/auth/signup`, plus `/api/auth/verify` and
+ *      `/api/auth/resume-signup` — the server generates a 32-byte random
+ *      binding value, sets it in an httpOnly cookie (`pevo_signup_session`),
+ *      and stores its SHA-256 hash on the `accounts.signup_binding_hash`
+ *      column for the same row. (The `PENDING_SIGNUP` branch of
+ *      `/api/auth/login` mints nothing: it returns only `{ email }` and
+ *      directs the user back through `/resume-signup` or the email link to
+ *      obtain a fresh binding.)
  *
  *   2. The `/api/auth/confirm` and `/api/auth/link` handlers read the
  *      cookie, SHA-256 it, and compare against the row's stored hash. They
@@ -70,11 +81,12 @@ export function mintBinding(): MintedBinding {
  * single response — calling twice for the same request overwrites the
  * earlier value (Express's `res.cookie()` semantics).
  *
- * `secure` mirrors the `Cookie.Secure` discipline used for the
- * authentication-session JWT path: in non-production environments (no TLS
+ * `secure` is gated on production: in non-production environments (no TLS
  * termination) the flag is omitted so localhost dev / Docker still works;
  * in production behind nginx-with-TLS it MUST be on so a downgraded HTTP
- * leg cannot harvest the value.
+ * leg cannot harvest the value. PEvO carries its authentication session in a
+ * Bearer header, not a cookie, so there is no sibling JWT-cookie Secure-flag
+ * policy to mirror — this Secure rationale stands on its own.
  */
 export function setBindingCookie(res: Response, cookieValue: string): void {
   res.cookie(COOKIE_NAME, cookieValue, {
@@ -107,7 +119,17 @@ export function extractBindingCookie(req: Request): string | null {
   if (!header) return null;
   const match = header.match(new RegExp(`(?:^|;\\s*)${COOKIE_NAME}=([^;]*)`));
   if (!match) return null;
-  const value = decodeURIComponent(match[1]);
+  // A malformed percent-encoding (e.g. `%GG`) makes decodeURIComponent throw
+  // URIError. Catch it and degrade to the same null/reject path as a missing
+  // cookie. An uncaught throw here surfaces as a 500 from the route's outer
+  // catch, and a 500-on-malformed-cookie vs 400-on-valid-token gap would be a
+  // token-validity oracle that defeats this module's no-oracle reject shape.
+  let value: string;
+  try {
+    value = decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
   return value.length > 0 ? value : null;
 }
 
@@ -121,8 +143,10 @@ export function extractBindingCookie(req: Request): string | null {
  */
 export function verifyBinding(cookieValue: string, storedHash: Buffer | null | undefined): boolean {
   if (!storedHash || storedHash.length !== 32) return false;
+  // candidateHash is always 32 bytes (SHA-256) and storedHash is guaranteed
+  // 32 by the guard above, so timingSafeEqual's equal-length precondition
+  // already holds — no second length check is reachable.
   const candidateHash = crypto.createHash('sha256').update(cookieValue).digest();
-  if (candidateHash.length !== storedHash.length) return false;
   return crypto.timingSafeEqual(candidateHash, storedHash);
 }
 

@@ -29,6 +29,15 @@
  *   - Successful /confirm clears the row's `signup_binding_hash` (item 1
  *     post-condition; ensures replay of the cookie against a sibling row
  *     cannot succeed once the user is fully active).
+ *   - /link parity: the cross-session reject pins the same no-oracle message
+ *     as /confirm, a forged-cookie (valid signature + wrong cookie) attack is
+ *     rejected, the per-auth_token rate limit accumulates across rotated IPs,
+ *     and a successful /link clears the row's `signup_binding_hash`.
+ *   - Deploy-window fail-closed: a pending row that predates the binding
+ *     migration (verify_token set, signup_binding_hash NULL) is rejected at
+ *     /confirm and never activated.
+ *   - A malformed-percent-encoding cookie + a valid auth_token yields the
+ *     same 400 as a wrong cookie, never a URIError 500 (no oracle).
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
@@ -316,12 +325,14 @@ describe.skipIf(!dbReachable)('/link rejects cross-session replay of a leaked au
     });
 
     const body = { auth_token: authToken };
+
+    // Attack 1: session B presents the leaked auth_token AND a valid signed
+    // request from a Hive account they control, but NO binding cookie.
+    // Expectation: 400 BAD_REQUEST with the SAME message as a wholly invalid
+    // token ("Invalid or expired link request") — a distinguishable
+    // binding-reject message would be a token-validity oracle.
     const attackTimestamp = new Date().toISOString();
     const attackSignature = signLink(body, attackTimestamp);
-
-    // Attack: session B presents the leaked auth_token AND a valid signed
-    // request from a Hive account they control, but NO binding cookie.
-    // Expectation: 400 BAD_REQUEST "Invalid or expired link request".
     const attack = await request(app)
       .post('/api/auth/link')
       .set('X-Hive-Username', linkUser)
@@ -331,14 +342,36 @@ describe.skipIf(!dbReachable)('/link rejects cross-session replay of a leaked au
     expect(attack.status).toBe(400);
     expect(attack.body.status).toBe('error');
     expect(attack.body.error?.code).toBe('BAD_REQUEST');
+    expect(attack.body.error?.message).toMatch(/Invalid or expired link request/);
     expect(attack.body.data?.token).toBeFalsy();
+
+    // Attack 2: session B presents the leaked auth_token + a valid signed
+    // request AND a cookie with the RIGHT name but a forged value (32 random
+    // hex bytes the attacker controls). Same 400 reject + same message — the
+    // wrong-cookie path must not expose an oracle either. A fresh timestamp /
+    // signature is required because verifyHiveSignature's replay cache
+    // rejects a repeated signature value.
+    const forgedTimestamp = new Date(Date.now() + 1000).toISOString();
+    const forgedSignature = signLink(body, forgedTimestamp);
+    const forgedCookie = `${SIGNUP_BINDING_COOKIE_NAME}=${'fa'.repeat(32)}`;
+    const attackForged = await request(app)
+      .post('/api/auth/link')
+      .set('X-Hive-Username', linkUser)
+      .set('X-Hive-Signature', forgedSignature)
+      .set('X-Hive-Timestamp', forgedTimestamp)
+      .set('Cookie', forgedCookie)
+      .send(body);
+    expect(attackForged.status).toBe(400);
+    expect(attackForged.body.error?.code).toBe('BAD_REQUEST');
+    expect(attackForged.body.error?.message).toMatch(/Invalid or expired link request/);
+    expect(attackForged.body.data?.token).toBeFalsy();
 
     // Session A completes successfully when it presents its own cookie.
     // Use a fresh timestamp + signature: the replay-prevention cache in
     // verifyHiveSignature rejects the same signature value twice, so the
-    // legit call must sign anew (one second later is enough — the
-    // assembled hash differs on timestamp alone).
-    const legitTimestamp = new Date(Date.now() + 1000).toISOString();
+    // legit call must sign anew (a later timestamp is enough — the assembled
+    // hash differs on timestamp alone).
+    const legitTimestamp = new Date(Date.now() + 2000).toISOString();
     const legitSignature = signLink(body, legitTimestamp);
     const legit = await request(app)
       .post('/api/auth/link')
@@ -349,6 +382,16 @@ describe.skipIf(!dbReachable)('/link rejects cross-session replay of a leaked au
       .send(body);
     expect(legit.status).toBe(200);
     expect(legit.body.data?.token).toBeTruthy();
+
+    // Post-condition: the row's signup_binding_hash is cleared on a
+    // successful /link (mirrors /confirm) so a replayed cookie cannot
+    // complete a sibling row once this user is fully active.
+    const pool = getAppPool()!;
+    const post = await pool.query<{ signup_binding_hash: Buffer | null }>(
+      'SELECT signup_binding_hash FROM accounts WHERE username = $1',
+      [linkUser],
+    );
+    expect(post.rows[0].signup_binding_hash).toBeNull();
   });
 });
 
@@ -440,5 +483,159 @@ describe.skipIf(!dbReachable)('/confirm per-auth_token rate limit', () => {
       }
     }
     expect(last429, 'expected the 6th /confirm with the same auth_token to 429').toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// /link rate-limit by auth_token (parity with the /confirm limiter).
+// The linkTokenLimiter runs before verifyHiveSignature, so attempts
+// accumulate per-token even without a valid signature.
+// ─────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)('/link per-auth_token rate limit', () => {
+  it('429s after the 6th attempt against the same auth_token even when X-Forwarded-For rotates', async () => {
+    await clearRateLimitKeys(['signup-link', 'signup-link-token']);
+
+    // Bogus token: the per-token limiter (max 5/hr) fires before the
+    // signature check, so the token never has to be valid. Rotating
+    // X-Forwarded-For keeps the per-IP limiter (max 10/hr) cool so the
+    // per-token bucket is the only one that trips.
+    const bogusToken = `confirmed:${'7e'.repeat(32)}`;
+
+    let last429 = false;
+    for (let i = 0; i < 6; i++) {
+      const res = await request(app)
+        .post('/api/auth/link')
+        .set('X-Forwarded-For', `198.51.100.${i + 1}`)
+        .send({ auth_token: bogusToken });
+      if (i < 5) {
+        // First 5 pass the token-limiter, then fail at verifyHiveSignature
+        // (no signature) — but the per-token slot is burned regardless.
+        expect(res.status).not.toBe(429);
+      } else {
+        last429 = res.status === 429;
+      }
+    }
+    expect(last429, 'expected the 6th /link with the same auth_token to 429').toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Deploy-window safety: a pending row that predates migration 011 has a
+// NULL signup_binding_hash. /confirm must fail closed (verifyBinding
+// returns false for a NULL stored hash) rather than activate, and must
+// not surface a 500.
+// ─────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)('/confirm rejects a NULL-binding row (deploy-window safety)', () => {
+  const username = `bindnul${SUFFIX}`;
+  const email = `binding_null_${RUN_ID}@example.com`;
+  const nullBindingToken = `confirmed:${'9c'.repeat(32)}`;
+
+  beforeAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  afterAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  it('a row with verify_token set but signup_binding_hash NULL is rejected with the invalid-token shape and not activated', async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+    await clearRateLimitKeys(['signup-confirm', 'signup-confirm-token']);
+
+    // Seed a confirmed pending row WITHOUT a binding hash — the shape of a
+    // signup that was mid-flight when migration 011 added the column.
+    const pool = getAppPool()!;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await pool.query(
+      `INSERT INTO accounts (email, full_name, institution, field, verify_token, expires_at, signup_binding_hash)
+       VALUES ($1, 'Binding Null', 'MIT', 'physics', $2, $3, NULL)`,
+      [email, nullBindingToken, expiresAt],
+    );
+
+    const res = await request(app)
+      .post('/api/auth/confirm')
+      .send({
+        auth_token: nullBindingToken,
+        username,
+        keys: buildKeys(username),
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('BAD_REQUEST');
+    expect(res.body.error?.message).toMatch(/Invalid or expired auth token/);
+    expect(res.body.data?.token).toBeFalsy();
+
+    // Fail-closed: the chain account was never created and the row was not
+    // activated (username stays unset).
+    expect(createClaimedAccountMock).not.toHaveBeenCalled();
+    const after = await pool.query<{ username: string | null }>(
+      'SELECT username FROM accounts WHERE email = $1',
+      [email],
+    );
+    expect(after.rows[0]?.username ?? null).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Malformed-cookie 500-oracle regression: a cookie value with an invalid
+// percent-encoding makes decodeURIComponent throw URIError.
+// extractBindingCookie must catch it and return null so a VALID auth_token
+// yields the same 400 as a wrong-but-decodable cookie — never a 500, which
+// would distinguish valid tokens from invalid ones.
+// ─────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)('/confirm with a malformed binding cookie degrades to 400, not 500', () => {
+  const username = `bindmal${SUFFIX}`;
+  const email = `binding_malformed_${RUN_ID}@example.com`;
+  const orcidId = '0000-0001-2222-3003';
+  const nonce = `binding-nonce-malformed-${RUN_ID}`;
+
+  beforeAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  afterAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  it('an invalid-percent-encoding cookie + a VALID auth_token returns 400 (no URIError 500)', async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+    await clearRateLimitKeys(['auth-signup', 'signup-confirm', 'signup-confirm-token']);
+    await seedOrcidNonce(nonce, orcidId);
+
+    // Mint a real binding so the row carries a non-NULL hash: this isolates
+    // the failure to cookie DECODING, not a missing hash.
+    const signup = await request(app)
+      .post('/api/auth/signup')
+      .send({
+        email,
+        full_name: 'Binding Malformed',
+        institution: 'MIT',
+        field: 'physics',
+        orcid_token: nonce,
+      });
+    expect(signup.status).toBe(200);
+    const authToken = signup.body.data.auth_token as string;
+
+    // `%GG` is not a valid percent-encoding; decodeURIComponent throws on it.
+    const res = await request(app)
+      .post('/api/auth/confirm')
+      .set('Cookie', `${SIGNUP_BINDING_COOKIE_NAME}=%GG`)
+      .send({
+        auth_token: authToken,
+        username,
+        keys: buildKeys(username),
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('BAD_REQUEST');
+    expect(res.body.error?.message).toMatch(/Invalid or expired auth token/);
+    expect(res.body.data?.token).toBeFalsy();
   });
 });
