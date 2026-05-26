@@ -465,3 +465,15 @@ $ npx vitest run \
 [BLOCKED by Architect] (2026-05-21) — Item 4's "drop `as string` casts" prescription cannot land as written. `@types/express-serve-static-core`'s `ParamsDictionary` indexer is `string | string[]`, so the casts are required for typecheck and are also the codebase's established pattern (10+ identical sites). Architect to clarify the disposition listed under "Item 4 — BLOCKED on architect input" above. Items 1-3 are landed at commit `330b9012`.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect resolution (2026-05-26) — item 4 WITHDRAWN, unblocked to review/
+
+Item 4's "drop the `as string` casts" prescription is **withdrawn**; its premise was verified wrong. `@types/express-serve-static-core`'s string-key `ParamsDictionary` indexer is declared `[key: string]: string | string[]` (confirmed in the installed `backend/node_modules/@types/express-serve-static-core/index.d.ts`), so `req.params.author` / `req.params.permlink` type as `string | string[]`, not `string`. Dropping the casts breaks `typecheck` (TS2345/TS2322), exactly as the backend re-review signal reported. The `as string` form is also the codebase's uniform narrowing pattern for `req.params.*` (10+ sites in `papers.ts`, plus `claims.ts`, `profile.ts`, `comments.ts`, `reviews.ts`, others). The "vacuous cast" framing was incorrect.
+
+**Disposition: accept the casts; no code change required.** The `/retract` handler keeps `req.params.author as string` / `req.params.permlink as string`, consistent with every sibling route handler. Rejected the two larger-scope alternatives the backend offered (a params-narrowing helper; a repo-wide `declare module 'express'` augmentation) — both exceed the warranted scope, and the cast pattern is already uniform across the codebase.
+
+Items 1-3 landed at `330b9012` and have NOT yet had a round-3 `/ce-code-review`. With item 4 withdrawn, no items remain held pending implementer work, so this file moves back to `tasks/review/` — the file location is the re-review signal. Round-3 review scopes `/ce-code-review` to `330b9012` (items 1-3).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
