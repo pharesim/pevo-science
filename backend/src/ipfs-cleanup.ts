@@ -16,6 +16,7 @@ import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { T } from './hafsql.js';
+import { IMAGE_SRF_GUARD_EXPR, unpinFromKubo } from './lib/ipfs-shared.js';
 
 const CLEANUP_INTERVAL_MS = 30 * 60_000; // 30 minutes
 const MAX_AGE_MS = 24 * 60 * 60_000; // 24 hours
@@ -35,23 +36,13 @@ async function cidReferencedInHaf(cid: string): Promise<boolean> {
      WHERE c.json_metadata @> $1::jsonb
         OR c.json_metadata @> $2::jsonb
         OR EXISTS (
-          -- CASE-WHEN array-guard at SRF argument position. Hive's image
-          -- metadata is convention, not schema: any post can broadcast a
-          -- non-array image value (null, string, integer, object). Without
-          -- the guard, jsonb_array_elements_text would raise "cannot extract
-          -- elements from a scalar" mid-loop, the orphan-cleanup sweep
-          -- aborts, and stale pending-upload rows accumulate (with their
-          -- pins) until the malformed post is edited or removed. The
-          -- CASE-WHEN absorbs the non-array case to []::jsonb at the
-          -- argument site so the SRF never sees a scalar. See
-          -- agents/docs/solutions/conventions/
-          -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
-          SELECT 1 FROM jsonb_array_elements_text(
-            CASE WHEN jsonb_typeof(c.json_metadata->'image') = 'array'
-                 THEN c.json_metadata->'image'
-                 ELSE '[]'::jsonb
-            END
-          ) img
+          -- Array-type guard for the broadcaster-controlled image field is
+          -- centralized in IMAGE_SRF_GUARD_EXPR (lib/ipfs-shared.ts); it must
+          -- sit INSIDE the SRF argument because the LATERAL evaluates before
+          -- the surrounding WHERE. Without it, a non-array image raises
+          -- "cannot extract elements from a scalar" mid-loop and aborts the
+          -- orphan-cleanup sweep, leaking stale pending-upload rows and pins.
+          SELECT 1 FROM jsonb_array_elements_text(${IMAGE_SRF_GUARD_EXPR}) img
           WHERE img LIKE '%' || $3 || '%'
         )
      LIMIT 1`,
@@ -63,21 +54,6 @@ async function cidReferencedInHaf(cid: string): Promise<boolean> {
   );
 
   return result.rowCount !== null && result.rowCount > 0;
-}
-
-/** Unpin a CID from the local Kubo node. */
-async function unpinFromKubo(cid: string): Promise<void> {
-  const response = await fetch(
-    `${config.ipfsApiUrl}/api/v0/pin/rm?arg=${encodeURIComponent(cid)}`,
-    { method: 'POST', signal: AbortSignal.timeout(15_000) },
-  );
-  if (!response.ok) {
-    const text = await response.text();
-    // "not pinned" is not an error — the pin may have already been removed
-    if (!text.includes('not pinned')) {
-      throw new Error(`Kubo unpin failed: ${response.status} ${text}`);
-    }
-  }
 }
 
 /** Process all expired pending CIDs. */

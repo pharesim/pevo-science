@@ -9,6 +9,7 @@ import { getPool, isHafConfigured } from '../db.js';
 import { getAppPool } from '../app-db.js';
 import { T } from '../hafsql.js';
 import { logger } from '../logger.js';
+import { type PinBackend, IMAGE_SRF_GUARD_EXPR, unpinFromIpfs } from '../lib/ipfs-shared.js';
 import multer from 'multer';
 
 function sanitizeFilename(name: string): string {
@@ -83,8 +84,6 @@ const upload = multer({
 // IPFS pinning via Kubo HTTP API
 // ──────────────────────────────────────────────
 
-type PinBackend = 'kubo' | 'pinata';
-
 interface PinResult {
   cid: string;
   size: number;
@@ -149,62 +148,6 @@ async function pinToIpfs(buffer: Buffer, filename: string): Promise<PinResult> {
   }
 
   throw new Error('No IPFS backend available — configure IPFS_API_URL or Pinata keys');
-}
-
-async function unpinFromKubo(cid: string): Promise<void> {
-  const response = await fetch(
-    `${config.ipfsApiUrl}/api/v0/pin/rm?arg=${encodeURIComponent(cid)}`,
-    { method: 'POST', signal: AbortSignal.timeout(15_000) },
-  );
-  if (!response.ok) {
-    const text = await response.text();
-    // "not pinned" is benign — the pin may already be absent (e.g., backend
-    // restarted between pin and unpin). Mirrors the same tolerance in
-    // ipfs-cleanup.ts's unpin path.
-    if (!text.includes('not pinned')) {
-      throw new Error(`Kubo unpin failed: ${response.status} ${text}`);
-    }
-  }
-}
-
-async function unpinFromPinata(cid: string): Promise<void> {
-  const response = await fetch(`https://api.pinata.cloud/pinning/unpin/${encodeURIComponent(cid)}`, {
-    method: 'DELETE',
-    headers: {
-      pinata_api_key: config.pinataApiKey,
-      pinata_secret_api_key: config.pinataSecretKey,
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    // An already-absent pin is benign on the compensation path — the pin may
-    // have been removed by a concurrent cleanup sweep or never finished
-    // processing. Pinata signals this with a "not pinned" reason rather than
-    // a clean 200 (the CURRENT_USER_HAS_NOT_PINNED_CID family); match it
-    // case-insensitively across both the underscore reason-code form and any
-    // plain-English phrasing, mirroring unpinFromKubo's tolerance so the
-    // orphan alarm does not fire for a pin that is already gone. Pinata does
-    // not formally document this error body, so the match is deliberately
-    // defensive over the known not-pinned signal.
-    const lower = text.toLowerCase();
-    if (!lower.includes('not pinned') && !lower.includes('not_pinned')) {
-      throw new Error(`Pinata unpin failed: ${response.status} ${text}`);
-    }
-  }
-}
-
-/**
- * Compensation unpin for the pin-then-record durability shape: dispatch to the
- * same backend that produced the pin. If the original pin came from Kubo, only
- * Kubo's unpin can release the disk; calling the wrong backend would silently
- * leak the pinned blob.
- */
-async function unpinFromIpfs(cid: string, backend: PinBackend): Promise<void> {
-  if (backend === 'kubo') {
-    return unpinFromKubo(cid);
-  }
-  return unpinFromPinata(cid);
 }
 
 // ──────────────────────────────────────────────
@@ -393,22 +336,13 @@ async function cidIsKnown(cid: string): Promise<boolean> {
      WHERE c.json_metadata @> $1::jsonb
         OR c.json_metadata @> $2::jsonb
         OR EXISTS (
-          -- CASE-WHEN array-guard at SRF argument position. Hive's image
-          -- metadata is convention, not schema: any post can broadcast a
-          -- non-array image value (null, string, integer, object). Without
-          -- the guard, jsonb_array_elements_text would raise "cannot extract
-          -- elements from a scalar" on the first such row encountered, and
-          -- the per-request CID-known check fails for every download attempt
-          -- until that post is edited or removed. The CASE-WHEN absorbs the
-          -- non-array case to []::jsonb at the argument site so the SRF
-          -- never sees a scalar. See agents/docs/solutions/conventions/
-          -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
-          SELECT 1 FROM jsonb_array_elements_text(
-            CASE WHEN jsonb_typeof(c.json_metadata->'image') = 'array'
-                 THEN c.json_metadata->'image'
-                 ELSE '[]'::jsonb
-            END
-          ) img
+          -- Array-type guard for the broadcaster-controlled image field is
+          -- centralized in IMAGE_SRF_GUARD_EXPR (lib/ipfs-shared.ts); it must
+          -- sit INSIDE the SRF argument because the LATERAL evaluates before
+          -- the surrounding WHERE, so a WHERE-side guard is a placebo. Without
+          -- it, a non-array image raises "cannot extract elements from a
+          -- scalar" and fails the per-request CID-known check.
+          SELECT 1 FROM jsonb_array_elements_text(${IMAGE_SRF_GUARD_EXPR}) img
           WHERE img LIKE '%' || $3 || '%'
         )
      LIMIT 1`,
