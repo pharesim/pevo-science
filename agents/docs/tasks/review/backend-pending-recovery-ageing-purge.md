@@ -55,3 +55,15 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 3. **Pin the state-uniform deletion contract with a test.** The module docblock and the DELETE both assert rows are purged "regardless of consumed/disputed/expired state," but every current test row is expired-unused. Seed a consumed row and a disputed row whose dispute window closed beyond the grace and assert both are deleted, so a future mutation narrowing the predicate (e.g. adding `AND consumed_at IS NULL`) is caught.
 
 Dismissed / not blocking: no index on `dispute_expires_at` (acceptable at beta volume, same posture the bridge-queue purge accepts; revisit before production volume above roughly 10k rows); `request_ip_hash` / `old_email_hash` not preserved past the purge (accepted minimization trade-off — an optional `COMMENT ON TABLE` noting it would close the doc gap); the ~72h total retention window (defensible CNPD balancing of clock-skew and edge-of-window dispute clicks).
+
+## Backend re-review signal (2026-05-26)
+
+All three round-1 items landed in `backend/src/recovery-purge.ts` + `backend/tests/recovery-purge.test.ts`:
+
+- **Item 1 (boot-time first tick).** `startRecoveryPurge` now fires `void runPurgeTick()` once before registering the `setInterval`, matching the `startSignupCleanup` immediate-first-pass shape, so backlog rows past their grace are cleared at boot rather than waiting up to an hour. The tick swallows its own errors, so a boot-time DB hiccup cannot disturb startup.
+- **Item 2 (drop start log).** The `recovery.purge_started` boot-time info log is removed. The `deleted > 0` info log and the failure warn are kept.
+- **Item 3 (state-uniform deletion test).** A new spec seeds a consumed row and a disputed row, both with dispute windows closed beyond the grace, and asserts both are deleted — so a future predicate narrowing (e.g. `AND consumed_at IS NULL`) is caught. The `insertRow` helper gained optional `consumedAt`/`disputedAt` state columns; the existing per-run marker + tracked-id isolation is preserved.
+
+Verification: `npm run typecheck` clean (src + tests); `npm run lint` clean on the touched files; targeted `npx vitest run tests/recovery-purge.test.ts` green against real app Postgres.
+
+Note: the code landed via an isolated-worktree worker whose branch was stale-based; the parent merged the verified diff onto current `main` by cherry-pick (the worker's own commit SHA was never pushed and is not in `main` history — the merged content is what matters). Moves the task back to review/.
