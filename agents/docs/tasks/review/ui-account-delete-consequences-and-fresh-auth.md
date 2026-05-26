@@ -30,3 +30,41 @@ The backend gate `backend-settings-email-delete-fresh-auth-gate` will require a 
 ## Non-goals
 
 - Changing the backend deletion behavior or the endpoint name (backend-owned; tracked separately).
+
+## UI completion note (2026-05-26, commit 3f90107e)
+
+The three **independent** requirements landed (consequences copy, seed-phrase
+continuation message, post-delete session teardown). The fresh-auth proof-challenge
+wiring is **deferred to a follow-up**, as the task's Dependency section permits:
+`DELETE /api/settings/email` in `backend/src/routes/settings.ts` does NOT yet require
+a `fresh_auth_proof` (the backend gate task has not landed), so there is nothing to
+mint a proof against. **Architect: please split the fresh-auth-challenge wiring into
+its own task** to be picked up once `backend-settings-email-delete-fresh-auth-gate`
+lands (reuse the change-email proof-challenge UI pattern).
+
+What landed:
+- `deleteWarningLight`/`deleteWarningSelf` rewritten to state all PEvO-server account
+  data is erased (email, login, notification preferences, recovery state) and that it
+  cannot be undone; the affordance + confirm button relabeled to account-deletion
+  framing (`emailDelete` → "Delete account", `emailDeleteConfirm` → "Permanently
+  delete my account").
+- New `deleteSeedPhraseContinuation` (light accounts only): the on-chain Hive account
+  survives; a seed-phrase holder can import it into Hive Keychain and continue as
+  self-custody. Grounded in ARCHITECTURE.md § 6.3.
+- `handleEmailDelete` now tears down the session (`auth.disconnect()` +
+  `notifications.stop()`, the same mechanism `header.js` logout uses) and routes to
+  the landing page with an `accountDeleted` toast, replacing the optimistic
+  `emailStatus` patch that left the user on a settings view bound to a dead account.
+- i18n: 4 reworded keys re-stubbed (Updated) + 2 new keys (Added) across all 15
+  non-English locales; STUBS.md sweep entries appended. No emdashes in new copy.
+
+For the architect's triage: `settings.emailDeleted` is now an unreferenced i18n key
+(the toast it fed was replaced by `accountDeleted`). Left in all 16 locales; flag if
+orphaned-key removal is wanted.
+
+Landing path note: implemented in a fan-out worktree whose harness-assigned base was
+~141 commits stale; the parent cherry-picked the result onto current `main` as
+`3f90107e`, resolving a STUBS.md sweep-ordering conflict (kept the intervening
+`UI-AUTHOR-LIST-PREFILL-ON-REVISION` sweep + appended this task's two sweeps).
+`npm run build` passes; verified `auth.disconnect()`/`notifications.stop()`/`navigate`
+all still exist on current `main`; no existing test asserted the old delete behavior.
