@@ -82,6 +82,37 @@ export const T = {
  */
 export const CHAIN_ORCID_BTRIM_CHARSET = " \\t\\n\\r\\x0B\\f";
 
+/**
+ * SQL boolean fragment for the authorship-claim ORCID auto-accept arms:
+ * byte-equality of a broadcaster-controlled chain author ORCID against an
+ * accreditation-attested ORCID, after BTRIM-stripping ONLY the chain side
+ * with `CHAIN_ORCID_BTRIM_CHARSET` (ASCII C-whitespace). The attested side is
+ * canonical (sourced from the authority-gated `active_accreditations`), so it
+ * stays raw.
+ *
+ * Single source for the two production auto-accept arms — the read-surface
+ * `authorshipClaimsCteBody` and the reputation cycle's
+ * `computeReputationBatch.accepted_claims` — so they cannot drift on
+ * whitespace normalization. The reputation-cycle canary builds its predicate
+ * from this same helper, so a production-side change to the match shape
+ * (e.g. dropping the BTRIM wrapper back to a raw `=`) turns the test red.
+ *
+ * Callers supply the surrounding `IS NOT NULL` / `!= ''` guards; this returns
+ * only the equality conjunct.
+ */
+export function chainOrcidAutoAcceptMatchSql(opts: {
+  /** SQL expr for the comment's json_metadata column (e.g. `c.json_metadata`). */
+  metadataExpr: string;
+  /** SQL placeholder holding the appTag key (e.g. `$3`). */
+  appTagParam: string;
+  /** SQL expr for the author index into authors[] (e.g. `ce.author_index` or `0`). */
+  authorIndexExpr: string;
+  /** SQL expr for the attested ORCID, canonical and untrimmed (e.g. `aa.orcid`). */
+  attestedOrcidExpr: string;
+}): string {
+  return `BTRIM(${opts.metadataExpr} -> ${opts.appTagParam} -> 'authors' -> ${opts.authorIndexExpr} ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') = ${opts.attestedOrcidExpr}`;
+}
+
 // ─── Common CTEs ──────────────────────────────────────────────────
 
 /**
@@ -724,7 +755,7 @@ export function authorshipClaimsCteBody(
               (c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'orcid') IS NOT NULL
               AND aa.orcid IS NOT NULL
               AND aa.orcid != ''
-              AND aa.orcid = BTRIM(c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}')
+              AND ${chainOrcidAutoAcceptMatchSql({ metadataExpr: 'c.json_metadata', appTagParam: `$${p + 2}`, authorIndexExpr: 'cb.author_index', attestedOrcidExpr: 'aa.orcid' })}
             )
         ) THEN 'accepted'
         WHEN cb.author_index IS NOT NULL AND EXISTS (

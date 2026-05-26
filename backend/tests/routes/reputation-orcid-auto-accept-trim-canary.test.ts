@@ -5,15 +5,24 @@
  * The arm decides whether a co-author's authorship claim is auto-accepted
  * (and therefore accrues co-author reputation credit) by comparing the
  * broadcaster-controlled chain `authors[i].orcid` against the
- * accreditation-attested `claimer_orcids.orcid`. The chain side is wrapped
- * in `BTRIM(..., E'<charset>')` with the shared `CHAIN_ORCID_BTRIM_CHARSET`
- * so a whitespace-padded claim (e.g. a tab-prefixed ORCID copied from the
- * ORCID page) resolves identically across the read surfaces
- * (`authorsWithSupersessionSelect`, `authorshipClaimsCteBody`) and the
- * reputation cycle. Without the BTRIM wrapper, the read surfaces auto-accept
- * the padded claim but the reputation cycle byte-mismatches against the
- * attested canonical ORCID, denying the co-author reputation credit every
- * cycle — the cross-surface split this normalization task closes.
+ * authority-attested ORCID (sourced from the gated `active_accreditations`
+ * CTE). The chain side is BTRIM-stripped with the shared
+ * `CHAIN_ORCID_BTRIM_CHARSET` so a whitespace-padded claim (e.g. a
+ * tab-prefixed ORCID copied from the ORCID page) resolves identically across
+ * the read surfaces (`authorsWithSupersessionSelect`,
+ * `authorshipClaimsCteBody`) and the reputation cycle. Without the BTRIM
+ * wrapper, the read surfaces auto-accept the padded claim but the reputation
+ * cycle byte-mismatches against the attested canonical ORCID, denying the
+ * co-author reputation credit every cycle — the cross-surface split this
+ * normalization task closes.
+ *
+ * **Pins the production predicate.** The match SQL is built from the same
+ * `chainOrcidAutoAcceptMatchSql` helper that `reputation.ts` and
+ * `authorshipClaimsCteBody` use, so a production-side change to the predicate
+ * shape (e.g. dropping the BTRIM wrapper back to a raw `=`, or a charset
+ * drift in `CHAIN_ORCID_BTRIM_CHARSET`) turns the tab-padded assertion red.
+ * The raw-`=` negative control pins the pre-fix failure mode directly, so an
+ * inline call-site revert is caught even if the helper itself is untouched.
  *
  * **Carve-out clause-(c) justification:** Synthetic-VALUES against real
  * Postgres (no `${T.customJson}` / `${T.comments}` substitution per-test).
@@ -34,14 +43,10 @@
  *       charset bytes. The risk class pinned here is the reputation-cycle
  *       auto-accept arm's chain-orcid normalization — orthogonal to the
  *       discrepancy-badge risk class those companions cover.
- *
- * The test interpolates the production `CHAIN_ORCID_BTRIM_CHARSET` constant
- * into the auto-accept arm's equality predicate, so a charset drift (or a
- * revert of the BTRIM wrapper to a raw `=`) is caught against real Postgres.
  */
 import { describe, it, expect } from 'vitest';
 import { getPool, isHafConfigured } from '../../src/db.js';
-import { CHAIN_ORCID_BTRIM_CHARSET } from '../../src/hafsql.js';
+import { chainOrcidAutoAcceptMatchSql } from '../../src/hafsql.js';
 
 describe('reputation ORCID auto-accept arm — chain-orcid trim parity (synthetic-VALUES)', () => {
   it.skipIf(!isHafConfigured())(
@@ -53,19 +58,24 @@ describe('reputation ORCID auto-accept arm — chain-orcid trim parity (syntheti
 
       const attestedOrcid = '0000-0001-1234-5678';
 
-      // Mirror the ORCID auto-accept arm's EXISTS predicate from the
-      // `accepted_claims` CTE in reputation.ts: a synthetic paper-comment
-      // row carries the broadcaster-controlled `authors[i].orcid` chain
-      // claim; `claimer_orcids` carries the accreditation-attested ORCID.
-      // The arm matches when
+      // Production predicate, built from the shared helper that reputation.ts
+      // and authorshipClaimsCteBody use:
       //   BTRIM(<chain orcid>, E'<charset>') = <attested orcid>.
-      // Only the chain side is BTRIM-wrapped (the attested side is
-      // canonical, not broadcaster-controlled), matching production.
+      // Only the chain side is BTRIM-wrapped (the attested side is canonical,
+      // not broadcaster-controlled). A production-side revert of the helper
+      // (or a charset drift) changes this string and reds the assertion.
+      // `attested` is the synthetic stand-in for active_accreditations.
+      const matchPredicate = chainOrcidAutoAcceptMatchSql({
+        metadataExpr: 'c.json_metadata',
+        appTagParam: '$1',
+        authorIndexExpr: '0',
+        attestedOrcidExpr: 'attested.orcid',
+      });
       const autoAcceptMatch = `
         SELECT EXISTS (
           SELECT 1 FROM paper c
-          JOIN claimer_orcids co ON co.orcid IS NOT NULL AND co.orcid != ''
-          WHERE BTRIM(c.json_metadata -> $1 -> 'authors' -> 0 ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') = co.orcid
+          JOIN attested ON attested.orcid IS NOT NULL AND attested.orcid != ''
+          WHERE ${matchPredicate}
         ) AS accepted
       `;
 
@@ -78,7 +88,7 @@ describe('reputation ORCID auto-accept arm — chain-orcid trim parity (syntheti
       });
       const matched = await pool.query(
         `WITH paper(json_metadata) AS (VALUES ($2::jsonb)),
-              claimer_orcids(orcid) AS (VALUES ($3::text))
+              attested(orcid) AS (VALUES ($3::text))
          ${autoAcceptMatch}`,
         ['pevotest', tabPaddedMeta, attestedOrcid],
       );
@@ -92,7 +102,7 @@ describe('reputation ORCID auto-accept arm — chain-orcid trim parity (syntheti
       });
       const cleanMatched = await pool.query(
         `WITH paper(json_metadata) AS (VALUES ($2::jsonb)),
-              claimer_orcids(orcid) AS (VALUES ($3::text))
+              attested(orcid) AS (VALUES ($3::text))
          ${autoAcceptMatch}`,
         ['pevotest', cleanMeta, attestedOrcid],
       );
@@ -106,11 +116,34 @@ describe('reputation ORCID auto-accept arm — chain-orcid trim parity (syntheti
       });
       const differentMatched = await pool.query(
         `WITH paper(json_metadata) AS (VALUES ($2::jsonb)),
-              claimer_orcids(orcid) AS (VALUES ($3::text))
+              attested(orcid) AS (VALUES ($3::text))
          ${autoAcceptMatch}`,
         ['pevotest', differentMeta, attestedOrcid],
       );
       expect(differentMatched.rows[0].accepted, 'a different orcid must NOT auto-accept').toBe(false);
+
+      // (4) Negative control: the pre-fix raw-equality shape. The SAME
+      // tab-padded claim that auto-accepts through the BTRIM helper above
+      // must NOT match under a raw `=`. This pins the failure mode the
+      // helper closes, so an inline call-site revert (replacing the helper
+      // call with a raw `=`) is caught even if the helper is untouched.
+      const rawAutoAccept = `
+        SELECT EXISTS (
+          SELECT 1 FROM paper c
+          JOIN attested ON attested.orcid IS NOT NULL AND attested.orcid != ''
+          WHERE (c.json_metadata -> $1 -> 'authors' -> 0 ->> 'orcid') = attested.orcid
+        ) AS accepted
+      `;
+      const rawMatched = await pool.query(
+        `WITH paper(json_metadata) AS (VALUES ($2::jsonb)),
+              attested(orcid) AS (VALUES ($3::text))
+         ${rawAutoAccept}`,
+        ['pevotest', tabPaddedMeta, attestedOrcid],
+      );
+      expect(
+        rawMatched.rows[0].accepted,
+        'raw-`=` (pre-fix shape) must NOT match the tab-padded claim',
+      ).toBe(false);
     },
   );
 });

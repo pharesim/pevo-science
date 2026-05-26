@@ -12,7 +12,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T, getCachedGenesisBlock, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, CHAIN_ORCID_BTRIM_CHARSET, activeAccreditationsCteBody } from './hafsql.js';
+import { T, getCachedGenesisBlock, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, activeAccreditationsCteBody, chainOrcidAutoAcceptMatchSql } from './hafsql.js';
 
 // ─── Batch key helpers ──────────────────────────────────────────
 
@@ -520,27 +520,26 @@ export async function computeReputationBatch(
                 AND ap.paper_permlink = ce.paper_permlink
                 AND ap.block_num > ce.block_num
             )
-            -- Auto-accept: ORCID match. The broadcaster-controlled chain
-            -- ORCID is wrapped in BTRIM with the ASCII C-whitespace charset
-            -- before byte-equality against the authority-attested aa.orcid
-            -- (from the gated active_accreditations source above, canonical
-            -- and not broadcaster-controlled, so it stays raw). This mirrors
-            -- the authorshipClaimsCteBody ORCID auto-accept arm and the
-            -- authorsWithSupersessionSelect supersession projection: all
-            -- chain-orcid comparisons share the CHAIN_ORCID_BTRIM_CHARSET
-            -- constant so a whitespace-padded claim (e.g. a tab-prefixed
-            -- orcid copied from the ORCID page) resolves identically across
-            -- the read surfaces and the reputation cycle. Without it, a
-            -- padded claim auto-accepts on the read surfaces but
-            -- byte-mismatches here, denying the co-author reputation credit
-            -- every cycle.
+            -- Auto-accept: ORCID match. This arm and the read-surface
+            -- authorshipClaimsCteBody arm share the chainOrcidAutoAcceptMatchSql
+            -- helper, which BTRIMs the broadcaster-controlled chain ORCID with
+            -- the ASCII C-whitespace charset before byte-equality against the
+            -- authority-attested aa.orcid (from the gated active_accreditations
+            -- source above, canonical and not broadcaster-controlled, so it
+            -- stays raw). The authorsWithSupersessionSelect supersession
+            -- projection shares the same CHAIN_ORCID_BTRIM_CHARSET charset, so
+            -- a whitespace-padded claim (e.g. a tab-prefixed orcid copied from
+            -- the ORCID page) resolves identically across the read surfaces and
+            -- the reputation cycle. Without the trim, a padded claim
+            -- auto-accepts on the read surfaces but byte-mismatches here,
+            -- denying the co-author reputation credit every cycle.
             OR (ce.author_index IS NOT NULL AND EXISTS (
               SELECT 1 FROM ${T.comments} c
               JOIN active_accreditations aa ON aa.account = ce.claimer
               WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
                 AND c.parent_author = ''
                 AND aa.orcid IS NOT NULL AND aa.orcid != ''
-                AND BTRIM(c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') = aa.orcid
+                AND ${chainOrcidAutoAcceptMatchSql({ metadataExpr: 'c.json_metadata', appTagParam: '$3', authorIndexExpr: 'ce.author_index', attestedOrcidExpr: 'aa.orcid' })}
             ))
             -- Auto-accept: hive username match. Canonicalize the
             -- broadcaster-controlled authors[i].hive via LOWER(TRIM(...))
