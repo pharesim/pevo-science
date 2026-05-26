@@ -37,3 +37,17 @@ Add the two indexes, implement the ageing-purge the comment already promises (or
 - `backend/migrations/010_bridge_import_queue.sql` — the table, its current indexes, and the "ageing purges retire rows" comment to honor or correct.
 - `backend/src/bridge-queue.ts` — `leaseNextEntry`, `getLastSuccessfulBroadcastAt`, `computeQueuePosition`.
 - `backend/src/app-db.ts` — `initAppDb` boot-time migration verification (new migration must be reflected so a fresh container does not fail the check).
+
+## Backend implementation note (2026-05-26, working tree)
+
+Decisions made under the latitude this task grants:
+
+- **Migration number is 013, not 011.** `011_accounts_signup_binding_hash.sql` and `012_pending_recovery.sql` already exist; `013_bridge_import_queue_indexes.sql` is the next free number. It adds the two named partial indexes (`idx_bridge_import_queue_inprogress_expired` on `(lease_expires_at) WHERE state = 'in_progress'` for `leaseNextEntry`'s re-lease branch; `idx_bridge_import_queue_last_success` on `(completed_at DESC) WHERE state = 'completed' AND tx_id IS NOT NULL` for the cooldown seed) and self-records in `schema_migrations` so `verifyAppDbMigrations` stays green. Applied cleanly via `./deploy.sh migrate` (both `CREATE INDEX`es + the tracking row); both indexes verified present in `pevo_app`.
+- **Purge implemented, not deferred** — honoring migration 010's "ageing purges retire rows" comment rather than weakening it. `purgeAgedTerminalEntries(retentionMs)` (`bridge-queue.ts`) deletes `state IN ('completed','failed') AND completed_at < threshold`; pending/in_progress rows are never touched, so the per-user cap accounting is unaffected (matches the out-of-scope note). The threshold is computed in JS to avoid an int4 interval-multiplier overflow on the ms retention.
+- **Retention default: 30 days**, named in the `BRIDGE_QUEUE_RETENTION_MS` const docblock as the tunable assumption ("generous for recent imports at beta volume"). The "My imports" surface keeps a month of history.
+- **Purge runs in-process** on a dedicated low-frequency ticker (`PURGE_TICK_MS = 6h`) started in `startBridgeWorker` and cleared in `stopBridgeWorker`, separate from the 5s dispatch tick so a slow purge never delays a broadcast. Errors are swallowed (non-fatal maintenance).
+- **No purge index added**, per the out-of-scope "only add an index when a query path needs it" — the purge runs every few hours and a seq scan over terminal rows is fine at this volume.
+
+Coverage: a real-Postgres test in `tests/lib/bridge-queue.test.ts` asserts aged completed/failed rows are retired while a recent completed row and an old pending row are kept. `npm run typecheck` + `npm run lint` clean; bridge suites green against real Postgres + Redis.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

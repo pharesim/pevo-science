@@ -41,6 +41,7 @@ import {
   markFailed,
   rescheduleForRetry,
   getLastSuccessfulBroadcastAt,
+  purgeAgedTerminalEntries,
   logRetry,
   BRIDGE_CHAIN_COOLDOWN_MS,
   type BridgeImportRow,
@@ -51,7 +52,13 @@ import {
  *  recently; the cooldown gate stops back-to-back broadcasts. */
 const WORKER_TICK_MS = 5_000;
 
+/** Ageing-purge cadence. Low frequency — terminal rows accumulate slowly and
+ *  the retention window is days, so a few-hourly sweep is ample. Separate
+ *  from the dispatch tick so a slow purge can never delay a broadcast. */
+const PURGE_TICK_MS = 6 * 60 * 60 * 1000;
+
 let workerTimer: ReturnType<typeof setInterval> | null = null;
+let purgeTimer: ReturnType<typeof setInterval> | null = null;
 /** Re-entrancy guard so a slow tick (long broadcast, slow upstream fetch)
  *  does not stack a second invocation. */
 let tickInFlight = false;
@@ -350,12 +357,37 @@ export async function runWorkerTick(): Promise<void> {
 }
 
 /**
+ * Ageing-purge tick. Retires terminal rows older than the retention window
+ * so the queue table does not grow unbounded (honors migration 010's "ageing
+ * purges retire rows" comment). Swallows its own errors — a failed purge is
+ * non-fatal operational maintenance, never a reason to disturb dispatch.
+ */
+async function runPurgeTick(): Promise<void> {
+  try {
+    const deleted = await purgeAgedTerminalEntries();
+    if (deleted > 0) {
+      logger.info(
+        { event: 'bridge.queue.purge', route: 'bridge.queue', deleted },
+        'Bridge import queue retired aged terminal entries',
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { err, event: 'bridge.queue.purge_failed', route: 'bridge.queue' },
+      'Bridge import queue purge tick failed',
+    );
+  }
+}
+
+/**
  * Start the worker. Should be called once after `app.listen` resolves so
  * the ticker is not contending with boot-time HAF warmup.
  *
  * Initial seed of `lastBroadcastMs` from the DB closes the restart-bypass
  * window: a restart that lost in-memory state would otherwise pass the
  * cadence gate immediately and broadcast in violation of the cooldown.
+ *
+ * Also starts the low-frequency ageing-purge ticker.
  */
 export async function startBridgeWorker(): Promise<void> {
   if (workerTimer) return;
@@ -372,6 +404,10 @@ export async function startBridgeWorker(): Promise<void> {
     void runWorkerTick();
   }, WORKER_TICK_MS);
   workerTimer.unref();
+  purgeTimer = setInterval(() => {
+    void runPurgeTick();
+  }, PURGE_TICK_MS);
+  purgeTimer.unref();
   logger.info(
     { event: 'bridge.queue.worker_started', route: 'bridge.queue', tickMs: WORKER_TICK_MS },
     'Bridge import queue worker started',
@@ -382,6 +418,10 @@ export function stopBridgeWorker(): void {
   if (workerTimer) {
     clearInterval(workerTimer);
     workerTimer = null;
+  }
+  if (purgeTimer) {
+    clearInterval(purgeTimer);
+    purgeTimer = null;
   }
 }
 

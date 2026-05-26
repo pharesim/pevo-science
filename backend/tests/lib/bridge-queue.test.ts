@@ -29,6 +29,7 @@ import {
   listUserImports,
   countInflightForUser,
   findEntryById,
+  purgeAgedTerminalEntries,
   BRIDGE_QUEUE_USER_CAP,
   BRIDGE_QUEUE_MAX_ATTEMPTS,
 } from '../../src/bridge-queue.js';
@@ -436,6 +437,51 @@ describe('bridge-queue: listUserImports', () => {
     const completed = await listUserImports(USER, { state: 'completed' });
     expect(completed.length).toBe(1);
     expect(completed[0].id).toBe(a.row.id);
+  });
+});
+
+describe('bridge-queue: purgeAgedTerminalEntries', () => {
+  const USER = 'pevo-bridge-queue-test-purge';
+  let tableAvailable = false;
+
+  beforeEach(async () => {
+    tableAvailable = await ensureTableAvailable();
+    if (!tableAvailable) return;
+    await cleanupQueueRowsFor(USER);
+  });
+
+  it('retires terminal rows older than the retention window, keeps recent and non-terminal rows', async () => {
+    if (!tableAvailable) return;
+    const pool = getAppPool();
+    if (!pool) return;
+    // completed_at is a SQL expression (not a value), so it is interpolated
+    // directly — test-controlled literals, no injection surface.
+    const ins = async (permlink: string, state: string, completedAtSql: string): Promise<number> => {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO bridge_import_queue
+           (operation_kind, username, identifier, permlink, discipline,
+            keywords, language, state, completed_at)
+         VALUES ('bridge_register', $1, $2, $2, 'CS', '[]'::jsonb, 'en', $3, ${completedAtSql})
+         RETURNING id`,
+        [USER, permlink, state],
+      );
+      return Number(rows[0].id);
+    };
+
+    const oldCompleted = await ins('bridge-purge-old-completed', 'completed', `NOW() - INTERVAL '2 hours'`);
+    const oldFailed = await ins('bridge-purge-old-failed', 'failed', `NOW() - INTERVAL '2 hours'`);
+    const recentCompleted = await ins('bridge-purge-recent-completed', 'completed', `NOW()`);
+    // A pending row this old must never be purged — only terminal states are.
+    const oldPending = await ins('bridge-purge-old-pending', 'pending', `NULL`);
+
+    const deleted = await purgeAgedTerminalEntries(60 * 60 * 1000); // 1h retention
+    // Global DELETE; at least this test's two aged terminal rows go.
+    expect(deleted).toBeGreaterThanOrEqual(2);
+
+    expect(await findEntryById(oldCompleted)).toBeNull();
+    expect(await findEntryById(oldFailed)).toBeNull();
+    expect(await findEntryById(recentCompleted)).not.toBeNull();
+    expect(await findEntryById(oldPending)).not.toBeNull();
   });
 });
 

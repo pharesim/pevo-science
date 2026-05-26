@@ -59,6 +59,17 @@ export const BRIDGE_QUEUE_LEASE_MS = 2 * 60 * 1000;
  */
 export const BRIDGE_QUEUE_MAX_ATTEMPTS = 5;
 
+/**
+ * Retention window for terminal queue rows. Completed/failed entries older
+ * than this are retired by the worker's low-frequency purge tick. The queue
+ * is operational short-term state, not an audit log; this window only keeps
+ * enough recent history for the "My imports" surface to render a user's
+ * recent imports. Assumption: 30 days is generous for "recent imports" at
+ * beta volume (hundreds/day, terminal in minutes-to-hours); tune here if the
+ * surface needs a longer or shorter horizon.
+ */
+export const BRIDGE_QUEUE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 export type BridgeImportState = 'pending' | 'in_progress' | 'completed' | 'failed';
 
 /**
@@ -492,6 +503,34 @@ export async function getLastSuccessfulBroadcastAt(): Promise<Date | null> {
        LIMIT 1`,
   );
   return rows[0]?.completed_at ?? null;
+}
+
+/**
+ * Retire terminal (completed/failed) entries whose terminal timestamp is
+ * older than {@link BRIDGE_QUEUE_RETENTION_MS}. Pending/in_progress rows are
+ * never touched, so the per-user cap accounting (which counts only those) is
+ * unaffected. Returns the number of rows deleted.
+ *
+ * Honors migration 010's "ageing purges retire rows" assertion. Invoked on a
+ * low-frequency worker tick, not per-request; at beta volume a seq scan over
+ * terminal rows is acceptable, so no dedicated index backs the predicate.
+ * The threshold is computed in JS (not via SQL interval math) so the
+ * millisecond retention does not overflow an int4 interval multiplier.
+ */
+export async function purgeAgedTerminalEntries(
+  retentionMs: number = BRIDGE_QUEUE_RETENTION_MS,
+): Promise<number> {
+  const pool = getAppPool();
+  if (!pool) return 0;
+  const threshold = new Date(Date.now() - retentionMs);
+  const result = await pool.query(
+    `DELETE FROM bridge_import_queue
+      WHERE state IN ('completed', 'failed')
+        AND completed_at IS NOT NULL
+        AND completed_at < $1`,
+    [threshold],
+  );
+  return result.rowCount ?? 0;
 }
 
 /**
