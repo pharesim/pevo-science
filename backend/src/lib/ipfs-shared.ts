@@ -105,14 +105,17 @@ export function imageSrfGuardExpr(alias: string): string {
  * refcounted); on the gateway side it serves or withholds content. Keeping one
  * source removes that drift.
  *
- * Three invariants are load-bearing and must not be reverted:
+ * Four invariants are load-bearing and must not be reverted:
  *
  *  - **tags-GIN scope.** `c.tags @> [appTag]` restricts the scan to PEvO-tagged
  *    comments via the only index-assisted PEvO subset on this HAF
  *    (hafsql.comments has no GIN index on metadata, so an unscoped containment
  *    predicate full-scans the whole corpus). All CID-carrying PEvO content is
  *    appTag-tagged, so the scope drops no real reference — over-inclusive (keep
- *    pinned) beats under-inclusive (unpin a live file).
+ *    pinned) beats under-inclusive (unpin a live file). When more than one tag
+ *    is in scope (see appTag-set below) the scope is OR'd `c.tags @> $N`
+ *    containments — each is GIN-indexable, so the planner BitmapOrs index scans
+ *    rather than full-scanning; the indexed scope is preserved.
  *  - **appTag namespace.** The containment namespace must match the published
  *    shape (`metadata.<appTag>.…`), NOT a literal `pevo` key — verified against
  *    live HAF, where zero posts carry a `pevo` top-level key; the literal-`pevo`
@@ -124,29 +127,55 @@ export function imageSrfGuardExpr(alias: string): string {
  *    scalar" and aborts the query (the cleanup sweep mid-loop, leaking orphan
  *    rows and pins; or the per-request CID-known check). The `'c'` arg is the
  *    comment-relation alias used in the FROM clause below.
+ *  - **appTag set = current + historical.** The scope and namespace cover
+ *    `config.appTag` plus `config.appTagsHistorical`. Historical is empty in
+ *    steady state, so the generated query is the single-tag form and behavior
+ *    is unchanged. During a beta→prod tag flip, setting
+ *    `APP_TAGS_HISTORICAL=<old-tag>` keeps an on-chain paper that still carries
+ *    the old tag matchable, so the cleanup unpin decision does not destroy a
+ *    live old-tag file whose pending-upload row outlived the flip. The bias
+ *    stays over-inclusive (keep pinned), the safe direction for an unpin.
  *
  * Returns false when the HAF pool is unavailable so callers can layer their own
  * pre-checks (the gateway's Redis + pending-row short-circuit) ahead of this.
  */
 export async function cidReferencedByAppTag(pool: pg.Pool, cid: string): Promise<boolean> {
+  // current tag first, then any historical tags; de-duplicated so a historical
+  // entry equal to the current tag does not emit a redundant OR clause.
+  const appTags = [config.appTag, ...config.appTagsHistorical].filter(
+    (tag, i, all) => all.indexOf(tag) === i,
+  );
+
+  // One OR'd `c.tags @> $N` containment per tag (each GIN-indexable), plus one
+  // ipfs_cid + one supplementary_files namespace containment per tag. Built as
+  // positional binds so the query stays parameterized. With a single tag this
+  // collapses to the original single-tag shape.
+  const params: unknown[] = [];
+  const tagsScope: string[] = [];
+  const namespaceMatch: string[] = [];
+  for (const tag of appTags) {
+    params.push(JSON.stringify([tag]));
+    tagsScope.push(`c.tags @> $${params.length}::jsonb`);
+    params.push(JSON.stringify({ [tag]: { ipfs_cid: cid } }));
+    namespaceMatch.push(`c.json_metadata @> $${params.length}::jsonb`);
+    params.push(JSON.stringify({ [tag]: { supplementary_files: [{ cid }] } }));
+    namespaceMatch.push(`c.json_metadata @> $${params.length}::jsonb`);
+  }
+  params.push(cid);
+  const cidParam = params.length;
+
   const result = await pool.query(
     `SELECT 1 FROM ${T.comments} c
-     WHERE c.tags @> $1::jsonb
+     WHERE (${tagsScope.join(' OR ')})
        AND (
-            c.json_metadata @> $2::jsonb
-         OR c.json_metadata @> $3::jsonb
+            ${namespaceMatch.join('\n         OR ')}
          OR EXISTS (
               SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
-              WHERE img LIKE '%' || $4 || '%'
+              WHERE img LIKE '%' || $${cidParam} || '%'
             )
        )
      LIMIT 1`,
-    [
-      JSON.stringify([config.appTag]),
-      JSON.stringify({ [config.appTag]: { ipfs_cid: cid } }),
-      JSON.stringify({ [config.appTag]: { supplementary_files: [{ cid }] } }),
-      cid,
-    ],
+    params,
   );
 
   return result.rowCount !== null && result.rowCount > 0;

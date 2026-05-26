@@ -165,6 +165,19 @@ export const config = {
   appVersion,
   appId: `${appTag}/${appVersion}`,
 
+  // Historical APP_TAG values from before a beta→prod tag flip. The IPFS
+  // orphan-cleanup reference check ORs these into its tags-scope and namespace
+  // containment so a pending-upload row created under the old tag, but still
+  // referenced by an on-chain paper carrying that old tag, is NOT seen as
+  // unreferenced and unpinned after the flip (Kubo pin/rm is irreversible).
+  // Empty by default — steady-state single-appTag behavior is unchanged. Set
+  // it during a transition window (e.g. APP_TAGS_HISTORICAL=pevotest), then
+  // clear it once the old-tag pending rows have all aged out / drained.
+  appTagsHistorical: (process.env.APP_TAGS_HISTORICAL || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean),
+
   // Blog
   blogAuthor: process.env.BLOG_AUTHOR || 'pevo.science',
   blogTag: process.env.BLOG_TAG || 'pevo-blog',

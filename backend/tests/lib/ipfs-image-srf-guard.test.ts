@@ -204,9 +204,12 @@ describe('IPFS image SRF guard — shared builder + call-site presence canary', 
       const source = readFileSync(resolve(PROJECT_ROOT, file), 'utf-8');
       const normalized = source.replace(/\s+/g, ' ');
 
-      // The trailing `(` excludes prose mentions of the function name in the
-      // comment blocks (e.g. "jsonb_array_elements_text would raise").
-      const totalCalls = (normalized.match(/jsonb_array_elements_text\(/g) ?? []).length;
+      // Requiring a non-`)` first character after the `(` counts only calls
+      // that pass an actual SRF argument, excluding prose mentions in the
+      // comment/docblocks — both the no-paren form ("jsonb_array_elements_text
+      // would raise") and the empty-paren form ("at a jsonb_array_elements_text()
+      // SRF argument position", which the shared builder's own docblock uses).
+      const totalCalls = (normalized.match(/jsonb_array_elements_text\([^)]/g) ?? []).length;
       // Calls whose argument is the shared builder invoked with a bare-identifier
       // alias literal — asserts alias substitution, not bare constant interpolation.
       const viaSharedFn = (normalized.match(/jsonb_array_elements_text\(\$\{imageSrfGuardExpr\('[A-Za-z_][A-Za-z0-9_]*'\)\}\)/g) ?? []).length;
