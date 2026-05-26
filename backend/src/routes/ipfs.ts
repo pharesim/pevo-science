@@ -9,7 +9,7 @@ import { getPool, isHafConfigured } from '../db.js';
 import { getAppPool } from '../app-db.js';
 import { T } from '../hafsql.js';
 import { logger } from '../logger.js';
-import { type PinBackend, IMAGE_SRF_GUARD_EXPR, unpinFromIpfs } from '../lib/ipfs-shared.js';
+import { type PinBackend, imageSrfGuardExpr, unpinFromIpfs } from '../lib/ipfs-shared.js';
 import multer from 'multer';
 
 function sanitizeFilename(name: string): string {
@@ -337,12 +337,13 @@ async function cidIsKnown(cid: string): Promise<boolean> {
         OR c.json_metadata @> $2::jsonb
         OR EXISTS (
           -- Array-type guard for the broadcaster-controlled image field is
-          -- centralized in IMAGE_SRF_GUARD_EXPR (lib/ipfs-shared.ts); it must
+          -- centralized in imageSrfGuardExpr (lib/ipfs-shared.ts); it must
           -- sit INSIDE the SRF argument because the LATERAL evaluates before
           -- the surrounding WHERE, so a WHERE-side guard is a placebo. Without
           -- it, a non-array image raises "cannot extract elements from a
-          -- scalar" and fails the per-request CID-known check.
-          SELECT 1 FROM jsonb_array_elements_text(${IMAGE_SRF_GUARD_EXPR}) img
+          -- scalar" and fails the per-request CID-known check. The 'c' arg is
+          -- the comment-relation alias used in this query's FROM.
+          SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
           WHERE img LIKE '%' || $3 || '%'
         )
      LIMIT 1`,

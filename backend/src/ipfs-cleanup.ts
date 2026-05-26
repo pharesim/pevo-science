@@ -16,7 +16,7 @@ import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { T } from './hafsql.js';
-import { IMAGE_SRF_GUARD_EXPR, unpinFromKubo } from './lib/ipfs-shared.js';
+import { imageSrfGuardExpr, unpinFromKubo } from './lib/ipfs-shared.js';
 
 const CLEANUP_INTERVAL_MS = 30 * 60_000; // 30 minutes
 const MAX_AGE_MS = 24 * 60 * 60_000; // 24 hours
@@ -37,12 +37,13 @@ async function cidReferencedInHaf(cid: string): Promise<boolean> {
         OR c.json_metadata @> $2::jsonb
         OR EXISTS (
           -- Array-type guard for the broadcaster-controlled image field is
-          -- centralized in IMAGE_SRF_GUARD_EXPR (lib/ipfs-shared.ts); it must
+          -- centralized in imageSrfGuardExpr (lib/ipfs-shared.ts); it must
           -- sit INSIDE the SRF argument because the LATERAL evaluates before
           -- the surrounding WHERE. Without it, a non-array image raises
           -- "cannot extract elements from a scalar" mid-loop and aborts the
           -- orphan-cleanup sweep, leaking stale pending-upload rows and pins.
-          SELECT 1 FROM jsonb_array_elements_text(${IMAGE_SRF_GUARD_EXPR}) img
+          -- The 'c' arg is the comment-relation alias used in this query's FROM.
+          SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
           WHERE img LIKE '%' || $3 || '%'
         )
      LIMIT 1`,

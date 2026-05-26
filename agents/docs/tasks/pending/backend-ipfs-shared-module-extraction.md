@@ -62,3 +62,15 @@ First review via combined IPFS-cluster `/ce-code-review` (11 personas; agent-nat
 This pass also surfaced a P1 pre-existing orphan-leak in `ipfs-cleanup.ts` — the cleanup job hardcodes `unpinFromKubo` and cannot release a Pinata-origin pin, then deletes the tracking row. It is orthogonal to this extraction and is filed as a separate task (`backend-ipfs-cleanup-backend-dispatch`); do NOT fold it into this hold.
 
 When the alias item lands, `git mv` this file back to `tasks/review/`.
+
+## Backend re-review signal (2026-05-26)
+
+Alias item landed via architect option (a): the `c`-hardwired `IMAGE_SRF_GUARD_EXPR` constant is now an `imageSrfGuardExpr(alias: string)` builder in `lib/ipfs-shared.ts`.
+
+- **Builder enforces the alias contract.** It substitutes the relation alias into both the `jsonb_typeof(...)` guard and the `THEN` branch, so the alias is an explicit argument instead of an invisible baked-in constant. `alias` is validated against `/^[A-Za-z_][A-Za-z0-9_]*$/` and throws otherwise — the value is interpolated, not bound, because SRF-argument SQL cannot take a placeholder; call sites pass compile-time literals, never user input.
+- **Both call sites updated.** `cidIsKnown` (`routes/ipfs.ts`) and `cidReferencedInHaf` (`ipfs-cleanup.ts`) interpolate `imageSrfGuardExpr('c')`. The in-query comments name the builder and note the `'c'` argument is the FROM-clause relation alias.
+- **Canary asserts substitution, not bare interpolation.** The SRF test (`tests/lib/ipfs-image-srf-guard.test.ts`) composes `imageSrfGuardExpr('c')` in `guardedSrfShape` and the top-level-NULL case. The builder canary now asserts the guard shape, alias substitution (a different alias appears verbatim and the default does not leak), and that a non-identifier alias throws. The call-site canary regex requires `jsonb_array_elements_text(${imageSrfGuardExpr('<alias>')})` at every SRF site, so a dropped alias argument, an inlined argument, or a gutted builder fails red.
+
+**Verification.** `typecheck:src` clean; `eslint` clean on `lib/ipfs-shared.ts`, `routes/ipfs.ts`, `ipfs-cleanup.ts`, and the SRF test; scoped `npx vitest run tests/lib/ipfs-image-srf-guard.test.ts` → 7/7 green against real Postgres/Redis (parent's authoritative serial run remains the gate). Self-audit on changed lines: no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in the source/test files.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

@@ -31,14 +31,15 @@
  *
  * Carve-out clause-(c) real-path companion: the routes are exercised by
  * existing IPFS upload/cleanup tests against well-formed data. The
- * behavioral block below composes the production `IMAGE_SRF_GUARD_EXPR`
+ * behavioral block below composes the production `imageSrfGuardExpr`
  * (lib/ipfs-shared.ts), so the fragment it runs cannot drift from the live
- * guard; the second describe block then pins that the constant still carries
- * the guard AND that each call site (`cidIsKnown` / `cidReferencedInHaf`)
- * interpolates that shared constant, so a revert that gutted the constant or
- * inlined an unguarded SRF argument at either site fails red. Together they
- * cover the malformed-image cascade-fail class at the behavioral, constant,
- * and call-site layers.
+ * guard; the second describe block then pins that the builder still carries
+ * the guard and substitutes its alias argument AND that each call site
+ * (`cidIsKnown` / `cidReferencedInHaf`) interpolates that shared builder, so a
+ * revert that gutted the builder, dropped its alias argument, or inlined an
+ * unguarded SRF argument at either site fails red. Together they cover the
+ * malformed-image cascade-fail class at the behavioral, builder, and
+ * call-site layers.
  *
  * See conventions:
  *   - pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16
@@ -49,17 +50,16 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getPool } from '../../src/db.js';
-import { IMAGE_SRF_GUARD_EXPR } from '../../src/lib/ipfs-shared.js';
+import { imageSrfGuardExpr } from '../../src/lib/ipfs-shared.js';
 
-// Composes the production guard fragment (IMAGE_SRF_GUARD_EXPR from
-// lib/ipfs-shared.ts — the same constant both `cidIsKnown` and
+// Composes the production guard fragment (imageSrfGuardExpr from
+// lib/ipfs-shared.ts — the same builder both `cidIsKnown` and
 // `cidReferencedInHaf` interpolate) over a synthetic one-row `c` relation
 // with controlled json_metadata, so this test cannot drift from the live
-// guard. The constant assumes the relation is aliased `c`, which the
-// synthetic FROM below satisfies.
+// guard. The builder is passed the alias the synthetic FROM below uses (`c`).
 const guardedSrfShape = `
   SELECT EXISTS (
-    SELECT 1 FROM jsonb_array_elements_text(${IMAGE_SRF_GUARD_EXPR}) AS img
+    SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) AS img
     WHERE img LIKE '%' || $1 || '%'
   ) AS matched
   FROM (SELECT $2::jsonb AS json_metadata) AS c
@@ -139,10 +139,10 @@ describe('IPFS image SRF-argument array-guard (real Postgres, synthetic rows)', 
     // SQL NULL on the column — `c.json_metadata->'image'` returns SQL NULL,
     // `jsonb_typeof(NULL)` returns NULL, the CASE evaluates ELSE and the
     // SRF gets '[]'::jsonb. The query yields one row with `matched=false`.
-    // Composes the same shared IMAGE_SRF_GUARD_EXPR over a top-level-NULL row.
+    // Composes the same shared imageSrfGuardExpr over a top-level-NULL row.
     const sql = `
       SELECT EXISTS (
-        SELECT 1 FROM jsonb_array_elements_text(${IMAGE_SRF_GUARD_EXPR}) AS img
+        SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) AS img
         WHERE img LIKE '%' || $1 || '%'
       ) AS matched
       FROM (SELECT NULL::jsonb AS json_metadata) AS c
@@ -153,15 +153,16 @@ describe('IPFS image SRF-argument array-guard (real Postgres, synthetic rows)', 
 });
 
 // ──────────────────────────────────────────────────────────────────────
-// Shared-constant + call-site presence canary.
+// Shared-builder + call-site presence canary.
 //
-// The behavioral block above composes the imported IMAGE_SRF_GUARD_EXPR, so
-// it can no longer drift from production by construction. This block adds two
-// layers: (1) the shared constant itself still carries the CASE-WHEN
-// jsonb_typeof array guard, and (2) each production call site interpolates
-// that shared constant into its jsonb_array_elements_text() SRF — so a revert
-// that gutted the constant, or one that inlined an unguarded SRF argument at
-// either call site, fails red. Modeled on
+// The behavioral block above composes the imported imageSrfGuardExpr, so it
+// can no longer drift from production by construction. This block adds two
+// layers: (1) the shared builder still carries the CASE-WHEN jsonb_typeof
+// array guard and substitutes its alias argument, and (2) each production call
+// site interpolates that shared builder (invoked with a relation-alias literal)
+// into its jsonb_array_elements_text() SRF — so a revert that gutted the
+// builder, dropped its alias argument, or inlined an unguarded SRF argument at
+// either call site fails red. Modeled on
 // `excludeSelfReviewWhere-callsite-canaries.test.ts`.
 // ──────────────────────────────────────────────────────────────────────
 
@@ -179,36 +180,47 @@ const GUARD_SITES: GuardSite[] = [
   { file: 'src/ipfs-cleanup.ts', fn: 'cidReferencedInHaf' },
 ];
 
-describe('IPFS image SRF guard — shared constant + call-site presence canary', () => {
-  it('IMAGE_SRF_GUARD_EXPR carries the CASE-WHEN jsonb_typeof array guard', () => {
-    const normalized = IMAGE_SRF_GUARD_EXPR.replace(/\s+/g, ' ').trim();
+describe('IPFS image SRF guard — shared builder + call-site presence canary', () => {
+  it('imageSrfGuardExpr(alias) carries the CASE-WHEN jsonb_typeof array guard and substitutes the alias', () => {
+    const normalized = imageSrfGuardExpr('c').replace(/\s+/g, ' ').trim();
     expect(normalized).toContain("CASE WHEN jsonb_typeof(c.json_metadata->'image') = 'array'");
     expect(normalized).toContain("THEN c.json_metadata->'image'");
     expect(normalized).toContain("ELSE '[]'::jsonb");
     expect(normalized).toMatch(/END$/);
+
+    // Alias substitution: a different alias appears verbatim and the default
+    // `c` does not leak — this is the contract the builder form enforces over
+    // the former `c`-hardwired constant.
+    const aliased = imageSrfGuardExpr('p').replace(/\s+/g, ' ').trim();
+    expect(aliased).toContain("jsonb_typeof(p.json_metadata->'image')");
+    expect(aliased).not.toContain('c.json_metadata');
+
+    // Non-identifier aliases are rejected (the value is interpolated, not bound).
+    expect(() => imageSrfGuardExpr("c; DROP TABLE comments;--")).toThrow();
   });
 
   for (const { file, fn } of GUARD_SITES) {
-    it(`${file} composes the shared IMAGE_SRF_GUARD_EXPR at every jsonb_array_elements_text() SRF call (${fn})`, () => {
+    it(`${file} composes the shared imageSrfGuardExpr at every jsonb_array_elements_text() SRF call (${fn})`, () => {
       const source = readFileSync(resolve(PROJECT_ROOT, file), 'utf-8');
       const normalized = source.replace(/\s+/g, ' ');
 
       // The trailing `(` excludes prose mentions of the function name in the
       // comment blocks (e.g. "jsonb_array_elements_text would raise").
       const totalCalls = (normalized.match(/jsonb_array_elements_text\(/g) ?? []).length;
-      // Calls whose argument is the interpolated shared guard constant.
-      const viaSharedConst = (normalized.match(/jsonb_array_elements_text\(\$\{IMAGE_SRF_GUARD_EXPR\}\)/g) ?? []).length;
+      // Calls whose argument is the shared builder invoked with a bare-identifier
+      // alias literal — asserts alias substitution, not bare constant interpolation.
+      const viaSharedFn = (normalized.match(/jsonb_array_elements_text\(\$\{imageSrfGuardExpr\('[A-Za-z_][A-Za-z0-9_]*'\)\}\)/g) ?? []).length;
 
       expect(
         totalCalls,
         `expected at least one jsonb_array_elements_text() SRF call in ${file} (${fn})`,
       ).toBeGreaterThanOrEqual(1);
       expect(
-        viaSharedConst,
+        viaSharedFn,
         `every jsonb_array_elements_text() SRF argument in ${file} (${fn}) must interpolate the shared ` +
-        `IMAGE_SRF_GUARD_EXPR (lib/ipfs-shared.ts) — an inlined or unguarded argument bypasses the single ` +
-        `source of the LATERAL-before-WHERE type guard (see ` +
-        `pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16). Found ${viaSharedConst} via-constant of ${totalCalls} total.`,
+        `imageSrfGuardExpr(<alias>) builder (lib/ipfs-shared.ts) — an inlined or unguarded argument, or one ` +
+        `that drops the relation-alias argument, bypasses the single source of the LATERAL-before-WHERE type ` +
+        `guard (see pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16). Found ${viaSharedFn} via-builder of ${totalCalls} total.`,
       ).toBe(totalCalls);
     });
   }

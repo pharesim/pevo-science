@@ -11,8 +11,8 @@ import { config } from '../config.js';
 export type PinBackend = 'kubo' | 'pinata';
 
 /**
- * SQL fragment: array-type guard for the broadcaster-controlled Hive `image`
- * field at a `jsonb_array_elements_text()` SRF argument position.
+ * SQL fragment builder: array-type guard for the broadcaster-controlled Hive
+ * `image` field at a `jsonb_array_elements_text()` SRF argument position.
  *
  * Hive's `image` metadata is convention, not schema: any post can broadcast a
  * non-array value (null, string, integer, object). Postgres evaluates a
@@ -21,17 +21,30 @@ export type PinBackend = 'kubo' | 'pinata';
  * guard must sit INSIDE the SRF argument so a non-array short-circuits to
  * `'[]'::jsonb` before the SRF runs.
  *
+ * `alias` is the SQL alias of the comment relation at the call site
+ * (`cidIsKnown` and `cidReferencedInHaf` both alias `comments` as `c`).
+ * Taking it as a parameter makes the relation-alias dependency an explicit,
+ * enforced part of the call rather than an invisible contract baked into a
+ * constant: a site using a different alias substitutes it correctly instead of
+ * interpolating a `c.`-hardwired fragment that fails at runtime with an obscure
+ * column-not-found error. `alias` is validated as a bare SQL identifier because
+ * it is interpolated, not bound — SRF-argument SQL cannot take a placeholder —
+ * and call sites pass compile-time literals, never user input.
+ *
  * Interpolated into `cidIsKnown` (`routes/ipfs.ts`) and `cidReferencedInHaf`
  * (`ipfs-cleanup.ts`), and imported by the SRF guard test so the test fragment
- * stays definitionally in sync with production. **Assumes the comment relation
- * is aliased `c`** (both call sites and the test alias their `comments` /
- * synthetic relation as `c`). See
+ * stays definitionally in sync with production. See
  * `agents/docs/solutions/conventions/pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md`.
  */
-export const IMAGE_SRF_GUARD_EXPR = `CASE WHEN jsonb_typeof(c.json_metadata->'image') = 'array'
-             THEN c.json_metadata->'image'
+export function imageSrfGuardExpr(alias: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) {
+    throw new Error(`imageSrfGuardExpr: invalid SQL relation alias ${JSON.stringify(alias)}`);
+  }
+  return `CASE WHEN jsonb_typeof(${alias}.json_metadata->'image') = 'array'
+             THEN ${alias}.json_metadata->'image'
              ELSE '[]'::jsonb
         END`;
+}
 
 /**
  * Unpin a CID from the local Kubo node. A "not pinned" response is benign —
