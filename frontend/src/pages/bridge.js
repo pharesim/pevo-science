@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { fetchBridgeLookup, fetchBridgeCheck, registerBridgePaper } from '../api.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { formatEta } from '../lib/format-eta.js';
 
 const DISCIPLINE_TAXONOMY = [
   { field: 'Natural Sciences', subfields: ['Mathematics', 'Computer Science', 'Physics', 'Chemistry', 'Earth Sciences', 'Biology', 'Astronomy'] },
@@ -157,8 +158,32 @@ const template = `
                 <template x-if="step === 'registering'">
                   <p class="text-sm text-ink-muted" x-text="$t('bridge.stepRegistering')"></p>
                 </template>
-                <template x-if="step === 'success'">
-                  <p class="text-sm text-pevo-green font-medium" x-text="$t('bridge.stepSuccess')"></p>
+                <!-- Queued (HTTP 202): the import was accepted into the publish
+                     queue and will be broadcast on a later worker tick. Distinct
+                     from the prior synchronous-success state — the paper does not
+                     exist on chain yet, so we surface queue position + ETA and
+                     point at My imports instead of redirecting to a paper page. -->
+                <template x-if="step === 'queued'">
+                  <div class="rounded-lg border border-pevo-teal/40 bg-pevo-teal-light px-4 py-3">
+                    <p class="text-sm font-semibold text-pevo-teal-dark mb-1" x-text="$t('bridge.queuedTitle')"></p>
+                    <p class="text-sm text-ink-muted mb-2" x-text="queuedDetailText"></p>
+                    <a :href="$lp('/my-imports')" @click.prevent="navigate('/my-imports')"
+                       class="text-sm text-pevo-teal hover:underline" x-text="$t('bridge.queuedViewMyImports')"></a>
+                  </div>
+                </template>
+                <!-- Per-user in-flight cap (HTTP 429 RATE_LIMITED with
+                     details.cap): the caller already holds the max number of
+                     pending/in-progress imports. Worded as a usage-limit
+                     remediation hint, deliberately NOT styled like the transient
+                     chain-error path below — submission resumes once one of the
+                     in-flight imports completes. -->
+                <template x-if="step === 'userCap'">
+                  <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+                    <p class="text-sm font-medium text-amber-800 mb-1" x-text="$t('bridge.userCapTitle')"></p>
+                    <p class="text-sm text-amber-800 mb-2" x-text="userCapMessageText"></p>
+                    <a :href="$lp('/my-imports')" @click.prevent="navigate('/my-imports')"
+                       class="text-sm text-pevo-teal hover:underline" x-text="$t('myImports.navLabel')"></a>
+                  </div>
                 </template>
                 <template x-if="step === 'error' && duplicateExisting">
                   <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
@@ -199,6 +224,9 @@ export function initBridgePage() {
     keywordsText: '',
     language: '',
 
+    // step transitions: idle → registering → {queued | userCap | error | idle-on-success-redirect}
+    // 'queued' is the async-enqueue success state (HTTP 202). 'userCap' is the
+    // per-user in-flight cap rejection (429 RATE_LIMITED with details.cap).
     step: 'idle',
     errorMessage: '',
     // When step === 'error' and the failure was a DUPLICATE 409 from /register,
@@ -206,6 +234,11 @@ export function initBridgePage() {
     // renders a link to it (in lieu of the generic "Try again" button). Stays
     // null on every other error path, including LOCK_HELD-after-retry.
     duplicateExisting: null,
+    // Populated on a successful 202 enqueue, read by the `queued` template.
+    queuedPosition: null,
+    queuedEtaSeconds: null,
+    // Populated on the per-user-cap rejection, read by the `userCap` template.
+    userCapInflight: null,
 
     navigate(path) { Alpine.store('router').navigate(path); },
 
@@ -234,6 +267,22 @@ export function initBridgePage() {
       return this.lookup && !this.isDuplicate && this.discipline && this.step === 'idle';
     },
 
+    // Queued-state copy. When the backend supplied a usable ETA estimate we
+    // render position + ETA; when eta_seconds is missing/unknown we fall back
+    // to position-only rather than show a bogus "in 0 min".
+    get queuedDetailText() {
+      const position = this.queuedPosition ?? 1;
+      const eta = this.queuedEtaSeconds;
+      if (eta === null || eta === undefined || !Number.isFinite(eta)) {
+        return this.$t('bridge.queuedPositionOnly', { position });
+      }
+      return this.$t('bridge.queuedPositionAndEta', { position, eta: formatEta(eta, this.$t.bind(this)) });
+    },
+
+    get userCapMessageText() {
+      return this.$t('bridge.userCapMessage', { pending: this.userCapInflight ?? '' });
+    },
+
     get disciplineDisplayValue() {
       return this.disciplineDropdownOpen ? this.disciplineSearch : (this.discipline || this.disciplineSearch);
     },
@@ -258,6 +307,9 @@ export function initBridgePage() {
       this.step = 'idle';
       this.errorMessage = '';
       this.duplicateExisting = null;
+      this.queuedPosition = null;
+      this.queuedEtaSeconds = null;
+      this.userCapInflight = null;
     },
 
     onDisciplineInput(e) {
@@ -315,6 +367,9 @@ export function initBridgePage() {
       this.step = 'idle';
       this.errorMessage = '';
       this.duplicateExisting = null;
+      this.queuedPosition = null;
+      this.queuedEtaSeconds = null;
+      this.userCapInflight = null;
       try {
         const [lookupRes, checkRes] = await Promise.all([
           fetchBridgeLookup(this.identifier.trim()),
@@ -351,6 +406,9 @@ export function initBridgePage() {
       this.step = 'registering';
       this.duplicateExisting = null;
       this.errorMessage = '';
+      this.queuedPosition = null;
+      this.queuedEtaSeconds = null;
+      this.userCapInflight = null;
       const keywords = this.keywordsText.split(',').map((k) => k.trim()).filter(Boolean);
       const payload = {
         identifier: this.identifier.trim(),
@@ -363,13 +421,17 @@ export function initBridgePage() {
         try {
           const res = await registerBridgePaper(payload);
           if (!this._mounted) return;
-          this.step = 'success';
-          Alpine.store('toast').show(this.$t('bridge.stepSuccess'), 'success');
-          // Wait for the Hive block to be produced before redirecting. The paper detail
-          // page retries on NOT_FOUND to cover any remaining HAF indexing lag.
-          this._setTimer(() => {
-            this.navigate(`/paper/${res.data.author}/${res.data.permlink}`);
-          }, 3000);
+          // Async enqueue: a successful /register returns HTTP 202 with the
+          // pending queue entry, its 1-based queue_position, and a best-effort
+          // eta_seconds. The paper is NOT on chain yet, so we render the queued
+          // state (position + ETA) inline and point at My imports rather than
+          // redirecting to a paper page that does not exist. The terminal
+          // outcome surfaces on the My imports surface (GET /api/bridge/imports).
+          const data = res.data || {};
+          this.queuedPosition = data.queue_position ?? null;
+          this.queuedEtaSeconds = data.eta_seconds ?? null;
+          this.step = 'queued';
+          Alpine.store('toast').show(this.$t('bridge.queuedTitle'), 'success');
           return;
         } catch (err) {
           if (!this._mounted) return;
@@ -378,6 +440,18 @@ export function initBridgePage() {
             if (!this._mounted) return;
             lockHeldAttempt++;
             continue;
+          }
+          // Per-user in-flight cap: RATE_LIMITED (429) carrying details.cap is
+          // the cap rejection (vs. the per-IP limiter, which shares the code
+          // but omits details.cap). Render the cap-specific remediation surface
+          // — distinct from the transient chain-error path — telling the user
+          // submission resumes once one in-flight import completes. Returns
+          // before console.warn: a usage-cap hit is expected operation, not an
+          // error worth log noise.
+          if (err.code === 'RATE_LIMITED' && err.details?.cap !== undefined) {
+            this.userCapInflight = err.details.inflight ?? err.details.cap;
+            this.step = 'userCap';
+            return;
           }
           this.step = 'error';
           if (err.code === 'LOCK_HELD') {

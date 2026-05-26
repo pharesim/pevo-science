@@ -352,6 +352,17 @@ export function registerBridgePaper(data) {
   });
 }
 
+// List the caller's own bridge import queue entries (the "My imports"
+// surface). The bridge register endpoint is asynchronous: a successful
+// POST returns HTTP 202 with a pending queue entry, and the broadcast
+// happens later on a worker tick. This endpoint is how the caller learns
+// the terminal outcome. Authenticated; entries are scoped to the bearer's
+// account server-side (no caller-controlled user selector). `state` and
+// `limit` are optional filters; both are validated server-side.
+export function fetchBridgeImports({ state, limit } = {}) {
+  return authenticatedRequest(`/bridge/imports${buildQuery({ state, limit })}`);
+}
+
 // ─── Contact ─────────────────────────────────────────────────────
 
 export function submitContactForm(data) {

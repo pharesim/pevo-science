@@ -329,24 +329,75 @@ describe('bridgePage', () => {
       expect(mockRegisterBridgePaper).not.toHaveBeenCalled();
     });
 
-    it('transitions to registering then success', async () => {
-      vi.useFakeTimers();
+    // Async-enqueue success: /register returns HTTP 202 with a pending queue
+    // entry, queue_position, and eta_seconds. The page renders the 'queued'
+    // state (position + ETA) and does NOT redirect to a paper page (the paper
+    // is not on chain yet).
+    it('transitions to registering then queued on 202 enqueue', async () => {
       const comp = createComponent();
       comp.identifier = '10.1234/test';
       comp.discipline = 'Physics';
       comp.keywordsText = 'quantum, optics';
       comp.language = 'en';
-      mockRegisterBridgePaper.mockResolvedValue({ data: { author: 'testuser', permlink: 'paper-1' } });
+      mockRegisterBridgePaper.mockResolvedValue({
+        data: { entry: { id: 7, state: 'pending' }, queue_position: 3, eta_seconds: 600 },
+      });
 
       await comp.handleRegister();
-      expect(comp.step).toBe('success');
+      expect(comp.step).toBe('queued');
+      expect(comp.queuedPosition).toBe(3);
+      expect(comp.queuedEtaSeconds).toBe(600);
       expect(mockRegisterBridgePaper).toHaveBeenCalledWith({
         identifier: '10.1234/test',
         discipline: 'Physics',
         keywords: ['quantum', 'optics'],
         language: 'en',
       });
-      vi.useRealTimers();
+      // No redirect on the async path.
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+    });
+
+    // Per-user in-flight cap: 429 RATE_LIMITED carrying details.cap is the cap
+    // rejection (vs. the per-IP limiter, which omits details.cap). It surfaces
+    // the cap-specific 'userCap' state, distinct from the transient error path.
+    it('RATE_LIMITED with details.cap transitions to userCap and records inflight count', async () => {
+      const capErr = new Error('Too many pending imports');
+      capErr.code = 'RATE_LIMITED';
+      capErr.details = { retriable: true, inflight: 5, cap: 5 };
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper.mockRejectedValue(capErr);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await comp.handleRegister();
+
+      expect(comp.step).toBe('userCap');
+      expect(comp.userCapInflight).toBe(5);
+      expect(comp.errorMessage).toBe('');
+      // A usage-cap hit is expected operation, not log-worthy noise.
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    // The per-IP limiter shares the RATE_LIMITED code but omits details.cap.
+    // It must NOT hit the userCap branch; it falls through to the generic
+    // error surface like any other transient failure.
+    it('RATE_LIMITED without details.cap falls through to the generic error surface', async () => {
+      const ipErr = new Error('Rate limit exceeded');
+      ipErr.code = 'RATE_LIMITED';
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper.mockRejectedValue(ipErr);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await comp.handleRegister();
+
+      expect(comp.step).toBe('error');
+      expect(comp.userCapInflight).toBeNull();
+      expect(comp.errorMessage).toBe('common.registrationFailed');
+      warnSpy.mockRestore();
     });
 
     // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
@@ -370,13 +421,12 @@ describe('bridgePage', () => {
     });
 
     it('omits keywords when empty', async () => {
-      vi.useFakeTimers();
       const comp = createComponent();
       comp.identifier = '10.1234/test';
       comp.discipline = 'Physics';
       comp.keywordsText = '';
       comp.language = '';
-      mockRegisterBridgePaper.mockResolvedValue({ data: { author: 'testuser', permlink: 'p' } });
+      mockRegisterBridgePaper.mockResolvedValue({ data: { entry: { id: 1 }, queue_position: 1, eta_seconds: 0 } });
       await comp.handleRegister();
       expect(mockRegisterBridgePaper).toHaveBeenCalledWith({
         identifier: '10.1234/test',
@@ -384,7 +434,6 @@ describe('bridgePage', () => {
         keywords: undefined,
         language: undefined,
       });
-      vi.useRealTimers();
     });
 
     // 409 LOCK_HELD (concurrent registration of the same preprint, Redis
@@ -420,7 +469,7 @@ describe('bridgePage', () => {
       vi.useRealTimers();
     });
 
-    it('LOCK_HELD: a retry that succeeds reaches the success path without surfacing the error UI', async () => {
+    it('LOCK_HELD: a retry that succeeds reaches the queued path without surfacing the error UI', async () => {
       vi.useFakeTimers();
       const lockErr = new Error('Registration already in progress');
       lockErr.code = 'LOCK_HELD';
@@ -429,13 +478,13 @@ describe('bridgePage', () => {
       comp.discipline = 'Physics';
       mockRegisterBridgePaper
         .mockRejectedValueOnce(lockErr)
-        .mockResolvedValueOnce({ data: { author: 'testuser', permlink: 'paper-1' } });
+        .mockResolvedValueOnce({ data: { entry: { id: 9 }, queue_position: 1, eta_seconds: 0 } });
 
       const registerP = comp.handleRegister();
       await vi.advanceTimersByTimeAsync(2000);
       await registerP;
 
-      expect(comp.step).toBe('success');
+      expect(comp.step).toBe('queued');
       expect(comp.errorMessage).toBe('');
       expect(mockRegisterBridgePaper).toHaveBeenCalledTimes(2);
       vi.useRealTimers();
@@ -493,27 +542,29 @@ describe('bridgePage', () => {
       warnSpy.mockRestore();
     });
 
-    // UI-SETTIMEOUT-NAVIGATE-TEARDOWN-GUARD-SWEEP: the 3s post-success
-    // redirect must be cancelable. If the user navigates away during the
-    // wait for the Hive block, destroy() clears the pending timer and
-    // navigate MUST NOT fire.
-    it('destroy() cancels the post-success redirect timer (no navigate after teardown)', async () => {
-      vi.useFakeTimers();
+    // Post-destroy() success continuation must not write to component state.
+    // The async-enqueue path resolves after the user navigated away; the
+    // _mounted guard short-circuits before the resolve writes 'queued'.
+    it('destroy() before the 202 resolves stops the queued-state write', async () => {
       const comp = createComponent();
       comp.identifier = '10.1234/test';
       comp.discipline = 'Physics';
-      mockRegisterBridgePaper.mockResolvedValue({ data: { author: 'testuser', permlink: 'p' } });
 
-      await comp.handleRegister();
-      expect(comp.step).toBe('success');
-      // Timer armed but not yet fired.
-      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      let resolveFn;
+      mockRegisterBridgePaper.mockReturnValue(new Promise((resolve) => { resolveFn = resolve; }));
+
+      const registerP = comp.handleRegister();
+      // 'registering' set synchronously before the await.
+      expect(comp.step).toBe('registering');
 
       comp.destroy();
-      // Advancing past the 3s redirect window MUST NOT trigger navigate.
-      vi.advanceTimersByTime(5000);
+      resolveFn({ data: { entry: { id: 1 }, queue_position: 1, eta_seconds: 0 } });
+      await registerP;
+
+      // step must NOT transition to 'queued' after teardown.
+      expect(comp.step).toBe('registering');
+      expect(comp.queuedPosition).toBeNull();
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
-      vi.useRealTimers();
     });
 
     // Pins the post-await `_mounted` guard between the LOCK_HELD backoff
@@ -607,6 +658,53 @@ describe('bridgePage', () => {
       expect(comp.step).toBe('registering');
       expect(comp.errorMessage).toBe('');
       warnSpy.mockRestore();
+    });
+  });
+
+  describe('queuedDetailText', () => {
+    // $t echoes "key|JSON(params)" so the test can assert which key and which
+    // interpolation params the getter selected.
+    function withParamCapturingT(comp) {
+      comp.$t = (key, params) => (params ? `${key}|${JSON.stringify(params)}` : key);
+      return comp;
+    }
+
+    it('uses position + ETA copy when eta_seconds is a finite number', () => {
+      const comp = withParamCapturingT(createComponent());
+      comp.queuedPosition = 3;
+      comp.queuedEtaSeconds = 600; // 10 min
+      const out = comp.queuedDetailText;
+      expect(out).toContain('bridge.queuedPositionAndEta');
+      expect(out).toContain('"position":3');
+      // ETA is formatted via myImports.etaMinutes (~10 min).
+      expect(out).toContain('myImports.etaMinutes');
+    });
+
+    it('falls back to position-only copy when eta_seconds is missing', () => {
+      const comp = withParamCapturingT(createComponent());
+      comp.queuedPosition = 2;
+      comp.queuedEtaSeconds = null;
+      const out = comp.queuedDetailText;
+      expect(out).toContain('bridge.queuedPositionOnly');
+      expect(out).toContain('"position":2');
+    });
+
+    it('defaults position to 1 when queuedPosition is null', () => {
+      const comp = withParamCapturingT(createComponent());
+      comp.queuedPosition = null;
+      comp.queuedEtaSeconds = null;
+      expect(comp.queuedDetailText).toContain('"position":1');
+    });
+  });
+
+  describe('userCapMessageText', () => {
+    it('interpolates the in-flight count into the cap message', () => {
+      const comp = createComponent();
+      comp.$t = (key, params) => (params ? `${key}|${JSON.stringify(params)}` : key);
+      comp.userCapInflight = 5;
+      const out = comp.userCapMessageText;
+      expect(out).toContain('bridge.userCapMessage');
+      expect(out).toContain('"pending":5');
     });
   });
 
