@@ -783,16 +783,29 @@ describe.skipIf(!dbReachable)('signup_verify.confirm.failed log shape', () => {
   it('fires from outer catch with event + route + err: <Error>', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
     const pool = getAppPool()!;
-    const origQuery = pool.query.bind(pool);
-    let calls = 0;
+    // The /confirm activation runs inside a locked transaction on a dedicated
+    // client (see lockSignupActivation): BEGIN, advisory lock, and the row
+    // lookup all run on that client, not the bare pool. Inject a synthetic
+    // failure into the transaction client's first query so the inner tx-catch
+    // rethrows to the outer catch — the 500 + failure-log path this test pins.
+    // A pool.query stub would miss the lookup, and the handler would 400 on the
+    // (absent) token instead.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (pool as any).query = (...args: unknown[]) => {
-      calls++;
-      if (calls === 1) {
-        return Promise.reject(new Error('synthetic db failure for signup_verify.confirm.failed'));
-      }
+    const origConnect = (pool as any).connect.bind(pool);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (pool as any).connect = async (...args: unknown[]) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return origQuery(...(args as [any]));
+      const client = await (origConnect as (...a: unknown[]) => Promise<any>)(...args);
+      const origClientQuery = client.query.bind(client);
+      let injected = false;
+      client.query = (...qargs: unknown[]) => {
+        if (!injected) {
+          injected = true;
+          return Promise.reject(new Error('synthetic db failure for signup_verify.confirm.failed'));
+        }
+        return origClientQuery(...qargs);
+      };
+      return client;
     };
 
     try {
@@ -823,7 +836,7 @@ describe.skipIf(!dbReachable)('signup_verify.confirm.failed log shape', () => {
       expect(fields!.err).toBeInstanceOf(Error);
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (pool as any).query = origQuery;
+      (pool as any).connect = origConnect;
       errorSpy.mockRestore();
     }
   });
@@ -855,16 +868,29 @@ describe.skipIf(!dbReachable)('signup_verify.link.failed log shape', () => {
 
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
     const pool = getAppPool()!;
-    const origQuery = pool.query.bind(pool);
-    let calls = 0;
+    // The /link activation runs inside a locked transaction on a dedicated
+    // client (see lockSignupActivation): BEGIN, advisory lock, and the row
+    // lookup all run on that client, not the bare pool. Inject a synthetic
+    // failure into the transaction client's first query so the inner tx-catch
+    // rethrows to the outer catch — the 500 + failure-log path this test pins.
+    // A pool.query stub would miss the lookup, and the handler would 400 on the
+    // (absent) token instead.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (pool as any).query = (...args: unknown[]) => {
-      calls++;
-      if (calls === 1) {
-        return Promise.reject(new Error('synthetic db failure for signup_verify.link.failed'));
-      }
+    const origConnect = (pool as any).connect.bind(pool);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (pool as any).connect = async (...args: unknown[]) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return origQuery(...(args as [any]));
+      const client = await (origConnect as (...a: unknown[]) => Promise<any>)(...args);
+      const origClientQuery = client.query.bind(client);
+      let injected = false;
+      client.query = (...qargs: unknown[]) => {
+        if (!injected) {
+          injected = true;
+          return Promise.reject(new Error('synthetic db failure for signup_verify.link.failed'));
+        }
+        return origClientQuery(...qargs);
+      };
+      return client;
     };
 
     try {
@@ -890,7 +916,7 @@ describe.skipIf(!dbReachable)('signup_verify.link.failed log shape', () => {
       expect(fields!.err).toBeInstanceOf(Error);
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (pool as any).query = origQuery;
+      (pool as any).connect = origConnect;
       errorSpy.mockRestore();
     }
   });
