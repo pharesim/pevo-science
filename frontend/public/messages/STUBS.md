@@ -1826,3 +1826,103 @@ pt: edit.authorNameRequired
 sv: edit.authorNameRequired
 tr: edit.authorNameRequired
 zh: edit.authorNameRequired
+
+### Updated 2026-05-26 (UI-ACCOUNT-DELETE-CONSEQUENCES-AND-FRESH-AUTH)
+
+ar: settings.emailDelete
+cs: settings.emailDelete
+da: settings.emailDelete
+de: settings.emailDelete
+es: settings.emailDelete
+fa: settings.emailDelete
+fr: settings.emailDelete
+he: settings.emailDelete
+it: settings.emailDelete
+nl: settings.emailDelete
+pl: settings.emailDelete
+pt: settings.emailDelete
+sv: settings.emailDelete
+tr: settings.emailDelete
+zh: settings.emailDelete
+
+ar: settings.emailDeleteConfirm
+cs: settings.emailDeleteConfirm
+da: settings.emailDeleteConfirm
+de: settings.emailDeleteConfirm
+es: settings.emailDeleteConfirm
+fa: settings.emailDeleteConfirm
+fr: settings.emailDeleteConfirm
+he: settings.emailDeleteConfirm
+it: settings.emailDeleteConfirm
+nl: settings.emailDeleteConfirm
+pl: settings.emailDeleteConfirm
+pt: settings.emailDeleteConfirm
+sv: settings.emailDeleteConfirm
+tr: settings.emailDeleteConfirm
+zh: settings.emailDeleteConfirm
+
+ar: settings.deleteWarningLight
+cs: settings.deleteWarningLight
+da: settings.deleteWarningLight
+de: settings.deleteWarningLight
+es: settings.deleteWarningLight
+fa: settings.deleteWarningLight
+fr: settings.deleteWarningLight
+he: settings.deleteWarningLight
+it: settings.deleteWarningLight
+nl: settings.deleteWarningLight
+pl: settings.deleteWarningLight
+pt: settings.deleteWarningLight
+sv: settings.deleteWarningLight
+tr: settings.deleteWarningLight
+zh: settings.deleteWarningLight
+
+ar: settings.deleteWarningSelf
+cs: settings.deleteWarningSelf
+da: settings.deleteWarningSelf
+de: settings.deleteWarningSelf
+es: settings.deleteWarningSelf
+fa: settings.deleteWarningSelf
+fr: settings.deleteWarningSelf
+he: settings.deleteWarningSelf
+it: settings.deleteWarningSelf
+nl: settings.deleteWarningSelf
+pl: settings.deleteWarningSelf
+pt: settings.deleteWarningSelf
+sv: settings.deleteWarningSelf
+tr: settings.deleteWarningSelf
+zh: settings.deleteWarningSelf
+
+### Added 2026-05-26 (UI-ACCOUNT-DELETE-CONSEQUENCES-AND-FRESH-AUTH)
+
+ar: settings.deleteSeedPhraseContinuation
+cs: settings.deleteSeedPhraseContinuation
+da: settings.deleteSeedPhraseContinuation
+de: settings.deleteSeedPhraseContinuation
+es: settings.deleteSeedPhraseContinuation
+fa: settings.deleteSeedPhraseContinuation
+fr: settings.deleteSeedPhraseContinuation
+he: settings.deleteSeedPhraseContinuation
+it: settings.deleteSeedPhraseContinuation
+nl: settings.deleteSeedPhraseContinuation
+pl: settings.deleteSeedPhraseContinuation
+pt: settings.deleteSeedPhraseContinuation
+sv: settings.deleteSeedPhraseContinuation
+tr: settings.deleteSeedPhraseContinuation
+zh: settings.deleteSeedPhraseContinuation
+
+ar: settings.accountDeleted
+cs: settings.accountDeleted
+da: settings.accountDeleted
+de: settings.accountDeleted
+es: settings.accountDeleted
+fa: settings.accountDeleted
+fr: settings.accountDeleted
+he: settings.accountDeleted
+it: settings.accountDeleted
+nl: settings.accountDeleted
+pl: settings.accountDeleted
+pt: settings.accountDeleted
+sv: settings.accountDeleted
+tr: settings.accountDeleted
+zh: settings.accountDeleted

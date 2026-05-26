@@ -334,6 +334,8 @@ const template = `
                       <div x-show="showDeleteConfirm" class="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
                         <p class="text-sm text-red-700 mb-3"
                            x-text="custody === 'light' ? $t('settings.deleteWarningLight') : $t('settings.deleteWarningSelf')"></p>
+                        <p x-show="custody === 'light'" class="text-sm text-ink-muted mb-3"
+                           x-text="$t('settings.deleteSeedPhraseContinuation')"></p>
                         <div class="flex gap-3">
                           <button @click="handleEmailDelete()" :disabled="deleting"
                                   class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50"
@@ -379,6 +381,8 @@ const template = `
                       <div x-show="showDeleteConfirm" class="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
                         <p class="text-sm text-red-700 mb-3"
                            x-text="custody === 'light' ? $t('settings.deleteWarningLight') : $t('settings.deleteWarningSelf')"></p>
+                        <p x-show="custody === 'light'" class="text-sm text-ink-muted mb-3"
+                           x-text="$t('settings.deleteSeedPhraseContinuation')"></p>
                         <div class="flex gap-3">
                           <button @click="handleEmailDelete()" :disabled="deleting"
                                   class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50"
@@ -779,16 +783,19 @@ export function initSettingsPage() {
       this.deleting = true;
       try {
         await deleteEmail(true);
-        this.emailStatus = {
-          hasEmail: false,
-          custody: this.custody,
-          hasPassword: this.emailStatus?.hasPassword ?? false,
-        };
+        // The DELETE erases the entire PEvO account row, not just the email
+        // column. The current session JWT now points at a deleted account, so
+        // there is no logged-in state left to render. Tear the session down
+        // and route to the landing page rather than optimistically patching
+        // emailStatus into a logged-in settings view bound to a dead account.
         this.showDeleteConfirm = false;
         this.showChangeForm = false;
         this.emailMessage = null;
         this.emailError = null;
-        Alpine.store('toast').show(this.$t('settings.emailDeleted'), 'success');
+        Alpine.store('auth').disconnect();
+        Alpine.store('notifications').stop();
+        Alpine.store('toast').show(this.$t('settings.accountDeleted'), 'success');
+        this.navigate('/');
       } catch (err) {
         // Sanitization pattern (see handleOrcidLink).
         console.warn('[email delete]', err);
