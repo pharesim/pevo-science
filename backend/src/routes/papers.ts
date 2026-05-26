@@ -727,8 +727,20 @@ async function computeChainCumulativeFromHaf(
   const pool = getPool();
   if (!pool) return null;
 
-  const chain = await resolveContinuationChain(rootAuthor, rootPermlink, options.memo, options.signal);
+  const { chain, degraded } = await resolveContinuationChain(rootAuthor, rootPermlink, options.memo, options.signal);
   if (chain.length === 0) return null;
+
+  // A degraded (truncated) forward walk yields a partial chain whose
+  // cumulative author-union is missing the truncated tail; caching that
+  // partial union would serve an under-enriched authors[] for the full TTL.
+  // Return null so the surrounding getOrSet skips the write and the caller
+  // falls back to its head-meta projection, recomputing next request. This
+  // subsumes the abort variant (previously covered only by the empty-versions
+  // guard below) and closes the mid-walk non-abort truncation gap (swallowed
+  // SQL error, cycle, depth cap) for chains longer than the root; the
+  // chain.length === 1 short-circuit already covers root-only degraded walks
+  // (e.g. an empty/failed root head-authors fetch).
+  if (degraded) return null;
 
   // Single-link short-circuit: when the chain is just the root, there is no
   // cumulative work to do — the head metadata IS the only contribution. The
@@ -1321,7 +1333,10 @@ async function fetchPaperDetailFromHaf(
     // The optional `memo` parameter lets the caller share the
     // per-`(author, permlink)` metadata cache with the backward
     // canonical-root walker (see `findCanonicalRoot`).
-    const chain = await resolveContinuationChain(author, permlink, memo, signal);
+    // Live detail surface: use the resolved chain as-is. A degraded (partial)
+    // walk shows fewer versions but is not negative-cached, so no degraded gate
+    // here — only the negative-caching callers gate on it.
+    const { chain } = await resolveContinuationChain(author, permlink, memo, signal);
     // Hoist the accreditation lookups so the cumulative-union construction
     // (further down) and the `accredited_authors` rebuild share the same
     // request-scoped fetches. Both helpers cache 10 min via hafCache so
@@ -1652,6 +1667,24 @@ interface ChainLink {
 }
 
 /**
+ * Discriminated result of a forward continuation-chain walk. `degraded` is
+ * true unless the walk reached its clean natural end — no further post
+ * continues the current head, i.e. the terminating `rows.length === 0` break.
+ * Every other exit leaves `degraded` true and the accumulated `chain`
+ * partial/unverified: pool unavailable, wall-clock abort, an empty or failed
+ * root head-authors fetch, a swallowed inner-loop SQL error, cycle detection,
+ * or MAX_HOPS truncation. Callers that negative-cache a result derived from
+ * the chain (the canonical-root negative cache in `findCanonicalRoot`, the
+ * cumulative-authors cache in `computeChainCumulativeFromHaf`) MUST NOT write
+ * the cache when `degraded` — otherwise a transient HAF blip locks a false
+ * negative or a partial author-union in for the full TTL.
+ */
+interface ChainResolution {
+  chain: ChainLink[];
+  degraded: boolean;
+}
+
+/**
  * Per-request memo for `fetchHeadAuthorizedAuthors` results, keyed by
  * `"author/permlink"`. Threaded into the forward (`resolveContinuationChain`)
  * and backward (`findCanonicalRoot`) walkers so the two halves of a single
@@ -1755,8 +1788,11 @@ async function fetchHeadAuthorizedAuthors(
 /**
  * Resolve the continuation chain starting from a canonical (root) post.
  * Follows `json_metadata -> appTag -> 'continues'` pointers iteratively.
- * Returns ordered array starting with the root post, ending at the chain head.
- * Uses block_num to resolve collisions (earliest wins). 50-hop safety cap.
+ * Returns `{ chain, degraded }` (see `ChainResolution`): the ordered chain
+ * starting with the root post and ending at the chain head, plus a `degraded`
+ * flag that is false only on a clean natural end and true on any
+ * truncation/abort/error exit. Uses block_num to resolve collisions (earliest
+ * wins). 50-hop safety cap.
  *
  * **Author-consent gate (cumulative-union under
  * `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`).** A candidate
@@ -1802,9 +1838,9 @@ async function resolveContinuationChain(
   permlink: string,
   memo?: HeadAuthorsMemo,
   signal?: AbortSignal,
-): Promise<ChainLink[]> {
+): Promise<ChainResolution> {
   const pool = getPool();
-  if (!pool) return [{ author, permlink }];
+  if (!pool) return { chain: [{ author, permlink }], degraded: true };
 
   // Capture entry time so wall-clock-exceeded warns carry the elapsed
   // signal that operators need to distinguish "budget tripped early"
@@ -1812,6 +1848,12 @@ async function resolveContinuationChain(
   const startedAt = Date.now();
 
   const chain: ChainLink[] = [{ author, permlink }];
+
+  // Degraded unless the walk reaches its clean natural end (the
+  // `rows.length === 0` break below flips this to false). Every other exit —
+  // abort, empty/failed root head-authors, swallowed SQL error, cycle, depth
+  // cap — leaves it true so negative-caching callers skip the write.
+  let degraded = true;
 
   // Pre-loop abort check. The route-handler-bounded `AbortController`
   // could already have fired before we issued the seed fetch (e.g., a
@@ -1829,7 +1871,7 @@ async function resolveContinuationChain(
       },
       'continuation chain walker aborted: wall-clock budget exceeded before seed fetch',
     );
-    return chain;
+    return { chain, degraded };
   }
 
   // Seed the cumulative admit-set from the root's contribution. The root's
@@ -1837,9 +1879,12 @@ async function resolveContinuationChain(
   // the root itself).
   const rootAuthorizedAuthors = await fetchHeadAuthorizedAuthors(pool, author, permlink, memo, signal);
   if (!rootAuthorizedAuthors || rootAuthorizedAuthors.size === 0) {
-    // Root is not a valid PEvO paper, or has no named authors. No
-    // continuations are admitted; chain is root-only.
-    return chain;
+    // Root is not a valid PEvO paper, has no named authors, OR its
+    // head-authors fetch failed/returned empty under a transient HAF read
+    // (eventual consistency). These are indistinguishable here, so the
+    // root-only chain is marked degraded — a negative-caching caller must not
+    // lock in a false negative built on a possibly-transient empty fetch.
+    return { chain, degraded };
   }
 
   // Cumulative admit-set, seeded from root. Extended in-place after each
@@ -1891,7 +1936,7 @@ async function resolveContinuationChain(
           },
           'continuation chain walker aborted: wall-clock budget exceeded mid-walk',
         );
-        return chain;
+        return { chain, degraded };
       }
       const cumulativeArr = Array.from(cumulative);
       // Find any post whose continues field points to the current head AND
@@ -1924,7 +1969,12 @@ async function resolveContinuationChain(
         [currentAuthor, currentPermlink, config.appTag, cumulativeArr, config.hiveBridgeAccount],
       );
 
-      if (result.rows.length === 0) break;
+      if (result.rows.length === 0) {
+        // Clean natural end: no post continues the current head. This is the
+        // ONLY non-degraded exit — the chain is fully resolved.
+        degraded = false;
+        break;
+      }
 
       const next = result.rows[0];
       const candidateAuthor = next.author;
@@ -1977,7 +2027,7 @@ async function resolveContinuationChain(
           },
           'continuation chain walker detected cycle in continuation pointers',
         );
-        return chain;
+        return { chain, degraded };
       }
       visited.add(visitedKey);
 
@@ -1996,10 +2046,13 @@ async function resolveContinuationChain(
       for (const a of candidateContrib) cumulative.add(a);
     }
   } catch (err) {
+    // Swallowed inner-loop SQL error (e.g. statement_timeout 57014): the
+    // chain is partial and `degraded` stays true. MAX_HOPS exhaustion (loop
+    // exits without the clean break) likewise leaves `degraded` true.
     logger.error({ err }, 'Continuation chain resolution failed');
   }
 
-  return chain;
+  return { chain, degraded };
 }
 
 /**
@@ -2464,7 +2517,7 @@ async function findCanonicalRoot(
       );
       return null;
     }
-    const forwardChain = await resolveContinuationChain(
+    const { chain: forwardChain, degraded: forwardDegraded } = await resolveContinuationChain(
       currentAuthor,
       currentPermlink,
       memo,
@@ -2551,7 +2604,31 @@ async function findCanonicalRoot(
     // drift on the same window and post-edit staleness closes
     // uniformly. The membership-failed branch is also cached so a
     // repeated attacker-URL request does not re-walk on each hit.
-    await hafCache.set(cacheKey, { root: resolved }, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
+    //
+    // Negative-cache gate: a membership-failed negative (`resolved === null`)
+    // is only cached when the forward verify walk terminated cleanly. A
+    // degraded forward walk (swallowed SQL error, empty/failed head-authors
+    // fetch, cycle, or depth-cap truncation — NOT abort, which the
+    // signal?.aborted re-check above already handles) can drop a legitimate
+    // deep-chain leaf from the chain, so membership fails for a real member
+    // and `{ root: null }` would lock a false negative in for the full TTL,
+    // even after HAF recovers within seconds. Positive resolutions are always
+    // cached (the leaf was found, and truncation beyond it does not change
+    // root = chain[0]); a clean negative (the leaf genuinely outside a fully
+    // walked chain) still caches.
+    if (resolved !== null || !forwardDegraded) {
+      await hafCache.set(cacheKey, { root: resolved }, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
+    } else {
+      logger.debug(
+        {
+          event: 'canonical_root_walker_degraded_negative_uncached',
+          startAuthor: author,
+          startPermlink: permlink,
+          forwardChainLength: forwardChain.length,
+        },
+        'canonical-root walker skipped negative cache: forward verify chain degraded (partial), not a clean miss',
+      );
+    }
     return resolved;
   } catch (err) {
     logger.error(
@@ -2619,7 +2696,7 @@ async function reconstructVersionsFromHaf(
   try {
     // Resolve continuation chain to get all (author, permlink) pairs.
     // Caller may pass it in to avoid the duplicate fetch.
-    const chain = prefetchedChain ?? await resolveContinuationChain(author, permlink, memo, signal);
+    const chain = prefetchedChain ?? (await resolveContinuationChain(author, permlink, memo, signal)).chain;
 
     // Defense-in-depth abort check before the per-chain version replay
     // query. The forward walker (`resolveContinuationChain`) emits its

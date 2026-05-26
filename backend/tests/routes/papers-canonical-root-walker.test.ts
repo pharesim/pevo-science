@@ -612,3 +612,164 @@ describe('GET /api/papers/:author/:permlink — canonical-root forward-walker de
     }
   });
 });
+
+describe('GET /api/papers/:author/:permlink — non-abort degraded forward walk does not poison the canonical-root negative cache', () => {
+  // The abort variant (wall-clock budget tripping mid-step-2) is pinned by the
+  // "mid-step-2 wall-clock abort" spec above. These pin the NON-abort degraded
+  // exits the abort re-check cannot see: a swallowed inner-loop SQL error and
+  // an empty/failed root head-authors fetch. Both yield a partial forward
+  // chain WITHOUT setting signal.aborted, so a legitimate deep-chain leaf fails
+  // the membership check and — pre-fix — `{ root: null }` was cached for the
+  // full TTL, breaking the leaf's chain view until expiry even after HAF
+  // recovered within seconds. The reproducer chain is the same as above
+  // (carol/v3 → bob/v2 → alice/p1); the backward walk completes and finds
+  // alice/p1, then the forward verify from alice/p1 is degraded.
+
+  function statementTimeout(): Error {
+    // Mirrors Postgres 57014 (canceling statement due to statement timeout),
+    // the transient class the forward walker's inner catch swallows.
+    const e = new Error('canceling statement due to statement timeout');
+    (e as { code?: string }).code = '57014';
+    return e;
+  }
+
+  it('forward-walk SQL timeout (non-abort) leaves a deep-chain leaf uncached', async () => {
+    const aliceMeta = pevoPaperJsonMeta(['alice', 'bob', 'carol']);
+    const carolRow = pevoPaperRow('carol', 'v3', ['carol'], { continues: { author: 'bob', permlink: 'v2' } });
+    const aliceRow = pevoPaperRow('alice', 'p1', ['alice', 'bob', 'carol']);
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (isInitialBackwardProbe(sql)) {
+          if (a === 'carol' && p === 'v3') {
+            return { rows: [{ author: 'carol', json_metadata: carolRow.json_metadata, cont_author: 'bob', cont_permlink: 'v2' }] };
+          }
+          return { rows: [] };
+        }
+        if (a === 'bob' && p === 'v2') return { rows: [{ cont_author: 'alice', cont_permlink: 'p1' }] };
+        if (a === 'alice' && p === 'p1') return { rows: [] };
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        // Root seed succeeds, so the forward walker enters its loop and the
+        // continuation probe below is the failure point.
+        if (params[0] === 'alice') return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        return { rows: [] };
+      }
+      if (isForwardWalkContinuationProbe(sql)) {
+        // The forward verify's continuation probe trips a statement timeout;
+        // the walker's inner catch swallows it and returns the root-only chain
+        // with degraded=true (signal.aborted stays false).
+        throw statementTimeout();
+      }
+      if (isPaperDetailFetch(sql)) {
+        const a = params[0];
+        if (a === 'carol') return { rows: [carolRow] };
+        if (a === 'alice') return { rows: [aliceRow] };
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/carol/v3');
+    expect(res.status).toBeLessThan(500);
+
+    // Load-bearing: the negative result derived from the degraded (truncated)
+    // forward walk must NOT be cached. A regression that drops the degraded
+    // gate caches `{ root: null }` here and poisons the entry for the TTL.
+    const cached = await hafCache.get('canonical-root:carol:v3');
+    expect(cached).toBeUndefined();
+  });
+
+  it('empty root head-authors fetch (HAF eventual consistency) leaves a deep-chain leaf uncached', async () => {
+    const carolRow = pevoPaperRow('carol', 'v3', ['carol'], { continues: { author: 'bob', permlink: 'v2' } });
+    const aliceRow = pevoPaperRow('alice', 'p1', ['alice', 'bob', 'carol']);
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (isInitialBackwardProbe(sql)) {
+          if (a === 'carol' && p === 'v3') {
+            return { rows: [{ author: 'carol', json_metadata: carolRow.json_metadata, cont_author: 'bob', cont_permlink: 'v2' }] };
+          }
+          return { rows: [] };
+        }
+        if (a === 'bob' && p === 'v2') return { rows: [{ cont_author: 'alice', cont_permlink: 'p1' }] };
+        if (a === 'alice' && p === 'p1') return { rows: [] };
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        // The root's authorized-author row is not yet visible (eventual
+        // consistency / transient read miss). fetchHeadAuthorizedAuthors
+        // returns null, so the forward walker terminates root-only with
+        // degraded=true — indistinguishable here from a genuinely author-less
+        // root, hence fail-safe to "do not cache".
+        return { rows: [] };
+      }
+      if (isForwardWalkContinuationProbe(sql)) return { rows: [] };
+      if (isPaperDetailFetch(sql)) {
+        const a = params[0];
+        if (a === 'carol') return { rows: [carolRow] };
+        if (a === 'alice') return { rows: [aliceRow] };
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/carol/v3');
+    expect(res.status).toBeLessThan(500);
+
+    const cached = await hafCache.get('canonical-root:carol:v3');
+    expect(cached).toBeUndefined();
+  });
+
+  it('clean negative (leaf outside a fully-walked chain) still caches { root: null }', async () => {
+    // No regression in the legitimate negative-cache path: when the forward
+    // walk terminates cleanly (the continuation probe returns zero rows) and
+    // the leaf is genuinely not a member, the `{ root: null }` negative is
+    // still cached so repeated attacker-URL requests do not re-walk. Mirrors
+    // the fail-CLOSED spec's chain (attacker/fake-paper → alice/paper-v1) but
+    // asserts the cache write rather than the response body.
+    const aliceMeta = pevoPaperJsonMeta(['alice']);
+    const attackerRow = pevoPaperRow('attacker', 'fake-paper', ['attacker'], { continues: { author: 'alice', permlink: 'paper-v1' } });
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (isInitialBackwardProbe(sql)) {
+          if (a === 'attacker' && p === 'fake-paper') {
+            return { rows: [{ author: 'attacker', json_metadata: attackerRow.json_metadata, cont_author: 'alice', cont_permlink: 'paper-v1' }] };
+          }
+          return { rows: [] };
+        }
+        if (a === 'alice' && p === 'paper-v1') return { rows: [] };
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        if (params[0] === 'alice' && params[1] === 'paper-v1') {
+          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        }
+        return { rows: [] };
+      }
+      // Clean end: no candidate in alice's cumulative admit-set continues at
+      // alice/paper-v1, so the forward walker breaks on rows.length === 0
+      // (degraded=false).
+      if (isForwardWalkContinuationProbe(sql)) return { rows: [] };
+      if (isPaperDetailFetch(sql)) {
+        if (params[0] === 'attacker') return { rows: [attackerRow] };
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/attacker/fake-paper');
+    expect(res.status).toBe(200);
+
+    const cached = await hafCache.get('canonical-root:attacker:fake-paper');
+    expect(cached).toEqual({ root: null });
+  });
+});

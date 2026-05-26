@@ -42,3 +42,18 @@ Make truncation observable at the `resolveContinuationChain` boundary so callers
 ## Source
 
 - `/ce-code-review` adversarial (confidence 75) during round-2 review of `backend-canonical-root-walker-cumulative-aware` (2026-05-25): constructed the SQL-statement-timeout and HAF-eventual-consistency truncation reproducers that the abort-only re-check does not cover.
+
+## Backend completion signal (2026-05-26)
+
+Implemented **Alternative 1 (discriminated return)** — chosen so the walker is the single source of truth for classifying its own exits; multiple negative-caching callers need the signal and a new degraded exit cannot drift per-call-site under Alternative 2's encode-at-call-site approach.
+
+- **`resolveContinuationChain` now returns `ChainResolution { chain: ChainLink[]; degraded: boolean }`.** `degraded` starts true and flips to false ONLY at the clean natural-end break (`result.rows.length === 0`). Every other exit leaves it true: pool unavailable, pre-loop / mid-loop wall-clock abort, empty-or-failed root head-authors fetch, swallowed inner-loop SQL error (statement_timeout 57014), cycle detection, MAX_HOPS truncation.
+- **`findCanonicalRoot` (STEP 4) gates the negative cache.** A membership-failed `{ root: null }` is written only when `resolved !== null || !forwardDegraded` — positives always cache, and a negative caches only when the forward verify walk was clean. A degraded forward walk that drops a legitimate deep-chain leaf now skips the write (emits `canonical_root_walker_degraded_negative_uncached` at debug) so the next request re-resolves after HAF recovers. The abort variant stays handled by the existing `signal?.aborted` re-check; this closes the non-abort degraded gap.
+- **`computeChainCumulativeFromHaf` (the `chain-authors:` cache) gets the same gate — YES, it needed it.** `if (degraded) return null` after resolving the chain, so a partial chain's under-populated cumulative author-union is never cached (the surrounding `getOrSet` drops null). This subsumes the abort variant (previously covered only by the empty-versions guard) and closes the mid-walk non-abort truncation gap for chains longer than the root; the `chain.length === 1` short-circuit already covered root-only degraded walks.
+- **Live surfaces don't gate.** `fetchPaperDetailFromHaf` and `reconstructVersionsFromHaf` destructure `.chain` only — a degraded (partial) walk shows fewer versions (existing fail-soft behavior) and is not negative-cached.
+
+Canaries in `tests/routes/papers-canonical-root-walker.test.ts`: (1) forward-walk SQL statement-timeout (57014, non-abort) → `canonical-root:carol:v3` stays undefined; (2) empty root head-authors fetch (HAF eventual consistency) → same; (3) clean negative (leaf genuinely outside a fully-walked chain) STILL caches `{ root: null }` (no regression). The existing mid-step-2 abort cache-skip canary stays.
+
+**Verification.** `npm run typecheck` clean (src + tests); `npm run lint` (src) clean on `routes/papers.ts` (the one remaining warning is pre-existing in `author-supersession.ts`, untouched); scoped `npx vitest run` → walker 9/9, plus cumulative-cross-surface + route-error-isolation + continuation-author-gate 59/59 (covers the `chain-authors:` and per-row enrichment paths). Self-audit on changed lines: no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in the source/test files.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
