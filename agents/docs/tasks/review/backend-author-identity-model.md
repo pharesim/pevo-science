@@ -84,3 +84,37 @@ Extend the cumulative-union + shared supersession projection so (a) Hive-less co
 - `agents/docs/tasks/blocked/architect-cumulative-union-doc-edits.md` — where the doc edits land.
 - `agents/docs/tasks/blocked/backend-bridge-paper-author-claim-flow.md` — the forbidden-auto-merge boundary's explicit alternative.
 - `backend/src/routes/papers.ts` `buildCumulativeAuthorsForChain` — the construction; `backend/src/hafsql.ts` `authorsWithSupersessionSelect` — SQL projection; `backend/src/lib/author-supersession.ts` — JS parity helpers; `backend/src/types/domain.ts` `PaperAuthor` — the type.
+
+---
+
+## Backend implementation summary
+
+R1–R4 landed as one coherent change. Implementation commit + a follow-on fixture-modeling commit.
+
+### Files
+
+- `backend/src/accreditation.ts` — new `getAccreditedNamesByAccount()` (active-only attested-name map; non-empty `researcher_name` only; loud-fail error contract mirroring `getAccreditedOrcidsByAccount`). The JS source for name-supersession.
+- `backend/src/lib/author-supersession.ts` — new exported `resolveAuthorName(hive, broadcasterName, orcid, nameMap)` implementing name-supersession + the fallback chain (attested → broadcaster → hive handle → orcid; `undefined` only for a fully-empty entry). `applyAuthorSupersession` now takes a `nameMap` and resolves `name` through it. `computeSupersession` unchanged (ORCID only).
+- `backend/src/hafsql.ts` — `authorsWithSupersessionSelect` `name` projection is now `COALESCE(NULLIF(aa.researcher_name,''), NULLIF(a.elem->>'name',''), NULLIF(a.elem->>'hive',''), NULLIF(a.elem->>'orcid',''))` (active-only attested via the existing LEFT JOIN). Docblock documents the silent name-supersession + fallback.
+- `backend/src/routes/papers.ts` — `buildCumulativeAuthorsForChain` rewritten with two never-merging tracks (hive-keyed + Hive-less composite-key `orcid:`/`name:`), one shared first-occurrence counter, name-supersession + fallback per entry, and a sound `typeof a.name === 'string'` exit guard (no `as` cast). New `hivelessCompositeKey` helper. `accreditedNames` threaded through `ResolveChainCumulativeAuthorsOptions`, the detail/listing batches, and the version/`metadata_restored` paths. Single-link short-circuit comments corrected (the union no longer strips Hive-less carriers).
+- `backend/src/routes/profile.ts`, `backend/src/helpers.ts` — `nameMap` threaded into the profile enrichment, `fetchUserPapersFromHaf`, and `toPaperSummary`.
+
+### `PaperAuthor.name`
+
+Already typed `name: string` (required); the change makes the runtime honor it (every realistic entry resolves a name via the fallback) and replaces the unsound `hive`-discriminator guard with a sound `name`-based one — closing the type-soundness gap the round-4 deferral flagged. The round-3 `hive`-deviation is now unnecessary.
+
+### Tests
+
+Deterministic helper canaries (in `papers-cumulative-cross-surface-parity-mocked.test.ts`): Hive-less carry on multi-link, composite-key dedup on the ORCID track and the name track, two-track no-merge boundary, first-occurrence interleave, Hive-less enumerated-key parity, fully-empty-entry drop, silent name-supersession (attested wins, no `name_discrepancy`/`name_verified` field), no-supersession-without-attested-name, and the full fallback chain. Real-Postgres SQL canary (in `hafsql.test.ts`) pins the `authorsWithSupersessionSelect` name COALESCE precedence (and updated the existing cascade-fail CTE to expose `researcher_name`). The real-HAF cross-surface parity canary (`papers.test.ts`) now compares full author-`name` lists across detail/listing/profile (Hive-less-persistence parity). `applyAuthorSupersession`/`toPaperSummary` call sites updated for the new `nameMap` param.
+
+### Fixture modeling (R3) — scoping note for review
+
+Per R3 ("fixtures model the cutover reality"), added `name` to the bare-hive author entries in the **paper-author** fixtures: `papers-cumulative-orcid-audit`, `reputation-paper-reviews-self-exclusion-canary`, `review-parity-invariant`, `haf-outage-translation-canaries`, `papers-canonical-orcid-resolution` (clean entries), `profile-papers-cid-validate`, and the existing `papers-cumulative-cross-surface-parity-mocked` canaries. **Deliberately left name-less:** hive-normalization probes (mixed-case `'Bob'`, whitespace-padded `' carol-padded '`, malformed `'al;ice'`, escape-prefixed `'\tbob'` in `hafsql.test.ts`/`anonymousReview`/`retract`/`profile-papers-supersession`), SQL-fragment unit-test rows, the `normalizeHiveAccount` unit-test object, and the read-time-fallback canaries — for all of these the name-less / malformed shape IS the test subject. Flagging in case the architect wants the probe fixtures churned too (trivial follow-up); the substantive coverage (name total + both shapes) is already pinned by the new canaries.
+
+### Verification
+
+`npm run typecheck` (src + tests) clean; `npm run lint` clean (1 pre-existing `author-supersession.ts` unused-eslint-disable warning, untouched). Scoped vitest across all touched-path files green (cumulative-union + cross-surface-parity + supersession + audit + listing/profile + real-HAF papers/profile). No `as unknown as` laundering at the helper boundary; no `name_discrepancy`/`name_verified` field emitted. Comment anchors clean (no task slugs, round numbers, line/SHA/date anchors; requirement-ID qualifiers stripped from production/test comments).
+
+### Architect doc edits remain (per task body `[TODO Architect]`)
+
+`hive-schemas.md` § 1.1, `api-contracts/papers.md`, and `ARCHITECTURE.md` § 2 edits land at archive (architect-owned), folded into the `architect-cumulative-union-doc-edits` rewrite.
