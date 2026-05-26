@@ -472,6 +472,9 @@ export async function computeReputationBatch(
           cj.json::jsonb ->> 'paper_author' AS paper_author,
           cj.json::jsonb ->> 'paper_permlink' AS paper_permlink,
           (cj.json::jsonb ->> 'author_index')::int AS author_index,
+          -- On-chain signer of the op; for approve_authorship (§2.10) this is
+          -- the approver, gated to post author / bridge in the arms below.
+          cj.required_posting_auths ->> 0 AS approver,
           cj.block_num
         FROM ${T.customJson} cj
         WHERE cj.custom_id = $3
@@ -508,10 +511,15 @@ export async function computeReputationBatch(
                   AND ap.claimer = ce.claimer
                   AND ap.paper_author = ce.paper_author
                   AND ap.paper_permlink = ce.paper_permlink
+                  AND ap.approver IN (ap.paper_author, $18)
               ), 0)
           )
           AND (
-            -- Explicitly approved
+            -- Explicitly approved. §2.10 signer gate: a self-signed approve
+            -- (signer = claimer) is not a valid trust grant; only the post
+            -- author or the bridge account can approve a co-author claim.
+            -- Mirrors authorshipClaimsCteBody's approvals arm on the read
+            -- surface so cycle and read surfaces resolve claims identically.
             EXISTS (
               SELECT 1 FROM claim_events ap
               WHERE ap.action = 'approve_authorship'
@@ -519,6 +527,7 @@ export async function computeReputationBatch(
                 AND ap.paper_author = ce.paper_author
                 AND ap.paper_permlink = ce.paper_permlink
                 AND ap.block_num > ce.block_num
+                AND ap.approver IN (ap.paper_author, $18)
             )
             -- Auto-accept: ORCID match. This arm and the read-surface
             -- authorshipClaimsCteBody arm share the chainOrcidAutoAcceptMatchSql

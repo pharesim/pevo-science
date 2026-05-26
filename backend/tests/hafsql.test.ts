@@ -104,26 +104,31 @@ describe('authorshipClaimsCteBody scope', () => {
  * wrong value).
  */
 describe('authorshipClaimsCteBody param arithmetic', () => {
-  it('unscoped: nextIdx and params have the base 3 entries', () => {
+  it('unscoped: nextIdx and params have the base 4 entries', () => {
     const frag = authorshipClaimsCteBody(5);
-    // base params: [appTag, genesisBlock, appTag]; three $N consumed (5,6,7)
-    expect(frag.params).toHaveLength(3);
-    expect(frag.nextIdx).toBe(8);
-  });
-
-  it('claimer scope adds 1 param and advances nextIdx by 1', () => {
-    const frag = authorshipClaimsCteBody(5, { claimer: 'alice' });
+    // base params: [appTag, genesisBlock, appTag, hiveBridgeAccount]; four $N
+    // consumed (5,6,7,8). The bridge account ($8 here) backs the §2.10 approve
+    // signer gate in the approvals arm.
     expect(frag.params).toHaveLength(4);
-    expect(frag.params[3]).toBe('alice');
+    expect(frag.params[3]).toBe(config.hiveBridgeAccount);
     expect(frag.nextIdx).toBe(9);
   });
 
-  it('paper scope adds 2 params and advances nextIdx by 2', () => {
-    const frag = authorshipClaimsCteBody(5, { paperAuthor: 'bob', paperPermlink: 'p-1' });
+  it('claimer scope adds 1 param after the base 4 and advances nextIdx by 1', () => {
+    const frag = authorshipClaimsCteBody(5, { claimer: 'alice' });
     expect(frag.params).toHaveLength(5);
-    expect(frag.params[3]).toBe('bob');
-    expect(frag.params[4]).toBe('p-1');
+    expect(frag.params[3]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[4]).toBe('alice');
     expect(frag.nextIdx).toBe(10);
+  });
+
+  it('paper scope adds 2 params after the base 4 and advances nextIdx by 2', () => {
+    const frag = authorshipClaimsCteBody(5, { paperAuthor: 'bob', paperPermlink: 'p-1' });
+    expect(frag.params).toHaveLength(6);
+    expect(frag.params[3]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[4]).toBe('bob');
+    expect(frag.params[5]).toBe('p-1');
+    expect(frag.nextIdx).toBe(11);
   });
 });
 
