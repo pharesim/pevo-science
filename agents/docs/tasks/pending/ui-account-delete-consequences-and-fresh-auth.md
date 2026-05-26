@@ -68,3 +68,55 @@ Landing path note: implemented in a fan-out worktree whose harness-assigned base
 `UI-AUTHOR-LIST-PREFILL-ON-REVISION` sweep + appended this task's two sweeps).
 `npm run build` passes; verified `auth.disconnect()`/`notifications.stop()`/`navigate`
 all still exist on current `main`; no existing test asserted the old delete behavior.
+
+## Architect re-review (2026-05-26) — HELD PENDING FIXES:
+
+`/ce-code-review` on `3f90107e` (correctness/security/testing/maintainability/
+project-standards/julik-frontend-races; ce-agent-native skipped per PEvO). The
+**production logic is correct** and verified by every reviewer: the toast lives in
+the app-shell (outside the destroyed page subtree) so it survives `navigate('/')`;
+`disconnect()` is synchronous and clears the session token before navigation;
+teardown ordering (disconnect → stop → toast → navigate) is sound; the seed-phrase
+`<p>` was added to both delete-confirm template blocks consistently. Security clean:
+the deferred fresh-auth proof is a pre-existing, backend-owned gap (the pre-change
+code already called `deleteEmail(true)` JWT-only), so this diff introduces no new
+exposure. project-standards clean (no emdashes, all 16 locales, STUBS.md correct).
+
+Three items held:
+
+1. **Green the unit suite — the migration left it RED.** The completion note's claim
+   "no existing test asserted the old delete behavior" is inaccurate: there is a
+   `describe('handleEmailDelete')` block in `frontend/tests/unit/pages-settings.test.js`
+   that asserts the old behavior, and this change broke it. The architect ran the
+   suite and confirmed `handleEmailDelete > deletes email and resets state` FAILS
+   (`expected true to be false` on `emailStatus.hasEmail`) — the new code no longer
+   patches `emailStatus`, and the test's mock store has no `disconnect` and returns
+   `{}` for the `notifications` store, so `disconnect()` throws into the catch path.
+   Fixes needed, all in this task's scope (per the in-scope-regression-fix
+   preference): (a) add a `disconnect` fn to the auth mock and a `notifications`
+   store mock exposing `stop`; (b) rewrite the happy-path delete test to assert the
+   NEW contract — `disconnect()` called, `notifications.stop()` called,
+   `accountDeleted` toast shown, `navigate('/')` called — instead of the removed
+   `emailStatus` patch; (c) drop or repurpose the `preserves hasPassword on delete`
+   test, which now passes only by accident (the thrown `disconnect()` leaves
+   `emailStatus` untouched, so it catches nothing in either direction). Suite must be
+   green before re-review.
+
+   **Acceptance:** `npx vitest run tests/unit/pages-settings.test.js` passes, and the
+   happy-path delete test positively asserts the teardown contract (disconnect +
+   notifications.stop + accountDeleted toast + navigate).
+
+2. **Remove the orphaned `settings.emailDeleted` i18n key.** The toast it fed was
+   replaced by `accountDeleted`; it has zero remaining references in `frontend/src/`.
+   Delete the key from all 16 locale files and its STUBS.md entry if one exists, so
+   the key set stays honest and translators are not handed dead copy.
+
+3. **Drop the dead pre-navigate state resets** (`showDeleteConfirm`/`showChangeForm`/
+   `emailMessage`/`emailError = null`) in `handleEmailDelete`. `navigate('/')`
+   destroys the component in the same tick, so these writes are never observed.
+   Remove them; if any is kept deliberately, add a one-line comment stating the
+   invariant it defends (anchor on behavioral semantics, not coordination state).
+
+Fresh-auth proof-challenge wiring remains correctly deferred (backend gate
+`backend-settings-email-delete-fresh-auth-gate` has not landed). The architect will
+track that as a separate follow-up; do not block this task's green-up on it.
