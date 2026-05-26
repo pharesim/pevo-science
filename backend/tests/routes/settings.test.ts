@@ -379,13 +379,16 @@ describe('Settings email (with DB)', () => {
     'DELETE anonymizes audit history instead of wiping it (forensics + right-to-erasure)',
     async () => {
       // Seed: an account row plus two prior custody_audit_log rows for the
-      // same username — one with PII-derived columns populated (simulating
-      // a consent-op broadcast that ran the fresh-auth gate), one without.
-      // After DELETE /api/settings/email, both prior rows AND the
-      // `email_deleted` row inserted by the handler must survive with
-      // username/user_agent/session_id NULLed and operation_type +
-      // created_at preserved. The wider table's row count stays exactly
-      // (prior + 1) — no row was DELETEd, only anonymized.
+      // same username. One simulates a consent-op broadcast that ran the
+      // fresh-auth gate (PII-derived columns populated AND forensic columns
+      // tx_id/auth_mechanism set); one is a non-broadcast event. After
+      // DELETE /api/settings/email both seeded rows must SURVIVE (no row is
+      // DELETEd, only anonymized) with username/user_agent/session_id NULLed,
+      // while the forensic columns tx_id/auth_mechanism retain their seeded
+      // values. The handler's own `email_deleted` row is likewise anonymized,
+      // which the username-scoped "no rows still bound" assertion below
+      // covers: an un-anonymized email_deleted row would keep the username
+      // link, and a wrong INSERT-after-UPDATE order would leave it bound.
       const pool = getAppPool()!;
       const username = `anon_audit_${Date.now()}`;
       const email = `anon_audit_${Date.now()}@example.com`;
@@ -393,14 +396,22 @@ describe('Settings email (with DB)', () => {
         `INSERT INTO accounts (email, username, verify_token) VALUES ($1, $2, NULL)`,
         [email, username],
       );
-      await pool.query(
-        `INSERT INTO custody_audit_log (username, operation_type, user_agent, session_id)
-         VALUES ($1, 'author_accept', 'fake-ua-hash', 'fake-session-id')`,
-        [username],
+      const seededTxId = `seeded-tx-${username}`;
+      const {
+        rows: [{ id: acceptId }],
+      } = await pool.query<{ id: number }>(
+        `INSERT INTO custody_audit_log
+           (username, operation_type, user_agent, session_id, tx_id, auth_mechanism)
+         VALUES ($1, 'author_accept', 'fake-ua-hash', 'fake-session-id', $2, 'orcid')
+         RETURNING id`,
+        [username, seededTxId],
       );
-      await pool.query(
-        `INSERT INTO custody_audit_log (username, operation_type)
-         VALUES ($1, 'login_failure')`,
+      const {
+        rows: [{ id: loginFailId }],
+      } = await pool.query<{ id: number }>(
+        `INSERT INTO custody_audit_log (username, operation_type, user_agent, session_id)
+         VALUES ($1, 'login_failure', 'fake-ua-2', 'fake-session-2')
+         RETURNING id`,
         [username],
       );
 
@@ -412,9 +423,11 @@ describe('Settings email (with DB)', () => {
         expect(res.status).toBe(200);
         expect(res.body.data.deleted).toBe(true);
 
-        // No rows remain bound to the deleted username (privacy: the
-        // username link is severed for every prior row, including the
-        // just-inserted `email_deleted` row).
+        // No rows remain bound to the deleted username. This also covers the
+        // handler's just-inserted `email_deleted` row: it is INSERTed with
+        // the username and then swept by the anonymize UPDATE, so a row still
+        // bound here would mean either it was never anonymized or the INSERT
+        // ran after the UPDATE (the inverted order the handler guards against).
         const { rows: stillBound } = await pool.query(
           'SELECT id FROM custody_audit_log WHERE username = $1',
           [username],
@@ -429,50 +442,48 @@ describe('Settings email (with DB)', () => {
         );
         expect(accRows.length).toBe(0);
 
-        // The pre-existing operation_type rows survive, anonymized.
-        // Identify them via `tx_id` / `operation_type` markers we seeded.
-        // We can't filter by username (it's NULL now), so we look for the
-        // three operation types we wrote/triggered: author_accept,
-        // login_failure, email_deleted, all with username IS NULL and
-        // PII columns NULL.
-        const { rows: anonRows } = await pool.query<{
+        // The two seeded rows SURVIVE the delete (anonymized, not wiped),
+        // pinned by id so the assertion is deterministic under parallel
+        // sibling test load against the shared DB.
+        const { rows: survivors } = await pool.query<{
+          id: number;
           operation_type: string;
           username: string | null;
           user_agent: string | null;
           session_id: string | null;
+          tx_id: string | null;
+          auth_mechanism: string | null;
         }>(
-          `SELECT operation_type, username, user_agent, session_id
+          `SELECT id, operation_type, username, user_agent, session_id, tx_id, auth_mechanism
              FROM custody_audit_log
-            WHERE operation_type IN ('author_accept', 'login_failure', 'email_deleted')
-              AND username IS NULL
-              AND user_agent IS NULL
-              AND session_id IS NULL
-              AND created_at >= NOW() - INTERVAL '1 minute'`,
+            WHERE id IN ($1, $2)
+            ORDER BY id`,
+          [acceptId, loginFailId],
         );
-        // At least our three rows must be present, all anonymized. We
-        // use >= 3 rather than == 3 to tolerate sibling test seeding into
-        // the same window.
-        const opTypes = anonRows.map((r) => r.operation_type).sort();
-        expect(opTypes).toContain('author_accept');
-        expect(opTypes).toContain('login_failure');
-        expect(opTypes).toContain('email_deleted');
-        // Re-confirm every anon row has the link severed + PII NULLed.
-        for (const r of anonRows) {
+        // Both present: nothing was DELETEd, only anonymized.
+        expect(survivors.length).toBe(2);
+        for (const r of survivors) {
           expect(r.username).toBeNull();
           expect(r.user_agent).toBeNull();
           expect(r.session_id).toBeNull();
         }
+        // Forensic columns SURVIVE the anonymize: the seeded author_accept
+        // row keeps its tx_id and auth_mechanism. This guards against a
+        // regression that adds a forensic column to the `SET ... = NULL`
+        // clause. tx_id is a public-ledger reference the user themselves
+        // signed and is retained by design.
+        const acceptRow = survivors.find((r) => r.id === acceptId)!;
+        expect(acceptRow.operation_type).toBe('author_accept');
+        expect(acceptRow.tx_id).toBe(seededTxId);
+        expect(acceptRow.auth_mechanism).toBe('orcid');
       } finally {
-        // Defensive: rows with username=NULL won't match the WHERE in
-        // the file-level cleanup, so sweep the seeded operation_types
-        // from this test window directly.
+        // Cleanup pinned to the rows we own. The handler's anonymized
+        // `email_deleted` row (server-assigned id inside the handler txn,
+        // username NULLed) is left for the custody-audit-retention-sweep to
+        // collect by created_at; sweeping by operation_type/time window here
+        // could clobber a concurrent sibling's anonymized rows on the shared DB.
         await pool
-          .query(
-            `DELETE FROM custody_audit_log
-              WHERE username IS NULL
-                AND operation_type IN ('author_accept', 'login_failure', 'email_deleted')
-                AND created_at >= NOW() - INTERVAL '5 minutes'`,
-          )
+          .query('DELETE FROM custody_audit_log WHERE id IN ($1, $2)', [acceptId, loginFailId])
           .catch(() => {});
         await pool.query('DELETE FROM accounts WHERE username = $1', [username]).catch(() => {});
       }

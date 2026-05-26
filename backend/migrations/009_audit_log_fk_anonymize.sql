@@ -11,10 +11,14 @@
 -- (operation_type, tx_id, block_num, created_at, auth_mechanism,
 -- fresh_auth_outcome) survive. This satisfies both:
 --
---   - GDPR Art. 17 right-to-erasure: no PII remains (the SHA-256 user-agent
---     hash and session id are both correlatable back to the original session,
---     so both are dropped; the bare operation_type + timestamp + mechanism
---     is anonymous activity metadata).
+--   - GDPR Art. 17 right-to-erasure: the erasure covers the username link and
+--     the PII-derived columns (user_agent, session_id), not the public-ledger
+--     references. The SHA-256 user-agent hash and the session id are both
+--     correlatable back to the original session, so both are dropped. The
+--     retained tx_id / block_num point at public Hive transactions the user
+--     themselves signed (inherently public on-chain data), so they are out of
+--     scope for erasure. What remains (operation_type + timestamp + mechanism,
+--     plus those public references) is anonymous activity metadata.
 --   - Forensics: the row count and operation_type distribution survive
 --     post-deletion, so an operator can still see "an `email_deleted` event
 --     happened at T0 for a now-anonymized user" without re-identifying them.
@@ -64,7 +68,9 @@ COMMENT ON COLUMN custody_audit_log.user_agent IS
   'candidate UA can confirm presence by recomputing the hash. '
   'Legal basis: legitimate interest in security audit, GDPR Art. 6(1)(f). '
   'Retention: 24 months from row insert (security-audit retention, balanced against '
-  'GDPR data-minimization Art. 5(1)(c)/(e)); periodic cleanup job is a follow-up. '
+  'GDPR data-minimization Art. 5(1)(c)/(e)); enforced by the custody-audit-retention-sweep '
+  'job (backend/src/jobs/custody-audit-retention-sweep.ts), which deletes rows by created_at '
+  'and so also collects anonymized (NULL-username) rows. '
   'Right-to-erasure deletion path: the account-deletion sweep inside the '
   'DELETE /api/settings/email handler in backend/src/routes/settings.ts runs '
   'UPDATE custody_audit_log SET username = NULL, user_agent = NULL, session_id = NULL '
@@ -74,8 +80,8 @@ COMMENT ON COLUMN custody_audit_log.user_agent IS
   'Populated whenever a fresh-auth challenge has been answered for the broadcast, '
   'covering both consent-op signing (author_accept / author_resign) and non-consent '
   'broadcasts (e.g., vote, comment, custom_json) that answer a session-kind or '
-  'consent_op-kind fresh-auth challenge. See the success-path auditExtras constructor '
-  'inside the POST /api/custody/broadcast handler in backend/src/routes/custody.ts '
+  'consent_op-kind fresh-auth challenge. See the POST /api/custody/broadcast handler '
+  'in backend/src/routes/custody.ts '
   'for the insert path. Rows persisted before the hash-at-insert change still hold '
   'raw UA strings and age out under the retention sweep without retroactive rewrite. '
   'Scope on the wider table: custody_audit_log also stores non-broadcast '

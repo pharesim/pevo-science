@@ -667,20 +667,23 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
     // columns + the username link), then delete the application-side rows.
     //
     // Anonymize-on-delete instead of DELETE preserves the forensic trail
-    // across the right-to-erasure path: operation_type + timestamp survive
-    // so an operator triaging incident traffic can still see that an event
-    // happened, but the username link and the PII-derived columns
-    // (user_agent, session_id) are erased. Per the column COMMENT on
-    // `custody_audit_log.username` (set in migration 009): username is
-    // nullable for exactly this purpose; the prior account-delete path
-    // wiped the entire row history, giving an attacker who triggered
-    // `email_deleted` a one-call audit-log wipe.
+    // across the right-to-erasure path: the forensic columns (operation_type,
+    // tx_id, block_num, created_at, auth_mechanism, fresh_auth_outcome)
+    // survive so an operator triaging incident traffic can still see that an
+    // event happened, while the username link and the PII-derived columns
+    // (user_agent, session_id) are erased. The retained tx_id/block_num are
+    // references to public Hive transactions the user themselves signed
+    // (inherently public on-chain data), so they are out of scope for erasure.
+    // Per the column COMMENT on `custody_audit_log.username` (set in migration
+    // 009): username is nullable for exactly this purpose; the prior
+    // account-delete path wiped the entire row history, giving an attacker who
+    // triggered `email_deleted` a one-call audit-log wipe.
     //
-    // Order matters: the `email_deleted` INSERT must come BEFORE the
-    // anonymize UPDATE, otherwise the just-inserted row's username would
-    // itself be NULLed in the same WHERE-username-matches sweep. The
-    // post-INSERT UPDATE then anonymizes the new row alongside every
-    // older row for the same username.
+    // Order matters: the `email_deleted` INSERT comes BEFORE the anonymize
+    // UPDATE so the just-inserted row is itself swept up and anonymized (its
+    // username NULLed) by the same WHERE-username-matches UPDATE. The reverse
+    // order (UPDATE then INSERT) would leave the `email_deleted` row bound to
+    // the live username, defeating the erasure for that very row.
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -709,7 +712,7 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
 
       await client.query('COMMIT');
     } catch (txErr) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
       throw txErr;
     } finally {
       client.release();
