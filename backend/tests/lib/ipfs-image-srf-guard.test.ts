@@ -1,12 +1,12 @@
 /**
  * IPFS `image` SRF-argument-position array-guard defense.
  *
- * Two production sites invoke `jsonb_array_elements_text(c.json_metadata->'image')`
- * in a `CROSS JOIN LATERAL`-equivalent shape:
- *   - `backend/src/routes/ipfs.ts` `cidIsKnown` (the GET /ipfs/:cid gateway's
- *     CID-known check).
- *   - `backend/src/ipfs-cleanup.ts cidReferencedInHaf` (the cleanup job's
- *     CID-in-use check).
+ * One production site invokes `jsonb_array_elements_text(c.json_metadata->'image')`
+ * in a `CROSS JOIN LATERAL`-equivalent shape: the shared
+ * `cidReferencedByAppTag` containment query in `backend/src/lib/ipfs-shared.ts`,
+ * which both reference checks consume — the GET /ipfs/:cid gateway's CID-known
+ * check (`cidIsKnown`, `routes/ipfs.ts`) and the cleanup job's CID-in-use check
+ * (`cidReferencedInHaf`, `ipfs-cleanup.ts`).
  *
  * Hive's `image` metadata is convention, not schema: any post can broadcast
  * a non-array `image` value (null, string, integer, object). Postgres
@@ -15,10 +15,10 @@
  * fix is to move the type-guard INTO the SRF argument via CASE-WHEN with
  * `ELSE '[]'::jsonb` fallback.
  *
- * Failure mode without the guard:
- *   - `cidIsKnown`: GET /ipfs/:cid raises on every CID lookup while at least
- *     one post in scope has malformed `image`. Per-request fault.
- *   - `cidReferencedInHaf`: the periodic cleanup job crashes mid-sweep,
+ * Failure mode without the guard (both reach the shared query):
+ *   - via `cidIsKnown`: GET /ipfs/:cid raises on every CID lookup while at
+ *     least one post in scope has malformed `image`. Per-request fault.
+ *   - via `cidReferencedInHaf`: the periodic cleanup job crashes mid-sweep,
  *     leaving orphaned pending-upload rows and their pins until the
  *     malformed post is edited or removed.
  *
@@ -34,12 +34,12 @@
  * behavioral block below composes the production `imageSrfGuardExpr`
  * (lib/ipfs-shared.ts), so the fragment it runs cannot drift from the live
  * guard; the second describe block then pins that the builder still carries
- * the guard and substitutes its alias argument AND that each call site
- * (`cidIsKnown` / `cidReferencedInHaf`) interpolates that shared builder, so a
+ * the guard and substitutes its alias argument AND that the shared
+ * `cidReferencedByAppTag` containment query interpolates that builder, so a
  * revert that gutted the builder, dropped its alias argument, or inlined an
- * unguarded SRF argument at either site fails red. Together they cover the
- * malformed-image cascade-fail class at the behavioral, builder, and
- * call-site layers.
+ * unguarded SRF argument at the one production SRF site fails red. Together
+ * they cover the malformed-image cascade-fail class at the behavioral,
+ * builder, and call-site layers.
  *
  * See conventions:
  *   - pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16
@@ -158,11 +158,12 @@ describe('IPFS image SRF-argument array-guard (real Postgres, synthetic rows)', 
 // The behavioral block above composes the imported imageSrfGuardExpr, so it
 // can no longer drift from production by construction. This block adds two
 // layers: (1) the shared builder still carries the CASE-WHEN jsonb_typeof
-// array guard and substitutes its alias argument, and (2) each production call
-// site interpolates that shared builder (invoked with a relation-alias literal)
-// into its jsonb_array_elements_text() SRF — so a revert that gutted the
-// builder, dropped its alias argument, or inlined an unguarded SRF argument at
-// either call site fails red. Modeled on
+// array guard and substitutes its alias argument, and (2) the one production
+// SRF site — the shared cidReferencedByAppTag containment query, consumed by
+// both reference checks — interpolates that shared builder (invoked with a
+// relation-alias literal) into its jsonb_array_elements_text() SRF, so a revert
+// that gutted the builder, dropped its alias argument, or inlined an unguarded
+// SRF argument fails red. Modeled on
 // `excludeSelfReviewWhere-callsite-canaries.test.ts`.
 // ──────────────────────────────────────────────────────────────────────
 
@@ -176,8 +177,7 @@ interface GuardSite {
 }
 
 const GUARD_SITES: GuardSite[] = [
-  { file: 'src/routes/ipfs.ts', fn: 'cidIsKnown' },
-  { file: 'src/ipfs-cleanup.ts', fn: 'cidReferencedInHaf' },
+  { file: 'src/lib/ipfs-shared.ts', fn: 'cidReferencedByAppTag' },
 ];
 
 describe('IPFS image SRF guard — shared builder + call-site presence canary', () => {

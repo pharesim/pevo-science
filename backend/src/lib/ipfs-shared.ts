@@ -1,16 +1,40 @@
 /**
  * Shared IPFS helpers used by both the gateway/upload routes (`routes/ipfs.ts`)
  * and the orphan-cleanup job (`ipfs-cleanup.ts`): the Kubo/Pinata unpin
- * helpers and the `image`-array SRF type-guard SQL fragment. Both symbols were
+ * helpers, the `pin_backend` narrowing, the `image`-array SRF type-guard SQL
+ * fragment, and the tags-scoped CID-reference containment query. Each was
  * byte-duplicated across the two files; centralizing them here keeps them from
- * drifting under independent edits.
+ * drifting under independent edits — a drift that, on the cleanup side, unpins
+ * a live on-chain-referenced file (irreversible).
  */
 
+import type pg from 'pg';
 import { config } from '../config.js';
+import { T } from '../hafsql.js';
 
 export type PinBackend = 'kubo' | 'pinata';
 
 const PIN_BACKENDS: readonly PinBackend[] = ['kubo', 'pinata'];
+
+/**
+ * The unrecognized-pin-backend error message, in one place. Raised by both the
+ * read-time narrowing in `toPinBackend` and the exhaustive-switch default in
+ * `unpinFromIpfs`; sharing the source keeps the two from drifting if the union
+ * widens.
+ */
+export function unrecognizedPinBackendMessage(value: unknown): string {
+  return `Unrecognized pin backend: ${JSON.stringify(value)}`;
+}
+
+/**
+ * Type predicate narrowing an arbitrary string to the `PinBackend` union. Used
+ * by `toPinBackend` so the narrowing is mechanical — no inner `as PinBackend`
+ * assertion survives, so deleting the surrounding guard cannot let an
+ * out-of-domain value through silently.
+ */
+function isPinBackend(v: string): v is PinBackend {
+  return (PIN_BACKENDS as readonly string[]).includes(v);
+}
 
 /**
  * Narrow an untrusted string (e.g. the `pin_backend` column read off a
@@ -27,10 +51,8 @@ const PIN_BACKENDS: readonly PinBackend[] = ['kubo', 'pinata'];
  * is the write-time backstop; this is the read-time one.
  */
 export function toPinBackend(value: string): PinBackend {
-  if ((PIN_BACKENDS as readonly string[]).includes(value)) {
-    return value as PinBackend;
-  }
-  throw new Error(`Unrecognized pin backend: ${JSON.stringify(value)}`);
+  if (isPinBackend(value)) return value;
+  throw new Error(unrecognizedPinBackendMessage(value));
 }
 
 /**
@@ -67,6 +89,67 @@ export function imageSrfGuardExpr(alias: string): string {
              THEN ${alias}.json_metadata->'image'
              ELSE '[]'::jsonb
         END`;
+}
+
+/**
+ * Is `cid` referenced by any PEvO post in HAF? Checks both
+ * `metadata.<appTag>.ipfs_cid` and `metadata.<appTag>.supplementary_files[].cid`,
+ * plus the broadcaster-controlled `image` array, scoped to PEvO-tagged comments.
+ *
+ * Both call sites consume this single definition: the cleanup job's
+ * CID-in-use check (`cidReferencedInHaf`, gates whether an expired
+ * pending-upload row's pin is unpinned) and the GET /ipfs/:cid gateway's
+ * CID-known check (`cidIsKnown`, gates whether the proxy serves the CID). The
+ * cost of drift is asymmetric: a wrong predicate on the cleanup side unpins a
+ * live on-chain-referenced file (irreversible — Kubo `pin/rm` is not
+ * refcounted); on the gateway side it serves or withholds content. Keeping one
+ * source removes that drift.
+ *
+ * Three invariants are load-bearing and must not be reverted:
+ *
+ *  - **tags-GIN scope.** `c.tags @> [appTag]` restricts the scan to PEvO-tagged
+ *    comments via the only index-assisted PEvO subset on this HAF
+ *    (hafsql.comments has no GIN index on metadata, so an unscoped containment
+ *    predicate full-scans the whole corpus). All CID-carrying PEvO content is
+ *    appTag-tagged, so the scope drops no real reference — over-inclusive (keep
+ *    pinned) beats under-inclusive (unpin a live file).
+ *  - **appTag namespace.** The containment namespace must match the published
+ *    shape (`metadata.<appTag>.…`), NOT a literal `pevo` key — verified against
+ *    live HAF, where zero posts carry a `pevo` top-level key; the literal-`pevo`
+ *    predicate never matches and would unpin every live file / 404 every CID.
+ *  - **image-SRF guard.** The `image`-array match goes through
+ *    `imageSrfGuardExpr('c')`, whose CASE-WHEN type guard sits INSIDE the SRF
+ *    argument because Postgres evaluates the LATERAL before the surrounding
+ *    WHERE; a non-array image otherwise raises "cannot extract elements from a
+ *    scalar" and aborts the query (the cleanup sweep mid-loop, leaking orphan
+ *    rows and pins; or the per-request CID-known check). The `'c'` arg is the
+ *    comment-relation alias used in the FROM clause below.
+ *
+ * Returns false when the HAF pool is unavailable so callers can layer their own
+ * pre-checks (the gateway's Redis + pending-row short-circuit) ahead of this.
+ */
+export async function cidReferencedByAppTag(pool: pg.Pool, cid: string): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT 1 FROM ${T.comments} c
+     WHERE c.tags @> $1::jsonb
+       AND (
+            c.json_metadata @> $2::jsonb
+         OR c.json_metadata @> $3::jsonb
+         OR EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
+              WHERE img LIKE '%' || $4 || '%'
+            )
+       )
+     LIMIT 1`,
+    [
+      JSON.stringify([config.appTag]),
+      JSON.stringify({ [config.appTag]: { ipfs_cid: cid } }),
+      JSON.stringify({ [config.appTag]: { supplementary_files: [{ cid }] } }),
+      cid,
+    ],
+  );
+
+  return result.rowCount !== null && result.rowCount > 0;
 }
 
 /**
@@ -135,7 +218,7 @@ export async function unpinFromIpfs(cid: string, backend: PinBackend): Promise<v
       return unpinFromPinata(cid);
     default: {
       const unreachable: never = backend;
-      throw new Error(`Unrecognized pin backend: ${JSON.stringify(unreachable)}`);
+      throw new Error(unrecognizedPinBackendMessage(unreachable));
     }
   }
 }
