@@ -29,13 +29,17 @@ let dbReachable = false;
 
 const MARKER = `purge-test-${randomBytes(6).toString('hex')}`;
 
-async function insertRow(usernameSuffix: string, disputeExpiresAt: Date): Promise<number> {
+async function insertRow(
+  usernameSuffix: string,
+  disputeExpiresAt: Date,
+  state: { consumedAt?: Date; disputedAt?: Date } = {},
+): Promise<number> {
   const pool = getAppPool()!;
   const { rows } = await pool.query<{ id: number }>(
     `INSERT INTO pending_recovery
        (username, new_email, new_password_hash, verify_token_hash, verify_expires_at,
-        dispute_token_hash, dispute_expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+        dispute_token_hash, dispute_expires_at, consumed_at, disputed_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING id`,
     [
       `${MARKER}-${usernameSuffix}`,
@@ -45,6 +49,8 @@ async function insertRow(usernameSuffix: string, disputeExpiresAt: Date): Promis
       disputeExpiresAt, // verify window mirrors dispute window for the fixture
       randomBytes(32),
       disputeExpiresAt,
+      state.consumedAt ?? null,
+      state.disputedAt ?? null,
     ],
   );
   return rows[0].id;
@@ -78,6 +84,28 @@ describe.skipIf(!dbReachable)('pending_recovery ageing purge', () => {
 
     expect(await rowExists(expiredId)).toBe(false); // purged
     expect(await rowExists(freshId)).toBe(true); // survived
+  });
+
+  it('deletes consumed and disputed rows uniformly, not just expired-unused ones', async () => {
+    // The purge predicate keys only on dispute_expires_at and is deliberately
+    // state-uniform: once the dispute window closes past the grace a row can
+    // neither be verified (phase 2) nor disputed, so consumed and disputed
+    // rows are as terminal as never-used ones. Seed one of each past the grace
+    // and assert both are gone — a future narrowing of the predicate (e.g.
+    // adding `AND consumed_at IS NULL`) would leave one behind and fail here.
+    const closedLongAgo = new Date(Date.now() - 100 * 24 * 3600_000);
+    const consumedId = await insertRow('consumed', closedLongAgo, {
+      consumedAt: new Date(Date.now() - 99 * 24 * 3600_000),
+    });
+    const disputedId = await insertRow('disputed', closedLongAgo, {
+      disputedAt: new Date(Date.now() - 99 * 24 * 3600_000),
+    });
+    created.push(consumedId, disputedId);
+
+    await purgeAgedPendingRecovery();
+
+    expect(await rowExists(consumedId)).toBe(false); // consumed row still purged
+    expect(await rowExists(disputedId)).toBe(false); // disputed row still purged
   });
 
   it('keeps a row still inside the retention grace (recently-closed dispute window)', async () => {

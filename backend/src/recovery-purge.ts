@@ -77,10 +77,11 @@ async function runPurgeTick(): Promise<void> {
 
 export function startRecoveryPurge(): void {
   if (purgeTimer) return;
-  logger.info(
-    { event: 'recovery.purge_started', tickMs: PURGE_TICK_MS },
-    'pending_recovery ageing-purge job started (hourly)',
-  );
+  // Run an immediate first pass at boot so rows already past their grace are
+  // cleared on restart, rather than lingering up to a full tick. The start
+  // call runs after the app DB pool is initialized, and the tick swallows its
+  // own errors, so a boot-time DB hiccup cannot disturb startup.
+  void runPurgeTick();
   purgeTimer = setInterval(() => {
     void runPurgeTick();
   }, PURGE_TICK_MS);
