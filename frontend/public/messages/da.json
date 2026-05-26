@@ -1110,7 +1110,6 @@
     "deleteWarningSelf": "This permanently erases all of your PEvO account data: your email, notification preferences, and recovery state. You will be signed out. Your Hive account and your published content on Hive are not affected. This cannot be undone.",
     "deleteSeedPhraseContinuation": "Your Hive account itself is not deleted. If you still have your 12-word seed phrase, you can import it into Hive Keychain and keep using PEvO as a self-custody account.",
     "accountDeleted": "Your PEvO account data has been deleted.",
-    "emailDeleted": "E-mail og tilknyttede data er slettet.",
     "emailAlreadyInUse": "Denne e-mailadresse er allerede tilknyttet en anden konto.",
     "emailTokenExpired": "Bekræftelseslinket er udløbet. Anmod om et nyt.",
     "emailResend": "Send bekræftelse igen",

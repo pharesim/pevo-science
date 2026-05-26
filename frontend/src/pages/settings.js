@@ -788,10 +788,8 @@ export function initSettingsPage() {
         // there is no logged-in state left to render. Tear the session down
         // and route to the landing page rather than optimistically patching
         // emailStatus into a logged-in settings view bound to a dead account.
-        this.showDeleteConfirm = false;
-        this.showChangeForm = false;
-        this.emailMessage = null;
-        this.emailError = null;
+        // No pre-navigate state resets here: navigate('/') destroys this
+        // component in the same tick, so any local-field writes are unobserved.
         Alpine.store('auth').disconnect();
         Alpine.store('notifications').stop();
         Alpine.store('toast').show(this.$t('settings.accountDeleted'), 'success');

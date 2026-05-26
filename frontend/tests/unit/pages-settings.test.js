@@ -97,6 +97,7 @@ const mockAuthStore = {
   _checkAccreditation: vi.fn(),
   _startAccreditationPolling: vi.fn(),
   loginFromResponse: vi.fn(mockLoginFromResponse),
+  disconnect: vi.fn(),
 };
 const mockRouterStore = {
   navigate: vi.fn(),
@@ -104,6 +105,7 @@ const mockRouterStore = {
   unregisterNavigationGuard: vi.fn(),
 };
 const mockToastStore = { show: vi.fn() };
+const mockNotificationsStore = { stop: vi.fn() };
 
 vi.mock('alpinejs', () => ({
   default: {
@@ -112,6 +114,7 @@ vi.mock('alpinejs', () => ({
       if (name === 'auth') return mockAuthStore;
       if (name === 'router') return mockRouterStore;
       if (name === 'toast') return mockToastStore;
+      if (name === 'notifications') return mockNotificationsStore;
       return {};
     }),
   },
@@ -272,7 +275,12 @@ describe('settingsPage', () => {
   });
 
   describe('handleEmailDelete', () => {
-    it('deletes email and resets state', async () => {
+    // DELETE erases the entire PEvO account row, so the session is dead on
+    // success. The handler tears it down (disconnect + stop notifications),
+    // shows the accountDeleted toast, and routes home — it does NOT patch
+    // emailStatus in place, which would leave a logged-in settings view bound
+    // to a deleted account.
+    it('tears down the session and routes home on successful account deletion', async () => {
       mockDeleteEmail.mockResolvedValue({});
       const comp = createComponent();
       comp.emailStatus = { hasEmail: true };
@@ -280,19 +288,10 @@ describe('settingsPage', () => {
       await comp.handleEmailDelete();
 
       expect(mockDeleteEmail).toHaveBeenCalledWith(true);
-      expect(comp.emailStatus.hasEmail).toBe(false);
-      expect(comp.showDeleteConfirm).toBe(false);
-      expect(mockToastStore.show).toHaveBeenCalled();
-    });
-
-    it('preserves hasPassword on delete so Set-Password surface stays visible for ORCID users', async () => {
-      mockDeleteEmail.mockResolvedValue({});
-      const comp = createComponent();
-      comp.emailStatus = { hasEmail: true, email: 'a***@x.com', verified: true, hasPassword: false };
-
-      await comp.handleEmailDelete();
-
-      expect(comp.emailStatus.hasPassword).toBe(false);
+      expect(mockAuthStore.disconnect).toHaveBeenCalled();
+      expect(mockNotificationsStore.stop).toHaveBeenCalled();
+      expect(mockToastStore.show).toHaveBeenCalledWith('settings.accountDeleted', 'success');
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/');
     });
 
     it('does nothing if already deleting', async () => {
