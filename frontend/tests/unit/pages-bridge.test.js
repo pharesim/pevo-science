@@ -689,11 +689,24 @@ describe('bridgePage', () => {
       expect(out).toContain('"position":2');
     });
 
-    it('defaults position to 1 when queuedPosition is null', () => {
+    it('renders position-agnostic no-detail copy when queuedPosition is null and no ETA', () => {
       const comp = withParamCapturingT(createComponent());
       comp.queuedPosition = null;
       comp.queuedEtaSeconds = null;
-      expect(comp.queuedDetailText).toContain('"position":1');
+      const out = comp.queuedDetailText;
+      // No fabricated "position 1": render the position-agnostic line.
+      expect(out).toBe('bridge.queuedNoDetail');
+      expect(out).not.toContain('position');
+    });
+
+    it('renders ETA-only copy when queuedPosition is null but an ETA is present', () => {
+      const comp = withParamCapturingT(createComponent());
+      comp.queuedPosition = null;
+      comp.queuedEtaSeconds = 600; // 10 min
+      const out = comp.queuedDetailText;
+      expect(out).toContain('bridge.queuedEtaOnly');
+      expect(out).toContain('myImports.etaMinutes');
+      expect(out).not.toContain('position');
     });
   });
 

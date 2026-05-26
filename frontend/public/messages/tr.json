@@ -718,7 +718,6 @@
     "languagePlaceholder": "tr",
     "registerButton": "PEvO'ya Kaydet",
     "stepRegistering": "Ön baskı kaydediliyor...",
-    "stepSuccess": "Ön baskı başarıyla kaydedildi! Yönlendiriliyor...",
     "sourcePanel": "İlk olarak {source} üzerinde yayınlandı",
     "viewSource": "{source} üzerinde görüntüle",
     "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
@@ -726,6 +725,8 @@
     "queuedTitle": "Queued for publishing",
     "queuedPositionAndEta": "Position {position} in queue. Estimated completion in {eta}.",
     "queuedPositionOnly": "Position {position} in queue.",
+    "queuedEtaOnly": "Estimated completion in {eta}.",
+    "queuedNoDetail": "Your import is in the queue.",
     "queuedViewMyImports": "Track this and other pending imports under My imports.",
     "userCapTitle": "Too many pending imports",
     "userCapMessage": "You already have {pending} bridge imports in flight. New submissions resume once one completes."

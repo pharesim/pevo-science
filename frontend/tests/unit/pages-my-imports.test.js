@@ -95,7 +95,7 @@ describe('myImportsPage', () => {
       expect(e.retriable).toBe(false); // not failed
     });
 
-    it('maps a failed entry: error_message → failure_reason, retriable true, no author', async () => {
+    it('maps a failed entry with a transient error_code: error_message → failure_reason, retriable true, no author', async () => {
       mockFetchBridgeImports.mockResolvedValue({
         data: {
           entries: [
@@ -108,8 +108,8 @@ describe('myImportsPage', () => {
               completed_at: '2026-05-26T13:01:00.000Z',
               existing_author: null,
               permlink: 'bridge-doi-10-1234-notreal',
-              error_message: 'Source metadata could not be retrieved.',
-              error_code: 'BAD_REQUEST',
+              error_message: 'The publishing network rejected the submission.',
+              error_code: 'BROADCAST_FAILED',
             },
           ],
         },
@@ -119,9 +119,39 @@ describe('myImportsPage', () => {
       await comp.loadEntries();
 
       const e = comp.entries[0];
-      expect(e.failure_reason).toBe('Source metadata could not be retrieved.');
+      expect(e.failure_reason).toBe('The publishing network rejected the submission.');
       expect(e.retriable).toBe(true);
       expect(e.author).toBeNull(); // no existing_author → link suppressed in template
+    });
+
+    it('derives retriable from error_code: BAD_REQUEST is terminal (not retriable)', async () => {
+      mockFetchBridgeImports.mockResolvedValue({
+        data: {
+          entries: [
+            { id: 1, identifier: 'a', state: 'failed', created_at: 'x', existing_author: null, permlink: 'p', error_message: 'gone', error_code: 'BAD_REQUEST' },
+            { id: 2, identifier: 'b', state: 'failed', created_at: 'x', existing_author: null, permlink: 'p', error_message: 'timeout', error_code: 'BROADCAST_TIMEOUT' },
+            { id: 3, identifier: 'c', state: 'failed', created_at: 'x', existing_author: null, permlink: 'p', error_message: 'svc', error_code: 'SERVICE_UNAVAILABLE' },
+            { id: 4, identifier: 'd', state: 'completed', created_at: 'x', existing_author: 'pevo.bridge', permlink: 'p', error_message: null, error_code: null },
+          ],
+        },
+      });
+
+      const comp = createComponent();
+      await comp.loadEntries();
+      const byId = Object.fromEntries(comp.entries.map((e) => [e.id, e]));
+      expect(byId[1].retriable).toBe(false); // BAD_REQUEST → terminal
+      expect(byId[2].retriable).toBe(true); // BROADCAST_TIMEOUT → transient
+      expect(byId[3].retriable).toBe(true); // SERVICE_UNAVAILABLE → transient
+      expect(byId[4].retriable).toBe(false); // completed → not a failure
+    });
+
+    it('completed entry without existing_author leaves author null (View paper link suppressed)', async () => {
+      mockFetchBridgeImports.mockResolvedValue({
+        data: { entries: [{ id: 9, identifier: 'x', state: 'completed', created_at: 'x', existing_author: null, permlink: 'p', error_message: null }] },
+      });
+      const comp = createComponent();
+      await comp.loadEntries();
+      expect(comp.entries[0].author).toBeNull();
     });
 
     it('tolerates a missing entries array', async () => {
@@ -147,12 +177,28 @@ describe('myImportsPage', () => {
       const comp = createComponent();
       await comp.loadEntries();
       expect(mockFetchBridgeImports).not.toHaveBeenCalled();
-      expect(comp.entries.length).toBe(4);
+      expect(comp.entries.length).toBe(5);
       // Demo rows pass through adaptEntry, so the completed row resolves author.
       const completed = comp.entries.find((e) => e.state === 'completed');
       expect(completed.author).toBe('pevo.bridge');
-      const failed = comp.entries.find((e) => e.state === 'failed');
-      expect(failed.retriable).toBe(true);
+      // Two failed rows exercise both template branches: a terminal
+      // BAD_REQUEST (cannotRetry) and a transient BROADCAST_FAILED (Retry).
+      const failed = comp.entries.filter((e) => e.state === 'failed');
+      expect(failed.length).toBe(2);
+      expect(failed.some((e) => e.retriable === true)).toBe(true);
+      expect(failed.some((e) => e.retriable === false)).toBe(true);
+    });
+
+    it('ignores a concurrent loadEntries call while one is in flight', async () => {
+      let resolveFetch;
+      mockFetchBridgeImports.mockImplementationOnce(() => new Promise((r) => { resolveFetch = r; }));
+      const comp = createComponent();
+      const p1 = comp.loadEntries(); // sets loading=true, awaits the fetch
+      await comp.loadEntries(); // second call must early-return on the in-flight guard
+      expect(mockFetchBridgeImports).toHaveBeenCalledTimes(1);
+      resolveFetch({ data: { entries: [] } });
+      await p1;
+      expect(comp.loading).toBe(false);
     });
   });
 
@@ -228,6 +274,58 @@ describe('myImportsPage', () => {
       await comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
       expect(mockRegisterBridgePaper).not.toHaveBeenCalled();
     });
+
+    it('runs only one retry at a time across distinct entries', async () => {
+      let resolveFirst;
+      mockRegisterBridgePaper.mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }));
+      mockFetchBridgeImports.mockResolvedValue({ data: { entries: [] } });
+      const comp = createComponent();
+      // First retry (entry 5) starts and parks on the in-flight re-POST.
+      const p1 = comp.retryEntry({ id: 5, identifier: 'a', retriable: true });
+      expect(comp.retryingId).toBe(5);
+      // Second retry on a DIFFERENT entry while the first is in flight must
+      // bail before re-POSTing — otherwise both re-enqueue and race the reload.
+      await comp.retryEntry({ id: 7, identifier: 'b', retriable: true });
+      expect(mockRegisterBridgePaper).toHaveBeenCalledTimes(1);
+      resolveFirst({ data: { entry: { id: 5 }, queue_position: 1, eta_seconds: 0 } });
+      await p1;
+      expect(comp.retryingId).toBeNull();
+    });
+
+    it('surfaces the cap message (not the generic toast) when retry hits the per-user cap', async () => {
+      const capErr = new Error('Too many pending imports');
+      capErr.code = 'RATE_LIMITED';
+      capErr.details = { retriable: true, inflight: 5, cap: 5 };
+      mockRegisterBridgePaper.mockRejectedValue(capErr);
+      const comp = createComponent();
+      await comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
+      expect(mockToastStore.show).toHaveBeenCalledWith('bridge.userCapMessage|{"pending":5}', 'error');
+      expect(mockToastStore.show).not.toHaveBeenCalledWith('common.error', 'error');
+      expect(comp.retryingId).toBeNull();
+    });
+
+    it('surfaces the lock-held message when retry hits LOCK_HELD contention', async () => {
+      const lockErr = new Error('Registration already in progress');
+      lockErr.code = 'LOCK_HELD';
+      mockRegisterBridgePaper.mockRejectedValue(lockErr);
+      const comp = createComponent();
+      await comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
+      expect(mockToastStore.show).toHaveBeenCalledWith('bridge.lockHeldRetry', 'error');
+      expect(mockToastStore.show).not.toHaveBeenCalledWith('common.error', 'error');
+    });
+
+    it('treats a DUPLICATE during retry as already-registered: reloads and shows the duplicate notice', async () => {
+      const dupErr = new Error('Preprint already registered');
+      dupErr.code = 'DUPLICATE';
+      mockRegisterBridgePaper.mockRejectedValue(dupErr);
+      mockFetchBridgeImports.mockResolvedValue({ data: { entries: [] } });
+      const comp = createComponent();
+      await comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
+      expect(mockToastStore.show).toHaveBeenCalledWith('bridge.duplicateWarning', 'success');
+      // The list is reloaded so the row reflects the already-on-chain post.
+      expect(mockFetchBridgeImports).toHaveBeenCalledTimes(1);
+      expect(comp.retryingId).toBeNull();
+    });
   });
 
   describe('stateLabel / badgeClass', () => {
@@ -238,6 +336,93 @@ describe('myImportsPage', () => {
       expect(comp.stateLabel('completed')).toBe('myImports.stateCompleted');
       expect(comp.stateLabel('failed')).toBe('myImports.stateFailed');
       expect(comp.stateLabel('weird')).toBe('weird');
+    });
+
+    it('maps each state to a distinct badge class, with a default fallback', () => {
+      const comp = createComponent();
+      const pending = comp.badgeClass('pending');
+      const inProgress = comp.badgeClass('in_progress');
+      const completed = comp.badgeClass('completed');
+      const failed = comp.badgeClass('failed');
+      const classes = [pending, inProgress, completed, failed];
+      // Each known state resolves to a non-empty, distinct class string.
+      expect(new Set(classes).size).toBe(4);
+      classes.forEach((c) => expect(c.length).toBeGreaterThan(0));
+      // Unknown state falls back to the pending/neutral class.
+      expect(comp.badgeClass('weird')).toBe(pending);
+    });
+  });
+
+  describe('init / handleConnect', () => {
+    it('does not load entries when disconnected', () => {
+      mockAuthStore.isConnected = false;
+      const comp = createComponent();
+      comp.init();
+      expect(mockFetchBridgeImports).not.toHaveBeenCalled();
+    });
+
+    it('loads entries on init when already connected', async () => {
+      mockAuthStore.isConnected = true;
+      mockFetchBridgeImports.mockResolvedValue({ data: { entries: [] } });
+      const comp = createComponent();
+      comp.init();
+      // init kicks off loadEntries without awaiting; flush the microtask queue.
+      await Promise.resolve();
+      expect(mockFetchBridgeImports).toHaveBeenCalledTimes(1);
+    });
+
+    it('handleConnect loads entries after a successful connect', async () => {
+      mockAuthStore.isConnected = true;
+      mockAuthStore.connect.mockResolvedValue(undefined);
+      mockFetchBridgeImports.mockResolvedValue({ data: { entries: [] } });
+      const comp = createComponent();
+      await comp.handleConnect();
+      expect(mockAuthStore.connect).toHaveBeenCalled();
+      expect(mockFetchBridgeImports).toHaveBeenCalledTimes(1);
+    });
+
+    it('handleConnect shows a toast and does not load when connect rejects', async () => {
+      mockAuthStore.connect.mockRejectedValue(new Error('user cancelled'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      await comp.handleConnect();
+      expect(mockToastStore.show).toHaveBeenCalledWith('common.connectionFailed', 'error');
+      expect(mockFetchBridgeImports).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
+
+  // page-mount.js calls Alpine.destroyTree on route change; an async
+  // continuation resolving after destroy() must not write reactive state or
+  // fire a toast on a torn-down component. createTimerGuard()'s _mounted flag
+  // gates every post-await write.
+  describe('teardown guard', () => {
+    it('loadEntries torn down mid-fetch does not write entries or loading', async () => {
+      let resolveFetch;
+      mockFetchBridgeImports.mockImplementationOnce(() => new Promise((r) => { resolveFetch = r; }));
+      const comp = createComponent();
+      const p = comp.loadEntries();
+      expect(comp.loading).toBe(true);
+      comp.destroy(); // route change tears the component down mid-fetch
+      resolveFetch({ data: { entries: [{ id: 1, identifier: 'x', state: 'pending', created_at: 'x' }] } });
+      await p;
+      // No post-teardown writes: entries stays empty, loading is not reset true→false.
+      expect(comp.entries).toEqual([]);
+      expect(comp._mounted).toBe(false);
+    });
+
+    it('retryEntry torn down mid-flight does not toast or reload', async () => {
+      let resolveRetry;
+      mockRegisterBridgePaper.mockImplementationOnce(() => new Promise((r) => { resolveRetry = r; }));
+      const comp = createComponent();
+      const p = comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
+      expect(comp.retryingId).toBe(5);
+      comp.destroy();
+      resolveRetry({ data: { entry: { id: 5 }, queue_position: 1, eta_seconds: 0 } });
+      await p;
+      // The success continuation short-circuits: no toast, no reload.
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+      expect(mockFetchBridgeImports).not.toHaveBeenCalled();
     });
   });
 });

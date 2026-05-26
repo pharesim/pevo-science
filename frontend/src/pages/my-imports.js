@@ -1,39 +1,57 @@
 import Alpine from 'alpinejs';
 import { formatDate } from '../components/paper-card.js';
 import { fetchBridgeImports, registerBridgePaper } from '../api.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 import { formatEta } from '../lib/format-eta.js';
 
 // View-model shape this page renders against (post-adapter). The backend's
-// queue-entry shape (GET /api/bridge/imports per agents/docs/api-contracts/
-// bridge.md) is mapped into this by `adaptEntry()`; keeping the rendered shape
-// stable means the template never has to know the wire field names.
+// queue-entry shape (the GET /api/bridge/imports entry in
+// agents/docs/api-contracts/bridge.md) is mapped into this by `adaptEntry()`;
+// keeping the rendered shape stable means the template never has to know the
+// wire field names.
 //
 //   {
 //     id:            number,
 //     identifier:    string,           // user-submitted DOI/arXiv/URL
 //     title:         string | null,    // null until source metadata resolved
 //     state:         'pending' | 'in_progress' | 'completed' | 'failed',
+//     discipline:    string | null,    // echoed back when retryEntry re-POSTs
+//     keywords:      string[],         // echoed back when retryEntry re-POSTs
+//     language:      string | null,    // echoed back when retryEntry re-POSTs
 //     submitted_at:  ISO-8601 string,  // wire: created_at
 //     completed_at:  ISO-8601 string | null,
 //     etaSeconds:    number | null,    // worker-tick estimate; non-terminal only
 //     author:        string | null,    // resolvable bridge author (completed)
 //     permlink:      string | null,
 //     failure_reason:string | null,    // wire: error_message
-//     retriable:     boolean,          // failed entries re-POST /register
+//     retriable:     boolean,          // derived from state + error_code
 //   }
 
-// Map a wire queue entry (bridge.md GET /api/bridge/imports) into the
-// view-model the template renders. Field-name differences from the earlier
-// consumer sketch are absorbed here:
-//   - created_at  → submitted_at
+// error_code values that mark a terminal, non-retriable failure: re-POSTing
+// /register would deterministically re-fail because the upstream condition is
+// permanent. Per the error_code reference under GET /api/bridge/imports in
+// agents/docs/api-contracts/bridge.md, BAD_REQUEST means the identifier is no
+// longer resolvable or the source preprint is gone. Broadcast/service failures
+// (BROADCAST_TIMEOUT, BROADCAST_FAILED, SERVICE_UNAVAILABLE) are transient and
+// re-enqueue cleanly, so they stay retriable.
+const NON_RETRIABLE_ERROR_CODES = new Set(['BAD_REQUEST']);
+
+// Map a wire queue entry (the GET /api/bridge/imports entry shape in
+// agents/docs/api-contracts/bridge.md) into the view-model the template
+// renders. Field-name and shape differences from that contract are absorbed
+// here so the template never sees wire names:
+//   - created_at    → submitted_at
 //   - error_message → failure_reason
-//   - author: the entry carries no bridge-author field; we resolve it from
-//     existing_author (set only on the permlink-collision short-circuit). For
-//     a freshly broadcast bridge paper existing_author is null, so the link
-//     renders only when an author is resolvable (see template).
-//   - retriable: the contract has no per-entry retriable flag; the retry model
-//     is "a failed entry re-POSTs /register" (a failed entry is not in-flight,
-//     so it re-enqueues). We therefore treat every failed entry as retriable.
+//   - author: resolved from existing_author, which the contract sets only on
+//     the permlink-collision short-circuit. A freshly broadcast bridge paper
+//     has existing_author null, so the "View paper" link renders only when an
+//     author is resolvable (see template). Widening to the contract's own
+//     `author` field is gated on the backend populating it.
+//   - retriable: the contract has no per-entry retriable flag, so we derive it
+//     from state + error_code. Only a `failed` entry is retriable, and only
+//     when its failure is not terminal (see NON_RETRIABLE_ERROR_CODES). The
+//     retry model itself is "a failed entry re-POSTs /register" (a failed
+//     entry is not in-flight, so it re-enqueues).
 function adaptEntry(wire) {
   return {
     id: wire.id,
@@ -49,7 +67,7 @@ function adaptEntry(wire) {
     author: wire.existing_author ?? null,
     permlink: wire.existing_permlink ?? wire.permlink ?? null,
     failure_reason: wire.error_message ?? null,
-    retriable: wire.state === 'failed',
+    retriable: wire.state === 'failed' && !NON_RETRIABLE_ERROR_CODES.has(wire.error_code),
   };
 }
 
@@ -107,7 +125,22 @@ function buildDemoEntries() {
       existing_author: null,
       permlink: 'bridge-doi-10-1234-notreal-5678',
       error_message: 'Source metadata could not be retrieved.',
+      // Terminal failure (source gone) — renders the cannotRetry branch.
       error_code: 'BAD_REQUEST',
+    },
+    {
+      id: 5,
+      identifier: '10.1101/2024.07.07.000000',
+      title: 'A Preprint Whose Broadcast Failed and Can Be Retried',
+      state: 'failed',
+      created_at: isoMinutesAgo(90),
+      completed_at: isoMinutesAgo(85),
+      eta_seconds: null,
+      existing_author: null,
+      permlink: 'bridge-biorxiv-2024-07-07-000000',
+      error_message: 'The publishing network rejected the submission. You can try again.',
+      // Transient broadcast failure — renders the Retry branch.
+      error_code: 'BROADCAST_FAILED',
     },
   ];
 }
@@ -197,7 +230,7 @@ const template = `
                            class="btn-secondary text-xs no-underline inline-block" x-text="$t('myImports.viewPaper')"></a>
                       </template>
                       <template x-if="entry.state === 'failed' && entry.retriable">
-                        <button class="btn-secondary text-xs" @click="retryEntry(entry)" :disabled="retryingId === entry.id" x-text="$t('myImports.retry')"></button>
+                        <button class="btn-secondary text-xs" @click="retryEntry(entry)" :disabled="retryingId !== null" x-text="$t('myImports.retry')"></button>
                       </template>
                       <template x-if="entry.state === 'failed' && !entry.retriable">
                         <span class="text-xs text-ink-muted italic" x-text="$t('myImports.cannotRetry')"></span>
@@ -216,16 +249,30 @@ export { template as myImportsPageTemplate };
 
 export function initMyImportsPage() {
   Alpine.data('myImportsPage', () => ({
+    // Post-teardown guard for async continuations. loadEntries / retryEntry /
+    // handleConnect can resolve after the user navigates away (page-mount.js
+    // calls Alpine.destroyTree on route change); _mounted gates every
+    // post-await write. See frontend/src/lib/timer-guard.js.
+    ...createTimerGuard(),
+
     entries: [],
     loading: false,
     error: false,
-    // Id of the entry whose retry re-POST is in flight; disables that row's
-    // retry button so a double-click does not enqueue twice.
+    // Id of the entry whose retry re-POST is in flight, or null when none.
+    // Doubles as a one-retry-at-a-time lock: retryEntry bails while it is
+    // non-null and the template disables every retry button. A scalar that
+    // matched only the clicked row would let a second row's retry race the
+    // first and double-enqueue (the backend dedups, but the UI shouldn't lean
+    // on that).
     retryingId: null,
 
     formatDate,
 
     navigate(path) { Alpine.store('router').navigate(path); },
+
+    destroy() {
+      this._teardownTimers();
+    },
 
     get isConnected() { return Alpine.store('auth').isConnected; },
     get username() { return Alpine.store('auth').username; },
@@ -239,14 +286,20 @@ export function initMyImportsPage() {
     async handleConnect() {
       try {
         await Alpine.store('auth').connect();
+        if (!this._mounted) return;
         if (this.isConnected) await this.loadEntries();
       } catch (err) {
+        if (!this._mounted) return;
         console.warn('[my-imports connect]', err);
         Alpine.store('toast').show(this.$t('common.connectionFailed'), 'error');
       }
     },
 
     async loadEntries() {
+      // In-flight guard: init, the error-banner Retry, and a retry-success
+      // reload can all call this; a concurrent second call would last-writer-
+      // win on `this.entries`. One read at a time keeps it deterministic.
+      if (this.loading) return;
       this.loading = true;
       this.error = false;
       try {
@@ -258,12 +311,14 @@ export function initMyImportsPage() {
         const wireEntries = params.has('demo')
           ? buildDemoEntries()
           : (await fetchBridgeImports()).data?.entries ?? [];
+        if (!this._mounted) return;
         this.entries = wireEntries.map(adaptEntry);
       } catch (err) {
+        if (!this._mounted) return;
         console.warn('[my-imports load]', err);
         this.error = true;
       } finally {
-        this.loading = false;
+        if (this._mounted) this.loading = false;
       }
     },
 
@@ -272,7 +327,10 @@ export function initMyImportsPage() {
     // On success we reload the list so the new pending entry replaces the
     // failed row.
     async retryEntry(entry) {
-      if (!entry || this.retryingId === entry.id) return;
+      // One retry at a time: bail if ANY retry is in flight, not just one on
+      // this row. Two concurrent re-POSTs of distinct failed entries would
+      // each re-enqueue and race the success reload.
+      if (!entry || this.retryingId !== null) return;
       this.retryingId = entry.id;
       try {
         await registerBridgePaper({
@@ -281,13 +339,38 @@ export function initMyImportsPage() {
           keywords: entry.keywords && entry.keywords.length > 0 ? entry.keywords : undefined,
           language: entry.language || undefined,
         });
+        if (!this._mounted) return;
         Alpine.store('toast').show(this.$t('bridge.queuedTitle'), 'success');
         await this.loadEntries();
       } catch (err) {
+        if (!this._mounted) return;
+        // Discriminate the actionable rejection classes so a cap hit, an
+        // already-on-chain duplicate, or held-lock contention during retry
+        // doesn't surface the misleading generic "try again" toast. Mirrors
+        // handleRegister's discrimination in bridge.js.
+        if (err.code === 'RATE_LIMITED' && err.details?.cap !== undefined) {
+          Alpine.store('toast').show(
+            this.$t('bridge.userCapMessage', { pending: err.details.inflight ?? err.details.cap }),
+            'error',
+          );
+          return;
+        }
+        if (err.code === 'LOCK_HELD') {
+          Alpine.store('toast').show(this.$t('bridge.lockHeldRetry'), 'error');
+          return;
+        }
+        if (err.code === 'DUPLICATE') {
+          // The re-POST found the preprint already on chain — the import
+          // effectively succeeded. Reload so the row reflects the existing
+          // post, and tell the user it is already registered.
+          Alpine.store('toast').show(this.$t('bridge.duplicateWarning'), 'success');
+          await this.loadEntries();
+          return;
+        }
         console.warn('[my-imports retry]', err);
         Alpine.store('toast').show(this.$t('common.error'), 'error');
       } finally {
-        this.retryingId = null;
+        if (this._mounted) this.retryingId = null;
       }
     },
 

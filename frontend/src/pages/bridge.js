@@ -269,14 +269,22 @@ export function initBridgePage() {
 
     // Queued-state copy. When the backend supplied a usable ETA estimate we
     // render position + ETA; when eta_seconds is missing/unknown we fall back
-    // to position-only rather than show a bogus "in 0 min".
+    // to position-only rather than show a bogus "in 0 min". queue_position is
+    // normally present per contract, but when the 202 omits it we render a
+    // position-agnostic line rather than asserting a position the backend
+    // never sent.
     get queuedDetailText() {
-      const position = this.queuedPosition ?? 1;
+      const position = this.queuedPosition;
       const eta = this.queuedEtaSeconds;
-      if (eta === null || eta === undefined || !Number.isFinite(eta)) {
-        return this.$t('bridge.queuedPositionOnly', { position });
+      const hasEta = Number.isFinite(eta);
+      if (position === null || position === undefined) {
+        return hasEta
+          ? this.$t('bridge.queuedEtaOnly', { eta: formatEta(eta, this.$t.bind(this)) })
+          : this.$t('bridge.queuedNoDetail');
       }
-      return this.$t('bridge.queuedPositionAndEta', { position, eta: formatEta(eta, this.$t.bind(this)) });
+      return hasEta
+        ? this.$t('bridge.queuedPositionAndEta', { position, eta: formatEta(eta, this.$t.bind(this)) })
+        : this.$t('bridge.queuedPositionOnly', { position });
     },
 
     get userCapMessageText() {

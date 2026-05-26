@@ -1926,3 +1926,37 @@ pt: settings.accountDeleted
 sv: settings.accountDeleted
 tr: settings.accountDeleted
 zh: settings.accountDeleted
+
+### Added 2026-05-26 (UI-BRIDGE-IMPORT-QUEUE-UX)
+
+ar: bridge.queuedEtaOnly
+cs: bridge.queuedEtaOnly
+da: bridge.queuedEtaOnly
+de: bridge.queuedEtaOnly
+es: bridge.queuedEtaOnly
+fa: bridge.queuedEtaOnly
+fr: bridge.queuedEtaOnly
+he: bridge.queuedEtaOnly
+it: bridge.queuedEtaOnly
+nl: bridge.queuedEtaOnly
+pl: bridge.queuedEtaOnly
+pt: bridge.queuedEtaOnly
+sv: bridge.queuedEtaOnly
+tr: bridge.queuedEtaOnly
+zh: bridge.queuedEtaOnly
+
+ar: bridge.queuedNoDetail
+cs: bridge.queuedNoDetail
+da: bridge.queuedNoDetail
+de: bridge.queuedNoDetail
+es: bridge.queuedNoDetail
+fa: bridge.queuedNoDetail
+fr: bridge.queuedNoDetail
+he: bridge.queuedNoDetail
+it: bridge.queuedNoDetail
+nl: bridge.queuedNoDetail
+pl: bridge.queuedNoDetail
+pt: bridge.queuedNoDetail
+sv: bridge.queuedNoDetail
+tr: bridge.queuedNoDetail
+zh: bridge.queuedNoDetail
