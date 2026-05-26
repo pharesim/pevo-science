@@ -216,9 +216,16 @@ class FakeRedis {
   //     honored in real time (specs clear `store` in beforeEach), matching
   //     the lock TTL note above.
   //   * BRIDGE_RELEASE_LOCK_LUA — compare-token DEL (the original CAS form).
+  // Dispatch on `redis.call('PEXPIRE'`, which is unique to the rate-limit
+  // script. The earlier `redis.call('INCR'` token also matched the
+  // accreditation-verify limiter's INCR_AND_EXPIRE_ON_ZERO_TO_ONE script
+  // (it INCRs too but expires with EXPIRE, not PEXPIRE); a future spec that
+  // exercised that script through this FakeRedis would have misrouted into
+  // the rate-limit branch and received a wrong-shaped {count, pttl} tuple
+  // with windowMs = NaN. PEXPIRE keeps the two unambiguous.
   async eval(lua: string, _numKeys: number, ...rest: string[]) {
     const [key, ...args] = rest;
-    if (lua.includes("redis.call('INCR'")) {
+    if (lua.includes("redis.call('PEXPIRE'")) {
       const max = Number(args[0]);
       const windowMs = Number(args[1]);
       const count = (parseInt(this.store.get(key) ?? '0', 10) || 0) + 1;
@@ -549,8 +556,9 @@ describe('registerLimiter slot-refund on retriable error paths (skipFailedReques
     // refund-path canaries above all send well-formed bodies and exercise
     // the slot-acquired-then-decremented path, not this pre-limiter
     // short-circuit path; a refactor reverting the mount to
-    // limiter-before-validation would reopen the round-1 CPU/RPC
-    // amplification surface while leaving those three green.
+    // limiter-before-validation would reopen the ECDSA + `getAccounts`-RPC
+    // amplification surface that limiter-after-validation closes, while
+    // leaving those three green.
     //
     // Content-Type is application/json so the request passes the
     // Content-Type guard at the top of validateRegisterBody and reaches

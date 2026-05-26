@@ -289,3 +289,21 @@ Round-3 commit `fee77060` (malformed-body-pre-limiter slot-untouched canary + Fa
 When items 1-3 land in one round-4 commit, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The mv is the re-review signal; round-4 review scopes `/ce-code-review` to that commit only. Use a bare `backend:` / `backend(scope):` prefix so the zone-audit hook fires. The architect's `[TODO Architect]` to update `agents/docs/api-contracts/bridge.md` § POST /api/bridge/register Errors remains pending — it lands at archive.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-26, working tree)
+
+Round-4 hold items addressed in `backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts`.
+
+**Item 1 (P2, round-number marker) — DONE.** The malformed-body-pre-limiter canary's comment said the mutation "would reopen the round-1 CPU/RPC amplification surface". Replaced `round-1` with the behavioral phrase: "would reopen the ECDSA + `getAccounts`-RPC amplification surface that limiter-after-validation closes". No substitute rot form introduced — the replacement names the cryptographic-recovery + Hive-RPC work the limiter-after-validation order keeps off the unvalidated path; no slug, SHA, line number, date, or relative-positional anchor.
+
+**Item 2 (P2, non-unique FakeRedis Lua dispatch) — DONE.** The `eval` dispatcher branched on `lua.includes("redis.call('INCR'")`, which matched BOTH `RATE_LIMIT_CHECK_AND_CONSUME_LUA` and `INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA` (both INCR). Switched the dispatch token to `redis.call('PEXPIRE'`. Verified against `backend/src/lib/redis-scripts.ts`: `PEXPIRE` appears only in `RATE_LIMIT_CHECK_AND_CONSUME_LUA`; the accreditation-verify limiter's `INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA` expires with `EXPIRE` (not `PEXPIRE`). The two scripts are now unambiguously distinguished. Updated the dispatcher comment to record why the old token was ambiguous (the accreditation script INCRs too) and why `PEXPIRE` is the unique discriminator.
+
+**Item 3 (P2, stale EVALSHA comment) — already satisfied in the committed round-3 code; no change needed.** The hold block describes a "Slot-untouched probe (memStore-based)" comment in the `validateRegisterBody Content-Type guard` describe block claiming "FakeRedis has no EVALSHA, so the Lua path throws and the middleware falls through to memStore". That phrasing is NOT present in the committed test file. The round-3 commit's version of that describe-block comment already states FakeRedis implements the `RATE_LIMIT_CHECK_AND_CONSUME` Lua via `evalsha`/`eval` (so the middleware uses its Redis path, not the memStore fallback) and already uses the `rateLimitCount(...) → toBeNull()` key probe — exactly the "switch to the key probe" outcome the hold block offered as the simpler alternative. The hold block prose described an earlier draft state that the committed code had already corrected. Left as-is; the existing comment is accurate against the current code.
+
+**Verification.** `npm run typecheck` clean (both `typecheck:src` and `typecheck:tests`, 0 errors). `npx eslint tests/routes/bridge-register-rate-limit-skip-failed.test.ts` clean. Did not run vitest (shared real Postgres/Redis; parent runs the full suite serially after merge).
+
+**Worktree note.** This worker worktree was branched from a stale backend-main point (the round-2 hold state). I fast-forwarded the worker branch to the current backend-main HEAD (which already carried the round-3 work) before editing — forward-only, my branch had no unique commits and the stale point was a strict ancestor of current main. The edits land on top of the real round-3 code.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
