@@ -6,7 +6,7 @@ import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
 import { normalizeHiveAccount } from '../lib/author-supersession.js';
-import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAllEverAccreditedOrcidsWithStatus } from '../accreditation.js';
+import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAccreditedNamesByAccount, getAllEverAccreditedOrcidsWithStatus } from '../accreditation.js';
 import { resolveChainCumulativeAuthors, type ChainCumulativeAuthorsResult } from './papers.js';
 import { getReputationScore, getReputationScores } from '../reputation.js';
 import { logger } from '../logger.js';
@@ -251,6 +251,7 @@ async function fetchUserPapersFromHaf(
   sortCol: string,
   order: string,
   orcidMap: Map<string, string | null>,
+  nameMap: Map<string, string>,
 ) {
   const pool = getPool();
   if (!pool) return null;
@@ -311,6 +312,7 @@ async function fetchUserPapersFromHaf(
         { author: r.author as string, permlink: r.permlink as string, title: r.title as string, body: r.body as string, created: r.created as string, net_votes: 0 },
         meta,
         orcidMap,
+        nameMap,
       );
     });
 
@@ -349,12 +351,16 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
       // route's outer catch returns 503 retriable rather than letting
       // the raw pg error propagate to the central 500 handler.
       let orcidMap: Map<string, string | null>;
+      let nameMap: Map<string, string>;
       try {
-        orcidMap = await getAccreditedOrcidsByAccount();
+        [orcidMap, nameMap] = await Promise.all([
+          getAccreditedOrcidsByAccount(),
+          getAccreditedNamesByAccount(),
+        ]);
       } catch (err) {
         throw new HafQueryError('getAccreditedOrcidsByAccount', { cause: err });
       }
-      const hafResult = await fetchUserPapersFromHaf(username, limit, offset, sort, order, orcidMap);
+      const hafResult = await fetchUserPapersFromHaf(username, limit, offset, sort, order, orcidMap, nameMap);
       if (hafResult) return hafResult;
       return { rows: [], total: 0 };
     });
@@ -376,13 +382,15 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
       let allAccredited: Set<string>;
       let accreditedOrcidsByAccount: Map<string, string | null>;
       let accreditationOrcidStatus: Map<string, { orcid: string | null; status: import('../accreditation.js').AccreditationStatus }>;
+      let accreditedNamesByAccount: Map<string, string>;
       try {
-        [accreditedSet, batchScores, allAccredited, accreditedOrcidsByAccount, accreditationOrcidStatus] = await Promise.all([
+        [accreditedSet, batchScores, allAccredited, accreditedOrcidsByAccount, accreditationOrcidStatus, accreditedNamesByAccount] = await Promise.all([
           getAccreditedSet(authorNames),
           getReputationScores(authorNames),
           getAllAccreditedAccounts(),
           getAccreditedOrcidsByAccount(),
           getAllEverAccreditedOrcidsWithStatus(),
+          getAccreditedNamesByAccount(),
         ]);
       } catch (err) {
         if (err instanceof HafQueryError) throw err;
@@ -422,6 +430,7 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
                   accreditedAccounts: allAccredited,
                   accreditedOrcids: accreditedOrcidsByAccount,
                   accreditationOrcidStatus,
+                  accreditedNames: accreditedNamesByAccount,
                   signal: enrichmentAbort.signal,
                 },
               );

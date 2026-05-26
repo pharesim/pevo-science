@@ -19,7 +19,7 @@ import {
   pevoStringArray,
   type SortField,
 } from '../helpers.js';
-import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAllEverAccreditedOrcidsWithStatus } from '../accreditation.js';
+import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAccreditedNamesByAccount, getAllEverAccreditedOrcidsWithStatus } from '../accreditation.js';
 import type { AccreditationStatus } from '../accreditation.js';
 import { getReputationScore, getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
@@ -28,6 +28,7 @@ import { validatedCid } from '../lib/ipfs-validation.js';
 import {
   normalizeHiveAccount,
   computeSupersession,
+  resolveAuthorName,
   applyAuthorSupersession,
   trimAsciiCWhitespace,
 } from '../lib/author-supersession.js';
@@ -260,31 +261,69 @@ function emitOrcidClaimMismatchAudit(
 }
 
 /**
+ * Composite dedup key for a Hive-less author entry: normalized `orcid` when
+ * present, else normalized `name`. Returns null when the entry carries
+ * neither (it names no one and is skipped). The `orcid:`/`name:` prefix
+ * keeps the two sub-tracks distinct AND namespaces the key away from the
+ * Hive-keyed track's `hive:<account>` first-occurrence key. Normalization is
+ * JS-local — this dedup lives entirely inside the cumulative union and never
+ * crosses to SQL, so trim + lowercase suffices for display-credit dedup,
+ * where over/under-merge is an accepted cosmetic outcome.
+ */
+function hivelessCompositeKey(entry: Record<string, unknown>): string | null {
+  const orcid = typeof entry.orcid === 'string' ? entry.orcid.trim().toLowerCase() : '';
+  if (orcid.length > 0) return `orcid:${orcid}`;
+  const name = typeof entry.name === 'string' ? entry.name.trim().toLowerCase() : '';
+  if (name.length > 0) return `name:${name}`;
+  return null;
+}
+
+/**
  * Build the cumulative-union authors[] for a multi-link continuation chain
  * per `agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"`. The
- * displayed `authors[]`
- * is the union of `pevo.authors[].hive` (lowercased, trimmed,
- * non-empty-string only) across all chain posts; per-hive sub-fields
- * (`name`, `affiliation`, etc.) resolve to the most-recent self-claim
- * (a chain post whose `chain-author === hive` claiming itself) or, absent
- * a self-claim, the most-recent claim across the chain. ORCID is
- * server-overridden for accredited hives whose claimed ORCID disagrees
- * with the on-chain accredited ORCID; mismatch emits a structured
- * `orcid_claim_mismatch` audit warn for post-incident triage.
+ * displayed `authors[]` unions author entries across all chain posts on
+ * TWO separate, never-merging tracks:
  *
- * Drops are forbidden by construction: the union map only grows, so a
- * later chain post cannot remove a hive that an earlier post added. A
- * mathematical invariant replaces a check that could be inverted or get
- * out of sync with the spec.
+ *   - **Hive-keyed track.** Entries with a normalizable `hive` dedup on the
+ *     lowercased/trimmed hive. Per-hive sub-fields (`name`, `orcid`,
+ *     `affiliation`) resolve to the most-recent self-claim (a chain post
+ *     whose `chain-author === hive` claiming itself) or, absent a
+ *     self-claim, the most-recent claim across the chain. ORCID is
+ *     server-overridden for accredited hives whose claimed ORCID disagrees
+ *     with the on-chain accredited ORCID; mismatch emits a structured
+ *     `orcid_claim_mismatch` audit warn for post-incident triage.
  *
- * Bridge papers' `hive: null` carrier entries (original-preprint authors
- * who lack on-chain identity) are filtered out at extract time. Bridge
- * papers are immutable post-publish so they reach this helper only with
- * `chain.length === 1` — and the caller skips this helper for
- * `chain.length === 1`. Defense-in-depth: even if a bridge chain extended
- * to multiple links, the union strips `hive: null` entries; the existing
- * bridge metadata path (`buildPaperDetail`'s `pevo.authors || []` for
- * single-link papers) preserves the full carrier list.
+ *   - **Hive-less track.** Entries with no normalizable `hive` (a co-author
+ *     who has no Hive account — a display-only credit; they can never sign
+ *     a continuation, so they only ever appear in some broadcaster's
+ *     `authors[]`). They are CARRIED, not dropped, deduped on a composite
+ *     key (normalized `orcid` when present, else normalized `name`). This
+ *     upholds the "authors can't be dropped" invariant from the Hive-less
+ *     side: a multi-link paper whose head broadcaster omitted a Hive-less
+ *     co-author still surfaces that credit.
+ *
+ * The two tracks NEVER merge. Auto-linking a display-only credit to a Hive
+ * account by matching name or ORCID is forbidden by the trust model
+ * (`ARCHITECTURE.md` § 2 "Bridge papers"); the explicit bridge-author-claim
+ * attestation flow is the only path that links a Hive-less credit to a Hive
+ * identity. The same human appearing once with a handle and once without
+ * may double-list until that attestation lands — accepted. Over-merge (two
+ * people sharing a normalized name) and under-merge are accepted cosmetic
+ * outcomes on informational-only credits.
+ *
+ * Drops are forbidden by construction: both track maps only grow, so a
+ * later chain post cannot remove an entry an earlier post added.
+ *
+ * Name resolution: every output entry's `name` is resolved via
+ * `resolveAuthorName` — name-supersession (an accredited author's attested
+ * name supersedes the broadcaster claim, silently) plus the read-time
+ * fallback chain (attested → broadcaster → hive handle → orcid). `name` is
+ * therefore total across the output, which is what makes the exit-boundary
+ * guard sound on `name`.
+ *
+ * Ordering: both tracks share one first-occurrence counter, so Hive-keyed
+ * and Hive-less entries interleave in displayed order by first appearance
+ * across the chain.
  *
  * @param chainPosts - chain links with their latest reconstructed pevo
  *   metadata, in chain order (root first, head last).
@@ -303,6 +342,9 @@ function emitOrcidClaimMismatchAudit(
  *   the revoked-arm pass-through behavior. See the in-function comment
  *   under "ORCID server-override + audit emission" for the active vs
  *   revoked split.
+ * @param accreditedNames - per-currently-accredited-account attested-name
+ *   map (loaded once per request via `getAccreditedNamesByAccount`); drives
+ *   silent name-supersession. Only currently-accredited accounts appear.
  */
 function buildCumulativeAuthorsForChain(
   chainPosts: Array<{ author: string; permlink: string; pevo: Record<string, unknown> }>,
@@ -311,6 +353,7 @@ function buildCumulativeAuthorsForChain(
   accreditedAccounts: Set<string>,
   accreditedOrcids: Map<string, string | null>,
   accreditationOrcidStatus: Map<string, { orcid: string | null; status: AccreditationStatus }>,
+  accreditedNames: Map<string, string>,
 ): PaperAuthor[] {
   // Per-(rootAuthor, rootPermlink, hive) dedup set for the
   // `orcid_claim_mismatch` audit emission. The cumulative-union loop iterates
@@ -333,9 +376,20 @@ function buildCumulativeAuthorsForChain(
     sourcePermlink: string;
     isSelf: boolean;
   }>();
-  // First-occurrence index: the index at which this hive first appeared
-  // in any chain post. Drives the displayed authors[] order so the chain's
-  // monotonic-growth narrative carries through to the API response.
+  // Hive-less track: display-only co-author credits with no normalizable
+  // Hive account, deduped on a composite key (normalized orcid when present,
+  // else normalized name) so a multi-link paper does not structurally drop
+  // them. Most-recent occurrence wins the entry content — these are
+  // informational credits with no self-claim authority, so over/under-merge
+  // is accepted per the trust model. Kept strictly separate from `winning`:
+  // the two tracks never merge (no auto-linking a Hive-less credit to a Hive
+  // identity by name/ORCID).
+  const winningHiveless = new Map<string, Record<string, unknown>>();
+  // First-occurrence index, shared across BOTH tracks so Hive-keyed and
+  // Hive-less entries interleave in displayed order by first appearance.
+  // Keys are namespaced (`hive:<account>` for the Hive-keyed track, the
+  // `orcid:`/`name:`-prefixed composite key for the Hive-less track) so a
+  // hive value and a composite key cannot collide on one order slot.
   const firstOccurrence = new Map<string, number>();
   let occurrenceCounter = 0;
 
@@ -345,10 +399,23 @@ function buildCumulativeAuthorsForChain(
       if (!e || typeof e !== 'object') continue;
       const entry = e as Record<string, unknown>;
       const hive = normalizeHiveAccount(entry.hive);
-      if (hive === null) continue;
 
-      if (!firstOccurrence.has(hive)) {
-        firstOccurrence.set(hive, occurrenceCounter++);
+      if (hive === null) {
+        // Hive-less co-author: carry via the composite-key track. An entry
+        // with neither a normalizable orcid nor a name names no one and is
+        // skipped (it would also fail the name-based exit guard below).
+        const compositeKey = hivelessCompositeKey(entry);
+        if (compositeKey === null) continue;
+        if (!firstOccurrence.has(compositeKey)) {
+          firstOccurrence.set(compositeKey, occurrenceCounter++);
+        }
+        winningHiveless.set(compositeKey, entry);
+        continue;
+      }
+
+      const orderKey = `hive:${hive}`;
+      if (!firstOccurrence.has(orderKey)) {
+        firstOccurrence.set(orderKey, occurrenceCounter++);
       }
 
       const isSelfClaim = post.author === hive;
@@ -384,11 +451,9 @@ function buildCumulativeAuthorsForChain(
     }
   }
 
-  const orderedHives = Array.from(winning.keys()).sort(
-    (a, b) => (firstOccurrence.get(a) ?? 0) - (firstOccurrence.get(b) ?? 0),
-  );
-
-  return orderedHives.map((hive) => {
+  // Project one Hive-keyed winning entry: ORCID server-override + audit,
+  // supersession fields, name-supersession + fallback, enumerated output.
+  const projectHiveAuthor = (hive: string): Record<string, unknown> => {
     const w = winning.get(hive)!;
     // Clone the winning entry so we can override sub-fields (ORCID) without
     // mutating the source `pevo.authors[]` array.
@@ -558,6 +623,16 @@ function buildCumulativeAuthorsForChain(
     out.orcid_verified = supersession.orcid_verified;
     out.orcid_discrepancy = supersession.orcid_discrepancy;
 
+    // Name-supersession + fallback. The attested name (if `hive` is currently
+    // accredited with a non-empty attested name) supersedes the broadcaster
+    // claim silently — no discrepancy field, no audit (name variation is
+    // benign, unlike an ORCID mismatch). Otherwise the fallback chain
+    // (broadcaster name → hive handle → orcid) keeps `name` populated. The
+    // hive handle always satisfies arm 3 for a Hive-keyed entry, so `name`
+    // is total here. Mirrors the SQL `name` COALESCE in
+    // `authorsWithSupersessionSelect`.
+    const resolvedName = resolveAuthorName(hive, out.name, out.orcid, accreditedNames);
+
     // Enumerated projection to exactly PaperSummary's contract fields plus
     // `affiliation`. The detail surface legitimately renders `affiliation`;
     // the listing/profile consumers strip it. Dropping every other key a
@@ -567,7 +642,7 @@ function buildCumulativeAuthorsForChain(
     // set. Without it the same endpoint returns wider author objects on
     // multi-link papers and the extra keys survive into the per-root cache.
     const projected: Record<string, unknown> = {
-      name: out.name,
+      name: resolvedName,
       hive: out.hive,
       orcid: out.orcid,
       orcid_verified: out.orcid_verified,
@@ -575,19 +650,56 @@ function buildCumulativeAuthorsForChain(
     };
     if (out.affiliation !== undefined) projected.affiliation = out.affiliation;
     return projected;
-  })
-    // Real type-guard narrowing (not an `as` cast). The guaranteed-present
-    // field on every cumulative-union entry is `hive`: it is the dedup key,
-    // normalised to a string when the winning entry is selected, and entries
-    // with a null hive were skipped before they could win. `name` is NOT a
-    // safe discriminator here — PEvO author entries are routinely hive-only
-    // (`{hive}` with no `name`), so filtering on `name` would drop those
-    // legitimate authors,
-    // breaking the "authors can't be dropped" invariant this surface upholds.
-    // The predicate asserts the intersection so it stays assignable to the
-    // map output's `Record<string, unknown>` element type; the surviving
-    // array narrows to PaperAuthor[].
-    .filter((a): a is Record<string, unknown> & PaperAuthor => typeof a.hive === 'string');
+  };
+
+  // Project one Hive-less display-only credit. No Hive account means no
+  // ORCID server-override, no audit, and no name-supersession (all gated on
+  // a Hive account); `computeSupersession(null, …)` yields the
+  // no-attestation defaults. The emitted shape mirrors the Hive-keyed
+  // enumerated set so multi-link `authors[]` stays shape-identical to the
+  // single-link SQL/JS projection (which carries Hive-less entries with a
+  // null `hive`). The chain `hive`/`orcid` values pass through raw (or
+  // undefined when absent), matching the SQL projection's raw passthrough.
+  const projectHivelessAuthor = (entry: Record<string, unknown>): Record<string, unknown> => {
+    const chainOrcid = typeof entry.orcid === 'string' ? entry.orcid : null;
+    const supersession = computeSupersession(null, chainOrcid, accreditedOrcids);
+    const projected: Record<string, unknown> = {
+      name: resolveAuthorName(
+        typeof entry.hive === 'string' ? entry.hive : null,
+        entry.name,
+        entry.orcid,
+        accreditedNames,
+      ),
+      hive: typeof entry.hive === 'string' ? entry.hive : undefined,
+      orcid: typeof entry.orcid === 'string' ? entry.orcid : undefined,
+      orcid_verified: supersession.orcid_verified,
+      orcid_discrepancy: supersession.orcid_discrepancy,
+    };
+    if (entry.affiliation !== undefined) projected.affiliation = entry.affiliation;
+    return projected;
+  };
+
+  // Emit both tracks interleaved by shared first-occurrence order.
+  const slots: Array<{ order: number; project: () => Record<string, unknown> }> = [];
+  for (const hive of winning.keys()) {
+    slots.push({ order: firstOccurrence.get(`hive:${hive}`) ?? 0, project: () => projectHiveAuthor(hive) });
+  }
+  for (const [compositeKey, entry] of winningHiveless) {
+    slots.push({ order: firstOccurrence.get(compositeKey) ?? 0, project: () => projectHivelessAuthor(entry) });
+  }
+  slots.sort((a, b) => a.order - b.order);
+
+  return slots
+    .map((s) => s.project())
+    // Sound name-based exit guard (not an `as` cast). `name` is now total
+    // across both tracks via `resolveAuthorName`'s fallback chain — a
+    // Hive-keyed entry always resolves at least its hive handle, and a
+    // Hive-less entry resolves its broadcaster name / orcid. Only a
+    // fully-empty entry (no name, hive, or orcid) yields no `name`, and such
+    // an entry names no one and is correctly dropped. The intersection
+    // predicate keeps the result assignable to the map output's
+    // `Record<string, unknown>` element type while narrowing to PaperAuthor[].
+    .filter((a): a is Record<string, unknown> & PaperAuthor => typeof a.name === 'string');
 }
 
 /**
@@ -606,6 +718,7 @@ interface ResolveChainCumulativeAuthorsOptions {
   accreditedAccounts: Set<string>;
   accreditedOrcids: Map<string, string | null>;
   accreditationOrcidStatus: Map<string, { orcid: string | null; status: AccreditationStatus }>;
+  accreditedNames: Map<string, string>;
   /**
    * Pre-built chain posts (with per-link latest pevo metadata) if the caller
    * has already done the work. The detail surface passes this to avoid the
@@ -660,15 +773,19 @@ export async function resolveChainCumulativeAuthors(
   const cacheKey = `chain-authors:${rootAuthor}:${rootPermlink}`;
 
   if (options.prebuiltChainPosts && options.prebuiltChainPosts.length > 0) {
-    // Single-link short-circuit on the prebuilt path: the HAF path returns
-    // null for chain.length === 1 so callers fall back to their own
-    // supersession projection (which preserves bridge-paper `hive: null`
-    // carrier entries that the cumulative-union construction intentionally
-    // strips). Without this guard the prebuilt path writes a stripped
-    // result to the cache, and a subsequent listing/profile call hits the
-    // warm cache and serves the stripped shape instead of the head-meta
-    // projection — a divergence between cached and live shapes that would
-    // surface as a missing-carrier bug on multi-author single-link papers.
+    // Single-link short-circuit on the prebuilt path, symmetric with the HAF
+    // path's `chain.length === 1` guard: a single-link paper has no
+    // cross-link union to compute, so its own supersession projection (SQL
+    // `authorsWithSupersessionSelect` for listing/detail, JS
+    // `applyAuthorSupersession` for profile) is authoritative — it already
+    // carries every author entry (Hive-keyed AND Hive-less) with
+    // name-supersession + fallback applied. Returning null lets the caller
+    // use that projection directly. This also avoids a needless cached/live
+    // shape divergence: the cumulative union normalizes the displayed `hive`
+    // and emits an absent hive as `undefined`, whereas the head-meta
+    // projection passes `hive` through raw (SQL emits `null`). Without the
+    // guard the prebuilt path would cache the normalized shape and a later
+    // listing/profile call would serve it instead of the head-meta shape.
     if (options.prebuiltChainPosts.length === 1) return null;
     // Route through getOrSet so the epoch guard suppresses the cache write
     // when /invalidate fires between fetcher-start and resolve. Single-flight
@@ -707,15 +824,19 @@ function buildChainCumulativeFromPosts(
     options.accreditedAccounts,
     options.accreditedOrcids,
     options.accreditationOrcidStatus,
+    options.accreditedNames,
   );
+  // `accredited_authors` is the Hive-keyed intersection only — Hive-less
+  // entries have no account to be accredited (their `hive` does not
+  // normalize), so they never enter this set.
   const accredited = authors
     .map((a) => normalizeHiveAccount(a.hive))
     .filter((hive): hive is string => hive !== null && options.accreditedAccounts.has(hive));
   // `authors` is already `PaperAuthor[]`. `buildCumulativeAuthorsForChain`
   // enumerates each output entry to the contract fields and narrows with a
-  // real type guard (`typeof a.hive === 'string'`) at its return boundary,
-  // so no cast is needed here and broadcaster-injected keys cannot reach the
-  // consumers or the per-root cache.
+  // real type guard on `name` (total via the name-resolution fallback) at
+  // its return boundary, so no cast is needed here and broadcaster-injected
+  // keys cannot reach the consumers or the per-root cache.
   return { authors, accredited_authors: accredited };
 }
 
@@ -747,12 +868,13 @@ async function computeChainCumulativeFromHaf(
   // listing / profile / detail surfaces each have their own supersession-
   // aware projection of `pevo.authors[]` (SQL `authorsWithSupersessionSelect`
   // for listing+detail; JS `applyAuthorSupersession` for profile via
-  // `toPaperSummary`) that preserve bridge-paper `hive: null` carrier
-  // entries and other non-hive entries the cumulative-union construction
-  // intentionally strips. Returning `null` here signals "no override
-  // needed" so callers keep their existing projection and parity holds at
-  // the single-link case. Multi-link papers go through the full cumulative
-  // path below.
+  // `toPaperSummary`) that already carries every author entry — Hive-keyed
+  // and Hive-less (bridge-paper `hive: null` carriers included) — with
+  // name-supersession + fallback applied, passing `hive`/`orcid` through raw.
+  // Returning `null` here signals "no override needed" so callers keep that
+  // projection (whose raw passthrough is the canonical single-link shape).
+  // Multi-link papers go through the full cumulative path below, which now
+  // carries Hive-less entries via the composite-key track.
   if (chain.length === 1) return null;
 
   // Multi-link: replay version history to pick up per-link latest metadata
@@ -1035,13 +1157,14 @@ async function fetchPapersFromHaf(
     // within the same Promise.all — total cold-cache latency is bounded by
     // the slowest sibling rather than serialized fetches.
     const allAccreditedPromise = getAllAccreditedAccounts();
-    const [batchScores, accreditedSet, voteData, allAccredited, accreditedOrcidsByAccount, accreditationOrcidStatus] = await Promise.all([
+    const [batchScores, accreditedSet, voteData, allAccredited, accreditedOrcidsByAccount, accreditationOrcidStatus, accreditedNamesByAccount] = await Promise.all([
       getReputationScores(authors),
       getAccreditedSet(authors),
       allAccreditedPromise.then(set => batchResolveVotes(pool, paperKeys, [...set])),
       allAccreditedPromise,
       getAccreditedOrcidsByAccount(),
       getAllEverAccreditedOrcidsWithStatus(),
+      getAccreditedNamesByAccount(),
     ]);
 
     // Cross-surface cumulative-union enrichment: for each row, fetch the
@@ -1076,6 +1199,7 @@ async function fetchPapersFromHaf(
                 accreditedAccounts: allAccredited,
                 accreditedOrcids: accreditedOrcidsByAccount,
                 accreditationOrcidStatus,
+                accreditedNames: accreditedNamesByAccount,
                 signal: enrichmentAbort.signal,
               },
             );
@@ -1342,7 +1466,7 @@ async function fetchPaperDetailFromHaf(
     // request-scoped fetches. Both helpers cache 10 min via hafCache so
     // the parallel call is typically free; parallelizing with paperResult
     // / fullVersions / retraction avoids serial latency on cold cache.
-    const [paperResult, fullVersions, retraction, accreditedAccountSet, accreditedOrcidsByAccount, accreditationOrcidStatus, authorReputation] = await Promise.all([
+    const [paperResult, fullVersions, retraction, accreditedAccountSet, accreditedOrcidsByAccount, accreditationOrcidStatus, accreditedNamesByAccount, authorReputation] = await Promise.all([
       pool.query(
         `WITH ${detailCte.sql}
          SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
@@ -1359,6 +1483,7 @@ async function fetchPaperDetailFromHaf(
       getAllAccreditedAccounts(),
       getAccreditedOrcidsByAccount(),
       getAllEverAccreditedOrcidsWithStatus(),
+      getAccreditedNamesByAccount(),
       // List-view (and profile-view) parity per BACKEND-REPUTATION-SSOT
       // AC #1: every reputation value displayed in the UI must derive
       // from the same `${appTag}:reputation:batch:${user}` value. Paper
@@ -1484,6 +1609,7 @@ async function fetchPaperDetailFromHaf(
               accreditedAccounts: accreditedAccountSet,
               accreditedOrcids: accreditedOrcidsByAccount,
               accreditationOrcidStatus,
+              accreditedNames: accreditedNamesByAccount,
               prebuiltChainPosts: chainPosts,
               memo,
               signal,
@@ -3008,9 +3134,13 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
         // authors array: this branch builds `detail` from a version row
         // without running the SQL-side `authorsWithSupersessionSelect`
         // projection, so apply the same rule in JS via the per-request
-        // ORCID map.
-        const orcidMapForVersion = await getAccreditedOrcidsByAccount();
-        detail.authors = applyAuthorSupersession(detail.authors, orcidMapForVersion);
+        // ORCID + attested-name maps (ORCID + name supersession and the
+        // name fallback chain).
+        const [orcidMapForVersion, nameMapForVersion] = await Promise.all([
+          getAccreditedOrcidsByAccount(),
+          getAccreditedNamesByAccount(),
+        ]);
+        detail.authors = applyAuthorSupersession(detail.authors, orcidMapForVersion, nameMapForVersion);
 
         const retraction = await getRetractionInfo(author, permlink);
         detail.is_retracted = retraction.is_retracted;
@@ -3046,8 +3176,11 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 
         // Supersession on the metadata-restored fallback. Same shape as
         // the ?version=N branch above.
-        const orcidMapForRestored = await getAccreditedOrcidsByAccount();
-        detail.authors = applyAuthorSupersession(detail.authors, orcidMapForRestored);
+        const [orcidMapForRestored, nameMapForRestored] = await Promise.all([
+          getAccreditedOrcidsByAccount(),
+          getAccreditedNamesByAccount(),
+        ]);
+        detail.authors = applyAuthorSupersession(detail.authors, orcidMapForRestored, nameMapForRestored);
 
         const retraction = await getRetractionInfo(author, permlink);
         detail.is_retracted = retraction.is_retracted;

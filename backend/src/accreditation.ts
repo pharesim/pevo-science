@@ -146,6 +146,65 @@ export async function getAccreditedOrcidsByAccount(): Promise<Map<string, string
 }
 
 /**
+ * Map of every currently-accredited account to its accreditation-attested
+ * display name (`active_accreditations.researcher_name`). The JS-side source
+ * for name-supersession: an accredited author's attested name is the
+ * authoritative display name and supersedes the broadcaster-claimed
+ * `pevo.authors[i].name`, exactly as `getAccreditedOrcidsByAccount` is the
+ * source for ORCID supersession.
+ *
+ * Only accounts with a NON-EMPTY attested name are included — an empty
+ * `researcher_name` carries no authority and would shadow the broadcaster
+ * claim with nothing. Callers treat a missing key as "no attested name,
+ * keep the broadcaster value" (the name-resolution fallback in
+ * `resolveAuthorName`). This is the active-only analogue of
+ * `getAccreditedOrcidsByAccount`: name-supersession applies only to
+ * currently-accredited accounts, so revoked accounts are intentionally
+ * absent (the LEFT JOIN to `active_accreditations` on the SQL side has the
+ * same active-only semantics — the two surfaces stay in lockstep per the
+ * SQL/JS parity doctrine).
+ *
+ * **Error contract.** Mirrors `getAccreditedOrcidsByAccount`: throws on HAF
+ * query failure (re-thrown so the route layer translates to 503-retriable
+ * rather than caching an empty map mid-outage and silently dropping
+ * name-supersession until cache expiry). `pool === null` (dev without HAF)
+ * returns an empty map without caching — a startup condition, not a
+ * transient outage.
+ */
+export async function getAccreditedNamesByAccount(): Promise<Map<string, string>> {
+  if (getPool() === null) return new Map();
+  const arr = await hafCache.getOrSet<Array<{ account: string; researcher_name: string }>>(
+    'accredited_account_names',
+    async () => {
+      const pool = getPool();
+      if (!pool) return [];
+
+      try {
+        const cte = activeAccreditationsCteBody();
+        const result = await pool.query(
+          `WITH ${cte.sql}
+           SELECT account, researcher_name FROM active_accreditations
+           WHERE NULLIF(BTRIM(researcher_name), '') IS NOT NULL`,
+          cte.params,
+        );
+        return result.rows.map((r: { account: string; researcher_name: string }) => ({
+          account: r.account,
+          researcher_name: r.researcher_name,
+        }));
+      } catch (err) {
+        logger.error({ err }, 'HAF accredited-name lookup failed');
+        throw err;
+      }
+    },
+    10 * 60_000,
+    true,
+  );
+  const map = new Map<string, string>();
+  for (const { account, researcher_name } of arr) map.set(account, researcher_name);
+  return map;
+}
+
+/**
  * Get the full set of all accredited accounts, cached for 10 minutes.
  * Used by reputation queries to filter votes without re-running the
  * expensive ACTIVE_ACCREDITATIONS_CTE on every call.

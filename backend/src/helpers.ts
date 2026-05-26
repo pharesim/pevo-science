@@ -304,14 +304,17 @@ export function extractAbstract(body: string): string {
  *  review_count, citation_count, author_reputation, and is_accredited
  *  default to 0/false — callers should enrich from HAF or batch lookups.
  *
- *  ORCID supersession per `agents/docs/hive-schemas.md` § 1.1: every
+ *  ORCID + name supersession per `agents/docs/hive-schemas.md` § 1.1: every
  *  `authors[i]` gets `orcid_verified` and `orcid_discrepancy` populated
- *  from `orcidMap` (typically supplied by the caller via
- *  `getAccreditedOrcidsByAccount()`). Callers without an accreditation
- *  context pass `new Map()`; the supersession projection collapses to
- *  case-1/case-2 ("no claim") for every author. PaperSummary's contract
- *  omits `affiliation` per `agents/docs/api-contracts/papers.md`, so the
- *  post-supersession entries are stripped of that field. */
+ *  from `orcidMap`, and `name` resolved via name-supersession + the
+ *  read-time fallback chain from `nameMap` (both typically supplied by the
+ *  caller via `getAccreditedOrcidsByAccount()` / `getAccreditedNamesByAccount()`).
+ *  Callers without an accreditation context pass `new Map()` for both; the
+ *  supersession projection collapses to case-1/case-2 ("no claim") for every
+ *  author and `name` falls back to the broadcaster value / hive / orcid.
+ *  PaperSummary's contract omits `affiliation` per
+ *  `agents/docs/api-contracts/papers.md`, so the post-supersession entries
+ *  are stripped of that field. */
 export function toPaperSummary(post: {
   author: string;
   permlink: string;
@@ -319,10 +322,10 @@ export function toPaperSummary(post: {
   body: string;
   created: string;
   net_votes: number;
-}, meta: Record<string, unknown>, orcidMap: Map<string, string | null>): PaperSummary {
+}, meta: Record<string, unknown>, orcidMap: Map<string, string | null>, nameMap: Map<string, string>): PaperSummary {
   const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
   const rawAuthors = Array.isArray(pevo.authors) ? (pevo.authors as Array<Record<string, unknown>>) : [];
-  const supersededAuthors = applyAuthorSupersession(rawAuthors, orcidMap);
+  const supersededAuthors = applyAuthorSupersession(rawAuthors, orcidMap, nameMap);
   const summaryAuthors: PaperAuthor[] = supersededAuthors.map((entry) => {
     // Strip affiliation to honor the PaperSummary shape. `applyAuthorSupersession`
     // emits the enumerated key set (name, hive, orcid, affiliation,

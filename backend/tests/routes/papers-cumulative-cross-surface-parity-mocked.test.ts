@@ -10,6 +10,13 @@
  * output. Route-level wiring is covered by the real-HAF parity canary in
  * `papers.test.ts` (Cross-surface cumulative-union parity).
  *
+ * Also pins the author-identity-model behaviors: Hive-less co-author
+ * persistence via the composite-key (orcid-else-name) track, the two-track
+ * no-merge boundary (a Hive-less credit is never auto-linked to a Hive
+ * identity), silent name-supersession (an accredited author's attested name
+ * supersedes the broadcaster claim with no discrepancy field), and the
+ * name read-time fallback chain (attested → broadcaster → hive → orcid).
+ *
  * **Carve-out (CLAUDE.md "Running Tests"):** this test exercises the
  * helper's algorithmic behavior in isolation via the `prebuiltChainPosts`
  * fast-path. Per the carve-out clauses:
@@ -51,6 +58,7 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
       accreditedAccounts: new Set(['alice', 'bob']),
       accreditedOrcids: new Map(),
       accreditationOrcidStatus: new Map(),
+      accreditedNames: new Map(),
       prebuiltChainPosts: chainPosts,
     });
     expect(result).not.toBeNull();
@@ -74,6 +82,7 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
       accreditedAccounts: new Set(['alice', 'bob']),
       accreditedOrcids: new Map<string, string | null>(),
       accreditationOrcidStatus: new Map<string, { orcid: string | null; status: 'active' | 'revoked' }>(),
+      accreditedNames: new Map<string, string>(),
     };
     const detailResult = await resolveChainCumulativeAuthors('alice', 'p1', {
       ...ctx,
@@ -123,6 +132,7 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
       accreditedAccounts: new Set(['alice', 'bob']),
       accreditedOrcids: new Map<string, string | null>(),
       accreditationOrcidStatus: new Map<string, { orcid: string | null; status: 'active' | 'revoked' }>(),
+      accreditedNames: new Map<string, string>(),
     };
     const result = await resolveChainCumulativeAuthors('alice', 'p1', {
       ...ctx,
@@ -168,6 +178,7 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
       accreditedAccounts: new Set(['alice', 'bob', 'poisoned']),
       accreditedOrcids: new Map<string, string | null>(),
       accreditationOrcidStatus: new Map<string, { orcid: string | null; status: 'active' | 'revoked' }>(),
+      accreditedNames: new Map<string, string>(),
     };
 
     // Mirror the route's per-row enrichment loop shape verbatim: Promise.all
@@ -225,6 +236,7 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
       accreditedAccounts: new Set(['bob']),
       accreditedOrcids: new Map(),
       accreditationOrcidStatus: new Map(),
+      accreditedNames: new Map(),
       prebuiltChainPosts: chainPosts,
     });
     expect(result).not.toBeNull();
@@ -261,6 +273,7 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
       accreditedAccounts: new Set(['alice', 'bob']),
       accreditedOrcids: new Map(),
       accreditationOrcidStatus: new Map(),
+      accreditedNames: new Map(),
       prebuiltChainPosts: chainPosts,
     });
     expect(result).not.toBeNull();
@@ -281,5 +294,175 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
     expect(Object.keys(byHive.get('bob')!).sort()).toEqual(
       ['hive', 'name', 'orcid', 'orcid_discrepancy', 'orcid_verified'],
     );
+  });
+});
+
+describe('resolveChainCumulativeAuthors — Hive-less co-author persistence (composite-key track)', () => {
+  const baseCtx = () => ({
+    accreditedAccounts: new Set<string>(['alice', 'bob']),
+    accreditedOrcids: new Map<string, string | null>(),
+    accreditationOrcidStatus: new Map<string, { orcid: string | null; status: 'active' | 'revoked' }>(),
+    accreditedNames: new Map<string, string>(),
+  });
+
+  it('carries a Hive-less co-author the head broadcaster dropped on a multi-link paper', async () => {
+    // Root names a Hive-keyed author (alice) plus a Hive-less co-author
+    // (Carol, no Hive account). The head continuation drops Carol. The
+    // cumulative union must still surface Carol — a display-only credit
+    // cannot be removed by a later broadcaster's metadata edit, exactly as
+    // a Hive-keyed author cannot.
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Carol Hiveless', orcid: '0000-0002-1111-2222' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', { ...baseCtx(), prebuiltChainPosts: chainPosts });
+    expect(result).not.toBeNull();
+    const names = result!.authors.map((a) => a.name).sort();
+    expect(names).toEqual(['Alice', 'Carol Hiveless']);
+    // Carol has no Hive account → not in accredited_authors regardless of
+    // the accreditation set.
+    expect(result!.accredited_authors).toEqual(['alice']);
+  });
+
+  it('dedups a repeated Hive-less co-author on the ORCID track', async () => {
+    // Carol (Hive-less, ORCID present) appears in both links. The composite
+    // key (normalized orcid) dedups her to a single entry.
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Carol', orcid: '0000-0002-1111-2222' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Carol C', orcid: '0000-0002-1111-2222' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', { ...baseCtx(), prebuiltChainPosts: chainPosts });
+    const hiveless = result!.authors.filter((a) => !a.hive);
+    expect(hiveless).toHaveLength(1);
+    // Most-recent occurrence wins the entry content.
+    expect(hiveless[0].name).toBe('Carol C');
+    expect(hiveless[0].orcid).toBe('0000-0002-1111-2222');
+  });
+
+  it('dedups a repeated Hive-less co-author on the name track (no ORCID)', async () => {
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Dave Hiveless' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'dave hiveless' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', { ...baseCtx(), prebuiltChainPosts: chainPosts });
+    const hiveless = result!.authors.filter((a) => !a.hive);
+    // Normalized-name composite key (case-insensitive) collapses the two.
+    expect(hiveless).toHaveLength(1);
+  });
+
+  it('NEVER merges a Hive-less credit into a Hive-keyed entry for the same human', async () => {
+    // Carol appears once with a Hive handle (carol) and once as a Hive-less
+    // credit with the same name. Auto-linking by name is forbidden by the
+    // trust model — the two stay separate (double-list) until an explicit
+    // bridge-author-claim attestation links them.
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Carol', hive: 'carol' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Carol' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', { ...baseCtx(), prebuiltChainPosts: chainPosts });
+    const carolEntries = result!.authors.filter((a) => a.name === 'Carol');
+    expect(carolEntries).toHaveLength(2);
+    // One Hive-keyed (carol), one Hive-less (no hive) — never merged.
+    expect(carolEntries.filter((a) => a.hive === 'carol')).toHaveLength(1);
+    expect(carolEntries.filter((a) => !a.hive)).toHaveLength(1);
+  });
+
+  it('interleaves Hive-less and Hive-keyed entries by first-occurrence order', async () => {
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Zed Hiveless' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Zed Hiveless' }, { name: 'Bob', hive: 'bob' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', { ...baseCtx(), prebuiltChainPosts: chainPosts });
+    // alice (occ 0), Zed (occ 1, Hive-less), bob (occ 2) — Hive-less takes
+    // its slot by first appearance, not after all Hive-keyed entries.
+    expect(result!.authors.map((a) => a.name)).toEqual(['Alice', 'Zed Hiveless', 'Bob']);
+  });
+
+  it('projects a Hive-less entry to exactly the enumerated key set', async () => {
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Carol', orcid: '0000-0002-1111-2222', affiliation: 'Uni C', email: 'leak@example.com' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', { ...baseCtx(), prebuiltChainPosts: chainPosts });
+    const carol = result!.authors.find((a) => a.name === 'Carol')!;
+    // Same enumerated set as a Hive-keyed entry (+ affiliation here), no
+    // broadcaster-injected `email`. orcid_verified/discrepancy default to
+    // the no-attestation values (a Hive-less credit has no accreditation).
+    expect(Object.keys(carol).sort()).toEqual(
+      ['affiliation', 'hive', 'name', 'orcid', 'orcid_discrepancy', 'orcid_verified'],
+    );
+    expect(carol).not.toHaveProperty('email');
+    expect(carol.orcid_verified).toBeNull();
+    expect(carol.orcid_discrepancy).toBe(false);
+  });
+
+  it('drops a fully-empty author entry (no name, hive, or orcid)', async () => {
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { affiliation: 'Ghost Uni' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', { ...baseCtx(), prebuiltChainPosts: chainPosts });
+    // The affiliation-only entry names no one → dropped by the name guard.
+    expect(result!.authors.map((a) => a.name)).toEqual(['Alice']);
+  });
+});
+
+describe('resolveChainCumulativeAuthors — name-supersession + fallback', () => {
+  const ctxWith = (accreditedNames: Map<string, string>) => ({
+    accreditedAccounts: new Set<string>(['alice', 'bob']),
+    accreditedOrcids: new Map<string, string | null>(),
+    accreditationOrcidStatus: new Map<string, { orcid: string | null; status: 'active' | 'revoked' }>(),
+    accreditedNames,
+  });
+
+  it('silently supersedes an accredited author name with the attested name (no discrepancy field)', async () => {
+    // alice is accredited; her attested name is "Alice Anderson". She
+    // broadcast "Al". The attested name wins for display, silently — no
+    // name_discrepancy/name_verified field, unlike ORCID supersession.
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Al', hive: 'alice' }, { name: 'Bob', hive: 'bob' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Al', hive: 'alice' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', {
+      ...ctxWith(new Map([['alice', 'Alice Anderson']])),
+      prebuiltChainPosts: chainPosts,
+    });
+    const alice = result!.authors.find((a) => a.hive === 'alice')!;
+    expect(alice.name).toBe('Alice Anderson');
+    expect(alice).not.toHaveProperty('name_discrepancy');
+    expect(alice).not.toHaveProperty('name_verified');
+    // bob accredited but no attested name in the map → broadcaster name kept.
+    expect(result!.authors.find((a) => a.hive === 'bob')!.name).toBe('Bob');
+  });
+
+  it('does not supersede when the attested name is absent (revoked/unaccredited keep broadcaster name)', async () => {
+    // carol is NOT in accreditedNames (and not accredited) → her broadcaster
+    // name is kept; no supersession.
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Carol Claimed', hive: 'carol' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', {
+      ...ctxWith(new Map([['alice', 'Alice Anderson']])),
+      prebuiltChainPosts: chainPosts,
+    });
+    expect(result!.authors.find((a) => a.hive === 'carol')!.name).toBe('Carol Claimed');
+  });
+
+  it('falls back through broadcaster name → hive handle → orcid', async () => {
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [
+        { hive: 'bob' },                         // no name, not in name map → hive handle
+        { orcid: '0000-0003-4444-5555' },        // Hive-less, no name → orcid
+        { name: 'Named Person', hive: 'dave' },  // broadcaster name kept
+      ] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ hive: 'bob' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', {
+      ...ctxWith(new Map()),
+      prebuiltChainPosts: chainPosts,
+    });
+    const byName = result!.authors.map((a) => a.name).sort();
+    expect(byName).toEqual(['0000-0003-4444-5555', 'Named Person', 'bob']);
   });
 });

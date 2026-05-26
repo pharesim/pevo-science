@@ -1086,9 +1086,12 @@ describe('authorsWithSupersessionSelect SRF cascade-fail defense (real Postgres,
     // orcid_verified=null / orcid_discrepancy=false. The load-bearing
     // assertion is that the SRF does not raise on malformed authors[].
     const projection = authorsWithSupersessionSelect('c', '$1');
+    // The projection references `aa.researcher_name` (name-supersession), so
+    // the inlined CTE must expose that column too — an empty set still
+    // suffices for the cascade-fail assertion.
     const withEmptyAccred = `
-      WITH active_accreditations(account, orcid) AS (
-        SELECT NULL::text, NULL::text WHERE false
+      WITH active_accreditations(account, orcid, researcher_name) AS (
+        SELECT NULL::text, NULL::text, NULL::text WHERE false
       )
     `;
 
@@ -1163,6 +1166,75 @@ describe('authorsWithSupersessionSelect SRF cascade-fail defense (real Postgres,
       expect(projected[0].orcid).toBe('0000-0001-1234-5678');
       expect(projected[0].orcid_verified).toBeNull();
       expect(projected[0].orcid_discrepancy).toBe(false);
+    }
+  });
+});
+
+/**
+ * Pin the SQL-side name-supersession + read-time fallback projection in
+ * `authorsWithSupersessionSelect`, the SQL/JS parity counterpart of the JS-side
+ * `resolveAuthorName` (`backend/src/lib/author-supersession.ts`). The
+ * projected `name` is
+ * `COALESCE(NULLIF(aa.researcher_name,''), NULLIF(a.elem->>'name',''),
+ * NULLIF(a.elem->>'hive',''), NULLIF(a.elem->>'orcid',''))`. Both surfaces
+ * MUST agree: an accredited author's attested name wins silently, and a
+ * Hive-/ORCID-only credit still surfaces a display name.
+ *
+ * Carve-out clause-(c): synthetic-VALUES is justified because seeding the
+ * public HAF corpus with an accredited account whose attested name differs
+ * from a paper's broadcaster claim, per case per test, is impractical; the
+ * assertion (name COALESCE precedence) is exactly what the carve-out is for.
+ * The real-path companion is the cross-surface parity canary in
+ * `papers.test.ts`, which exercises this projection over live corpus rows.
+ */
+describe('authorsWithSupersessionSelect name-supersession + fallback (real Postgres, synthetic rows)', () => {
+  it('supersedes accredited names and applies the read-time fallback chain', { timeout: 30_000 }, async (ctx) => {
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+    const projection = authorsWithSupersessionSelect('c', '$1');
+    // alice is accredited with attested name "Alice Anderson"; bob is
+    // accredited with an empty attested name (must fall through, not shadow
+    // the broadcaster value with '').
+    const withAccred = `
+      WITH active_accreditations(account, orcid, researcher_name) AS (
+        VALUES ('alice'::text, NULL::text, 'Alice Anderson'::text),
+               ('bob'::text,   NULL::text, ''::text)
+      )
+    `;
+    const meta = JSON.stringify({
+      pevotest: {
+        type: 'paper',
+        authors: [
+          { name: 'Al', hive: 'alice' },              // accredited → attested name wins
+          { name: 'Robert', hive: 'bob' },            // accredited, empty attested → broadcaster name
+          { hive: 'carol' },                          // unaccredited, no name → hive handle
+          { orcid: '0000-0003-4444-5555' },           // Hive-less, no name → orcid
+          { name: 'Dave Display' },                   // Hive-less, broadcaster name
+        ],
+      },
+    });
+    const sql = `
+      ${withAccred}, paper(json_metadata) AS (SELECT $2::jsonb)
+      SELECT (${projection}) AS authors_with_supersession
+      FROM paper c
+    `;
+    const result = await pool.query(sql, ['pevotest', meta]);
+    const projected = result.rows[0].authors_with_supersession as Array<Record<string, unknown>>;
+    expect(projected.map((a) => a.name)).toEqual([
+      'Alice Anderson',       // attested supersedes 'Al'
+      'Robert',               // empty attested name falls through to broadcaster
+      'carol',                // hive-handle fallback
+      '0000-0003-4444-5555',  // orcid fallback
+      'Dave Display',         // broadcaster name
+    ]);
+    // Name-supersession is silent — no name_discrepancy / name_verified key
+    // is added to the projection (contrast ORCID supersession).
+    for (const author of projected) {
+      expect(author).not.toHaveProperty('name_discrepancy');
+      expect(author).not.toHaveProperty('name_verified');
     }
   });
 });

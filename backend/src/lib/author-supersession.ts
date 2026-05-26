@@ -187,11 +187,76 @@ export function computeSupersession(
 }
 
 /**
+ * Resolve an author entry's display `name`, combining name-supersession with
+ * the read-time fallback chain per `agents/docs/hive-schemas.md` § 1.1.
+ *
+ * Resolution order (first non-empty wins):
+ *   1. **Attested name** — the accreditation-attested `researcher_name` when
+ *      the entry's `hive` is CURRENTLY accredited (key present in `nameMap`).
+ *      This is name-supersession: the accredited author's attested name is
+ *      authoritative and overrides whatever the broadcaster typed. Unlike
+ *      ORCID supersession, name divergence is silent — no discrepancy field,
+ *      no audit event — because name variation (Rob/Robert, maiden names,
+ *      transliterations, initials) is benign and high-noise.
+ *   2. **Broadcaster name** — the chain-claimed `authors[i].name`.
+ *   3. **Hive handle** — the entry's `hive` value, for a co-author who has a
+ *      Hive account but no typed name.
+ *   4. **ORCID** — last-resort identifier when nothing else is present.
+ *
+ * Returns `undefined` only for a fully-empty entry (no attested/broadcaster
+ * name, no hive, no orcid) — such an entry names no one and is dropped by
+ * the cumulative-union's name-based exit guard. The fallback makes `name`
+ * satisfiable for every realistic author entry (chain is SSoT and a direct
+ * Keychain broadcast can omit `name`); it is NOT a legacy-compat shim (PEvO
+ * is beta — no grandfathered posts).
+ *
+ * **SQL parity.** The `name` projection in `authorsWithSupersessionSelect`
+ * (`hafsql.ts`) mirrors this exactly via
+ * `COALESCE(NULLIF(aa.researcher_name, ''), NULLIF(a.elem ->> 'name', ''),
+ * NULLIF(a.elem ->> 'hive', ''), NULLIF(a.elem ->> 'orcid', ''))` — the
+ * LEFT JOIN to `active_accreditations` makes arm 1 active-only, matching
+ * `nameMap`'s currently-accredited-only membership. Both sides treat only an
+ * exactly-empty string as absent (no whitespace trimming) so the two
+ * surfaces agree on the common case; the same extended-whitespace residual
+ * noted on `computeSupersession` applies but is benign for names.
+ *
+ * @param hive - the entry's chain `hive` value; canonicalized internally via
+ *   `normalizeHiveAccount` for the `nameMap` lookup. The raw value (when a
+ *   non-empty string) is the arm-3 fallback so the resolved name matches the
+ *   surface's displayed `hive`.
+ * @param broadcasterName - the chain-claimed `authors[i].name`.
+ * @param orcid - the chain-claimed `authors[i].orcid` (arm-4 fallback).
+ * @param nameMap - per-currently-accredited-account attested-name map from
+ *   `getAccreditedNamesByAccount` (only non-empty attested names present).
+ */
+export function resolveAuthorName(
+  hive: string | undefined | null,
+  broadcasterName: unknown,
+  orcid: unknown,
+  nameMap: Map<string, string>,
+): string | undefined {
+  const key = normalizeHiveAccount(hive);
+  if (key !== null) {
+    const attested = nameMap.get(key);
+    if (typeof attested === 'string' && attested.length > 0) return attested;
+  }
+  if (typeof broadcasterName === 'string' && broadcasterName.length > 0) return broadcasterName;
+  if (typeof hive === 'string' && hive.length > 0) return hive;
+  if (typeof orcid === 'string' && orcid.length > 0) return orcid;
+  return undefined;
+}
+
+/**
  * Apply the supersession rule to a chain-shaped authors array. Returns a
  * new array (does not mutate the input). Each entry is projected through
  * an enumerated key set — `name`, `hive`, `orcid`, `affiliation`, plus
  * `orcid_verified` and `orcid_discrepancy` — matching the SQL-side
  * `authorsWithSupersessionSelect` projection's `jsonb_build_object` keys.
+ *
+ * `name` is resolved via `resolveAuthorName` (name-supersession + the
+ * read-time fallback chain), so an accredited author's attested name
+ * supersedes the broadcaster claim and a Hive-/ORCID-only entry still
+ * surfaces a display name. See that helper for the SQL parity contract.
  *
  * The enumerated projection is load-bearing: it pins the JS-side output
  * shape to the same key set the SQL side emits, so a broadcaster posting
@@ -210,6 +275,7 @@ export function computeSupersession(
 export function applyAuthorSupersession(
   authors: unknown,
   orcidMap: Map<string, string | null>,
+  nameMap: Map<string, string>,
 ): Array<Record<string, unknown>> {
   if (!Array.isArray(authors)) return [];
   return authors.map((entry) => {
@@ -228,7 +294,7 @@ export function applyAuthorSupersession(
     const chainOrcid = typeof e.orcid === 'string' ? e.orcid : null;
     const supersession = computeSupersession(hive, chainOrcid, orcidMap);
     return {
-      name: e.name,
+      name: resolveAuthorName(hive, e.name, e.orcid, nameMap),
       hive: e.hive,
       orcid: e.orcid,
       affiliation: e.affiliation,

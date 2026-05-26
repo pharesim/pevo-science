@@ -343,8 +343,8 @@ describe('hive-account normalization parity across SQL JOIN, computeSupersession
       { name: 'Alice', hive: 'alice', orcid: '0000-0000-0000-DEAD' },
       { name: 'Bob', hive: 'bob', orcid: '0000-0000-0000-BBBB' },
     ];
-    const mixedResult = applyAuthorSupersession(mixedCaseAuthors, orcidMap);
-    const lowerResult = applyAuthorSupersession(lowerCaseAuthors, orcidMap);
+    const mixedResult = applyAuthorSupersession(mixedCaseAuthors, orcidMap, new Map());
+    const lowerResult = applyAuthorSupersession(lowerCaseAuthors, orcidMap, new Map());
     // The chain-field passthrough preserves the raw `hive` value (so the
     // UI can render what was broadcast); only the supersession fields are
     // normalized via normalizeHiveAccount. Pin the supersession parity directly.
@@ -497,7 +497,7 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
     // Without NULLIF parity (SQL) + length>0 guard (JS), every accredited
     // author who left the field blank surfaces as discrepancy=true.
     const orcidMap = new Map<string, string | null>([['alice', '0000-0000-0000-3000']]);
-    const out = applyAuthorSupersession([{ hive: 'alice', orcid: '' }], orcidMap);
+    const out = applyAuthorSupersession([{ hive: 'alice', orcid: '' }], orcidMap, new Map());
     expect(out).toHaveLength(1);
     expect(out[0].orcid_verified).toBe('0000-0000-0000-3000');
     expect(out[0].orcid_discrepancy).toBe(false);
@@ -588,7 +588,7 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
       const result = computeSupersession('alice', raw, orcidMap);
       expect(result.orcid_verified).toBe(ATTESTED);
       expect(result.orcid_discrepancy).toBe(false);
-      const projected = applyAuthorSupersession([{ hive: 'alice', orcid: raw }], orcidMap);
+      const projected = applyAuthorSupersession([{ hive: 'alice', orcid: raw }], orcidMap, new Map());
       expect(projected[0].orcid_verified).toBe(ATTESTED);
       expect(projected[0].orcid_discrepancy).toBe(false);
     });

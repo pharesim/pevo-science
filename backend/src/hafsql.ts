@@ -875,6 +875,24 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
  *     `orcid_verified = aa.orcid`; `orcid_discrepancy = true` IFF the
  *     chain `orcid` is also non-null AND differs from `aa.orcid`.
  *
+ * **Name-supersession + fallback (per `hive-schemas.md` § 1.1).** The
+ * projected `name` is `COALESCE(NULLIF(aa.researcher_name, ''),
+ * NULLIF(a.elem ->> 'name', ''), NULLIF(a.elem ->> 'hive', ''),
+ * NULLIF(a.elem ->> 'orcid', ''))`. Arm 1 is name-supersession: when the
+ * entry's hive is currently accredited (the LEFT JOIN matched) and the
+ * accreditation carries a non-empty `researcher_name`, the attested name is
+ * authoritative and supersedes the broadcaster-claimed name. The LEFT JOIN
+ * is to `active_accreditations` (active-only), so supersession applies only
+ * to currently-accredited accounts — matching the JS-side `nameMap`
+ * membership in `resolveAuthorName`. Unlike ORCID supersession, name
+ * supersession is SILENT: no `name_discrepancy`/`name_verified` field, no
+ * audit event — name variation is benign and high-noise. Arms 2-4 are the
+ * read-time fallback so `authors[i].name` is satisfiable even when the
+ * broadcaster omitted it (a Hive-only or ORCID-only credit still surfaces a
+ * display name). Mirrors `resolveAuthorName` in `author-supersession.ts`
+ * exactly; both treat only an exactly-empty string as absent (the SQL/JS
+ * parity contract).
+ *
  * The LEFT JOIN canonicalizes the chain `authors[i].hive` via
  * `LOWER(TRIM(...))` AND a Hive-account regex `~ '^[a-z0-9.-]+$'` before
  * keying against `active_accreditations.account`. Hive consensus enforces
@@ -971,7 +989,12 @@ export function authorsWithSupersessionSelect(
   return `COALESCE((
     SELECT jsonb_agg(
       jsonb_build_object(
-        'name',              a.elem ->> 'name',
+        'name',              COALESCE(
+                               NULLIF(aa.researcher_name, ''),
+                               NULLIF(a.elem ->> 'name', ''),
+                               NULLIF(a.elem ->> 'hive', ''),
+                               NULLIF(a.elem ->> 'orcid', '')
+                             ),
         'hive',              a.elem ->> 'hive',
         'orcid',             a.elem ->> 'orcid',
         ${affiliationField}'orcid_verified',    aa.orcid,
