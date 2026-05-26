@@ -108,3 +108,25 @@ Verification:
 - `npm run typecheck` from `backend/` passes.
 - `npm run lint` from `backend/` clean (only the pre-existing `author-supersession.ts` unused-eslint-disable warning, unrelated to this task).
 - `npx vitest run tests/lib/custody-crypto.test.ts` from `backend/`: 18 tests pass.
+
+---
+
+## Architect re-review (2026-05-26) — HELD PENDING FIXES (round 3)
+
+Re-review intake note on the orphan SHA: the round-2 signal above cites commit `5fa9a43d`, which is NOT an ancestor of HEAD (it was committed in a worktree and never merged). The round-2 content landed identically at `b9dff52b` in HEAD — patch bodies compared byte-for-byte, no work lost. The orphan is benign; flagging for the worktree-fanout-orphan-detection record. `/ce-code-review` for this re-review scoped to `b9dff52b` (8 reviewers — correctness/security/adversarial on Opus; testing/maintainability/project-standards/kieran-typescript/learnings on Sonnet; ce-agent-native-reviewer skipped per PEvO). Five reviewers clean; the round-2 constant-dedup (round-1 hold items 3 + 4, which this re-review prescribed) is confirmed byte-for-byte safe and behavior-preserving. Two items held — both are coverage REGRESSIONS introduced by the dedup itself, cross-corroborated by adversarial + testing + learnings (anchor 100). These are NOT preemptive hardening: round-2 removed independent literal pins the test previously carried.
+
+### Items held (must fix before archive — bundle into one round-3 commit)
+
+**1. (P2, conf 100, cross-reviewer: adversarial + testing + learnings) Sharing `HKDF_INFO_PREFIX` between test and production made a prefix-VALUE change invisible to the canonical-derivation test.** Before round-2 the canonical-derivation block hardcoded `'pevo:custody:alice'` independently; a production prefix change would have flipped the test RED. Now both production `deriveKey` and the test re-derivation read the same exported `HKDF_INFO_PREFIX`, so a prefix change updates both sides together and the test passes green. The failure mode is catastrophic and currently unguarded: changing the prefix makes every already-stored custody ciphertext (light-account posting + memo keys) permanently undecryptable on the recovery/broadcast paths. The mutation classes the comment explicitly claims to kill (username-drop, KDF-swap) remain killed; only the prefix-value case regressed.
+
+Fix: add a standalone value-pin assertion — `expect(HKDF_INFO_PREFIX).toBe('pevo:custody:')` — in the canonical-derivation describe block (or a dedicated `it`). This restores the independent pin without re-introducing the literal duplication the round-2 dedup removed (the dedup's value was de-duping the derivation INPUT; a single explicit value-pin is the canonical single point). Mutation-kill: any change to `HKDF_INFO_PREFIX`'s value flips this assertion RED. Anchor on the stable `HKDF_INFO_PREFIX` symbol — no slug/round/line/SHA.
+
+**2. (P2, conf 100, cross-reviewer: adversarial + testing) Sharing `IV_LENGTH` / `AUTH_TAG_LENGTH` made the length assertions tautological for a constant-VALUE drift.** Same mechanism: the IV-length and auth-tag-length assertions now compare module output against the same module-exported constant, so an `IV_LENGTH` `12→16` or `AUTH_TAG_LENGTH` `16→12` drift passes silently. Both would break stored-ciphertext interoperability. Before round-2 these were bare literals (`toBe(12)`, `+ 16`) that pinned the value independently.
+
+Fix: add value-pin assertions alongside the constant-based ones — `expect(IV_LENGTH).toBe(12)` and `expect(AUTH_TAG_LENGTH).toBe(16)` — in the IV-non-reuse / GCM-tag describe blocks. Keeps the constant-sourced assertions (which catch a divergence between `randomBytes(IV_LENGTH)` and the declared constant) AND restores the value pin. Anchor on the stable symbols.
+
+### Re-review signal
+
+When items 1–2 land in a single round-3 commit, `git mv` this file back to `tasks/review/`. The mv is the re-review signal. Round-3 architect re-review scopes `/ce-code-review` to the round-3 commit only. Both items are one-line `expect(...).toBe(...)` additions in the existing test file; no production change.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
