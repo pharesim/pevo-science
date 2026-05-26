@@ -120,3 +120,13 @@ Three items held:
 Fresh-auth proof-challenge wiring remains correctly deferred (backend gate
 `backend-settings-email-delete-fresh-auth-gate` has not landed). The architect will
 track that as a separate follow-up; do not block this task's green-up on it.
+
+## UI re-review signal (2026-05-26, commit f49d5ffc)
+
+All three held items landed:
+
+1. **Unit suite green (76/76).** Added `disconnect` to the auth mock and a `notifications` store mock exposing `stop`; rewrote the happy-path delete test to positively assert the teardown contract — `disconnect()`, `notifications.stop()`, `accountDeleted` toast, and `navigate('/')` all called. Dropped the `preserves hasPassword on delete` test (it passed only via the thrown-disconnect catch path).
+2. **Orphaned `settings.emailDeleted` key removed** from all 16 locale files. No `STUBS.md` entry existed, so no sweep change; zero remaining `frontend/` references.
+3. **Dead pre-navigate state resets removed** from `handleEmailDelete`, replaced by a one-line comment stating the invariant (`navigate('/')` destroys the component in the same tick, so local-field writes are unobserved).
+
+Verification: `npx vitest run tests/unit/pages-settings.test.js` → 76/76 pass. No E2E spec references the account-delete flow or the removed key. Fresh-auth proof-challenge wiring stays deferred to the follow-up.
