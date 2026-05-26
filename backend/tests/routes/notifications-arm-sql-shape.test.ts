@@ -73,6 +73,7 @@ vi.mock('../../src/db.js', () => ({
 
 const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');
+const { config } = await import('../../src/config.js');
 const app = createApp();
 
 beforeEach(async () => {
@@ -82,7 +83,7 @@ beforeEach(async () => {
 });
 
 describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
-  async function captureNotificationsSql(): Promise<string> {
+  async function captureNotificationsSql(): Promise<{ sql: string; params: unknown[] }> {
     // Use a sinceBlock past the genesis short-circuit so the route reaches
     // the notification query. The route hits pool.query three times in
     // sequence:
@@ -106,7 +107,8 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     //      `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`
     //      for the auth-mock policy under clause-(b)).
     let capturedSql = '';
-    hafQueryMock.mockImplementation(async (sql: string) => {
+    let capturedParams: unknown[] = [];
+    hafQueryMock.mockImplementation(async (sql: string, params?: unknown[]) => {
       // Bootstrap: genesis-block lookup. Return 0 so the clamp doesn't engage.
       if (sql.includes('AS genesis')) {
         return { rows: [{ genesis: 0 }] };
@@ -115,6 +117,7 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
       // emitted in the UNION-ALL arms.
       if (sql.includes("'new_review'::text")) {
         capturedSql = sql;
+        capturedParams = params ?? [];
         return { rows: [] };
       }
       // Anything else: empty fall-through (don't capture).
@@ -126,11 +129,11 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
       .set('X-Hive-Signature', 'mock-sig');
     expect(res.status).toBe(200);
     expect(capturedSql.length).toBeGreaterThan(0);
-    return capturedSql;
+    return { sql: capturedSql, params: capturedParams };
   }
 
   it('arm 1a promotes the parent-paper join to INNER JOIN (round-1 hold #3 mutation-kill)', async () => {
-    const sql = await captureNotificationsSql();
+    const { sql } = await captureNotificationsSql();
     // The round-1 hold flipped the parent-paper join from LEFT JOIN to
     // INNER JOIN to enforce paper-class existence at the JOIN level.
     // Reverting to LEFT JOIN re-opens the empty-title griefing vector.
@@ -144,7 +147,7 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
   });
 
   it('arm 1a JOIN carries validPevoPaperWhere(source=all) paper-class gate (round-1 hold #3)', async () => {
-    const sql = await captureNotificationsSql();
+    const { sql } = await captureNotificationsSql();
     // validPevoPaperWhere(source='all') expands to
     //   ((p.json_metadata -> $X ->> 'type') = 'paper'
     //    OR (p.author = $Y AND (p.json_metadata -> $X ->> 'type') = 'bridge_paper'))
@@ -160,7 +163,7 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
   });
 
   it('arms 1a + 1b both apply co.author != $1 self-author exclusion (mutation-kill for self-review-exclusion item #6, per-arm count)', async () => {
-    const sql = await captureNotificationsSql();
+    const { sql } = await captureNotificationsSql();
     // Reverting the inline `AND co.author != $1` filter lets a paper
     // author receive `new_review` notifications for their own self-reply.
     // Asymmetric vs `excludeSelfReviewWhere` is deliberate — co-author
@@ -178,7 +181,7 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
   });
 
   it('accreditation_update arm carries the required_posting_auths authority gate', async () => {
-    const sql = await captureNotificationsSql();
+    const { sql } = await captureNotificationsSql();
     // The accreditation-update feed reads accredit/revoke ops directly to
     // notify the recipient. Without the authority gate, a self-broadcast
     // accredit/revoke op naming the recipient (signed with any posting key)
@@ -190,5 +193,21 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     const arm = sql.match(/'accreditation_update'::text[\s\S]*?'new_vouch'::text/);
     expect(arm, 'accreditation_update arm not found in captured SQL').not.toBeNull();
     expect(arm![0]).toMatch(/required_posting_auths \?\|/);
+  });
+
+  it('accreditation_update authority gate binds to the accreditationAuthorities param', async () => {
+    const { sql, params } = await captureNotificationsSql();
+    // The prior canary asserts the `required_posting_auths ?|` text is present
+    // inside the arm, but a placeholder-index shift in activeAccreditationsCteBody
+    // could move the gate to a different $N (binding it to the wrong value)
+    // while the text stays — the prior canary would remain green. Pin the bound
+    // value: resolve the arm's gate placeholder back to its position in the
+    // params array and assert it carries accreditationAuthorities.
+    const arm = sql.match(/'accreditation_update'::text[\s\S]*?'new_vouch'::text/);
+    expect(arm, 'accreditation_update arm not found in captured SQL').not.toBeNull();
+    const gate = arm![0].match(/required_posting_auths \?\| \$(\d+)::text\[\]/);
+    expect(gate, 'authority-gate placeholder not found in accreditation_update arm').not.toBeNull();
+    const placeholderIdx = Number(gate![1]);
+    expect(params[placeholderIdx - 1]).toEqual(config.accreditationAuthorities);
   });
 });

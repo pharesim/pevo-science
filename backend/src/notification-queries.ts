@@ -121,11 +121,16 @@ export async function fetchNotificationsFromHaf(
 
   try {
     // $1 = account, $2 = sinceBlock, $3 = limit, $4/$5 = CTE params, $N = appTag, $N+1 = appTag/%, $N+2 = bridgeAccount
-    const accredCte = activeAccreditationsCteBody(4);
+    const accredStartIdx = 4;
+    const accredCte = activeAccreditationsCteBody(accredStartIdx);
     const at = `$${accredCte.nextIdx}`;       // appTag for WHERE clauses
     const al = `$${accredCte.nextIdx + 1}`;   // appTag/% LIKE pattern
     const bridgeParam = `$${accredCte.nextIdx + 2}`; // hiveBridgeAccount
-    const authoritiesParam = `$${accredCte.nextIdx - 1}`; // accreditationAuthorities (last accredCte param) — authority gate on the accreditation-update feed
+    // accreditationAuthorities is the 2nd of activeAccreditationsCteBody's two
+    // params (custom_id at startIdx, authorities array at startIdx + 1). Anchor
+    // forward on the CTE start index so a new bound param in that CTE shifts
+    // this in step rather than silently resolving to the wrong placeholder.
+    const authoritiesParam = `$${accredStartIdx + 1}`; // accreditationAuthorities — authority gate on the accreditation-update feed
     const result = await pool.query(
       `WITH ${accredCte.sql},
 
