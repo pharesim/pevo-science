@@ -140,3 +140,59 @@ the user 2026-05-26):
 
 When landed, `git mv` this file back to `tasks/review/` (the move is the
 re-review signal). Re-review will scope to the commits since this hold block.
+
+## Backend re-review signal (2026-05-26, commit 412adb11)
+
+All seven items landed in `412adb11`.
+
+1. **Erasure-claim reworded; tx_id/block_num retained.** Migration 009's top
+   `--` block GDPR bullet no longer says "no PII remains"; it now states the
+   erasure covers the username link and the PII-derived columns (user_agent,
+   session_id), and that the retained tx_id/block_num point at public Hive
+   transactions the user themselves signed (inherently public on-chain data),
+   so they are out of scope for erasure. Mirrors `ARCHITECTURE.md` § 4 (which
+   the architect already corrected — left untouched). The same carve-out is
+   mirrored in the `settings.ts` handler comment. The anonymize UPDATE already
+   left tx_id/block_num; no code change to the SET clause.
+2. **Forensic-survival asserted.** The test seeds `tx_id` (`seeded-tx-<user>`)
+   and `auth_mechanism` (`orcid`) on the `author_accept` row and, after the
+   delete, asserts both retain their seeded values while username/user_agent/
+   session_id are NULL. A regression adding either column to the `SET … = NULL`
+   clause now fails.
+3. **Seeded rows pinned by id.** `RETURNING id` captured on both seed INSERTs;
+   the survival query and the `finally` cleanup are scoped to `id IN ($1,$2)`.
+   Survival assertion is `=== 2` (was `>= 3`); the time-window/op-type
+   identification and the "identify via tx_id markers" comment are gone. The
+   handler's own `email_deleted` row has a server-assigned id inside the
+   handler txn that cannot be captured race-free, so its anonymization stays
+   covered by the username-scoped `stillBound === 0` assertion (which also
+   catches the item-4 inverted order); it is left for the retention sweep to
+   collect rather than swept by op-type/window (which would clobber siblings).
+4. **Inverted ordering comment fixed.** The "Order matters" block now states
+   that INSERT-before-UPDATE is what anonymizes the just-inserted `email_deleted`
+   row (intended), and that the reverse order would leave it bound to the live
+   username, defeating erasure for that row.
+5. **Cleanup comment corrected.** Migration 009's `user_agent` COMMENT no longer
+   calls periodic cleanup "a follow-up"; it references the existing
+   custody-audit-retention-sweep job (which deletes by created_at and so also
+   collects anonymized NULL-username rows). The `Retention: 24 months` SOT
+   substring the sweep's `parseRetentionMonthsFromComment` regex reads is intact.
+6. **Local-variable anchor dropped.** The `user_agent` COMMENT's `auditExtras`
+   navigation anchor is replaced with the stable `POST /api/custody/broadcast`
+   handler route anchor.
+7. **ROLLBACK guarded.** The delete handler's `catch` now runs
+   `await client.query('ROLLBACK').catch(() => {})` so a throwing ROLLBACK can't
+   mask the original `txErr`, matching the pattern in `recover.ts`.
+
+Migration note: 009 was re-applied to `pevo_app` and `pevo_app_test` (idempotent
+COMMENT overwrite + no-op DROP NOT NULL) so the live column comments match the
+file; the boot probe keys on filename, not content, so the edit does not affect
+`schema_migrations`. Operators sync via `./deploy.sh migrate`.
+
+Verification: `npm run typecheck` pass (src + tests); `npm run lint` pass (one
+pre-existing unrelated warning in `author-supersession.ts`);
+`tests/routes/settings.test.ts` 24/24 pass; `tests/jobs/custody-audit-retention-sweep.test.ts`
+14/14 pass against the re-applied live comment (confirms the reworded COMMENT
+still parses 24 months).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
