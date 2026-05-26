@@ -181,3 +181,28 @@ Round-2→round-3's sole hold item (item 1, P1 — Architect re-review 2026-05-2
 - Vitest deferred to the parent's authoritative serial run — real-Postgres tests collide with sibling worktrees.
 
 **Expected mutation-kill:** reverting the new BTRIM widening at the `reputation.ts` ORCID auto-accept arm back to a raw `=` makes case (1) fail red — the tab-padded value byte-mismatches the attested ORCID and `accepted` returns false instead of the asserted true. A charset drift (e.g. `E'\v'` parsing as literal `v` byte 0x76 instead of `\x0B`) is also caught: the constant is interpolated from production, so the test exercises the same bytes-on-the-wire the production arm uses.
+
+---
+
+## Architect re-review (2026-05-26, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `cda34e3c` (round-3 sole item: widen the reputation-cycle ORCID auto-accept arm with `CHAIN_ORCID_BTRIM_CHARSET`) with correctness/security/adversarial (Opus) + testing/maintainability/project-standards/performance/learnings (Sonnet). The **production fix is clean and confirmed correct**: BTRIM wraps only the broadcaster-controlled chain side, `co.orcid` stays raw, the change is identity-preserving, the interpolated charset is a module-level constant (no SQL-injection vector), there is no query-plan regression (the EXISTS is already narrowed by indexed author/permlink/parent-author equality), comment anchors are clean, and the constant's home is appropriate. One item is held below; one pre-existing P1 is routed to a separate task.
+
+### Item held (must fix before archive)
+
+**1. (P1, conf 100 — testing + adversarial) The canary does not pin the production fix; it inlines its own SQL and only imports the charset constant, so a production-side BTRIM revert ships green — failing this task's own round-2→3 acceptance criterion.** `reputation-orcid-auto-accept-trim-canary.test.ts` builds its own `autoAcceptMatch` SQL string with `BTRIM(…, E'${CHAIN_ORCID_BTRIM_CHARSET}')` hardcoded. It imports `CHAIN_ORCID_BTRIM_CHARSET` (so charset drift *is* caught) but never exercises the production `reputation.ts` `accepted_claims` ORCID arm. Reverting that arm's `BTRIM(…)` to a raw `=` leaves the test's inlined SQL untouched → all three cases stay green. The round-2→3 hold's acceptance criterion ("a targeted revert of the new BTRIM widening on this arm must turn the assertion red") is therefore **not met**; the round-3 signal's mutation-kill claim conflated "interpolates the production constant" with "exercises the production arm."
+
+Fix (either):
+- (a) **preferred** — extract the auto-accept ORCID-match predicate into a shared SQL-fragment builder exported from `hafsql.ts` that BOTH `reputation.ts` and the canary import, so the test exercises the production predicate shape and a production-side revert turns it red; OR
+- (b) add a negative sub-case that runs the SAME synthetic rows through a raw-`=` predicate and asserts the tab-padded case returns `false`, pinning the pre-fix failure mode in-test.
+
+(a) is preferred — it mutation-kills a production revert rather than only demonstrating the delta. Minor doc nit while in the file: the header cites `hafsql-btrim-charset-real-postgres.test.ts` as living in `tests/routes/`, but it is at `tests/`.
+
+### Routed to a separate P1 task (NOT held on this task)
+
+The review surfaced — and the architect verified at the code level — a **pre-existing** reputation-integrity vector unrelated to whitespace normalization: the `claimer_orcids` CTE in `reputation.ts` reads `accredit`/`revoke` ops filtered only on `custom_id` + `action` + `block_num`, with **no `required_posting_auths` authority-signer gate**, unlike the canonical `activeAccreditationsCteBody` (which gates on `required_posting_auths ?| accreditationAuthorities`). An already-accredited account can self-broadcast an `accredit` op signed with its own posting key (not the platform authority), set `orcid` to any value (it becomes that account's `rn = 1` row), then auto-accept a co-author claim on any paper listing that ORCID — inflating reputation every cycle. Filed as `backend-claimer-orcids-accreditation-authority-gate.md` in `tasks/pending/`. Not introduced by this commit; out of scope for the trim-parity task.
+
+### Re-review signal
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
