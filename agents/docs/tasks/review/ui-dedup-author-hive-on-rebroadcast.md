@@ -75,3 +75,24 @@ genuinely *new* failure mode rather than theoretical hardening:
   *under*-dedup (a redundant entry survives), which is the pre-change status quo and
   harmless given backend authority. Do NOT reach for the backend `normalizeHiveAccount`
   helper — it has reject-at-boundary semantics that diverge by design.
+
+## UI re-review signal (2026-05-26, commit a286faa8)
+
+Held item #1 landed. The dedup key in `handleSubmit` now derives only when `hive`
+is a string (`typeof a.hive === 'string' ? a.hive.trim().toLowerCase() : ''`); a
+non-string truthy `hive` is treated as hive-less (preserved, never collapsed)
+instead of throwing a `TypeError` that aborted the whole revision broadcast. The
+new code comment is anchored on the behavioral semantics, not the slug/round/SHA.
+
+Acceptance unit test added to `frontend/tests/unit/pages-edit.test.js`: feeds an
+assembled author set with a numeric `hive` through the dedup path and asserts the
+broadcast succeeds with that entry preserved. Verified load-bearing (reverting the
+guard fails it with `(a.hive || "").trim is not a function`). Full suite green
+(59/59); `npm run build` passes.
+
+Note on landing path: implemented in a fan-out worktree whose harness-assigned base
+was ~141 commits stale and lacked the dedup feature commit (`4c91729e`); the worker
+rebased onto current `main` before applying the guard, and the parent cherry-picked
+the result onto `main` as `a286faa8` (so `4c91729e` is an ancestor). The 3
+`_mountEditors` unhandled rejections vitest reports are pre-existing and unrelated
+to this change.
