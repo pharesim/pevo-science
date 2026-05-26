@@ -596,7 +596,12 @@ Light → self upgrade:
   B ──custody/upgrade(seed-phrase-derived-key proof)──> D
   C ──custody/upgrade(seed-phrase-derived-key proof)──> D
   D ──custody/upgrade──> 409 ALREADY_UPGRADED
+
+Account deletion / right-to-erasure (requires fresh-auth proof per § 6.4):
+  A/B/C/D ──settings/email DELETE(fresh-auth proof)──> [no row]
 ```
+
+Account deletion erases the `accounts` row entirely; the user returns to the **no-row case**. It is a one-way exit, not a transition between steady states. The on-chain Hive account is untouched — a light user who still holds their BIP39 seed phrase can re-import it into Hive Keychain and continue as pure self-custody (the no-row case). The user-facing deletion flow must make both facts clear: all PEvO-server data is erased, and the Hive account survives via the seed phrase.
 
 Pure self-custody (no-row) users never enter this state machine; their identity is on-chain only.
 
@@ -618,6 +623,7 @@ Every critical action requires a fresh re-auth proof; the JWT alone is never suf
 | Recover (lost email access, ORCID path) | `POST /api/auth/recover` | Fresh ORCID OAuth round-trip matching the account's registered ORCID. Applies immediately and in one step — the OAuth round-trip is itself the email-side control proof the memo-key path lacks. Severed once `upgraded_at` is set (state D returns 401, generic message, to avoid an upgrade-state oracle). | B and C (states with `orcid IS NOT NULL`). |
 | Reset (forgot password) | `POST /api/auth/reset-request` + `POST /api/auth/reset` | Email-link token | A and B (states with email AND password). C: not applicable. |
 | Change email | `POST /api/settings/email` (change-email branch on existing row) | Fresh-auth proof matching a factor registered on the account. JWT path requires the proof in the body; Keychain (Hive-signature) path is fresh-proof at the middleware and requires no body proof. Add-flow no-row branch is JWT-unreachable and remains Keychain-only. | A: password proof. B: password OR ORCID proof. C: ORCID proof. D: matches preserved factors (password and/or orcid columns). Implemented at `settings.ts` POST /email (commit `b27bcdf`, audit closed by `backend-settings-email-reauth-audit` 2026-05-16). |
+| Delete account data / right-to-erasure (erases the entire `accounts` row plus `notification_preferences` + `pending_recovery`, and anonymizes `custody_audit_log` — not just the email column) | `DELETE /api/settings/email` | Fresh-auth proof matching a factor registered on the account. JWT path requires the proof in the body; Keychain (Hive-signature) path is fresh-proof at the middleware and requires no body proof. | A: password proof. B: password OR ORCID proof. C: ORCID proof. D: matches preserved factors (password and/or orcid columns). no-row: n/a (no `accounts` row to delete; handler 401s). Gate not yet implemented — current code mounts `verifyHiveSignature` only; the body-proof requirement is the intended contract, pending implementation. |
 | Link ORCID | `POST /api/orcid/callback mode='link'` | Fresh ORCID OAuth | A → B |
 
 ### 6.5 Security Invariants
