@@ -12,7 +12,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T, getCachedGenesisBlock, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, CHAIN_ORCID_BTRIM_CHARSET } from './hafsql.js';
+import { T, getCachedGenesisBlock, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, CHAIN_ORCID_BTRIM_CHARSET, activeAccreditationsCteBody } from './hafsql.js';
 
 // ─── Batch key helpers ──────────────────────────────────────────
 
@@ -345,6 +345,10 @@ export async function startReputationWeightsCache(): Promise<void> {
  *       and `citing_paper_quality`'s inner subquery; mirrors the
  *       display-side accreditation-or-anon shape composed at
  *       profile.ts / reviews.ts).
+ * $20 = config.appTag, $21 = config.accreditationAuthorities — the
+ *       authority-gated active_accreditations CTE (composed via
+ *       activeAccreditationsCteBody) backing the co-author ORCID auto-accept
+ *       arm; only authority-signed accredit/revoke ops are trusted.
  *
  * The same FOUR review CTEs also compose `excludeSelfReviewWhere` so
  * paper-authors and named co-authors reviewing their own paper are
@@ -474,17 +478,18 @@ export async function computeReputationBatch(
           AND cj.json::jsonb ->> 'action' IN ('claim_authorship', 'approve_authorship', 'revoke_authorship')
           AND cj.block_num >= $7
       ),
-      -- Accredited user ORCIDs for auto-accept
-      claimer_orcids AS (
-        SELECT
-          cj.json::jsonb ->> 'account' AS account,
-          cj.json::jsonb ->> 'orcid' AS orcid,
-          ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC) AS rn
-        FROM ${T.customJson} cj
-        WHERE cj.custom_id = $3
-          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-          AND cj.block_num >= $7
-      ),
+      -- Authority-gated accreditation source for the co-author ORCID
+      -- auto-accept arm below. accred_ranked applies the
+      -- required_posting_auths ?| accreditationAuthorities gate, so only an
+      -- accredit/revoke op signed by an accreditation authority is trusted; a
+      -- self-signed op (the broadcaster's own posting auth) never enters
+      -- active_accreditations. This is the same gated source the read-surface
+      -- authorshipClaimsCteBody ORCID arm joins, so the cycle and the read
+      -- surfaces agree on which ORCID attestations are valid. Sourcing the
+      -- auto-accept ORCID here (rather than re-reading raw accredit ops)
+      -- removes the divergence class entirely; a revoke clears the account
+      -- from active_accreditations so a prior attestation stops matching.
+      ${activeAccreditationsCteBody(20).sql},
       accepted_claims AS (
         SELECT DISTINCT ce.claimer, ce.paper_author, ce.paper_permlink
         FROM claim_events ce
@@ -517,24 +522,25 @@ export async function computeReputationBatch(
             )
             -- Auto-accept: ORCID match. The broadcaster-controlled chain
             -- ORCID is wrapped in BTRIM with the ASCII C-whitespace charset
-            -- before byte-equality against the accreditation-attested
-            -- co.orcid (which is canonical and not broadcaster-controlled,
-            -- so it stays raw). This mirrors the authorshipClaimsCteBody
-            -- ORCID auto-accept arm and the authorsWithSupersessionSelect
-            -- supersession projection: all chain-orcid comparisons share
-            -- the CHAIN_ORCID_BTRIM_CHARSET constant so a whitespace-padded
-            -- claim (e.g. a tab-prefixed orcid copied from the ORCID page)
-            -- resolves identically across the read surfaces and the
-            -- reputation cycle. Without it, a padded claim auto-accepts on
-            -- the read surfaces but byte-mismatches here, denying the
-            -- co-author reputation credit every cycle.
+            -- before byte-equality against the authority-attested aa.orcid
+            -- (from the gated active_accreditations source above, canonical
+            -- and not broadcaster-controlled, so it stays raw). This mirrors
+            -- the authorshipClaimsCteBody ORCID auto-accept arm and the
+            -- authorsWithSupersessionSelect supersession projection: all
+            -- chain-orcid comparisons share the CHAIN_ORCID_BTRIM_CHARSET
+            -- constant so a whitespace-padded claim (e.g. a tab-prefixed
+            -- orcid copied from the ORCID page) resolves identically across
+            -- the read surfaces and the reputation cycle. Without it, a
+            -- padded claim auto-accepts on the read surfaces but
+            -- byte-mismatches here, denying the co-author reputation credit
+            -- every cycle.
             OR (ce.author_index IS NOT NULL AND EXISTS (
               SELECT 1 FROM ${T.comments} c
-              JOIN claimer_orcids co ON co.account = ce.claimer AND co.rn = 1
-                AND co.orcid IS NOT NULL AND co.orcid != ''
+              JOIN active_accreditations aa ON aa.account = ce.claimer
               WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
                 AND c.parent_author = ''
-                AND BTRIM(c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') = co.orcid
+                AND aa.orcid IS NOT NULL AND aa.orcid != ''
+                AND BTRIM(c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') = aa.orcid
             ))
             -- Auto-accept: hive username match. Canonicalize the
             -- broadcaster-controlled authors[i].hive via LOWER(TRIM(...))
@@ -1015,6 +1021,8 @@ export async function computeReputationBatch(
                                           //  Hive prohibits empty author
                                           //  names so `c.author = ''`
                                           //  never matches)
+        config.appTag,                    // $20 (active_accreditations custom_id)
+        config.accreditationAuthorities,  // $21 (required_posting_auths ?| authority gate)
       ],
     );
 
