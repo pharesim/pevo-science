@@ -101,3 +101,19 @@ Both gates are met; returning to `pending/`. `backend-bridge-import-queue` archi
 - Retry model → re-POST `/register` (no dedicated retry endpoint); a `failed` entry is not "in-flight" so it re-enqueues, while an active `pending`/`in_progress` duplicate returns `DUPLICATE`/`LOCK_HELD`.
 
 Remaining work is all UI-side and is the task body, not a blocker: wire `registerBridgePaper()` to the 202 queued state and the cap rejection, replace `my-imports.js` `loadEntries()`'s empty stub with a real fetch against `GET /api/bridge/imports` (the `loadEntries` adapter absorbs any field-name differences from the consumer shape sketched above), add the ETA formatter, and add E2E coverage. Confirm the documented field names against the live `bridge.md` shape before binding — the earlier consumer sketch in this file predates the contract and was explicitly "not a contract."
+
+## UI implementation note (2026-05-26) → review
+
+Bound against the live `bridge.md` contract (not the predating consumer sketch). Landed:
+
+- **Queued state (202).** `bridge.js` reads `queue_position`/`eta_seconds` off the 202 body, sets a `queued` step rendering position + ETA inline, links to `/my-imports`, and no longer redirects to a paper (the old synchronous `success` step + 3s redirect was removed). Consumes the already-shipped `bridge.queued*` keys.
+- **Per-user cap.** Discriminated on `err.code === 'RATE_LIMITED' && err.details?.cap !== undefined` so the per-IP limiter (same code, no `details.cap`) falls through to the generic transient-error path. The cap surface (`bridge.userCap*`) is styled distinctly (amber remediation vs. crimson transient error).
+- **My imports.** `my-imports.js` `loadEntries()` now fetches via the new `fetchBridgeImports()` (`src/api.js`, bearer-JWT, mirrors `fetchNotifications`); `adaptEntry()` absorbs field-name differences; failed entries re-POST `/register` (contract retry model) behind a re-entrancy guard. New shared `src/lib/format-eta.js` for the `eta_seconds` → localized label.
+
+**Field-name adaptations (`adaptEntry`) against `bridge.md`:** `submitted_at`←`created_at`, `failure_reason`←`error_message`, `retriable`←`state === 'failed'` (no per-entry flag in the contract). 
+
+**i18n:** consumed only already-shipped keys (`bridge.queued*`, `bridge.userCap*`, `myImports.*`). No new keys, no `STUBS.md` change. (`bridge.stepSuccess` is now orphaned but left in place, harmless.)
+
+**[For architect — design gap, not blocking]** Completed entries from `GET /api/bridge/imports` carry no resolved bridge-author field, and `window.__PEVO_CONFIG__` does not expose the bridge account, so the "View paper" link only renders on the `existing_author` permlink-collision case; for a freshly broadcast bridge paper the link is suppressed (graceful degradation) rather than rendered broken. If completed entries should always link to the paper, the backend should add the resolved `author` to the entry shape or expose the bridge account in the injected config. Left as graceful degradation rather than guessing.
+
+**Verification:** all touched/new unit suites pass (`pages-bridge`, `pages-my-imports`, `lib-format-eta`); `tests/e2e/bridge-import-queue.spec.js` passes (backend test-mode, dev routing restored after). Production `vite build` succeeds.
