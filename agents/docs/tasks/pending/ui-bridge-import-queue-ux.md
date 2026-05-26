@@ -202,3 +202,33 @@ Item 10 remains deferred (still gated on `backend-bridge-imports-entry-enrich`; 
 
 **Verification:** full frontend unit suite green (1333 passed; the 3 pre-existing `pages-edit.test.js` unhandled-rejection errors are unrelated and not in this diff). `vite build` succeeds. E2E not re-run (no backend contract change; the changed retry/adapter surfaces are unit-covered).
 
+## Architect re-review (2026-05-26, commit 492959e7) — round-2 items 11-15 VERIFIED FIXED; item 10 UNBLOCKED → pending/
+
+Re-ran `/ce-code-review` on commit `492959e7` (9 personas: correctness + adversarial on Opus; testing / maintainability / project-standards / julik-frontend-races / reliability / api-contract / learnings on Sonnet; `ce-agent-native-reviewer` skipped per PEvO). **All five round-2 hold items (11-15) are verified correctly implemented:**
+
+- 11 `SERVICE_UNAVAILABLE` non-retriable — contract-faithful (the only terminal-`failed` cause is the posting-key-not-configured case; the HAF-unavailable variant reschedules server-side and never reaches `failed`).
+- 12 DUPLICATE on-chain vs already-queued discrimination — correct; absent-discriminator default is the neutral queued notice.
+- 13 fail-open retriable default — test pins it.
+- 14 toast-after-await reorder — race-safe (one-retry lock + post-await `_mounted` rechecks).
+- 15 demo short-circuit — placed before the `retryingId` set, so no lock leak.
+
+No P0/P1 findings.
+
+**Item 10 is now UNBLOCKED.** The backend already emits the enrich fields on `main`: `serializeQueueRow` returns `author` for completed entries (`existing_author ?? HIVE_BRIDGE_ACCOUNT`), plus `title` and a per-position `eta_seconds`; enqueue persists `title`; the `/imports` handler passes `queue_position`. `backend-bridge-imports-entry-enrich`'s R1/R2/R3 are implemented in the route, so the `adaptEntry` widening no longer waits on backend work. (That backend task still sits in `pending/` despite the code being live — flagged to the backend agent separately to move it to `review/`.)
+
+**Remaining UI work (this is why the file returns to `pending/`, not archive):**
+
+A. **(was item 10) Wire the View-paper link for ALL completed entries.** Widen `adaptEntry`'s `author: wire.existing_author ?? null` to `author: wire.author ?? wire.existing_author ?? null`, and drop the `?demo=1`-only synthetic `author`/`title`/`eta_seconds` masking in `buildDemoEntries` now that the real wire carries them. Confirm the field names against the live `GET /api/bridge/imports` response. Add a unit test: a completed fresh-broadcast entry (`author` set, `existing_author` null) renders the View-paper link (the current suite asserts only the suppression-on-null case).
+
+B. **Cover the post-reload teardown guard.** The teardown test exercises the pre-reload `_mounted` guard only; add a case where `destroy()` fires during the post-success `loadEntries()` reload, asserting the success toast does NOT fire — exercising the second `_mounted` recheck the toast-after-await reorder added.
+
+**Findings dismissed at triage (architect + user, 2026-05-26) — do not re-raise:**
+
+- Per-IP `RATE_LIMITED` on retry falls to the generic toast and re-enables Retry immediately (reliability, P2). Pre-existing pattern shared with `bridge.js`'s `handleRegister`; out of this task's scope; would need a new i18n key + 16-locale sweep. Accepted as-is.
+- `loadEntries` in-flight guard could no-op the post-retry reload, leaving a stale failed row (julik + adversarial, P3). Unreachable: the per-row Retry button renders only inside the `!loading` template branch, so no concurrent `loadEntries` can collide with the retry reload.
+- Success/duplicate toast fires over a load-failed error banner if the reload sets `error` (adversarial, P3). The re-POST itself succeeded, so the success toast is not incorrect; only a cosmetic juxtaposition.
+- Comments cite the `agents/docs/api-contracts/bridge.md` path (maintainability, P3). The contract-file + route citation is the prescribed anchor; `project-standards` approved it. The rot classes are line-numbers / SHAs / task-slugs, not contract-file+route citations.
+- DUPLICATE with `details` entirely absent (`undefined`/`{}`) untested (testing, P3). The neutral else branch is already covered via the queued-shape test; the no-details sub-case is optional.
+
+Move back to `review/` once A and B land.
+
