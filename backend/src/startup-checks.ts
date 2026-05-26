@@ -23,7 +23,7 @@ interface EnvCheck {
  * paging broadcast-on-call when the actual root cause is admin-key configuration.
  * Failing boot loudly removes that mislabeled trigger from the request lifecycle.
  *
- * Whitespace-only carve-out (round-3 item 4): a copy-paste artifact like
+ * Whitespace-only carve-out: a copy-paste artifact like
  * `PEVO_ADMIN_POSTING_KEY=' '` would otherwise fall through to dhive's generic
  * `'Non-base58 character'` message, leading operators to misdiagnose copy-paste
  * artifacts as key corruption. Emit a recognizable "empty or whitespace-only"
@@ -57,12 +57,13 @@ export function validatePostingKeyFormat(value: string, envVar: string): string 
  * malformed account name yields a query that matches nothing, but produces
  * no error. Validate at boot so a deploy-time misconfiguration fails loudly.
  *
- * Round-3 (item 1): tightened from the legacy `/^[a-z][a-z0-9.-]{2,15}$/` to
- * Hive's canonical shape via the shared `HIVE_ACCOUNT_NAME_REGEX` constant.
- * The legacy regex accepted canonically-invalid names like `pevo.` (trailing
- * dot), `a..b` (consecutive dots), `a-bc-` (trailing hyphen), `.abc` (leading
- * dot) — all of which would survive boot and silently mismatch every chain
- * query, defeating this validator's stated purpose.
+ * This validator matches Hive's canonical account-name shape via the shared
+ * `HIVE_ACCOUNT_NAME_REGEX` constant, not the looser legacy
+ * `/^[a-z][a-z0-9.-]{2,15}$/`. The legacy regex accepted canonically-invalid
+ * names like `pevo.` (trailing dot), `a..b` (consecutive dots), `a-bc-`
+ * (trailing hyphen), `.abc` (leading dot) — all of which would survive boot
+ * and silently mismatch every chain query, defeating this validator's stated
+ * purpose.
  *
  * The explicit `.trim()` guard below is belt-and-suspenders so whitespace-only
  * input gets a recognizable error message (the canonical regex would also
@@ -205,7 +206,7 @@ export function validateConfig(): void {
 //       WIF in-place; the cache invalidates on the next access.
 // `null` when `pevoBridgePostingKey` is unset (production deployments
 // without bridge custody enabled), per the existing optional-key semantics
-// in `routes/bridge.ts:33` and `routes/claims.ts:203`.
+// in `routes/bridge.ts` and `routes/claims.ts`.
 
 interface BridgeKeyCacheEntry {
   source: string;
@@ -231,7 +232,6 @@ function initBridgePostingKeyCache(): void {
     // misconfiguration. Log via the redact-policy logger so the
     // AssertionError's `actual`/`expected` Buffer slices DON'T reach
     // operator logs, then exit. Never log the WIF itself.
-    // Round-3 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
     // pino's destination transport is async by default; `process.exit(1)`
     // would otherwise tear down the runtime before the buffered fatal line
     // drains. Flush before exit so the boot-fatal log is observable to
@@ -258,8 +258,7 @@ function initBridgePostingKeyCache(): void {
 }
 
 /**
- * Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
- * structured boot-fatal sentinel. Thrown by `validateConfig()` /
+ * Structured boot-fatal sentinel. Thrown by `validateConfig()` /
  * `initBridgePostingKeyCache()` after a fatal log so the call stack unwinds
  * to the top-level boot wrapper in `index.ts`. The wrapper catches it and
  * routes through the single `flushAndExit()` watchdog (flush + 2s timer
@@ -302,8 +301,7 @@ export class BootFatalError extends Error {
  * All production bridge-WIF call sites in `routes/` MUST NOT call
  * `PrivateKey.fromString(config.pevoBridgePostingKey)` directly — use this
  * accessor (or `getRequiredBridgePostingKey()` when null is unacceptable)
- * instead. As of BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION (commit
- * `83c6a28`), this covers both `routes/bridge.ts` and `routes/claims.ts`.
+ * instead. This covers both `routes/bridge.ts` and `routes/claims.ts`.
  * Two reasons:
  *   1. The parse result is immutable; recomputing it per request is waste.
  *   2. The parse path can throw `AssertionError` whose `.actual`/`.expected`
@@ -321,8 +319,8 @@ export class BootFatalError extends Error {
  * accessor safe to call before `validateConfig()` has run (test harnesses
  * that bypass startup validation, scripts that import bridge.ts, etc.).
  *
- * BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE (approach 2,
- * behavior-preserving): the lazy parse below is wrapped in try/catch.
+ * Lazy-fallback throw-site closure (behavior-preserving): the lazy parse
+ * below is wrapped in try/catch.
  * Successful parses populate the cache as before; failed parses throw
  * `BridgeKeyLazyParseDivergence` (a sanitized sibling of
  * `BridgeKeyCacheUnpopulated`) instead of letting dhive's raw
@@ -342,9 +340,8 @@ export function getCachedBridgePostingKey(): PrivateKey | null {
     return cachedBridgePostingKey.parsed;
   }
   // Source changed (test override, in-place rotation) or cache is unset.
-  // Parse lazily. The try/catch is the throw-site-closure for the lazy
-  // fallback (BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE,
-  // approach 2): on parse failure, re-throw a structured, redact-safe
+  // Parse lazily. The try/catch is the throw-site closure for the lazy
+  // fallback: on parse failure, re-throw a structured, redact-safe
   // sibling error (`BridgeKeyLazyParseDivergence`) WITHOUT the dhive
   // AssertionError's `.actual`/`.expected` properties (which carry
   // WIF-derived Buffer slices). Successful parses populate the cache and
@@ -374,8 +371,6 @@ export function getCachedBridgePostingKey(): PrivateKey | null {
  * (which the redact serializer in `logger.ts` projects into the output's
  * `type` field) deterministic. Operator alerts and log greps can key on
  * `err.type === 'BridgeKeyCacheUnpopulated'` from the redacted payload.
- *
- * Round-3 hold #6 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT).
  */
 export class BridgeKeyCacheUnpopulated extends Error {
   constructor(message?: string) {
@@ -396,9 +391,8 @@ export class BridgeKeyCacheUnpopulated extends Error {
  * `AssertionError` whose `.actual`/`.expected` are Buffer slices derived
  * FROM the WIF. The redact policy in `logger.ts` strips those keys post-
  * hoc (Layer-B `serializers.err`), but the structural defense — never
- * letting that error shape escape this site — is the stronger guarantee
- * (BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE, approach 2). The
- * subclass carries:
+ * letting that error shape escape this site — is the stronger guarantee.
+ * The subclass carries:
  *   - a fixed redact-safe message (no source interpolation);
  *   - no `.actual` / `.expected` / `.operator` / `.cause` linkage to the
  *     swallowed dhive error;
@@ -432,9 +426,9 @@ export class BridgeKeyLazyParseDivergence extends Error {
  * safe error when the cache is null (i.e., `PEVO_BRIDGE_POSTING_KEY`
  * unset or never initialized).
  *
- * Round-3 hold #6 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
- * `routes/bridge.ts:233` and `:366` previously used the non-null assertion
- * `getCachedBridgePostingKey()!` after `assertBridgeKeyConfigured(res)`.
+ * The bridge broadcast call sites in `routes/bridge.ts` previously used the
+ * non-null assertion `getCachedBridgePostingKey()!` after
+ * `assertBridgeKeyConfigured(res)`.
  * That guard checks `config.pevoBridgePostingKey` (the source string), NOT
  * the cache contents — a future change that nulls the cache while config
  * stays truthy would silently produce `null!.toString()` → TypeError. This
@@ -447,10 +441,8 @@ export class BridgeKeyLazyParseDivergence extends Error {
  * carries no secret-derived material — it's safe to log via the project-
  * wide redact policy without further scrubbing.
  *
- * Adopted by `routes/bridge.ts` (rounds 3-4 of the parent task) and
- * `routes/claims.ts:216, :314` (BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION,
- * commit `83c6a28`). All production bridge-WIF broadcast call sites
- * funnel through this helper.
+ * Adopted by `routes/bridge.ts` and `routes/claims.ts`. All production
+ * bridge-WIF broadcast call sites funnel through this helper.
  */
 export function getRequiredBridgePostingKey(): PrivateKey {
   const cached = getCachedBridgePostingKey();

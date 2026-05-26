@@ -51,11 +51,11 @@ describe('validatePostingKeyFormat', () => {
     expect(bridgeErr).not.toContain('PEVO_ADMIN_POSTING_KEY');
   });
 
-  it('validates PEVO_ANON_POSTING_KEY (round-2 coverage gap)', () => {
-    // Round-2 architect re-review caught that `pevoAnonPostingKey` is consumed via
-    // `PrivateKey.fromString` at routes/anonymousReview.ts:174 — same defect class
-    // as admin/bridge but uncovered by the round-1 boot validator.
-    // Round-3 item 6a: include dhive error-class hint to mirror round-1 admin/bridge rigor.
+  it('validates PEVO_ANON_POSTING_KEY', () => {
+    // `pevoAnonPostingKey` is consumed via `PrivateKey.fromString` in
+    // `routes/anonymousReview.ts` — the same defect class as admin/bridge, so
+    // the boot validator must cover it too. The assertions include the dhive
+    // error-class hint to mirror the admin/bridge format checks.
     expect(validatePostingKeyFormat('', 'PEVO_ANON_POSTING_KEY')).toBeNull();
     const validWif = PrivateKey.fromSeed('startup-checks-anon-fixture').toString();
     expect(validatePostingKeyFormat(validWif, 'PEVO_ANON_POSTING_KEY')).toBeNull();
@@ -67,8 +67,8 @@ describe('validatePostingKeyFormat', () => {
     expect(malformedErr).toContain('Non-base58 character');
   });
 
-  it('rejects whitespace-only WIF with a recognizable error message (round-3 item 4)', () => {
-    // Round-3 item 4: a copy-paste artifact like PEVO_ADMIN_POSTING_KEY=' '
+  it('rejects whitespace-only WIF with a recognizable error message', () => {
+    // A copy-paste artifact like PEVO_ADMIN_POSTING_KEY=' '
     // would otherwise fall through to dhive's generic 'Non-base58 character',
     // leading operators to misdiagnose copy-paste artifacts as key corruption.
     // Mirror the .trim() guard from validateAccountNameFormat so the message is
@@ -133,45 +133,45 @@ describe('validateAccountNameFormat', () => {
     expect(result).toContain('HIVE_ADMIN_ACCOUNT');
   });
 
-  it('accepts names at the inclusive lower-length boundary (3 chars) (round-3 item 6b)', () => {
+  it('accepts names at the inclusive lower-length boundary (3 chars)', () => {
     // A future off-by-one regex tweak (e.g. {3,15} or {2,14}) would slip
     // through if only rejection at 2 is tested. Pin acceptance at the
     // inclusive boundary so the boundary itself is covered.
     expect(validateAccountNameFormat('abc', 'HIVE_ADMIN_ACCOUNT')).toBeNull();
   });
 
-  it('accepts names at the inclusive upper-length boundary (16 chars) (round-3 item 6b)', () => {
+  it('accepts names at the inclusive upper-length boundary (16 chars)', () => {
     expect(validateAccountNameFormat('a'.repeat(16), 'HIVE_ADMIN_ACCOUNT')).toBeNull();
   });
 
-  it('rejects trailing dot (round-3 item 1: canonical-shape gap)', () => {
+  it('rejects trailing dot (canonical-shape gap)', () => {
     // Adversarial: 'pevo.' boots clean under the legacy /^[a-z][a-z0-9.-]{2,15}$/
     // and silently mismatches every chain query — the exact failure mode the
-    // boot validator was filed to prevent.
+    // boot validator exists to prevent.
     const result = validateAccountNameFormat('pevo.', 'HIVE_BRIDGE_ACCOUNT');
     expect(result).not.toBeNull();
     expect(result).toContain('HIVE_BRIDGE_ACCOUNT');
   });
 
-  it('rejects consecutive dots (round-3 item 1)', () => {
+  it('rejects consecutive dots', () => {
     const result = validateAccountNameFormat('foo..bar', 'HIVE_BRIDGE_ACCOUNT');
     expect(result).not.toBeNull();
     expect(result).toContain('HIVE_BRIDGE_ACCOUNT');
   });
 
-  it('rejects trailing hyphen (round-3 item 1)', () => {
+  it('rejects trailing hyphen', () => {
     const result = validateAccountNameFormat('a-bc-', 'HIVE_ADMIN_ACCOUNT');
     expect(result).not.toBeNull();
     expect(result).toContain('HIVE_ADMIN_ACCOUNT');
   });
 
-  it('rejects leading dot (round-3 item 1)', () => {
+  it('rejects leading dot', () => {
     const result = validateAccountNameFormat('.abc', 'HIVE_ADMIN_ACCOUNT');
     expect(result).not.toBeNull();
     expect(result).toContain('HIVE_ADMIN_ACCOUNT');
   });
 
-  it('rejects segment shorter than 3 chars in dotted name (round-3 item 1)', () => {
+  it('rejects segment shorter than 3 chars in dotted name', () => {
     // Hive's per-segment 3-16 char rule: 'pevo.ab' has a 2-char trailing segment.
     const result = validateAccountNameFormat('pevo.ab', 'HIVE_BRIDGE_ACCOUNT');
     expect(result).not.toBeNull();
@@ -201,7 +201,7 @@ describe('validateAccountNameFormat', () => {
 });
 
 // ──────────────────────────────────────────────
-// Bridge posting key cache (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT)
+// Bridge posting key cache
 //
 // `getCachedBridgePostingKey()` is the single accessor for the parsed bridge
 // admin WIF. It is initialized at boot inside `validateConfig()` after the
@@ -267,11 +267,11 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
     expect(getCachedBridgePostingKey()).toBe(parsed);
   });
 
-  // BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE (approach 2):
-  // when the lazy-fallback path's `PrivateKey.fromString(source)` throws —
-  // i.e. the boot validator passed but request-time dhive parse rejects
-  // the same source (validator/dhive divergence) — the accessor MUST
-  // re-throw a sanitized `BridgeKeyLazyParseDivergence`, NOT let the raw
+  // Lazy-fallback throw-site closure: when the lazy-fallback path's
+  // `PrivateKey.fromString(source)` throws — i.e. the boot validator passed
+  // but request-time dhive parse rejects the same source (validator/dhive
+  // divergence) — the accessor MUST re-throw a sanitized
+  // `BridgeKeyLazyParseDivergence`, NOT let the raw
   // dhive `AssertionError` (with WIF-derived `.actual`/`.expected` Buffer
   // slices) escape. Pre-this-task, that AssertionError would propagate
   // unchanged.
@@ -336,7 +336,6 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
     expect(getCachedBridgePostingKey()?.toString()).toBe(wifB);
   });
 
-  // Round-3 hold #6 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
   // `getRequiredBridgePostingKey` is the throw-on-null variant added so
   // bridge.ts call sites can drop the non-null assertion `getCachedBridge
   // PostingKey()!`. The non-null assertion tied type narrowing to
@@ -346,7 +345,7 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
   // `null!.toString()` → TypeError. The accessor below ties type
   // narrowing to the cache directly and throws a structured, redact-safe
   // error if the cache is ever null at the call site.
-  it('getRequiredBridgePostingKey: returns the parsed key when cache is populated (round-3 hold #6)', () => {
+  it('getRequiredBridgePostingKey: returns the parsed key when cache is populated', () => {
     const wif = PrivateKey.fromSeed('startup-checks-required-fixture').toString();
     (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = wif;
     _initBridgePostingKeyCacheForTests();
@@ -354,7 +353,7 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
     expect(required.toString()).toBe(wif);
   });
 
-  it('getRequiredBridgePostingKey: throws structured BridgeKeyCacheUnpopulated when cache is null (round-3 hold #6)', () => {
+  it('getRequiredBridgePostingKey: throws structured BridgeKeyCacheUnpopulated when cache is null', () => {
     (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = '';
     _initBridgePostingKeyCacheForTests();
     let captured: unknown = null;
@@ -393,8 +392,7 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
   });
 
   it('fatal log on parse-divergence does NOT leak the WIF or AssertionError buffer slices (real PrivateKey.fromString throw)', () => {
-    // Round-3 hold #9 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-    // the prior version of this test hand-rolled an AssertionError-shaped
+    // The prior version of this test hand-rolled an AssertionError-shaped
     // object with literal `actual`/`expected` Buffer slices. That made the
     // assertions pass by construction, not by virtue of the redactor — a
     // mutation that disabled the redactor would still pass because the
@@ -465,8 +463,7 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
 // ──────────────────────────────────────────────
 
 describe('Bridge admin WIF boot validation end-to-end', () => {
-  // Round-3 hold #9 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-  // the prior "format-validator does NOT echo the malformed WIF input" test
+  // The prior "format-validator does NOT echo the malformed WIF input" test
   // was dropped as redundant. `validatePostingKeyFormat` interpolates only
   // (a) the env-var name and (b) the dhive error class + message into its
   // returned string. dhive's error message for malformed input does NOT
@@ -554,7 +551,7 @@ describe('Bridge admin WIF boot validation end-to-end', () => {
 // `expect(() => ...).toThrow(BootFatalError)` assertion below fail red.
 // ──────────────────────────────────────────────
 
-describe('validateConfig / initBridgePostingKeyCache — BootFatalError throw (round-5 hold #3)', () => {
+describe('validateConfig / initBridgePostingKeyCache — BootFatalError throw', () => {
   // Save/restore process.env.HAF_DATABASE_URL and config fields so the
   // mutations under test don't leak across tests.
   let originalHafEnv: string | undefined;
@@ -582,7 +579,7 @@ describe('validateConfig / initBridgePostingKeyCache — BootFatalError throw (r
   it('validateConfig throws BootFatalError when required env (HAF_DATABASE_URL) is missing', () => {
     // Drive the missing-required path: empty hafDatabaseUrls causes the
     // `HAF_DATABASE_URL` check to push into `missing[]`, which triggers
-    // the round-4 boot-fatal throw at startup-checks.ts:175.
+    // the boot-fatal throw in `validateConfig` for a missing required env var.
     (config as { hafDatabaseUrls: string[] }).hafDatabaseUrls = [];
 
     expect(() => validateConfig()).toThrow(BootFatalError);
@@ -610,8 +607,8 @@ describe('validateConfig / initBridgePostingKeyCache — BootFatalError throw (r
     // otherwise reject the malformed WIF at the format-validator step) and
     // call `_initBridgePostingKeyCacheForTests()` directly with a malformed
     // WIF in `config.pevoBridgePostingKey`. This simulates the "validator
-    // passed but PrivateKey.fromString rejects" divergence the round-4 hold
-    // #1 throw protects against.
+    // passed but PrivateKey.fromString rejects" divergence the
+    // initBridgePostingKeyCache boot-fatal throw protects against.
     const malformedWif = '5J' + '1'.repeat(50);
     (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = malformedWif;
 
