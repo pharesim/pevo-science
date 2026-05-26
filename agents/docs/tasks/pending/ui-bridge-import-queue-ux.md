@@ -90,3 +90,14 @@ This is a starting point for backend-side shape negotiation, not a contract. Bac
 - E2E coverage of the new submission flow and the My imports surface.
 
 Move back to `pending/` once `backend-bridge-import-queue.md` archives and the new endpoints are documented in `agents/docs/api-contracts/bridge.md`.
+
+## Architect unblock (2026-05-26)
+
+Both gates are met; returning to `pending/`. `backend-bridge-import-queue` archived 2026-05-26, and `agents/docs/api-contracts/bridge.md` now documents the full surface this task binds against:
+
+- `POST /api/bridge/register` → HTTP 202 `EnqueueBridgePaperResponse` with `queue_position` and `eta_seconds` (the queued-state shape).
+- Per-user in-flight cap (5) → `RATE_LIMITED` (429), `error.details: { retriable, inflight, cap }`; resumes once one in-flight import completes.
+- `GET /api/bridge/imports` → the "My imports" status/list endpoint (full field reference in `bridge.md`).
+- Retry model → re-POST `/register` (no dedicated retry endpoint); a `failed` entry is not "in-flight" so it re-enqueues, while an active `pending`/`in_progress` duplicate returns `DUPLICATE`/`LOCK_HELD`.
+
+Remaining work is all UI-side and is the task body, not a blocker: wire `registerBridgePaper()` to the 202 queued state and the cap rejection, replace `my-imports.js` `loadEntries()`'s empty stub with a real fetch against `GET /api/bridge/imports` (the `loadEntries` adapter absorbs any field-name differences from the consumer shape sketched above), add the ETA formatter, and add E2E coverage. Confirm the documented field names against the live `bridge.md` shape before binding — the earlier consumer sketch in this file predates the contract and was explicitly "not a contract."
