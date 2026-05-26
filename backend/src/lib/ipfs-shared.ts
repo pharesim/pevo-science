@@ -10,6 +10,29 @@ import { config } from '../config.js';
 
 export type PinBackend = 'kubo' | 'pinata';
 
+const PIN_BACKENDS: readonly PinBackend[] = ['kubo', 'pinata'];
+
+/**
+ * Narrow an untrusted string (e.g. the `pin_backend` column read off a
+ * tracking row) to the `PinBackend` union, throwing on anything outside it.
+ *
+ * The cleanup job and the upload compensation path both dispatch the unpin to
+ * the recorded backend; an `as PinBackend` assertion cast would let an
+ * out-of-domain value flow straight into `unpinFromIpfs`, whose non-kubo
+ * branch routes to Pinata — firing a Pinata DELETE for a CID Pinata never
+ * held, swallowing the benign "not pinned", then letting the caller reap the
+ * tracking row and leak the real (Kubo) pin forever. Throwing here surfaces
+ * the bad value to the caller's error handling instead, which logs and skips
+ * the reap so the row survives for an operator. The DB CHECK on `pin_backend`
+ * is the write-time backstop; this is the read-time one.
+ */
+export function toPinBackend(value: string): PinBackend {
+  if ((PIN_BACKENDS as readonly string[]).includes(value)) {
+    return value as PinBackend;
+  }
+  throw new Error(`Unrecognized pin backend: ${JSON.stringify(value)}`);
+}
+
 /**
  * SQL fragment builder: array-type guard for the broadcaster-controlled Hive
  * `image` field at a `jsonb_array_elements_text()` SRF argument position.
@@ -97,10 +120,22 @@ export async function unpinFromPinata(cid: string): Promise<void> {
  * same backend that produced the pin. If the original pin came from Kubo, only
  * Kubo's unpin can release the disk; calling the wrong backend would silently
  * leak the pinned blob.
+ *
+ * The dispatch is exhaustive over the `PinBackend` union with an explicit
+ * branch per backend and a throw on the unreachable default. A bare
+ * `if (kubo) … else pinata` would silently route any non-kubo value to Pinata;
+ * the explicit branches plus the `never`-typed default keep the function from
+ * misrouting if the union ever widens without a matching branch here.
  */
 export async function unpinFromIpfs(cid: string, backend: PinBackend): Promise<void> {
-  if (backend === 'kubo') {
-    return unpinFromKubo(cid);
+  switch (backend) {
+    case 'kubo':
+      return unpinFromKubo(cid);
+    case 'pinata':
+      return unpinFromPinata(cid);
+    default: {
+      const unreachable: never = backend;
+      throw new Error(`Unrecognized pin backend: ${JSON.stringify(unreachable)}`);
+    }
   }
-  return unpinFromPinata(cid);
 }

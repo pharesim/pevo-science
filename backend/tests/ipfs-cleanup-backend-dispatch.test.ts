@@ -148,4 +148,26 @@ describe('IPFS cleanup — per-backend unpin dispatch', () => {
     // Sanity: the Kubo unpin targets the configured node, not a relative URL.
     expect(kuboUnpins[0].url.startsWith(config.ipfsApiUrl)).toBe(true);
   });
+
+  it('skips an orphan with an unrecognized pin_backend: no unpin fetch, no row DELETE', async () => {
+    // An out-of-domain pin_backend (e.g. a future third backend, a manual
+    // operator row, or a migration oversight) must NOT fall through to a
+    // Pinata DELETE and reap the tracking row — that would leave the real pin
+    // live forever with no record of it. toPinBackend throws, runCleanup's
+    // per-row try/catch logs and skips, and the row survives for an operator.
+    seedSingleRow('s3');
+    stubUnpinFetch();
+
+    await runCleanup();
+
+    const anyUnpin = fetchCalls.filter(
+      (c) => c.url.includes('/api/v0/pin/rm') || c.url.includes('pinata.cloud/pinning/unpin/'),
+    );
+    const deletes = appQueryMock.mock.calls.filter(
+      ([sql]) => typeof sql === 'string' && sql.includes('DELETE FROM pending_ipfs_uploads'),
+    );
+
+    expect(anyUnpin).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
+  });
 });

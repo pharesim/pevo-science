@@ -19,7 +19,7 @@ import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { T } from './hafsql.js';
-import { type PinBackend, imageSrfGuardExpr, unpinFromIpfs } from './lib/ipfs-shared.js';
+import { imageSrfGuardExpr, toPinBackend, unpinFromIpfs } from './lib/ipfs-shared.js';
 
 const CLEANUP_INTERVAL_MS = 30 * 60_000; // 30 minutes
 const MAX_AGE_MS = 24 * 60 * 60_000; // 24 hours
@@ -95,8 +95,12 @@ export async function runCleanup(): Promise<void> {
         logger.debug({ cid: row.cid }, 'IPFS CID confirmed on-chain — tracking removed');
       } else {
         // Route the unpin to the backend that created the pin — a Pinata-origin
-        // pin cannot be released by a Kubo pin/rm and vice versa.
-        await unpinFromIpfs(row.cid, row.pin_backend as PinBackend);
+        // pin cannot be released by a Kubo pin/rm and vice versa. toPinBackend
+        // throws on an out-of-domain value rather than letting it fall through
+        // to Pinata; the throw is caught below, which logs and skips the DELETE
+        // so the row survives for an operator instead of being misrouted and
+        // reaped.
+        await unpinFromIpfs(row.cid, toPinBackend(row.pin_backend));
         await appPool.query(`DELETE FROM pending_ipfs_uploads WHERE cid = $1`, [row.cid]);
         if (redis) await redis.del(`${config.appTag}:ipfs:pending:${row.cid}`).catch(() => {});
         unpinned++;
