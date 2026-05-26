@@ -78,3 +78,17 @@ Unblocked after architect + user review of the implementer's EXPLAIN investigati
 ### Coordination
 
 The sibling `backend-ipfs-shared-module-extraction` task is independent and proceeding (it de-duplicates the unpin helpers + the image-SRF guard expression without changing the scan shape). When this task lands, the rewritten query should compose the extracted `IMAGE_SRF_GUARD_EXPR` for the image branch.
+
+## Backend completion signal (2026-05-26)
+
+Both fixes landed in both call sites. The sibling shared-module extraction had already merged when this landed, so the image branch composes the extracted `imageSrfGuardExpr('c')` helper rather than an inline guard.
+
+- **Namespace.** `cidIsKnown` (`routes/ipfs.ts`) and `cidReferencedInHaf` (`ipfs-cleanup.ts`) now bind `{ [config.appTag]: { ipfs_cid } }` and `{ [config.appTag]: { supplementary_files: [{ cid }] } }` in the two `@>` branches, replacing the literal `pevo` key.
+- **Indexed scope.** Both predicates are now `c.tags @> $1::jsonb AND ( <ipfs_cid containment> OR <supplementary_files containment> OR <image-LIKE EXISTS> )`, with `$1 = JSON.stringify([config.appTag])`. The OR-group is parenthesized so the tags scope ANDs across all three branches (AND binds tighter than OR; without the parens the scope would attach to only the first containment branch). Bind order is now [tags-scope, ipfs_cid, supplementary_files, cid-for-LIKE].
+- **Anti-revert note.** A comment at each site documents that both the tags scope and the appTag namespace are load-bearing and must not be reverted.
+
+**EXPLAIN (live HAF, unknown CID).** The corrected query plans `Bitmap Heap Scan on comments_table` driven by `Bitmap Index Scan on hafsql_comments_table_tags_idx` (`Index Cond: tags @> '["pevotest"]'`), with the `@>` containment + image-LIKE as a Recheck/Filter on the tags-scoped subset (~2905 est. rows) — not the prior full seq-scan over ~67.6M rows.
+
+**Test.** `tests/routes/ipfs.test.ts` adds a real-HAF GET spec (real `getPool()`, no mocked db): it locates a published paper carrying a non-empty `metadata.<appTag>.ipfs_cid` via the same tags-GIN-scoped query, then asserts `GET /api/ipfs/:cid` is not 404. Live run found `QmQ5dov…` and the route reached the gateway (502, not 404), proving `cidIsKnown` resolved the on-chain reference under the namespaced+scoped query (a literal-`pevo` regression would 404).
+
+**Verification.** `npm run typecheck` clean (src + tests); `npm run lint` clean on touched files; targeted `npx vitest run tests/routes/ipfs.test.ts` green against real Postgres/Redis/HAF. No api-contract or ARCHITECTURE change needed (query-internals fix; no API shape, route, or status-code contract change).

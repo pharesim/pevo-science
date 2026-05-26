@@ -335,25 +335,38 @@ async function cidIsKnown(cid: string): Promise<boolean> {
   const pool = getPool();
   if (!pool) return false;
 
+  // Scope to PEvO-tagged comments via the tags-GIN index. hafsql.comments has
+  // no GIN index on metadata, so an unscoped containment predicate full-scans
+  // the whole corpus; tags is the only index-assisted PEvO subset on this HAF.
+  // All CID-carrying PEvO content is appTag-tagged, so the scope drops no real
+  // reference. The containment namespace must match the published shape
+  // (metadata.<appTag>.ipfs_cid), NOT a literal `pevo` key — verified against
+  // live HAF, where zero posts carry a `pevo` top-level key. Keep both the
+  // tags scope and the appTag namespace; reverting either reintroduces the
+  // full-scan or the never-matching predicate.
   const result = await pool.query(
     `SELECT 1 FROM ${T.comments} c
-     WHERE c.json_metadata @> $1::jsonb
-        OR c.json_metadata @> $2::jsonb
-        OR EXISTS (
-          -- Array-type guard for the broadcaster-controlled image field is
-          -- centralized in imageSrfGuardExpr (lib/ipfs-shared.ts); it must
-          -- sit INSIDE the SRF argument because the LATERAL evaluates before
-          -- the surrounding WHERE, so a WHERE-side guard is a placebo. Without
-          -- it, a non-array image raises "cannot extract elements from a
-          -- scalar" and fails the per-request CID-known check. The 'c' arg is
-          -- the comment-relation alias used in this query's FROM.
-          SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
-          WHERE img LIKE '%' || $3 || '%'
-        )
+     WHERE c.tags @> $1::jsonb
+       AND (
+            c.json_metadata @> $2::jsonb
+         OR c.json_metadata @> $3::jsonb
+         OR EXISTS (
+              -- Array-type guard for the broadcaster-controlled image field is
+              -- centralized in imageSrfGuardExpr (lib/ipfs-shared.ts); it must
+              -- sit INSIDE the SRF argument because the LATERAL evaluates before
+              -- the surrounding WHERE, so a WHERE-side guard is a placebo. Without
+              -- it, a non-array image raises "cannot extract elements from a
+              -- scalar" and fails the per-request CID-known check. The 'c' arg is
+              -- the comment-relation alias used in this query's FROM.
+              SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
+              WHERE img LIKE '%' || $4 || '%'
+            )
+       )
      LIMIT 1`,
     [
-      JSON.stringify({ pevo: { ipfs_cid: cid } }),
-      JSON.stringify({ pevo: { supplementary_files: [{ cid }] } }),
+      JSON.stringify([config.appTag]),
+      JSON.stringify({ [config.appTag]: { ipfs_cid: cid } }),
+      JSON.stringify({ [config.appTag]: { supplementary_files: [{ cid }] } }),
       cid,
     ],
   );
