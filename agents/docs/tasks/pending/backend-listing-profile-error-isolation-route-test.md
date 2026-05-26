@@ -38,3 +38,15 @@ Can land independently of the `backend-cumulative-union-listing-surfaces-parity`
 ## Source
 
 - `/ce-code-review` testing (confidence 90) + correctness testing-gap during round-2 review of `backend-cumulative-union-listing-surfaces-parity` (2026-05-25). Backend re-review signal explicitly deferred the route-level 200-status assertion to a separate follow-up.
+
+## Backend completion signal (2026-05-26)
+
+Verified both isolation structures exist in production before writing the test:
+- Listing `fetchPapersFromHaf` (`backend/src/routes/papers.ts`) wraps each per-row `resolveChainCumulativeAuthors` call in a `try/catch` inside the `Promise.all(rows.map(...))` callback, so one row's throw is absorbed (logged as "chain cumulative authors enrichment failed") rather than rejecting the page.
+- Profile `GET /:username/papers` (`backend/src/routes/profile.ts`) has the identical per-row `try/catch` inside its `Promise.all(rows.map(...))` enrichment loop ("profile chain cumulative authors enrichment failed").
+
+Added `backend/tests/routes/papers-cumulative-route-error-isolation-mocked.test.ts` (2 tests, both passing). Drives the REAL `GET /api/papers` and `GET /api/profile/:username/papers` handlers via supertest with a 2-row fixture. Failure injection is at the helper's outermost wrapper: `hafCache.getOrSet` is spied to reject for the erroring row's `chain-authors:<author>:<permlink>` key and delegate every other key (including the profile response cache and the sibling's pre-seeded warm entry) to the real implementation. This forces the real `resolveChainCumulativeAuthors` to throw through the route's per-row map; a real chain walk swallows its own SQL failures and returns null, so it can't reproduce the throw the isolation guard defends against.
+
+Assertions per route: (1) response status 200, not 5xx; (2) the erroring row is present with its head-meta `authors` (the SQL `authors_with_supersession` fallback for listing / `toPaperSummary` authors for profile) and empty head-derived `accredited_authors` — no cumulative-union override and no inheritance of the sibling's cumulative `accredited_authors`; (3) the sibling row carries cumulative-union enrichment (a dropped chain co-author plus the cumulative `accredited_authors` set). The helper-boundary canary in `papers-cumulative-cross-surface-parity-mocked.test.ts` stays — it pins the per-row `try/catch` primitive; this file adds the integrated-route assertion that catches a refactor relocating the catch out of the per-row map.
+
+Mocked infra (carve-out documented in the test header): `getPool()` returns a deterministic multi-row dataset; `hafCache.getOrSet` is the failure-injection point. No auth middleware is mocked or bypassed — both routes are unauthenticated reads behind `readLimiter` only. `npm run typecheck` (src + tests) and `npm run lint` (src) pass; the one lint warning is pre-existing in `src/lib/author-supersession.ts`, untouched by this task.
