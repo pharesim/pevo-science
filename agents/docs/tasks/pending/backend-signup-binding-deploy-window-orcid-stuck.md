@@ -31,3 +31,96 @@ Coordinate timing with the deploy of `backend-auth-token-session-binding` once i
 
 - Backfilling bindings for in-flight rows (impossible — the cookie value never existed server-side).
 - Changing the 24h expiry or the binding mechanism.
+
+---
+
+## Backend resolution (2026-05-27)
+
+Took **Option 1 (operator runbook)** only. **Skipped Option 2 (the distinct
+NULL-binding-row message)** — analysis below shows it re-introduces a
+token-validity oracle, so it is a security defect, not a nicety.
+
+### Why the code-message option was skipped (oracle analysis)
+
+The binding threat model deliberately makes the "invalid token" and
+"binding mismatch" rejections an identical `400 BAD_REQUEST "Invalid or
+expired auth token"` so a leaked-token holder cannot distinguish
+"right token, wrong browser" from "wrong token" (which would confirm the
+token is valid). Today a NULL-binding row also lands on that same generic
+message: `verifyBinding(cookieValue, null)` returns `false`, so the
+fail-closed reject is the generic one — no oracle.
+
+A distinct "re-start ORCID signup" message for the NULL-binding case is
+reachable ONLY when the `verify_token` lookup found a row (token IS valid)
+AND its `signup_binding_hash` is NULL. Emitting a different message there
+splits the response space three ways:
+
+- invalid token → generic message
+- valid token + non-NULL binding + no/wrong cookie → generic message
+- valid token + NULL binding (stranded) → distinct message
+
+An attacker submitting a leaked token with no cookie and receiving the
+distinct message learns the token is valid AND in the stranded state — a
+token-validity oracle for that subset, which the no-oracle invariant
+forbids. The "may be safe to message differently" hypothesis in the task
+Goal does not hold: the NULL-binding case is not separable from the valid-token
+fact, so any distinct copy leaks validity. Backend leaves the rejection on the
+generic message; the runbook (below) is the operator-facing remedy.
+
+### [TODO Architect] Operator runbook addition (ARCHITECTURE.md is architect-owned; backend cannot edit it)
+
+Add an operator note to the `Migrations` / deploy runbook section of
+`agents/docs/ARCHITECTURE.md` covering the deploy-window strand of
+`011_accounts_signup_binding_hash.sql`. Suggested content:
+
+> **Post-deploy cleanup — migration `011` (signup binding hash).** The binding
+> column is nullable and back-fills NULL on existing rows. `/confirm` and
+> `/link` fail closed on a NULL `signup_binding_hash`, so any signup that was
+> in-flight at deploy time is stranded. Email-flow rows self-recover via
+> `/resume-signup` (password re-verify re-mints the cookie + hash).
+> ORCID-only rows (no password) cannot, and will see a confusing
+> `400 "Invalid or expired ..."` until they re-start the full ORCID signup or
+> the row's 24h `expires_at` lapses. Immediately after the migration, clear any
+> stranded ORCID-only pending rows so affected users get a clean re-signup.
+>
+> Stranded-row predicate:
+>
+> ```
+> verify_token IS NOT NULL
+>   AND signup_binding_hash IS NULL
+>   AND orcid IS NOT NULL
+>   AND password_hash IS NULL
+> ```
+>
+> Verification SELECT (inspect before deleting — confirm the set is the
+> in-flight ORCID-only strand and nothing else):
+>
+> ```sql
+> SELECT id, orcid, full_name, created_at, expires_at
+>   FROM accounts
+>  WHERE verify_token IS NOT NULL
+>    AND signup_binding_hash IS NULL
+>    AND orcid IS NOT NULL
+>    AND password_hash IS NULL
+>  ORDER BY created_at;
+> ```
+>
+> Cleanup action — DELETE the rows (not merely NULL `verify_token`). The
+> ORCID-only signup INSERT in `auth.ts` is a plain INSERT (no ON CONFLICT) and
+> the partial-unique index on `orcid` (migration `007`) would otherwise make
+> the user's re-signup collide on the lingering stale row. Deleting clears the
+> way for a clean re-signup:
+>
+> ```sql
+> DELETE FROM accounts
+>  WHERE verify_token IS NOT NULL
+>    AND signup_binding_hash IS NULL
+>    AND orcid IS NOT NULL
+>    AND password_hash IS NULL;
+> ```
+>
+> These rows are never-activated pending signups (no `username`, no
+> `custody`), so deletion is non-destructive — there is no on-chain account or
+> linked identity to lose. The window self-resolves within 24h via
+> `expires_at` regardless; the cleanup just turns a confusing stuck `400` into
+> an immediate clean re-signup for users mid-flight at deploy time.
