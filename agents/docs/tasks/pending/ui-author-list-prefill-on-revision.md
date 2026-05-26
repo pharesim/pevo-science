@@ -75,19 +75,17 @@ While in item 1's map you may also name the backend symbol `resolveAuthorName` i
 
 Dismissed at triage (no action): `_primaryIndex` account-switch staleness (ordering-only, identity stays correct via the live submit-time `username`; pre-existing class); primary-author name-block test toast-assertion symmetry. The duplicate-`hive` re-broadcast finding was split to its own pending task (`ui-dedup-author-hive-on-rebroadcast`).
 
-## UI re-review BLOCKED (2026-05-26) — [BLOCKED by Architect]
+## Architect resolution (2026-05-26) — orcid conflict settled: NORMALIZE to `''` (option a)
 
-Finding #1's prescribed `existingCoAuthors` projection uses `orcid: a.orcid || ''`, which normalizes a null orcid to an empty string on the **data side**. This directly contradicts the documented `UI-PAPERS-ORCID-NULL-FALLBACK` contract in `frontend/tests/unit/pages-edit.test.js` (and its 3 passing assertions), which pins the opposite: `_prefillForm` preserves `orcid: null` untouched on existing co-author rows, and the Alpine template binding `:value="ca.orcid || ''"` is responsible for the falsy coalesce at render time. The hold block did not acknowledge this contradiction.
+The implementer correctly escalated rather than silently picking a side (per `agents/docs/solutions/conventions/hold-block-must-not-contradict-convention-docs-2026-04-22.md`). Architect + user decided **option (a): normalize absent orcid to `''` on the data side** in `_prefillForm`'s `existingCoAuthors` projection. Finding #1's prescribed `orcid: a.orcid || ''` is **confirmed correct** and supersedes the prior `UI-PAPERS-ORCID-NULL-FALLBACK` data-side preservation contract.
 
-The two readings produce **different on-chain author data** (irreversible once broadcast):
+Rationale (the API's `null` is a read-side projection, not a broadcaster claim):
 
-- **Normalize (`|| ''`):** every broadcast author entry uses `''` for absent orcid — consistent with the primary author (`editedSelf.orcid = this.authorOrcid`, defaults `''`) and new co-authors (`addCoAuthor()` seeds `orcid: ''`). No-change detection (`metaChanged`) then works in the common case because the resolved set matches the raw head-post `json_metadata` claim.
-- **Preserve null:** existing co-authors broadcast `orcid: null`, inconsistent with the `''` written everywhere else; no-change detection stays broken unless the `metaChanged` comparison is also normalized on both sides before stringifying.
+- The API emits `orcid: null` for **accredited** authors only, via the accredited-ORCID-authority branch in `buildCumulativeAuthorsForChain` (case (d): accredited hive with no on-chain ORCID + a broadcaster claim → suppress to null + audit). For accredited authors the accreditation directory is authoritative and the backend re-derives/overrides orcid on **every read**, so the chain-side value is moot — normalizing it to `''` on re-broadcast is lossless.
+- Persisting the read-side `null` back onto the chain is the same chain-pollution class finding #1 already strips (`orcid_verified` / `orcid_discrepancy`): only the broadcaster's claim belongs on chain, in the form's canonical `''`-for-absent shape.
+- The primary author path **already** normalizes `null`→`''` (`authorOrcid`); option (a) makes existing co-authors consistent with it, with new co-authors (`addCoAuthor` seeds `''`), and restores no-change detection (`metaChanged`) without needing both-sides normalization.
+- The original regression intent ("`_prefillForm` does not throw on a null orcid from the API") is preserved: null is still accepted as input and coalesced — now on the data side, matching the primary author.
 
-Per `agents/docs/solutions/conventions/hold-block-must-not-contradict-convention-docs-2026-04-22.md`, the implementer must not silently pick a side when a hold block contradicts a documented contract. Need the architect to either:
+**Authorized test-contract update** (implementer makes the edit; architect does not touch `frontend/`): update the `UI-PAPERS-ORCID-NULL-FALLBACK` block in `frontend/tests/unit/pages-edit.test.js` — change the two existing-co-author `expect(...).toBeNull()` assertions to `toBe('')`, and rewrite the block comment to describe data-side normalization (existing co-authors normalize `null`→`''` consistent with the primary author; the template `:value="ca.orcid || ''"` coalesce remains as defense-in-depth). When rewriting that comment, anchor on stable symbols (`buildCumulativeAuthorsForChain`, the binding expression) — drop the stale `papers.ts: 417-434` and `edit.js:183` line-number anchors per root `CLAUDE.md` "Comment anchors" (`convention-enforcing-fix-must-audit-its-own-new-code`).
 
-(a) confirm the normalize-to-`''` direction and authorize updating the `UI-PAPERS-ORCID-NULL-FALLBACK` contract comment + its 3 `toBeNull()` assertions to `toBe('')` (the regression's core "does not throw on null orcid" intent survives either way), **or**
-
-(b) revise finding #1 to preserve `orcid: null` in the projection and instead fix the defeated no-change detection by normalizing orcid on both sides of the `metaChanged` comparison.
-
-Findings #2 (drop `(R3)` from the prefill test title) and #3 (empty-`p.authors` source-fallback test) are unaffected and ready to land once #1's direction is settled. The split-off `ui-dedup-author-hive-on-rebroadcast` task is independent of this decision and proceeds separately.
+Findings #1 (now disambiguated above), #2 (drop `(R3)` from the prefill test title), and #3 (empty-`p.authors` source-fallback test) are all ready to land. Move this file back to `tasks/review/` once they're in. The split-off `ui-dedup-author-hive-on-rebroadcast` task proceeds separately.
