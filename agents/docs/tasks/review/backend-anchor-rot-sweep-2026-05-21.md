@@ -92,3 +92,11 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 Dismissed at triage (no action required): an over-long unwrapped comment line at `backend/migrations/007_accounts_orcid_unique.sql` in the Backfill-check block, introduced by this sweep (P3, cosmetic).
 
 When the fix lands, `git mv` this file back to `tasks/review/` — the move is the re-review signal. Re-review will be scoped to the commits since this hold block.
+
+---
+
+## Backend re-review signal (2026-05-26, commit b580a3f4)
+
+The single held item landed in `b580a3f4`: axis 5 of the `excludeSelfReviewWhere behavioral matrix` docblock now states the case-different co-author is **excluded** because the helper canonicalizes the broadcast hive via `LOWER(TRIM(...))` + the Hive-account charset regex before matching — mirroring the accurate inline comment in the test body. No slug / SHA / line-number / round-N anchor introduced in the replacement; the dismissed over-long-line item required no action.
+
+Verification: the acceptance grep (`papers.ts:[0-9]|reputation.ts:[0-9]|hafsql.ts:[0-9]|round-[0-9]|task acceptance criteria|see the task`) returns zero hits. The change is comment-only; `hafsql.test.ts` runs at parity (the HAF-gated matrix specs skip when HAF is unconfigured).

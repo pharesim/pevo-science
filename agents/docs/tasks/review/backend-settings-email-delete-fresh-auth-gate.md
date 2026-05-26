@@ -106,3 +106,16 @@ The two [TODO Architect] items above (`settings.md` proof requirement + error sh
 ### Re-review signal
 
 When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+---
+
+## Backend re-review signal (2026-05-26, commit 73c5a78f)
+
+Round-2 hold items 1-4 landed in `73c5a78f` (implemented in a worktree, cherry-picked onto main).
+
+- **Item 1 (cascade assertions):** state-A and state-C JWT happy-path tests now seed `notification_preferences`, a `pending_recovery` row, and a prior `custody_audit_log` row, then assert prefs + recovery gone and `custody_audit_log` anonymized (no row left bound to the username) after the DELETE.
+- **Item 2 (state-B):** added a state-B (password AND orcid) seed + two tests — state-B + password proof → 200 erased, state-B + ORCID proof → 200 erased — pinning the `mechanismAccepted` OR branch.
+- **Item 3 (fresh-auth.ts doc):** `FreshAuthVerifyFailureReason` docstring enumerates all three `wrong_mechanism` call sites (set-password, change-email, delete-account); the stale "typo at a third call site" hypothetical is dropped.
+- **Item 4 (stale comments):** `delete_account` appended to the `orcid.ts` change_email else-branch comment and the `custody.ts` cast comment.
+
+Verification: typecheck (src + tests) + lint clean; `settings-email-delete-fresh-auth.test.ts` green (9 specs) against real Postgres/Redis in the affected-files run.

@@ -117,3 +117,26 @@ provides `auth_token` (force a re-resume-signup with password to re-bind).
 ### Re-review signal
 
 When items 1-8 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commits only.
+
+---
+
+## Backend re-review signal (2026-05-26, commit 6e3cd97d)
+
+Round-2 hold items landed in `6e3cd97d`. Mapping to the hold block above:
+
+- **Item 1 (decode 500-oracle):** `extractBindingCookie` wraps `decodeURIComponent` in try/catch returning `null`. Regression test added: a malformed-percent-encoding cookie (`%GG`) + a VALID auth_token returns the same `400` as a wrong cookie, never `500`.
+- **Item 2 (/link JWT-replay bypass):** the `/link` stuck-recovery branch is gated on `req.hiveAuthMethod === 'signature'`; a Bearer JWT falls through to the no-row 400. Comment corrected.
+- **Item 3 (mailbox claim):** module docstring scopes the threat model to the post-verification `confirmed:` token (Referer / login-error-body / log) and adds a scope note that mailbox-read takeover is NOT closed (`/verify` re-binds for any token presenter).
+- **Item 4 (PENDING_SIGNUP mint claim):** module docstring + migration 011 header comment + `COMMENT ON COLUMN` now list the three real mint sites (ORCID-direct `/signup`, `/verify`, `/resume-signup`) and state the `PENDING_SIGNUP` login branch mints nothing.
+- **Item 5 (/link no-oracle message):** the `/link` cross-session reject now asserts `Invalid or expired link request`.
+- **Item 6 (/link coverage cluster):** forged-cookie attack ✓, per-auth_token rate-limit accumulation ✓, binding-cleared-on-success ✓, NULL-binding deploy-window rejection at `/confirm` ✓. **Sibling `verify_token` invalidation test NOT added — see flag below.**
+- **Item 7 (dead length check):** removed from `verifyBinding`; intent kept as a comment.
+- **Item 8 (setBindingCookie docstring):** the false "authentication-session JWT path" cookie reference is gone; the `secure=isProd` rationale stands on its own, noting PEvO carries its session in a Bearer header, not a cookie.
+
+### Flag for architect — item 6 sibling-invalidation sub-bullet is un-seedable under migration 007
+
+The sibling-invalidation sweep (both `/confirm` and `/link`) keys on `WHERE orcid = $1 AND id <> $2 AND verify_token IS NOT NULL`. Migration 007's partial unique index `accounts_orcid_unique (orcid) WHERE orcid IS NOT NULL` forbids two rows sharing a non-null ORCID, so the sweep can never match a sibling row, and a test seeding two same-orcid rows hits a unique violation at INSERT against the migrated test DB. The existing `/confirm` and `/link` success tests already exercise the sweep's code path (it runs, matches 0 rows, does not throw); the "asserts a sibling row's verify_token is nulled" coverage requested is not implementable as written. Architect decision needed: (i) drop the sibling-invalidation sub-bullet, (ii) treat the sweep as dead defense-in-depth subsumed by migration 007 and remove it (architect-domain), or (iii) point me at a reachable scenario I missed.
+
+Verification: typecheck (src + tests) + lint clean; `npx vitest run` of the affected files (`signup-verify-session-binding`, `signup-verify`, `signup-verify-stuck-recovery`, `settings-email-delete-fresh-auth`, `hafsql`) green (64 passed / 2 skipped) against real Postgres/Redis.
+
+The [TODO Architect] contract/ARCHITECTURE edits (auth.md cookie + login-409, § 6.x binding-as-auth-factor note, the stale "010"→"011" migration reference) remain architect-owned and untouched by backend.
