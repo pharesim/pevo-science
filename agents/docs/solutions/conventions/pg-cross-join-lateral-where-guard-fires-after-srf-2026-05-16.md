@@ -111,6 +111,8 @@ NOT EXISTS (
 
 Sibling sites in the cycle-cascade class — the `paper_resolved_votes` CTE and the `citing_papers` CTE in `computeReputationBatch` — use the same CASE-WHEN-at-SRF-arg shape. The listing-path helper `authorsWithSupersessionSelect` in `backend/src/hafsql.ts` and the per-user CTEs in `backend/src/routes/profile.ts` + `backend/src/routes/stats.ts` use the same shape with narrower (per-request) blast radius.
 
+The IPFS-path sites on the broadcaster-controlled bare-Hive `json_metadata->'image'` field are also guarded: `cidIsKnown` in `backend/src/routes/ipfs.ts` (the `/ipfs/:cid` gateway CID-in-use check) and `cidReferencedInHaf` in `backend/src/ipfs-cleanup.ts` (the orphan-cleanup CID-reference check). Both interpolate the shared `IMAGE_SRF_GUARD_EXPR` constant from `backend/src/lib/ipfs-shared.ts` at SRF-argument position — a single definition so the guard cannot drift between the two sites — with per-request (gateway) and per-cleanup-run (job) blast radius. A source-level canary in `backend/tests/lib/ipfs-image-srf-guard.test.ts` asserts both live call sites interpolate the guarded constant, so a revert at either site fails red.
+
 ### Anti-pattern (WHERE-clause guard after LATERAL — fires too late)
 
 ```sql
