@@ -362,6 +362,22 @@ describe('GET /api/bridge/imports: status listing', () => {
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('BAD_REQUEST');
   });
+
+  it('rejects a non-numeric limit with 400 (not a 500 from LIMIT NaN)', async () => {
+    if (!tableReady) return;
+    // Number('abc') is NaN, which slips past `?? 50` and would reach SQL
+    // `LIMIT NaN`, surfacing as a 500 without the route-level guard.
+    const res = await signedGet('/api/bridge/imports?limit=abc', ACCREDITED_CALLER);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+  });
+
+  it('accepts a valid positive-integer limit', async () => {
+    if (!tableReady) return;
+    const res = await signedGet('/api/bridge/imports?limit=10', ACCREDITED_CALLER);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+  });
 });
 
 afterAll(async () => {

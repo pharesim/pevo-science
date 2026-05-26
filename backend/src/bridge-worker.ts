@@ -173,10 +173,11 @@ export async function dispatchEntry(entry: BridgeImportRow): Promise<void> {
     return;
   }
 
-  // Re-fetch metadata. The metadata source may have changed (or gone
-  // away) between enqueue and dispatch. Per task acceptance: failures
-  // discovered at dispatch mark the entry failed with a reason without
-  // consuming the cooldown window for the next entry.
+  // Re-fetch metadata. The metadata source may have changed (or gone away)
+  // between enqueue and dispatch. A failure discovered here resolves the
+  // entry — terminal-fail when the source is permanently gone, reschedule
+  // when the outage is transient — without consuming the chain cooldown
+  // window reserved for the next entry's broadcast.
   let meta;
   try {
     meta = await lookupPreprint(entry.identifier);
@@ -186,11 +187,15 @@ export async function dispatchEntry(entry: BridgeImportRow): Promise<void> {
       'Bridge queue metadata fetch failed at dispatch',
     );
     // Metadata fetch is a transient external-API call; reschedule with
-    // backoff rather than fail terminally on the first attempt.
-    const result = await rescheduleForRetry(entry.id, {
-      code: 'BAD_REQUEST',
-      message: 'Metadata source unavailable at dispatch',
-    });
+    // backoff rather than fail terminally on the first attempt. This is a
+    // pre-broadcast outage — it must NOT consume the broadcast retry budget,
+    // or a sustained metadata-source outage would terminal-fail a valid
+    // submission that never reached a broadcast.
+    const result = await rescheduleForRetry(
+      entry.id,
+      { code: 'BAD_REQUEST', message: 'Metadata source unavailable at dispatch' },
+      { incrementAttempts: false },
+    );
     if (result.state === 'pending') logRetry(entry, result.attempts, result.scheduledAt);
     return;
   }
@@ -202,12 +207,11 @@ export async function dispatchEntry(entry: BridgeImportRow): Promise<void> {
     return;
   }
 
-  // Permlink-collision short-circuit. Per task: "Permlink-uniqueness
-  // collisions short-circuit retry — the queue layer sits in front of the
-  // existing bridge_register_lock semantics rather than replacing them; on
-  // collision, return the existing on-chain record." We complete the entry
-  // with the existing record so the user sees a terminal success that
-  // points at the existing on-chain post.
+  // Permlink-collision short-circuit: when the paper is already on chain,
+  // the queue does not re-broadcast. It completes the entry with the
+  // existing record so the submitter sees a terminal success pointing at
+  // the existing post. This sits in front of the per-permlink
+  // bridge_register_lock semantics rather than replacing them.
   const onChain = await checkExistingOnChain(parsed, entry.permlink);
   if (onChain.kind === 'exists') {
     await markCompletedExisting(entry.id, {
@@ -219,11 +223,14 @@ export async function dispatchEntry(entry: BridgeImportRow): Promise<void> {
   if (onChain.kind === 'haf_unavailable') {
     // Do NOT broadcast on HAF outage; reschedule with backoff. The chain
     // cooldown is precious — using it on a duplicate would lose the
-    // ~5-minute slot.
-    const result = await rescheduleForRetry(entry.id, {
-      code: 'SERVICE_UNAVAILABLE',
-      message: 'HAF duplicate-check unavailable; will retry',
-    });
+    // ~5-minute slot. Pre-broadcast outage: does NOT consume the broadcast
+    // retry budget, so a sustained HAF outage reschedules until HAF recovers
+    // rather than terminal-failing a valid submission.
+    const result = await rescheduleForRetry(
+      entry.id,
+      { code: 'SERVICE_UNAVAILABLE', message: 'HAF duplicate-check unavailable; will retry' },
+      { incrementAttempts: false },
+    );
     if (result.state === 'pending') logRetry(entry, result.attempts, result.scheduledAt);
     return;
   }
@@ -263,8 +270,9 @@ export async function dispatchEntry(entry: BridgeImportRow): Promise<void> {
     entry.permlink,
   );
 
+  let broadcastResult;
   try {
-    const result = await broadcastSendOperationsWithTimeout(
+    broadcastResult = await broadcastSendOperationsWithTimeout(
       [
         ['comment', {
           parent_author: '',
@@ -287,19 +295,6 @@ export async function dispatchEntry(entry: BridgeImportRow): Promise<void> {
       ],
       key,
     );
-    await markCompleted(entry.id, { txId: result.id });
-    lastBroadcastMs = Date.now();
-    logger.info(
-      {
-        event: 'bridge.queue.dispatch.success',
-        route: 'bridge.queue',
-        entry_id: entry.id,
-        username: entry.username,
-        permlink: entry.permlink,
-        tx_id: result.id,
-      },
-      'bridge queue dispatch success',
-    );
   } catch (err) {
     const isTimeout = err instanceof BroadcastTimeoutError;
     const code = isTimeout ? 'BROADCAST_TIMEOUT' : 'BROADCAST_FAILED';
@@ -318,12 +313,60 @@ export async function dispatchEntry(entry: BridgeImportRow): Promise<void> {
       },
       'bridge queue dispatch failure',
     );
+    // A timed-out broadcast may still have landed on chain: treat the
+    // cooldown window as consumed so we do not back-to-back another
+    // broadcast. Record it before the reschedule write for the same reason
+    // the success path records it before markCompleted (below).
+    if (isTimeout) lastBroadcastMs = Date.now();
     const result = await rescheduleForRetry(entry.id, { code, message });
     if (result.state === 'pending') logRetry(entry, result.attempts, result.scheduledAt);
-    // The broadcast may have landed (timeout case): treat the cooldown
-    // window as consumed so we do not back-to-back another broadcast.
-    if (isTimeout) lastBroadcastMs = Date.now();
+    return;
   }
+
+  // Broadcast landed. Record the cooldown BEFORE the completion write: if
+  // markCompleted throws, the cooldown must still be honored, or the next
+  // tick would broadcast again inside the chain's ~5-minute window.
+  lastBroadcastMs = Date.now();
+  try {
+    await markCompleted(entry.id, { txId: broadcastResult.id });
+  } catch (err) {
+    // The broadcast succeeded but persisting completion failed. This is NOT
+    // a broadcast failure — labelling it BROADCAST_FAILED would misreport a
+    // post that is already on chain. Reschedule without consuming the
+    // broadcast budget; the next tick's pre-broadcast checkExistingOnChain
+    // reconciliation finds the now-on-chain post and short-circuits to
+    // markCompletedExisting (terminal), so this does not loop.
+    logger.error(
+      {
+        err,
+        event: 'bridge.queue.dispatch.post_broadcast_write_failed',
+        route: 'bridge.queue',
+        entry_id: entry.id,
+        username: entry.username,
+        permlink: entry.permlink,
+        tx_id: broadcastResult.id,
+      },
+      'bridge queue broadcast landed but completion write failed; will reconcile',
+    );
+    const result = await rescheduleForRetry(
+      entry.id,
+      { code: 'COMPLETION_WRITE_FAILED', message: 'Broadcast landed; completion write failed, will reconcile' },
+      { incrementAttempts: false },
+    );
+    if (result.state === 'pending') logRetry(entry, result.attempts, result.scheduledAt);
+    return;
+  }
+  logger.info(
+    {
+      event: 'bridge.queue.dispatch.success',
+      route: 'bridge.queue',
+      entry_id: entry.id,
+      username: entry.username,
+      permlink: entry.permlink,
+      tx_id: broadcastResult.id,
+    },
+    'bridge queue dispatch success',
+  );
 }
 
 /**

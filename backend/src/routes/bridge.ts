@@ -441,16 +441,13 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
 
 /**
  * Map a queue row's state + error_code + result fields to a status shape
- * suitable for the SPA's "My imports" surface. The wire fields stay
- * close to the queue's persisted shape so the UI can render queue
- * position, retry-attempt count, and terminal outcomes without a parallel
- * vocabulary.
+ * suitable for the SPA's "My imports" surface. The wire fields stay close
+ * to the queue's persisted shape so the UI can render queue position,
+ * retry-attempt count, and terminal outcomes without a parallel vocabulary.
  *
- * Contract-shape decision: the UI agent's sibling task negotiates the
- * exact field set; this is the proposed v1 shape and is documented in
- * the task file's TODO Architect note. The wire response from
- * `/api/bridge/imports` is the source of truth that the architect
- * formalises in the contract during review.
+ * This is the provisional v1 wire shape; the formal field set is documented
+ * in `agents/docs/api-contracts/bridge.md` (GET /api/bridge/imports). The
+ * `/api/bridge/imports` response is the source of truth the contract tracks.
  */
 function serializeQueueRow(row: BridgeImportRow): Record<string, unknown> {
   return {
@@ -511,10 +508,10 @@ router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimi
     return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier. Try pasting a DOI or arXiv ID directly.');
   }
 
-  // Metadata-fetch is done synchronously so failures discovered at enqueue
-  // surface to the submitter (no queue entry created). Per task acceptance:
-  // "Metadata-fetch failures discovered at enqueue are surfaced
-  // synchronously to the submitter (no queue entry created)."
+  // Metadata-fetch is done synchronously so a failure discovered at enqueue
+  // surfaces to the submitter immediately (with no queue entry created),
+  // rather than enqueueing a submission that would only fail later at
+  // dispatch.
   let meta;
   try {
     meta = await lookupPreprint(identifier);
@@ -679,18 +676,15 @@ router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimi
 // with their reasons. Authenticated; no per-account targeting (the route
 // always reads `req.hiveUsername`'s entries).
 //
-// Contract-shape decision (recorded in the task file's TODO Architect):
-// the shape returned is the union of fields a UI needs to render the
+// The shape returned is the union of fields a UI needs to render the
 // surface — entry state, attempts, scheduled_at (so the UI can show "next
 // retry in N seconds"), tx_id on success, error_code+error_message on
-// failure, and existing_* on permlink-collision short-circuits. The shape
-// is documented in `agents/docs/api-contracts/bridge.md` during the
-// architect's review pass.
+// failure, and existing_* on permlink-collision short-circuits. It is
+// documented in `agents/docs/api-contracts/bridge.md` (GET /api/bridge/imports).
 // ──────────────────────────────────────────────
 router.get('/imports', verifyHiveSignature, async (req: Request, res: Response) => {
   const username = req.hiveUsername!;
   const stateParam = typeof req.query.state === 'string' ? req.query.state : undefined;
-  const limitParam = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
   const allowedStates = ['pending', 'in_progress', 'completed', 'failed'] as const;
   let state: typeof allowedStates[number] | undefined;
   if (stateParam !== undefined) {
@@ -700,8 +694,20 @@ router.get('/imports', verifyHiveSignature, async (req: Request, res: Response) 
     }
     state = found;
   }
+  // Guard the limit before it reaches SQL. A non-numeric value parses to
+  // NaN, which slips past `?? 50` in listUserImports (NaN is not null) and
+  // reaches `LIMIT NaN`, a Postgres error surfacing as a 500. Reject any
+  // non-positive-integer up front; over-200 values are clamped downstream.
+  let limit: number | undefined;
+  if (typeof req.query.limit === 'string') {
+    const parsed = Number(req.query.limit);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid limit (must be a positive integer)');
+    }
+    limit = parsed;
+  }
   try {
-    const rows = await listUserImports(username, { state, limit: limitParam });
+    const rows = await listUserImports(username, { state, limit });
     sendOk(res, {
       entries: rows.map(serializeQueueRow),
       cap: BRIDGE_QUEUE_USER_CAP,

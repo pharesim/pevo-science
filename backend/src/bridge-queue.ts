@@ -19,11 +19,14 @@
  *
  * Restart safety: the leasing pattern below (CTE updates `state` from
  * `pending` -> `in_progress` and sets `lease_expires_at`) lets a crashed
- * worker's lease expire and the entry re-lease on the next worker tick
- * without double-broadcast risk. The chain-level dedup (the bridge paper's
- * permlink is deterministic from its identifier; a second broadcast of the
- * same permlink under the same account fails on-chain) is the last-line
- * defense against double broadcast.
+ * worker's lease expire and the entry re-lease on the next worker tick.
+ * Re-leasing cannot double-broadcast: the worker re-runs an on-chain
+ * duplicate check (`checkExistingOnChain`) before every broadcast and
+ * short-circuits to the existing record if the post already landed; and
+ * even a racing re-broadcast is harmless because the permlink is
+ * deterministic from the identifier, so a same-author/same-permlink
+ * `comment` is an idempotent edit of the same content on Hive, not a
+ * duplicate post.
  */
 
 import type pg from 'pg';
@@ -166,12 +169,18 @@ async function computeQueuePosition(
  * (a sibling submission for the same permlink is already pending or
  * in-progress).
  *
- * The cap check + insert run in a single transaction so two concurrent
- * 5th-slot submissions from the same user cannot both squeeze through.
- * SERIALIZABLE isolation would also work; we use REPEATABLE READ with a
- * row-count gate because the partial-unique index on `permlink` provides
- * an independent collision backstop and the per-user index makes the
- * count cheap.
+ * The cap check + insert run in a single transaction guarded by a
+ * transaction-scoped per-user advisory lock so two concurrent 5th-slot
+ * submissions from the same user cannot both squeeze through. The bare
+ * `BEGIN` runs at READ COMMITTED, under which a count-then-insert phantom
+ * is possible: two same-user submissions for distinct permlinks both
+ * observe `COUNT < cap` and both insert, exceeding the cap by one.
+ * REPEATABLE READ would not close this (the phantom is on rows neither
+ * transaction has read yet); the advisory lock — or SERIALIZABLE with a
+ * 40001 retry loop — is the real fix. We take the lock because it
+ * serializes only same-user enqueues (cross-user throughput is unaffected)
+ * and needs no retry plumbing. The partial-unique index on `permlink`
+ * remains an independent cross-user collision backstop.
  */
 export async function tryEnqueueBridgeImport(input: EnqueueInput): Promise<EnqueueResult> {
   const pool = getAppPool();
@@ -181,6 +190,14 @@ export async function tryEnqueueBridgeImport(input: EnqueueInput): Promise<Enque
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Serialize concurrent enqueues from the same user so the per-user cap
+    // COUNT below and the subsequent INSERT are atomic against each other.
+    // Transaction-scoped: released automatically on COMMIT/ROLLBACK. Keyed
+    // per-user so cross-user enqueues never contend.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext('bridge_enqueue:' || $1))`,
+      [input.username],
+    );
     // Active-permlink check (partial-unique index also enforces this at
     // write time, but the typed pre-check lets us return the active row
     // for caller-visible feedback rather than a raw 23505 error).
@@ -241,8 +258,9 @@ export async function tryEnqueueBridgeImport(input: EnqueueInput): Promise<Enque
  * `lease_expires_at` so a crashed worker's lease is recoverable.
  *
  * Also re-leases stale `in_progress` rows whose lease has expired (their
- * worker crashed mid-flight; the chain-level permlink dedup is the
- * defense-in-depth against the rare double-broadcast race).
+ * worker crashed mid-flight); the worker's pre-broadcast on-chain
+ * duplicate check plus deterministic-permlink edit-idempotency are the
+ * defense-in-depth against the rare double-broadcast race.
  *
  * Returns null when nothing is due.
  */
@@ -346,18 +364,29 @@ export async function markFailed(
 
 /**
  * Push a leased entry back to pending with an exponential backoff on
- * `scheduled_at`. Used for transient broadcast failures (RC exhaustion,
- * node unreachable, timeout). Returns the new attempt count; when the
- * attempt count exceeds {@link BRIDGE_QUEUE_MAX_ATTEMPTS}, the entry is
- * instead transitioned to terminal failed.
+ * `scheduled_at`. Returns the new attempt count; when the attempt count
+ * exceeds {@link BRIDGE_QUEUE_MAX_ATTEMPTS}, the entry is instead
+ * transitioned to terminal failed.
  *
- * Backoff: 30s, 60s, 120s, 240s, 480s. Bounded; on the final attempt the
+ * `opts.incrementAttempts` (default `true`) gates the attempt budget. Real
+ * broadcast failures (RC exhaustion, node unreachable, timeout) increment
+ * it and can drive the entry to terminal failed. Pre-broadcast transient
+ * outages — HAF duplicate-check unavailable, metadata source down at
+ * dispatch — pass `false`: a global infra outage should reschedule a valid
+ * submission indefinitely until infra recovers, never terminal-fail it on
+ * a budget the broadcast never got to consume.
+ *
+ * Backoff: 30s, 60s, 120s, 240s, 480s indexed off the post-increment
+ * attempt count; a non-incrementing reschedule reuses the current level
+ * (≈15s when attempts is still 0). Bounded; on the final attempt the
  * 5-minute chain cooldown dominates anyway.
  */
 export async function rescheduleForRetry(
   id: number,
   failure: { code: string; message: string },
+  opts: { incrementAttempts?: boolean } = {},
 ): Promise<{ state: BridgeImportState; attempts: number; scheduledAt: Date | null }> {
+  const incrementAttempts = opts.incrementAttempts ?? true;
   const pool = getAppPool();
   if (!pool) {
     return { state: 'failed', attempts: 0, scheduledAt: null };
@@ -373,8 +402,8 @@ export async function rescheduleForRetry(
       await client.query('ROLLBACK');
       return { state: 'failed', attempts: 0, scheduledAt: null };
     }
-    const attempts = current.rows[0].attempts + 1;
-    if (attempts > BRIDGE_QUEUE_MAX_ATTEMPTS) {
+    const attempts = incrementAttempts ? current.rows[0].attempts + 1 : current.rows[0].attempts;
+    if (incrementAttempts && attempts > BRIDGE_QUEUE_MAX_ATTEMPTS) {
       await client.query(
         `UPDATE bridge_import_queue
             SET state = 'failed',
@@ -466,9 +495,11 @@ export async function getLastSuccessfulBroadcastAt(): Promise<Date | null> {
 }
 
 /**
- * Count a user's currently-inflight entries (pending + in_progress).
- * Exposed for the route's pre-enqueue cap-feedback message so the user
- * can be told how many slots they have used.
+ * Count a user's currently-inflight entries (pending + in_progress). Not
+ * used by the production route or worker — the route's cap-feedback message
+ * comes from `tryEnqueueBridgeImport`'s atomic `cap_exceeded` branch, which
+ * already returns the inflight count. Exposed for tests so they can assert
+ * per-user cap accounting without re-deriving the WHERE.
  */
 export async function countInflightForUser(username: string): Promise<number> {
   const pool = getAppPool();

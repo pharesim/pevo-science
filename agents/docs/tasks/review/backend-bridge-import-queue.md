@@ -187,3 +187,24 @@ generality fields. Out of this round:
 - Dismissed: the unguarded `state` cast in `rowToBridgeImport` (the DB `CHECK` constraint makes a phantom state unreachable).
 
 When items 1–7 are landed, `git mv` this file back to `tasks/review/`.
+
+## Backend re-review signal (2026-05-26, working tree)
+
+Round-2 fix for items 1–7 landed in one commit. `npm run typecheck` + `npm run lint` clean; the bridge suites run green against real Postgres + Redis (`tests/lib/bridge-worker.test.ts`, `tests/lib/bridge-queue.test.ts`, `tests/routes/bridge-register-enqueue.test.ts`, `tests/routes/bridge.test.ts`, `tests/routes/bridge-haf-lag-locks.test.ts`, `tests/routes/bridge-register-rate-limit-skip-failed.test.ts`, `tests/routes/bridge-paper-author-gate.test.ts`).
+
+What landed per item (the commit diff is the evidence):
+
+1. New `tests/lib/bridge-worker.test.ts` covers every enumerated `dispatchEntry` branch (success, broadcast-timeout reschedule, non-timeout broadcast-failure reschedule, retry-exhaustion terminal, HAF-unavailable no-broadcast, metadata-throw vs metadata-null, key-cache-unpopulated terminal, permlink-collision → `markCompletedExisting`), `runWorkerTick`'s cadence gate + `tickInFlight` re-entrancy guard, and `startBridgeWorker`'s `lastBroadcastMs` seed — plus a direct `getLastSuccessfulBroadcastAt` test pinning the `tx_id IS NOT NULL` filter (far-future NULL-`tx_id` collision row must be excluded). Queue state runs REAL against the app Postgres; only the external boundaries (hive broadcast, arXiv/Crossref metadata, HAF pool, posting-key cache, and — for the tick tests only — `leaseNextEntry`) are mocked under the carve-out, documented in the file header. Dispatch-test rows are inserted `in_progress` with a non-expired lease so a sibling file's real `leaseNextEntry` (suite runs `maxWorkers: 2`) cannot steal them.
+2. `tryEnqueueBridgeImport` now takes a transaction-scoped `pg_advisory_xact_lock(hashtext('bridge_enqueue:' || username))` before the cap COUNT; docblock corrected (was claiming REPEATABLE READ over a bare READ COMMITTED `BEGIN`).
+3. `rescheduleForRetry` gained an `opts.incrementAttempts` flag (default `true`). The worker's HAF-unavailable and metadata-fetch-throw branches now pass `false`, so a sustained pre-broadcast outage reschedules indefinitely instead of burning the broadcast budget. Tests assert `attempts` stays 0 on those branches and increments on real broadcast failures.
+4. `dispatchEntry` records `lastBroadcastMs = Date.now()` immediately after the broadcast resolves, before `await markCompleted`. The broadcast call and the completion write are now separate `try` blocks so a post-broadcast DB-write failure is not misclassified as a broadcast failure.
+5. `GET /api/bridge/imports` rejects a non-positive-integer `limit` with 400 `BAD_REQUEST` before it can reach `LIMIT NaN` → 500; route-level canary added (`?limit=abc` → 400, `?limit=10` → 200) alongside the existing real-`verifyHiveSignature` listing tests.
+6. The four enumerated comment-anchor sites rewritten to behavioral invariants (no slug/round/line/SHA substitutes); the two `routes/bridge.ts` comments now point at `agents/docs/api-contracts/bridge.md`. The two `bridge-queue.ts` restart-safety docblocks corrected to the `checkExistingOnChain`-reconciliation + deterministic-permlink-edit-idempotency mechanism.
+7. `countInflightForUser` docblock corrected to state it is a test-only helper (matching `findEntryById`), not route-facing. Left exported; tests reference it.
+
+Two items flagged for architect awareness (not in the hold, surfaced here per the asking-questions convention):
+
+- **Extra comment-anchor site fixed beyond the enumerated four.** `routes/bridge.ts` had a fifth `Per task acceptance:` coordination-state comment (the synchronous metadata-fetch comment in the `/register` handler), the same banned prefix class as the two `bridge-worker.ts` sites. Rewritten in the same pass — leaving one identical violation while removing its twin would re-flag on re-review and violates the audit-own-replacement convention.
+- **New internal queue `error_code` `COMPLETION_WRITE_FAILED`** introduced by item 4's post-broadcast-write-failure branch (the entry stays pending and reconciles to completed on the next tick; the code is informational queue state, not an HTTP error code). Flagging in case the `[TODO Architect]` `api-contracts/bridge.md` pass wants to enumerate it among the entry `error_code` values.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
