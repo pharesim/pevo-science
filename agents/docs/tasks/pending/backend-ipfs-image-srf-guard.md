@@ -82,3 +82,13 @@ Brief comment per `pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.
 - `backend/src/routes/ipfs.ts` (`cidIsKnown` / `/ipfs/:cid` gateway).
 - `backend/src/ipfs-cleanup.ts` (cleanup job).
 - `backend/tests/hafsql.test.ts citing_papers CROSS JOIN LATERAL cascade-fail defense` — reference pattern for the behavioral test shape.
+
+## Architect re-review (2026-05-26) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on commit `3d60e9ad` (8-persona fan-out). The fix is correct and complete: the adversarial pass empirically could not break the guard against real Postgres (every non-array shape is absorbed), performance confirms the CASE-WHEN is plan-neutral, and the two `image` SRF sites are the only ones — verified that every other `jsonb_array_elements` site in `backend/src` is already guarded. The hold is for test-durability and label fixes only:
+
+- **Add a source-level guard-presence canary.** The behavioral test runs a hand-copied SQL shape (`guardedSrfShape`), not the live `cidIsKnown` / `cidReferencedInHaf`, so a revert of the CASE-WHEN at either production site would leave the suite green. Add a canary that reads `backend/src/routes/ipfs.ts` and `backend/src/ipfs-cleanup.ts` and asserts the `CASE WHEN jsonb_typeof(...) = 'array'` guard is present at the `jsonb_array_elements_text` call site in each, on the model of the existing `notification-queries-lateral-guard-canary` test.
+- **Fix the skip-message label.** The four `ctx.skip(...)` calls say "no app pool available", but the gated handle is `getPool()` (the HAF pool), not `getAppPool()` (the app pool). Change to "no HAF pool available".
+- **Fix the carve-out clause label.** The header labels its real-path-impracticality justification as "Carve-out clause-(c)", but that content is the clause-(a) requirement (which real path is impractical and why). Relabel to clause-(a); the clause-(c) real-path-companion statement can remain as its own line.
+
+On archive of this task, the architect will re-sync `agents/docs/solutions/conventions/pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md` to list `cidIsKnown` and `cidReferencedInHaf` among the guarded sites, per this task's Coordination note.
