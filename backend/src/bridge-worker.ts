@@ -23,11 +23,10 @@
  */
 
 import { getRequiredBridgePostingKey, BridgeKeyCacheUnpopulated } from './startup-checks.js';
-import { getPool, isHafConfigured } from './db.js';
 import { broadcastSendOperationsWithTimeout, BroadcastTimeoutError } from './hive.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { T, validPevoPaperWhere } from './hafsql.js';
+import { findBridgeDuplicate } from './bridge-haf.js';
 import {
   lookupPreprint,
   resolveToCanonical,
@@ -62,10 +61,11 @@ let tickInFlight = false;
 let lastBroadcastMs = 0;
 
 /**
- * On-chain duplicate check for an already-resolved permlink/parsed
- * identifier. Mirrors the route-side `checkExistingBridge` shape but is
- * scoped to the worker's narrower input: the queue entry already carries
- * the canonical permlink, so we can skip the parse step.
+ * On-chain duplicate check for an already-resolved parsed identifier +
+ * permlink. Delegates the two-query HAF lookup to the shared
+ * `findBridgeDuplicate` (the same source of truth the route's
+ * `checkExistingBridge` uses) and maps the result into the worker's
+ * fail-closed vocabulary.
  *
  * Returns:
  *   - { kind: 'exists', author, permlink } — duplicate found on chain
@@ -86,53 +86,13 @@ async function checkExistingOnChain(
   if (parsed.type !== 'arxiv' && parsed.type !== 'doi') {
     return { kind: 'none' };
   }
-  const pool = getPool();
-  if (!pool || !isHafConfigured()) return { kind: 'none' };
-  const sourceField = parsed.type === 'doi' ? 'doi' : 'arxiv_id';
+  // Narrow the identifier to the canonical {arxiv|doi} shape the shared
+  // helper expects (control-flow narrows the `.type` read, not the whole
+  // ParsedIdentifier object).
+  const canonical = { type: parsed.type, id: parsed.id };
   try {
-    const bridgePaperWhere = validPevoPaperWhere({
-      commentAlias: 'c',
-      appTagParam: '$2',
-      bridgeAccountParam: '$5',
-      source: 'bridge',
-    });
-    const result = await pool.query<{ author: string; permlink: string }>(
-      `SELECT c.author, c.permlink
-         FROM ${T.comments} c
-        WHERE c.parent_author = '' AND c.parent_permlink = $2
-          AND ${bridgePaperWhere}
-          AND c.json_metadata ->> 'app' LIKE $3
-          AND (c.json_metadata -> $2 -> 'source' ->> $4) = $1
-        LIMIT 1`,
-      [parsed.id, config.appTag, `${config.appTag}/%`, sourceField, config.hiveBridgeAccount],
-    );
-    if (result.rows.length > 0) {
-      return { kind: 'exists', author: result.rows[0].author, permlink: result.rows[0].permlink };
-    }
-    const permlinkBridgeWhere = validPevoPaperWhere({
-      commentAlias: 'c',
-      appTagParam: '$2',
-      bridgeAccountParam: '$4',
-      source: 'bridge',
-    });
-    const permlinkResult = await pool.query<{ author: string; permlink: string }>(
-      `SELECT c.author, c.permlink
-         FROM ${T.comments} c
-        WHERE c.parent_author = '' AND c.parent_permlink = $2
-          AND c.permlink = $1
-          AND ${permlinkBridgeWhere}
-          AND c.json_metadata ->> 'app' LIKE $3
-        LIMIT 1`,
-      [permlink, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
-    );
-    if (permlinkResult.rows.length > 0) {
-      return {
-        kind: 'exists',
-        author: permlinkResult.rows[0].author,
-        permlink: permlinkResult.rows[0].permlink,
-      };
-    }
-    return { kind: 'none' };
+    const dup = await findBridgeDuplicate(canonical, permlink);
+    return dup ? { kind: 'exists', author: dup.author, permlink: dup.permlink } : { kind: 'none' };
   } catch (err) {
     logger.warn(
       { err, permlink, event: 'bridge.queue.haf_check_failed', route: 'bridge.queue' },

@@ -36,3 +36,13 @@ Extract the shared two-query HAF duplicate-check into one helper that both the r
 - `backend/src/bridge-worker.ts` — `checkExistingOnChain`.
 - `backend/src/hafsql.ts` — `validPevoPaperWhere` and the bridge-account parameterization both copies depend on.
 - `agents/docs/solutions/conventions/read-then-write-races-on-haf-backed-routes-2026-05-15.md` — the convention governing the HAF-read-then-write shape on bridge routes; keep the fail-closed behavior the shared helper inherits.
+
+## Backend implementation note (2026-05-26, working tree)
+
+Extracted the two-query lookup into `backend/src/bridge-haf.ts` → `findBridgeDuplicate(parsed, permlink)`. Both `checkExistingBridge` (route) and `checkExistingOnChain` (worker) now call it; the now-unused `getPool`/`isHafConfigured`/`T`/`validPevoPaperWhere` imports were dropped from both files. No circular import (`bridge-haf.ts` imports only `db`, `config`, `hafsql`).
+
+Design choice worth a review note: the helper returns the **superset row** (`author`/`permlink`/`title`/`created`, or `null`) and **throws on a HAF query error** rather than returning a `haf_unavailable` union member. Each caller keeps its own `try/catch` around the call. Rationale — this keeps each caller's fail-closed behavior and log line byte-identical: the route still logs `{ identifier, permlink, event: \`${callerLabel}.haf_check_failed\`, route: callerLabel }` and maps to its rich `BridgeCheckResult` (`/register` → 503/retriable, `/check` → fail-open); the worker still logs `event: 'bridge.queue.haf_check_failed'` and reschedules. Only the query shape (the part that had drifted) is unified; the per-caller fail-closed policy and vocabulary stay where they were. The `null`-on-unconfigured branch preserves the prior dev-without-HAF fail-open behavior.
+
+No new test added: this is a pure de-duplication refactor, and both call paths through `findBridgeDuplicate` are already exercised — the route's HAF paths by `tests/routes/bridge.test.ts` + `bridge-haf-lag-locks.test.ts` (including the fail-closed 503), the worker's by `tests/lib/bridge-worker.test.ts` (collision → `markCompletedExisting`, and the HAF-unavailable reschedule). `npm run typecheck` + `npm run lint` clean; the bridge suites (66 tests across 6 files) pass against real Postgres + Redis.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

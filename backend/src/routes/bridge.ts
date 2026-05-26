@@ -1,6 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import crypto from 'crypto';
-import { getPool, isHafConfigured } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -9,7 +8,7 @@ import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
-import { T, validPevoPaperWhere } from '../hafsql.js';
+import { findBridgeDuplicate } from '../bridge-haf.js';
 import { assertNever } from '../util/assertNever.js';
 import {
   parseIdentifier,
@@ -315,48 +314,19 @@ async function checkExistingBridge(
     return { status: 'ok', exists: false, author: null, permlink: null, title: null, created: null };
   }
 
+  // Narrow to the canonical {arxiv|doi} shape the shared helper expects
+  // before the bridgePermlink call below (control-flow narrows the `.type`
+  // read, not the whole ParsedIdentifier object).
+  const canonical = { type: parsed.type, id: parsed.id };
   const permlink = bridgePermlink(parsed);
 
   try {
-    // Check all possible authors by querying HAF first
-    const pool = getPool();
-    if (pool && isHafConfigured()) {
-      // Metadata check: find by source DOI or arXiv ID. Pin to the bridge
-      // account so a spoofer can't preempt a canonical bridge import by
-      // posting a comment with the same source DOI under their own account.
-      const sourceField = parsed.type === 'doi' ? 'doi' : 'arxiv_id';
-      const bridgePaperWhere = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$2', bridgeAccountParam: '$5', source: 'bridge' });
-      const result = await pool.query(
-        `SELECT c.author, c.permlink, c.title, c.created
-         FROM ${T.comments} c
-         WHERE c.parent_author = '' AND c.parent_permlink = $2
-           AND ${bridgePaperWhere}
-           AND c.json_metadata ->> 'app' LIKE $3
-           AND (c.json_metadata -> $2 -> 'source' ->> $4) = $1
-         LIMIT 1`,
-        [parsed.id, config.appTag, `${config.appTag}/%`, sourceField, config.hiveBridgeAccount],
-      );
-      if (result.rows.length > 0) {
-        const row = result.rows[0];
-        return { status: 'ok', exists: true, author: row.author, permlink: row.permlink, title: row.title, created: row.created };
-      }
-
-      // Also check by deterministic permlink (also pinned to bridge account).
-      const permlinkBridgeWhere = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$2', bridgeAccountParam: '$4', source: 'bridge' });
-      const permlinkResult = await pool.query(
-        `SELECT c.author, c.permlink, c.title, c.created
-         FROM ${T.comments} c
-         WHERE c.parent_author = '' AND c.parent_permlink = $2
-           AND c.permlink = $1
-           AND ${permlinkBridgeWhere}
-           AND c.json_metadata ->> 'app' LIKE $3
-         LIMIT 1`,
-        [permlink, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
-      );
-      if (permlinkResult.rows.length > 0) {
-        const row = permlinkResult.rows[0];
-        return { status: 'ok', exists: true, author: row.author, permlink: row.permlink, title: row.title, created: row.created };
-      }
+    // Two-query HAF duplicate lookup (source-field match + deterministic
+    // permlink fallback, both pinned to the bridge account) shared with the
+    // worker's pre-broadcast reconciliation via `findBridgeDuplicate`.
+    const dup = await findBridgeDuplicate(canonical, permlink);
+    if (dup) {
+      return { status: 'ok', exists: true, author: dup.author, permlink: dup.permlink, title: dup.title, created: dup.created };
     }
   } catch (err) {
     // Fail-closed signal for /register. The route handler converts this to
