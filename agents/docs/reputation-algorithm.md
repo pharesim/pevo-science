@@ -28,7 +28,7 @@ score = CLAMP(0, 100,
 
 ### Co-author Credit
 
-Authors with accepted authorship claims on a paper receive the same paper reputation score as the posting author. The paper's votes, reviews, decay, and quality multiplier all apply identically. This is implemented via `accepted_claims` in the reputation query, which resolves claim status using the same logic as `authorshipClaimsCteBody` (explicit approval, ORCID auto-accept, hive username auto-accept, with revocation override). Self-claims (claimer = post author) are excluded to avoid double counting.
+Authors with accepted authorship claims on a paper receive the same paper reputation score as the posting author. The paper's votes, reviews, decay, and quality multiplier all apply identically. This is implemented via `accepted_claims` in the reputation query, which resolves claim status using the same logic as `authorshipClaimsCteBody` (explicit approval, ORCID auto-accept, hive username auto-accept, with revocation override). The ORCID auto-accept arm sources the claimer's attested ORCID from the authority-gated `active_accreditations` set (composed via `activeAccreditationsCteBody`, whose `accred_ranked` CTE trusts an `accredit`/`revoke` op only when its `required_posting_auths` includes an accreditation authority), the same gated source the `authorshipClaimsCteBody` read surface joins. A self-signed accreditation therefore cannot drive a co-author credit, and the cycle and read surfaces agree on which ORCID attestations are valid. Self-claims (claimer = post author) are excluded to avoid double counting.
 
 ### Paper Reputation Contribution
 
