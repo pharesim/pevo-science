@@ -72,3 +72,37 @@ Gate landed, mirroring the change-email consume side present at `POST /api/setti
 2. **`agents/docs/ARCHITECTURE.md` § 6.4** — the "Delete account data / right-to-erasure" row's "gate not yet implemented" marker can be updated to reference the implementing commit (task goal item 5).
 
 Moves the task to review/.
+
+---
+
+## Architect re-review (2026-05-26, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `6dd1f8b5` (11 personas; `ce-agent-native-reviewer` skipped per PEvO). **Security goal met and verified clean:** correctness found no defects (faithful mirror of the change-email gate), security found no exploitable path (a stolen JWT alone cannot erase an account; cross-action replay blocked by the length-prefixed `action` in `computeFreshAuthTargetHash`; single-use GETDEL consume; wrong-mechanism closed at mint and consume; Keychain path genuinely fresh), adversarial found only fail-closed UX cascades — § 6.5 invariant #1 satisfied. Held items are test-coverage and doc-comment only; no code defect blocks the gate. Held (not archived) to keep destructive-action coverage tight before the task is marked done.
+
+### Items to address
+
+**1. (P2, test) JWT 200-erased tests assert only the `accounts` row deletion, not the related cascade.** State-A and state-C happy-path tests should additionally assert `notification_preferences` + `pending_recovery` rows are gone and `custody_audit_log` is anonymized (`username IS NULL`) — this is the only path that exercises the new fresh-auth gate, and the related deletes/anonymization are otherwise covered only on a sibling path. Mutation-kill coverage for the three companion writes is missing here.
+
+**2. (P2, test) State-B (password AND orcid) OR-branch untested.** Only A (password) and C (ORCID) are pinned; the `mechanismAccepted` OR branch is exercised only transitively. Add a state-B seed + two tests: state-B + password proof → 200 erased; state-B + ORCID proof → 200 erased.
+
+**3. (P2, doc) `FreshAuthVerifyFailureReason` docstring in `fresh-auth.ts` enumerates only two of the three `wrong_mechanism` call sites.** Its "a typo at a third call site" hypothetical has materialized (delete-account is the third). Update the enumeration to "set-password + change-email + delete-account" and drop the now-stale hypothetical phrasing.
+
+**4. (P3, doc) Two stale action-set comments.** `orcid.ts` change_email else-branch comment ("Same shape as set_password") and the `custody.ts` cast comment ("set_password and change_email") both omit `delete_account` after the union was widened. Append `delete_account` to both.
+
+### Dismissed at architect triage (no implementer action)
+
+- **kieran-typescript P2 — `FreshAuthTargetAction` union lacks an `assertNever` exhaustiveness guard.** Dismissed as preemptive hardening against a hypothetical future 6th union member; the current consumers fail closed at runtime (mint returns 400, no security impact). Per `feedback_dismiss_preemptive_test_hardening` spirit. Re-file if a future widening actually slips a consumer.
+
+### Pre-existing / separate (not held on this task)
+
+- Round-N comment anchors in untouched `fresh-auth.ts` lines — covered by the existing `backend-anchor-rot-sweep` task, not introduced here.
+- Three-way duplication of the JWT fresh-auth gate body (change-email / set-password / delete-account) — advisory; extraction adds its own indirection at three sites, revisit at a fourth.
+- Proof consumed before the destructive transaction (re-auth on tx failure) — correct security ordering; reliability suggested only a clarifying code comment.
+
+### [TODO Architect] (the architect owns these; do at final archive)
+
+The two [TODO Architect] items above (`settings.md` proof requirement + error shapes; `ARCHITECTURE.md` § 6.4 "gate not yet implemented" → implementing commit) PLUS the pre-existing `settings.md` `NOT_FOUND` → `UNAUTHORIZED` doc bug for the missing-row case on `DELETE /email`. On final archive the architect also moves `tasks/blocked/ui-account-delete-fresh-auth-proof-challenge.md` to `tasks/pending/` (it is blocked on this gate).
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
