@@ -131,3 +131,38 @@ Architect note: the `[TODO Architect]` § Migrations paragraph above is still
 owed; the architect will land it in `ARCHITECTURE.md` at archive time (it
 documents already-shipped, correct behavior and is not blocked by the two items
 here). When the two items land, `git mv` this file back to `tasks/review/`.
+
+## Backend re-review signal (2026-05-26, commit 315d734b)
+
+Both hold-block items landed.
+
+1. **node-pg-migrate tooling removed.** Dropped the `migrate` / `migrate:up` /
+   `migrate:down` scripts and the `node-pg-migrate` dependency from
+   `backend/package.json`, and reconciled `backend/package-lock.json` via
+   `npm install` (prunes 22 now-unused packages: node-pg-migrate + its yargs /
+   glob / lru-cache transitive tree; diff is removals only, no additions).
+   Confirmed nothing else invokes them: `deploy.sh` runs migrations through its
+   own raw-psql loop (`migrate_db()` → `psql -f`), there is no `.github/` CI
+   directory, and the only remaining repo references to `node-pg-migrate` are
+   this task file and the lockfile-now-removed entries. No repoint was needed
+   because no real use existed.
+
+2. **readdir ENOENT wrapped as BootFatalError.** `listExpectedMigrations` in
+   `backend/src/app-db.ts` now wraps `readdir(MIGRATIONS_DIR)` in try/catch and
+   rethrows `new BootFatalError('Migrations directory not found at ' +
+   MIGRATIONS_DIR …, { cause: err })`. The `cause` preserves the original
+   ENOENT for diagnostics. No test added: the branch is unreachable in practice
+   (the Dockerfile COPYs `backend/migrations` into the image), the architect
+   scoped it as low-severity defensive hardening, the same risk class
+   (boot-probe gap surfacing as `BootFatalError`) is already covered by the
+   missing-table and missing-row cases in `tests/app-db-fresh-migrations.test.ts`,
+   and `listExpectedMigrations` is unexported so forcing the branch would require
+   module-mocking `node:fs/promises` readdir, which would break the real-DB
+   missing-row test in that same file.
+
+Verification: `npm run typecheck` pass (src + tests); `npm run lint` pass (one
+pre-existing unrelated warning in `author-supersession.ts`);
+`tests/app-db-fresh-migrations.test.ts` 4/4 pass against real Postgres (boot
+probe verified 14 migrations on disk).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
