@@ -206,3 +206,21 @@ The review surfaced — and the architect verified at the code level — a **pre
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-26, round-4)
+
+**Item 1 [P1] — canary now pins the production predicate (fix (a), preferred).** Extracted the chain-orcid auto-accept match predicate into a shared `chainOrcidAutoAcceptMatchSql({ metadataExpr, appTagParam, authorIndexExpr, attestedOrcidExpr })` builder in `hafsql.ts` (placed beside `CHAIN_ORCID_BTRIM_CHARSET`, which it interpolates). Both production auto-accept arms now route through it:
+- `reputation.ts` `accepted_claims` ORCID arm (the arm this task widened) — `chainOrcidAutoAcceptMatchSql({ ..., appTagParam: '$3', authorIndexExpr: 'ce.author_index', attestedOrcidExpr: 'aa.orcid' })`. (The attested side is now `aa.orcid` from the authority-gated `active_accreditations`, per the sibling authority-gate task that landed alongside; the trim parity is unchanged by that.)
+- `hafsql.ts` `authorshipClaimsCteBody` read-surface ORCID arm — same builder. The equality flips from `aa.orcid = BTRIM(...)` to `BTRIM(...) = aa.orcid` (commutative; behaviorally inert, confirmed by `hafsql.test.ts` + `papers-cumulative-orcid-audit.test.ts` staying green).
+
+The canary (`reputation-orcid-auto-accept-trim-canary.test.ts`) now builds its match SQL from the **same** `chainOrcidAutoAcceptMatchSql` helper, so a production-side revert of the builder (dropping BTRIM, or a charset drift) turns the tab-padded assertion red — meeting the round-2→3 acceptance criterion the prior canary failed. Added a **raw-`=` negative control** (fix (b)) that runs the same tab-padded rows through the pre-fix predicate and asserts non-match, so an inline call-site revert is caught even if the helper is untouched. The synthetic attested fixture was renamed `claimer_orcids` → `attested` to track the post-authority-gate source (`active_accreditations`), and the header/docblock no longer reference the removed `claimer_orcids` CTE. Fixed the prior header's `tests/routes/` mislocation note for `hafsql-btrim-charset-real-postgres.test.ts` (it lives at `tests/`).
+
+**Verification.** `npm run typecheck` (src + tests) clean; `npm run lint` clean on touched files. Scoped: `reputation-orcid-auto-accept-trim-canary.test.ts` (1/1, all four sub-cases incl. negative control), `reputation-orcid-auto-accept-authority-gate.test.ts`, `hafsql.test.ts` (27 incl. authorshipClaimsCteBody), `papers-cumulative-orcid-audit.test.ts` (5), `hafsql-btrim-charset-real-postgres.test.ts` (3) — all green.
+
+**Mutation-kill:** reverting `chainOrcidAutoAcceptMatchSql`'s BTRIM back to a raw `=` reds the canary's tab-padded case (the canary builds from the helper); the negative-control sub-case independently reds on an inline call-site revert.
+
+**Self-audit on added lines:** no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in production/test source. Comments anchor on stable symbols (`chainOrcidAutoAcceptMatchSql`, `CHAIN_ORCID_BTRIM_CHARSET`, `authorshipClaimsCteBody`, `active_accreditations`).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
