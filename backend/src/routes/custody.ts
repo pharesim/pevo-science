@@ -478,8 +478,8 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     // has already been filtered through `CONSENT_OP_ACTIONS.has()` at the
     // scan site (see `findConsentOpsInBundle` around line 133), and those
     // values are a strict subset of `FreshAuthTargetAction` (which now
-    // additionally includes `set_password` and `change_email` for the
-    // non-broadcast surfaces).
+    // additionally includes `set_password`, `change_email`, and
+    // `delete_account` for the non-broadcast surfaces).
     const expectedTarget: FreshAuthTarget = {
       action: consentScan.action as FreshAuthTargetAction,
       root_author: consentScan.rootAuthor,

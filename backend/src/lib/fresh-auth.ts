@@ -481,16 +481,18 @@ export async function issueSessionFreshAuthToken(
  *
  *  `consumeFreshAuthToken` and its session-kind sibling produce every value
  *  in this union except `'wrong_mechanism'`. `'wrong_mechanism'` is
- *  synthesized at the route layer (e.g., `settings.ts` set-password +
- *  change-email handlers) AFTER a successful consume returned
+ *  synthesized at the route layer AFTER a successful consume returned
  *  `{ valid: true, mechanism }` but the route's per-account mechanism
  *  predicate (§ 6.4: factor must be registered on the account) rejects the
- *  result. Keeping the value in this union — rather than as a magic string
- *  at each call site — gives the typechecker compile-time enforcement that
- *  every route that emits this reason agrees on the spelling. A typo at a
- *  third call site (`'wrong-mechanism'`, `'mechanism_mismatch'`) would fail
- *  the assignability check against `details.reason` rather than silently
- *  landing a divergent wire token. */
+ *  result. Three call sites synthesize it today: the `settings.ts`
+ *  set-password and change-email handlers and the `settings.ts`
+ *  delete-account (`DELETE /api/settings/email`) handler. Keeping the value
+ *  in this union — rather than as a magic string at each call site — gives
+ *  the typechecker compile-time enforcement that every route that emits this
+ *  reason agrees on the spelling: a divergent spelling
+ *  (`'wrong-mechanism'`, `'mechanism_mismatch'`) fails the assignability
+ *  check against `details.reason` rather than silently landing a divergent
+ *  wire token. */
 export type FreshAuthVerifyFailureReason =
   | 'missing'
   | 'expired'

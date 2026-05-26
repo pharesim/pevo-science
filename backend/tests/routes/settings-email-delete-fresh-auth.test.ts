@@ -37,8 +37,16 @@
  *   - JWT path, no proof → 401 FRESH_AUTH_REQUIRED + reason 'missing';
  *     account NOT erased.
  *   - JWT path, valid delete_account proof (state A: password) → 200;
- *     account erased.
- *   - JWT path, valid delete_account proof (state C: orcid) → 200; erased.
+ *     account erased AND the companion cascade is gone
+ *     (notification_preferences + pending_recovery rows deleted,
+ *     custody_audit_log anonymized so no row stays bound to the username).
+ *   - JWT path, valid delete_account proof (state C: orcid) → 200; same
+ *     account-erased + cascade assertions as state A.
+ *   - JWT path, valid delete_account proof (state B: password AND orcid),
+ *     password mechanism → 200; account erased. Pins the mechanismAccepted
+ *     OR-branch (password leg) on a both-factors account.
+ *   - JWT path, valid delete_account proof (state B), orcid mechanism → 200;
+ *     account erased. Pins the mechanismAccepted OR-branch (orcid leg).
  *   - JWT path, change_email proof (cross-action) → 403 + reason
  *     'target_mismatch'; account NOT erased.
  *   - JWT path, set_password proof (cross-action) → 403 + reason
@@ -50,6 +58,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import crypto from 'node:crypto';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
@@ -108,10 +117,13 @@ let dbReachable = false;
 
 const SUFFIX = (RUN_ID % 100000).toString(36).padStart(4, '0').slice(-4);
 const STATE_A_USER = `semda${SUFFIX}usr`;
+const STATE_B_USER = `semdb${SUFFIX}usr`;
 const STATE_C_USER = `semdc${SUFFIX}usr`;
 const STATE_A_EMAIL = `setting_delete_a_${RUN_ID}@example.com`;
+const STATE_B_EMAIL = `setting_delete_b_${RUN_ID}@example.com`;
 const STATE_C_EMAIL = `setting_delete_c_${RUN_ID}@example.com`;
 const SIG_EMAIL = `setting_delete_sig_${RUN_ID}@example.com`;
+const STATE_B_ORCID = `0000-0003-${(RUN_ID % 10000).toString().padStart(4, '0')}-0003`;
 const STATE_C_ORCID = `0000-0003-${(RUN_ID % 10000).toString().padStart(4, '0')}-0002`;
 
 const FAKE_PASSWORD_HASH =
@@ -125,14 +137,73 @@ async function deleteUserRows(username: string) {
   if (!dbReachable) return;
   const pool = getAppPool()!;
   await pool.query('DELETE FROM custody_audit_log WHERE username = $1', [username]).catch(() => {});
+  await pool.query('DELETE FROM pending_recovery WHERE username = $1', [username]).catch(() => {});
   await pool.query('DELETE FROM notification_preferences WHERE username = $1', [username]).catch(() => {});
   await pool.query('DELETE FROM accounts WHERE username = $1', [username]).catch(() => {});
 }
 
 async function cleanupAll() {
-  for (const u of [STATE_A_USER, STATE_C_USER, SIG_USER]) {
+  for (const u of [STATE_A_USER, STATE_B_USER, STATE_C_USER, SIG_USER]) {
     await deleteUserRows(u);
   }
+}
+
+// Seed the three companion rows the DELETE handler cascades: a
+// notification_preferences row, a two-phase pending_recovery staging row, and
+// a prior custody_audit_log row. The happy-path tests assert these are erased
+// (prefs + staging deleted, audit row anonymized so none stays bound to the
+// username) — the mutation-kill for the handler's cascade deletes and the
+// anonymize-on-delete UPDATE, which the JWT fresh-auth path is the only place
+// that exercises them after the gate.
+async function seedCompanionRows(username: string, email: string) {
+  if (!dbReachable) return;
+  const pool = getAppPool()!;
+  await pool.query(
+    `INSERT INTO notification_preferences (username, email) VALUES ($1, $2)`,
+    [username, email],
+  );
+  // pending_recovery stores SHA-256 token digests (raw 32 bytes), not the
+  // plaintext tokens; the exact digest values are irrelevant to the cascade
+  // assertion, so random bytes suffice.
+  const verifyTokenHash = crypto.createHash('sha256').update(crypto.randomBytes(32)).digest();
+  const disputeTokenHash = crypto.createHash('sha256').update(crypto.randomBytes(32)).digest();
+  await pool.query(
+    `INSERT INTO pending_recovery
+       (username, new_email, new_password_hash,
+        verify_token_hash, verify_expires_at,
+        dispute_token_hash, dispute_expires_at)
+     VALUES ($1, $2, $3, $4, NOW() + INTERVAL '24 hours', $5, NOW() + INTERVAL '48 hours')`,
+    [username, `staged_${email}`, 'argon2-hash-placeholder', verifyTokenHash, disputeTokenHash],
+  );
+  await pool.query(
+    `INSERT INTO custody_audit_log (username, operation_type, user_agent, session_id)
+     VALUES ($1, 'login_failure', 'fake-ua-hash', 'fake-session-id')`,
+    [username],
+  );
+}
+
+// Assert the DELETE cascade fully erased the companion rows: the
+// notification_preferences and pending_recovery rows are gone, and no
+// custody_audit_log row stays bound to the username (the handler anonymizes
+// them in-place by NULLing the username link rather than deleting, so the
+// assertion is "no row still bound" rather than "no row at all").
+async function expectCascadeErased(username: string) {
+  const pool = getAppPool()!;
+  const prefs = await pool.query(
+    'SELECT username FROM notification_preferences WHERE username = $1',
+    [username],
+  );
+  expect(prefs.rows.length).toBe(0);
+  const staging = await pool.query(
+    'SELECT id FROM pending_recovery WHERE username = $1',
+    [username],
+  );
+  expect(staging.rows.length).toBe(0);
+  const auditStillBound = await pool.query(
+    'SELECT id FROM custody_audit_log WHERE username = $1',
+    [username],
+  );
+  expect(auditStillBound.rows.length).toBe(0);
 }
 
 async function seedStateA() {
@@ -144,6 +215,20 @@ async function seedStateA() {
     `INSERT INTO accounts (email, username, password_hash, orcid, custody, verify_token)
      VALUES ($1, $2, $3, NULL, 'light', NULL)`,
     [STATE_A_EMAIL, STATE_A_USER, FAKE_PASSWORD_HASH],
+  );
+}
+
+async function seedStateB() {
+  if (!dbReachable) return;
+  const pool = getAppPool()!;
+  await deleteUserRows(STATE_B_USER);
+  // State B: BOTH password AND ORCID registered. Exercises the
+  // mechanismAccepted OR branch — a delete_account proof is accepted via
+  // either the password leg or the orcid leg.
+  await pool.query(
+    `INSERT INTO accounts (email, username, password_hash, orcid, custody, verify_token)
+     VALUES ($1, $2, $3, $4, 'light', NULL)`,
+    [STATE_B_EMAIL, STATE_B_USER, FAKE_PASSWORD_HASH, STATE_B_ORCID],
   );
 }
 
@@ -186,6 +271,7 @@ describe.skipIf(!dbReachable)('DELETE /api/settings/email — JWT-path fresh-aut
     _resetFreshAuthMemStoreForTests();
     await clearRateLimitKeys(['settings-write', 'settings-read']);
     await seedStateA();
+    await seedStateB();
     await seedStateC();
   });
 
@@ -206,7 +292,8 @@ describe.skipIf(!dbReachable)('DELETE /api/settings/email — JWT-path fresh-aut
     expect(await rowExists(STATE_A_USER)).toBe(true);
   });
 
-  it('JWT path, valid delete_account proof (state A, password) → 200, account erased', async () => {
+  it('JWT path, valid delete_account proof (state A, password) → 200, account + cascade erased', async () => {
+    await seedCompanionRows(STATE_A_USER, STATE_A_EMAIL);
     const issued = await issueFreshAuthToken(
       STATE_A_USER,
       'password',
@@ -221,9 +308,11 @@ describe.skipIf(!dbReachable)('DELETE /api/settings/email — JWT-path fresh-aut
     expect(res.body.data.deleted).toBe(true);
 
     expect(await rowExists(STATE_A_USER)).toBe(false);
+    await expectCascadeErased(STATE_A_USER);
   });
 
-  it('JWT path, valid delete_account proof (state C, orcid) → 200, account erased', async () => {
+  it('JWT path, valid delete_account proof (state C, orcid) → 200, account + cascade erased', async () => {
+    await seedCompanionRows(STATE_C_USER, STATE_C_EMAIL);
     const issued = await issueFreshAuthToken(
       STATE_C_USER,
       'orcid',
@@ -238,6 +327,47 @@ describe.skipIf(!dbReachable)('DELETE /api/settings/email — JWT-path fresh-aut
     expect(res.body.data.deleted).toBe(true);
 
     expect(await rowExists(STATE_C_USER)).toBe(false);
+    await expectCascadeErased(STATE_C_USER);
+  });
+
+  it('JWT path, valid delete_account proof (state B, password mechanism) → 200, account erased', async () => {
+    // State B has BOTH password and orcid registered. A password-mechanism
+    // proof is accepted via the password leg of the mechanismAccepted OR.
+    const issued = await issueFreshAuthToken(
+      STATE_B_USER,
+      'password',
+      deleteAccountFreshAuthTarget(STATE_B_USER),
+    );
+    const res = await request(app)
+      .delete('/api/settings/email')
+      .set('Authorization', `Bearer ${bearerFor(STATE_B_USER)}`)
+      .set('X-Hive-Username', STATE_B_USER)
+      .send({ confirm: true, fresh_auth_proof: issued.token });
+    expect(res.status).toBe(200);
+    expect(res.body.data.deleted).toBe(true);
+
+    expect(await rowExists(STATE_B_USER)).toBe(false);
+  });
+
+  it('JWT path, valid delete_account proof (state B, orcid mechanism) → 200, account erased', async () => {
+    // Same state-B account, the orcid leg of the mechanismAccepted OR. Pins
+    // that either registered factor authorizes erasure on a both-factors
+    // account (the password leg above and this orcid leg are the two arms of
+    // the OR branch that is otherwise exercised only transitively).
+    const issued = await issueFreshAuthToken(
+      STATE_B_USER,
+      'orcid',
+      deleteAccountFreshAuthTarget(STATE_B_USER),
+    );
+    const res = await request(app)
+      .delete('/api/settings/email')
+      .set('Authorization', `Bearer ${bearerFor(STATE_B_USER)}`)
+      .set('X-Hive-Username', STATE_B_USER)
+      .send({ confirm: true, fresh_auth_proof: issued.token });
+    expect(res.status).toBe(200);
+    expect(res.body.data.deleted).toBe(true);
+
+    expect(await rowExists(STATE_B_USER)).toBe(false);
   });
 
   it('JWT path, change_email proof (cross-action) → 403 target_mismatch, account NOT erased', async () => {

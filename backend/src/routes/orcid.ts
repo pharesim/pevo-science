@@ -379,10 +379,10 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         // the bind so a future refactor cannot re-introduce the inline literal.
         freshAuthTarget = deleteAccountFreshAuthTarget(username);
       } else {
-        // Non-broadcast target. Same shape as set_password: target binds to
-        // (action, <authenticated username>, ''); request body does not carry
-        // root_author / root_permlink. Helper enforces the bind so a future
-        // refactor cannot silently re-introduce the inline literal.
+        // Non-broadcast target. Same shape as set_password / delete_account:
+        // target binds to (action, <authenticated username>, ''); request body
+        // does not carry root_author / root_permlink. Helper enforces the bind
+        // so a future refactor cannot silently re-introduce the inline literal.
         freshAuthTarget = changeEmailFreshAuthTarget(username);
       }
     } else if (action === 'author_accept' || action === 'author_resign') {
