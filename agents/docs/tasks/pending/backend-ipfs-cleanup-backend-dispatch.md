@@ -44,3 +44,18 @@ Persist the originating backend per pending upload and route the cleanup unpin t
 - `backend/src/routes/ipfs.ts` (`POST /api/ipfs/upload` handler, the `pending_ipfs_uploads` INSERT and `result.backend`).
 - `backend/src/lib/ipfs-shared.ts` (`unpinFromIpfs`, `PinBackend`).
 - `backend/migrations/` — `003_pending_ipfs_uploads.sql` defines the current table; add a new numbered migration.
+
+## Backend completion signal (2026-05-26)
+
+Persisted the originating pin backend per pending upload and routed the cleanup unpin through it.
+
+- **Migration 014** (`014_pending_ipfs_uploads_pin_backend.sql`): `ALTER TABLE pending_ipfs_uploads ADD COLUMN IF NOT EXISTS pin_backend TEXT NOT NULL DEFAULT 'kubo'` plus the `schema_migrations` tracking INSERT (per migration 008's `verifyAppDbMigrations` boot contract). The default backfills existing rows to `'kubo'`; applied forward to the dev app DB.
+- **Upload INSERT records the backend.** `POST /api/ipfs/upload` writes `result.backend` into the new `pin_backend` column (4th param on the `pending_ipfs_uploads` INSERT).
+- **Cleanup dispatches per-backend.** `runCleanup` now selects `pin_backend` and replaces the hardcoded `unpinFromKubo(row.cid)` with `unpinFromIpfs(row.cid, row.pin_backend as PinBackend)` (the shared dispatcher). The import switched from `unpinFromKubo` to `{ type PinBackend, unpinFromIpfs }`; the header docblock and the unpinned-orphan log line now reflect per-backend routing. `runCleanup` is exported for the dispatch test.
+- **Test** `tests/ipfs-cleanup-backend-dispatch.test.ts`: drives the real `runCleanup` with a seeded `pin_backend='pinata'` orphan and asserts a DELETE to `pinata.cloud/pinning/unpin/<cid>` with zero Kubo `pin/rm`; the `pin_backend='kubo'` path hits Kubo `pin/rm` (POST, against the configured node URL) with zero Pinata. Carve-out (a/b/c) documented in the test header: the app pool, HAF reference-check (a full-corpus `comments` scan that trips `statement_timeout` for a synthetic CID), and the IPFS client are mocked for determinism + non-destructiveness; the per-backend-dispatch risk class is shared with the real-path Pinata compensation-dispatch test (upload route) and the `unpinFromPinata` benign-absence unit.
+
+No API contract change: the upload response envelope is unchanged and `pin_backend` is internal tracking state, so no `api-contracts/*.md` edit is required.
+
+**Verification.** `npm run typecheck` clean (src + tests); `eslint` clean on `routes/ipfs.ts`, `ipfs-cleanup.ts`, and the new test; scoped `npx vitest run tests/ipfs-cleanup-backend-dispatch.test.ts` → 2/2 green, and the broader IPFS cluster (srf-guard, pin-durability, unpin unit) stays green. Self-audit on changed lines: no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in the source/test files.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

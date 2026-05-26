@@ -211,10 +211,10 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
       // this defends against).
       try {
         await appPool.query(
-          `INSERT INTO pending_ipfs_uploads (cid, uploader_account, size_bytes)
-           VALUES ($1, $2, $3)
+          `INSERT INTO pending_ipfs_uploads (cid, uploader_account, size_bytes, pin_backend)
+           VALUES ($1, $2, $3, $4)
            ON CONFLICT (cid) DO NOTHING`,
-          [result.cid, req.hiveUsername, result.size],
+          [result.cid, req.hiveUsername, result.size, result.backend],
         );
       } catch (dbErr) {
         // The success response is withheld until the row exists, so a failed

@@ -3,7 +3,10 @@
  *
  * Runs every 30 minutes. For each row in `pending_ipfs_uploads` older than 24h:
  * - If a PEvO post references the CID → drop the DB row (and Redis key)
- * - If no post references it → unpin from Kubo, then drop the DB row (and Redis key)
+ * - If no post references it → unpin from the backend that created the pin
+ *   (Kubo or Pinata, per the row's `pin_backend`), then drop the DB row (and
+ *   Redis key). Dispatching to the wrong backend would fire pin/rm at a node
+ *   that never held the pin and silently leak the live one.
  *
  * Postgres is the authoritative record of in-flight pins. Redis is a hot cache
  * for the download proxy's known-CID check only; keys there have a 24h TTL and
@@ -16,7 +19,7 @@ import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { T } from './hafsql.js';
-import { imageSrfGuardExpr, unpinFromKubo } from './lib/ipfs-shared.js';
+import { type PinBackend, imageSrfGuardExpr, unpinFromIpfs } from './lib/ipfs-shared.js';
 
 const CLEANUP_INTERVAL_MS = 30 * 60_000; // 30 minutes
 const MAX_AGE_MS = 24 * 60 * 60_000; // 24 hours
@@ -57,8 +60,8 @@ async function cidReferencedInHaf(cid: string): Promise<boolean> {
   return result.rowCount !== null && result.rowCount > 0;
 }
 
-/** Process all expired pending CIDs. */
-async function runCleanup(): Promise<void> {
+/** Process all expired pending CIDs. Exported for the backend-dispatch test. */
+export async function runCleanup(): Promise<void> {
   const appPool = getAppPool();
   if (!appPool) {
     logger.debug('IPFS cleanup skipped — app DB not configured');
@@ -73,8 +76,8 @@ async function runCleanup(): Promise<void> {
   const redis = getRedis();
   const ageSeconds = Math.floor(MAX_AGE_MS / 1000);
 
-  const { rows } = await appPool.query<{ cid: string; uploader_account: string }>(
-    `SELECT cid, uploader_account
+  const { rows } = await appPool.query<{ cid: string; uploader_account: string; pin_backend: string }>(
+    `SELECT cid, uploader_account, pin_backend
        FROM pending_ipfs_uploads
       WHERE created_at < NOW() - ($1 || ' seconds')::interval`,
     [String(ageSeconds)],
@@ -91,11 +94,13 @@ async function runCleanup(): Promise<void> {
         if (redis) await redis.del(`${config.appTag}:ipfs:pending:${row.cid}`).catch(() => {});
         logger.debug({ cid: row.cid }, 'IPFS CID confirmed on-chain — tracking removed');
       } else {
-        await unpinFromKubo(row.cid);
+        // Route the unpin to the backend that created the pin — a Pinata-origin
+        // pin cannot be released by a Kubo pin/rm and vice versa.
+        await unpinFromIpfs(row.cid, row.pin_backend as PinBackend);
         await appPool.query(`DELETE FROM pending_ipfs_uploads WHERE cid = $1`, [row.cid]);
         if (redis) await redis.del(`${config.appTag}:ipfs:pending:${row.cid}`).catch(() => {});
         unpinned++;
-        logger.info({ cid: row.cid, uploader: row.uploader_account }, 'Unpinned orphaned IPFS CID');
+        logger.info({ cid: row.cid, uploader: row.uploader_account, backend: row.pin_backend }, 'Unpinned orphaned IPFS CID');
       }
       processed++;
     } catch (err) {
