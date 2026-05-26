@@ -353,3 +353,30 @@ Per user triage, the guard discriminates on **`hive`** — the dedup key, guaran
 No task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in production or test source. Inline comments anchor on behavioural symbols: `PaperSummary`'s contract set, the `hive` dedup key, `buildCumulativeAuthorsForChain`, the single-flight `getOrSet`, `statement_timeout`, the canonical-root walker. The item-2 discriminator rationale is documented at the filter site (why `hive` not `name`).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-26, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `c9eab868` (round-3 hold items 1-4) with correctness/security/adversarial (Opus) + testing/maintainability/project-standards/api-contract/kieran-typescript/reliability/learnings (Sonnet); `ce-agent-native-reviewer` skipped per project CLAUDE.md. Items 1 (enumerated projection), 3 (abort docblocks), 4 (listing-row-map guard unification) landed correctly. The `hive`-discriminator deviation is **confirmed behaviorally correct and safe** (correctness + security + adversarial converged: it never drops a legitimate author; the prescribed `name` discriminator would have, given the construction is hive-keyed). One item is held below. Three findings (the unsound type guard, the multi-link/single-link key-shape divergence, the missing discriminator canary) are **deferred to an author-identity-model design pass**, not this hold — see the deferral note.
+
+### Item held (must fix before archive)
+
+**1. (P2, conf 100 — six-reviewer convergence: correctness, adversarial, api-contract, reliability, testing, maintainability) Profile surface lacks the listing's empty-cumulative fallback, recreating a cross-surface parity break.** Round-3 item 4 unified the **listing** row-map so an empty cumulative array falls back to the head-meta projection (gate `chainResult && chainResult.authors.length > 0 ? chainResult : null`). The profile `/:username/papers` handler still takes over whenever `chainResult` is non-null, with no `authors.length > 0` check. Verified reachable: a multi-link paper (chain ≥ 2) with valid versions whose every author entry lacks a normalizable `hive` returns a **non-null `{authors: []}`** from `buildChainCumulativeFromPosts` (the construction skips `hive === null`; the single-link short-circuit and empty-versions guards do not cover the multi-link-all-hiveless case). Result: listing + detail show head-meta authors, profile serves `authors: []` — the exact cross-surface divergence this task exists to close.
+
+Fix: gate the profile takeover on `chainResult && chainResult.authors.length > 0` to mirror the listing surface (both fall back to head-meta together). Add a deterministic test asserting the profile path falls back to head-meta on a non-null empty-cumulative result. Anchor any comment on stable symbols (no round/slug/line/SHA citations in route or test source).
+
+### Deferred to the author-identity-model design pass (NOT held on this task)
+
+The review surfaced that the cumulative-union is keyed entirely on `hive` (`if (hive === null) continue` at the construction), so multi-link papers structurally drop every Hive-less co-author (`{name, hive: null}`). Per the ratified author model — **`name` mandatory, `hive` optional** (a co-author need not have a Hive account), and `name` server-overridable like `orcid` — that is an authors-can't-be-dropped gap, and the type-soundness finding resolves the opposite way from "make `name` optional": `name` stays mandatory, populated via name-supersession, so the originally-prescribed `name` discriminator becomes both correct and sound and the `hive` deviation becomes unnecessary. These are design changes, addressed in a `/ce-brainstorm` on the author-identity model that precedes the implementation work:
+
+- the cumulative-union identity key for Hive-less co-authors;
+- name-supersession (accredited author's attested name overrides the broadcaster claim);
+- the `PaperAuthor.name` mandatory contract + the unsound `typeof a.hive === 'string'` guard, the multi-link-vs-single-link key-shape divergence (hive-less entries: JS drops `name`/`orcid` keys, SQL emits `null`), and a discriminator-survival canary — all fold into the resulting design.
+
+This task is held ONLY on item 1 (profile-guard parity), which is orthogonal to the model redesign and safe to land independently.
+
+### Re-review signal
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
