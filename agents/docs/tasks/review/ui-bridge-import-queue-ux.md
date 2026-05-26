@@ -186,3 +186,19 @@ Items 11–12 are behavioral logic changes with companion tests; 13 is a test ro
 
 Verified-clean, no action: all round-1 items 1–9; the one-retry-at-a-time lock (flag set synchronously before the first `await`); every teardown `_mounted` guard; the `loadEntries` in-flight guard's interaction with the retry-success reload; the `adaptEntry` contract field mappings (`created_at`/`error_message`/`eta_seconds`/`existing_permlink`, and `discipline`/`keywords`/`language` which the contract does return so live retries are well-formed); the i18n sweep; and the comment anchors. Dismissed below the confidence gate: a malformed-`id` `x-for :key` collapse (contract guarantees a unique non-null `id`; Alpine `x-text` auto-escapes).
 
+## UI re-review signal (2026-05-26, commit 492959e7) — round-2 items 11-15 landed
+
+All five round-2 items addressed in `my-imports.js` plus companion tests. Per item:
+
+11. **(P2) `SERVICE_UNAVAILABLE` non-retriable.** Added to `NON_RETRIABLE_ERROR_CODES`. The comment now records the reasoning: this code's only `failed`-terminal cause is "bridge posting key not configured" (needs an operator redeploy, so a re-POST re-fails identically); its HAF-duplicate-check-unavailable variant reschedules server-side and never reaches `failed`, so a `failed` entry carrying it is always the terminal posting-key case. `BROADCAST_TIMEOUT`/`BROADCAST_FAILED` stay retriable (re-POST re-enqueues a fresh entry). The `error_code`-matrix test flips `SERVICE_UNAVAILABLE` → `retriable: false`.
+12. **(P2) DUPLICATE retry discrimination.** `retryEntry`'s DUPLICATE branch now discriminates on `err.details` like `handleRegister`: on-chain (`existing_author`/`existing_permlink`) keeps the `bridge.duplicateWarning` "already registered" success framing; already-queued (`existing_entry_id`/`existing_entry_state`) shows a neutral queued notice (`bridge.queuedTitle`, `info`). Absent discriminator fields default to the neutral message rather than asserting a non-existent on-chain post. No new i18n key (reuses the shipped `bridge.queuedTitle`). Two tests pin both `details` shapes.
+13. **(P2 → test) fail-open default pinned.** Added an `error_code`-matrix row asserting a `failed` entry with no/unrecognized `error_code` → `retriable: true`.
+14. **(P3) toast-after-reload.** Both the queued-success path and the DUPLICATE branch now `await this.loadEntries()` first, then re-check `if (!this._mounted) return;`, then toast — so a route change during the reload can't surface the toast on the next page.
+15. **(P3) demo retry short-circuit.** `retryEntry` returns early when `?demo=1` is active, so a demo retry never reaches the live `/register` (demo rows omit the discipline a real submission requires). Test asserts `registerBridgePaper` is not called in demo mode.
+
+Item 10 remains deferred (still gated on `backend-bridge-imports-entry-enrich`; the `author:` widening and per-row title/ETA are untouched). The two conf-below-gate nits were folded in (LOCK_HELD `retryingId`-reset assertion; `loading` stays `true` after teardown).
+
+**No i18n change** (reused already-shipped keys); **no `STUBS.md` change**.
+
+**Verification:** full frontend unit suite green (1333 passed; the 3 pre-existing `pages-edit.test.js` unhandled-rejection errors are unrelated and not in this diff). `vite build` succeeds. E2E not re-run (no backend contract change; the changed retry/adapter surfaces are unit-covered).
+
