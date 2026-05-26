@@ -982,13 +982,30 @@ export function initEditPage() {
         // follow; blank rows (no name) are dropped — name-less rows carrying
         // data were already blocked by the _hasIncompleteAuthor guard above.
         const editedSelf = { name: this.authorName, hive: username, orcid: this.authorOrcid, affiliation: this.authorAffiliation };
-        const allAuthors = [...this.existingCoAuthors];
+        const assembledAuthors = [...this.existingCoAuthors];
         if (this._primaryIndex >= 0) {
-          allAuthors.splice(this._primaryIndex, 0, editedSelf);
+          assembledAuthors.splice(this._primaryIndex, 0, editedSelf);
         } else {
-          allAuthors.push(editedSelf);
+          assembledAuthors.push(editedSelf);
         }
-        allAuthors.push(...this.newCoAuthors.filter(ca => ca.name));
+        assembledAuthors.push(...this.newCoAuthors.filter(ca => ca.name));
+
+        // Drop duplicate-hive entries before broadcast (keep first occurrence,
+        // preserve order). Two paths produce a duplicate: a prior author set
+        // already carrying the same hive twice, or a new co-author row whose
+        // hive collides with an existing author. Either persists a redundant
+        // entry in json_metadata.authors. Hive-less (display-only) credits
+        // carry no account identity, so they are never deduped against each
+        // other. The backend re-dedups on read; this is a write-path
+        // cleanliness guard, not a correctness fix.
+        const seenHive = new Set();
+        const allAuthors = assembledAuthors.filter((a) => {
+          const h = (a.hive || '').trim().toLowerCase();
+          if (!h) return true;
+          if (seenHive.has(h)) return false;
+          seenHive.add(h);
+          return true;
+        });
 
         // Upload new supplementary files
         const uploadedSupplementary = [...this.existingSupplementaryFiles];

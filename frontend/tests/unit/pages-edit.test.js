@@ -1401,3 +1401,102 @@ describe('editPage author-list prefill on revision', () => {
     });
   });
 });
+
+// handleSubmit drops duplicate-hive author entries before broadcast so a
+// revision never persists a redundant entry in json_metadata.authors. Two
+// sources produce a duplicate: a prior author set already carrying the same
+// hive twice, or a new co-author row colliding with an existing author by
+// hive. First occurrence wins, order is preserved, and Hive-less display-only
+// credits (no account identity) are never deduped against each other. The
+// backend re-dedups on read; this is a write-path cleanliness guard.
+describe('editPage handleSubmit drops duplicate-hive authors on re-broadcast', () => {
+  function paperWith(authors) {
+    return {
+      author: 'alice', permlink: 'p1',
+      head_author: 'alice', head_permlink: 'p1',
+      canonical_author: 'alice', canonical_permlink: 'p1',
+      title: 'A Paper',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: { pevotest: { version: 1 } },
+      versions: [{ version_number: 1 }],
+      authors,
+    };
+  }
+
+  async function broadcastAuthors(comp) {
+    comp.title = 'Revised';
+    comp.abstract = 'new abstract';
+    comp.body = 'new body';
+    comp.discipline = 'Physics';
+    comp.keywordsText = 'quantum';
+    await comp.handleSubmit();
+    expect(comp.step).toBe('success');
+    const commentOp = broadcastOps.mock.calls[0][1][0];
+    return JSON.parse(commentOp[1].json_metadata).pevotest.authors;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockStores.auth.isConnected = true;
+    mockStores.auth.isAccredited = true;
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    invalidatePaperCache.mockResolvedValue({});
+  });
+
+  // Source 1: the prior author set already carries the same hive twice.
+  // First occurrence wins, so the kept entry is the first 'bob' ('Bob'),
+  // not the duplicate ('Bob Dup').
+  it('collapses a prior set that carries the same hive twice (first occurrence wins)', async () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = paperWith([
+      { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+      { name: 'Bob', hive: 'bob', orcid: '', affiliation: 'Harvard' },
+      { name: 'Bob Dup', hive: 'bob', orcid: '', affiliation: 'Elsewhere' },
+    ]);
+    comp._prefillForm();
+
+    const authors = await broadcastAuthors(comp);
+
+    expect(authors.map((a) => a.hive)).toEqual(['alice', 'bob']);
+    expect(authors.find((a) => a.hive === 'bob').name).toBe('Bob');
+  });
+
+  // Source 2: a new co-author row's hive collides with an existing author.
+  // The new row does not add a second entry for that account.
+  it('drops a new co-author whose hive matches an existing author', async () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = paperWith([
+      { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+      { name: 'Bob', hive: 'bob', orcid: '', affiliation: 'Harvard' },
+    ]);
+    comp._prefillForm();
+    comp.newCoAuthors = [{ name: 'Bob Again', hive: 'bob', orcid: '', affiliation: 'Elsewhere' }];
+
+    const authors = await broadcastAuthors(comp);
+
+    expect(authors.map((a) => a.hive)).toEqual(['alice', 'bob']);
+    expect(authors.find((a) => a.hive === 'bob').name).toBe('Bob');
+  });
+
+  // Hive-less display-only credits carry no account identity and must all be
+  // preserved — they are never collapsed together even though they share the
+  // falsy hive value.
+  it('preserves every Hive-less display-only credit (no collapse)', async () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = paperWith([
+      { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+      { name: 'Carol', hive: null, orcid: '', affiliation: 'Oxford' },
+      { name: 'Dave', hive: null, orcid: '', affiliation: 'Cambridge' },
+    ]);
+    comp._prefillForm();
+
+    const authors = await broadcastAuthors(comp);
+
+    expect(authors.map((a) => a.hive)).toEqual(['alice', null, null]);
+    expect(authors.map((a) => a.name)).toEqual(['Alice', 'Carol', 'Dave']);
+  });
+});
