@@ -27,3 +27,19 @@ Add a TTL-based ageing purge for `pending_recovery`, mirroring the bridge-queue 
 
 - The account-delete sweep (already landed in the recover-email task).
 - Reworking the two-phase flow itself.
+
+## Backend completion signal (2026-05-26)
+
+Added a TTL ageing purge for `pending_recovery` mirroring the bridge-queue `purgeAgedTerminalEntries` job shape, in a self-contained `backend/src/recovery-purge.ts` (the `ipfs-cleanup.ts` standalone-job precedent).
+
+**Decision: DELETE, not scrub.** The task flagged that the consumed row is no longer the durable forensic record post-account-delete; migration 012 confirms the dispute forensic signal lives in `custody_audit_log`, which survives independently. After `dispute_expires_at` (~48h) a row can neither be verified (phase 2) nor disputed, so its plaintext `new_email` + offline-crackable argon2id `new_password_hash` have no remaining function and nothing forensic is left to preserve in the staging row. So the purge DELETEs rather than scrubs.
+
+**Retention horizon + cadence.** `purgeAgedPendingRecovery(graceMs = 24h)` deletes every row whose `dispute_expires_at < NOW() - grace`, uniformly across expired-unused, consumed, and disputed states (all three are terminal once the dispute window closes). The 24h grace buffers clock skew and an in-flight dispute click at the window edge. The threshold is computed in JS (not SQL interval math) to avoid int4 interval overflow, mirroring `purgeAgedTerminalEntries`. Runs hourly via `startRecoveryPurge` (a `setInterval` with `.unref()`), wired into `src/index.ts` boot alongside `startSignupCleanup`, with `stopRecoveryPurge` in the shutdown drain. Tick errors are swallowed as non-fatal maintenance.
+
+**No migration.** This is a periodic DELETE job, not a schema change.
+
+**Test** `tests/recovery-purge.test.ts` (real app Postgres, `describe.skipIf(!dbReachable)`): an expired row (dispute window closed 100d ago) is purged while a fresh row (window open) survives; a row whose window closed 1h ago survives the default 24h grace; a custom 1h grace purges a 2h-old row. Rows are isolated by a unique per-run username marker + tracked ids, so assertions never depend on other rows the shared dev DB carries.
+
+**Verification.** `npm run typecheck` clean (src + tests); `npm run lint` clean on `recovery-purge.ts`, `index.ts`, and the test; scoped `npx vitest run tests/recovery-purge.test.ts` → 3/3 green. Self-audit on changed lines: no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in the source/test files.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

@@ -16,6 +16,7 @@ import { startReputationWeightsCache, backfillAccreditationSeeds } from './reput
 import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
+import { startRecoveryPurge, stopRecoveryPurge } from './recovery-purge.js';
 import { validateRetentionSweepConfig, startRetentionSweepTicker, stopRetentionSweep } from './jobs/custody-audit-retention-sweep.js';
 import { startBridgeWorker, stopBridgeWorker } from './bridge-worker.js';
 import { drainArgon2Queue, startArgon2AbortReporter, stopArgon2AbortReporter } from './lib/argon2-semaphore.js';
@@ -143,6 +144,12 @@ if (app) {
         // Start pending signup cleanup (every 1h)
         startSignupCleanup();
 
+        // Start pending_recovery ageing purge (every 1h). Retires staged
+        // memo-key recovery rows (plaintext new email + argon2id hash) past
+        // their dispute window so GDPR-relevant PII does not outlive its
+        // purpose; the durable forensic record is custody_audit_log.
+        startRecoveryPurge();
+
         // Start custody_audit_log retention sweep ticker (first sweep
         // immediately as backfill of pre-existing rows older than the SOT
         // retention period, then every 24h). Boot-time SOT validation
@@ -220,6 +227,7 @@ async function shutdown(signal: string): Promise<void> {
   stopBatchReputation();
   stopAccountClaimer();
   stopSignupCleanup();
+  stopRecoveryPurge();
   stopArgon2AbortReporter();
   stopDecrementQueueDrainer();
   stopRetentionSweep();
