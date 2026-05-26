@@ -1013,24 +1013,20 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
 });
 
 // UI-PAPERS-ORCID-NULL-FALLBACK-VERIFICATION: backend's vouch-coauthor
-// spoof-suppression branch in buildCumulativeAuthorsForChain (papers.ts:
-// 417-434) now emits `authors[].orcid = null` for accredited authors on
-// continuation chains. The API contract at
-// `agents/docs/api-contracts/papers.md` widened the field to
-// `string | null`. Edit-page _prefillForm is the only SPA site that
-// consumes paper authors[].orcid in a non-template context (primary
-// author -> authorOrcid string; existing co-authors retained as raw
-// objects whose orcid is read by `:value="ca.orcid || ''"` in the
-// template).
+// spoof-suppression branch in buildCumulativeAuthorsForChain emits
+// `authors[].orcid = null` for accredited authors on continuation chains.
+// The API contract at `agents/docs/api-contracts/papers.md` widened the
+// field to `string | null`. Edit-page _prefillForm is the only SPA site
+// that consumes paper authors[].orcid in a non-template context.
 //
-// These tests pin the data-side null-preservation contract:
-// _prefillForm normalizes `primary.orcid: null` to `authorOrcid: ''`
-// via its `|| ''` coalesce, and existing co-authors retain `orcid: null`
-// untouched so the Alpine template binding `:value="ca.orcid || ''"` in
-// `frontend/src/pages/edit.js` is responsible for the falsy coalesce at
-// render time. The template-side `|| ''` is grep-pinned by that binding
-// expression; pinning it end-to-end would require mounting Alpine via
-// jsdom and is out of scope here.
+// These tests pin data-side normalization: _prefillForm coalesces a null
+// orcid to '' for BOTH the primary author (authorOrcid) and existing
+// co-authors, so a re-broadcast carries the form's canonical ''-for-absent
+// shape rather than a read-side null. The original regression intent
+// (_prefillForm does not throw on a null orcid from the API) is preserved:
+// null is accepted as input and coalesced. The template binding
+// `:value="ca.orcid || ''"` remains as defense-in-depth; asserting it
+// end-to-end would require mounting Alpine via jsdom and is out of scope.
 describe('editPage _prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALLBACK)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1062,7 +1058,7 @@ describe('editPage _prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALL
     expect(comp.authorAffiliation).toBe('MIT');
   });
 
-  it('existing co-authors with orcid: null pass through to existingCoAuthors without throwing', () => {
+  it('existing co-authors with orcid: null normalize to "" on existingCoAuthors without throwing', () => {
     const comp = createComponent();
     comp.paper = {
       title: 'A Paper',
@@ -1085,12 +1081,13 @@ describe('editPage _prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALL
 
     expect(() => comp._prefillForm()).not.toThrow();
     expect(comp.existingCoAuthors).toHaveLength(2);
-    // Pin the data-side pass-through: _prefillForm preserves `orcid: null`
-    // on existing co-author rows untouched. The template-side `|| ''`
-    // coalesce at `edit.js:183` is grep-pinned in the audit notes and
-    // not asserted here (would require mounting Alpine via jsdom).
-    expect(comp.existingCoAuthors[0].orcid).toBeNull();
-    expect(comp.existingCoAuthors[1].orcid).toBeNull();
+    // Pin the data-side normalization: _prefillForm coalesces a null orcid
+    // on existing co-author rows to '' (consistent with the primary author),
+    // so a re-broadcast carries the form's canonical shape. The template
+    // binding `:value="ca.orcid || ''"` remains as defense-in-depth;
+    // asserting it would require mounting Alpine via jsdom.
+    expect(comp.existingCoAuthors[0].orcid).toBe('');
+    expect(comp.existingCoAuthors[1].orcid).toBe('');
   });
 
   it('primary author with orcid: null AND no other fields set still prefills cleanly', () => {
@@ -1127,7 +1124,7 @@ describe('editPage author-list prefill on revision', () => {
   // Prefill sources from the API-resolved authors[], not the raw head-post
   // json_metadata claim, so the cumulative-union set carries forward.
   // Distinguished by giving the two surfaces divergent data.
-  it('prefills from API authors[] (R3), not raw json_metadata pevo.authors', () => {
+  it('prefills from API authors[], not raw json_metadata pevo.authors', () => {
     const comp = createComponent();
     mockStores.auth.username = 'alice';
     comp.paper = {
@@ -1148,6 +1145,37 @@ describe('editPage author-list prefill on revision', () => {
     expect(comp.existingCoAuthors).toHaveLength(1);
     expect(comp.existingCoAuthors[0].hive).toBe('bob');
     expect(comp._primaryIndex).toBe(0);
+  });
+
+  // Source fallback: when the API p.authors is absent or empty (a surface
+  // that didn't resolve the cumulative-union set), _prefillForm falls back to
+  // the raw json_metadata pevo.authors claim, so the broadcaster and the
+  // claimed co-authors are still seated rather than starting from an empty
+  // form.
+  it('falls back to raw json_metadata authors when API p.authors is empty', () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = {
+      title: 'A Paper',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: {
+        pevotest: {
+          authors: [
+            { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+            { name: 'Bob', hive: 'bob', orcid: '', affiliation: 'Harvard' },
+          ],
+        },
+      },
+      authors: [], // API resolved set absent/empty -> fall back to chain claim
+    };
+
+    comp._prefillForm();
+
+    expect(comp._primaryIndex).toBe(0);
+    expect(comp.authorName).toBe('Alice');
+    expect(comp.authorAffiliation).toBe('MIT');
+    expect(comp.existingCoAuthors).toHaveLength(1);
+    expect(comp.existingCoAuthors[0].hive).toBe('bob');
   });
 
   // When a co-author (not the original first author) revises, the broadcaster
@@ -1200,8 +1228,8 @@ describe('editPage author-list prefill on revision', () => {
 
   // Defensive name fallback: a read-only existing row can't be edited to add
   // a missing name, so prefill guarantees one (name -> hive -> orcid),
-  // mirroring the backend read-time fallback. Other fields pass through.
-  it('applies a name fallback (hive) to a name-less existing entry, preserving orcid', () => {
+  // mirroring the backend read-time fallback. orcid normalizes null -> ''.
+  it('applies a name fallback (hive) to a name-less existing entry, normalizing orcid', () => {
     const comp = createComponent();
     mockStores.auth.username = 'alice';
     comp.paper = {
@@ -1217,7 +1245,7 @@ describe('editPage author-list prefill on revision', () => {
     comp._prefillForm();
 
     expect(comp.existingCoAuthors[0].name).toBe('bob'); // fell back to hive
-    expect(comp.existingCoAuthors[0].orcid).toBeNull(); // untouched
+    expect(comp.existingCoAuthors[0].orcid).toBe(''); // null normalized to ''
   });
 
   // Broadcaster not yet a listed author (an accepted-claim co-author's first

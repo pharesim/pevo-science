@@ -684,14 +684,25 @@ export function initEditPage() {
       const rest = selfIdx !== -1
         ? authors.filter((_, i) => i !== selfIdx)
         : authors.slice();
-      // Defensive name fallback mirrors the backend read-time order
-      // (name -> hive -> orcid): a read-only existing row can't be edited to
-      // supply a missing name, so guarantee one here rather than dead-ending
-      // the per-entry name requirement. Other fields (hive, orcid,
-      // affiliation) pass through untouched.
+      // Project each prior author down to only the chain-claimed fields the
+      // form re-broadcasts: {name, hive, orcid, affiliation}. The API detail
+      // surface attaches read-time projection fields (orcid_verified,
+      // orcid_discrepancy) to each authors[] entry; spreading them through
+      // would persist read-time projections onto the chain as author-claimed
+      // data and would defeat handleSubmit's no-change (metaChanged)
+      // comparison against the raw head-post claim. The name fallback mirrors
+      // the backend read-time order (resolveAuthorName: name -> hive ->
+      // orcid) and is trim-aware: a read-only existing row can't be edited to
+      // supply a missing name, and a whitespace-only name would otherwise
+      // survive the truthy check yet fail the per-entry name requirement,
+      // dead-ending an un-revisable paper. orcid normalizes null -> '' on the
+      // data side, consistent with the primary author (authorOrcid) and new
+      // co-authors (addCoAuthor seeds '').
       this.existingCoAuthors = rest.map(a => ({
-        ...a,
-        name: a.name || a.hive || a.orcid || '',
+        name: String(a.name || '').trim() || a.hive || a.orcid || '',
+        hive: a.hive ?? null,
+        orcid: a.orcid || '',
+        affiliation: a.affiliation || '',
       }));
     },
 
