@@ -167,12 +167,17 @@ export function initLoginPage() {
         // Semantic-code branches render localized messages; the generic
         // fallback takes the sanitization path shared with executeUpgrade()
         // in settings.js (generic message to DOM, raw err to console.warn).
-        if (err.code === 'PENDING_SIGNUP' && err.data) {
-          // Verified but incomplete. Redirect to choose phase with auth_token.
-          const params = new URLSearchParams({
-            auth_token: err.data.auth_token,
-            email: err.data.email,
-          });
+        if (err.code === 'PENDING_SIGNUP') {
+          // Email verified but signup not completed. The login 409 no longer
+          // carries an auth_token (it was removed because it is the row-lookup
+          // credential for /confirm and /link and leaked via referer/logs).
+          // Route the user to the resume step, which re-verifies the password
+          // via /resume-signup — that call mints the httpOnly binding cookie
+          // and returns a fresh auth_token in its RESPONSE BODY. We pass only a
+          // resume marker and the email hint in the URL; the auth_token is
+          // never put in the address bar.
+          const params = new URLSearchParams({ resume: '1' });
+          if (err.data?.email) params.set('email', err.data.email);
           Alpine.store('router').navigate(`/signup/verify?${params}`);
           return;
         }

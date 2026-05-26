@@ -31,3 +31,14 @@ Make the SPA's PENDING_SIGNUP recovery route the user back through `/resume-sign
 ## Coordination
 
 Backend gate is in `tasks/pending/backend-auth-token-session-binding.md` (round-1 hold). The contract changes (login 409 shape, cookie requirement) are already landed in backend code, so this SPA work can proceed in parallel. **Do not deploy the backend binding work to production until this UI task ships** — PENDING_SIGNUP users are broken in the interim.
+
+## UI implementation note (2026-05-26) → review
+
+Implemented by a UI worker subagent. Summary:
+
+- `login.js` + `sign-in-modal.js` PENDING_SIGNUP handlers no longer read `err.data.auth_token`. They navigate to `/signup/verify?resume=1&email=<email>` (resume marker + email hint only; no `auth_token` ever in the URL). Both gracefully handle a 409 body with `{ email }` only, with no data at all, and defensively drop any stray `auth_token` if a stale backend ever sent one.
+- `signup-verify.js` `init()` dropped the `if (query.auth_token && query.email)` fast-path (the source of the `"undefined"` bug). It now activates only on the literal `query.resume === '1'` marker, lands on the resume form (`error` phase) with `resumeEmail` prefilled, and never lifts an `auth_token` from the address bar. `authToken` is obtained solely from the `/resume-signup` (or `/verify`) response body via `handleResume()`/`verifyToken()`.
+- `api.js`: added explicit `credentials: 'same-origin'` to `resumeSignup`, `confirmAccount`, and `linkExistingAccount` so the httpOnly `pevo_signup_session` binding cookie (`path=/api/auth`, `sameSite=lax`) is stored from the `Set-Cookie` response and re-sent on the follow-up XHR. `resumeSignup` already existed; no new client function needed.
+- i18n: new key `seedPhrase.resumeFromLogin` (a one-line explanatory note shown on the resume form when arriving from a login redirect). Added to `en.json` and stubbed as raw English into all 15 non-English locales; `STUBS.md` sweep entry added under `### Added 2026-05-26 (UI-LOGIN-PENDING-SIGNUP-RESUME-REBIND)`.
+- Tests: extended `pages-login`, `components-sign-in-modal`, `pages-signup-verify`, and `api` unit suites. New coverage asserts the resume-redirect path, the `"undefined"`-never-becomes-`authToken` guard, no `auth_token` in the URL, and the `credentials: 'same-origin'` shape on the cookie-bearing calls.
+- Verification: affected suites 107/107 pass; full unit run 1336/1336 pass; `vite build` succeeds. (The 3 unhandled-rejection "errors" in `pages-edit.test.js` are a pre-existing teardown artifact in `edit.js`, untouched by this task; all 60 of its tests pass.)

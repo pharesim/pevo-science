@@ -431,9 +431,21 @@ export function submitSignup(data) {
   });
 }
 
+// `/resume-signup`, `/confirm`, and `/link` are the signup-session-binding
+// triad: `/resume-signup` (and `/verify`) mint the httpOnly `pevo_signup_session`
+// cookie via Set-Cookie; `/confirm` and `/link` require that cookie back on the
+// request to authorize completing the pending signup. The cookie is scoped
+// `path=/api/auth`, `sameSite=lax`. `credentials: 'same-origin'` is set
+// explicitly on all three so the binding cookie is stored from the response and
+// re-sent on the follow-up XHR even if a future build serves the SPA from a
+// configuration where the fetch credentials default would not attach it. The
+// auth_token NEVER travels as a URL query param — it lives only in these
+// response bodies and request bodies, never the address bar (which leaks to
+// logs / Referer).
 export function resumeSignup(email, password) {
   return request('/auth/resume-signup', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
@@ -458,6 +470,9 @@ export function verifyEmail(token) {
 export function confirmAccount(authToken, username, keys) {
   return request('/auth/confirm', {
     method: 'POST',
+    // Sends the `pevo_signup_session` binding cookie minted by /verify or
+    // /resume-signup; the route rejects without it. See resumeSignup() above.
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ auth_token: authToken, username, keys }),
   });
@@ -468,6 +483,9 @@ export async function linkExistingAccount(authToken, username) {
   const signed = await signRequest(username, 'POST', '/api/auth/link', body);
   return request('/auth/link', {
     method: 'POST',
+    // Sends the `pevo_signup_session` binding cookie minted by /verify or
+    // /resume-signup; the route rejects without it. See resumeSignup() above.
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
       ...signed.headers,

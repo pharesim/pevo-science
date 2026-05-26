@@ -92,17 +92,19 @@ export function initSignInModal() {
         }
       } catch (err) {
         if (!this._mounted) return;
-        if (err.code === 'PENDING_SIGNUP' && err.data) {
+        if (err.code === 'PENDING_SIGNUP') {
           this.open = false;
           this.mode = 'choose';
           if (this._resolve) {
             this._resolve(null);
             this._resolve = null;
           }
-          const params = new URLSearchParams({
-            auth_token: err.data.auth_token,
-            email: err.data.email,
-          });
+          // The login 409 no longer carries an auth_token. Route to the resume
+          // step where /resume-signup re-verifies the password, mints the
+          // binding cookie, and returns a fresh auth_token in its response
+          // body. Pass only a resume marker and the email hint in the URL.
+          const params = new URLSearchParams({ resume: '1' });
+          if (err.data?.email) params.set('email', err.data.email);
           Alpine.store('router').navigate(`/signup/verify?${params}`);
           return;
         }

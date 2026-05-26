@@ -70,6 +70,16 @@ function createComponent(query = {}) {
   return comp;
 }
 
+// Put a freshly created component into the post-verify/post-resume "choose"
+// state. This mirrors how verifyToken() and handleResume() seed authToken/email
+// from a RESPONSE BODY (never from a URL query param). Used by the create/link
+// flow specs below, which exercise behavior downstream of obtaining the token.
+function enterChooseState(comp, { authToken = 'tok', email = 'e@x.com' } = {}) {
+  comp.authToken = authToken;
+  comp.email = email;
+  comp.phase = 'choose';
+}
+
 describe('signupVerifyPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -83,18 +93,57 @@ describe('signupVerifyPage', () => {
   });
 
   describe('init', () => {
-    it('goes to choose phase when auth_token and email in query', () => {
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
+    // Login PENDING_SIGNUP redirect: the URL carries resume=1 + email but
+    // NEVER an auth_token (it is the row-lookup credential for /confirm and
+    // /link). The page must land on the resume form so the user re-verifies
+    // their password via /resume-signup, which mints the binding cookie and
+    // returns a fresh auth_token in its response body.
+    it('goes to resume form (error phase) on resume=1 redirect, prefilling email, with no authToken from URL', () => {
+      const comp = createComponent({ resume: '1', email: 'e@x.com' });
       comp.init();
-      expect(comp.phase).toBe('choose');
-      expect(comp.authToken).toBe('tok');
-      expect(comp.email).toBe('e@x.com');
+      expect(comp.phase).toBe('error');
+      expect(comp.resumeFromLogin).toBe(true);
+      expect(comp.resumeEmail).toBe('e@x.com');
+      // The auth_token must NOT be lifted from the URL.
+      expect(comp.authToken).toBeNull();
+      // No verify-link error copy on the resume-from-login path.
+      expect(comp.error).toBeNull();
+      expect(mockVerifyEmail).not.toHaveBeenCalled();
+    });
+
+    // Regression guard for the original break: a stale/absent auth_token used
+    // to be URL-encoded as the literal string "undefined", which is truthy and
+    // silently set this.authToken = "undefined", 400ing every later /confirm
+    // and /link. The init must NOT activate any auth_token fast-path; the only
+    // marker it honors is resume === '1', and authToken stays null.
+    it('does not treat a literal "undefined" auth_token param as a credential', () => {
+      const comp = createComponent({ auth_token: 'undefined', email: 'undefined' });
+      comp.init();
+      // No resume marker → falls through to the email-token path (no token →
+      // invalid-link error). Critically, authToken is never set to "undefined".
+      expect(comp.authToken).toBeNull();
+      expect(comp.authToken).not.toBe('undefined');
+      expect(comp.phase).toBe('error');
+    });
+
+    // Even a real-looking auth_token in the URL must be ignored — auth_token is
+    // never accepted from the address bar, only from a response body.
+    it('ignores an auth_token query param when resume marker is absent', () => {
+      const comp = createComponent({ auth_token: 'confirmed:realtok', email: 'e@x.com' });
+      comp.init();
+      expect(comp.authToken).toBeNull();
+      // No resume=1 and no email token → invalid-link error.
+      expect(comp.phase).toBe('error');
+      expect(comp.error).toBe('seedPhrase.invalidLink');
     });
 
     it('goes to error phase when no token in query', () => {
       const comp = createComponent({});
       comp.init();
       expect(comp.phase).toBe('error');
+      // No resume marker → this is the consumed/expired-link case, which shows
+      // the invalid-link copy (distinct from the resume-from-login note).
+      expect(comp.resumeFromLogin).toBe(false);
     });
 
     it('calls verifyToken when email token present', () => {
@@ -140,8 +189,8 @@ describe('signupVerifyPage', () => {
 
   describe('chooseCreate', () => {
     it('generates mnemonic and moves to create-seed phase', () => {
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseCreate();
 
       expect(mockGenerateMnemonic).toHaveBeenCalled();
@@ -152,8 +201,8 @@ describe('signupVerifyPage', () => {
 
   describe('chooseLink', () => {
     it('moves to link-keychain phase', () => {
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseLink();
       expect(comp.phase).toBe('link-keychain');
     });
@@ -161,8 +210,8 @@ describe('signupVerifyPage', () => {
 
   describe('proceedToConfirm', () => {
     it('picks random indices and moves to confirm phase', () => {
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseCreate();
       comp.proceedToConfirm();
 
@@ -177,8 +226,8 @@ describe('signupVerifyPage', () => {
 
   describe('confirmCorrect', () => {
     it('returns true when inputs match seed words', () => {
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseCreate();
       comp.proceedToConfirm();
 
@@ -191,8 +240,8 @@ describe('signupVerifyPage', () => {
     });
 
     it('returns false when inputs are wrong', () => {
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseCreate();
       comp.proceedToConfirm();
 
@@ -210,8 +259,8 @@ describe('signupVerifyPage', () => {
         data: { token: 'jwt', username: 'alice', expires_at: '2099-01-01', accreditation: null },
       });
 
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseCreate();
       comp.username = 'alice';
       comp.usernameStatus = 'available';
@@ -260,8 +309,8 @@ describe('signupVerifyPage', () => {
         savedSnapshot = { ...mockAuthStore };
       });
 
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseCreate();
       comp.username = 'alice';
       comp.usernameStatus = 'available';
@@ -292,8 +341,8 @@ describe('signupVerifyPage', () => {
       // Simulate a stale prior value on the store.
       mockAuthStore.accreditation = { stale: true };
 
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseCreate();
       comp.username = 'alice';
       comp.usernameStatus = 'available';
@@ -318,8 +367,8 @@ describe('signupVerifyPage', () => {
       });
       const originalToken = mockAuthStore.token;
       const originalExpiry = mockAuthStore.expiresAt;
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseCreate();
       comp.username = 'alice';
       comp.usernameStatus = 'available';
@@ -336,8 +385,8 @@ describe('signupVerifyPage', () => {
     });
 
     it('does nothing with invalid username', async () => {
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.username = 'ab'; // too short
       comp.usernameStatus = 'available';
 
@@ -367,8 +416,8 @@ describe('signupVerifyPage', () => {
       mockConfirmAccount.mockRejectedValue(leaky);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseCreate();
       comp.username = 'alice';
       comp.usernameStatus = 'available';
@@ -390,8 +439,8 @@ describe('signupVerifyPage', () => {
         data: { token: 'jwt2', username: 'bob', expires_at: '2099-01-01', accreditation: null },
       });
 
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseLink();
       comp.hiveUsername = 'Bob';
 
@@ -422,8 +471,8 @@ describe('signupVerifyPage', () => {
         savedSnapshot = { ...mockAuthStore };
       });
 
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseLink();
       comp.hiveUsername = 'Bob';
 
@@ -456,8 +505,8 @@ describe('signupVerifyPage', () => {
       });
       const originalToken = mockAuthStore.token;
       const originalExpiry = mockAuthStore.expiresAt;
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseLink();
       comp.hiveUsername = 'Bob';
 
@@ -473,8 +522,8 @@ describe('signupVerifyPage', () => {
     });
 
     it('does nothing without hiveUsername', async () => {
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.hiveUsername = '';
       await comp.handleLinkAccount();
       expect(mockLinkExistingAccount).not.toHaveBeenCalled();
@@ -482,8 +531,8 @@ describe('signupVerifyPage', () => {
 
     it('requires keychain installed', async () => {
       mockIsKeychainInstalled.mockReturnValue(false);
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.hiveUsername = 'bob';
 
       await comp.handleLinkAccount();
@@ -500,8 +549,8 @@ describe('signupVerifyPage', () => {
       mockLinkExistingAccount.mockRejectedValue(leaky);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
-      comp.init();
+      const comp = createComponent();
+      enterChooseState(comp);
       comp.chooseLink();
       comp.hiveUsername = 'Bob';
 

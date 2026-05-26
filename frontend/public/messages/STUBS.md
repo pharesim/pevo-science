@@ -1960,3 +1960,21 @@ pt: bridge.queuedNoDetail
 sv: bridge.queuedNoDetail
 tr: bridge.queuedNoDetail
 zh: bridge.queuedNoDetail
+
+### Added 2026-05-26 (UI-LOGIN-PENDING-SIGNUP-RESUME-REBIND)
+
+ar: seedPhrase.resumeFromLogin
+cs: seedPhrase.resumeFromLogin
+da: seedPhrase.resumeFromLogin
+de: seedPhrase.resumeFromLogin
+es: seedPhrase.resumeFromLogin
+fa: seedPhrase.resumeFromLogin
+fr: seedPhrase.resumeFromLogin
+he: seedPhrase.resumeFromLogin
+it: seedPhrase.resumeFromLogin
+nl: seedPhrase.resumeFromLogin
+pl: seedPhrase.resumeFromLogin
+pt: seedPhrase.resumeFromLogin
+sv: seedPhrase.resumeFromLogin
+tr: seedPhrase.resumeFromLogin
+zh: seedPhrase.resumeFromLogin

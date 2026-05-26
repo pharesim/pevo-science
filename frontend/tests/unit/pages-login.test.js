@@ -172,10 +172,15 @@ describe('loginPage', () => {
       expect(mockLoginWithPassword).not.toHaveBeenCalled();
     });
 
-    it('redirects on PENDING_SIGNUP error', async () => {
+    // The login 409 PENDING_SIGNUP body now carries ONLY { email } — no
+    // auth_token (it was removed because it is the row-lookup credential for
+    // /confirm and /link). The SPA must route to the resume step with a
+    // resume marker and the email hint, and must NOT put any auth_token in the
+    // URL.
+    it('redirects to resume step on PENDING_SIGNUP without leaking auth_token in the URL', async () => {
       mockLoginWithPassword.mockRejectedValue({
         code: 'PENDING_SIGNUP',
-        data: { auth_token: 'tok', email: 'e@x.com' },
+        data: { email: 'e@x.com' },
         message: 'pending',
       });
       const comp = createComponent();
@@ -184,9 +189,55 @@ describe('loginPage', () => {
 
       await comp.handleSubmit();
 
-      expect(mockRouterStore.navigate).toHaveBeenCalledWith(
-        expect.stringContaining('/signup/verify?')
-      );
+      expect(mockRouterStore.navigate).toHaveBeenCalledTimes(1);
+      const dest = mockRouterStore.navigate.mock.calls[0][0];
+      expect(dest).toContain('/signup/verify?');
+      expect(dest).toContain('resume=1');
+      expect(dest).toContain('email=e%40x.com');
+      // No auth_token anywhere in the navigation target.
+      expect(dest).not.toContain('auth_token');
+      // The literal "undefined" must never be encoded into the URL.
+      expect(dest).not.toContain('undefined');
+    });
+
+    // Defensive: even if a stale backend ever sent a 409 with an auth_token in
+    // the body, the SPA must not forward it to the address bar.
+    it('does not forward a stray auth_token from the 409 body into the URL', async () => {
+      mockLoginWithPassword.mockRejectedValue({
+        code: 'PENDING_SIGNUP',
+        data: { auth_token: 'confirmed:leak', email: 'e@x.com' },
+        message: 'pending',
+      });
+      const comp = createComponent();
+      comp.emailOrUsername = 'e@x.com';
+      comp.password = 'pass';
+
+      await comp.handleSubmit();
+
+      const dest = mockRouterStore.navigate.mock.calls[0][0];
+      expect(dest).not.toContain('auth_token');
+      expect(dest).not.toContain('confirmed%3Aleak');
+      expect(dest).toContain('resume=1');
+    });
+
+    // The 409 may arrive with no data at all; the redirect must still work
+    // (resume marker present, email simply omitted).
+    it('redirects to resume step on PENDING_SIGNUP even when the body has no data', async () => {
+      mockLoginWithPassword.mockRejectedValue({
+        code: 'PENDING_SIGNUP',
+        message: 'pending',
+      });
+      const comp = createComponent();
+      comp.emailOrUsername = 'e@x.com';
+      comp.password = 'pass';
+
+      await comp.handleSubmit();
+
+      const dest = mockRouterStore.navigate.mock.calls[0][0];
+      expect(dest).toContain('/signup/verify?');
+      expect(dest).toContain('resume=1');
+      expect(dest).not.toContain('auth_token');
+      expect(dest).not.toContain('undefined');
     });
 
     // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND hold item #1: the

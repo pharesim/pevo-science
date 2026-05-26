@@ -26,6 +26,10 @@ const template = `
             <!-- Resume signup form -->
             <div class="max-w-sm mx-auto bg-parchment-light border border-parchment-dark rounded-lg p-6">
 
+              <div x-show="resumeFromLogin" class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+                <p class="text-blue-800 text-sm" x-text="$t('seedPhrase.resumeFromLogin')"></p>
+              </div>
+
               <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
                 <p class="text-red-700 text-sm" x-text="error"></p>
               </div>
@@ -266,6 +270,10 @@ export function initSignupVerifyPage() {
     resumeEmail: '',
     resumePassword: '',
     isResuming: false,
+    // True when the resume form was reached from a PENDING_SIGNUP login
+    // redirect (vs. a consumed/expired email link). Drives an explanatory
+    // note so the user understands why a password re-entry is asked for.
+    resumeFromLogin: false,
 
     // Confirmation step
     confirmIndices: [],
@@ -284,11 +292,23 @@ export function initSignupVerifyPage() {
     init() {
       const query = Alpine.store('router').query || {};
 
-      // Resuming from login redirect — already have auth_token
-      if (query.auth_token && query.email) {
-        this.authToken = query.auth_token;
-        this.email = query.email;
-        this.phase = 'choose';
+      // Resuming from a PENDING_SIGNUP login redirect. The auth_token is NOT
+      // carried in the URL anymore (it is the row-lookup credential for
+      // /confirm and /link; passing it via a query param leaks it into logs
+      // and Referer). Instead, land on the resume form so the user re-verifies
+      // the password via /resume-signup — that call mints the binding cookie
+      // and returns a fresh auth_token in its response body. The email is just
+      // a UX prefill hint.
+      //
+      // Guard on the literal '1' marker, not on the mere presence of an
+      // auth_token/email param: a stale or absent auth_token used to encode the
+      // string "undefined" here, which is truthy and silently set
+      // this.authToken = "undefined", breaking every later /confirm and /link.
+      if (query.resume === '1') {
+        this.resumeFromLogin = true;
+        if (query.email) this.resumeEmail = query.email;
+        this.phase = 'error';
+        this.error = null;
         return;
       }
 

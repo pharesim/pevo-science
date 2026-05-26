@@ -124,19 +124,44 @@ describe('signInModal', () => {
       expect(comp.open).toBe(false);
     });
 
-    it('navigates to signup/verify on PENDING_SIGNUP', async () => {
+    // The login 409 PENDING_SIGNUP body now carries ONLY { email } — no
+    // auth_token. The modal must route to the resume step with a resume marker
+    // and the email hint, never an auth_token in the URL.
+    it('navigates to the resume step on PENDING_SIGNUP without leaking auth_token in the URL', async () => {
       const err = new Error('Pending');
       err.code = 'PENDING_SIGNUP';
-      err.data = { auth_token: 'tok', email: 'e@x.com' };
+      err.data = { email: 'e@x.com' };
       mockLoginWithPassword.mockRejectedValue(err);
       const comp = createComponent();
       comp.prompt();
       comp.emailValue = 'e@x.com';
       comp.passwordValue = 'pass';
       await comp.handleEmailLogin();
-      expect(mockRouterStore.navigate).toHaveBeenCalledWith(
-        expect.stringContaining('/signup/verify')
-      );
+      const dest = mockRouterStore.navigate.mock.calls[0][0];
+      expect(dest).toContain('/signup/verify?');
+      expect(dest).toContain('resume=1');
+      expect(dest).toContain('email=e%40x.com');
+      expect(dest).not.toContain('auth_token');
+      expect(dest).not.toContain('undefined');
+      // Modal closes and the keychain prompt resolves null.
+      expect(comp.open).toBe(false);
+    });
+
+    // Defensive: a stray auth_token in the body must not reach the URL.
+    it('does not forward a stray auth_token from the 409 body into the URL', async () => {
+      const err = new Error('Pending');
+      err.code = 'PENDING_SIGNUP';
+      err.data = { auth_token: 'confirmed:leak', email: 'e@x.com' };
+      mockLoginWithPassword.mockRejectedValue(err);
+      const comp = createComponent();
+      comp.prompt();
+      comp.emailValue = 'e@x.com';
+      comp.passwordValue = 'pass';
+      await comp.handleEmailLogin();
+      const dest = mockRouterStore.navigate.mock.calls[0][0];
+      expect(dest).not.toContain('auth_token');
+      expect(dest).not.toContain('confirmed%3Aleak');
+      expect(dest).toContain('resume=1');
     });
 
     it('switches to unverified mode on PENDING_UNVERIFIED', async () => {

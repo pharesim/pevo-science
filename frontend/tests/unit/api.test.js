@@ -18,6 +18,8 @@ import {
   completeOrcid,
   setPassword,
   isRetriable503,
+  resumeSignup,
+  confirmAccount,
 } from '../../src/api.js';
 
 // Helper: build a mock Response-like object for fetch.
@@ -370,5 +372,43 @@ describe('setPassword (SEC-004-UI)', () => {
       expect(err.code).toBe('UNAUTHORIZED');
     }
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// The signup-session-binding triad mints (/resume-signup) and consumes
+// (/confirm, /link) the httpOnly `pevo_signup_session` cookie. The cookie only
+// rides along on the follow-up XHR if the fetch is made with credentials that
+// attach same-origin cookies. These specs pin `credentials: 'same-origin'` on
+// the cookie-bearing calls so a refactor that drops the option (silently
+// breaking /confirm and /link with a binding-missing 400) is caught here.
+describe('signup-session-binding cookie credentials', () => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    authStore = null;
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      mockJsonResponse(200, { status: 'ok', data: { flow: 'choose', auth_token: 'confirmed:x', email: 'e@x.com' } }),
+    );
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it('resumeSignup sends credentials: same-origin so the binding cookie is stored from Set-Cookie', async () => {
+    await resumeSignup('e@x.com', 'pass');
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/auth/resume-signup');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('same-origin');
+    expect(init.body).toBe(JSON.stringify({ email: 'e@x.com', password: 'pass' }));
+  });
+
+  it('confirmAccount sends credentials: same-origin so the binding cookie is re-sent', async () => {
+    await confirmAccount('confirmed:x', 'alice', { owner_public: 'STM1' });
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/auth/confirm');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('same-origin');
   });
 });

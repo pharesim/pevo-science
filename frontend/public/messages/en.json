@@ -1000,7 +1000,8 @@
     "unexpectedResponse": "Unexpected response from server.",
     "createAccountFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
     "linkAccountFailed": "Could not link your Hive account. Please try again. If the problem persists, contact support.",
-    "resumeFailed": "Could not resume your signup. Please check your credentials and try again."
+    "resumeFailed": "Could not resume your signup. Please check your credentials and try again.",
+    "resumeFromLogin": "Your account is verified but signup was not finished. Enter your password to pick up where you left off."
   },
   "confirm": {
     "publishTitle": "Publish Paper",
