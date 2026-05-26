@@ -1,6 +1,7 @@
 ---
 title: "Broad `git add` on a shared checkout sweeps concurrent sessions' staged operations into the wrong commit"
 date: 2026-05-12
+last_updated: 2026-05-26
 category: conventions
 module: agent-coordination
 problem_type: convention
@@ -11,6 +12,7 @@ applies_when:
   - "Architect about to commit after any non-trivial interval where another session could have staged work (typical during parallel `/ce-compound`, `/ce-code-review`, or archive flows)"
   - "Archive commits specifically — they touch both `tasks-archive.md` and a `git rm` path, two distinct staged operations that are easy to lose track of if a sweep occurs"
   - "Any time the shell harness shows the cwd shared with another agent window (architect + architect, architect + backend, etc.)"
+  - "Considering git commit --amend, git reset --hard HEAD~N, or rebase on the shared branch — HEAD may point at a sibling's commit by the time the command runs"
 tags:
   - git
   - staging-discipline
@@ -18,6 +20,7 @@ tags:
   - concurrency
   - commit-discipline
   - architect
+  - history-rewrite
 related_components:
   - documentation
   - tooling
@@ -217,6 +220,22 @@ git revert <contaminated-sha>     # auto-generates inverse commit
 
 `git revert` produces a `Revert "..."` commit that other sessions' work above is preserved against. Yes, the contaminated commit is permanently in history. Yes, the subject-vs-diff drift it captured is permanent. That is the cost of choosing forward-only on a shared branch; the alternative is silent loss of unrelated work.
 
+**`git commit --amend` is the same hazard (recurred 2026-05-26):**
+
+`git commit --amend` rewrites whatever commit `HEAD` currently points at — and on a shared branch that is not necessarily your own most recent commit. On 2026-05-26 an architect committed a task-file hold, then seconds later ran `git commit --amend` to fold in a dropped `git mv` source-deletion (the rename had been split by a single-destination pathspec — see `git-commit-explicit-path-arg-defeats-shared-index-race-2026-05-21.md` "Multi-path caveat"). In that gap a sibling architect session had committed `architect(account-cluster): archive…` on top, advancing `HEAD`. The amend therefore rewrote the *sibling's* commit (`dccc9d06` → `111458dc`), not the agent's own. Content survived only by luck: the staged set was empty at amend time, so it was a SHA-only re-stamp. Had anything been staged, it would have folded into the sibling's commit under the wrong subject — the rewind hazard's silent-loss cousin.
+
+This is `git reset --hard HEAD~N`'s twin: both target `HEAD`, and "your most recent commit" can be a sibling's by the time the command runs. Before any `--amend`, `git reset`, or rebase on the shared branch, verify `HEAD` is your own commit:
+
+```bash
+# Right after your own commit, record its SHA:
+my_sha=$(git rev-parse HEAD)
+# …time passes; a sibling may commit on top…
+# Before amending/resetting, confirm HEAD is still yours:
+[ "$(git rev-parse HEAD)" = "$my_sha" ] || echo "HEAD advanced to a sibling commit — do NOT amend; use a forward-only fixup"
+```
+
+If `HEAD` advanced, do not amend or reset. Commit the fix forward instead. In the 2026-05-26 case the split rename had left the source deletion staged-but-uncommitted; the forward-only fix was simply `git commit -- <source-path>` to complete the rename, which never touches the sibling's commit. The inadvertently re-stamped sibling commit was left as-is (its content was intact, and a further rewind to "restore" the original SHA would only compound the hazard near an active sibling).
+
 **Prevention (committer side):**
 
 If you are committing on a shared branch and have any reason to suspect you may want to "fix" the commit later via rewind, push to a private branch first, work out the fix there, and merge or PR. Once a commit is on a shared branch with other sessions actively working from its tip, rewinds are no longer a unilateral option.
@@ -228,7 +247,7 @@ If you are committing on a shared branch and have any reason to suspect you may 
   - **(1) Cross-zone staging at commit time** — broad `git add` sweeps another *role's* in-flight edits (the April 30 zone-hook entry catches this via the commit-msg hook).
   - **(2) Working-tree destruction at reset time** — `git checkout HEAD -- <path>` or `git restore <path>` destroys another agent's unstaged content (the May 11 entry).
   - **(3) Within-zone staging at commit time** — broad `git add` or `git commit -a` sweeps another *session's* staged work in the same role (the staging-sweep section of this entry — zone hook cannot catch).
-  - **(4) Destructive rewind by concurrent session** — `git reset --hard HEAD~N` on a shared branch drops commits the rewinder did not author (the rewind section of this entry — only the reflog catches it, time-bounded).
+  - **(4) Destructive rewind or amend by concurrent session** — `git reset --hard HEAD~N` drops commits the rewinder did not author, and `git commit --amend` rewrites whatever commit `HEAD` points at, which may be a sibling's if `HEAD` advanced since your own commit. Both target `HEAD`; verify `HEAD` is yours before either (the rewind section of this entry). `reset` loss is reflog-bounded and recoverable; `amend` silently re-stamps a sibling's SHA with no loud signal.
   - **(5) Collateral unstage via rename detection** — `git restore --staged <path>` silently unstages other paths git's content-based rename detection has grouped with it above the 50% similarity threshold (most often markdown task files sharing a skeleton). The defense from this entry (use `git restore --staged` to unstage foreign paths) is itself the trigger surface; only a post-restore `git diff --cached --stat` re-check catches it. See `git-restore-staged-can-unstage-grouped-rename-detected-deletions-2026-05-20.md`.
 - Root `CLAUDE.md` "Commits and Pushes" — the explicit-path staging mandate. This convention enforces that mandate at the verification layer (`--cached` inspection) rather than only the staging layer (per-path `git add`), and forbids `git reset --hard HEAD~N` past commits you did not author.
 - `worktree-fanout-orphan-detection-2026-04-29.md` — adjacent family member. Different mechanism (claimed-commit SHA never merged from a worker worktree back to main), same class of "routine git tooling silently corrupts shared coordination state."
