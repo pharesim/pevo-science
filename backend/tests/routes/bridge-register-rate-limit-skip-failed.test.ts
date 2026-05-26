@@ -598,17 +598,23 @@ describe('validateRegisterBody Content-Type guard (415 before limiter, slot unto
     tableReady = await tableAvailable();
   });
 
-  // Slot-untouched probe (memStore-based): this suite's limiter accounting
-  // runs through the rateLimit middleware's in-memory `memStore` fallback
-  // (FakeRedis has no EVALSHA, so the Lua path throws and the middleware
-  // falls through to memStore). The custody-style Redis-key probe does not
-  // reflect that counter, so the file-consistent slot-untouched assertion is
-  // response-code based: spray > the per-IP cap (10/hour) of pre-limiter
-  // rejects, then prove a full cap's worth of well-formed successes still go
-  // through from the SAME IP. If the rejected sprays had consumed (and not
-  // refunded) any slot, the legitimate successes would 429 before reaching 10.
-  // A fresh accredited user per success avoids BRIDGE_QUEUE_USER_CAP (5)
-  // contaminating the per-IP assertion (matches the abuse-cap canary above).
+  // Slot-untouched is asserted two ways. Primary: the `rateLimitCount(...) →
+  // toBeNull()` probe after each spray (mirrors the sibling malformed-body
+  // canary). `rateLimitCount` reads the per-IP limiter key from the FakeRedis
+  // store; FakeRedis implements the RATE_LIMIT_CHECK_AND_CONSUME Lua
+  // (`evalsha`/`eval`), so the rate-limit middleware uses its Redis path (not
+  // the memStore fallback) and writes the key iff registerLimiter actually
+  // ran. A null result means the limiter was never reached: the Content-Type
+  // guard 415s inside validateRegisterBody BEFORE registerLimiter. This kills
+  // the limiter-before-validation reorder mutation — under that order the
+  // limiter INCRs first and skipFailedRequests refunds on the 415, leaving the
+  // key present at "0" (rateLimitCount === 0, not null) so toBeNull() flips
+  // RED. Complementary end-to-end check: a full per-IP cap (10/hour) of
+  // well-formed 202s from the SAME IP still goes through after the spray,
+  // proving no rejected request burned a slot. A fresh accredited user per
+  // success avoids BRIDGE_QUEUE_USER_CAP (5) contaminating the per-IP
+  // assertion (matches the abuse-cap canary above). The probe must run BEFORE
+  // this cap check, since the successes themselves write the per-IP key.
   async function assertCapWorthOfSuccessesFromSameIp(ip: string, userPrefix: string) {
     for (let i = 0; i < 10; i++) {
       const username = `${userPrefix}${i}`;
@@ -647,7 +653,12 @@ describe('validateRegisterBody Content-Type guard (415 before limiter, slot unto
       expect(res.body.error.code).toBe('BAD_REQUEST');
     }
 
-    // Slot untouched: a full per-IP cap of well-formed successes from the
+    // Primary slot-untouched probe: the 415 fired inside validateRegisterBody
+    // before registerLimiter, so the per-IP limiter key was never written.
+    // Must precede the cap check below, which writes the key via its 202s.
+    expect(rateLimitCount('bridge-register', TEST_IP)).toBeNull();
+
+    // Complementary: a full per-IP cap of well-formed successes from the
     // same IP still go through (none of the 12 text/plain sprays burned a slot).
     await assertCapWorthOfSuccessesFromSameIp(TEST_IP, 'registerlimiterctok');
   });
@@ -669,6 +680,11 @@ describe('validateRegisterBody Content-Type guard (415 before limiter, slot unto
       expect(res.status).toBe(415);
       expect(res.body.error.code).toBe('BAD_REQUEST');
     }
+
+    // Primary slot-untouched probe (see the describe-block comment): 415
+    // before registerLimiter ⇒ the per-IP key was never written. Precedes the
+    // cap check, which writes the key via its 202s.
+    expect(rateLimitCount('bridge-register', TEST_IP)).toBeNull();
 
     await assertCapWorthOfSuccessesFromSameIp(TEST_IP, 'registerlimiternoctok');
   });

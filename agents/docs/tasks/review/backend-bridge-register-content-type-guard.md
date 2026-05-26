@@ -106,3 +106,19 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 **Advisory / NOT held:** the 415 guard fires before the limiter (correctly leaving the slot untouched), which also means non-JSON sprays are never counted by `registerLimiter` — a valid-key holder still pays one ECDSA recovery + one `getAccounts` RPC per request, unbounded by the app limiter. This is unchanged from before the fix and is the task's accepted trust boundary (the per-request `verifyHiveSignature` cost is bounded by nginx/upstream at single-instance scale); not a regression. The `api-contracts/bridge.md` note that `BAD_REQUEST` can now arrive with HTTP 415 on `/register` is architect-owned and applied at archive time.
 
 When item 1 is landed, `git mv` this file back to `tasks/review/`.
+
+## Backend re-review signal (round-2, working tree pre-commit)
+
+Item 1 landed — test-only fix, no production change.
+
+**Probe added.** Both Content-Type spray canaries (`text/plain` and missing-header) now assert `rateLimitCount('bridge-register', TEST_IP)` is `null` immediately after the 12× spray, mirroring the sibling malformed-body canary. The probe runs BEFORE `assertCapWorthOfSuccessesFromSameIp`, because that helper's 202s write the per-IP key themselves; ordering the probe first keeps it measuring only the spray.
+
+**False comment corrected.** The describe-block comment claiming "FakeRedis has no EVALSHA, so the Lua path throws and the middleware falls through to memStore" was factually wrong — `FakeRedis` implements `evalsha`/`eval` (the `RATE_LIMIT_CHECK_AND_CONSUME` Lua), so the rate-limit middleware uses its Redis path and `rateLimitCount` is live (the sibling canary depends on it). The comment now states the real reason the slot stays untouched: `validateRegisterBody` 415s before `registerLimiter` runs. The complementary cap-worth-of-successes check is retained as the end-to-end probe.
+
+**Mutation-kill verified.** Reordered the `/register` mount to `verifyHiveSignature → registerLimiter → validateRegisterBody` (limiter-before-validation — the exact regression the validator-limiter-ordering convention prevents) and re-ran the suite: all three before-limiter canaries (the sibling malformed-body + both new Content-Type probes) flipped RED with `expected +0 to be null` — the limiter INCRs first, `skipFailedRequests` refunds on the 4xx, leaving the key present at "0". Restored the mount (`git diff` clean vs HEAD); re-ran → 7/7 green. Previously the two Content-Type canaries stayed green under this mutation (the false-green item 1 flagged).
+
+**Verification.** `npm run typecheck` (src + tests) clean; `npx eslint` clean on the touched test file; `npx vitest run tests/routes/bridge-register-rate-limit-skip-failed.test.ts` → 7/7 pass.
+
+The empty-body canary was left as-is: it 400s on the presence check (not the Content-Type guard) and the sibling malformed-body canary already pins the `rateLimitCount === null` invariant for the presence-check-before-limiter path; the architect's item 1 scoped the probe to "each Content-Type spray loop."
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
