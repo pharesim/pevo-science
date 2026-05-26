@@ -78,6 +78,35 @@ async function verifyPostingKeyAuthorized(username: string, postingPrivate: stri
   }
 }
 
+/**
+ * Serialize concurrent /confirm + /link activation for a single auth_token.
+ *
+ * Both routes look up a pending-signup row by `verify_token = auth_token`,
+ * then activate it (createClaimedAccount broadcast + verify_token-clearing
+ * UPDATE). Without serialization, two near-simultaneous requests carrying the
+ * SAME valid auth_token both pass the lookup and both reach the activation
+ * step, double-firing the single-use chain account-creation broadcast.
+ *
+ * A transaction-scoped pg advisory lock keyed on the auth_token forces the
+ * second request to block until the first COMMITs. Once it acquires the lock,
+ * the first request has already cleared verify_token, so the in-transaction
+ * lookup returns 0 rows and the second request falls through to the normal
+ * "invalid or expired" reject — exactly the already-consumed path. The lock
+ * is keyed per-token, so it only contends on the precise double-fire race
+ * (concurrent requests for the same token); distinct tokens never serialize.
+ *
+ * Mirrors the `pg_advisory_xact_lock(hashtext(...))` pattern in
+ * `tryEnqueueBridgeImport` (bridge-queue.ts). The lock releases automatically
+ * on COMMIT, ROLLBACK, or connection drop, so a crashed handler cannot strand
+ * it.
+ */
+async function lockSignupActivation(client: import('pg').PoolClient, authToken: string): Promise<void> {
+  await client.query(
+    `SELECT pg_advisory_xact_lock(hashtext('signup_activation:' || $1))`,
+    [authToken],
+  );
+}
+
 const verifyLimiter = rateLimit({ name: 'signup-verify', windowMs: 3_600_000, max: 10, keyFn: byIp });
 const resumeLimiter = rateLimit({ name: 'signup-resume', windowMs: 3_600_000, max: 5, keyFn: byIp });
 const confirmLimiter = rateLimit({ name: 'signup-confirm', windowMs: 3_600_000, max: 10, keyFn: byIp });
@@ -347,145 +376,194 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
     }
   }
 
-  try {
-    // Look up account by auth token (must be in confirmed state).
-    //
-    // `email` is `string | null`: ORCID-only signups (auth.ts /signup with
-    // verifiedOrcid + no email) insert with `accounts.email = NULL`. Mistyping
-    // it as `string` would compile-pass `hashEmailForLogs(account.email)` in
-    // the broadcast catch below, which then throws TypeError on `null.trim()`
-    // and converts a recoverable `logger.error + 200 + JWT` flow into a 500.
-    type SignupRow = {
-      id: number;
-      email: string | null;
-      password_hash: string | null;
-      full_name: string;
-      institution: string;
-      field: string;
-      orcid: string | null;
-      signup_binding_hash: Buffer | null;
-    };
-    const { rows } = await pool.query<SignupRow>(
-      `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
-       FROM accounts WHERE verify_token = $1`,
-      [auth_token],
-    );
+  // `email` is `string | null`: ORCID-only signups (auth.ts /signup with
+  // verifiedOrcid + no email) insert with `accounts.email = NULL`. Mistyping
+  // it as `string` would compile-pass `hashEmailForLogs(account.email)` in
+  // the broadcast catch below, which then throws TypeError on `null.trim()`
+  // and converts a recoverable `logger.error + 200 + JWT` flow into a 500.
+  type SignupRow = {
+    id: number;
+    email: string | null;
+    password_hash: string | null;
+    full_name: string;
+    institution: string;
+    field: string;
+    orcid: string | null;
+    signup_binding_hash: Buffer | null;
+  };
 
-    // Stuck-account recovery detection (BACKEND-SIGNUP-VERIFY-STUCK-ACCOUNT
-    // -RECOVERY, Option C). Chain step 1 (`createClaimedAccount`) is
-    // single-use and pg step 2 clears verify_token; a second /confirm with
-    // the same auth_token gets 0 rows on the lookup above. To let the user
-    // recover their stuck account (chain account created + pg keys stored
-    // + accreditation broadcast failed), fall back to a username-keyed
-    // lookup for a row that ALREADY completed steps 1-2 with this username.
-    //
-    // Auth proof for the fallback: the user must supply a posting_private
-    // matching one of the authorized posting keys on the Hive account.
-    // verify_token has already been consumed and isn't recoverable from
-    // pg; the supplied private key is the user's proof-of-ownership for
-    // the resume path.
-    let account: SignupRow | null = rows[0] ?? null;
+  try {
+    // Critical section: lookup + activation run inside one transaction holding
+    // a per-auth_token advisory lock so concurrent /confirm requests for the
+    // same token cannot both pass the lookup and double-fire createClaimedAccount.
+    // See `lockSignupActivation` for the full rationale. The transaction COMMITs
+    // immediately after the activation UPDATE (releasing the lock) and BEFORE
+    // the accreditation broadcast — the broadcast is idempotent under HAF probe
+    // for resumes and must not hold a DB lock across a slow chain round-trip.
+    let account: SignupRow | null = null;
     let resumeStuck = false;
-    if (!account) {
-      const stuckLookup = await pool.query<SignupRow>(
+    let createResult: { block_num: number } = { block_num: 0 };
+
+    const client = await pool.connect();
+    let inTransaction = false;
+    try {
+      await client.query('BEGIN');
+      inTransaction = true;
+      await lockSignupActivation(client, auth_token);
+
+      // Look up account by auth token (must be in confirmed state). Re-read
+      // inside the locked transaction: a concurrent first request that already
+      // committed will have cleared verify_token, so this returns 0 rows and
+      // the second request takes the already-consumed reject path below.
+      const { rows } = await client.query<SignupRow>(
         `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
-         FROM accounts
-         WHERE username = $1
-           AND verify_token IS NULL
-           AND custody = 'light'
-           AND posting_key_enc IS NOT NULL`,
-        [normalizedUsername],
+         FROM accounts WHERE verify_token = $1`,
+        [auth_token],
       );
-      if (stuckLookup.rows.length > 0) {
-        // Verify the supplied posting_private corresponds to an authorized
-        // posting key on the Hive account. Without this, anyone who knew a
-        // stuck username could request a session by submitting arbitrary
-        // keys.
-        const ownershipOk = await verifyPostingKeyAuthorized(normalizedUsername, posting_private);
-        if (ownershipOk) {
-          account = stuckLookup.rows[0];
-          resumeStuck = true;
+
+      // Stuck-account recovery detection (Option C). Chain step 1
+      // (`createClaimedAccount`) is single-use and pg step 2 clears
+      // verify_token; a second /confirm with the same auth_token gets 0 rows
+      // on the lookup above. To let the user recover their stuck account
+      // (chain account created + pg keys stored + accreditation broadcast
+      // failed), fall back to a username-keyed lookup for a row that ALREADY
+      // completed steps 1-2 with this username.
+      //
+      // Auth proof for the fallback: the user must supply a posting_private
+      // matching one of the authorized posting keys on the Hive account.
+      // verify_token has already been consumed and isn't recoverable from
+      // pg; the supplied private key is the user's proof-of-ownership for
+      // the resume path.
+      account = rows[0] ?? null;
+      if (!account) {
+        const stuckLookup = await client.query<SignupRow>(
+          `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
+           FROM accounts
+           WHERE username = $1
+             AND verify_token IS NULL
+             AND custody = 'light'
+             AND posting_key_enc IS NOT NULL`,
+          [normalizedUsername],
+        );
+        if (stuckLookup.rows.length > 0) {
+          // Verify the supplied posting_private corresponds to an authorized
+          // posting key on the Hive account. Without this, anyone who knew a
+          // stuck username could request a session by submitting arbitrary
+          // keys.
+          const ownershipOk = await verifyPostingKeyAuthorized(normalizedUsername, posting_private);
+          if (ownershipOk) {
+            account = stuckLookup.rows[0];
+            resumeStuck = true;
+          }
         }
       }
+
+      if (!account) {
+        await client.query('ROLLBACK');
+        inTransaction = false;
+        return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired auth token');
+      }
+
+      // Session-binding check. Required for the fresh-confirm path; bypassed
+      // on the stuck-recovery path because the supplied posting_private has
+      // already proved Hive-account ownership above and the row's
+      // verify_token / binding may have been cleared by the prior partial
+      // run. The reject response shape MUST equal the "invalid or expired
+      // auth token" 400 above so an attacker holding a leaked auth_token
+      // cannot distinguish "right token, wrong browser" from "wrong token"
+      // and confirm the token is valid. See `signup-session-binding.ts` for
+      // the full threat model.
+      if (!resumeStuck) {
+        const cookieValue = extractBindingCookie(req);
+        const bindingOk = cookieValue !== null
+          && verifyBinding(cookieValue, account.signup_binding_hash);
+        if (!bindingOk) {
+          await client.query('ROLLBACK');
+          inTransaction = false;
+          logger.warn(
+            {
+              event: 'signup_verify.confirm.binding_rejected',
+              route: 'signup-verify.confirm',
+              cookie_present: cookieValue !== null,
+              row_has_hash: account.signup_binding_hash !== null,
+            },
+            'signup_verify.confirm rejected: session-binding cookie missing or mismatched',
+          );
+          return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired auth token');
+        }
+      }
+
+      // Steps 1 and 2 (create_claimed_account + pg activation) only fire on
+      // the first attempt. On a stuck-resume, the chain account exists and
+      // pg already carries `username`, `custody = 'light'`, encrypted keys;
+      // jump straight to the broadcast block. `createResult` is constructed
+      // synthetically for the stuck path; only `block_num` is consumed
+      // downstream in the response body.
+      if (!resumeStuck) {
+        // Check Hive username availability
+        const [existingAccount] = await hiveClient.database.getAccounts([normalizedUsername]);
+        if (existingAccount) {
+          await client.query('ROLLBACK');
+          inTransaction = false;
+          return sendError(res, 409, 'DUPLICATE', 'Username is already taken on Hive');
+        }
+
+        // Create the Hive account
+        createResult = await createClaimedAccount(
+          normalizedUsername,
+          owner_public,
+          active_public,
+          posting_public,
+          memo_public,
+        );
+
+        // Encrypt and store posting + memo private keys
+        const postingEnc = encryptKey(normalizedUsername, posting_private);
+        const memoEnc = encryptKey(normalizedUsername, memo_private);
+
+        // Activate the account: set username, keys, custody, clear verify_token
+        // AND the signup_binding_hash — the binding has served its purpose and
+        // the row is post-signup; carrying the hash forward would let a
+        // session cookie from the signup ceremony re-use the row.
+        await client.query(
+          `UPDATE accounts
+           SET username = $1, custody = 'light', verify_token = NULL,
+               posting_key_enc = $2, iv_posting = $3,
+               memo_key_enc = $4, iv_memo = $5,
+               signup_binding_hash = NULL
+           WHERE id = $6`,
+          [
+            normalizedUsername,
+            postingEnc.ciphertext, postingEnc.iv,
+            memoEnc.ciphertext, memoEnc.iv,
+            account.id,
+          ],
+        );
+      }
+
+      // Commit + release the advisory lock before the slow accreditation
+      // broadcast. The activation is now durable; the broadcast/seed/sweep
+      // below run on the shared pool.
+      await client.query('COMMIT');
+      inTransaction = false;
+    } catch (txErr) {
+      if (inTransaction) {
+        await client.query('ROLLBACK').catch(() => undefined);
+      }
+      throw txErr;
+    } finally {
+      client.release();
     }
 
+    // Reaching here means the locked transaction committed; every reject path
+    // above returns before COMMIT, so `account` is non-null. Pin a non-null
+    // `const` for the broadcast block (the inner-try `if (!account) return`
+    // narrowing does not carry across the block boundary, and an object-literal
+    // / closure read of a mutable `let` de-narrows).
     if (!account) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired auth token');
     }
-
-    // Session-binding check. Required for the fresh-confirm path; bypassed
-    // on the stuck-recovery path because the supplied posting_private has
-    // already proved Hive-account ownership above and the row's
-    // verify_token / binding may have been cleared by the prior partial
-    // run. The reject response shape MUST equal the "invalid or expired
-    // auth token" 400 above so an attacker holding a leaked auth_token
-    // cannot distinguish "right token, wrong browser" from "wrong token"
-    // and confirm the token is valid. See `signup-session-binding.ts` for
-    // the full threat model.
-    if (!resumeStuck) {
-      const cookieValue = extractBindingCookie(req);
-      const bindingOk = cookieValue !== null
-        && verifyBinding(cookieValue, account.signup_binding_hash);
-      if (!bindingOk) {
-        logger.warn(
-          {
-            event: 'signup_verify.confirm.binding_rejected',
-            route: 'signup-verify.confirm',
-            cookie_present: cookieValue !== null,
-            row_has_hash: account.signup_binding_hash !== null,
-          },
-          'signup_verify.confirm rejected: session-binding cookie missing or mismatched',
-        );
-        return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired auth token');
-      }
-    }
-
-    // Steps 1 and 2 (create_claimed_account + pg activation) only fire on
-    // the first attempt. On a stuck-resume, the chain account exists and
-    // pg already carries `username`, `custody = 'light'`, encrypted keys;
-    // jump straight to the broadcast block. `createResult` is constructed
-    // synthetically for the stuck path; only `block_num` is consumed
-    // downstream in the response body.
-    let createResult: { block_num: number } = { block_num: 0 };
-    if (!resumeStuck) {
-      // Check Hive username availability
-      const [existingAccount] = await hiveClient.database.getAccounts([normalizedUsername]);
-      if (existingAccount) {
-        return sendError(res, 409, 'DUPLICATE', 'Username is already taken on Hive');
-      }
-
-      // Create the Hive account
-      createResult = await createClaimedAccount(
-        normalizedUsername,
-        owner_public,
-        active_public,
-        posting_public,
-        memo_public,
-      );
-
-      // Encrypt and store posting + memo private keys
-      const postingEnc = encryptKey(normalizedUsername, posting_private);
-      const memoEnc = encryptKey(normalizedUsername, memo_private);
-
-      // Activate the account: set username, keys, custody, clear verify_token
-      // AND the signup_binding_hash — the binding has served its purpose and
-      // the row is post-signup; carrying the hash forward would let a
-      // session cookie from the signup ceremony re-use the row.
-      await pool.query(
-        `UPDATE accounts
-         SET username = $1, custody = 'light', verify_token = NULL,
-             posting_key_enc = $2, iv_posting = $3,
-             memo_key_enc = $4, iv_memo = $5,
-             signup_binding_hash = NULL
-         WHERE id = $6`,
-        [
-          normalizedUsername,
-          postingEnc.ciphertext, postingEnc.iv,
-          memoEnc.ciphertext, memoEnc.iv,
-          account.id,
-        ],
-      );
-    }
+    const confirmedAccount = account;
 
     // Broadcast accreditation custom_json + seed reputation in a single
     // discrimination block. Mirrors orcid.ts handleAccredit so a broadcast
@@ -514,9 +592,9 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
         timeoutMsg: `Broadcasting accreditation timed out. ${recoveryHint}`,
         failMsg: `Failed to broadcast accreditation to Hive. ${recoveryHint}`,
         logContext: {
-          email_hash: safeHashEmailForLogs(account.email),
+          email_hash: safeHashEmailForLogs(confirmedAccount.email),
           username: normalizedUsername,
-          orcid: account.orcid ?? undefined,
+          orcid: confirmedAccount.orcid ?? undefined,
           resume_stuck: resumeStuck,
         },
         routeLabel: 'signup_verify.confirm',
@@ -560,7 +638,7 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
       } else {
         const evidenceHash = crypto
           .createHash('sha256')
-          .update(`${account.email}:${normalizedUsername}:signup`)
+          .update(`${confirmedAccount.email}:${normalizedUsername}:signup`)
           .digest('hex');
 
         const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
@@ -572,10 +650,10 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
               json: JSON.stringify({
                 action: 'accredit',
                 account: normalizedUsername,
-                name: account.full_name || normalizedUsername,
-                institution: account.institution || '',
-                field: account.field || '',
-                orcid: account.orcid || '',
+                name: confirmedAccount.full_name || normalizedUsername,
+                institution: confirmedAccount.institution || '',
+                field: confirmedAccount.field || '',
+                orcid: confirmedAccount.orcid || '',
                 method: 'email',
                 evidence_hash: evidenceHash,
                 timestamp: new Date().toISOString(),
@@ -626,12 +704,12 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
     // same ORCID via a different identifier). Sweep them clean here so a
     // leaked sibling auth_token can't be replayed against /confirm after
     // this user has already completed.
-    if (account.orcid) {
+    if (confirmedAccount.orcid) {
       await pool.query(
         `UPDATE accounts
            SET verify_token = NULL, signup_binding_hash = NULL
          WHERE orcid = $1 AND id <> $2 AND verify_token IS NOT NULL`,
-        [account.orcid, account.id],
+        [confirmedAccount.orcid, confirmedAccount.id],
       ).catch((sweepErr) => {
         // Non-fatal: the user's own row is fully active and the leak
         // window on a sibling row is bounded by its expires_at. Log so
@@ -688,112 +766,160 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
     return sendError(res, 400, 'VALIDATION_ERROR', 'Keychain signature is required');
   }
 
-  try {
-    // Look up account by auth token (must be in confirmed state).
-    // `email` is `string | null` for the same ORCID-only-signup reason
-    // documented at the sibling /confirm pg query above.
-    type LinkRow = {
-      id: number;
-      email: string | null;
-      password_hash: string | null;
-      full_name: string;
-      institution: string;
-      field: string;
-      orcid: string | null;
-      signup_binding_hash: Buffer | null;
-    };
-    const { rows } = await pool.query<LinkRow>(
-      `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
-       FROM accounts WHERE verify_token = $1`,
-      [auth_token],
-    );
+  // `email` is `string | null` for the same ORCID-only-signup reason
+  // documented at the sibling /confirm pg query above.
+  type LinkRow = {
+    id: number;
+    email: string | null;
+    password_hash: string | null;
+    full_name: string;
+    institution: string;
+    field: string;
+    orcid: string | null;
+    signup_binding_hash: Buffer | null;
+  };
 
-    // Stuck-account recovery detection (Option C). Symmetric to /confirm: if
-    // a prior /link attempt consumed the verify_token (pg activation step)
-    // but the accreditation broadcast failed, the user is locked out by the
-    // verify_token lookup failing. Recover by username-keyed fallback.
-    //
-    // This fallback bypasses the session-binding check below, so it is gated
-    // on a FRESH Keychain signature (`hiveAuthMethod === 'signature'`), not a
-    // replayable Bearer JWT. verifyHiveSignature accepts both, and a
-    // self-custody account can hold a session JWT; without this gate a stolen
-    // JWT for a stuck self-custody row would reach the binding bypass and
-    // broadcast the accreditation link with no fresh proof. A fresh signature
-    // is the per-request ownership proof that justifies skipping the binding;
-    // a JWT is not, so JWT callers fall through to the no-row 400 reject.
-    let account: LinkRow | null = rows[0] ?? null;
+  try {
+    // Critical section: lookup + activation run inside one transaction holding
+    // a per-auth_token advisory lock so concurrent /link requests for the same
+    // token cannot both pass the lookup and double-activate. See
+    // `lockSignupActivation`. Symmetric to the /confirm transaction: COMMIT
+    // before the accreditation broadcast so a slow chain round-trip never
+    // holds a DB lock.
+    let account: LinkRow | null = null;
     let resumeStuck = false;
-    if (!account && req.hiveAuthMethod === 'signature') {
-      const stuckLookup = await pool.query<LinkRow>(
+
+    const client = await pool.connect();
+    let inTransaction = false;
+    try {
+      await client.query('BEGIN');
+      inTransaction = true;
+      await lockSignupActivation(client, auth_token);
+
+      // Look up account by auth token (must be in confirmed state). Re-read
+      // inside the locked transaction so a concurrent first request that
+      // already committed (verify_token cleared) yields 0 rows here.
+      const { rows } = await client.query<LinkRow>(
         `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
-         FROM accounts
-         WHERE username = $1
-           AND verify_token IS NULL
-           AND custody = 'self'`,
-        [hiveUsername],
+         FROM accounts WHERE verify_token = $1`,
+        [auth_token],
       );
-      if (stuckLookup.rows.length > 0) {
-        account = stuckLookup.rows[0];
-        resumeStuck = true;
+
+      // Stuck-account recovery detection (Option C). Symmetric to /confirm: if
+      // a prior /link attempt consumed the verify_token (pg activation step)
+      // but the accreditation broadcast failed, the user is locked out by the
+      // verify_token lookup failing. Recover by username-keyed fallback.
+      //
+      // This fallback bypasses the session-binding check below, so it is gated
+      // on a FRESH Keychain signature (`hiveAuthMethod === 'signature'`), not a
+      // replayable Bearer JWT. verifyHiveSignature accepts both, and a
+      // self-custody account can hold a session JWT; without this gate a stolen
+      // JWT for a stuck self-custody row would reach the binding bypass and
+      // broadcast the accreditation link with no fresh proof. A fresh signature
+      // is the per-request ownership proof that justifies skipping the binding;
+      // a JWT is not, so JWT callers fall through to the no-row 400 reject.
+      account = rows[0] ?? null;
+      if (!account && req.hiveAuthMethod === 'signature') {
+        const stuckLookup = await client.query<LinkRow>(
+          `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
+           FROM accounts
+           WHERE username = $1
+             AND verify_token IS NULL
+             AND custody = 'self'`,
+          [hiveUsername],
+        );
+        if (stuckLookup.rows.length > 0) {
+          account = stuckLookup.rows[0];
+          resumeStuck = true;
+        }
       }
+
+      if (!account) {
+        await client.query('ROLLBACK');
+        inTransaction = false;
+        return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired link request');
+      }
+
+      // Session-binding check. Required for the fresh-link path; bypassed on
+      // the stuck-recovery path because the verifyHiveSignature middleware
+      // above has already proved Hive-account ownership and the row's
+      // binding may have been cleared by the prior partial run. The reject
+      // shape matches the "invalid or expired" 400 above so a leaked
+      // auth_token cannot be confirmed-as-valid via this side channel. See
+      // `signup-session-binding.ts` for the threat model.
+      if (!resumeStuck) {
+        const cookieValue = extractBindingCookie(req);
+        const bindingOk = cookieValue !== null
+          && verifyBinding(cookieValue, account.signup_binding_hash);
+        if (!bindingOk) {
+          await client.query('ROLLBACK');
+          inTransaction = false;
+          logger.warn(
+            {
+              event: 'signup_verify.link.binding_rejected',
+              route: 'signup-verify.link',
+              cookie_present: cookieValue !== null,
+              row_has_hash: account.signup_binding_hash !== null,
+            },
+            'signup_verify.link rejected: session-binding cookie missing or mismatched',
+          );
+          return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired link request');
+        }
+      }
+
+      if (!resumeStuck) {
+        // Verify the Hive account exists
+        const [hiveAccount] = await hiveClient.database.getAccounts([hiveUsername]);
+        if (!hiveAccount) {
+          await client.query('ROLLBACK');
+          inTransaction = false;
+          return sendError(res, 404, 'NOT_FOUND', 'Hive account not found');
+        }
+
+        // Check the Hive account isn't already registered
+        const { rows: existing } = await client.query<{ username: string }>(
+          'SELECT username FROM accounts WHERE username = $1',
+          [hiveUsername],
+        );
+        if (existing.length > 0) {
+          await client.query('ROLLBACK');
+          inTransaction = false;
+          return sendError(res, 409, 'DUPLICATE', 'This Hive account is already linked');
+        }
+
+        // Activate: set username, custody=self, upgraded_at, clear verify_token
+        // and the binding hash (the binding has served its purpose).
+        const now = new Date();
+        await client.query(
+          `UPDATE accounts
+           SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = $2,
+               signup_binding_hash = NULL
+           WHERE id = $3`,
+          [hiveUsername, now, account.id],
+        );
+      }
+
+      // Commit + release the advisory lock before the slow accreditation
+      // broadcast.
+      await client.query('COMMIT');
+      inTransaction = false;
+    } catch (txErr) {
+      if (inTransaction) {
+        await client.query('ROLLBACK').catch(() => undefined);
+      }
+      throw txErr;
+    } finally {
+      client.release();
     }
 
+    // Reaching here means the locked transaction committed; every reject path
+    // above returns before COMMIT, so `account` is non-null. Pin a non-null
+    // `const` for the broadcast block (see the /confirm equivalent for why the
+    // closure-boundary de-narrowing forces this).
     if (!account) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired link request');
     }
-
-    // Session-binding check. Required for the fresh-link path; bypassed on
-    // the stuck-recovery path because the verifyHiveSignature middleware
-    // above has already proved Hive-account ownership and the row's
-    // binding may have been cleared by the prior partial run. The reject
-    // shape matches the "invalid or expired" 400 above so a leaked
-    // auth_token cannot be confirmed-as-valid via this side channel. See
-    // `signup-session-binding.ts` for the threat model.
-    if (!resumeStuck) {
-      const cookieValue = extractBindingCookie(req);
-      const bindingOk = cookieValue !== null
-        && verifyBinding(cookieValue, account.signup_binding_hash);
-      if (!bindingOk) {
-        logger.warn(
-          {
-            event: 'signup_verify.link.binding_rejected',
-            route: 'signup-verify.link',
-            cookie_present: cookieValue !== null,
-            row_has_hash: account.signup_binding_hash !== null,
-          },
-          'signup_verify.link rejected: session-binding cookie missing or mismatched',
-        );
-        return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired link request');
-      }
-    }
-
-    if (!resumeStuck) {
-      // Verify the Hive account exists
-      const [hiveAccount] = await hiveClient.database.getAccounts([hiveUsername]);
-      if (!hiveAccount) {
-        return sendError(res, 404, 'NOT_FOUND', 'Hive account not found');
-      }
-
-      // Check the Hive account isn't already registered
-      const { rows: existing } = await pool.query<{ username: string }>(
-        'SELECT username FROM accounts WHERE username = $1',
-        [hiveUsername],
-      );
-      if (existing.length > 0) {
-        return sendError(res, 409, 'DUPLICATE', 'This Hive account is already linked');
-      }
-
-      // Activate: set username, custody=self, upgraded_at, clear verify_token
-      // and the binding hash (the binding has served its purpose).
-      const now = new Date();
-      await pool.query(
-        `UPDATE accounts
-         SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = $2,
-             signup_binding_hash = NULL
-         WHERE id = $3`,
-        [hiveUsername, now, account.id],
-      );
-    }
+    const linkedAccount = account;
 
     // Broadcast accreditation custom_json + seed reputation in a single
     // discrimination block. See /confirm above for full rationale
@@ -811,9 +937,9 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
         timeoutMsg: `Broadcasting accreditation timed out. ${recoveryHint}`,
         failMsg: `Failed to broadcast accreditation to Hive. ${recoveryHint}`,
         logContext: {
-          email_hash: safeHashEmailForLogs(account.email),
+          email_hash: safeHashEmailForLogs(linkedAccount.email),
           username: hiveUsername,
-          orcid: account.orcid ?? undefined,
+          orcid: linkedAccount.orcid ?? undefined,
           resume_stuck: resumeStuck,
         },
         routeLabel: 'signup_verify.link',
@@ -846,7 +972,7 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       } else {
         const evidenceHash = crypto
           .createHash('sha256')
-          .update(`${account.email}:${hiveUsername}:link`)
+          .update(`${linkedAccount.email}:${hiveUsername}:link`)
           .digest('hex');
 
         const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
@@ -858,10 +984,10 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
               json: JSON.stringify({
                 action: 'accredit',
                 account: hiveUsername,
-                name: account.full_name || hiveUsername,
-                institution: account.institution || '',
-                field: account.field || '',
-                orcid: account.orcid || '',
+                name: linkedAccount.full_name || hiveUsername,
+                institution: linkedAccount.institution || '',
+                field: linkedAccount.field || '',
+                orcid: linkedAccount.orcid || '',
                 method: 'email',
                 evidence_hash: evidenceHash,
                 timestamp: new Date().toISOString(),
@@ -895,12 +1021,12 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
     // Invalidate any sibling pending-signup rows that share this user's
     // ORCID. See `/confirm` above for the rationale (replay defence on a
     // leaked sibling auth_token after this user is fully active).
-    if (account.orcid) {
+    if (linkedAccount.orcid) {
       await pool.query(
         `UPDATE accounts
            SET verify_token = NULL, signup_binding_hash = NULL
          WHERE orcid = $1 AND id <> $2 AND verify_token IS NOT NULL`,
-        [account.orcid, account.id],
+        [linkedAccount.orcid, linkedAccount.id],
       ).catch((sweepErr) => {
         logger.warn(
           { event: 'signup_verify.link.sibling_invalidation_failed', err: sweepErr },
