@@ -307,12 +307,17 @@ describe('Settings email (with DB)', () => {
     expect(prefRows.length).toBe(0);
   });
 
-  it.skipIf(!dbReachable)('DELETE sweeps the pending_recovery staging row, and phase-2 verify on the swept row is rejected', async () => {
+  it.skipIf(!dbReachable)('DELETE sweeps the pending_recovery staging row', async () => {
     // A two-phase recovery staging row carries the would-be new email
     // (plaintext) plus an offline-crackable argon2id hash. Under data
     // minimization it must not outlive the deleted account. This pins that the
-    // email-delete transaction removes the row, and that a phase-2 verify
-    // presenting the (now gone) staged verify token can no longer apply a swap.
+    // email-delete transaction removes the row (the row-count assertion is the
+    // mutation-kill for the sweep). The follow-on phase-2 verify is an
+    // integration sanity check that no swap can apply once the account is gone;
+    // note its 400 is driven by the account-gone re-resolution branch in the
+    // verify handler, NOT by the row sweep (with the sweep dropped, the row
+    // survives but the accounts row is still deleted in the same transaction,
+    // so verify hits the same account-gone path and still returns 400).
     const pool = getAppPool()!;
     const username = `settings_pendrec_${Date.now()}`;
     const oldEmail = `settings_pendrec_${Date.now()}@example.com`;
@@ -354,8 +359,9 @@ describe('Settings email (with DB)', () => {
       const after = await pool.query('SELECT id FROM pending_recovery WHERE username = $1', [username]);
       expect(after.rows.length).toBe(0);
 
-      // Phase-2 verify on the (now gone) token is rejected; no account was
-      // recreated and no swap applied.
+      // Phase-2 verify is rejected because the account no longer exists (the
+      // account-gone re-resolution branch returns 400), not because of the row
+      // sweep. No account was recreated and no swap applied.
       const p2 = await request(app).post('/api/auth/recover/verify').send({ token: verifyToken });
       expect(p2.status).toBe(400);
       expect(p2.body.error.code).toBe('INVALID_TOKEN');

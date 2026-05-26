@@ -451,9 +451,11 @@ router.post('/recover/verify', recoverLimiter, async (req: Request, res: Respons
     // Resolve the staging row by verify-token digest. The plaintext token only
     // ever existed in the mailed link; we look up by its SHA-256.
     // The forensic digests (request_ip_hash, old_email_hash) are written at
-    // phase 1 and persist on this row; phase 2 does not re-read them — the
-    // consumed row IS the durable forensic record (see the apply transaction
-    // below for why the digests live here rather than in custody_audit_log).
+    // phase 1 and persist on this row only while the account lives; phase 2
+    // does not re-read them. They do NOT survive account deletion: the
+    // email-delete transaction sweeps the staging row outright (see the apply
+    // transaction below). The durable post-deletion forensic record is the
+    // anonymized custody_audit_log account_recovery row, not these digests.
     const { rows } = await pool.query<{
       id: number;
       username: string;
@@ -514,13 +516,15 @@ router.post('/recover/verify', recoverLimiter, async (req: Request, res: Respons
     }
 
     // Apply the swap, consume the staging row, and record the recovery in the
-    // audit log — all in one transaction. The recovery's forensic digests
-    // (requesting-IP digest, old-email digest, timestamp) live on the
-    // CONSUMED `pending_recovery` row, which is NOT swept by the account-delete
-    // anonymizer (that sweep touches only custody_audit_log /
-    // notification_preferences / accounts). So the forensic trail survives even
-    // the email-delete path: the consumed staging row records who initiated the
-    // swap and from where, durably and independently of the account row.
+    // audit log, all in one transaction. The recovery's forensic digests
+    // (requesting-IP digest, old-email digest, timestamp) live on the CONSUMED
+    // `pending_recovery` row. They do NOT survive account deletion by design:
+    // the email-delete transaction sweeps this row alongside the accounts row,
+    // because data-minimization (right-to-erasure under CNPD/GDPR) takes
+    // precedence over retaining forensic PII about a user who exercised
+    // erasure. The forensic trail that survives is the anonymized
+    // custody_audit_log account_recovery row written here, which records that a
+    // recovery occurred without retaining the erased user's contact digests.
     const client = await pool.connect();
     try {
       await client.query('BEGIN');

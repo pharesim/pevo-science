@@ -211,3 +211,28 @@ When items 1-2 land, `git mv` this file back to `tasks/review/`. The mv itself i
 Recommendation: item 1 is a `recover.ts` comment fix; item 2 is a `settings.test.ts` comment/assertion fix. Two files, naturally one small bundled commit.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-26, working tree)
+
+Both round-3 hold items landed in one bundled commit on `recover.ts` + `settings.test.ts`.
+
+**Item 1 (forensic-survival comment reconciliation, `recover.ts`).** Rewrote both stale comment locations to reflect Shape A:
+
+- The verify-token-lookup note (above the `pending_recovery` resolve-by-verify-token-digest query) now states the phase-1 forensic digests persist on the row only while the account lives, do NOT survive account deletion (the email-delete transaction sweeps the row outright), and that the durable post-deletion forensic record is the anonymized `custody_audit_log` `account_recovery` row.
+- The apply-transaction docblock now states the consumed row's forensic digests do NOT survive account deletion by design: the email-delete transaction sweeps the row alongside the `accounts` row because data-minimization (right-to-erasure under CNPD/GDPR) takes precedence over retaining forensic PII about a user who exercised erasure; the surviving forensic trail is the anonymized `custody_audit_log` `account_recovery` row.
+
+Both replacement comments anchor on stable semantics (table names, route behavior, GDPR/CNPD rationale). No task-slug, round-number, line-number, SHA, date, or relative-positional anchors. No em-dashes.
+
+**Item 2 (non-load-bearing phase-2 assertion + misleading comment, `settings.test.ts`).** Took the reword option (kept the phase-2 integration sanity check; corrected the attribution). Three edits in the `DELETE sweeps the pending_recovery staging row` spec:
+
+- Renamed the spec title to `DELETE sweeps the pending_recovery staging row` (dropped the "and phase-2 verify on the swept row is rejected" clause that implied the sweep drives the rejection).
+- The header comment now states the `after.rows.length === 0` row-count assertion is the mutation-kill for the sweep, and that the follow-on phase-2 verify is an integration sanity check whose 400 is driven by the account-gone re-resolution branch, NOT the row sweep (with the sweep dropped the row survives but the `accounts` row is still deleted in the same transaction, so verify hits the same account-gone path and still returns 400).
+- The inline comment on the phase-2 block now attributes the 400 to the account-gone re-resolution branch, not "the (now gone) token".
+
+Kept the phase-2 block rather than dropping it: it exercises the integrated `/recover/verify` path against real infrastructure, and the reword removes the mis-attribution without losing that coverage. The row-gone-then-token-rejected linkage remains covered by the supersession spec in `recover-two-phase.test.ts` per the hold-block note.
+
+**Verification.** `npm run typecheck` clean (0 errors, src + tests). `npm run lint` clean (0 errors; the single pre-existing unrelated warning in `src/lib/author-supersession.ts` is unchanged). Did not run vitest (shared real Postgres/Redis; parent runs the suite serially after merge).
+
+Note: this worktree branched from a stale parent HEAD that predated the round-2 recover work landing on `main`; fast-forwarded the worktree branch to current `main` before editing so the target files (`recover.ts`, the `settings.ts` sweep, the two-phase tests, this hold block) existed. The branch was a strict ancestor of `main`, so the fast-forward lost nothing.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
