@@ -239,11 +239,15 @@ describe('signupPage', () => {
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers');
     });
 
-    it('routes _resolveExistingAccount PENDING_SIGNUP to /signup/verify', async () => {
+    it('routes _resolveExistingAccount PENDING_SIGNUP to /signup/verify resume path', async () => {
+      // The login 409 carries only { email } — the auth_token was removed
+      // because it is the /confirm + /link row-lookup credential and must not
+      // ride in the URL. The redirect drives the user to the resume form
+      // (?resume=1), never carries auth_token, and prefills the email hint.
       mockSubmitSignup.mockRejectedValue({ code: 'DUPLICATE' });
       mockLoginWithPassword.mockRejectedValue({
         code: 'PENDING_SIGNUP',
-        data: { auth_token: 'pending-token', email: 'x@x.com' },
+        data: { email: 'x@x.com' },
       });
 
       const comp = createComponent();
@@ -258,8 +262,9 @@ describe('signupPage', () => {
 
       const navArg = mockRouterStore.navigate.mock.calls[0][0];
       expect(navArg).toContain('/signup/verify?');
-      expect(navArg).toContain('auth_token=pending-token');
+      expect(navArg).toContain('resume=1');
       expect(navArg).toContain('email=');
+      expect(navArg).not.toContain('auth_token');
     });
 
     it('falls back to /login for non-PENDING_SIGNUP login errors during DUPLICATE resolution', async () => {
@@ -564,7 +569,7 @@ describe('signupPage', () => {
       comp.destroy();
       rejectLogin(Object.assign(new Error('pending'), {
         code: 'PENDING_SIGNUP',
-        data: { auth_token: 'tok', email: 'x@y.com' },
+        data: { email: 'x@y.com' },
       }));
       await pending;
       expect(Alpine.store('router').navigate).not.toHaveBeenCalled();

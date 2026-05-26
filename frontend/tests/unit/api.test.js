@@ -9,6 +9,16 @@ vi.mock('alpinejs', () => ({
   },
 }));
 
+// linkExistingAccount signs the request with a Hive key via signRequest before
+// POSTing. Stub it so the credentials assertion below exercises the fetch shape
+// without a real key — signRequest itself is covered in sign-request.test.js.
+vi.mock('../../src/sign-request.js', () => ({
+  signRequest: vi.fn(async (_username, _method, _path, bodyObject) => ({
+    headers: { 'X-Hive-Signature': 'stub-sig' },
+    body: JSON.stringify(bodyObject),
+  })),
+}));
+
 import {
   ApiRequestError,
   fetchPlatformStats,
@@ -20,6 +30,7 @@ import {
   isRetriable503,
   resumeSignup,
   confirmAccount,
+  linkExistingAccount,
 } from '../../src/api.js';
 
 // Helper: build a mock Response-like object for fetch.
@@ -408,6 +419,14 @@ describe('signup-session-binding cookie credentials', () => {
     await confirmAccount('confirmed:x', 'alice', { owner_public: 'STM1' });
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe('/api/auth/confirm');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('same-origin');
+  });
+
+  it('linkExistingAccount sends credentials: same-origin so the binding cookie is re-sent', async () => {
+    await linkExistingAccount('confirmed:x', 'alice');
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/auth/link');
     expect(init.method).toBe('POST');
     expect(init.credentials).toBe('same-origin');
   });

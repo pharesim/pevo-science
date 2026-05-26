@@ -60,3 +60,19 @@ Implemented by a UI worker subagent. Summary:
 **Dismissed at triage (architect + user, 2026-05-26) — do not re-raise:** reliability's "handleResume conflates all errors into one generic message / no 429 backoff hint" (largely pre-existing `handleResume` behavior, a UX enhancement out of this task's scope); the learnings advisories (audit sibling `URLSearchParams` "undefined"-truthy reads, `sessionStorage` flow-state scope, a backend `/resume-signup` enumeration-oracle gate-ordering check — sibling/backend concerns or speculative, out of scope here); `verifyEmail` missing `credentials:'same-origin'` (same-origin fetch default covers it; `/verify` is a cookie-minter the SPA does not need to read the cookie from); and below-gate teardown/race confirmations from julik (all verified correct, no change).
 
 Items 1–2 are the blocking regression + its masking test; 3–5 are P2 cleanups folded into the same pass. Keep the fixes minimal — do not over-harden.
+
+## UI re-review signal (2026-05-26, working tree):
+
+All five hold-block items landed; scoped strictly to them, no over-hardening.
+
+1. **(P1)** `signup.js` `_resolveExistingAccount()` PENDING_SIGNUP catch now mirrors `login.js` / `sign-in-modal.js`: guards on bare `loginErr.code === 'PENDING_SIGNUP'` (no `&& loginErr.data`), builds `new URLSearchParams({ resume: RESUME_MARKER })`, conditionally `params.set('email', loginErr.data?.email)`, and never reads `auth_token`. The duplicate-email recovery path (`submitSignup` DUPLICATE → `_resolveExistingAccount` → login 409) now routes to the working resume form instead of dead-ending on `?auth_token=undefined`.
+
+2. **(P1)** `pages-signup.test.js` "routes _resolveExistingAccount PENDING_SIGNUP …" rewritten to the `{ email }`-only 409 contract: asserts the redirect contains `resume=1` + `email=`, and `not.toContain('auth_token')`. The sibling teardown test "DUPLICATE branch … does not navigate after destroy()" had its dead `auth_token` field dropped from the 409 mock so the fixture matches the live shape.
+
+3. **(P2)** `api.test.js` now imports `linkExistingAccount` and pins `credentials: 'same-origin'` on `/api/auth/link`, mirroring the `confirmAccount` assertion. `signRequest` is stubbed module-wide (it is the only `signRequest` consumer exercised in this file) so the fetch-shape assertion runs without a real key.
+
+4. **(P2)** `signup-verify.js`: deleted the `email: ''` declaration and both `this.email = res.data.email` assignments (`verifyToken()` + `handleResume()`) — no reader remained after the round-1 fast-path removal. The `enterChooseState` test helper in `pages-signup-verify.test.js` was correspondingly trimmed (dead `email` param + write removed) so it stays faithful to the production seed.
+
+5. **(P2)** Promoted the resume marker to `export const RESUME_MARKER = '1'` in `signup-verify.js`; the consumer (`init()`) and all three producers (`login.js`, `sign-in-modal.js`, `signup.js`) import and use it. The stale "literal '1' marker" comment in `init()` was updated to reference the constant.
+
+**Verification:** the 5 affected suites (`api`, `pages-signup`, `pages-signup-verify`, `pages-login`, `components-sign-in-modal`) pass 139/139; full unit run 1343/1343 pass; `vite build` succeeds. The 3 unhandled-rejection "errors" in the full run originate in `edit.js` `_mountEditors` (pre-existing teardown artifact, untouched by this task). No i18n keys added/changed, so no `STUBS.md` entry.

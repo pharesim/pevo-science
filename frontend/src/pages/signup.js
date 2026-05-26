@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { submitSignup, loginWithPassword, resendVerification, startOrcid } from '../api.js';
 import { isPasswordValid } from '../password-policy.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { RESUME_MARKER } from './signup-verify.js';
 
 const template = `
       <div x-data="signupPage" class="container-narrow py-8">
@@ -347,11 +348,15 @@ export function initSignupPage() {
         Alpine.store('router').navigate('/papers');
       } catch (loginErr) {
         if (!this._mounted) return;
-        if (loginErr.code === 'PENDING_SIGNUP' && loginErr.data) {
-          const params = new URLSearchParams({
-            auth_token: loginErr.data.auth_token,
-            email: loginErr.data.email,
-          });
+        if (loginErr.code === 'PENDING_SIGNUP') {
+          // Email verified but signup not completed. The login 409 no longer
+          // carries an auth_token (it is the row-lookup credential for /confirm
+          // and /link and leaked via referer/logs). Route to the resume step,
+          // which re-verifies the password via /resume-signup — that mints the
+          // binding cookie and returns a fresh auth_token in its response body.
+          // Pass only the resume marker and the email hint; never the auth_token.
+          const params = new URLSearchParams({ resume: RESUME_MARKER });
+          if (loginErr.data?.email) params.set('email', loginErr.data.email);
           Alpine.store('router').navigate(`/signup/verify?${params}`);
         } else {
           Alpine.store('router').navigate('/login');

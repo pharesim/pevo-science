@@ -4,6 +4,14 @@ import { generateMnemonic, validateMnemonic, deriveAllKeys, loadDhive } from '..
 import { isKeychainInstalled } from '../keychain.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 
+// Query-param value that marks a PENDING_SIGNUP login redirect into the resume
+// form. Shared between the producers (login.js, sign-in-modal.js, signup.js'
+// _resolveExistingAccount) that write `?resume=<RESUME_MARKER>` and the consumer
+// (this module's init()) that gates the resume landing on it. A literal typo at
+// any site would silently fall through to the invalid-link path with no signal,
+// so the producer/consumer coupling lives in one constant.
+export const RESUME_MARKER = '1';
+
 const template = `
       <div x-data="signupVerifyPage" class="container-narrow py-8">
         <div class="max-w-lg mx-auto">
@@ -255,7 +263,6 @@ export function initSignupVerifyPage() {
 
     // Auth token returned by verify/resume — used to authenticate confirm/link
     authToken: null,
-    email: '',
 
     // Create flow: username step
     username: '',
@@ -300,11 +307,11 @@ export function initSignupVerifyPage() {
       // and returns a fresh auth_token in its response body. The email is just
       // a UX prefill hint.
       //
-      // Guard on the literal '1' marker, not on the mere presence of an
+      // Guard on the shared RESUME_MARKER, not on the mere presence of an
       // auth_token/email param: a stale or absent auth_token used to encode the
       // string "undefined" here, which is truthy and silently set
       // this.authToken = "undefined", breaking every later /confirm and /link.
-      if (query.resume === '1') {
+      if (query.resume === RESUME_MARKER) {
         this.resumeFromLogin = true;
         if (query.email) this.resumeEmail = query.email;
         this.phase = 'error';
@@ -338,7 +345,6 @@ export function initSignupVerifyPage() {
         if (!this._mounted) return;
         if (res.data.flow === 'choose') {
           this.authToken = res.data.auth_token;
-          this.email = res.data.email;
           this.phase = 'choose';
         } else {
           this.phase = 'error';
@@ -529,7 +535,6 @@ export function initSignupVerifyPage() {
         if (!this._mounted) return;
         if (res.data.flow === 'choose') {
           this.authToken = res.data.auth_token;
-          this.email = res.data.email;
           this.phase = 'choose';
         } else {
           this.error = this.$t('seedPhrase.unexpectedResponse');

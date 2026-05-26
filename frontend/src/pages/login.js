@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { loginWithPassword, resendVerification, startOrcid } from '../api.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { RESUME_MARKER } from './signup-verify.js';
 
 const template = `
       <div x-data="loginPage" class="container-narrow py-8">
@@ -176,7 +177,7 @@ export function initLoginPage() {
           // and returns a fresh auth_token in its RESPONSE BODY. We pass only a
           // resume marker and the email hint in the URL; the auth_token is
           // never put in the address bar.
-          const params = new URLSearchParams({ resume: '1' });
+          const params = new URLSearchParams({ resume: RESUME_MARKER });
           if (err.data?.email) params.set('email', err.data.email);
           Alpine.store('router').navigate(`/signup/verify?${params}`);
           return;

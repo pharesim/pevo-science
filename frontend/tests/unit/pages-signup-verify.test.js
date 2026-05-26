@@ -71,12 +71,11 @@ function createComponent(query = {}) {
 }
 
 // Put a freshly created component into the post-verify/post-resume "choose"
-// state. This mirrors how verifyToken() and handleResume() seed authToken/email
-// from a RESPONSE BODY (never from a URL query param). Used by the create/link
-// flow specs below, which exercise behavior downstream of obtaining the token.
-function enterChooseState(comp, { authToken = 'tok', email = 'e@x.com' } = {}) {
+// state. This mirrors how verifyToken() and handleResume() seed authToken from
+// a RESPONSE BODY (never from a URL query param). Used by the create/link flow
+// specs below, which exercise behavior downstream of obtaining the token.
+function enterChooseState(comp, { authToken = 'tok' } = {}) {
   comp.authToken = authToken;
-  comp.email = email;
   comp.phase = 'choose';
 }
 

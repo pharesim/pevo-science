@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { loginWithPassword, resendVerification } from '../api.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { RESUME_MARKER } from '../pages/signup-verify.js';
 
 export function initSignInModal() {
   Alpine.data('signInModal', () => ({
@@ -103,7 +104,7 @@ export function initSignInModal() {
           // step where /resume-signup re-verifies the password, mints the
           // binding cookie, and returns a fresh auth_token in its response
           // body. Pass only a resume marker and the email hint in the URL.
-          const params = new URLSearchParams({ resume: '1' });
+          const params = new URLSearchParams({ resume: RESUME_MARKER });
           if (err.data?.email) params.set('email', err.data.email);
           Alpine.store('router').navigate(`/signup/verify?${params}`);
           return;
