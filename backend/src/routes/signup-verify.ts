@@ -123,6 +123,18 @@ const linkLimiter = rateLimit({ name: 'signup-link', windowMs: 3_600_000, max: 1
  * shared budget regardless of source IP — so the brute-forcer pays a
  * rate-cost on the dimension they were trying to amplify across.
  *
+ * Key derivation: the raw `auth_token` body field is attacker-controlled and
+ * bounded only by the 1MB body-parser limit, so keying directly on it (`tok:`
+ * + raw token) lets an attacker rotating arbitrarily long distinct tokens
+ * inflate the rate-limiter key set (Redis keys, or in-memory map keys on the
+ * Redis-down fallback). Hash the token to a fixed-length SHA-256 hex digest so
+ * the key length is constant (`tok:` + 64 hex chars) regardless of submitted
+ * token length. A real `confirmed:` token is fixed-length anyway
+ * (`confirmed:` + 64 hex chars from `crypto.randomBytes(32)`), so hashing does
+ * not lose any legitimate distinction: the same token always maps to the same
+ * bucket (per-token accumulation preserved — 5/token/hour still accumulates),
+ * and distinct tokens map to distinct buckets.
+ *
  * The key falls back to the IP when no auth_token is present in the body
  * (malformed request); that case is already covered by the upstream IP
  * limiter, so the fallback is essentially a no-op + double-spend on the IP
@@ -135,7 +147,10 @@ const linkLimiter = rateLimit({ name: 'signup-link', windowMs: 3_600_000, max: 1
  */
 function byAuthToken(req: Request): string {
   const token = req.body?.auth_token;
-  if (typeof token === 'string' && token.length > 0) return `tok:${token}`;
+  if (typeof token === 'string' && token.length > 0) {
+    const digest = crypto.createHash('sha256').update(token).digest('hex');
+    return `tok:${digest}`;
+  }
   return `ip:${byIp(req)}`;
 }
 

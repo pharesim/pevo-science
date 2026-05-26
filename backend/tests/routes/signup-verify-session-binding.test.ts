@@ -521,6 +521,44 @@ describe.skipIf(!dbReachable)('/link per-auth_token rate limit', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
+// /confirm per-auth_token rate limit: an arbitrarily long auth_token still
+// accumulates to the same 5/hr bucket. The key function hashes the token to a
+// fixed-length digest, so a long token neither escapes the limiter nor inflates
+// the rate-limiter key length. Regression for the unbounded-key-length surface.
+// ─────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)('/confirm per-auth_token rate limit bounds key length', () => {
+  it('a multi-kilobyte auth_token still 429s after the 6th attempt (hashed to a fixed-length bucket)', async () => {
+    await clearRateLimitKeys(['signup-confirm', 'signup-confirm-token']);
+
+    // A 4KB token: keying on the raw value would produce a 4KB+ rate-limiter
+    // key. The byAuthToken key function hashes it to `tok:` + 64 hex chars, so
+    // the bucket is fixed-length AND the same long token keeps hitting the same
+    // bucket (per-token accumulation preserved). Rotating X-Forwarded-For keeps
+    // the per-IP limiter (max 10/hr) cool so the per-token bucket is the only
+    // one that trips.
+    const longToken = `confirmed:${'ab'.repeat(2048)}`;
+    expect(longToken.length).toBeGreaterThan(4000);
+    const username = 'lenboundtarget';
+    const keys = buildKeys(username);
+
+    let last429 = false;
+    for (let i = 0; i < 6; i++) {
+      const res = await request(app)
+        .post('/api/auth/confirm')
+        .set('X-Forwarded-For', `203.0.114.${i + 1}`)
+        .send({ auth_token: longToken, username, keys });
+      if (i < 5) {
+        expect(res.status).not.toBe(429);
+      } else {
+        last429 = res.status === 429;
+      }
+    }
+    expect(last429, 'expected the 6th /confirm with the same long auth_token to 429').toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
 // Deploy-window safety: a pending row that predates migration 011 has a
 // NULL signup_binding_hash. /confirm must fail closed (verifyBinding
 // returns false for a NULL stored hash) rather than activate, and must
