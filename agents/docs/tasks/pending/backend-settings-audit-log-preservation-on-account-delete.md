@@ -79,3 +79,64 @@ Verification:
 - Lint: pass (one pre-existing warning in unrelated `author-supersession.ts`).
 - Typecheck: pass (both src and tests).
 - Targeted test: `settings.test.ts` 23/23 pass; full settings cluster 63/63 pass.
+
+## Architect review (2026-05-26) — HELD PENDING FIXES
+
+Reviewed via `/ce-code-review` on commit `8198de0d` (correctness, security,
+adversarial, testing, maintainability, project-standards, data-migrations,
+reliability, kieran-typescript, performance, learnings). The core change —
+anonymize-on-delete instead of wiping `custody_audit_log` — is sound and
+achieves the task goal. Seven items to land before archive (all triaged with
+the user 2026-05-26):
+
+1. **Reword the right-to-erasure claim; do NOT NULL `tx_id`/`block_num`.**
+   The anonymize UPDATE correctly leaves `tx_id`/`block_num`, but migration
+   009's COMMENT claims "GDPR Art. 17 right-to-erasure: no PII remains." For
+   broadcast-type rows `tx_id` resolves on any public Hive node back to the
+   signer, so that claim is inaccurate. Decision: on-chain references are
+   inherently-public data the user themselves signed; they are retained by
+   design. Correct the wording in migration 009's COMMENT(s) and the
+   `settings.ts` handler comment to say the erasure covers the username link
+   and the PII-derived columns (`user_agent`, `session_id`), NOT the
+   public-ledger `tx_id`/`block_num`. The canonical wording now lives in
+   `ARCHITECTURE.md` § 4 (architect corrected it this review) — mirror that.
+
+2. **Assert forensic columns SURVIVE the anonymize.** The new test only reads
+   back the NULLed columns, so a regression adding any forensic column to the
+   `SET … = NULL` clause passes silently. Seed a known `tx_id` and
+   `auth_mechanism` on the `author_accept` row and assert (after the delete)
+   those forensic columns retain their seeded values. This is the guardrail
+   for item 1's "tx_id survives by design" decision.
+
+3. **Pin seeded rows by id.** Capture `RETURNING id` on the seed INSERTs and
+   scope BOTH the survival query and the `finally` cleanup to `id IN (…)`
+   instead of `operation_type IN (…) AND username IS NULL AND created_at >=
+   NOW() - INTERVAL`. The current time-window/op-type identification is
+   non-deterministic and the broad `finally` DELETE can clobber anonymized
+   rows seeded by sibling tests running in parallel against the shared DB.
+   Fixing this also lets the survival assertion be `=== expected` rather than
+   `>= 3`, and removes the misleading "identify via tx_id markers" comment.
+
+4. **Fix the inverted ordering comment.** The "Order matters:" block in the
+   delete handler says the alternative order "would NULL the new row," but the
+   current INSERT-first order is exactly what NULLs the just-inserted
+   `email_deleted` row (intended). Reword so the rationale matches behavior;
+   a maintainer must not be misled into reordering and breaking the
+   email_deleted anonymization.
+
+5. **Correct the "follow-up" cleanup comment.** Migration 009's COMMENT calls
+   periodic cleanup "a follow-up," but `custody-audit-retention-sweep` already
+   deletes by `created_at` and covers anonymized (NULL-username) rows. Update
+   the COMMENT to reference the existing sweep.
+
+6. **Drop the local-variable anchor.** Migration 009's `user_agent` COMMENT
+   cites the `auditExtras` local variable as a navigation anchor. Replace it
+   with the stable route-path anchor (the `POST /api/custody/broadcast`
+   handler in `backend/src/routes/custody.ts`).
+
+7. **Guard the ROLLBACK.** The bare `await client.query('ROLLBACK')` in the
+   delete handler's `catch` can mask the original `txErr` if ROLLBACK itself
+   throws. Add `.catch(() => {})`, matching the pattern in `recover.ts`.
+
+When landed, `git mv` this file back to `tasks/review/` (the move is the
+re-review signal). Re-review will scope to the commits since this hold block.
