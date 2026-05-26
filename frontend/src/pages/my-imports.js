@@ -30,11 +30,20 @@ import { formatEta } from '../lib/format-eta.js';
 // error_code values that mark a terminal, non-retriable failure: re-POSTing
 // /register would deterministically re-fail because the upstream condition is
 // permanent. Per the error_code reference under GET /api/bridge/imports in
-// agents/docs/api-contracts/bridge.md, BAD_REQUEST means the identifier is no
-// longer resolvable or the source preprint is gone. Broadcast/service failures
-// (BROADCAST_TIMEOUT, BROADCAST_FAILED, SERVICE_UNAVAILABLE) are transient and
-// re-enqueue cleanly, so they stay retriable.
-const NON_RETRIABLE_ERROR_CODES = new Set(['BAD_REQUEST']);
+// agents/docs/api-contracts/bridge.md:
+//   - BAD_REQUEST: the identifier is no longer resolvable at dispatch or the
+//     source preprint is gone. (Its transient metadata-source variant
+//     reschedules server-side and never reaches `failed`.)
+//   - SERVICE_UNAVAILABLE: this code's only `failed`-terminal cause is "bridge
+//     posting key not configured", which needs an operator redeploy — a
+//     re-POST re-fails identically. Its other cause (HAF duplicate-check
+//     unavailable at dispatch) reschedules server-side and never reaches
+//     `failed`, so a `failed` entry carrying this code is always the terminal
+//     posting-key case.
+// Broadcast failures (BROADCAST_TIMEOUT, BROADCAST_FAILED) consume the
+// broadcast budget but a re-POST re-enqueues a fresh entry, so they stay
+// retriable.
+const NON_RETRIABLE_ERROR_CODES = new Set(['BAD_REQUEST', 'SERVICE_UNAVAILABLE']);
 
 // Map a wire queue entry (the GET /api/bridge/imports entry shape in
 // agents/docs/api-contracts/bridge.md) into the view-model the template
@@ -331,6 +340,11 @@ export function initMyImportsPage() {
       // this row. Two concurrent re-POSTs of distinct failed entries would
       // each re-enqueue and race the success reload.
       if (!entry || this.retryingId !== null) return;
+      // Demo mode (?demo=1) renders synthetic rows for design review only; a
+      // retry must never reach the live /register. The synthetic rows also
+      // omit the discipline a real submission requires, so a re-POST would
+      // deterministically 400 against the backend.
+      if (new URLSearchParams(window.location.search).has('demo')) return;
       this.retryingId = entry.id;
       try {
         await registerBridgePaper({
@@ -340,8 +354,12 @@ export function initMyImportsPage() {
           language: entry.language || undefined,
         });
         if (!this._mounted) return;
-        Alpine.store('toast').show(this.$t('bridge.queuedTitle'), 'success');
+        // Reload first, then confirm: re-check _mounted after the await so a
+        // route change during the reload can't surface the success toast on
+        // the next page.
         await this.loadEntries();
+        if (!this._mounted) return;
+        Alpine.store('toast').show(this.$t('bridge.queuedTitle'), 'success');
       } catch (err) {
         if (!this._mounted) return;
         // Discriminate the actionable rejection classes so a cap hit, an
@@ -360,11 +378,24 @@ export function initMyImportsPage() {
           return;
         }
         if (err.code === 'DUPLICATE') {
-          // The re-POST found the preprint already on chain — the import
-          // effectively succeeded. Reload so the row reflects the existing
-          // post, and tell the user it is already registered.
-          Alpine.store('toast').show(this.$t('bridge.duplicateWarning'), 'success');
+          // DUPLICATE covers two disjoint cases distinguished by err.details
+          // (see the /register DUPLICATE note in
+          // agents/docs/api-contracts/bridge.md): already on chain
+          // ({existing_author, existing_permlink}) vs. already queued
+          // ({existing_entry_id, existing_entry_state}). Only the on-chain
+          // case is "already registered on PEvO"; an already-queued duplicate
+          // is merely in flight, so frame it neutrally as queued. Reload
+          // either way so the row reflects the authoritative state, and
+          // re-check _mounted after the await before toasting. Absent
+          // discriminator fields default to the neutral message rather than
+          // falsely asserting an on-chain post.
           await this.loadEntries();
+          if (!this._mounted) return;
+          if (err.details?.existing_author || err.details?.existing_permlink) {
+            Alpine.store('toast').show(this.$t('bridge.duplicateWarning'), 'success');
+          } else {
+            Alpine.store('toast').show(this.$t('bridge.queuedTitle'), 'info');
+          }
           return;
         }
         console.warn('[my-imports retry]', err);

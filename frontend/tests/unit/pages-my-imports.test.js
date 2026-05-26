@@ -124,7 +124,7 @@ describe('myImportsPage', () => {
       expect(e.author).toBeNull(); // no existing_author → link suppressed in template
     });
 
-    it('derives retriable from error_code: BAD_REQUEST is terminal (not retriable)', async () => {
+    it('derives retriable from error_code: BAD_REQUEST and SERVICE_UNAVAILABLE are terminal, broadcast failures are transient', async () => {
       mockFetchBridgeImports.mockResolvedValue({
         data: {
           entries: [
@@ -132,6 +132,7 @@ describe('myImportsPage', () => {
             { id: 2, identifier: 'b', state: 'failed', created_at: 'x', existing_author: null, permlink: 'p', error_message: 'timeout', error_code: 'BROADCAST_TIMEOUT' },
             { id: 3, identifier: 'c', state: 'failed', created_at: 'x', existing_author: null, permlink: 'p', error_message: 'svc', error_code: 'SERVICE_UNAVAILABLE' },
             { id: 4, identifier: 'd', state: 'completed', created_at: 'x', existing_author: 'pevo.bridge', permlink: 'p', error_message: null, error_code: null },
+            { id: 5, identifier: 'e', state: 'failed', created_at: 'x', existing_author: null, permlink: 'p', error_message: 'unknown', error_code: null },
           ],
         },
       });
@@ -139,10 +140,14 @@ describe('myImportsPage', () => {
       const comp = createComponent();
       await comp.loadEntries();
       const byId = Object.fromEntries(comp.entries.map((e) => [e.id, e]));
-      expect(byId[1].retriable).toBe(false); // BAD_REQUEST → terminal
-      expect(byId[2].retriable).toBe(true); // BROADCAST_TIMEOUT → transient
-      expect(byId[3].retriable).toBe(true); // SERVICE_UNAVAILABLE → transient
+      expect(byId[1].retriable).toBe(false); // BAD_REQUEST → terminal (source gone)
+      expect(byId[2].retriable).toBe(true); // BROADCAST_TIMEOUT → transient, re-POST re-enqueues
+      expect(byId[3].retriable).toBe(false); // SERVICE_UNAVAILABLE → terminal posting-key case
       expect(byId[4].retriable).toBe(false); // completed → not a failure
+      // Fail-open default: a failed entry with no/unrecognized error_code stays
+      // retriable, so an unexpected wire shape never silently hides the Retry
+      // affordance.
+      expect(byId[5].retriable).toBe(true);
     });
 
     it('completed entry without existing_author leaves author null (View paper link suppressed)', async () => {
@@ -312,17 +317,42 @@ describe('myImportsPage', () => {
       await comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
       expect(mockToastStore.show).toHaveBeenCalledWith('bridge.lockHeldRetry', 'error');
       expect(mockToastStore.show).not.toHaveBeenCalledWith('common.error', 'error');
+      expect(comp.retryingId).toBeNull();
     });
 
-    it('treats a DUPLICATE during retry as already-registered: reloads and shows the duplicate notice', async () => {
+    it('short-circuits in demo mode (?demo=1) and never reaches the live /register', async () => {
+      setSearch('?demo=1');
+      const comp = createComponent();
+      await comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
+      expect(mockRegisterBridgePaper).not.toHaveBeenCalled();
+      expect(comp.retryingId).toBeNull();
+    });
+
+    it('treats an on-chain DUPLICATE during retry as already-registered: reloads and shows the duplicate notice', async () => {
       const dupErr = new Error('Preprint already registered');
       dupErr.code = 'DUPLICATE';
+      dupErr.details = { existing_author: 'pevo.bridge', existing_permlink: 'bridge-x' };
       mockRegisterBridgePaper.mockRejectedValue(dupErr);
       mockFetchBridgeImports.mockResolvedValue({ data: { entries: [] } });
       const comp = createComponent();
       await comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
       expect(mockToastStore.show).toHaveBeenCalledWith('bridge.duplicateWarning', 'success');
       // The list is reloaded so the row reflects the already-on-chain post.
+      expect(mockFetchBridgeImports).toHaveBeenCalledTimes(1);
+      expect(comp.retryingId).toBeNull();
+    });
+
+    it('treats an already-queued DUPLICATE during retry as in-flight: reloads and shows a neutral queued notice (not "already registered")', async () => {
+      const dupErr = new Error('Preprint already queued');
+      dupErr.code = 'DUPLICATE';
+      dupErr.details = { existing_entry_id: 88, existing_entry_state: 'pending' };
+      mockRegisterBridgePaper.mockRejectedValue(dupErr);
+      mockFetchBridgeImports.mockResolvedValue({ data: { entries: [] } });
+      const comp = createComponent();
+      await comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
+      // An in-flight duplicate is queued, not on chain — neutral framing only.
+      expect(mockToastStore.show).toHaveBeenCalledWith('bridge.queuedTitle', 'info');
+      expect(mockToastStore.show).not.toHaveBeenCalledWith('bridge.duplicateWarning', 'success');
       expect(mockFetchBridgeImports).toHaveBeenCalledTimes(1);
       expect(comp.retryingId).toBeNull();
     });
@@ -406,8 +436,10 @@ describe('myImportsPage', () => {
       comp.destroy(); // route change tears the component down mid-fetch
       resolveFetch({ data: { entries: [{ id: 1, identifier: 'x', state: 'pending', created_at: 'x' }] } });
       await p;
-      // No post-teardown writes: entries stays empty, loading is not reset true→false.
+      // No post-teardown writes: entries stays empty, loading is not reset
+      // true→false (the finally's reset is gated behind _mounted).
       expect(comp.entries).toEqual([]);
+      expect(comp.loading).toBe(true);
       expect(comp._mounted).toBe(false);
     });
 
