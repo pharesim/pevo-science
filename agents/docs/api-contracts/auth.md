@@ -367,7 +367,7 @@ Invalidates all existing sessions for the account.
 
 ### POST /api/auth/recover
 
-Recover a light account when the user has lost access to their email. Requires either a seed-phrase-derived memo key or a verified ORCID token as proof of identity.
+Recover a light account when the user has lost access to their email. Requires either a seed-phrase-derived memo key or a verified ORCID token as proof of identity. The two paths behave differently. The memo-key (seed-phrase) path is **two-phase**: it stages the requested change and does not touch the account until the new email proves control via `POST /api/auth/recover/verify`. The ORCID path applies immediately, because the fresh OAuth round-trip is itself the email-side control proof the memo-key path lacks.
 
 **Body (seed phrase recovery):**
 
@@ -380,7 +380,7 @@ Recover a light account when the user has lost access to their email. Requires e
 }
 ```
 
-- `new_password` is **required** on seed-phrase recovery. Memo-key knowledge is the only credential the user just proved; forcing a fresh password keeps the account password-loginable.
+- `new_password` is **required** on seed-phrase recovery. Memo-key knowledge is the only credential the user just proved, so forcing a fresh password keeps the account password-loginable.
 
 **Body (ORCID recovery):**
 
@@ -393,12 +393,25 @@ Recover a light account when the user has lost access to their email. Requires e
 }
 ```
 
-- `new_password` is **optional** on ORCID recovery. When omitted, null, or empty, `password_hash` is set to `NULL` — password login is disabled for the account until the user opts in via `POST /api/settings/set-password`. Subsequent password-login attempts return `403 NO_PASSWORD_SET`. Seed-phrase recovery remains available on null-hash accounts.
-- When supplied, the password must meet the signup policy (10+ chars with lowercase, uppercase, and numbers — same `isPasswordValid` helper used by signup).
+- `new_password` is **optional** on ORCID recovery. When omitted, null, or empty, `password_hash` is set to `NULL`, which disables password login until the user opts in via `POST /api/settings/set-password`. Subsequent password-login attempts return `403 NO_PASSWORD_SET`. Seed-phrase recovery remains available on null-hash accounts.
+- When supplied, the password must meet the signup policy (10+ chars with lowercase, uppercase, and numbers, the same `isPasswordValid` helper used by signup).
 
-For ORCID recovery, obtain `orcid_token` via `POST /api/orcid/start` (mode: `signup`) and `POST /api/orcid/callback` first. The backend verifies the ORCID iD from the token matches the account's stored ORCID. Note: the ORCID recovery path does not re-check `ORCID_MIN_WORKS`. It only verifies identity match, since the ORCID was already validated during signup.
+For ORCID recovery, obtain `orcid_token` via `POST /api/orcid/start` (mode: `signup`) and `POST /api/orcid/callback` first. The backend verifies the ORCID iD from the token matches the account's stored ORCID. Note: the ORCID recovery path does not re-check `ORCID_MIN_WORKS`. It only verifies identity match, since the ORCID was already validated during signup. ORCID recovery is severed once the account has upgraded to self-custody (state D): a `upgraded_at IS NOT NULL` account is under on-chain (Keychain) control, and a stored ORCID link must not trigger a server-side rebind.
 
-**Response `data`:**
+**Response `data` is path-dependent.**
+
+**Seed-phrase (memo-key) path, success (200):** phase 1 only. Nothing on the account changes yet, and no token or JWT is returned.
+
+```json
+{
+  "recovery": "pending_verification",
+  "message": "Confirm the recovery by clicking the link sent to n***w@***.edu."
+}
+```
+
+Phase 1 verifies the memo key, then stages the requested swap (new email plus the pre-hashed new password) in a server-side staging row. It mails a verification link to the **new** email (proof of control, which gates phase 2) and a dispute link to the **old** email so the prior owner can void the swap. The `message` names a masked form of the new email. The swap applies only when the new mailbox confirms via `POST /api/auth/recover/verify`. A repeated phase-1 request for the same username supersedes any earlier un-confirmed staging row.
+
+**ORCID path, success (200):** applies immediately. Updates email, sets or drops the password per `new_password`, invalidates all existing sessions, and returns a new JWT (same envelope as `POST /api/auth/login`).
 
 ```json
 {
@@ -409,13 +422,82 @@ For ORCID recovery, obtain `orcid_token` via `POST /api/orcid/start` (mode: `sig
 }
 ```
 
-Updates email, resets password, invalidates all existing sessions, and returns a new JWT.
-
-**Rate limit:** 10 requests per IP per hour.
+**Rate limit:** 10 requests per IP per hour, shared across `POST /api/auth/recover`, `POST /api/auth/recover/verify`, and `POST /api/auth/recover/dispute` (one combined `auth-recover` counter keyed by IP).
 
 **Errors:**
-- `VALIDATION_ERROR` — missing fields, weak password, no recovery method provided, OR **both `memo_key` and `orcid_token` supplied simultaneously**. Exactly one credential must be presented. Message: `"Supply exactly one of memo_key or orcid_token, not both"`.
-- `NOT_FOUND` — no active account with that username
-- `UNAUTHORIZED` — memo key mismatch, no ORCID on account, invalid/expired ORCID token, or ORCID mismatch
-- `DUPLICATE` — new email already in use by another account
-- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
+- `VALIDATION_ERROR` (400): missing fields, weak password, no recovery method provided, OR **both `memo_key` and `orcid_token` supplied simultaneously**. Exactly one credential must be presented. Message: `"Supply exactly one of memo_key or orcid_token, not both"`.
+- `NOT_FOUND` (404): no active account with that username.
+- `UNAUTHORIZED` (401): memo key mismatch, account has no stored memo key, no ORCID on account, ORCID recovery attempted on an account that has upgraded to self-custody, or invalid/expired/mismatched ORCID token. The message is generic so the route is not an upgrade-state or account-state oracle.
+- `DUPLICATE` (409): new email already in use by another account.
+- `SERVICE_UNAVAILABLE` (503): argon2 capacity exhausted or backend draining (the memo-key path and password-bearing ORCID path both run argon2). See [common.md](common.md).
+
+---
+
+### POST /api/auth/recover/verify
+
+Phase 2 of memo-key recovery. The holder of the **new** email clicks the link mailed in phase 1, proving control of that mailbox, which applies the staged email/password swap. Not used by the ORCID path (which applies in one step).
+
+**Body:**
+
+```json
+{
+  "token": "the verify token from the recovery link"
+}
+```
+
+**Response `data`, success (200):** the swap is applied (email updated, password set from the phase-1 staged hash, all existing sessions invalidated) and a new JWT is returned, identical in shape to the login envelope.
+
+```json
+{
+  "token": "eyJhbG...",
+  "expires_at": "2026-04-19T12:00:00.000Z",
+  "custody": "light",
+  "username": "researcher1"
+}
+```
+
+The verify token expires 24 hours after phase 1.
+
+**Rate limit:** shared `auth-recover` counter (see `POST /api/auth/recover`).
+
+**Errors:**
+- `VALIDATION_ERROR` (400): missing or empty `token`.
+- `INVALID_TOKEN` (400): the staging row was not found, already consumed, disputed by the old email-holder, or expired. Also returned when the account was deleted or upgraded to self-custody between phase 1 and phase 2. All of these collapse to one generic message so the link is not a dispute-status or account-state oracle. There is no machine-readable `details.reason` discriminator; the SPA may string-match the message text if it needs to distinguish the expired case for copy.
+- `DUPLICATE` (409): the new email was claimed by another account between phase 1 and phase 2.
+- `INTERNAL_ERROR` (503): the application database is unavailable. This path runs no argon2, so it has no argon2-capacity 503.
+
+---
+
+### POST /api/auth/recover/dispute
+
+Lets the holder of the **old** email void a staged memo-key recovery. The dispute link is mailed to the old address in phase 1. Clicking it within the dispute window stops a not-yet-confirmed swap from ever applying.
+
+**Body:**
+
+```json
+{
+  "token": "the dispute token from the notification email"
+}
+```
+
+**Response `data`, success (200):**
+
+```json
+{
+  "disputed": true,
+  "message": "The recovery request has been stopped. No change has been made to your account."
+}
+```
+
+Idempotent: clicking the link twice returns the same 200 (the staging row's `disputed_at` is set with `COALESCE(disputed_at, NOW())`, so only the first click records the timestamp). The dispute window is 48 hours from phase 1, intentionally longer than the 24-hour verify window so the prior owner has more time to react. If the swap already applied (the new mailbox confirmed within the first 24 hours) before the dispute is filed, the dispute is recorded for forensics in `custody_audit_log` but the applied swap is **not** rolled back; the success message is uniform either way so the link is not a swap-status oracle.
+
+**Rate limit:** shared `auth-recover` counter (see `POST /api/auth/recover`).
+
+**Errors:**
+- `VALIDATION_ERROR` (400): missing or empty `token`.
+- `INVALID_TOKEN` (400): dispute token not found, or past the 48-hour dispute window.
+- `INTERNAL_ERROR` (503): the application database is unavailable.
+
+**Dispute-mail PII convention.** The dispute notification mailed to the old address names only the **domain** of the new email (via the `emailDomain()` helper), never the full address. This is a deliberate data-minimization choice (CNPD-defensible under the Portugal jurisdiction): a passive attacker who staged a hostile rebind, or anyone who later reads the old mailbox, cannot confirm the exact target address from the notification. Preserve this domain-only framing in any future copy edit to the dispute email.
+
+**Recovery forensic trail and erasure.** The phase-1 staging row carries forensic digests (a SHA-256 digest of the requesting IP, a digest of the old email, plus timestamps) for abuse correlation. These digests live on the `pending_recovery` row only while the account exists: the `DELETE /api/settings/email` transaction sweeps the staging row along with the account data, so the forensic digests do **not** survive a user exercising right-to-erasure. The durable post-deletion record of a recovery is the anonymized `account_recovery` row in `custody_audit_log`, which notes that a recovery occurred without retaining the erased user's contact digests. The staging row is not a durable forensic store.
