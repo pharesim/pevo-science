@@ -232,3 +232,15 @@ B. **Cover the post-reload teardown guard.** The teardown test exercises the pre
 
 Move back to `review/` once A and B land.
 
+## UI re-review signal (2026-05-26, commit f22937a2) — round-2 items A, B landed
+
+Both remaining items landed in `my-imports.js` plus companion tests; this file returns to `review/`.
+
+A. **View-paper link for ALL completed entries.** `adaptEntry`'s author resolution widened to `author: wire.author ?? wire.existing_author ?? null`, preferring the contract's resolved `author` (set for completed entries: the bridge account on a fresh broadcast, `existing_author` on a permlink collision) and falling back to bare `existing_author` for any older/partial wire shape. Confirmed against the live `GET /api/bridge/imports` shape in `bridge.md` (`serializeQueueRow` returns `author = existing_author ?? hiveBridgeAccount` for completed rows). The demo completed row (`buildDemoEntries`) dropped the `existing_author`/`existing_permlink` simulation and now carries the real wire `author` field, so the `?demo=1` affordance exercises the same widened path. New unit test pins the fresh-broadcast case (`author` set, `existing_author` null → author resolves, permlink present → link renders); the prior suppression-on-null test stays.
+
+B. **Post-reload teardown coverage.** New test in the teardown-guard block: re-POST succeeds, the post-success `loadEntries()` reload parks, `destroy()` fires mid-reload, the reload resolves — asserting the success toast does NOT fire. Exercises the second `_mounted` recheck after `await this.loadEntries()` (the toast-after-await reorder), distinct from the pre-reload guard the existing test covers.
+
+**No i18n change** (reused already-shipped keys); **no `STUBS.md` change**.
+
+**Verification:** affected unit suites green (`pages-my-imports` 30 / `pages-bridge` 52 / `lib-format-eta` 5, plus the merged login/signup-verify/sign-in-modal/api suites). `vite build` succeeds. E2E not re-run (no backend contract change; the changed adapter/teardown surfaces are unit-covered).
+
