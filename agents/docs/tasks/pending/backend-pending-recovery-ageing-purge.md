@@ -43,3 +43,15 @@ Added a TTL ageing purge for `pending_recovery` mirroring the bridge-queue `purg
 **Verification.** `npm run typecheck` clean (src + tests); `npm run lint` clean on `recovery-purge.ts`, `index.ts`, and the test; scoped `npx vitest run tests/recovery-purge.test.ts` → 3/3 green. Self-audit on changed lines: no task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in the source/test files.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-05-26) — HELD PENDING FIXES:
+
+`/ce-code-review` (correctness, data-integrity, reliability, security, testing, project-standards, learnings) on the implementation. The core logic is correct: the NULL-`dispute_expires_at`-escapes-the-predicate hazard is structurally impossible (migration 012 declares the column `NOT NULL` and the staging INSERT always supplies a value), the threshold math and the start/stop/`.unref()` lifecycle mirror the bridge-queue purge faithfully, and the DELETE-vs-scrub decision is sound (the durable forensic record is `custody_audit_log`). Three items to land before archive:
+
+1. **Run the first purge at boot, not only after the first 1h interval.** `startRecoveryPurge` registers the `setInterval` but fires no immediate tick, so a deploy or restart leaves rows already past their grace in the table for up to an hour. The sibling jobs `startSignupCleanup` and the custody-audit retention sweep both run an immediate first pass at boot precisely to clear backlog on restart. These rows hold the most sensitive deferred PII of any sibling job (plaintext new email + offline-crackable argon2id hash), so the up-to-1h wait is a concrete data-minimization gap, not a theoretical one. Fire the purge tick once before registering the interval, matching the signup-cleanup shape. Safe — the start call runs after the app DB pool is initialized.
+
+2. **Drop the boot-time `recovery.purge_started` info log.** No sibling maintenance ticker emits a structured start log (the retention sweep emits nothing at start). Per the project's log-volume guidance, prune it while you are in the file. Keep the `deleted > 0` info and the failure warn.
+
+3. **Pin the state-uniform deletion contract with a test.** The module docblock and the DELETE both assert rows are purged "regardless of consumed/disputed/expired state," but every current test row is expired-unused. Seed a consumed row and a disputed row whose dispute window closed beyond the grace and assert both are deleted, so a future mutation narrowing the predicate (e.g. adding `AND consumed_at IS NULL`) is caught.
+
+Dismissed / not blocking: no index on `dispute_expires_at` (acceptable at beta volume, same posture the bridge-queue purge accepts; revisit before production volume above roughly 10k rows); `request_ip_hash` / `old_email_hash` not preserved past the purge (accepted minimization trade-off — an optional `COMMENT ON TABLE` noting it would close the doc gap); the ~72h total retention window (defensible CNPD balancing of clock-skew and edge-of-window dispute clicks).
