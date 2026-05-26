@@ -1,0 +1,43 @@
+# BACKEND-APPROVE-AUTHORSHIP-SIGNER-GATE — gate the approve_authorship auto-accept on the post-author/bridge signer
+
+**Owner:** backend
+**Created:** 2026-05-26 (architect, surfaced by `/ce-code-review` adversarial during the `backend-claimer-orcids-accreditation-authority-gate` review; verified at the code level by the architect against `hive-schemas.md` § 2.10)
+**Priority:** P1 (reputation integrity — live forgery path)
+
+## Problem
+
+The "Explicitly approved" arm of the authorship-claim resolver does NOT verify who signed the `approve_authorship` op. Per `hive-schemas.md` § 2.10, an `approve_authorship` op's `required_posting_auths` MUST be `["<post_author>"]` or `["<HIVE_BRIDGE_ACCOUNT>"]` — the post author (or bridge admin) approves a co-author's claim. But both the reputation cycle and the read surface match the approve op only on its broadcaster-controlled JSON fields, with no signer check:
+
+- `backend/src/reputation.ts` `computeReputationBatch` → `accepted_claims` "Explicitly approved" `EXISTS` arm matches `ap.action = 'approve_authorship' AND ap.claimer = ce.claimer AND ap.paper_author = ce.paper_author AND ap.paper_permlink = ce.paper_permlink AND ap.block_num > ce.block_num`. The `claim_events` CTE that feeds it carries no approver/signer column and applies no `required_posting_auths` filter.
+- `backend/src/hafsql.ts` `authorshipClaimsCteBody` → `authorship_claims` `WHEN EXISTS (… approvals ap …) THEN 'accepted'` has the same shape and the same gap. Its `approvals` CTE is `SELECT … FROM claim_events WHERE action = 'approve_authorship'` with no signer gate.
+
+### Exploit (verified reachable at the code level)
+
+1. Attacker is already accredited (required to enter `target_users`).
+2. Attacker self-broadcasts `custom_json { id: <appTag>, json: { action: 'claim_authorship', claimer: <self>, paper_author: <victim>, paper_permlink: <p>, author_index: <i> } }` signed with their own posting key.
+3. Attacker self-broadcasts `custom_json { id: <appTag>, json: { action: 'approve_authorship', claimer: <self>, paper_author: <victim>, paper_permlink: <p> } }` signed with their own posting key. Per § 2.10 this op is only valid when signed by `<victim>` or the bridge account, but the SQL never checks the signer.
+4. The "Explicitly approved" arm matches (`ap.claimer = <self>`, `ap.paper_author = <victim>`, …), so the claim resolves to `accepted` → the attacker accrues co-author reputation credit on the victim's paper every cycle, and shows as an accepted co-author on the read surface.
+
+Both ops are permissionless on Hive and bypass the backend route guard entirely (`routes/claims.ts` enforces the signer for API-driven approvals, but a direct chain broadcast never touches the route). This is the SAME invariant class `backend-claimer-orcids-accreditation-authority-gate` just closed on the ORCID arm — a user must never be able to send a *valid* trust-granting op — reachable here via the approve arm instead. The hive-username auto-accept arm is NOT affected (it requires `authors[i].hive = ce.claimer`, which the attacker cannot forge on a victim's paper).
+
+## Goal
+
+Gate the `approve_authorship` trust read on the op signer in BOTH surfaces, mirroring § 2.10:
+
+1. **Carry the approver/signer through the approve source.** Project `cj.required_posting_auths ->> 0 AS approver` (the on-chain signer) alongside the existing fields in `claim_events` (and thus into `hafsql.ts`'s `approvals` CTE).
+2. **Constrain the approved arm** so an approve counts only when `approver` is the post author or the configured bridge account: `AND ap.approver IN (ap.paper_author, $<bridgeParam>)`. Apply this in `reputation.ts` `accepted_claims` (both the approved `EXISTS` and the `MAX(approve_block)` subquery inside the revoke-override) and in `hafsql.ts` `authorshipClaimsCteBody`'s `approvals` source, so the cycle and read surface stay consistent. Confirm the bridge approved-co-author flow (bridge admin endpoint, § 2.10 field note) still resolves to `accepted`.
+3. **Behavioral regression** (real Postgres, synthetic VALUES, no-mock-DB stance + clause-(c) header): seed a self-signed approve (signer = claimer, not paper_author) → claim NOT accepted; an approve signed by `paper_author` → accepted (control); an approve signed by the bridge account → accepted (control). A targeted revert of the new signer predicate must turn the self-signed assertion red. Mirror the synthetic-fragment approach in `reputation-orcid-auto-accept-authority-gate.test.ts`.
+
+## Acceptance criteria
+
+- The `approve_authorship` arm in both `reputation.ts` and `hafsql.ts` admits an approve only when its `required_posting_auths[0]` is the post author or the bridge account.
+- The exploit above no longer resolves to `accepted`; legitimate author-signed and bridge-signed approves still do.
+- The revoke-override `MAX(approve_block)` subquery uses the same signer constraint (a self-signed approve must not be able to out-rank a legitimate revoke and silently re-accept a revoked claim).
+- Reputation remains reproducible from public on-chain data; no off-chain state introduced.
+- Comments anchor on stable symbols (no task slugs, round numbers, line numbers, or SHAs in production/test source).
+
+## Notes
+
+- `config.hiveBridgeAccount` is the bridge account already threaded through `validPevoPaperWhere('bridge')` and the notifications query; reuse it rather than introducing a new config field.
+- The sibling `claim_approved` / `claim_pending` notification arms in `notification-queries.ts` were flagged by the same adversarial pass as also signer-ungated (P2 nuisance-spam, not a trust grant). Surface for triage; out of this task's reputation-integrity scope unless trivially covered by the same change.
+- `revoke_authorship` is intentionally permissive on its signer per § 2.11 (the claimer may self-revoke, and author/bridge/admin may revoke). Do NOT add a post-author-only gate to the revoke arm; revoke only removes credit.
