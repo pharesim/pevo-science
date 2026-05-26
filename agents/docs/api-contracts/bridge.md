@@ -239,13 +239,16 @@ Entries are scoped to the authenticated `X-Hive-Username`. There is no caller-co
       "id": 42,
       "operation_kind": "register",
       "identifier": "2301.12345",
+      "title": "Attention Is All You Need",
       "permlink": "bridge-arxiv-2301-12345",
+      "author": "pevo.bridge",
       "discipline": "Computer Science",
       "keywords": ["transformers"],
       "language": "en",
       "state": "completed",
       "attempts": 1,
       "scheduled_at": "2026-05-26T14:05:00.000Z",
+      "eta_seconds": null,
       "tx_id": "abc123...",
       "error_code": null,
       "error_message": null,
@@ -268,15 +271,18 @@ Entries are scoped to the authenticated `X-Hive-Username`. There is no caller-co
 | `id` | number | Queue entry id. |
 | `operation_kind` | string | `"register"`. The column is general to allow future bridge operations. |
 | `identifier` | string | The submitted identifier. |
+| `title` | string \| null | The source preprint title resolved at register time. `null` only if metadata had not resolved when the row was created. The SPA labels the row with this, falling back to `identifier`. |
 | `permlink` | string | The deterministic bridge permlink. |
+| `author` | string \| null | The Hive author of the resulting bridge post (`HIVE_BRIDGE_ACCOUNT`), populated once `state` is `completed`; `null` while non-terminal. On a permlink-collision short-circuit it equals `existing_author`. Together with `permlink` this is the link target for the completed post, so the SPA does not need the bridge account injected separately. |
 | `discipline`, `keywords`, `language` | | As submitted. |
 | `state` | string | `pending`, `in_progress`, `completed`, or `failed`. |
 | `attempts` | number | Broadcast attempts consumed. Pre-broadcast transient outages (metadata or HAF unavailable, or a post-broadcast completion-write failure) do NOT increment this. |
 | `scheduled_at` | string (ISO 8601) | Next dispatch time. |
+| `eta_seconds` | number \| null | Best-effort estimate (seconds) until this entry dispatches, derived from its queue position and the 5-minute chain cooldown, on the same basis as the `/register` 202 `eta_seconds`. Present for non-terminal (`pending`/`in_progress`) entries; `null` for terminal (`completed`/`failed`) entries and when no estimate is available. |
 | `tx_id` | string \| null | Hive transaction id once the broadcast lands; `null` before. |
 | `error_code` | string \| null | Last error classification (values below). `null` on success or while pending with no prior error. |
 | `error_message` | string \| null | Human-readable last error. |
-| `existing_author`, `existing_permlink` | string \| null | Set when the entry resolved to an already-on-chain post (permlink-collision short-circuit; the entry completes pointing at the existing post). |
+| `existing_author`, `existing_permlink` | string \| null | Set when the entry resolved to an already-on-chain post (permlink-collision short-circuit; the entry completes pointing at the existing post). `existing_author` equals `author` in that case. |
 | `created_at` | string (ISO 8601) | Enqueue time. |
 | `completed_at` | string (ISO 8601) \| null | Terminal time (`completed` or `failed`); `null` while non-terminal. |
 
