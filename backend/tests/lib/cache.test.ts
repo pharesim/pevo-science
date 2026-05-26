@@ -185,6 +185,73 @@ describe('QueryCache.getOrSet — single-flight coalescing', () => {
     expect(await cache.get('stable-key')).toEqual({ value: 'stable-value' });
   });
 
+  it('invalidate() during an in-flight STABLE fetcher suppresses the post-resolution cache write', async () => {
+    // Converse of the clearVolatile()/STABLE case: `invalidate(key)`
+    // targets a specific key regardless of tier and DELETES it, so it
+    // bumps BOTH epochs. A stable-key fetcher in flight when invalidate()
+    // fires must NOT write its pre-invalidation snapshot back — the
+    // stable gate keys on `stableEpoch`, which invalidate() advanced.
+    //
+    // Mutation-kill: dropping `this.stableEpoch++` from `invalidate()`
+    // leaves the captured stableEpoch matching, so the stable gate passes
+    // and the snapshot is re-cached — flipping the final assertion RED.
+    const fetcher = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return { value: 'stale-stable-snapshot' };
+    });
+
+    const inflightCall = cache.getOrSet('stable-invalidate-key', fetcher, undefined, true);
+
+    // Short delay so the in-flight slot is registered before the awaited
+    // 50ms timeout fires, then invalidate the stable key mid-flight.
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.invalidate('stable-invalidate-key');
+
+    // The in-flight caller still receives the value (callers get data;
+    // the cache stays cold).
+    const inflightResult = await inflightCall;
+    expect(inflightResult).toEqual({ value: 'stale-stable-snapshot' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Post-condition: cache is cold. invalidate() bumped stableEpoch, so
+    // the stable fetcher's write was suppressed.
+    expect(await cache.get('stable-invalidate-key')).toBeUndefined();
+  });
+
+  it('clearVolatile() during an in-flight NON-stable fetcher suppresses the post-resolution cache write', async () => {
+    // Converse of the clearVolatile()/STABLE case: a NON-stable entry IS
+    // deleted by `clearVolatile()`, so its in-flight fetcher must NOT
+    // write its pre-flush snapshot back. The non-stable gate keys on BOTH
+    // epochs; clearVolatile() advanced `volatileEpoch`, so the write is
+    // suppressed.
+    //
+    // Mutation-kill: dropping the `volatileEpoch` conjunct from the
+    // non-stable branch (so it reads only `stableEpoch`, which
+    // clearVolatile() leaves untouched) lets the gate pass and the stale
+    // snapshot is re-cached — flipping the final assertion RED.
+    const fetcher = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return { value: 'stale-volatile-snapshot' };
+    });
+
+    // Non-stable fetcher (stable defaults to false).
+    const inflightCall = cache.getOrSet('volatile-key', fetcher);
+
+    // Short delay so the in-flight slot is registered before the awaited
+    // 50ms timeout fires, then a block tick clears volatile entries.
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.clearVolatile();
+
+    // The in-flight caller still receives the value.
+    const inflightResult = await inflightCall;
+    expect(inflightResult).toEqual({ value: 'stale-volatile-snapshot' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Post-condition: cache is cold. clearVolatile() bumped volatileEpoch,
+    // so the non-stable fetcher's write was suppressed.
+    expect(await cache.get('volatile-key')).toBeUndefined();
+  });
+
   it('in-flight map entry is cleared on fetcher throw (next call retries fresh)', async () => {
     // First wave: fetcher throws. All concurrent awaiters see the
     // rejection AND the slot is cleared so a subsequent call retries

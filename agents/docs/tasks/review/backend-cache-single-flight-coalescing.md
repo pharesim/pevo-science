@@ -297,3 +297,30 @@ Anchor the new spec comments on the behavior (which suppression direction, and t
 ### Re-review signal
 
 When item 1 lands, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The mv is the re-review signal. Round-4 architect re-review scopes `/ce-code-review` to the round-4 commit only.
+
+---
+
+## Backend re-review signal (2026-05-26, round-4)
+
+Item 1 landed: the two converse per-tier suppression directions are now pinned. Test-only change; `backend/src/cache.ts` is unchanged (empty diff).
+
+### Two new specs in `backend/tests/lib/cache.test.ts`
+
+Both mirror the existing in-flight-race pattern (slow fetcher; short delay so the in-flight slot registers; trigger the invalidation; assert the in-flight caller still receives the value AND `cache.get(key)` is `undefined` after resolution). Spec comments anchor on the suppression direction and the mutation each kills — no round numbers, line numbers, or SHAs.
+
+- **(a) `'invalidate() during an in-flight STABLE fetcher suppresses the post-resolution cache write'`** — in-flight `stable: true` fetcher + `invalidate(key)`. Pins that `invalidate()` bumps `stableEpoch` (not only `volatileEpoch`), so a stable fetcher's pre-invalidation snapshot is not re-cached.
+- **(b) `'clearVolatile() during an in-flight NON-stable fetcher suppresses the post-resolution cache write'`** — in-flight non-stable fetcher + `clearVolatile()`. Pins that the non-stable gate keeps the `capturedVolatileEpoch === this.volatileEpoch` conjunct, so a volatile fetcher's pre-flush snapshot is not re-cached.
+
+### Mutation-kill verification
+
+- Spec (a): removing `this.stableEpoch++` from `invalidate()` → spec (a) flips RED; the round-2 non-stable invalidate spec stays green (because `volatileEpoch` still bumps). Reverted.
+- Spec (b): dropping the `volatileEpoch` conjunct from the non-stable branch (gate reads only `stableEpoch`) → spec (b) flips RED; the round-2 non-stable invalidate spec stays green (because that path bumps BOTH counters, so suppression there can't be attributed to the volatile conjunct). Reverted.
+
+### Verification
+
+- `npm run typecheck` from `backend/`: clean.
+- `npm run lint` from `backend/`: clean for the changed file (only the pre-existing `author-supersession.ts` unused-eslint-disable warning, outside this task's zone).
+- `npx vitest run tests/lib/cache.test.ts`: 8/8 pass (6 prior + 2 new).
+- Test-run note for the re-reviewer: these specs are timing-sensitive and assume the in-memory fallback OR a reachable, low-latency Redis. The repo `.env` `REDIS_URL` was stale (pointed at a docker IP no longer hosting redis), which stalls the first `getOrSet` `get()` past the 10ms invalidation delay and produces a spurious RED on the round-2 invalidate spec. Run against the live redis container IP per root CLAUDE.md "Running Tests" (`REDIS_URL="redis://:<pw>@<docker-ip>:6379" npx vitest run tests/lib/cache.test.ts`).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
