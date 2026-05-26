@@ -253,10 +253,10 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
       // claim wins when no self-claim seen). Self-claiming scenarios are
       // outside the spoof-detection model — a co-author who self-claims
       // an ORCID is the SSoT for their own ORCID by chain construction.
-      rootAuthors: [{ hive: 'bob' }],
+      rootAuthors: [{ name: 'Bob', hive: 'bob' }],
       headAuthors: [
-        { hive: 'alice', orcid: 'forged-orcid-by-bob' },
-        { hive: 'bob' },
+        { name: 'Alice', hive: 'alice', orcid: 'forged-orcid-by-bob' },
+        { name: 'Bob', hive: 'bob' },
       ],
       // alice is NOT in active accreditations (she's been revoked).
       // bob is still active for chain-walk admission purposes.
@@ -303,10 +303,10 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
     const warnSpy = vi.spyOn(logger, 'warn');
     seedTwoLinkChain({
       // Same self-claim avoidance shape as the single-cycle canary above.
-      rootAuthors: [{ hive: 'bob' }],
+      rootAuthors: [{ name: 'Bob', hive: 'bob' }],
       headAuthors: [
-        { hive: 'alice', orcid: 'forged-orcid-by-bob' },
-        { hive: 'bob' },
+        { name: 'Alice', hive: 'alice', orcid: 'forged-orcid-by-bob' },
+        { name: 'Bob', hive: 'bob' },
       ],
       accredited: ['bob'], // alice currently revoked (second revoke)
       accreditedOrcids: [{ account: 'bob', orcid: '0000-0000-0000-5678' }],
@@ -341,10 +341,10 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
       // Same self-claim avoidance shape — bob's forged claim about alice
       // must win the cumulative-union so the active-arm rule #3 audit
       // primitive engages.
-      rootAuthors: [{ hive: 'bob' }],
+      rootAuthors: [{ name: 'Bob', hive: 'bob' }],
       headAuthors: [
-        { hive: 'alice', orcid: 'forged-orcid-by-bob' },
-        { hive: 'bob' },
+        { name: 'Alice', hive: 'alice', orcid: 'forged-orcid-by-bob' },
+        { name: 'Bob', hive: 'bob' },
       ],
       accredited: ['alice', 'bob'], // alice currently active
       accreditedOrcids: [
@@ -377,10 +377,10 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
     seedTwoLinkChain({
       // Same self-claim avoidance shape so bob's claim about alice wins
       // (matching the spoof scenarios' chain construction).
-      rootAuthors: [{ hive: 'bob' }],
+      rootAuthors: [{ name: 'Bob', hive: 'bob' }],
       headAuthors: [
-        { hive: 'alice', orcid: '0000-0000-0000-1234' },
-        { hive: 'bob' },
+        { name: 'Alice', hive: 'alice', orcid: '0000-0000-0000-1234' },
+        { name: 'Bob', hive: 'bob' },
       ],
       accredited: ['bob'],
       accreditedOrcids: [{ account: 'bob', orcid: '0000-0000-0000-5678' }],
@@ -411,10 +411,10 @@ describe('GET /api/papers/:author/:permlink — orcid_claim_mismatch audit (post
       // Same self-claim avoidance shape as the other spoof canaries —
       // bob's forged claim about alice wins the cumulative-union, alice
       // never self-claims, so case (d) of the active arm engages.
-      rootAuthors: [{ hive: 'bob' }],
+      rootAuthors: [{ name: 'Bob', hive: 'bob' }],
       headAuthors: [
-        { hive: 'alice', orcid: 'forged-orcid-by-bob' },
-        { hive: 'bob' },
+        { name: 'Alice', hive: 'alice', orcid: 'forged-orcid-by-bob' },
+        { name: 'Bob', hive: 'bob' },
       ],
       accredited: ['alice', 'bob'], // alice currently active
       accreditedOrcids: [

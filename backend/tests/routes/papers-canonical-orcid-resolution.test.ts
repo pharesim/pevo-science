@@ -238,7 +238,7 @@ describe('GET /api/papers — ORCID supersession projection on list endpoint', (
             permlink: 'p1',
             title: 'Test',
             abstract: 'A',
-            json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }] } },
+            json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }] } },
             created: '2026-04-01T00:00:00Z',
             net_votes: 0,
             review_count: 0,
@@ -734,7 +734,7 @@ describe('?version=N and metadata_restored fallback branches apply applyAuthorSu
               app: `${config.appTag}/test`,
               [config.appTag]: {
                 type: 'paper',
-                authors: [{ hive: 'alice' }],
+                authors: [{ name: 'Alice', hive: 'alice' }],
               },
             },
           }],

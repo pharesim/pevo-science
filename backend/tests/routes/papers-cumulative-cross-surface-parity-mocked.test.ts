@@ -51,8 +51,8 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
     // because alice's root self-claim cannot be removed by a later
     // broadcaster's metadata edit.
     const chainPosts = [
-      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } },
-      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ hive: 'bob' }] } },
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }] } },
+      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Bob', hive: 'bob' }] } },
     ];
     const result = await resolveChainCumulativeAuthors('alice', 'p1', {
       accreditedAccounts: new Set(['alice', 'bob']),
@@ -75,8 +75,8 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
     // subsequent listing-shape call (no prebuilt) hitting the same root
     // pair must short-circuit on the cache hit and return the same value.
     const chainPosts = [
-      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } },
-      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ hive: 'bob' }] } },
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }] } },
+      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Bob', hive: 'bob' }] } },
     ];
     const ctx = {
       accreditedAccounts: new Set(['alice', 'bob']),
@@ -126,7 +126,7 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
     // divergence between cached and live shapes that surfaces as a missing-
     // carrier bug on multi-author single-link papers.
     const singleLinkPosts = [
-      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } },
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }] } },
     ];
     const ctx = {
       accreditedAccounts: new Set(['alice', 'bob']),
@@ -165,11 +165,11 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
     //     `post.pevo.authors`. The pre-existing Promise.all + try/catch
     //     pattern absorbs the throw.
     const validChain = [
-      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } },
-      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ hive: 'bob' }] } },
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }] } },
+      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Bob', hive: 'bob' }] } },
     ];
     const poisonedChain = [
-      { author: 'poisoned', permlink: 'x1', pevo: { type: 'paper', authors: [{ hive: 'poisoned' }] } },
+      { author: 'poisoned', permlink: 'x1', pevo: { type: 'paper', authors: [{ name: 'Poisoned', hive: 'poisoned' }] } },
       // Second link with `pevo: null as any` throws when the cumulative-union
       // loop reads `post.pevo.authors`.
       { author: 'poisoned-cont', permlink: 'x2', pevo: null as unknown as Record<string, unknown> },
@@ -228,9 +228,9 @@ describe('resolveChainCumulativeAuthors — cumulative-union construction', () =
     // appears in a third chain post but is not accredited. accredited_authors
     // is the strict intersection with the active accreditation set.
     const chainPosts = [
-      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ hive: 'alice' }] } },
-      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } },
-      { author: 'carol', permlink: 'v3', pevo: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }, { hive: 'carol' }] } },
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }] } },
+      { author: 'bob', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }] } },
+      { author: 'carol', permlink: 'v3', pevo: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }, { name: 'Carol', hive: 'carol' }] } },
     ];
     const result = await resolveChainCumulativeAuthors('alice', 'p1', {
       accreditedAccounts: new Set(['bob']),

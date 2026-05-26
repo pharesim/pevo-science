@@ -183,7 +183,7 @@ describe('review parity invariant: synthetic-VALUES fallback (Postgres-side)', (
       const paperMeta = JSON.stringify({
         pevotest: {
           type: 'paper',
-          authors: [{ hive: 'alice' }, { hive: 'bob' }],
+          authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
         },
       });
       const reviewMeta = JSON.stringify({

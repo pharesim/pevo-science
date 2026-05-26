@@ -86,7 +86,7 @@ function userPapersRow(author: string, permlink: string, ipfsCid: unknown) {
       app: `${config.appTag}/test`,
       [config.appTag]: {
         type: 'paper',
-        authors: [{ hive: author }],
+        authors: [{ name: 'Paper Author', hive: author }],
         ipfs_cid: ipfsCid,
       },
     },

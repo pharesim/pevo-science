@@ -203,7 +203,7 @@ describe('GET /api/profile/:username/papers — HAF outage on fetchUserPapersFro
               permlink: 'paper-x',
               title: 'A Title',
               body: 'body excerpt',
-              json_metadata: JSON.stringify({ pevotest: { type: 'paper', authors: [{ hive: 'alice' }] } }),
+              json_metadata: JSON.stringify({ pevotest: { type: 'paper', authors: [{ name: 'Alice', hive: 'alice' }] } }),
               created: '2026-01-01T00:00:00',
             },
           ],

@@ -55,7 +55,7 @@ describe('paper_reviews self-exclusion canary (synthetic-VALUES)', () => {
       const paperMeta = JSON.stringify({
         pevotest: {
           type: 'paper',
-          authors: [{ hive: 'alice' }, { hive: 'bob' }],
+          authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
         },
       });
       const fiveRating = JSON.stringify({
