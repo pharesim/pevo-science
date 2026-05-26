@@ -42,10 +42,15 @@
  *      (paired with the self-review-exclusion task hold item #6 ask:
  *      reverting either inline filter would let a paper author receive
  *      "you reviewed your own paper" notifications).
+ *   4. The accreditation_update arm carries the required_posting_auths
+ *      authority gate, so only an accredit/revoke op signed by an
+ *      accreditation authority produces a notification — a self-broadcast
+ *      op naming the recipient cannot push a spurious accreditation_update.
  *
  * Mutation kill: removing INNER from arm 1a's JOIN, dropping the
- * validPevoPaperWhere predicate from arm 1a, or removing `co.author != $1`
- * from either arm fails the corresponding canary below.
+ * validPevoPaperWhere predicate from arm 1a, removing `co.author != $1`
+ * from either arm, or dropping the required_posting_auths gate from the
+ * accreditation_update arm fails the corresponding canary below.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -170,5 +175,20 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     // hold #6 + `defense-in-depth-canary-must-pin-each-layer-2026-05-07`).
     const occurrences = (sql.match(/co\.author != \$1/g) ?? []).length;
     expect(occurrences).toBe(2);
+  });
+
+  it('accreditation_update arm carries the required_posting_auths authority gate', async () => {
+    const sql = await captureNotificationsSql();
+    // The accreditation-update feed reads accredit/revoke ops directly to
+    // notify the recipient. Without the authority gate, a self-broadcast
+    // accredit/revoke op naming the recipient (signed with any posting key)
+    // pushes a spurious accreditation_update notification. Isolate the arm
+    // (from its event-type tag to the next arm's tag) and assert the gate
+    // lives inside it — `required_posting_auths ?|` also appears in the
+    // accred_ranked CTE, so a bare substring check would pass even after a
+    // revert of this arm's gate.
+    const arm = sql.match(/'accreditation_update'::text[\s\S]*?'new_vouch'::text/);
+    expect(arm, 'accreditation_update arm not found in captured SQL').not.toBeNull();
+    expect(arm![0]).toMatch(/required_posting_auths \?\|/);
   });
 });

@@ -125,6 +125,7 @@ export async function fetchNotificationsFromHaf(
     const at = `$${accredCte.nextIdx}`;       // appTag for WHERE clauses
     const al = `$${accredCte.nextIdx + 1}`;   // appTag/% LIKE pattern
     const bridgeParam = `$${accredCte.nextIdx + 2}`; // hiveBridgeAccount
+    const authoritiesParam = `$${accredCte.nextIdx - 1}`; // accreditationAuthorities (last accredCte param) — authority gate on the accreditation-update feed
     const result = await pool.query(
       `WITH ${accredCte.sql},
 
@@ -272,6 +273,13 @@ export async function fetchNotificationsFromHaf(
       WHERE cj.custom_id = ${at}
         AND cj.json::jsonb ->> 'account' = $1
         AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+        -- Authority gate: only an accredit/revoke op signed by an
+        -- accreditation authority produces a notification. Without it, a
+        -- self-broadcast accredit/revoke op naming this account (signed with
+        -- any posting key) would push a spurious accreditation_update. Same
+        -- required_posting_auths gate the trust reads use (accred_ranked in
+        -- activeAccreditationsCteBody, the per-account accreditation reads).
+        AND cj.required_posting_auths ?| ${authoritiesParam}::text[]
         AND cj.block_num > $2
 
       UNION ALL
