@@ -62,3 +62,16 @@ Landed at commit `0162862b` (new file `backend/tests/routes/reviews-real-haf.tes
 When items 1–2 land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal. Round-1-fix re-review scopes `/ce-code-review` to the fix commit only. Both items are a one-line comment rewrite + a one-line assertion in the same new test file; no production change.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-26)
+
+Both round-1 items landed in `backend/tests/routes/reviews-real-haf.test.ts` (test-only, no production change):
+
+- **Item 1 (coordination-anchor rot).** The trailing comment on the unaccredited-author 404 branch no longer cites "per task acceptance #3". It now reads that seeding such an account against the public HAF DB "requires a controlled chain account and is not feasible per-test" — anchored on the behavioral reason, not the acceptance-criterion number.
+- **Item 2 (`created` projection assertion).** Added `expect(typeof data.created).toBe('string')` in the 200-path shape block, with a comment noting `created` is projected from `c.created` and pg serializes the timestamp to an ISO string in the JSON envelope; a CTE regression dropping the column would surface as `undefined` and flip the assertion RED.
+
+Verification: `npm run typecheck` clean (src + tests); `npm run lint` clean on the test file; targeted `npx vitest run tests/routes/reviews-real-haf.test.ts` green against real HAF — the 404 path and the 200-path (walked the live corpus, found a reviewed paper) both exercised.
+
+Moves the task back to review/.

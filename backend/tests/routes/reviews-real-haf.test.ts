@@ -124,6 +124,11 @@ describe('GET /api/reviews/:author/:permlink (real HAF)', () => {
       expect(data.author).toBe(reviewAuthor);
       expect(data.permlink).toBe(reviewPermlink);
       expect(typeof data.body).toBe('string');
+      // `created` is projected from `c.created`; a CTE regression dropping the
+      // column would surface as undefined. pg serializes the timestamp to an
+      // ISO string in the JSON envelope, so the tolerant shape check is a
+      // string-type assertion.
+      expect(typeof data.created).toBe('string');
       expect(data.rating).toBeTruthy();
       // Rating sub-keys mirror the `buildReviewDetail` default shape.
       expect(data.rating).toHaveProperty('methodology');
@@ -168,8 +173,9 @@ describe('GET /api/reviews/:author/:permlink (real HAF)', () => {
   // broadcasting a review-shaped comment under an unaccredited Hive
   // account cannot be located reliably on the public chain (the spam
   // vector exists in theory, but seeding such an account against the
-  // public HAF DB is impractical per task acceptance #3). Confirmed
-  // none surfaces via the listing walk above. That branch remains
+  // public HAF DB requires a controlled chain account and is not
+  // feasible per-test). Confirmed none surfaces via the listing walk
+  // above. That branch remains
   // pinned in mocked-pool coverage at `reviews.test.ts`'s SQL
   // accreditation gate describe block. The real-HAF predicate-set
   // equality is exercised at `review-parity-invariant.test.ts` for
