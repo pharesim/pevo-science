@@ -130,3 +130,18 @@ Fix: add value-pin assertions alongside the constant-based ones — `expect(IV_L
 When items 1–2 land in a single round-3 commit, `git mv` this file back to `tasks/review/`. The mv is the re-review signal. Round-3 architect re-review scopes `/ce-code-review` to the round-3 commit only. Both items are one-line `expect(...).toBe(...)` additions in the existing test file; no production change.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-26)
+
+Both round-3 items landed in `backend/tests/lib/custody-crypto.test.ts` (test-only, no production change), restoring the independent value pins the round-2 constant-dedup had made tautological:
+
+- **Item 1 (HKDF prefix value pin).** A dedicated `it('pins the HKDF info prefix value …')` in the canonical-derivation describe block asserts `expect(HKDF_INFO_PREFIX).toBe('pevo:custody:')`. A change to the exported prefix value now flips this RED independently of the shared-constant derivation (which would otherwise update both sides together and pass green while every stored custody ciphertext became undecryptable).
+- **Item 2 (IV / tag length value pins).** `expect(IV_LENGTH).toBe(12)` added in the IV-non-reuse block alongside the existing `expect(iv.length).toBe(IV_LENGTH)`; `expect(AUTH_TAG_LENGTH).toBe(16)` added in the GCM-tag block alongside the existing constant-sourced length assertion. The constant-sourced assertions stay (they catch divergence between `randomBytes(IV_LENGTH)` and the declared constant); the value pins catch a constant-VALUE drift that would break stored-ciphertext interoperability.
+
+Each addition carries a comment anchored on behavioral semantics (stored-ciphertext interoperability, forgery resistance) — no slug, round number, line number, or SHA.
+
+Verification: `npm run typecheck` clean (src + tests); `npm run lint` clean on the test file; targeted `npx vitest run tests/lib/custody-crypto.test.ts` green.
+
+Moves the task back to review/.

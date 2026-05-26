@@ -126,6 +126,11 @@ describe('custody-crypto: IV non-reuse (semantic security)', () => {
     // constant production uses, so a deliberate change updates both sides
     // together.
     expect(iv.length).toBe(IV_LENGTH);
+    // Value pin: the constant-sourced assertion above stays green even if
+    // IV_LENGTH itself drifted, since both sides read the same export. Pin the
+    // concrete 12-byte GCM nonce size so a 12→N change in the constant flips
+    // this RED — stored ciphertexts are only interoperable at a 12-byte IV.
+    expect(IV_LENGTH).toBe(12);
   });
 });
 
@@ -138,6 +143,11 @@ describe('custody-crypto: GCM auth tag is present in the ciphertext envelope', (
     // (which pads to the 16-byte block boundary) or to a stream cipher
     // without an appended tag would change this invariant.
     expect(ciphertext.length).toBe(Buffer.byteLength(plaintext, 'utf8') + AUTH_TAG_LENGTH);
+    // Value pin: the constant-sourced assertion above stays green even if
+    // AUTH_TAG_LENGTH itself drifted. Pin the concrete 16-byte GCM tag size so
+    // a 16→N change flips this RED — a shorter tag weakens forgery resistance
+    // and breaks stored-ciphertext interoperability.
+    expect(AUTH_TAG_LENGTH).toBe(16);
   });
 
   it('the trailing auth-tag slice is not all zero', () => {
@@ -221,6 +231,18 @@ describe('custody-crypto: HKDF derives deterministic per-username keys', () => {
   // pass per call but new ciphertexts would be unreadable by later code paths
   // that re-derive the key, which is precisely the recovery-flow failure
   // mode the validation here is meant to lock in.
+
+  // Value pin for the HKDF info prefix. Production `deriveKey` and the
+  // canonical-derivation check below both read the exported HKDF_INFO_PREFIX,
+  // so a change to its VALUE updates both sides together and the round-trip
+  // stays green — yet changing the prefix makes every already-stored custody
+  // ciphertext permanently undecryptable on the recovery/broadcast paths.
+  // This standalone assertion is the independent pin: any change to the
+  // prefix value flips it RED.
+  it('pins the HKDF info prefix value (stored-ciphertext interoperability)', () => {
+    expect(HKDF_INFO_PREFIX).toBe('pevo:custody:');
+  });
+
   it('the same username + master produces ciphertext decryptable across independent encrypt+decrypt pairs', () => {
     const first = encryptKey('alice', SAMPLE_WIF);
     const second = encryptKey('alice', SAMPLE_WIF);
