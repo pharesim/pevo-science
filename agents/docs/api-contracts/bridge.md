@@ -140,7 +140,7 @@ The `author` is the bridge account (not the requesting user). The requesting use
 **Errors:**
 - `UNAUTHORIZED` — invalid signature
 - `FORBIDDEN` — user is not accredited
-- `BAD_REQUEST` — missing identifier, invalid discipline, or identifier not found at source
+- `BAD_REQUEST` — missing identifier, invalid discipline, or identifier not found at source. Also returned with **HTTP 415** when the request `Content-Type` is not `application/json`: the body never parses under `express.json`, so the request is rejected inside `validateRegisterBody` before the rate limiter runs (no slot consumed). The error `code` stays `BAD_REQUEST` because the response envelope has no `UNSUPPORTED_MEDIA_TYPE` code; only the HTTP status is 415.
 - `DUPLICATE` (HTTP 409) — preprint already registered on PEvO. `error.details` includes `existing_author` and `existing_permlink` pointing at the existing post.
 - `LOCK_HELD` (HTTP 409) — a concurrent `/register` for the same preprint is in flight and holds the Redis lock. Retriable shortly. `error.details`: `{retriable: true}`. Distinct from `DUPLICATE` so SPA / integrators can switch on `err.code` without parsing the message string.
 - `BROADCAST_TIMEOUT` (504) — broadcast timed out before chain confirmation. Message: `"Broadcasting bridge paper registration timed out"`. Details: `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}` (`timeout_ms` is present; these routes always use the timer-fire path). The broadcast may have landed; verify via the chain before retrying. See [common.md → Broadcast Error Envelopes](common.md).
