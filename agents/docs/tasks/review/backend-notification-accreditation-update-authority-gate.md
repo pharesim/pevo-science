@@ -43,3 +43,15 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 2. **Companion test gap (land with item 1):** the SQL-shape canary asserts `required_posting_auths ?|` is present inside the `accreditation_update` arm but does not assert that the gate's placeholder binds to the `accreditationAuthorities` value. A `nextIdx`-shift regression (the exact failure mode of item 1) would change the placeholder to a different `$N` while the `?|` text stays, and the canary would remain green. Add an assertion that pins the bound param so the canary catches the mis-binding class.
 
 When both land, `git mv` this file back to `tasks/review/` — the move is the re-review signal. Do not edit this hold block; the commit diff is the evidence.
+
+---
+
+## Backend re-review signal (2026-05-26, commit `4af9e555`)
+
+Both hold items landed:
+
+1. **Forward-anchored the authorities placeholder.** Introduced `accredStartIdx = 4` and changed `authoritiesParam` from the backward `$${accredCte.nextIdx - 1}` to the forward `$${accredStartIdx + 1}` (the authorities array is the 2nd of `activeAccreditationsCteBody`'s two params — custom_id, authorities). The comment anchors on that stable two-param contract. The forward expression resolves to the same `$5` it does today, so behavior is unchanged; a future bound param added to `activeAccreditationsCteBody` now shifts this in step rather than silently mis-resolving.
+
+2. **Pinned the gate's bound value in the canary.** `notifications-arm-sql-shape.test.ts`'s capture helper now returns `{ sql, params }`; the new canary isolates the `accreditation_update` arm, extracts the gate's `$N` placeholder, and asserts `params[N-1]` deep-equals `config.accreditationAuthorities`. A `nextIdx`-shift that moved the placeholder to a different `$N` (item 1's failure mode) would leave the prior text-only canary green but fails this one.
+
+Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean on touched files (pre-existing `any` warnings at the hoisted mock factory unchanged); `notifications-arm-sql-shape.test.ts` (5 canaries incl. the new binding assertion) green against real Postgres in the full suite. No task-slug/round/line-number/SHA anchors in the added production or test source (the SHA above is in this coordination file, which is permitted).
