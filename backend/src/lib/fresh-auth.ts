@@ -82,26 +82,32 @@ export type FreshAuthMechanism = 'password' | 'orcid';
  *    actions issue a `custom_json` op on chain (see `CONSENT_OP_ACTIONS`
  *    above), and the `root_*` fields come from the paper being acted on.
  *
- *  - **Non-broadcast critical actions:** `set_password` and `change_email`
- *    bind to `(action, <authenticated username>, '')` via per-action helpers
- *    below (`setPasswordFreshAuthTarget`, `changeEmailFreshAuthTarget`).
+ *  - **Non-broadcast critical actions:** `set_password`, `change_email`, and
+ *    `delete_account` bind to `(action, <authenticated username>, '')` via
+ *    per-action helpers below (`setPasswordFreshAuthTarget`,
+ *    `changeEmailFreshAuthTarget`, `deleteAccountFreshAuthTarget`).
  *    Empty `root_permlink` is collision-free against consent-op proofs
  *    because the route layer for consent ops forbids empty `root_permlink`
  *    strings. `set_password` transitions state C → state B per
  *    ARCHITECTURE.md § 6.3 and requires fresh ORCID re-auth per § 6.4;
  *    `change_email` transitions the address that receives password-reset
  *    tokens (auth-adjacent factor), so the JWT-only path is closed via a
- *    body-proof check per § 6.5 invariant #1.
+ *    body-proof check per § 6.5 invariant #1; `delete_account` erases the
+ *    account row (the de-facto right-to-erasure exit, A/B/C/D → [no row] per
+ *    § 6.3) and so is likewise a critical action gated per § 6.4.
  *
  *  Collision-freedom across the union hinges on the `action` field in
  *  `computeFreshAuthTargetHash`: even two non-broadcast actions that share
  *  the same `(<username>, '')` tail produce distinct target hashes because
- *  `action` is length-prefixed into the encoded bytes. */
+ *  `action` is length-prefixed into the encoded bytes. This is the property
+ *  that stops a proof minted for one action (e.g. `change_email`) being
+ *  replayed against another (e.g. `delete_account`). */
 export type FreshAuthTargetAction =
   | 'author_accept'
   | 'author_resign'
   | 'set_password'
-  | 'change_email';
+  | 'change_email'
+  | 'delete_account';
 
 /** Round-5 hold #3: shape of the per-op target the fresh-auth proof
  *  binds to. The triple is reduced to a SHA-256 hash at issuance time
@@ -235,6 +241,23 @@ function isFreshAuthKind(value: unknown): value is FreshAuthKind {
  *  separately as a follow-up. */
 export function changeEmailFreshAuthTarget(username: string): FreshAuthTarget {
   return { action: 'change_email', root_author: username, root_permlink: '' };
+}
+
+/** Target-binding helper for the `delete_account` critical action.
+ *  Account deletion is the de-facto right-to-erasure exit — the route runs
+ *  `DELETE FROM accounts WHERE username = $1` plus related deletes and
+ *  anonymizes the audit log, transitioning A/B/C/D to the no-row state. Like
+ *  `change_email` it is per-user (not per-broadcast), so the proof binds to
+ *  `(delete_account, <username>, '')`; `root_permlink` is empty so the
+ *  target-hash domain stays collision-free against consent-op proofs (which
+ *  require non-empty `root_permlink` at the route layer). The distinct
+ *  `action` value is load-bearing: it prevents a proof minted for
+ *  `change_email` or `set_password` (which share the `(<username>, '')` tail)
+ *  from authorizing an account erasure. Used by `routes/settings.ts` DELETE
+ *  `/email`; the issuance side widens `POST /api/custody/fresh-auth`
+ *  (password) and `POST /api/orcid/start { mode: 'fresh_auth' }` (ORCID). */
+export function deleteAccountFreshAuthTarget(username: string): FreshAuthTarget {
+  return { action: 'delete_account', root_author: username, root_permlink: '' };
 }
 
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are

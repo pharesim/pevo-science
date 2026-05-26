@@ -27,6 +27,7 @@ import { assertNever } from '../util/assertNever.js';
 import { seedAccreditationBonus } from '../reputation.js';
 import {
   changeEmailFreshAuthTarget,
+  deleteAccountFreshAuthTarget,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
   setPasswordFreshAuthTarget,
@@ -344,11 +345,13 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   // ARCHITECTURE.md § 6.3) and has no paper. The target binds to the
   // authenticated username via `root_author`; `root_permlink` is forced
   // empty so the resulting hash cannot collide with any consent-op proof
-  // (consent ops require non-empty `root_permlink` at this layer).
+  // (consent ops require non-empty `root_permlink` at this layer). The
+  // `delete_account` action (right-to-erasure exit, A/B/C/D → [no row] per
+  // § 6.3) is the ORCID-mechanism issuance side for state C / state B / D.
   let freshAuthTarget: FreshAuthTarget | undefined;
   if (mode === 'fresh_auth') {
     const { action, root_author: rootAuthor, root_permlink: rootPermlink } = startParsed.data;
-    if (action === 'set_password' || action === 'change_email') {
+    if (action === 'set_password' || action === 'change_email' || action === 'delete_account') {
       // Non-broadcast actions bind the target to the authenticated
       // username. The invariant "`username` is set when `mode === 'fresh_auth'`"
       // is enforced by middleware composition (`AUTHENTICATED_MODES`
@@ -369,6 +372,12 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
       }
       if (action === 'set_password') {
         freshAuthTarget = setPasswordFreshAuthTarget(username);
+      } else if (action === 'delete_account') {
+        // Non-broadcast target. Same shape as set_password / change_email:
+        // target binds to (action, <authenticated username>, ''); request
+        // body does not carry root_author / root_permlink. Helper enforces
+        // the bind so a future refactor cannot re-introduce the inline literal.
+        freshAuthTarget = deleteAccountFreshAuthTarget(username);
       } else {
         // Non-broadcast target. Same shape as set_password: target binds to
         // (action, <authenticated username>, ''); request body does not carry
@@ -393,7 +402,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         res,
         400,
         'VALIDATION_ERROR',
-        'action must be one of: author_accept, author_resign, set_password, change_email',
+        'action must be one of: author_accept, author_resign, set_password, change_email, delete_account',
       );
     }
   }

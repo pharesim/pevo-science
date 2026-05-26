@@ -50,3 +50,25 @@ The user-facing deletion confirmation UX (clear "all PEvO data is erased" + "you
 
 - Re-auditing the other settings routes (covered by the change-email cluster, now archived).
 - Renaming the endpoint. `DELETE /api/settings/email` erasing the whole account (rather than just nulling the email column) is surprising REST, but renaming is an API-shape change out of scope for this security gate; note it for a possible future task rather than bundling it here.
+
+## Backend completion signal (2026-05-26)
+
+Gate landed, mirroring the change-email consume side present at `POST /api/settings/email`.
+
+- **fresh-auth.ts.** Added `delete_account` to the `FreshAuthTargetAction` union and a `deleteAccountFreshAuthTarget(username)` helper binding `(delete_account, <username>, '')`. The distinct `action` value (length-prefixed into the target hash) is what blocks a change-email / set-password proof from being replayed as an erasure.
+- **settings.ts `DELETE /email`.** Reads `req.hiveAuthMethod`. On the JWT path it consumes a `fresh_auth_proof` bound to the delete-account target: missing/expired → `401 FRESH_AUTH_REQUIRED`; username/target/kind mismatch → `403` (a change-email or set-password proof rejects with `target_mismatch`); a mechanism not registered on the account → `401` with `reason: wrong_mechanism` (closed-default per § 6.4: A→password, B→either, C→ORCID, D→preserved). The gate runs after the row-existence check and before the destructive transaction. The Keychain (Hive-signature) path requires no body proof (fresh at the middleware).
+- **Mint paths widened.** `POST /api/custody/fresh-auth` (password mechanism) and `POST /api/orcid/start { mode: 'fresh_auth' }` (ORCID mechanism) accept `action: 'delete_account'`.
+
+**Test.** `tests/routes/settings-email-delete-fresh-auth.test.ts` (new, auth-focused, real `verifyHiveSignature` — no `MOCK_VERIFY_SIGNATURE`): JWT no-proof → 401 missing; valid `delete_account` proof → 200 + account erased (states A and C); cross-action `change_email`/`set_password` proofs → 403 target_mismatch (not erased); wrong-mechanism (state A + ORCID proof) → 401 (not erased); real Hive-signature Keychain request with no body proof → 200 + erased (self-custody / state-D no-regression). Only `hiveClient.database.getAccounts` is stubbed for a deterministic keypair; the signature path runs real cryptographic recovery + posting-key match.
+
+**Verification.** `npm run typecheck` clean (src + tests); `npm run lint` clean on touched files; targeted `npx vitest run tests/routes/settings-email-delete-fresh-auth.test.ts` green against real Postgres/Redis (10 specs).
+
+### [TODO Architect] — contract + ARCHITECTURE edits (architect-owned; backend did NOT touch them)
+
+1. **`agents/docs/api-contracts/settings.md`** — document the new `DELETE /api/settings/email` re-auth requirement (integrator-facing, no emdashes):
+   - JWT (Bearer) path requires a body `fresh_auth_proof` minted for the `delete_account` action. Obtain via `POST /api/custody/fresh-auth { action: "delete_account" }` (password mechanism, states A/B) or `POST /api/orcid/start { mode: "fresh_auth", action: "delete_account" }` then `POST /api/orcid/callback` (ORCID mechanism, states B/C/D). The proof mechanism must match a factor registered on the account (A password, B password or ORCID, C ORCID, D preserved).
+   - Keychain (Hive-signature) path requires no body proof.
+   - Error shapes: missing/expired proof → `401 FRESH_AUTH_REQUIRED` with `details.reason` of `missing` or `expired`; proof bound to a different user/target/kind → `403 FRESH_AUTH_REQUIRED` with `details.reason` of `username_mismatch` / `target_mismatch` / `kind_mismatch` (a change-email or set-password proof → `target_mismatch`); mechanism not registered → `401 FRESH_AUTH_REQUIRED` with `details.reason` of `wrong_mechanism`.
+2. **`agents/docs/ARCHITECTURE.md` § 6.4** — the "Delete account data / right-to-erasure" row's "gate not yet implemented" marker can be updated to reference the implementing commit (task goal item 5).
+
+Moves the task to review/.

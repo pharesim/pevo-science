@@ -19,6 +19,7 @@ import {
   changeEmailFreshAuthTarget,
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
+  deleteAccountFreshAuthTarget,
   setPasswordFreshAuthTarget,
   type FreshAuthMechanism,
   type FreshAuthVerifyFailureReason,
@@ -504,6 +505,32 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
 // ─────────────────────────────────────────────────────────────
 // DELETE /api/settings/email — Delete email and associated data
 // ─────────────────────────────────────────────────────────────
+//
+// This is the de-facto account-erasure / right-to-erasure path: it runs
+// `DELETE FROM accounts WHERE username = $1` plus related deletes and
+// anonymizes `custody_audit_log`, transitioning A/B/C/D to the no-row state
+// per ARCHITECTURE.md § 6.3. Erasing the account mutates/destroys an auth
+// factor, so it is a critical action per § 6.6 and the JWT alone is never
+// sufficient per § 6.4.
+//
+// JWT-path fresh-auth gate (mirrors the change-email branch of
+// `POST /api/settings/email`): when authenticated via Bearer JWT (the only
+// auth path replayable without a fresh signature), the request body MUST
+// carry a `fresh_auth_proof` bound to the delete-account target. The proof's
+// `action` is `delete_account` (distinct from change-email / set-password),
+// so a proof minted for one action cannot be replayed against another — the
+// target-hash bind rejects a cross-action proof with `target_mismatch`. The
+// mechanism must match a factor the account has registered:
+//
+//   State A (password, no orcid)  : 'password' only
+//   State B (password + orcid)    : 'password' OR 'orcid'
+//   State C (orcid, no password)  : 'orcid' only
+//   State D (upgraded)            : preserved password/orcid factors
+//
+// Keychain (Hive-signature) requests skip the body-proof check entirely — the
+// per-request signed canonical message IS the fresh proof and is already
+// timestamp + replay-bounded by `verifyHiveSignature`. The discriminator
+// below reads `req.hiveAuthMethod` set by the unified middleware.
 router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
@@ -515,13 +542,20 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
 
   const username = req.hiveUsername!;
 
+  // JWT-vs-Keychain discriminator. The Hive-signature path runs after JWT in
+  // `verifyHiveSignature` and is fresh per-request; we only require a body
+  // proof on the JWT path.
+  const isJwtPath = req.hiveAuthMethod === 'jwt';
+
   try {
     const { rows } = await pool.query<{
       id: number;
       custody: string | null;
       upgraded_at: string | null;
+      password_hash: string | null;
+      orcid: string | null;
     }>(
-      'SELECT id, custody, upgraded_at FROM accounts WHERE username = $1',
+      'SELECT id, custody, upgraded_at, password_hash, orcid FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -534,6 +568,87 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
     }
 
     const row = rows[0];
+
+    // JWT-path fresh-auth gate. Runs AFTER the row-existence check (so a
+    // missing-own-row still reads as a stale session) and BEFORE the
+    // destructive transaction, so a replayed JWT alone cannot erase the
+    // account. The Keychain (signature) path is fresh at the middleware and
+    // requires no body proof, consistent with the change-email branch.
+    if (isJwtPath) {
+      const proof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
+      const proofToken = typeof proof === 'string' ? proof : undefined;
+      const expectedTargetHash = computeFreshAuthTargetHash(
+        deleteAccountFreshAuthTarget(username),
+      );
+      const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
+      if (!result.valid) {
+        logger.warn(
+          {
+            event: 'settings.email_delete.fresh_auth_rejected',
+            route: 'settings.email-delete',
+            username,
+            reason: result.reason,
+          },
+          'settings.email account-delete rejected — fresh-auth proof invalid',
+        );
+        // Same status mapping as the change-email / set-password handlers:
+        // binding violations (token issued for a different user / target /
+        // kind) → 403; "no valid proof present" outcomes → 401. The SPA
+        // error-router branches on status code (401 → re-login, 403 →
+        // wrong-account/wrong-proof), so every route that consumes the
+        // fresh-auth primitive emits the same signal for the same class of
+        // failure.
+        const status =
+          result.reason === 'username_mismatch' ||
+          result.reason === 'target_mismatch' ||
+          result.reason === 'kind_mismatch'
+            ? 403
+            : 401;
+        return sendError(
+          res,
+          status,
+          'FRESH_AUTH_REQUIRED',
+          'Re-authentication required to delete your account data. Please complete the fresh-auth challenge and retry.',
+          { reason: result.reason },
+        );
+      }
+
+      // Mechanism must match a factor the account has registered (§ 6.4).
+      // Closed-default: a mechanism that isn't registered on this account is
+      // treated as a wrong-mechanism failure even if the proof itself
+      // verified cryptographically — a password proof on a passwordless
+      // account is structurally invalid.
+      const mechanism: FreshAuthMechanism = result.mechanism;
+      const hasPassword = row.password_hash !== null;
+      const hasOrcid = row.orcid !== null;
+      const mechanismAccepted =
+        (mechanism === 'password' && hasPassword) ||
+        (mechanism === 'orcid' && hasOrcid);
+      if (!mechanismAccepted) {
+        logger.warn(
+          {
+            event: 'settings.email_delete.fresh_auth_wrong_mechanism',
+            route: 'settings.email-delete',
+            username,
+            mechanism,
+            has_password: hasPassword,
+            has_orcid: hasOrcid,
+          },
+          'settings.email account-delete rejected — fresh-auth proof mechanism not registered on account',
+        );
+        // Synthesized reason — see the FreshAuthVerifyFailureReason
+        // doc-comment in fresh-auth.ts. The typed const forces a compile
+        // error if a future narrowing of the union drops the value.
+        const reason: FreshAuthVerifyFailureReason = 'wrong_mechanism';
+        return sendError(
+          res,
+          401,
+          'FRESH_AUTH_REQUIRED',
+          'Re-authentication required to delete your account data. Please complete the fresh-auth challenge and retry.',
+          { reason },
+        );
+      }
+    }
 
     // Log if light account user will lose login access
     if (row.custody === 'light' && !row.upgraded_at) {

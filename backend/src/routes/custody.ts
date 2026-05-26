@@ -23,6 +23,7 @@ import {
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
+  deleteAccountFreshAuthTarget,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
   type FreshAuthMechanism,
@@ -148,7 +149,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
   const password = requireStringField(body, 'password', PASSWORD_MAX_LEN, 'Password is required');
   if (!password.ok) return sendError(res, 400, 'VALIDATION_ERROR', password.error);
   const action = body.action;
-  if (action === 'change_email') {
+  if (action === 'change_email' || action === 'delete_account') {
     // No additional fields required; target is derived from authenticated
     // username inside the handler.
     return next();
@@ -164,7 +165,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     res,
     400,
     'VALIDATION_ERROR',
-    'action must be one of: author_accept, author_resign, change_email',
+    'action must be one of: author_accept, author_resign, change_email, delete_account',
   );
 }
 
@@ -857,16 +858,19 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
   // all three fields; legacy callers that omit them get a 400 rather than
   // a target-less proof that would still be honored at consume.
   //
-  // change_email is a non-broadcast critical action: the target binds to
-  // (change_email, <authenticated username>, '') and request body does NOT
-  // carry root_author / root_permlink. Issuance via this route is only
-  // admissible for state A/B accounts (password_hash IS NOT NULL); state C
-  // (passwordless) has no password to base a password-mechanism proof on
-  // and must mint via /api/orcid/start { mode: 'fresh_auth' } instead.
+  // change_email and delete_account are non-broadcast critical actions: the
+  // target binds to (action, <authenticated username>, '') and request body
+  // does NOT carry root_author / root_permlink. Issuance via this route
+  // (password mechanism) is only admissible for state A/B accounts
+  // (password_hash IS NOT NULL); state C (passwordless) has no password to
+  // base a password-mechanism proof on and must mint via
+  // /api/orcid/start { mode: 'fresh_auth' } instead.
   const action = body.action;
   let target: FreshAuthTarget;
   if (action === 'change_email') {
     target = changeEmailFreshAuthTarget(username);
+  } else if (action === 'delete_account') {
+    target = deleteAccountFreshAuthTarget(username);
   } else if (action === 'author_accept' || action === 'author_resign') {
     const rootAuthorResult = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN);
     if (!rootAuthorResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootAuthorResult.error);
@@ -882,7 +886,7 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
       res,
       400,
       'VALIDATION_ERROR',
-      'action must be one of: author_accept, author_resign, change_email',
+      'action must be one of: author_accept, author_resign, change_email, delete_account',
     );
   }
 
