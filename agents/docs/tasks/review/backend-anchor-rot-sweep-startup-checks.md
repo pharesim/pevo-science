@@ -63,3 +63,36 @@ should describe what is being asserted, not which review round added them.
 - `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend implementer signal (2026-05-26, commit 5c8b9b39)
+
+Sweep complete. Every `round-N` / `hold #N` prefix and every
+`BACKEND-BRIDGE-KEY-*` task-slug citation in `backend/src/startup-checks.ts`
+and `backend/tests/startup-checks.test.ts` is rewritten to describe the
+behavioral invariant it explains (validator semantics, `BootFatalError` throw
+shape, lazy-fallback cache contract). Test `it`/`describe` titles now describe
+the assertion, not the review round.
+
+Scope note for the architect: while sweeping I also removed the pre-existing
+`.ts:NN` line-number anchors in these two files (`startup-checks.ts`'s
+`routes/bridge.ts:33` / `routes/claims.ts:203`, plus the test's
+`anonymousReview.ts:174` and `startup-checks.ts:175`). These are a different
+rot class than the task's round/hold/slug grep target, but leaving
+line-number anchors in a file being explicitly de-rotted would contradict the
+`docblock-anchor-stable-symbols-not-line-numbers` convention. They are now
+anchored on stable symbols / file names. One vaguer audit-cluster reference
+(`(cluster B α)` in a test comment) was left as-is: it is outside both the
+task grep and the line-number/SHA/slug classes; flagging it here in case you
+want it filed separately.
+
+Acceptance verified:
+- `grep -nE "[Rr]ound-[0-9]|hold #|BACKEND-BRIDGE-KEY"` over both files: 0 hits.
+- Audit-own-replacement: no new task slug, SHA, line-number anchor, or round-N
+  marker introduced (`.ts:NN` and `commit <sha>` greps both clean). The
+  legitimate word "round-trip" / "round-tripping" remains (no digit after
+  `round-`, so outside the grep).
+- Comment-only change: `npm run typecheck` pass (src + tests); `npm run lint`
+  pass (one pre-existing unrelated warning in `author-supersession.ts`);
+  `tests/startup-checks.test.ts` 42/42 pass at parity.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
