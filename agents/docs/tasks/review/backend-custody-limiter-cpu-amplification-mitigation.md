@@ -507,3 +507,29 @@ Five items held. One P2 functional regression introduced by item 2 (3-way cross-
 When items 1–5 land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal. Round-4 architect review scopes `/ce-code-review` to the round-4 commit(s) only. Item 1 (production change) and item 2's byte-exactness test pair naturally; items 3 + 4 + 5 are test/comment touches that can ride the same commit or split per the implementer's preference.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-27, round-4 fix commit `3fa489b8`)
+
+All five round-4 hold items landed. Provenance note: this round was produced by a fan-out worker whose worktree branched from a ~20-commit-stale base (`e009f8ac`); on `papers.ts` and `custody.ts` the worker's edits could not be merged directly because `main` had since rewritten those files (papers.ts +435/-111 across delete-account gating, co-author persistence, negative-cache, cumulative-union; custody.ts password reads gained a `'Password is required'` message arg). The parent agent therefore took the worker's verified-clean files verbatim (`body-record.ts`, the two new test files, the two modified retract test files — all untouched on `main` since the stale base) and **re-applied items 1 and 5 by hand against current `main`**. The result is byte-equivalent in intent to the worker's diff but rooted on current `main`.
+
+### Item 1 (P2, load-bearing) — no-trim credential parity
+`requireStringField` (`backend/src/lib/body-record.ts`) gained an opt-in `options.trim` param (`RequireStringFieldOptions`) **defaulting to no-trim**. The empty check always trims for the rejection decision, so whitespace-only is still rejected for every field; the flag only governs whether the surviving value is returned trimmed (identifiers) or byte-for-byte (credentials). The four `password` reads on `/fresh-auth` + `/session-auth` (validators + defense-in-depth handler re-reads) keep the default no-trim, so the bytes `argon2.verify` sees equal the bytes `argon2.hash` saw at signup/set-password/recover and the raw `/login` verify path. The ten identifier/proof/slug reads (`derived_pubkey`, `signed_proof`, `signed_at`, `root_author`, `root_permlink`, across the two validators and the two handlers) pass `{ trim: true }`. Inline comments anchor the rationale on the field shape, not on round/hold citations.
+
+### Item 2 (P2) — trim-contract + byte-exactness tests
+NEW `backend/tests/lib/body-record.test.ts`: pure-function pins for `requireStringField` (non-string reject; whitespace-only reject; surrounding-whitespace within trimmed cap returns the trimmed value under `trim:true`; cap-overshoot via padding reject; default no-trim returns raw byte-for-byte) and `assertBodyRecord`. NEW `backend/tests/routes/custody-password-byte-exactness.test.ts`: real-path (real `verifyHiveSignature` JWT + real argon2 + Postgres) seeding an edge-whitespace password, asserting `/login`, `/fresh-auth`, `/session-auth` all accept the same byte-exact value, with a trimmed-form 401 negative control.
+
+### Item 3 (P2) — /retract 400-before-401 pin
+Added a spec to `backend/tests/routes/papers-retract-url-shape-validator.test.ts` sending a malformed slug with NO auth headers, asserting 400 VALIDATION_ERROR (not 401) — pins that `validateRetractParams` fires before `verifyHiveSignature`.
+
+### Item 4 (P3) — stale comment fix
+`backend/tests/routes/papers-retract-real-path-verifyhivesignature.test.ts`: both middleware-order comment blocks updated to `validateRetractParams → verifyHiveSignature → retractLimiter → handler`.
+
+### Item 5 (P3) — positional anchor fix
+`backend/src/routes/papers.ts`: the `/retract` route comment now reads "documented in the `validateRetractParams` JSDoc" (was "…above."). Audited clean of SHA / task-slug / line-number rot classes.
+
+### Verification
+Parent's serialized authoritative run (full `vitest` + `typecheck` + `lint`) results recorded in the parent's task-move commit; the worker did not run `vitest` (no `.env` in the worktree).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
