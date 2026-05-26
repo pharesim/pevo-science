@@ -34,8 +34,19 @@ When unblocked:
 4. Cross-references between the 4 docs are consistent.
 5. After the doc edits land, re-check whether any production code comments cite `agents/docs/ARCHITECTURE.md § 2` against text that the rewrite removed; update or remove those comments per the comment-anchor conventions.
 
+## Author-identity-model additions (2026-05-26)
+
+The author-identity-model `/ce-brainstorm` (spun off the `backend-cumulative-union-listing-surfaces-parity` round-3→round-4 deferral) added scope to the § 2 rewrite. The rewrite must also incorporate, once `backend-author-identity-model` lands:
+
+- **Hive-less display-credit persistence.** § 2's claimed-set narrative is hive-keyed (for *vouching*). Add the display-completeness companion: Hive-less display-only credits (`hive: null`) persist across chain links via a composite-key union (ORCID-else-normalized-name), so they are not dropped from `authors[]` on multi-link papers. Note the two tracks (hive-keyed, hive-less) never auto-merge — the bridge-author-claim attestation flow is the only Hive-less→Hive link path; fuzzy name/ORCID auto-mapping stays forbidden.
+- **Name-supersession.** Add the name-supersession rule to `agents/docs/hive-schemas.md` § 1.1 alongside the ORCID supersession rule: an accredited author's attested name (`active_accreditations.researcher_name`) supersedes the broadcaster claim, silently — no discrepancy field, no audit event (unlike ORCID). Mark `authors[i].name` mandatory with the read-time fallback order (attested → broadcaster name → hive handle → orcid).
+- **`api-contracts/papers.md`.** `PaperSummary.authors[]` / `PaperDetail.authors[]`: `name` mandatory; name-supersession (attested wins, silent); no new field added.
+
+Gated additionally on `backend-author-identity-model` landing (so the rewrite describes the final author shape, not an intermediate state). Same single-rewrite rationale as the listing-surfaces gating below.
+
 ## Cross-references
 
+- `agents/docs/tasks/pending/backend-author-identity-model.md` — author-identity-model code task whose doc edits land here.
 - Parent task: `backend-multi-author-cumulative-union` (archived 2026-05-19 round-3 clean — see `tasks-archive.md`)
 - Sibling task: `agents/docs/tasks/pending/backend-cumulative-union-listing-surfaces-parity.md` (architect ratification block landed 2026-05-19 commit `b5a0f92`)
 - `agents/docs/ARCHITECTURE.md` lines 172-288 — § 2 Multi-Author Trust Model
