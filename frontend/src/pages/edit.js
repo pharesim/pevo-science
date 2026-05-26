@@ -996,11 +996,16 @@ export function initEditPage() {
         // hive collides with an existing author. Either persists a redundant
         // entry in json_metadata.authors. Hive-less (display-only) credits
         // carry no account identity, so they are never deduped against each
-        // other. The backend re-dedups on read; this is a write-path
-        // cleanliness guard, not a correctness fix.
+        // other. A non-string hive (e.g. a number or object reachable via the
+        // broadcaster-controlled raw json_metadata author fallback) carries no
+        // usable account identity either, so it is treated as hive-less:
+        // preserved, never collapsed, and never run through string methods
+        // (which would throw and abort the whole broadcast). The backend
+        // re-dedups on read; this is a write-path cleanliness guard, not a
+        // correctness fix.
         const seenHive = new Set();
         const allAuthors = assembledAuthors.filter((a) => {
-          const h = (a.hive || '').trim().toLowerCase();
+          const h = typeof a.hive === 'string' ? a.hive.trim().toLowerCase() : '';
           if (!h) return true;
           if (seenHive.has(h)) return false;
           seenHive.add(h);

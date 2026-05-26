@@ -1499,4 +1499,24 @@ describe('editPage handleSubmit drops duplicate-hive authors on re-broadcast', (
     expect(authors.map((a) => a.hive)).toEqual(['alice', null, null]);
     expect(authors.map((a) => a.name)).toEqual(['Alice', 'Carol', 'Dave']);
   });
+
+  // A non-string hive (e.g. a number) is reachable via the broadcaster-controlled
+  // raw json_metadata author fallback and is unvalidated. The dedup key must not
+  // call string methods on it: a non-string hive carries no usable account
+  // identity, so it is treated as hive-less (preserved, never collapsed) rather
+  // than throwing a TypeError that would abort the whole revision broadcast.
+  it('treats a non-string hive as hive-less: broadcast succeeds with the entry preserved', async () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = paperWith([
+      { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+      { name: 'Numeric', hive: 12345, orcid: '', affiliation: 'Poisoned' },
+    ]);
+    comp._prefillForm();
+
+    const authors = await broadcastAuthors(comp);
+
+    expect(authors.map((a) => a.hive)).toEqual(['alice', 12345]);
+    expect(authors.map((a) => a.name)).toEqual(['Alice', 'Numeric']);
+  });
 });
