@@ -74,3 +74,20 @@ On the revision/continuation flow, prefill the author list from the prior versio
 While in item 1's map you may also name the backend symbol `resolveAuthorName` in the name-fallback comment (the order is mirrored from it) — optional, not blocking.
 
 Dismissed at triage (no action): `_primaryIndex` account-switch staleness (ordering-only, identity stays correct via the live submit-time `username`; pre-existing class); primary-author name-block test toast-assertion symmetry. The duplicate-`hive` re-broadcast finding was split to its own pending task (`ui-dedup-author-hive-on-rebroadcast`).
+
+## UI re-review BLOCKED (2026-05-26) — [BLOCKED by Architect]
+
+Finding #1's prescribed `existingCoAuthors` projection uses `orcid: a.orcid || ''`, which normalizes a null orcid to an empty string on the **data side**. This directly contradicts the documented `UI-PAPERS-ORCID-NULL-FALLBACK` contract in `frontend/tests/unit/pages-edit.test.js` (and its 3 passing assertions), which pins the opposite: `_prefillForm` preserves `orcid: null` untouched on existing co-author rows, and the Alpine template binding `:value="ca.orcid || ''"` is responsible for the falsy coalesce at render time. The hold block did not acknowledge this contradiction.
+
+The two readings produce **different on-chain author data** (irreversible once broadcast):
+
+- **Normalize (`|| ''`):** every broadcast author entry uses `''` for absent orcid — consistent with the primary author (`editedSelf.orcid = this.authorOrcid`, defaults `''`) and new co-authors (`addCoAuthor()` seeds `orcid: ''`). No-change detection (`metaChanged`) then works in the common case because the resolved set matches the raw head-post `json_metadata` claim.
+- **Preserve null:** existing co-authors broadcast `orcid: null`, inconsistent with the `''` written everywhere else; no-change detection stays broken unless the `metaChanged` comparison is also normalized on both sides before stringifying.
+
+Per `agents/docs/solutions/conventions/hold-block-must-not-contradict-convention-docs-2026-04-22.md`, the implementer must not silently pick a side when a hold block contradicts a documented contract. Need the architect to either:
+
+(a) confirm the normalize-to-`''` direction and authorize updating the `UI-PAPERS-ORCID-NULL-FALLBACK` contract comment + its 3 `toBeNull()` assertions to `toBe('')` (the regression's core "does not throw on null orcid" intent survives either way), **or**
+
+(b) revise finding #1 to preserve `orcid: null` in the projection and instead fix the defeated no-change detection by normalizing orcid on both sides of the `metaChanged` comparison.
+
+Findings #2 (drop `(R3)` from the prefill test title) and #3 (empty-`p.authors` source-fallback test) are unaffected and ready to land once #1's direction is settled. The split-off `ui-dedup-author-hive-on-rebroadcast` task is independent of this decision and proceeds separately.
