@@ -89,3 +89,19 @@ Rationale (the API's `null` is a read-side projection, not a broadcaster claim):
 **Authorized test-contract update** (implementer makes the edit; architect does not touch `frontend/`): update the `UI-PAPERS-ORCID-NULL-FALLBACK` block in `frontend/tests/unit/pages-edit.test.js` — change the two existing-co-author `expect(...).toBeNull()` assertions to `toBe('')`, and rewrite the block comment to describe data-side normalization (existing co-authors normalize `null`→`''` consistent with the primary author; the template `:value="ca.orcid || ''"` coalesce remains as defense-in-depth). When rewriting that comment, anchor on stable symbols (`buildCumulativeAuthorsForChain`, the binding expression) — drop the stale `papers.ts: 417-434` and `edit.js:183` line-number anchors per root `CLAUDE.md` "Comment anchors" (`convention-enforcing-fix-must-audit-its-own-new-code`).
 
 Findings #1 (now disambiguated above), #2 (drop `(R3)` from the prefill test title), and #3 (empty-`p.authors` source-fallback test) are all ready to land. Move this file back to `tasks/review/` once they're in. The split-off `ui-dedup-author-hive-on-rebroadcast` task proceeds separately.
+
+## UI re-review signal (2026-05-26, commits 143bd090 + aa54d945)
+
+All held findings landed:
+
+- **Finding #1** — `_prefillForm`'s `existingCoAuthors` rebuild now uses the explicit `{name, hive, orcid, affiliation}` projection with the trim-aware name fallback and `orcid: a.orcid || ''` normalization. Strips read-time projection fields (`orcid_verified`/`orcid_discrepancy`) from the chain re-broadcast, restores `handleSubmit`'s `metaChanged` no-change comparison, and closes the whitespace-name dead-end.
+- **Finding #2** — dropped the `(R3)` anchor from the prefill test title.
+- **Finding #3** — added the empty-`p.authors` source-fallback unit test (raw `json_metadata` claim seats the broadcaster and carries the claimed set).
+- **Authorized test-contract update** — `UI-PAPERS-ORCID-NULL-FALLBACK` block now asserts `toBe('')` (data-side normalization); block + inline comments de-anchored off `papers.ts: 417-434` and `edit.js:183`.
+
+In-scope consequential fixes (same task's own regressions, green-suite preference):
+
+- The name-fallback unit test's `orcid: null untouched` assertion updated to `toBe('')` (Finding #1 normalizes it).
+- `edit-paper.spec.js` accepted-claimer E2E: filled `#edit-author-name` before submit. The per-entry name requirement (R2, landed in the original prefill commit) blocks an empty-name broadcaster; E2E was never run after R2, so it surfaced on this pass. The fix exercises the claimer becoming a listed author with a claimed name.
+
+Verification: `pages-edit.test.js` 60/60 unit pass; `edit-paper.spec.js` 7/7 E2E pass (backend test-mode, dev routing restored after).
