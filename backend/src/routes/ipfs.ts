@@ -241,7 +241,11 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
             `SELECT 1 FROM pending_ipfs_uploads WHERE cid = $1 LIMIT 1`,
             [result.cid],
           );
-          rowAbsent = check.rowCount === 0;
+          // Match the file's other rowCount checks: a null rowCount (driver
+          // could not report it) is not proof of absence, so it must not green-
+          // light the unpin. null === 0 is already false, so behavior is
+          // unchanged; the explicit guard keeps the conservative bias legible.
+          rowAbsent = check.rowCount !== null && check.rowCount === 0;
         } catch (checkErr) {
           logger.error(
             { err: checkErr, cid: result.cid },
