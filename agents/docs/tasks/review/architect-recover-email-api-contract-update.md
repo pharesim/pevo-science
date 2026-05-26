@@ -42,12 +42,14 @@ Bring `agents/docs/api-contracts/auth.md` and `agents/docs/ARCHITECTURE.md` § 6
 - `backend/src/routes/auth.ts` — `/recover` memo-key path, `/recover/verify`, `/recover/dispute` handlers (source of truth).
 - `backend/migrations/012_pending_recovery.sql` — staging table shape.
 
-## [BLOCKED by backend] — waiting on the backend recover-email task to archive (2026-05-25)
+## UNBLOCKED (2026-05-26) — backend recover-email archived; ready for the architect to implement
 
-This task documents the contract that the backend recover-email implementation defines. That backend task (`backend-recover-email-verification-and-notify.md`) is currently HELD at round-1 in `tasks/pending/` (5 items) and has not yet been re-reviewed or archived.
+`backend-recover-email-verification-and-notify.md` was re-reviewed clean at round-3 and archived on 2026-05-26, so this contract-doc task is no longer blocked. Moved from `tasks/blocked/` to `tasks/review/` per the retained unblock instruction below (architect-self-task). The `auth.md` + `ARCHITECTURE.md` doc edits themselves are NOT yet implemented — this awaits an architect implementation pass, after which it archives.
 
-Decision (user, 2026-05-25): document the contract only after the backend implementation has fully landed and been archived, to avoid syncing the architect-zone docs against a moving target. The 5 currently-held backend items were checked and do NOT touch the documented contract surface — item 1 is the `DELETE /api/settings/email` staging-row sweep, item 2 is a phase-1 `isEmail` VALIDATION_ERROR (no success-shape change), item 3 is migration-header copy, item 4 is a `token2`→`sessionJwt` local rename with the wire field staying `token`, item 5 is test pins. But a round-2 review could still surface contract-affecting changes, so we wait for the archive rather than race it.
+The landed contract surface to document is unchanged from the Problem section above. One refinement surfaced during the backend round-3 review must also be captured:
 
-**Unblock:** when `backend-recover-email-verification-and-notify.md` is archived, move this file back to `tasks/review/` (architect-self-task) and implement the doc updates against the final landed `auth.ts` recover trio.
+- **The recovery forensic trail does NOT survive the email-delete path.** The earlier GDPR/CNPD fix added `DELETE FROM pending_recovery WHERE username = $1` to the `DELETE /api/settings/email` transaction, which sweeps the consumed staging row (plaintext would-be-new email + argon2id hash) when a user exercises right-to-erasure. The recovery forensic digests (request-IP digest, old-email digest, timestamp) therefore do NOT persist past account deletion; the durable post-deletion forensic record is the anonymized `custody_audit_log` `account_recovery` row. Document this where the auth.md recover section / § 6.4 describes the audit trail, so the contract does not imply the staging row is a durable forensic store. (The round-3 backend commit was a comment + test reconciliation only; no response/endpoint shape changed beyond what the Problem section already enumerates.)
+
+**Unblock instruction (retained):** implement the `auth.md` + `ARCHITECTURE.md` § 6.4 updates against the final landed `auth.ts` recover trio, then archive this self-task.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
