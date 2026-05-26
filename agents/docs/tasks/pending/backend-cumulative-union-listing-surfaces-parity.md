@@ -380,3 +380,36 @@ This task is held ONLY on item 1 (profile-guard parity), which is orthogonal to 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-26)
+
+Round-4 held item 1 (profile-guard parity) landed. The two deferred items (the cumulative-union `hive` identity key for Hive-less co-authors and the `name`-mandatory / `PaperAuthor.name` model) were NOT touched — they belong to the author-identity-model design pass, which has since landed separately on the integration branch this worktree was rebased onto. This signal covers ONLY item 1.
+
+### Item 1 — profile surface mirrors the listing's empty-cumulative fallback
+
+The profile `GET /api/profile/:username/papers` enrichment took over whenever `chainResult` was non-null (`if (chainResult !== null && chainResult !== undefined)`), with no `authors.length > 0` check — so a multi-link chain whose cumulative-union resolves to a non-null but empty `{authors: [], accredited_authors: []}` would serve `authors: []` at the profile surface while listing + detail keep head-meta authors, reopening the cross-surface parity break.
+
+Fix mirrors the listing surface's gate verbatim: a single `const cumulative = chainResult && chainResult.authors.length > 0 ? chainResult : null;` now gates the takeover. An empty cumulative array (or a null/undefined result) falls through to the existing head-meta projection in the `else` branch (whose comment was widened to name the empty-cumulative case alongside the helper-unreachable cases). The affiliation-strip and `accredited_authors` assignment inside the takeover branch were re-pointed from `chainResult` to the gated `cumulative` binding. No helper change — the gate lives entirely at the profile consumer, symmetric with the listing row-map.
+
+### Test
+
+New deterministic route-level canary `backend/tests/routes/profile-papers-empty-cumulative-fallback.test.ts`:
+- mocks `getPool()` (stages one profile row + the accreditation membership set) and `resolveChainCumulativeAuthors` (the sibling-route helper that walks HAF + Redis per call) to return the exact empty / non-empty results the gate must discriminate;
+- **falls-back case:** helper returns non-null `{authors: [], accredited_authors: []}` → asserts the response keeps the head-meta author (`bob`) and head-derived `accredited_authors`, NOT an empty list (the mutation kill: reverting the gate to the non-null-only check sets `authors: []` and fails this assertion);
+- **takeover case:** helper returns a non-empty cumulative surfacing a dropped chain author (`carol`) → asserts the response takes the cumulative authors over, pinning the gate's discrimination on both sides.
+
+Header documents the carve-out clauses (a)/(b)/(c): real-corpus reproduction of a non-null empty cumulative is impractical; `verifyHiveSignature` is NOT mocked (public GET, no auth-focus assertion); the real-path companion is the live-HAF cross-surface parity canary in `papers.test.ts` plus the deterministic helper-unit tests in `papers-cumulative-cross-surface-parity-mocked.test.ts`.
+
+### Verification
+
+- `npm run typecheck` (typecheck:src + typecheck:tests) — clean.
+- `npm run lint` on touched files (`src/routes/profile.ts`, the new test) — clean, 0 warnings.
+- Scoped vitest: `npx vitest run tests/routes/profile-papers-empty-cumulative-fallback.test.ts` → 2 passed (Test Files 1 passed, ~1.9s with Redis reachable). Deterministic / fully mocked — no real Postgres.
+
+### Self-audit on added lines
+
+No task-slug citations, round-N markers, line-number anchors, SHA refs, date anchors, or relative positional anchors in production or test source. The production comment anchors on behavioural symbols: the listing surface's gate, the head-meta projection, `PaperSummary`'s contract, `toPaperSummary`, the empty cumulative array. The test header anchors on the route path, the helper name, and `papers.test.ts` / `papers-cumulative-cross-surface-parity-mocked.test.ts` as the real-path companions.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

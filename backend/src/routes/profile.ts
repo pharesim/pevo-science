@@ -453,20 +453,30 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
         row.author_reputation = authorAccredited ? (batchScores.get(row.author) ?? 0) : 0;
 
         const chainResult = chainAuthorsByKey.get(`${row.author}/${row.permlink}`);
-        if (chainResult !== null && chainResult !== undefined) {
+        // Mirror the listing surface's gate: take the cumulative result only
+        // when it carries authors, so an empty cumulative array (e.g. a
+        // multi-link chain whose posts carry no valid-hive author entries)
+        // falls back to the head-meta projection instead of serving an empty
+        // authors list. Without the `length > 0` check, profile would diverge
+        // from listing + detail (which both fall back to head-meta), reopening
+        // the cross-surface parity break this surface exists to close.
+        const cumulative =
+          chainResult && chainResult.authors.length > 0 ? chainResult : null;
+        if (cumulative !== null) {
           // Cumulative-union takeover: helper output replaces the head-meta
           // projection so dropped chain authors stay visible at the profile
           // surface. Strip `affiliation` because PaperSummary's contract
           // excludes that field (it is PaperDetail-only); the head-meta
           // projection above is already affiliation-free via toPaperSummary's
           // strip.
-          row.authors = chainResult.authors.map((a) => {
+          row.authors = cumulative.authors.map((a) => {
             const { affiliation: _affiliation, ...rest } = a;
             return rest;
           });
-          row.accredited_authors = chainResult.accredited_authors;
+          row.accredited_authors = cumulative.accredited_authors;
         } else {
-          // Helper unreachable (HAF down, single-link fast-path failed):
+          // No usable cumulative result (helper unreachable: HAF down,
+          // single-link fast-path failed; or an empty cumulative array):
           // fall back to the head-meta projection.
           row.accredited_authors = (row.authors || [])
             .map((a) => normalizeHiveAccount(a.hive))
