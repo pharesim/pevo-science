@@ -178,7 +178,19 @@ async function unpinFromPinata(cid: string): Promise<void> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Pinata unpin failed: ${response.status} ${text}`);
+    // An already-absent pin is benign on the compensation path — the pin may
+    // have been removed by a concurrent cleanup sweep or never finished
+    // processing. Pinata signals this with a "not pinned" reason rather than
+    // a clean 200 (the CURRENT_USER_HAS_NOT_PINNED_CID family); match it
+    // case-insensitively across both the underscore reason-code form and any
+    // plain-English phrasing, mirroring unpinFromKubo's tolerance so the
+    // orphan alarm does not fire for a pin that is already gone. Pinata does
+    // not formally document this error body, so the match is deliberately
+    // defensive over the known not-pinned signal.
+    const lower = text.toLowerCase();
+    if (!lower.includes('not pinned') && !lower.includes('not_pinned')) {
+      throw new Error(`Pinata unpin failed: ${response.status} ${text}`);
+    }
   }
 }
 
@@ -227,7 +239,7 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
     }
 
     if (!config.ipfsApiUrl && !config.pinataApiKey) {
-      return sendError(res, 500, 'INTERNAL_ERROR', 'IPFS not configured — set IPFS_API_URL or Pinata keys');
+      return sendError(res, 500, 'INTERNAL_ERROR', 'IPFS not configured. Set IPFS_API_URL or Pinata keys.');
     }
 
     // Refuse the pin entirely when the durable tracking store is unavailable.
@@ -262,17 +274,57 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
           [result.cid, req.hiveUsername, result.size],
         );
       } catch (dbErr) {
-        logger.error({ err: dbErr, cid: result.cid }, 'Failed to record pending IPFS upload in DB; compensating with unpin');
+        // The success response is withheld until the row exists, so a failed
+        // insert normally means no row landed and the pin must be released to
+        // avoid an undetectable orphan. But a rejection does NOT prove the row
+        // is absent: a concurrent upload of the same content/CID may have
+        // already committed its row (Kubo pins are not refcounted, so a blind
+        // unpin would kill the live pin that request's 200 already
+        // referenced), or our own insert may have committed server-side before
+        // the connection dropped on the ack. Both make an unconditional unpin
+        // destroy data a committed row depends on — the inverse of the orphan
+        // this path defends against. So confirm the row is absent before
+        // compensating; if the existence check itself cannot run, bias toward
+        // NOT unpinning — a tolerated orphan (the cleanup job can still reap a
+        // genuinely-unreferenced pin later) beats guaranteed data loss.
+        // Residual window: a row that commits in the gap between this check and
+        // the unpin is not covered, but that window is far narrower than the
+        // unconditional-unpin it replaces.
+        logger.error({ err: dbErr, cid: result.cid }, 'Failed to record pending IPFS upload in DB; checking row presence before compensating');
+
+        let rowAbsent = false;
         try {
-          await unpinFromIpfs(result.cid, result.backend);
-        } catch (unpinErr) {
-          // Compensation failed — the pin is now an orphan that the cleanup
-          // job cannot see (no DB row). Log loudly; operator-side recovery
-          // requires manual `pin rm` against the recorded CID.
-          logger.error(
-            { err: unpinErr, cid: result.cid, backend: result.backend, dbErr },
-            'IPFS unpin compensation failed after DB insert error — orphan pin requires manual cleanup',
+          const check = await appPool.query(
+            `SELECT 1 FROM pending_ipfs_uploads WHERE cid = $1 LIMIT 1`,
+            [result.cid],
           );
+          rowAbsent = check.rowCount === 0;
+        } catch (checkErr) {
+          logger.error(
+            { err: checkErr, cid: result.cid },
+            'Could not confirm pending-upload row presence after insert failure; skipping unpin to avoid destroying a pin a committed row may depend on',
+          );
+        }
+
+        if (rowAbsent) {
+          try {
+            await unpinFromIpfs(result.cid, result.backend);
+          } catch (unpinErr) {
+            // Compensation failed — the pin is now an orphan that the cleanup
+            // job cannot see (no DB row). Log loudly; operator-side recovery
+            // requires manual `pin rm` against the recorded CID. dbErr is
+            // normalized to a string because pino's Error serializer only
+            // fires on the `err` key (already carrying unpinErr here).
+            logger.error(
+              {
+                err: unpinErr,
+                cid: result.cid,
+                backend: result.backend,
+                dbErr: dbErr instanceof Error ? dbErr.message : String(dbErr),
+              },
+              'IPFS unpin compensation failed after DB insert error — orphan pin requires manual cleanup',
+            );
+          }
         }
         return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to record IPFS upload');
       }

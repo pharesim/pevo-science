@@ -34,18 +34,22 @@
  *       the DB-durability state machine and the unpin-compensation call
  *       shape, NOT cryptographic verification. The fixture preserves the
  *       401-on-missing-header gate and the username-extraction behavior;
- *       only the signature check itself is bypassed. The real
- *       `verifyHiveSignature` middleware is exercised by the sibling
- *       `ipfs.test.ts` file's 401-without-auth-headers test against the
- *       same `/api/ipfs/upload` route.
+ *       only the signature check itself is bypassed. (The sibling
+ *       `ipfs.test.ts` ALSO applies this fixture, so its 401-without-headers
+ *       test fires from the missing-header gate, not real crypto — it is not
+ *       the real-path companion.)
  *
- *   (c) Real-path companion: `tests/routes/ipfs.test.ts` exercises the
- *       integrated /api/ipfs/upload route with real `verifyHiveSignature`,
- *       real `getAccreditation`, real `getAppPool`, and real config. The
- *       risk class this file covers (compensation call-shape under DB
- *       failure) is fundamentally a deterministic-fault-injection shape; a
- *       real-path companion that pins live blobs per test run is the
- *       wrong tool.
+ *   (c) Real-path companion: `tests/routes/ipfs-upload-real-path-
+ *       verifyhivesignature.test.ts` exercises `/api/ipfs/upload` with the
+ *       real `verifyHiveSignature` middleware — signature recovery, the
+ *       posting-key compare, the timestamp-freshness window, the replay
+ *       SETNX, and the missing/malformed-signature 401 gates all run against
+ *       the production code path there. The risk class this file covers
+ *       (compensation call-shape under a deterministic DB-insert fault) is a
+ *       fault-injection shape; pinning live blobs per test run would be the
+ *       wrong tool for it, which is why the durability state machine is
+ *       exercised here with mocked infrastructure while the cryptographic
+ *       verification is exercised in that real-path companion.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -94,8 +98,17 @@ vi.mock('../../src/redis.js', () => ({
 }));
 
 const { createApp } = await import('../../src/app.js');
+const { config } = await import('../../src/config.js');
+const { logger } = await import('../../src/logger.js');
 
 const app = createApp();
+
+// Captured so the Pinata-dispatch spec can toggle config to the Pinata
+// backend (empty ipfsApiUrl + populated Pinata keys) and afterEach restores
+// the default Kubo config for the other specs.
+const ORIG_IPFS_API_URL = config.ipfsApiUrl;
+const ORIG_PINATA_API_KEY = config.pinataApiKey;
+const ORIG_PINATA_SECRET_KEY = config.pinataSecretKey;
 
 const PDF_BYTES = Buffer.from('%PDF-1.4 fake pin durability test content');
 const FAKE_CID = 'QmTestCidDurabilityFixture000000000000000000000';
@@ -118,6 +131,9 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  config.ipfsApiUrl = ORIG_IPFS_API_URL;
+  config.pinataApiKey = ORIG_PINATA_API_KEY;
+  config.pinataSecretKey = ORIG_PINATA_SECRET_KEY;
   vi.restoreAllMocks();
 });
 
@@ -186,11 +202,13 @@ describe('POST /api/ipfs/upload — DB-durability refusal', () => {
 });
 
 describe('POST /api/ipfs/upload — DB-insert compensation', () => {
-  it('unpins from the same backend and returns 500 when DB insert fails after a successful pin', async () => {
+  it('confirms row absence then unpins the same backend and returns 500 when DB insert fails after a successful pin', async () => {
     stubFetchForPinAndUnpin();
 
-    // The insert is the load-bearing DB call — reject it to trip compensation.
+    // Insert (call 1) rejects to trip compensation; the row-absence re-check
+    // (call 2) confirms no row landed, so releasing the pin is safe.
     appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
+    appQueryMock.mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
     const res = await request(app)
       .post('/api/ipfs/upload')
@@ -213,9 +231,151 @@ describe('POST /api/ipfs/upload — DB-insert compensation', () => {
     expect(unpinFetches[0].method).toBe('POST');
     expect(unpinFetches[0].url).toContain(`arg=${FAKE_CID}`);
 
-    // The DB query was attempted exactly once (the failed insert); no retry,
-    // no second write after compensation.
-    expect(appQueryMock).toHaveBeenCalledTimes(1);
+    // Two queries: the failed insert, then the row-absence re-check. No third
+    // write after compensation.
+    expect(appQueryMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT unpin when the row-absence re-check finds a committed row (concurrent / unacked insert)', async () => {
+    stubFetchForPinAndUnpin();
+
+    // Insert (call 1) rejects, but the re-check (call 2) finds a row: a
+    // concurrent upload of the same CID committed, or our own insert
+    // committed server-side before the connection dropped on the ack. The
+    // live pin backs that committed row's eventual reference — unpinning it
+    // would be data loss, the inverse of the orphan this path guards.
+    appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
+    appQueryMock.mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: 1 }] });
+
+    const res = await request(app)
+      .post('/api/ipfs/upload')
+      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Signature', 'mock-sig')
+      .attach('file', PDF_BYTES, {
+        filename: 'durability.pdf',
+        contentType: 'application/pdf',
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+    // The pin must survive — no unpin.
+    const unpinFetches = fetchCalls.filter((c) => c.url.includes('/api/v0/pin/rm'));
+    expect(unpinFetches).toHaveLength(0);
+    expect(appQueryMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT unpin when the row-absence re-check itself fails (bias toward a tolerated orphan over data loss)', async () => {
+    stubFetchForPinAndUnpin();
+
+    // Both the insert (call 1) and the existence re-check (call 2) reject —
+    // the DB is unreachable, so absence cannot be confirmed. A blind unpin
+    // here risks destroying a pin a committed-but-unconfirmed row depends on,
+    // so the handler skips compensation; the cleanup job remains the backstop
+    // for a genuinely-unreferenced pin.
+    appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
+    appQueryMock.mockRejectedValueOnce(new Error('still unreachable'));
+
+    const res = await request(app)
+      .post('/api/ipfs/upload')
+      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Signature', 'mock-sig')
+      .attach('file', PDF_BYTES, {
+        filename: 'durability.pdf',
+        contentType: 'application/pdf',
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+    const unpinFetches = fetchCalls.filter((c) => c.url.includes('/api/v0/pin/rm'));
+    expect(unpinFetches).toHaveLength(0);
+    expect(appQueryMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('dispatches compensation unpin to Pinata when the pin originated on Pinata', async () => {
+    // Drive the Pinata backend: empty Kubo URL routes pinToIpfs straight to
+    // pinToPinata, so result.backend === 'pinata' and compensation must
+    // dispatch to unpinFromPinata (DELETE pinata.cloud/pinning/unpin/<cid>),
+    // never the Kubo pin/rm. This is the entire reason PinResult carries the
+    // backend discriminator.
+    config.ipfsApiUrl = '';
+    config.pinataApiKey = 'test-pinata-key';
+    config.pinataSecretKey = 'test-pinata-secret';
+    stubFetchForPinAndUnpin();
+
+    appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
+    appQueryMock.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+    const res = await request(app)
+      .post('/api/ipfs/upload')
+      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Signature', 'mock-sig')
+      .attach('file', PDF_BYTES, {
+        filename: 'durability.pdf',
+        contentType: 'application/pdf',
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+    const pinataPins = fetchCalls.filter((c) => c.url.includes('pinata.cloud/pinning/pinFileToIPFS'));
+    const pinataUnpins = fetchCalls.filter((c) => c.url.includes('pinata.cloud/pinning/unpin/'));
+    const kuboUnpins = fetchCalls.filter((c) => c.url.includes('/api/v0/pin/rm'));
+    expect(pinataPins).toHaveLength(1);
+    expect(pinataUnpins).toHaveLength(1);
+    expect(pinataUnpins[0].method).toBe('DELETE');
+    expect(pinataUnpins[0].url).toContain(FAKE_CID);
+    expect(kuboUnpins).toHaveLength(0);
+  });
+
+  it('returns 500 and logs the orphan alarm when DB insert AND compensation unpin both fail', async () => {
+    // Double failure: insert rejects, re-check confirms absence, unpin then
+    // also fails. The handler must still return 500, fire BOTH error logs
+    // (the insert-failure log and the orphan-alarm log), and surface no
+    // unhandled rejection.
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? 'GET';
+      fetchCalls.push({ url, method });
+      if (url.includes('/api/v0/add')) {
+        return new Response(JSON.stringify({ Hash: FAKE_CID, Size: String(FAKE_SIZE) }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      // Compensation unpin fails with a non-benign error (not "not pinned").
+      if (url.includes('/api/v0/pin/rm')) {
+        return new Response('kubo daemon unreachable', { status: 500 });
+      }
+      throw new Error(`Unexpected fetch in test: ${method} ${url}`);
+    }) as typeof globalThis.fetch;
+
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
+
+    appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
+    appQueryMock.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+    const res = await request(app)
+      .post('/api/ipfs/upload')
+      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Signature', 'mock-sig')
+      .attach('file', PDF_BYTES, {
+        filename: 'durability.pdf',
+        contentType: 'application/pdf',
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+    // Unpin was attempted (and failed).
+    const unpinFetches = fetchCalls.filter((c) => c.url.includes('/api/v0/pin/rm'));
+    expect(unpinFetches).toHaveLength(1);
+
+    // Both error logs fired: the DB-insert-failure log and the orphan alarm.
+    const messages = errorSpy.mock.calls.map((call) => String(call[call.length - 1]));
+    expect(messages.some((m) => m.includes('checking row presence before compensating'))).toBe(true);
+    expect(messages.some((m) => m.includes('orphan pin requires manual cleanup'))).toBe(true);
   });
 
   it('returns 200 and skips compensation on the happy path (DB insert succeeds)', async () => {
