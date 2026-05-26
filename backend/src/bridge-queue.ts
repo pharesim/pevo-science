@@ -81,6 +81,9 @@ export interface BridgeImportRow {
   operation_kind: string;
   username: string;
   identifier: string;
+  // Source preprint title, resolved synchronously at /register time. Null when
+  // metadata had not resolved at enqueue, and for rows predating its column.
+  title: string | null;
   permlink: string;
   discipline: string;
   keywords: string[];
@@ -100,6 +103,15 @@ export interface BridgeImportRow {
 }
 
 /**
+ * A queue row augmented with its transient dispatch rank, returned by
+ * `listUserImports`. `queue_position` is computed at read time (not persisted)
+ * and is null for terminal entries.
+ */
+export interface BridgeImportListRow extends BridgeImportRow {
+  queue_position: number | null;
+}
+
+/**
  * Outcome of `tryEnqueueBridgeImport`. The discriminated union forces the
  * caller to handle the cap-exceeded and active-duplicate branches
  * explicitly rather than swallowing them as ok-with-null. Pre-existing
@@ -114,11 +126,26 @@ export type EnqueueResult =
 export interface EnqueueInput {
   username: string;
   identifier: string;
+  // Resolved at /register time; the route always supplies it. Optional so
+  // queue-internal callers and tests that don't exercise the title may omit
+  // it (persisted as NULL, matching the nullable column).
+  title?: string | null;
   permlink: string;
   discipline: string;
   keywords: string[];
   language: string;
   operationKind?: string;
+}
+
+/**
+ * Best-effort seconds-until-dispatch for a 1-based queue position, derived
+ * from the chain's per-account cooldown. Position 1 dispatches on the next
+ * worker tick (cooldown permitting) so its ETA is 0; each subsequent slot
+ * adds one cooldown window. Single source of the formula for both the
+ * `/register` 202 response and the `/imports` per-entry estimate.
+ */
+export function etaSecondsForPosition(queuePosition: number): number {
+  return Math.max(0, queuePosition - 1) * (BRIDGE_CHAIN_COOLDOWN_MS / 1000);
 }
 
 /**
@@ -135,6 +162,7 @@ function rowToBridgeImport(row: Record<string, unknown>): BridgeImportRow {
     operation_kind: String(row.operation_kind),
     username: String(row.username),
     identifier: String(row.identifier),
+    title: (row.title as string | null) ?? null,
     permlink: String(row.permlink),
     discipline: String(row.discipline),
     keywords,
@@ -237,14 +265,15 @@ export async function tryEnqueueBridgeImport(input: EnqueueInput): Promise<Enque
 
     const inserted = await client.query<Record<string, unknown>>(
       `INSERT INTO bridge_import_queue
-         (operation_kind, username, identifier, permlink, discipline,
+         (operation_kind, username, identifier, title, permlink, discipline,
           keywords, language)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
        RETURNING *`,
       [
         input.operationKind ?? 'bridge_register',
         input.username,
         input.identifier,
+        input.title ?? null,
         input.permlink,
         input.discipline,
         JSON.stringify(input.keywords),
@@ -464,7 +493,7 @@ export async function rescheduleForRetry(
 export async function listUserImports(
   username: string,
   opts: { state?: BridgeImportState; limit?: number } = {},
-): Promise<BridgeImportRow[]> {
+): Promise<BridgeImportListRow[]> {
   const pool = getAppPool();
   if (!pool) return [];
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
@@ -475,14 +504,29 @@ export async function listUserImports(
     stateClause = `AND state = $${params.length}`;
   }
   params.push(limit);
+  // queue_position is the 1-based dispatch rank among the GLOBAL pending/
+  // in-progress set (the chain cooldown is account-wide, not per-user), the
+  // same COUNT(id <= self) basis as computeQueuePosition. NULL for terminal
+  // entries, which carry no ETA. The correlated subquery is fine at beta
+  // scale; idx_bridge_import_queue_username_state backs the outer filter.
   const { rows } = await pool.query<Record<string, unknown>>(
-    `SELECT * FROM bridge_import_queue
-       WHERE username = $1 ${stateClause}
-       ORDER BY id DESC
+    `SELECT q.*,
+            CASE WHEN q.state IN ('pending', 'in_progress')
+                 THEN (SELECT COUNT(*) FROM bridge_import_queue q2
+                        WHERE q2.state IN ('pending', 'in_progress')
+                          AND q2.id <= q.id)
+                 ELSE NULL
+            END AS queue_position
+       FROM bridge_import_queue q
+       WHERE q.username = $1 ${stateClause}
+       ORDER BY q.id DESC
        LIMIT $${params.length}`,
     params,
   );
-  return rows.map(rowToBridgeImport);
+  return rows.map((row) => ({
+    ...rowToBridgeImport(row),
+    queue_position: row.queue_position != null ? Number(row.queue_position) : null,
+  }));
 }
 
 /**

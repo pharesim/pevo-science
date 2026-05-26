@@ -129,7 +129,7 @@ vi.mock('../../src/redis.js', () => ({
 
 const { createApp } = await import('../../src/app.js');
 const { getAppPool, closeAppPool } = await import('../../src/app-db.js');
-const { BRIDGE_QUEUE_USER_CAP } = await import('../../src/bridge-queue.js');
+const { BRIDGE_QUEUE_USER_CAP, tryEnqueueBridgeImport, markCompleted, markCompletedExisting } = await import('../../src/bridge-queue.js');
 const { signRequestBound: signRequestBoundShared } = await import('../support/sign-request.js');
 
 const app = createApp();
@@ -214,6 +214,11 @@ describe('POST /api/bridge/register: enqueue path', () => {
     expect(res.body.data.entry.permlink).toBe('bridge-arxiv-2999-00100');
     expect(res.body.data.entry.username).toBeUndefined(); // serializer omits username
     expect(res.body.data.entry.attempts).toBe(0);
+    // Enriched fields: register persists the resolved title, and the pending
+    // entry carries a numeric eta (position 1 → 0) with no author yet.
+    expect(res.body.data.entry.title).toBe(MOCK_META.title);
+    expect(res.body.data.entry.eta_seconds).toBe(0);
+    expect(res.body.data.entry.author).toBeNull();
     expect(res.body.data.source.type).toBe('arxiv');
     // No broadcast on the enqueue path — the worker handles dispatch.
     expect(sendOperations).not.toHaveBeenCalled();
@@ -347,6 +352,68 @@ describe('GET /api/bridge/imports: status listing', () => {
     // Wire-shape spot checks — the fields the SPA renders.
     expect(list.body.data.entries[0].state).toBe('pending');
     expect(list.body.data.entries[0].attempts).toBe(0);
+  });
+
+  it('emits title, author, and eta_seconds per the enriched entry shape', async () => {
+    if (!tableReady) return;
+
+    // Seed the three states directly via the queue model rather than /register:
+    // the register route's per-IP limiter is shared across this file's many
+    // register calls, and the field matrix under test (completed-fresh,
+    // completed-collision, pending) is the serializer's concern, exercised
+    // here through the real GET /imports list query against real Postgres.
+    const TITLE = 'Enriched entry shape paper';
+
+    // Fresh broadcast → completed with a tx → author resolves to the bridge
+    // account (config.hiveBridgeAccount, mocked to pevotest.bridge).
+    const fresh = await tryEnqueueBridgeImport({
+      username: ACCREDITED_CALLER, identifier: '2999.00501', title: TITLE,
+      permlink: 'bridge-arxiv-2999-00501', discipline: 'CS', keywords: [], language: 'en',
+    });
+    expect(fresh.status).toBe('enqueued');
+    if (fresh.status === 'enqueued') await markCompleted(fresh.row.id, { txId: 'tx-fresh-00501' });
+
+    // Permlink collision → completed-existing → author equals the existing
+    // on-chain author.
+    const collide = await tryEnqueueBridgeImport({
+      username: ACCREDITED_CALLER, identifier: '2999.00502', title: TITLE,
+      permlink: 'bridge-arxiv-2999-00502', discipline: 'CS', keywords: [], language: 'en',
+    });
+    expect(collide.status).toBe('enqueued');
+    if (collide.status === 'enqueued') {
+      await markCompletedExisting(collide.row.id, { author: 'someone.else', permlink: 'bridge-arxiv-2999-00502' });
+    }
+
+    // Pending → non-terminal → numeric eta_seconds, null author.
+    const pending = await tryEnqueueBridgeImport({
+      username: ACCREDITED_CALLER, identifier: '2999.00503', title: TITLE,
+      permlink: 'bridge-arxiv-2999-00503', discipline: 'CS', keywords: [], language: 'en',
+    });
+    expect(pending.status).toBe('enqueued');
+
+    const list = await signedGet('/api/bridge/imports', ACCREDITED_CALLER);
+    expect(list.status).toBe(200);
+    const byPermlink: Record<string, Record<string, unknown>> = Object.fromEntries(
+      (list.body.data.entries as Array<Record<string, unknown>>).map((e) => [e.permlink as string, e]),
+    );
+
+    const freshEntry = byPermlink['bridge-arxiv-2999-00501'];
+    expect(freshEntry.state).toBe('completed');
+    expect(freshEntry.title).toBe(TITLE);
+    expect(freshEntry.author).toBe('pevotest.bridge'); // HIVE_BRIDGE_ACCOUNT
+    expect(freshEntry.eta_seconds).toBeNull(); // terminal → no estimate
+
+    const collideEntry = byPermlink['bridge-arxiv-2999-00502'];
+    expect(collideEntry.state).toBe('completed');
+    expect(collideEntry.existing_author).toBe('someone.else');
+    expect(collideEntry.author).toBe('someone.else'); // equals existing_author
+
+    const pendingEntry = byPermlink['bridge-arxiv-2999-00503'];
+    expect(pendingEntry.state).toBe('pending');
+    expect(pendingEntry.title).toBe(TITLE);
+    expect(typeof pendingEntry.eta_seconds).toBe('number');
+    expect(pendingEntry.eta_seconds as number).toBeGreaterThanOrEqual(0);
+    expect(pendingEntry.author).toBeNull(); // non-terminal
   });
 
   it('rejects unauthenticated callers with 401', async () => {

@@ -19,8 +19,8 @@ import {
 import {
   tryEnqueueBridgeImport,
   listUserImports,
+  etaSecondsForPosition,
   BRIDGE_QUEUE_USER_CAP,
-  BRIDGE_CHAIN_COOLDOWN_MS,
   type BridgeImportRow,
 } from '../bridge-queue.js';
 
@@ -419,18 +419,28 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
  * in `agents/docs/api-contracts/bridge.md` (GET /api/bridge/imports). The
  * `/api/bridge/imports` response is the source of truth the contract tracks.
  */
-function serializeQueueRow(row: BridgeImportRow): Record<string, unknown> {
+function serializeQueueRow(row: BridgeImportRow, queuePosition?: number | null): Record<string, unknown> {
+  const nonTerminal = row.state === 'pending' || row.state === 'in_progress';
   return {
     id: row.id,
     operation_kind: row.operation_kind,
     identifier: row.identifier,
+    title: row.title,
     permlink: row.permlink,
+    // Resolved Hive author of the completed post. On a permlink-collision
+    // short-circuit the entry completes pointing at the existing post, so the
+    // author is existing_author; on a fresh broadcast it is the bridge account.
+    // Null while non-terminal (and on failed, which never produced a post).
+    author: row.state === 'completed' ? (row.existing_author ?? config.hiveBridgeAccount) : null,
     discipline: row.discipline,
     keywords: row.keywords,
     language: row.language,
     state: row.state,
     attempts: row.attempts,
     scheduled_at: row.scheduled_at.toISOString(),
+    // Best-effort dispatch estimate for non-terminal entries; null for terminal
+    // ones and when no position is available. Same formula as the 202 response.
+    eta_seconds: nonTerminal && typeof queuePosition === 'number' ? etaSecondsForPosition(queuePosition) : null,
     tx_id: row.tx_id,
     error_code: row.error_code,
     error_message: row.error_message,
@@ -554,6 +564,7 @@ router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimi
       enqueueResult = await tryEnqueueBridgeImport({
         username,
         identifier,
+        title: meta.title,
         permlink,
         discipline: discipline.trim(),
         keywords: keywords ?? [],
@@ -603,11 +614,11 @@ router.post('/register', verifyHiveSignature, validateRegisterBody, registerLimi
     // position and a best-effort ETA derived from the chain cooldown.
     // Position 1 dispatches on the next worker tick (cooldown permitting);
     // each subsequent slot adds one chain-cooldown window.
-    const etaSeconds = Math.max(0, enqueueResult.queuePosition - 1) * (BRIDGE_CHAIN_COOLDOWN_MS / 1000);
+    const etaSeconds = etaSecondsForPosition(enqueueResult.queuePosition);
     res.status(202).json({
       status: 'ok',
       data: {
-        entry: serializeQueueRow(enqueueResult.row),
+        entry: serializeQueueRow(enqueueResult.row, enqueueResult.queuePosition),
         queue_position: enqueueResult.queuePosition,
         eta_seconds: etaSeconds,
         source: {
@@ -679,7 +690,7 @@ router.get('/imports', verifyHiveSignature, async (req: Request, res: Response) 
   try {
     const rows = await listUserImports(username, { state, limit });
     sendOk(res, {
-      entries: rows.map(serializeQueueRow),
+      entries: rows.map((row) => serializeQueueRow(row, row.queue_position)),
       cap: BRIDGE_QUEUE_USER_CAP,
     });
   } catch (err) {
