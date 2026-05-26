@@ -3610,7 +3610,7 @@ async function isRetracted(author: string, permlink: string): Promise<boolean> {
 // is URL-keyed, so a structurally-invalid slug spray must be rejected without
 // paying ECDSA recovery. The custody routes mount their body-shape validators
 // AFTER verifyHiveSignature because their limiters are byAccount-keyed; that
-// asymmetry is intentional and is documented on validateRetractParams above.
+// asymmetry is intentional and is documented in the validateRetractParams JSDoc.
 router.post('/:author/:permlink/retract', validateRetractParams, verifyHiveSignature, retractLimiter, async (req: Request, res: Response) => {
   const author = req.params.author as string;
   const permlink = req.params.permlink as string;

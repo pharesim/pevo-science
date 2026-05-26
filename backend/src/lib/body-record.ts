@@ -48,14 +48,52 @@ export type RequireStringFieldResult =
   | { ok: true; value: string }
   | { ok: false; error: string };
 
+/** Options for {@link requireStringField}. */
+export interface RequireStringFieldOptions {
+  /**
+   * When `true`, the value is trimmed before the empty/length checks AND the
+   * trimmed string is what the success arm returns. Use this for identifier-
+   * or slug-shaped fields (account names, permlinks, pubkeys, signatures,
+   * timestamps) where surrounding whitespace is never semantically part of
+   * the value.
+   *
+   * Defaults to `false` (NO trim): the raw string is empty-checked,
+   * length-checked, and returned BYTE-FOR-BYTE. This default is load-bearing
+   * for credential fields. The bytes a custody re-auth route feeds to
+   * `argon2.verify` must equal the bytes the signup/set-password/recover path
+   * fed to `argon2.hash`; the `/login` verify path also reads the raw
+   * password. Trimming a credential here would make a whitespace-bearing
+   * password authenticate at `/login` but fail at `/fresh-auth` and
+   * `/session-auth` (or vice-versa), a byte-exactness lockout. Leave the
+   * default for any value that participates in a byte-exact comparison
+   * (passwords, and any other secret compared against a stored hash).
+   *
+   * NOTE: even with `trim: false`, a whitespace-ONLY input is still rejected
+   * (empty check sees `length === 0` only when trimmed, so the empty check
+   * always trims for the rejection decision). The `trim` flag controls
+   * whether the RETURNED value is trimmed, not whether whitespace-only is
+   * accepted — whitespace-only is rejected for every field.
+   */
+  trim?: boolean;
+}
+
 /**
  * Validate that `body[fieldName]` is a non-empty string with `length <=
- * maxLength`. The raw value is trimmed before the empty check, so a
- * whitespace-only input is rejected as missing; the trimmed string is what
- * the success arm returns. The length-cap check runs against the trimmed
- * value too, so a cap-overshoot via leading/trailing whitespace is also
- * rejected. Returns a discriminated result; callers forward `error` to
+ * maxLength`. Returns a discriminated result; callers forward `error` to
  * `sendError(res, 400, 'VALIDATION_ERROR', error)` on the failure arm.
+ *
+ * Whitespace handling is governed by `options.trim`:
+ *
+ *   - A whitespace-ONLY input is ALWAYS rejected as missing (the empty check
+ *     trims for the decision regardless of the flag).
+ *   - With `trim: true` (identifier/slug-shaped fields): the value is trimmed
+ *     before the length-cap check and the TRIMMED string is returned, so a
+ *     cap-overshoot via padding is rejected and surrounding whitespace is
+ *     stripped from the result.
+ *   - With `trim: false` (the DEFAULT; credential/byte-exact fields): the RAW
+ *     string is length-checked and returned byte-for-byte. Surrounding
+ *     whitespace is preserved so the value matches what other paths hashed or
+ *     compared against. See {@link RequireStringFieldOptions.trim}.
  *
  * The default error message is `"<fieldName> is required"`; pass `message`
  * to override (e.g., when the user-facing field name differs from the wire
@@ -67,14 +105,21 @@ export function requireStringField(
   fieldName: string,
   maxLength: number,
   message?: string,
+  options?: RequireStringFieldOptions,
 ): RequireStringFieldResult {
   const raw = body[fieldName];
   if (typeof raw !== 'string') {
     return { ok: false, error: message ?? `${fieldName} is required` };
   }
-  const trimmed = raw.trim();
-  if (trimmed.length === 0 || trimmed.length > maxLength) {
+  // Whitespace-only is rejected for EVERY field: the empty check always
+  // trims. The `trim` flag only decides whether the surviving value is
+  // returned trimmed (identifiers) or byte-for-byte (credentials).
+  if (raw.trim().length === 0) {
     return { ok: false, error: message ?? `${fieldName} is required` };
   }
-  return { ok: true, value: trimmed };
+  const value = options?.trim ? raw.trim() : raw;
+  if (value.length > maxLength) {
+    return { ok: false, error: message ?? `${fieldName} is required` };
+  }
+  return { ok: true, value };
 }

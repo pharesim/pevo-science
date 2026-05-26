@@ -73,8 +73,8 @@ vi.mock('../../src/hive.js', async () => {
 
 // HAF pool mock: return empty rows so `fetchPaperDetailFromHaf` reports
 // paper-not-found and the handler emits 404. The 404 is the load-bearing
-// post-auth signal: it proves the middleware chain (verifyHiveSignature →
-// validateRetractParams → retractLimiter → handler) ran end-to-end.
+// post-auth signal: it proves the middleware chain (validateRetractParams →
+// verifyHiveSignature → retractLimiter → handler) ran end-to-end.
 vi.mock('../../src/db.js', () => ({
   getPool: () => ({ query: hafQueryMock }),
   isHafConfigured: () => true,
@@ -159,12 +159,11 @@ describe.skipIf(!redisReachable)(
         .send(body);
 
       // 404 NOT_FOUND is the load-bearing post-auth assertion: the request
-      // traversed verifyHiveSignature (real cryptographic recovery + key
-      // match against `posting.key_auths`), then validateRetractParams
-      // (URL-shape OK), then retractLimiter (slot available), then the
-      // handler's `fetchPaperDetailFromHaf` lookup which returned no rows.
-      // A regression in any earlier middleware stage would produce 401 /
-      // 400 / 429 instead.
+      // traversed validateRetractParams (URL-shape OK), then verifyHiveSignature
+      // (real cryptographic recovery + key match against `posting.key_auths`),
+      // then retractLimiter (slot available), then the handler's
+      // `fetchPaperDetailFromHaf` lookup which returned no rows. A regression in
+      // any earlier middleware stage would produce 400 / 401 / 429 instead.
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe('NOT_FOUND');
       // Chain key was consulted by the real signature verifier.

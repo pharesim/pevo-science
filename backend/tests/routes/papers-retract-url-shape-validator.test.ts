@@ -10,11 +10,14 @@
  * limiter slot, and per-account RPS at the limiter's nominal cap would
  * sustain HAF query amplification with no rate bound.
  *
- * `validateRetractParams` runs BEFORE `retractLimiter` and rejects malformed
- * URL params with 400 VALIDATION_ERROR upstream of any HAF roundtrip. This
- * test pins the layered-pattern contract: malformed-slug probes must NOT
- * consume any of the limiter's per-account capacity, mirroring the body-
- * shape contract pinned for the custody routes.
+ * `validateRetractParams` runs BEFORE `retractLimiter` AND before
+ * `verifyHiveSignature` and rejects malformed URL params with 400
+ * VALIDATION_ERROR upstream of any HAF roundtrip. This test pins the
+ * layered-pattern contract: malformed-slug probes must NOT consume any of the
+ * limiter's per-account capacity, mirroring the body-shape contract pinned for
+ * the custody routes. It also pins the 400-before-401 ordering directly — a
+ * malformed slug sent with NO auth headers returns 400 (validator first), not
+ * 401 (auth first) — so a future re-reorder of the chain is caught.
  *
  * Carve-out (root CLAUDE.md "Running Tests"):
  *   (a) Why a mocked target: the focus is middleware ordering on a single
@@ -132,6 +135,28 @@ describe.skipIf(!redisReachable)(
 
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('VALIDATION_ERROR');
+
+      const count = await rateLimitCount('paper-retract', PROBE_USER);
+      expect(count).toBeNull();
+    });
+
+    it('/retract: malformed slug with NO auth headers returns 400 VALIDATION_ERROR, not 401 — validator runs BEFORE verifyHiveSignature', async () => {
+      // Pins the 400-before-401 ordering that is the security rationale for
+      // mounting validateRetractParams ahead of verifyHiveSignature on this
+      // URL-keyed route. With no X-Hive-Username / X-Hive-Signature headers,
+      // the auth gate (the MOCK_VERIFY_SIGNATURE missing-header arm preserves
+      // the real middleware's 401) WOULD fire first if the chain were ordered
+      // auth-then-validator. A 400 here proves the structural-slug rejection
+      // short-circuits upstream of auth; a regression re-reordering the chain
+      // (verifyHiveSignature first) would surface as 401 and fail this
+      // assertion. No DB/HAF/Redis is reached on the rejection path.
+      const res = await request(app)
+        .post('/api/papers/Alice/some-paper/retract')
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.body.error.message).toMatch(/author/);
 
       const count = await rateLimitCount('paper-retract', PROBE_USER);
       expect(count).toBeNull();

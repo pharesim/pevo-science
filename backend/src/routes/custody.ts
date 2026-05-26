@@ -129,11 +129,14 @@ const sessionAuthLimiter = rateLimit({
  *  performs. */
 function validateUpgradeBodyShape(req: Request, res: Response, next: NextFunction) {
   const body = assertBodyRecord(req);
-  const derivedPubkey = requireStringField(body, 'derived_pubkey', DERIVED_PUBKEY_MAX_LEN);
+  // derived_pubkey / signed_proof / signed_at are identifier/proof-shaped
+  // (base58 pubkey, hex signature, ISO-8601 timestamp); surrounding whitespace
+  // is never part of the value, so trim=true.
+  const derivedPubkey = requireStringField(body, 'derived_pubkey', DERIVED_PUBKEY_MAX_LEN, undefined, { trim: true });
   if (!derivedPubkey.ok) return sendError(res, 400, 'VALIDATION_ERROR', derivedPubkey.error);
-  const signedProof = requireStringField(body, 'signed_proof', SIGNED_PROOF_MAX_LEN);
+  const signedProof = requireStringField(body, 'signed_proof', SIGNED_PROOF_MAX_LEN, undefined, { trim: true });
   if (!signedProof.ok) return sendError(res, 400, 'VALIDATION_ERROR', signedProof.error);
-  const signedAt = requireStringField(body, 'signed_at', SIGNED_AT_MAX_LEN);
+  const signedAt = requireStringField(body, 'signed_at', SIGNED_AT_MAX_LEN, undefined, { trim: true });
   if (!signedAt.ok) return sendError(res, 400, 'VALIDATION_ERROR', signedAt.error);
   next();
 }
@@ -155,9 +158,10 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     return next();
   }
   if (action === 'author_accept' || action === 'author_resign') {
-    const rootAuthor = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN);
+    // root_author / root_permlink are Hive identifier slugs; trim=true.
+    const rootAuthor = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
     if (!rootAuthor.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootAuthor.error);
-    const rootPermlink = requireStringField(body, 'root_permlink', HIVE_PERMLINK_MAX_LEN);
+    const rootPermlink = requireStringField(body, 'root_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
     if (!rootPermlink.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootPermlink.error);
     return next();
   }
@@ -872,9 +876,10 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
   } else if (action === 'delete_account') {
     target = deleteAccountFreshAuthTarget(username);
   } else if (action === 'author_accept' || action === 'author_resign') {
-    const rootAuthorResult = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN);
+    // Identifier slugs — trim=true, matching validateFreshAuthBodyShape.
+    const rootAuthorResult = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
     if (!rootAuthorResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootAuthorResult.error);
-    const rootPermlinkResult = requireStringField(body, 'root_permlink', HIVE_PERMLINK_MAX_LEN);
+    const rootPermlinkResult = requireStringField(body, 'root_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
     if (!rootPermlinkResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootPermlinkResult.error);
     target = {
       action,
@@ -1134,13 +1139,14 @@ router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLi
   // the use site without an unsafe cast and share length caps with the
   // middleware.
   const body = assertBodyRecord(req);
-  const derivedPubkeyResult = requireStringField(body, 'derived_pubkey', DERIVED_PUBKEY_MAX_LEN);
+  // Identifier/proof-shaped fields — trim=true, matching validateUpgradeBodyShape.
+  const derivedPubkeyResult = requireStringField(body, 'derived_pubkey', DERIVED_PUBKEY_MAX_LEN, undefined, { trim: true });
   if (!derivedPubkeyResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', derivedPubkeyResult.error);
   const derivedPubkey = derivedPubkeyResult.value;
-  const signedProofResult = requireStringField(body, 'signed_proof', SIGNED_PROOF_MAX_LEN);
+  const signedProofResult = requireStringField(body, 'signed_proof', SIGNED_PROOF_MAX_LEN, undefined, { trim: true });
   if (!signedProofResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', signedProofResult.error);
   const signedProof = signedProofResult.value;
-  const signedAtResult = requireStringField(body, 'signed_at', SIGNED_AT_MAX_LEN);
+  const signedAtResult = requireStringField(body, 'signed_at', SIGNED_AT_MAX_LEN, undefined, { trim: true });
   if (!signedAtResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', signedAtResult.error);
   const signedAt = signedAtResult.value;
 
