@@ -517,6 +517,12 @@ test('accepted-claimer (accredited, not author, not co-author) reaches the edit 
   await waitForEditorsMounted(page);
   await setEditorContent(page, { abstract: NEW_ABSTRACT, body: NEW_BODY });
 
+  // Per-entry name requirement: the claimer is becoming a listed author via
+  // their accepted claim, so the form requires their name before submit.
+  // _prefillForm does not seat authorName here (the claimer is not yet in the
+  // prior authors[], so the broadcaster is an addition, _primaryIndex -1).
+  await page.locator('input#edit-author-name').fill('Accepted Claimer');
+
   await page.locator('form button[type="submit"]').click();
 
   await expect
