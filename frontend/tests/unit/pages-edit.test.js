@@ -1108,3 +1108,296 @@ describe('editPage _prefillForm null-orcid regression (UI-PAPERS-ORCID-NULL-FALL
     expect(comp.authorAffiliation).toBe('');
   });
 });
+
+// A revision must default to "same authors as before" so co-authors aren't
+// silently dropped at the write path. _prefillForm seats the broadcaster's
+// prior entry into the editable primary fields and keeps every other author
+// (including Hive-less display-only credits) as a read-only existing row,
+// sourcing from the API cumulative-union authors[] rather than raw chain
+// json_metadata. Author ORDER is preserved across the revision: the
+// broadcaster edits their entry in place rather than being hoisted to front.
+describe('editPage author-list prefill on revision', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStores.auth.isConnected = true;
+    mockStores.auth.isAccredited = true;
+    mockStores.auth.username = 'alice';
+  });
+
+  // Prefill sources from the API-resolved authors[], not the raw head-post
+  // json_metadata claim, so the cumulative-union set carries forward.
+  // Distinguished by giving the two surfaces divergent data.
+  it('prefills from API authors[] (R3), not raw json_metadata pevo.authors', () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = {
+      title: 'A Paper',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: { pevotest: { authors: [{ name: 'StaleName', hive: 'alice' }] } },
+      authors: [
+        { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+        { name: 'Bob', hive: 'bob', orcid: '', affiliation: 'Harvard' },
+      ],
+    };
+
+    comp._prefillForm();
+
+    // From p.authors (the resolved set), NOT json_metadata's 'StaleName'.
+    expect(comp.authorName).toBe('Alice');
+    expect(comp.authorAffiliation).toBe('MIT');
+    expect(comp.existingCoAuthors).toHaveLength(1);
+    expect(comp.existingCoAuthors[0].hive).toBe('bob');
+    expect(comp._primaryIndex).toBe(0);
+  });
+
+  // When a co-author (not the original first author) revises, the broadcaster
+  // is seated into the primary fields but their original index is recorded,
+  // and every other author stays as an existing row.
+  it('seats the broadcaster in place and records _primaryIndex (co-author revision)', () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'bob';
+    comp.paper = {
+      title: 'A Paper',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: { pevotest: {} },
+      authors: [
+        { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+        { name: 'Bob', hive: 'bob', orcid: '', affiliation: 'Harvard' },
+      ],
+    };
+
+    comp._prefillForm();
+
+    expect(comp.authorName).toBe('Bob');
+    expect(comp.authorAffiliation).toBe('Harvard');
+    expect(comp._primaryIndex).toBe(1);
+    // Alice (the other author) is the only existing row, kept read-only.
+    expect(comp.existingCoAuthors).toHaveLength(1);
+    expect(comp.existingCoAuthors[0].hive).toBe('alice');
+  });
+
+  // Hive-less display-only credits (hive: null) are prefilled into the
+  // existing rows so they aren't dropped on re-broadcast.
+  it('carries Hive-less display-only credits into existingCoAuthors', () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = {
+      title: 'A Paper',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: { pevotest: {} },
+      authors: [
+        { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+        { name: 'Carol Hiveless', hive: null, orcid: '0000-0003-3333-3333', affiliation: 'Oxford' },
+      ],
+    };
+
+    comp._prefillForm();
+
+    expect(comp.existingCoAuthors).toHaveLength(1);
+    expect(comp.existingCoAuthors[0].name).toBe('Carol Hiveless');
+    expect(comp.existingCoAuthors[0].hive).toBeNull();
+  });
+
+  // Defensive name fallback: a read-only existing row can't be edited to add
+  // a missing name, so prefill guarantees one (name -> hive -> orcid),
+  // mirroring the backend read-time fallback. Other fields pass through.
+  it('applies a name fallback (hive) to a name-less existing entry, preserving orcid', () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = {
+      title: 'A Paper',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: { pevotest: {} },
+      authors: [
+        { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+        { name: '', hive: 'bob', orcid: null, affiliation: 'Harvard' },
+      ],
+    };
+
+    comp._prefillForm();
+
+    expect(comp.existingCoAuthors[0].name).toBe('bob'); // fell back to hive
+    expect(comp.existingCoAuthors[0].orcid).toBeNull(); // untouched
+  });
+
+  // Broadcaster not yet a listed author (an accepted-claim co-author's first
+  // continuation): the full prior list is kept and the broadcaster is an
+  // addition (_primaryIndex stays -1), so prior order is left intact.
+  it('keeps the full prior list when the broadcaster is not yet listed (_primaryIndex -1)', () => {
+    const comp = createComponent();
+    mockStores.auth.username = 'carol';
+    comp.paper = {
+      title: 'A Paper',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: { pevotest: {} },
+      authors: [
+        { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+        { name: 'Bob', hive: 'bob', orcid: '', affiliation: 'Harvard' },
+      ],
+    };
+
+    comp._prefillForm();
+
+    expect(comp._primaryIndex).toBe(-1);
+    expect(comp.existingCoAuthors).toHaveLength(2);
+    expect(comp.existingCoAuthors.map(a => a.hive)).toEqual(['alice', 'bob']);
+  });
+
+  // End-to-end order preservation: Bob revising [Alice, Bob] re-broadcasts
+  // [Alice, Bob] — Bob stays at index 1, NOT hoisted to the front.
+  it('re-broadcasts the prior author set in original order (no reorder, no drop)', async () => {
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    invalidatePaperCache.mockResolvedValue({});
+
+    const comp = createComponent();
+    mockStores.auth.username = 'bob';
+    comp.paper = {
+      author: 'alice', permlink: 'p1',
+      head_author: 'alice', head_permlink: 'p1',
+      canonical_author: 'alice', canonical_permlink: 'p1',
+      title: 'A Paper',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: { pevotest: { version: 1 } },
+      versions: [{ version_number: 1 }],
+      authors: [
+        { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+        { name: 'Bob', hive: 'bob', orcid: '', affiliation: 'Harvard' },
+      ],
+    };
+
+    comp._prefillForm();
+    comp.title = 'Revised';
+    comp.abstract = 'new abstract';
+    comp.body = 'new body';
+    comp.discipline = 'Physics';
+    comp.keywordsText = 'quantum';
+
+    // Continuation (bob !== paper.author, sparse versions) routes through the
+    // continuation broadcast branch where allAuthors lands in json_metadata.
+    expect(comp.isContinuation).toBe(true);
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('success');
+    const commentOp = broadcastOps.mock.calls[0][1][0];
+    const meta = JSON.parse(commentOp[1].json_metadata);
+    expect(meta.pevotest.authors.map(a => a.hive)).toEqual(['alice', 'bob']);
+    expect(meta.pevotest.authors[1].name).toBe('Bob');
+  });
+
+  // A new author addition lands at the end, after the preserved prior set.
+  it('appends an accepted-claim broadcaster after the preserved prior set', async () => {
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    invalidatePaperCache.mockResolvedValue({});
+
+    const comp = createComponent();
+    mockStores.auth.username = 'carol';
+    comp.paper = {
+      author: 'alice', permlink: 'p1',
+      head_author: 'alice', head_permlink: 'p1',
+      canonical_author: 'alice', canonical_permlink: 'p1',
+      title: 'A Paper',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: { pevotest: { version: 1 } },
+      versions: [{ version_number: 1 }],
+      authors: [
+        { name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' },
+        { name: 'Bob', hive: 'bob', orcid: '', affiliation: 'Harvard' },
+      ],
+    };
+
+    comp._prefillForm();
+    comp.authorName = 'Carol'; // broadcaster fills in their own name
+    comp.title = 'Revised';
+    comp.abstract = 'new abstract';
+    comp.body = 'new body';
+    comp.discipline = 'Physics';
+    comp.keywordsText = 'quantum';
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('success');
+    const commentOp = broadcastOps.mock.calls[0][1][0];
+    const meta = JSON.parse(commentOp[1].json_metadata);
+    expect(meta.pevotest.authors.map(a => a.hive)).toEqual(['alice', 'bob', 'carol']);
+  });
+
+  describe('per-entry name requirement blocks submission', () => {
+    function paperWith(authors) {
+      return {
+        author: 'alice', permlink: 'p1',
+        head_author: 'alice', head_permlink: 'p1',
+        canonical_author: 'alice', canonical_permlink: 'p1',
+        title: 'A Paper',
+        body: 'abstract\n\n---\n\nbody',
+        json_metadata: { pevotest: { version: 1 } },
+        versions: [{ version_number: 1 }],
+        authors,
+      };
+    }
+
+    it('blocks submission when a new co-author row has data but no name', async () => {
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      const comp = createComponent();
+      mockStores.auth.username = 'alice';
+      comp.paper = paperWith([{ name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' }]);
+      comp._prefillForm();
+      comp.title = 'Revised';
+      comp.abstract = 'a';
+      comp.body = 'b';
+      comp.discipline = 'Physics';
+      // Partial new co-author: hive filled, name empty.
+      comp.newCoAuthors = [{ name: '', hive: 'mallory', orcid: '', affiliation: '' }];
+
+      await comp.handleSubmit();
+
+      expect(comp._hasIncompleteAuthor()).toBe(true);
+      expect(broadcastOps).not.toHaveBeenCalled();
+      expect(comp.step).toBe('idle');
+      expect(mockStores.toast.show).toHaveBeenCalledWith('edit.authorNameRequired', 'error');
+    });
+
+    it('allows submission when a new co-author row is wholly blank (unused row, dropped)', async () => {
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      invalidatePaperCache.mockResolvedValue({});
+      const comp = createComponent();
+      mockStores.auth.username = 'alice';
+      comp.paper = paperWith([{ name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' }]);
+      comp._prefillForm();
+      comp.title = 'Revised';
+      comp.abstract = 'a';
+      comp.body = 'b';
+      comp.discipline = 'Physics';
+      comp.newCoAuthors = [{ name: '', hive: '', orcid: '', affiliation: '' }];
+
+      expect(comp._hasIncompleteAuthor()).toBe(false);
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('success');
+      const commentOp = broadcastOps.mock.calls[0][1][0];
+      const meta = JSON.parse(commentOp[1].json_metadata);
+      // Blank row dropped: only Alice remains.
+      expect(meta.pevotest.authors.map(a => a.hive)).toEqual(['alice']);
+    });
+
+    it('blocks submission when the primary author name is empty', async () => {
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      const comp = createComponent();
+      mockStores.auth.username = 'alice';
+      comp.paper = paperWith([{ name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' }]);
+      comp._prefillForm();
+      comp.authorName = '   '; // whitespace-only
+      comp.title = 'Revised';
+      comp.abstract = 'a';
+      comp.body = 'b';
+      comp.discipline = 'Physics';
+
+      await comp.handleSubmit();
+
+      expect(broadcastOps).not.toHaveBeenCalled();
+      expect(comp.step).toBe('idle');
+    });
+  });
+});

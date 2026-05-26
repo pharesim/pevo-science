@@ -374,6 +374,11 @@ export function initEditPage() {
     authorAffiliation: '',
     authorOrcid: '',
     existingCoAuthors: [],
+    // Original index of the broadcaster within the prior author list, so a
+    // revision can splice their edited entry back at the same position and
+    // preserve author order. -1 when the broadcaster is not yet a listed
+    // author (then they are appended as an addition). See _prefillForm.
+    _primaryIndex: -1,
     newCoAuthors: [],
     accreditedDirectory: {},
     addressedReviews: [], // [{ author, permlink }]
@@ -647,15 +652,47 @@ export function initEditPage() {
       // Supplementary files (existing, read-only)
       this.existingSupplementaryFiles = pevo.supplementary_files || p.supplementary_files || [];
 
-      // Authors
-      const authors = pevo.authors || p.authors || [];
-      if (authors.length > 0) {
-        const primary = authors[0];
+      // Authors. Prefer the API cumulative-union-resolved authors[] (the
+      // supersession- and Hive-less-carry-resolved set the detail surface
+      // returns) over the raw head-post json_metadata claim, so a revision
+      // carries forward the complete author set the backend computed rather
+      // than re-deriving from a head post that may have dropped co-authors.
+      const authors = (Array.isArray(p.authors) && p.authors.length > 0)
+        ? p.authors
+        : (pevo.authors || []);
+
+      // Author order is preserved across revisions: the broadcaster edits
+      // their own entry in place rather than being hoisted to the front.
+      // Seat the broadcaster's prior entry into the editable primary fields
+      // and keep every other author (including Hive-less display-only credits)
+      // as a read-only existing row. _primaryIndex records where the
+      // broadcaster sat so handleSubmit can splice the edited entry back at
+      // the same position. When the broadcaster is not yet a listed author
+      // (an accepted-claim co-author's first continuation), _primaryIndex
+      // stays -1 and they are appended as an addition, leaving prior order
+      // intact.
+      const selfIdx = this.username
+        ? authors.findIndex(a => a.hive === this.username)
+        : -1;
+      this._primaryIndex = selfIdx;
+      if (selfIdx !== -1) {
+        const primary = authors[selfIdx];
         this.authorName = primary.name || '';
         this.authorAffiliation = primary.affiliation || '';
         this.authorOrcid = primary.orcid || '';
-        this.existingCoAuthors = authors.slice(1);
       }
+      const rest = selfIdx !== -1
+        ? authors.filter((_, i) => i !== selfIdx)
+        : authors.slice();
+      // Defensive name fallback mirrors the backend read-time order
+      // (name -> hive -> orcid): a read-only existing row can't be edited to
+      // supply a missing name, so guarantee one here rather than dead-ending
+      // the per-entry name requirement. Other fields (hive, orcid,
+      // affiliation) pass through untouched.
+      this.existingCoAuthors = rest.map(a => ({
+        ...a,
+        name: a.name || a.hive || a.orcid || '',
+      }));
     },
 
     _restoreDraft() {
@@ -884,10 +921,29 @@ export function initEditPage() {
       }
     },
 
+    // Per-entry name requirement: a name is mandatory on every author. The
+    // broadcaster's primary name and every read-only existing row must carry
+    // a name; a new co-author row with any field filled but no name is an
+    // incomplete entry. A wholly blank new row is an unused row, not an
+    // author, and is ignored here (and filtered out at broadcast).
+    _hasIncompleteAuthor() {
+      if (!this.authorName.trim()) return true;
+      if (this.existingCoAuthors.some(a => !String(a.name || '').trim())) return true;
+      return this.newCoAuthors.some(ca => {
+        const blank = !ca.name && !ca.hive && !ca.orcid && !ca.affiliation;
+        return !blank && !String(ca.name || '').trim();
+      });
+    },
+
     async handleSubmit() {
       const username = this.username;
       if (!username || !this.isConnected) return;
-      if (!this.authorName.trim()) return;
+      // Block submission if any author entry lacks a name, instead of
+      // silently dropping name-less co-authors at broadcast time.
+      if (this._hasIncompleteAuthor()) {
+        Alpine.store('toast').show(this.$t('edit.authorNameRequired'), 'error');
+        return;
+      }
 
       // Chain-routing scope only: capture isContinuation and
       // userPostInChain as locals before the IPFS-upload await. Both are
@@ -915,19 +971,24 @@ export function initEditPage() {
           .map(k => k.trim().toLowerCase())
           .filter(Boolean);
 
-        // Primary author of the broadcast is always the current user — they
-        // own the post being edited or created. The previous conditional
-        // (continuation ? username : paper.author) was vestigial: the only
-        // legacy non-continuation path was root-author-edits-self, where
-        // username === paper.author. With co-author native edits in the
-        // chain, paper.author would now point at the canonical root's
-        // author (e.g. alice) when the actual broadcaster is a different
-        // co-author (e.g. bob).
-        const allAuthors = [
-          { name: this.authorName, hive: username, orcid: this.authorOrcid, affiliation: this.authorAffiliation },
-          ...this.existingCoAuthors,
-          ...this.newCoAuthors.filter(ca => ca.name),
-        ];
+        // The broadcaster's own entry carries hive: username (the actual
+        // signing account), never paper.author — on a co-author native edit
+        // paper.author points at the canonical root (e.g. alice) while the
+        // broadcaster may be a different co-author (e.g. bob).
+        // Preserve prior author order: splice the broadcaster's edited entry
+        // back at its original index among the existing authors (see
+        // _prefillForm / _primaryIndex). A broadcaster not in the prior list
+        // is an addition, appended after the preserved set. New co-authors
+        // follow; blank rows (no name) are dropped — name-less rows carrying
+        // data were already blocked by the _hasIncompleteAuthor guard above.
+        const editedSelf = { name: this.authorName, hive: username, orcid: this.authorOrcid, affiliation: this.authorAffiliation };
+        const allAuthors = [...this.existingCoAuthors];
+        if (this._primaryIndex >= 0) {
+          allAuthors.splice(this._primaryIndex, 0, editedSelf);
+        } else {
+          allAuthors.push(editedSelf);
+        }
+        allAuthors.push(...this.newCoAuthors.filter(ca => ca.name));
 
         // Upload new supplementary files
         const uploadedSupplementary = [...this.existingSupplementaryFiles];

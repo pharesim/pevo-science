@@ -198,6 +198,7 @@
     "stepSuccess": "Article mis à jour avec succès !",
     "noChanges": "Aucune modification détectée. Le contenu de l'article est identique à la version actuelle.",
     "authorsAddOnly": "Les auteurs existants ne peuvent pas être supprimés. Vous pouvez ajouter de nouveaux co-auteurs.",
+    "authorNameRequired": "Each author needs a name. Complete or remove any author entry without one.",
     "versionLabel": "Version",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",

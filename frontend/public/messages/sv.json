@@ -198,6 +198,7 @@
     "stepSuccess": "Artikeln har uppdaterats!",
     "noChanges": "Inga ändringar hittades. Artikelinnehållet är identiskt med den nuvarande versionen.",
     "authorsAddOnly": "Befintliga författare kan inte tas bort. Du kan lägga till nya medförfattare.",
+    "authorNameRequired": "Each author needs a name. Complete or remove any author entry without one.",
     "versionLabel": "Version",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",

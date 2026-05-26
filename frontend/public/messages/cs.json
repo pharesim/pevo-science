@@ -198,6 +198,7 @@
     "stepSuccess": "Článek úspěšně aktualizován!",
     "noChanges": "Nebyly zjištěny žádné změny. Obsah článku je totožný s aktuální verzí.",
     "authorsAddOnly": "Stávající autory nelze odebrat. Můžete přidat nové spoluautory.",
+    "authorNameRequired": "Each author needs a name. Complete or remove any author entry without one.",
     "versionLabel": "Verze {version}",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",

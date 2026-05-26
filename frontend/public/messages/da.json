@@ -198,6 +198,7 @@
     "stepSuccess": "Artikel opdateret!",
     "noChanges": "Ingen ændringer fundet. Artikelindholdet er identisk med den nuværende version.",
     "authorsAddOnly": "Eksisterende forfattere kan ikke fjernes. Du kan tilføje nye medforfattere.",
+    "authorNameRequired": "Each author needs a name. Complete or remove any author entry without one.",
     "versionLabel": "Version",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",

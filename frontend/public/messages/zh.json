@@ -198,6 +198,7 @@
     "stepSuccess": "论文更新成功！",
     "noChanges": "未检测到更改。论文内容与当前版本相同。",
     "authorsAddOnly": "现有作者不能被移除。您可以添加新的共同作者。",
+    "authorNameRequired": "Each author needs a name. Complete or remove any author entry without one.",
     "versionLabel": "版本 {version}",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",

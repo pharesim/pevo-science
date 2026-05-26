@@ -198,6 +198,7 @@
     "stepSuccess": "המאמר עודכן בהצלחה!",
     "noChanges": "לא זוהו שינויים. תוכן המאמר זהה לגרסה הנוכחית.",
     "authorsAddOnly": "לא ניתן להסיר מחברים קיימים. ניתן להוסיף מחברים שותפים חדשים.",
+    "authorNameRequired": "Each author needs a name. Complete or remove any author entry without one.",
     "versionLabel": "גרסה {version}",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",

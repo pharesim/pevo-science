@@ -1808,3 +1808,21 @@ pt: myImports.etaUnknown
 sv: myImports.etaUnknown
 tr: myImports.etaUnknown
 zh: myImports.etaUnknown
+
+### Added 2026-05-26 (UI-AUTHOR-LIST-PREFILL-ON-REVISION)
+
+ar: edit.authorNameRequired
+cs: edit.authorNameRequired
+da: edit.authorNameRequired
+de: edit.authorNameRequired
+es: edit.authorNameRequired
+fa: edit.authorNameRequired
+fr: edit.authorNameRequired
+he: edit.authorNameRequired
+it: edit.authorNameRequired
+nl: edit.authorNameRequired
+pl: edit.authorNameRequired
+pt: edit.authorNameRequired
+sv: edit.authorNameRequired
+tr: edit.authorNameRequired
+zh: edit.authorNameRequired

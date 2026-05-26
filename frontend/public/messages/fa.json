@@ -198,6 +198,7 @@
     "stepSuccess": "مقاله با موفقیت به‌روزرسانی شد!",
     "noChanges": "تغییری شناسایی نشد. محتوای مقاله با نسخه فعلی یکسان است.",
     "authorsAddOnly": "نویسندگان موجود قابل حذف نیستند. می‌توانید نویسندگان همکار جدید اضافه کنید.",
+    "authorNameRequired": "Each author needs a name. Complete or remove any author entry without one.",
     "versionLabel": "نسخه {version}",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",
