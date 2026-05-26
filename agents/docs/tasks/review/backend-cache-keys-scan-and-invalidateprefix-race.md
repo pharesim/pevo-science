@@ -48,3 +48,41 @@ The non-blocking `SCAN` pattern is already implemented correctly in the same fil
 
 - `backend/src/cache.ts` — `clearVolatile()`, `clear()` (`KEYS` sites); `invalidatePrefix()` (the canonical `SCAN` pattern to copy + the mid-loop window).
 - `project_single_instance_only` — bounds the blast radius of both issues; the fix is hygiene, not a scaling necessity.
+
+---
+
+## Backend implementation signal (2026-05-26)
+
+Both items landed in `backend/src/cache.ts` plus a new mocked-redis test file. Ready for review.
+
+### Item 1 — `redis.keys()` → non-blocking SCAN
+
+- Extracted the SCAN cursor loop (the pattern previously inlined in `invalidatePrefix()`) into a private `scanAndDeleteKeys(redis, suffix, shouldDelete?)` helper: SCAN `COUNT 200`, collect, batched `del` (`CHUNK 200`). An optional `shouldDelete(unprefixedKey)` predicate filters candidates.
+- `clear()` and `clearVolatile()` now call the helper instead of `redis.keys(this.prefix + '*')`. `clearVolatile()` passes `(k) => !this.stableKeys.has(k)` so the stable-key retention filter is preserved through the migration. `invalidatePrefix()` also routes through the helper (de-duplicates the loop; single SCAN implementation).
+- The in-memory fallback paths (`memStore.clear()`, the non-stable `memStore` loop, the `keyPrefix` `memStore` loop) are unchanged.
+
+### Item 2 — `invalidatePrefix()` mid-SCAN epoch window (and the new window item 1 introduces in `clear`/`clearVolatile`)
+
+Converting `clear()`/`clearVolatile()` to a multi-round SCAN loop (item 1) gives them the same mid-loop window `invalidatePrefix()` had — the task's "single-shot" framing of `clear()` was true only pre-item-1. Chosen fix: **bump the tier's epoch(s) both BEFORE and AFTER the sweep** for all three multi-round-delete methods; `invalidate()` stays a single before-bump (it is genuinely single-shot — one `del`).
+
+Reasoning through both windows (the task asked for this): the architect's option (a) "bump only after the loop" reopens the before-window — a fetcher that started before the call, resolving mid-loop after its key was deleted, would re-cache stale data because the epoch hasn't advanced yet. Keeping the before-bump (round-2/round-3 contract) AND adding an after-bump closes the named during-loop window without reopening the before-window. The residual (a fetcher registered during the loop that also resolves during it) writes fresh data, because epoch capture happens at fetcher registration, which is after the before-bump, i.e. after the caller's data mutation — so its `fn()` reads post-mutation state. `clearVolatile()` bumps only `volatileEpoch` before+after (never `stableEpoch`, preserving the per-tier `stable: true` contract from `backend-cache-single-flight-coalescing`). Class-level docblock gained a "Single-shot vs multi-round deletes" paragraph; each method comment anchors on the before/after rationale (no slugs/lines/SHAs).
+
+### Tests — `backend/tests/lib/cache-invalidation.test.ts` (new, mocked-redis)
+
+Mocks `getRedis()` (permitted shared-helper per the test-mock carve-out; header documents clauses (a)/(b)/(c)). The behavioral risk classes (stable retention through `clearVolatile`; in-flight write suppression) are covered real-path by `tests/lib/cache.test.ts`; this file adds the command-shape and mid-loop-timing pins a real client can't express.
+
+- `clear()` and `clearVolatile()` issue SCAN and NOT `KEYS` (spy assertions are direct `KEYS` detectors); `clearVolatile()` retains the stable key, deletes the volatile one.
+- `invalidatePrefix()` suppresses the write of a fetcher registered during the SCAN loop and resolving after it. **Mutation-kill:** removing the after-bump flips this spec RED (the two SCAN-not-KEYS specs stay green); reverted.
+
+### Verification
+
+- `npm run typecheck` from `backend/`: clean.
+- `npm run lint` from `backend/`: clean for all changed files.
+- `tests/lib/cache-invalidation.test.ts` 3/3; `tests/lib/cache.test.ts` 8/8 (single-flight specs re-run against real Redis, now exercising the SCAN path in `clearVolatile`); `tests/cache.test.ts` 10/10 (direct `QueryCache` regression). No cache regression.
+- Test-run note: run the real-Redis cache specs against the live redis container IP (the repo `.env` `REDIS_URL` is stale) per root CLAUDE.md "Running Tests".
+
+### Carry-forward for the architect (archive-time)
+
+The "multi-round SCAN delete must bracket the sweep with before+after epoch bumps" insight is adjacent to the per-tier-epoch learning the round-4 hold on `backend-cache-single-flight-coalescing` already flagged for `/ce-compound` at archive. Suggest folding both into the same cache-invalidation learning refresh rather than a separate entry.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

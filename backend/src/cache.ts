@@ -43,6 +43,18 @@
  * (the request that triggered the fetcher gets data), but the cache stays
  * cold for the affected tier so the next caller picks up fresh
  * post-invalidation data.
+ *
+ * Single-shot vs multi-round deletes: `invalidate(key)` deletes one key in
+ * a single command, so one bump (before the delete) suffices — there is no
+ * window during which a fetcher can register against the post-bump epoch.
+ * `clear()`, `clearVolatile()`, and `invalidatePrefix()` delete via a
+ * non-blocking SCAN cursor loop spanning multiple awaits; a fetcher that
+ * registers DURING that loop captures the post-before-bump epoch and would
+ * pass its gate on resolution. These three bump their tier's epoch(s) both
+ * BEFORE and AFTER the sweep: the before-bump suppresses fetchers that
+ * started before the call (even if they resolve mid-loop after their key
+ * was deleted), and the after-bump suppresses fetchers registered during
+ * the loop that resolve after it completes.
  */
 import { getRedis } from './redis.js';
 import { config } from './config.js';
@@ -247,6 +259,40 @@ export class QueryCache {
     }
   }
 
+  /**
+   * Non-blocking keyspace sweep: enumerate every Redis key matching
+   * `${this.prefix}${suffix}*` via a SCAN cursor loop (COUNT 200), then
+   * delete the matches in batched DELs. Replaces the O(N) blocking `KEYS`
+   * command, which stalls the whole Redis server for the duration of the
+   * scan — especially costly in `clearVolatile()`, which fires on every
+   * ~3s block tick. `shouldDelete`, when supplied, filters candidates by
+   * their unprefixed key name (used by `clearVolatile()` to retain stable
+   * entries); when omitted, every match is deleted.
+   */
+  private async scanAndDeleteKeys(
+    redis: NonNullable<ReturnType<typeof getRedis>>,
+    suffix: string,
+    shouldDelete?: (unprefixedKey: string) => boolean,
+  ): Promise<void> {
+    let cursor = '0';
+    const toDelete: string[] = [];
+    do {
+      const [next, batch] = await redis.scan(cursor, 'MATCH', this.prefix + suffix + '*', 'COUNT', 200);
+      cursor = next;
+      for (const fullKey of batch) {
+        if (!shouldDelete || shouldDelete(fullKey.slice(this.prefix.length))) {
+          toDelete.push(fullKey);
+        }
+      }
+    } while (cursor !== '0');
+    if (toDelete.length > 0) {
+      const CHUNK = 200;
+      for (let i = 0; i < toDelete.length; i += CHUNK) {
+        await redis.del(...toDelete.slice(i, i + CHUNK));
+      }
+    }
+  }
+
   async invalidate(key: string): Promise<void> {
     // Bump BOTH epochs BEFORE the actual delete: `invalidate(key)`
     // targets a specific key regardless of its tier, so an in-flight
@@ -280,29 +326,23 @@ export class QueryCache {
    * non-blocking iteration so this is safe to call with broad prefixes.
    */
   async invalidatePrefix(keyPrefix: string): Promise<void> {
-    // Bump BOTH epochs first so in-flight fetchers under this prefix in
-    // either tier skip their cache-writes on resolution (see `invalidate`
-    // for ordering rationale and class-level docblock).
+    // Bump BOTH epochs before AND after the sweep. Before: in-flight
+    // fetchers under this prefix in either tier that started before this
+    // call must skip their cache-writes on resolution (see `invalidate`
+    // for ordering rationale). After: the Redis delete is a multi-round
+    // SCAN loop, so a fetcher registered DURING the loop captures the
+    // post-before-bump epoch and would otherwise pass its gate on
+    // resolution; the after-bump advances the epoch past that captured
+    // value so the mid-loop fetcher's write is suppressed too. Keeping the
+    // before-bump (rather than only bumping after) means a fetcher that
+    // started before this call is still suppressed even if it resolves
+    // mid-loop after its key was deleted. See class-level docblock.
     this.volatileEpoch++;
     this.stableEpoch++;
-    const fullPrefix = this.prefix + keyPrefix;
     const redis = getRedis();
     if (redis) {
       try {
-        let cursor = '0';
-        const matched: string[] = [];
-        do {
-          const [next, batch] = await redis.scan(cursor, 'MATCH', fullPrefix + '*', 'COUNT', 200);
-          cursor = next;
-          matched.push(...batch);
-        } while (cursor !== '0');
-        if (matched.length > 0) {
-          // Batch deletes to keep DEL command size reasonable.
-          const CHUNK = 200;
-          for (let i = 0; i < matched.length; i += CHUNK) {
-            await redis.del(...matched.slice(i, i + CHUNK));
-          }
-        }
+        await this.scanAndDeleteKeys(redis, keyPrefix);
       } catch (err) {
         logger.debug({ err, keyPrefix }, 'Redis cache invalidatePrefix failed');
       }
@@ -314,6 +354,8 @@ export class QueryCache {
         this.memStore.delete(key);
       }
     }
+    this.volatileEpoch++;
+    this.stableEpoch++;
   }
 
   private periodicEntries = new Map<string, { reload: () => Promise<void> }>();
@@ -348,42 +390,50 @@ export class QueryCache {
 
   /** Clear ALL entries including stable ones. */
   async clear(): Promise<void> {
-    // Bump BOTH epochs first: `clear()` flushes every tier, so in-flight
-    // fetchers for stable AND non-stable entries must skip their
-    // cache-writes on resolution (see `invalidate` for ordering rationale).
+    // Bump BOTH epochs before AND after the sweep. Before: `clear()`
+    // flushes every tier, so in-flight fetchers for stable AND non-stable
+    // entries that started before this call must skip their cache-writes
+    // (see `invalidate` for ordering rationale). After: the Redis delete is
+    // now a multi-round SCAN loop, so a fetcher registered DURING the loop
+    // must also be suppressed (see `invalidatePrefix` and the class-level
+    // docblock for the multi-round before/after bracket).
     this.volatileEpoch++;
     this.stableEpoch++;
     const redis = getRedis();
     if (redis) {
       try {
-        const keys = await redis.keys(this.prefix + '*');
-        if (keys.length > 0) await redis.del(...keys);
+        await this.scanAndDeleteKeys(redis, '');
       } catch (err) { logger.debug({ err }, 'Redis cache clear failed'); }
     }
     this.memStore.clear();
     this.stableKeys.clear();
+    this.volatileEpoch++;
+    this.stableEpoch++;
   }
 
   /** Clear only volatile (non-stable) entries. Called on new block. */
   async clearVolatile(): Promise<void> {
-    // Bump ONLY `volatileEpoch` first: this method deletes only non-stable
-    // entries, so an in-flight fetcher for a STABLE key (whose entry is
-    // never touched here) must still be allowed to write on resolution.
-    // Bumping `stableEpoch` here would suppress stable writes on every 3s
-    // block-watcher tick, defeating the `stable: true` contract under load
-    // (see `invalidate` for ordering rationale).
+    // Bump ONLY `volatileEpoch`, before AND after the sweep. This method
+    // deletes only non-stable entries, so an in-flight fetcher for a STABLE
+    // key (whose entry is never touched here) must still be allowed to
+    // write on resolution — bumping `stableEpoch` would suppress stable
+    // writes on every ~3s block-watcher tick, defeating the `stable: true`
+    // contract under load. Before-bump suppresses non-stable fetchers that
+    // started before this call; after-bump suppresses non-stable fetchers
+    // registered DURING the multi-round SCAN loop (see `invalidatePrefix`
+    // and the class-level docblock for the bracket; `invalidate` for the
+    // bump-before ordering).
     this.volatileEpoch++;
     const redis = getRedis();
     if (redis) {
       try {
-        const keys = await redis.keys(this.prefix + '*');
-        const toDelete = keys.filter((k) => !this.stableKeys.has(k.slice(this.prefix.length)));
-        if (toDelete.length > 0) await redis.del(...toDelete);
+        await this.scanAndDeleteKeys(redis, '', (k) => !this.stableKeys.has(k));
       } catch (err) { logger.debug({ err }, 'Redis cache clearVolatile failed'); }
     }
     for (const [key, entry] of this.memStore) {
       if (!entry.stable) this.memStore.delete(key);
     }
+    this.volatileEpoch++;
   }
 
   get size(): number {
