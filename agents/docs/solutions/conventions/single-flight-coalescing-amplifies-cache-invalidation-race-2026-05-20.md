@@ -1,6 +1,7 @@
 ---
 title: "Single-flight coalescing amplifies cache invalidation race; capture an epoch and skip the write on invalidation between fetcher-start and resolve"
 date: 2026-05-20
+last_refreshed: 2026-05-26
 category: conventions
 module: backend/src/cache.ts
 problem_type: convention
@@ -18,6 +19,8 @@ tags:
   - invalidation
   - race-condition
   - epoch-counter
+  - per-tier-epoch
+  - scan-multi-round-delete
   - QueryCache
 ---
 
@@ -27,34 +30,57 @@ tags:
 
 `QueryCache.getOrSet` in `backend/src/cache.ts` gained in-process single-flight coalescing in commit `623bee26` (parent task `backend-cache-single-flight-coalescing` round-1): concurrent same-key cache misses now share ONE fetcher invocation via a `Map<prefixedKey, Promise<T|null>>` (`this.inflight`). This correctly closes the per-request DoS amplifier where N concurrent readers each fired their own walker. /ce-code-review's adversarial pass surfaced that the win comes with a hidden cost: coalescing AMPLIFIES the invalidate-during-fetch race rather than reducing it. Pre-fix the race was per-fetcher (bounded — at most one fetcher's snapshot could race an invalidate); post-fix the race is per-key-wave (one stale write outlives many readers for the full TTL). No discipline existed for skipping the cache write when an invalidation fires between fetcher-start and fetcher-resolve. This entry codifies that discipline as a convention so future single-flight additions (e.g., the pending `backend-cache-single-flight-coalescing-swr-cold-path` extension to `getOrSetSWR`) carry the guard.
 
+The epoch primitive evolved twice after round-1, and the current HEAD shape is what this entry now documents:
+
+1. **A single shared `epoch` was split into per-tier counters `volatileEpoch` and `stableEpoch`.** A shared counter let `clearVolatile()` — which fires on every ~3s Hive block tick and deletes ONLY non-stable entries — suppress the cache write of an in-flight STABLE fetcher (e.g., `reputation_weights`, `disciplines`) that captured the epoch before the tick. That defeated the `stable: true` contract: under any concurrency, stable entries went cold on every block. The fix is a counter per tier; the `getOrSet` gate keys a stable entry on `stableEpoch` only and a non-stable entry on both.
+2. **Single-shot deletes and multi-round SCAN-loop deletes need different bump shapes.** When `clear()`/`clearVolatile()`/`invalidatePrefix()` switched from a blocking `redis.keys()` to a non-blocking SCAN cursor loop (task `backend-cache-keys-scan-and-invalidateprefix-race`), their delete phase became non-atomic — multiple awaits. A fetcher that registers DURING the loop captures the post-before-bump epoch and would pass its gate on resolution. So those three methods bump their tier's epoch(s) BOTH before AND after the sweep. `invalidate(key)` is a genuine single-shot (`one del`) and keeps a single before-bump.
+
 ## Guidance
 
-Any `QueryCache` method that introduces single-flight coalescing MUST also capture the invalidation epoch at fetcher-start and skip `this.set` if the epoch changes by the time the fetcher resolves. The resolved value is still returned to all coalesced callers; only the cache backfill is suppressed. The next reader after the skipped write is a cache miss and triggers a fresh fetcher that captures the post-invalidation epoch.
+Any `QueryCache` method that introduces single-flight coalescing MUST capture the invalidation epoch(s) at fetcher-start and skip `this.set` if the relevant counter changed by the time the fetcher resolves. The resolved value is still returned to all coalesced callers; only the cache backfill is suppressed. The next reader after the skipped write is a cache miss and triggers a fresh fetcher that captures the post-invalidation epoch.
+
+Two design rules harden the basic guard:
+
+- **Per-tier counters, not one.** Use `volatileEpoch` and `stableEpoch`. A stable-tier in-flight fetcher gates on `stableEpoch` only; a non-stable fetcher gates on both. This is what lets `clearVolatile()` (which never deletes stable entries) avoid suppressing in-flight stable writes on every block tick.
+- **Bracket multi-round deletes before AND after; single-shot deletes only before.** A delete that spans multiple awaits (a SCAN cursor loop) opens a mid-loop registration window — a fetcher that registers after the before-bump captures the already-advanced epoch and would pass its gate. The after-bump advances past that captured value. A single-command delete (`invalidate(key)`, one `del`) has no such window and needs only a before-bump.
 
 ```typescript
 export class QueryCache {
   private inflight = new Map<string, Promise<unknown>>();
-  private epoch = 0;  // bumps on every invalidation
+  // Per-tier invalidation epochs. clearVolatile() (3s block tick) deletes
+  // only non-stable entries, so it bumps ONLY volatileEpoch; bumping
+  // stableEpoch there would suppress in-flight STABLE writes and break the
+  // `stable: true` contract.
+  private volatileEpoch = 0;
+  private stableEpoch = 0;
 
-  invalidate(key: string): void {
-    this.epoch++;  // bump first, then clear storage
+  // Single-shot delete: one `del`, no mid-flight window -> bump once, before.
+  async invalidate(key: string): Promise<void> {
+    this.volatileEpoch++;  // targets a specific key regardless of tier,
+    this.stableEpoch++;    // so bump BOTH before deleting.
     this.memStore.delete(key);
-    // ... existing Redis del logic ...
+    // ... single Redis del ...
   }
 
-  invalidatePrefix(prefix: string): void {
-    this.epoch++;
-    // ... existing prefix-scan logic ...
+  // Multi-round SCAN-loop deletes: bump the tier's epoch(s) BEFORE and AFTER
+  // the sweep. Before suppresses fetchers started before the call; after
+  // suppresses fetchers registered DURING the loop that resolve after it.
+  async invalidatePrefix(keyPrefix: string): Promise<void> {
+    this.volatileEpoch++; this.stableEpoch++;          // before
+    await this.scanAndDeleteKeys(redis, keyPrefix);    // multi-round
+    this.volatileEpoch++; this.stableEpoch++;          // after
   }
 
-  clearVolatile(): void {
-    this.epoch++;
-    // ... existing volatile-clear logic ...
+  async clearVolatile(): Promise<void> {
+    this.volatileEpoch++;                                       // before (volatile only)
+    await this.scanAndDeleteKeys(redis, '', (k) => !this.stableKeys.has(k));
+    this.volatileEpoch++;                                       // after (volatile only)
   }
 
-  clear(): void {
-    this.epoch++;
-    // ... existing full-clear logic ...
+  async clear(): Promise<void> {
+    this.volatileEpoch++; this.stableEpoch++;          // before
+    await this.scanAndDeleteKeys(redis, '');           // multi-round
+    this.volatileEpoch++; this.stableEpoch++;          // after
   }
 
   async getOrSet<T>(
@@ -70,14 +96,21 @@ export class QueryCache {
     const existing = this.inflight.get(inflightKey) as Promise<T> | undefined;
     if (existing !== undefined) return existing;
 
-    const capturedEpoch = this.epoch;  // capture BEFORE registering promise
+    // Capture BOTH epochs BEFORE registering the promise.
+    const capturedVolatileEpoch = this.volatileEpoch;
+    const capturedStableEpoch = this.stableEpoch;
 
     const promise = (async (): Promise<T> => {
       try {
         const data = await fn();
-        // Skip the cache write if an invalidation fired during the fetch.
-        // Callers still receive `data`; only the backfill is suppressed.
-        if (data !== null && data !== undefined && capturedEpoch === this.epoch) {
+        // Stable entry: only stableEpoch must be unchanged (a concurrent
+        // clearVolatile() bumps only volatileEpoch and never deletes stable
+        // entries, so it must not suppress this write). Non-stable: both.
+        const notInvalidated = stable
+          ? capturedStableEpoch === this.stableEpoch
+          : capturedVolatileEpoch === this.volatileEpoch &&
+            capturedStableEpoch === this.stableEpoch;
+        if (data !== null && data !== undefined && notInvalidated) {
           await this.set(key, data, ttlMs, stable);
         }
         return data;
@@ -92,7 +125,9 @@ export class QueryCache {
 }
 ```
 
-Both the `inflight.set` registration AND the `capturedEpoch = this.epoch` snapshot must execute synchronously in the outer frame BEFORE any `await` yields the event loop. Two callers that both reach `inflight.get → undefined` synchronously (no `await` between the get and the set) can race-cleanly on the `inflight.set` slot; the same applies to the epoch capture.
+Both the `inflight.set` registration AND the `capturedVolatileEpoch`/`capturedStableEpoch` snapshots must execute synchronously in the outer frame BEFORE any `await` yields the event loop. Two callers that both reach `inflight.get → undefined` synchronously (no `await` between the get and the set) can race-cleanly on the `inflight.set` slot; the same applies to the epoch captures.
+
+**Residual window (accepted at single-instance scale).** The before+after bracket closes the two windows it names — fetchers that started before the call, and fetchers registered during the loop that resolve after it. It does NOT close the case where a fetcher both registers AND resolves entirely inside the SCAN loop, before the after-bump. That requires `fn()` (a slow HAF query) to start and finish inside a 1–2-round sub-millisecond local Redis SCAN loop — effectively unreachable at PEvO's single-instance, small-keyspace scale, and self-healing on the next fetch. The method comments correctly do NOT claim this case is closed; do not add a third bump to chase it.
 
 ## Why This Matters
 
@@ -111,7 +146,8 @@ Following this convention ensures single-flight coalescing delivers its load-red
 - Specifically when extending single-flight coalescing to `QueryCache.getOrSetSWR`'s cold path: the epoch-counter check must be included in that extension, not deferred. The pending task `backend-cache-single-flight-coalescing-swr-cold-path` carries this requirement.
 - The rule is: "Any cache method that adds single-flight coalescing must also skip the `cache.set` write on invalidation between fetcher-start and fetcher-resolve."
 - Does NOT apply to cache methods without single-flight coalescing. The original per-fetcher race (bounded) is acceptable for standalone-fetcher paths; the amplification only kicks in once N callers share one fetcher.
-- Applies only within the in-process boundary. PEvO is single-instance forever, so the in-process `epoch` counter is the correct primitive. A horizontal-scale deployment would need cross-process epoch coordination (e.g., Redis pubsub), but that scenario is out of scope.
+- When converting a single-shot delete to a multi-round SCAN-loop delete (or adding any new multi-round invalidation method), bump the tier's epoch(s) both before AND after the sweep — a before-only bump reopens the mid-loop registration window.
+- Applies only within the in-process boundary. PEvO is single-instance forever, so the in-process per-tier `volatileEpoch`/`stableEpoch` counters are the correct primitive. A horizontal-scale deployment would need cross-process epoch coordination (e.g., Redis pubsub), but that scenario is out of scope.
 
 ## Examples
 
@@ -146,15 +182,17 @@ async getOrSet<T>(key: string, fn: () => Promise<T>, ttlMs?: number, stable = fa
 }
 ```
 
-**After** (epoch guard; stale write suppressed, callers still receive the resolved value):
+**After** (per-tier epoch guard; stale write suppressed, callers still receive the resolved value):
 
 ```typescript
-private epoch = 0;
+private volatileEpoch = 0;
+private stableEpoch = 0;
 
-invalidate(key: string): void {
-  this.epoch++;
+async invalidate(key: string): Promise<void> {
+  this.volatileEpoch++;
+  this.stableEpoch++;
   this.memStore.delete(key);
-  // ... Redis del ...
+  // ... single Redis del ...
 }
 
 async getOrSet<T>(key: string, fn: () => Promise<T>, ttlMs?: number, stable = false): Promise<T> {
@@ -165,12 +203,17 @@ async getOrSet<T>(key: string, fn: () => Promise<T>, ttlMs?: number, stable = fa
   const existing = this.inflight.get(inflightKey) as Promise<T> | undefined;
   if (existing !== undefined) return existing;
 
-  const capturedEpoch = this.epoch;
+  const capturedVolatileEpoch = this.volatileEpoch;
+  const capturedStableEpoch = this.stableEpoch;
 
   const promise = (async (): Promise<T> => {
     try {
       const data = await fn();
-      if (data !== null && data !== undefined && capturedEpoch === this.epoch) {
+      const notInvalidated = stable
+        ? capturedStableEpoch === this.stableEpoch
+        : capturedVolatileEpoch === this.volatileEpoch &&
+          capturedStableEpoch === this.stableEpoch;
+      if (data !== null && data !== undefined && notInvalidated) {
         await this.set(key, data, ttlMs, stable);
       }
       return data;
@@ -184,7 +227,7 @@ async getOrSet<T>(key: string, fn: () => Promise<T>, ttlMs?: number, stable = fa
 }
 ```
 
-Outcome of the fix: when a paper edit invalidates `paperDetailKey` while a coalesced fetch is in flight, the fetcher resolves and returns data to its N callers, but writes nothing to the cache. The next reader is a cache miss, fires a fresh fetcher that captures the new epoch, and writes the post-edit snapshot. The stale window drops from up to 30 minutes (full TTL) to zero cache-hit reads after the invalidation.
+Outcome of the fix: when a paper edit invalidates `paperDetailKey` while a coalesced fetch is in flight, the fetcher resolves and returns data to its N callers, but writes nothing to the cache. The next reader is a cache miss, fires a fresh fetcher that captures the new epoch, and writes the post-edit snapshot. The stale window drops from up to 30 minutes (full TTL) to zero cache-hit reads after the invalidation. Critically, the converse must ALSO hold: a `clearVolatile()` block tick (which bumps only `volatileEpoch`) must NOT suppress an in-flight STABLE fetcher's write — otherwise stable entries go cold every 3 seconds under load. The per-tier split is what delivers both directions; pin all four tier×operation combinations with mutation-kill specs (a dropped counter bump or a mis-wired gate conjunct must turn a spec RED).
 
 ## Related
 
