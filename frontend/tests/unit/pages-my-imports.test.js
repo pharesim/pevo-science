@@ -159,6 +159,20 @@ describe('myImportsPage', () => {
       expect(comp.entries[0].author).toBeNull();
     });
 
+    it('completed fresh-broadcast entry resolves author from wire.author (existing_author null) so the View paper link renders', async () => {
+      mockFetchBridgeImports.mockResolvedValue({
+        data: { entries: [{ id: 11, identifier: 'x', state: 'completed', created_at: 'x', author: 'pevo.bridge', existing_author: null, permlink: 'bridge-x', error_message: null }] },
+      });
+      const comp = createComponent();
+      await comp.loadEntries();
+      const e = comp.entries[0];
+      // Widened resolution prefers the contract's own `author` (fresh broadcast)
+      // over the null existing_author. author + permlink both present is the
+      // view-model condition under which the template renders the View paper link.
+      expect(e.author).toBe('pevo.bridge');
+      expect(e.permlink).toBe('bridge-x');
+    });
+
     it('tolerates a missing entries array', async () => {
       mockFetchBridgeImports.mockResolvedValue({ data: {} });
       const comp = createComponent();
@@ -455,6 +469,27 @@ describe('myImportsPage', () => {
       // The success continuation short-circuits: no toast, no reload.
       expect(mockToastStore.show).not.toHaveBeenCalled();
       expect(mockFetchBridgeImports).not.toHaveBeenCalled();
+    });
+
+    it('retryEntry torn down DURING the post-success reload does not fire the success toast', async () => {
+      // Re-POST succeeds, then the reload parks; teardown fires mid-reload.
+      // Exercises the second _mounted recheck added after `await loadEntries()`
+      // (the toast-after-await reorder), distinct from the pre-reload guard above.
+      mockRegisterBridgePaper.mockResolvedValue({ data: { entry: { id: 5 }, queue_position: 1, eta_seconds: 0 } });
+      let resolveReload;
+      mockFetchBridgeImports.mockImplementationOnce(() => new Promise((r) => { resolveReload = r; }));
+      const comp = createComponent();
+      const p = comp.retryEntry({ id: 5, identifier: 'x', retriable: true });
+      // Flush past the resolved re-POST so the post-success loadEntries() reload
+      // starts and parks on the still-pending fetch.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockFetchBridgeImports).toHaveBeenCalledTimes(1);
+      comp.destroy(); // route change tears the component down mid-reload
+      resolveReload({ data: { entries: [] } });
+      await p;
+      // Post-reload _mounted recheck suppresses the success toast.
+      expect(mockToastStore.show).not.toHaveBeenCalledWith('bridge.queuedTitle', 'success');
     });
   });
 });

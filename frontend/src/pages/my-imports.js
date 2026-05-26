@@ -51,11 +51,12 @@ const NON_RETRIABLE_ERROR_CODES = new Set(['BAD_REQUEST', 'SERVICE_UNAVAILABLE']
 // here so the template never sees wire names:
 //   - created_at    → submitted_at
 //   - error_message → failure_reason
-//   - author: resolved from existing_author, which the contract sets only on
-//     the permlink-collision short-circuit. A freshly broadcast bridge paper
-//     has existing_author null, so the "View paper" link renders only when an
-//     author is resolvable (see template). Widening to the contract's own
-//     `author` field is gated on the backend populating it.
+//   - author: the contract's resolved bridge author for a completed entry
+//     (existing_author on a permlink collision, the bridge account on a fresh
+//     broadcast). We prefer the contract's own `author` field and fall back to
+//     the bare existing_author for any older/partial wire shape that predates
+//     it. The "View paper" link renders only when an author is resolvable
+//     (see template); a still-in-flight or failed entry has none.
 //   - retriable: the contract has no per-entry retriable flag, so we derive it
 //     from state + error_code. Only a `failed` entry is retriable, and only
 //     when its failure is not terminal (see NON_RETRIABLE_ERROR_CODES). The
@@ -73,7 +74,7 @@ function adaptEntry(wire) {
     submitted_at: wire.created_at ?? null,
     completed_at: wire.completed_at ?? null,
     etaSeconds: typeof wire.eta_seconds === 'number' ? wire.eta_seconds : null,
-    author: wire.existing_author ?? null,
+    author: wire.author ?? wire.existing_author ?? null,
     permlink: wire.existing_permlink ?? wire.permlink ?? null,
     failure_reason: wire.error_message ?? null,
     retriable: wire.state === 'failed' && !NON_RETRIABLE_ERROR_CODES.has(wire.error_code),
@@ -118,8 +119,9 @@ function buildDemoEntries() {
       created_at: isoMinutesAgo(45),
       completed_at: isoMinutesAgo(40),
       eta_seconds: null,
-      existing_author: 'pevo.bridge',
-      existing_permlink: 'bridge-biorxiv-2024-01-05-572345',
+      // Fresh broadcast: the contract resolves `author` (the bridge account)
+      // with existing_author null. Exercises the widened adaptEntry author path.
+      author: 'pevo.bridge',
       permlink: 'bridge-biorxiv-2024-01-05-572345',
       error_message: null,
     },
