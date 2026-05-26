@@ -31,13 +31,22 @@
  *         `runWorkerTick` / re-entrancy / seeding tests so the worker leases
  *         a controlled entry rather than the global oldest-due row. The
  *         suite runs at `maxWorkers: 2`; a real global lease could steal a
- *         sibling file's row and corrupt its assertions. Every OTHER
- *         `bridge-queue` function (`markCompleted`, `rescheduleForRetry`,
+ *         sibling file's row and corrupt its assertions.
+ *       - `markCompleted` (`bridge-queue.js`): wrapped in a mock that defaults
+ *         to the REAL implementation, so every test except the
+ *         post-broadcast-write-failure case persists completion state for real
+ *         against Postgres. The post-broadcast-write-failure branch
+ *         (broadcast lands, completion write throws → reschedule with
+ *         `COMPLETION_WRITE_FAILED`) is unreachable with a healthy app DB; the
+ *         only way to exercise it deterministically is to force the completion
+ *         write to reject after the broadcast mock resolves, so that one test
+ *         overrides the wrapper to reject.
+ *       Every OTHER `bridge-queue` function (`rescheduleForRetry`,
  *         `markFailed`, `markCompletedExisting`, `getLastSuccessfulBroadcastAt`,
  *         `tryEnqueueBridgeImport`, `findEntryById`) runs REAL against the
  *         Postgres app database — the queue's source of truth is never
- *         mocked. Dispatch-test rows are inserted as `in_progress` with a
- *         non-expired lease so they are invisible to a sibling's
+ *         otherwise mocked. Dispatch-test rows are inserted as `in_progress`
+ *         with a non-expired lease so they are invisible to a sibling's
  *         `leaseNextEntry`.
  *
  *   (b) The worker has no auth middleware — it is a background dispatcher,
@@ -69,6 +78,7 @@ const {
   getPoolMock,
   isHafConfiguredMock,
   leaseNextEntryMock,
+  markCompletedMock,
 } = vi.hoisted(() => ({
   broadcastMock: vi.fn(),
   lookupPreprintMock: vi.fn(),
@@ -79,6 +89,7 @@ const {
   getPoolMock: vi.fn(),
   isHafConfiguredMock: vi.fn(),
   leaseNextEntryMock: vi.fn(),
+  markCompletedMock: vi.fn(),
 }));
 
 vi.mock('../../src/hive.js', async () => {
@@ -109,7 +120,13 @@ vi.mock('../../src/db.js', async () => {
 
 vi.mock('../../src/bridge-queue.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/bridge-queue.js')>('../../src/bridge-queue.js');
-  return { ...actual, leaseNextEntry: leaseNextEntryMock };
+  // `markCompletedMock` defaults to the real implementation so every test
+  // EXCEPT the post-broadcast-write-failure case writes completion state for
+  // real against Postgres. The COMPLETION_WRITE_FAILED test overrides it to
+  // reject after the broadcast mock resolves. The default is re-established in
+  // `resetMockDefaults` (mockReset clears it between tests).
+  markCompletedMock.mockImplementation(actual.markCompleted);
+  return { ...actual, leaseNextEntry: leaseNextEntryMock, markCompleted: markCompletedMock };
 });
 
 const { dispatchEntry, runWorkerTick, startBridgeWorker, stopBridgeWorker, _resetBridgeWorkerForTests } =
@@ -121,6 +138,10 @@ const {
   getLastSuccessfulBroadcastAt,
   BRIDGE_QUEUE_MAX_ATTEMPTS,
 } = await import('../../src/bridge-queue.js');
+// Real (unmocked) markCompleted, used to restore the delegating default after
+// each test's mockReset so non-failure cases write completion for real.
+const { markCompleted: realMarkCompleted } =
+  await vi.importActual<typeof import('../../src/bridge-queue.js')>('../../src/bridge-queue.js');
 const { getAppPool, closeAppPool } = await import('../../src/app-db.js');
 
 const USER_PREFIX = 'pevo-bridge-worker-test';
@@ -177,6 +198,10 @@ function resetMockDefaults(): void {
   getPoolMock.mockReset();
   isHafConfiguredMock.mockReset();
   leaseNextEntryMock.mockReset();
+  markCompletedMock.mockReset();
+  // Default: completion writes run real against Postgres. The
+  // post-broadcast-write-failure test overrides this to reject.
+  markCompletedMock.mockImplementation(realMarkCompleted);
 
   // Happy-path defaults; individual tests override the branch they target.
   resolveToCanonicalMock.mockResolvedValue({ type: 'arxiv', id: '2401.00001' });
@@ -326,6 +351,42 @@ describe('bridge-worker: dispatchEntry', () => {
     expect(r!.existing_author).toBe('pevotest.bridge');
     expect(r!.existing_permlink).toBe('bridge-arxiv-existing');
     expect(r!.tx_id).toBeNull();
+    expect(broadcastMock).not.toHaveBeenCalled();
+  });
+
+  it('broadcast succeeds but completion write throws → pending, attempts NOT incremented, COMPLETION_WRITE_FAILED, cooldown recorded', async () => {
+    if (!available) return;
+    // Broadcast lands, then the completion write fails. The dispatcher must
+    // NOT treat this as a broadcast failure: it records the cooldown (so the
+    // next tick is held by the cadence gate rather than re-broadcasting inside
+    // the chain's window) and reschedules WITHOUT consuming the broadcast
+    // budget, labelling it COMPLETION_WRITE_FAILED (not BROADCAST_FAILED).
+    // The next tick's pre-broadcast on-chain reconciliation then short-circuits
+    // to terminal, so this does not loop.
+    broadcastMock.mockResolvedValue({ id: 'tx-completion-throws' });
+    markCompletedMock.mockRejectedValue(new Error('app db write failed'));
+    const entry = await insertLeasedEntry('completion-fail');
+
+    await dispatchEntry(entry);
+
+    expect(broadcastMock).toHaveBeenCalledTimes(1);
+    expect(markCompletedMock).toHaveBeenCalledTimes(1);
+    const r = await findEntryById(entry.id);
+    expect(r!.state).toBe('pending');
+    // Post-broadcast write failure is not a broadcast failure: the retry
+    // budget must not advance, or a flapping app DB would terminal-fail a
+    // submission whose post is already on chain.
+    expect(r!.attempts).toBe(0);
+    expect(r!.error_code).toBe('COMPLETION_WRITE_FAILED');
+
+    // Cooldown was recorded before the completion write, so the next tick is
+    // held by the cadence gate and does not re-broadcast inside the chain's
+    // ~5-minute window. Observe it via runWorkerTick: the gate returns before
+    // leaseNextEntry, and no second broadcast fires.
+    broadcastMock.mockClear();
+    leaseNextEntryMock.mockClear();
+    await runWorkerTick();
+    expect(leaseNextEntryMock).not.toHaveBeenCalled();
     expect(broadcastMock).not.toHaveBeenCalled();
   });
 });

@@ -225,3 +225,26 @@ One NEW item — introduced by the item-4 fix itself — blocks archive:
 **Dismissed (not held):** the restart cooldown-seed gap (adversarial, confidence 50) — the in-process `lastBroadcastMs` plus the `tx_id IS NOT NULL` restart seed cannot see a broadcast that landed but never persisted `tx_id` (timeout or completion-write-failure), so a restart in that narrow window can re-open the cooldown gate and re-broadcast under HAF indexing lag; bounded to an idempotent same-author/same-permlink Hive edit (not a duplicate post), pre-existing (the timeout path already carried it), single-instance, so accepted rather than introduced by this round. The untyped `let broadcastResult` and the negative-form `incrementAttempts` naming are below-gate nits.
 
 When item 1 is landed, `git mv` this file back to `tasks/review/`.
+
+## Backend re-review signal (2026-05-26, working tree)
+
+Item 1 (the `COMPLETION_WRITE_FAILED` dispatch-branch test coverage) landed.
+
+**What landed:** a new `dispatchEntry` case in `backend/tests/lib/bridge-worker.test.ts` named "broadcast succeeds but completion write throws → pending, attempts NOT incremented, COMPLETION_WRITE_FAILED, cooldown recorded". It forces the post-broadcast-write-failure branch deterministically: `broadcastMock` resolves with a tx id, then `markCompleted` rejects.
+
+**What it asserts (the mutation-kill set):**
+- `broadcastMock` called once and `markCompleted` called once (the branch is actually reached after a successful broadcast, not short-circuited earlier).
+- entry `state === 'pending'` (NOT `failed`) — kills a mutation that terminal-fails the entry.
+- `attempts === 0` — kills a mutation that flips this branch to `incrementAttempts: true` (which would burn the broadcast budget on a post that is already on chain).
+- `error_code === 'COMPLETION_WRITE_FAILED'` — kills a mutation that mislabels it `BROADCAST_FAILED`.
+- a follow-up `runWorkerTick()` does NOT lease (`leaseNextEntryMock` not called) and does NOT re-broadcast — kills a mutation that drops the pre-`markCompleted` `lastBroadcastMs` write, since without that write the cadence gate would open and the next tick would re-broadcast inside the chain's ~5-minute window.
+
+**Mocking shape:** `markCompleted` is now wrapped in a hoisted mock that defaults to the REAL implementation (re-established in `resetMockDefaults`), so every other test still persists completion state for real against Postgres; only this one case overrides it to reject. Queue state otherwise runs REAL; the existing external boundaries (hive broadcast, metadata, HAF pool, posting-key cache, `leaseNextEntry`) remain mocked as before.
+
+**Carve-out header:** extended the file's existing test-mock carve-out header with a `markCompleted` entry under clause (a), documenting that it defaults to the real implementation and is overridden to reject only for the post-broadcast-write-failure branch (unreachable with a healthy app DB). The `leaseNextEntry` paragraph's "every OTHER bridge-queue function runs REAL" list was adjusted so it no longer lists `markCompleted` among the never-mocked functions.
+
+`npm run typecheck` clean (src + tests, 0 errors). `npm run lint` clean (0 errors; the pre-existing `src/lib/author-supersession.ts` unused-eslint-disable warning is unrelated). Did NOT run vitest per the worktree-fan-out serial-suite discipline.
+
+**Note for the parent / re-review intake:** this worktree branched from a stale HEAD that predated the round-2 hold and the architect's `review → pending` move; it was fast-forwarded to `main` (a pure ancestor, clean working tree, 0 commits ahead) before the work so the test was written against the real `COMPLETION_WRITE_FAILED` source branch in `backend/src/bridge-worker.ts`. The task-file path is `pending/` (per `main`), not the `review/` location my dispatch instructions referenced.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
