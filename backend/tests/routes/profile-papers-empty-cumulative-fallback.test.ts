@@ -119,7 +119,8 @@ function userPapersRow(authors: Array<Record<string, unknown>>): Record<string, 
  */
 async function stage(headAuthors: Array<Record<string, unknown>>, accreditedAll: string[]): Promise<void> {
   await hafCache.set('accredited_accounts_all', accreditedAll);
-  hafQueryMock.mockImplementation(async (sql: string) => {
+  hafQueryMock.mockImplementation(async (...args: unknown[]) => {
+    const sql = args[0] as string;
     if (sql.includes('count(*)') && sql.includes('user_papers')) {
       return { rows: [{ total: 1 }] };
     }
