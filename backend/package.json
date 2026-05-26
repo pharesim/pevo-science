@@ -19,9 +19,6 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "migrate": "node-pg-migrate --database-url-var APP_DATABASE_URL --migrations-dir migrations",
-    "migrate:up": "npm run migrate -- up",
-    "migrate:down": "npm run migrate -- down",
     "test-db:reset": "node scripts/reset-test-db.js"
   },
   "dependencies": {
@@ -37,7 +34,6 @@
     "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
-    "node-pg-migrate": "^8.0.4",
     "nodemailer": "^8.0.5",
     "pg": "^8.20.0",
     "pino": "^10.3.1",

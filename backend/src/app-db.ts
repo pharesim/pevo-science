@@ -45,7 +45,22 @@ const MIGRATIONS_DIR = resolvePath(__dirname, '..', 'migrations');
  * each file (`001_`, `002_`, ...) makes lex order the apply order.
  */
 async function listExpectedMigrations(): Promise<string[]> {
-  const entries = await readdir(MIGRATIONS_DIR);
+  let entries: string[];
+  try {
+    entries = await readdir(MIGRATIONS_DIR);
+  } catch (err) {
+    // A missing migrations directory means the running image shipped without
+    // the SQL files this probe verifies against. Surface it as a BootFatalError
+    // naming the resolved path rather than letting a raw ENOENT bubble up as a
+    // generic "Failed to verify app database schema". The Dockerfile COPYs
+    // backend/migrations into the image, so this only fires on a packaging
+    // regression or a hand-run against a stripped tree.
+    throw new BootFatalError(
+      `Migrations directory not found at ${MIGRATIONS_DIR}. The backend image must ship ` +
+        'backend/migrations/*.sql so the schema_migrations boot probe can verify the applied set.',
+      { cause: err },
+    );
+  }
   return entries.filter((name) => name.endsWith('.sql')).sort();
 }
 
