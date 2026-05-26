@@ -32,6 +32,8 @@ Upload a file and pin it to IPFS. Uses the local Kubo node by default; falls bac
 - `FORBIDDEN` — user is not accredited
 - `INVALID_FILE_TYPE` — unsupported type or magic bytes mismatch
 - `FILE_TOO_LARGE` — exceeds configured size limit
+- `SERVICE_UNAVAILABLE` (503) — the upload-tracking store (app DB) is unavailable, so a durable pin record cannot be written; the pin is refused before it is attempted. Retry later. Carries no `details.reason`.
+- `INTERNAL_ERROR` (500) — no IPFS backend is configured, or the durable `pending_ipfs_uploads` insert failed after a successful pin (the handler then attempts to unpin and reports failure). A 200 is returned only once the tracking row exists.
 
 ---
 
