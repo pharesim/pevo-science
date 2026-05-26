@@ -146,3 +146,23 @@ While addressing the above, also add the unit coverage the review found missing 
 
 Verified-clean, no action: the synchronous-flag-before-await idempotency guard is satisfied (`retryingId` is set before the `await`) and the `finally` resets are unconditional — both compliant with the documented conventions. Dismissed: malformed/hostile wire `id` collapsing the `x-for :key` (confidence below the review gate; the contract guarantees a non-null unique `id`, and Alpine `x-text` auto-escapes so no XSS path).
 
+## UI re-review signal (2026-05-26, commit 54ef2399) — round 1 fixes landed
+
+Items 1-9 addressed; item 10 deliberately left (still gated on `backend-bridge-imports-entry-enrich`, which is in `pending/` — the `author:` widening is untouched). Per fix:
+
+1. **(P1) teardown guard.** `my-imports.js` now spreads `createTimerGuard()`, adds `destroy() { this._teardownTimers(); }`, and gates every post-`await` write with `if (!this._mounted) return;` (`loadEntries`, `retryEntry`, `handleConnect`), with `if (this._mounted) this.loading = false;` in `loadEntries`'s `finally` — matching `bridge.js` and the other async pages.
+2. **(P2) one-retry-at-a-time.** `retryEntry` bails on `this.retryingId !== null` (any row, not just the clicked one); the template's retry button binds `:disabled="retryingId !== null"`. `retryingId` keeps naming the active row while also serving as the global lock.
+3. **(P2) retry error discrimination.** `retryEntry`'s catch discriminates `RATE_LIMITED`+`details.cap` (cap message), `LOCK_HELD` (`lockHeldRetry`), and `DUPLICATE` (treated as already-on-chain: reload + `duplicateWarning` success toast) before the generic `common.error` fallback — mirroring `handleRegister`.
+4. **(P3) error_code-derived retriable.** New `NON_RETRIABLE_ERROR_CODES = {BAD_REQUEST}`; `retriable = state === 'failed' && !NON_RETRIABLE_ERROR_CODES.has(error_code)`. `BROADCAST_*`/`SERVICE_UNAVAILABLE` stay retriable. `buildDemoEntries` now carries both a terminal `BAD_REQUEST` row (renders `cannotRetry`) and a transient `BROADCAST_FAILED` row (renders `Retry`).
+5. **(P3) loadEntries in-flight guard.** `if (this.loading) return;` at entry.
+6. **(P3) queuedDetailText.** No longer fabricates `position ?? 1`; when `queuedPosition` is null it renders `bridge.queuedEtaOnly` (ETA present) or `bridge.queuedNoDetail` (no ETA).
+7. **(P3) orphaned key.** `bridge.stepSuccess` removed from `en.json` and all 15 locale files. (It had real translations, not stubs, and no `STUBS.md` row — nothing to remove there.)
+8. **(P3) docblock re-anchor.** `adaptEntry`'s docblock now anchors on the `GET /api/bridge/imports` entry shape in `bridge.md` (and the `error_code` value reference) instead of the task file's predating consumer sketch.
+9. **(P3) view-model docblock.** Now lists `discipline`, `keywords`, `language`.
+
+**New i18n:** `bridge.queuedEtaOnly`, `bridge.queuedNoDetail` (en + 15 raw-English stubs, `STUBS.md` sweep `### Added 2026-05-26 (UI-BRIDGE-IMPORT-QUEUE-UX)`).
+
+**Coverage added** (`pages-my-imports.test.js`, `pages-bridge.test.js`): teardown-during-fetch and teardown-during-retry; one-retry-at-a-time across distinct entries; cap/LOCK_HELD/DUPLICATE retry discrimination; `error_code`-derived retriable matrix; completed-without-author link suppression; `badgeClass`; `init`-disconnected + `handleConnect`-rejection; `loadEntries` in-flight guard; `queuedDetailText` position-null (both ETA and no-ETA).
+
+**Verification:** full unit suite green (1331 passed; the 3 `pages-edit.test.js` unhandled-rejection errors are pre-existing and unrelated — that file is not in this diff). `vite build` succeeds. E2E not re-run this round (no backend contract change; the changed surfaces are unit-covered).
+
