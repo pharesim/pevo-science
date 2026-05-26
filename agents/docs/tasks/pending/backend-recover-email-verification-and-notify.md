@@ -177,3 +177,37 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 `npm run typecheck` (src + tests) and `npm run lint` (src) both clean; the only lint output is the pre-existing unrelated warning in `src/lib/author-supersession.ts` (untouched). Per the worktree instruction, vitest was NOT run here (real shared Postgres/Redis — the parent runs it serially after merge). Migration 012 must be applied to the test DB before that run (it already is on this branch; the new settings + supersession/dispute specs query the `pending_recovery` table).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-26, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `ab740a54` (round-2 scope only) — correctness + security + adversarial on Opus; testing, maintainability, project-standards, reliability, data-migrations, kieran-typescript, learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per PEvO. **All five round-1 hold items landed correctly**: the GDPR `pending_recovery` sweep is atomic and correctly ordered in the email-delete tx; `.email()` rejects malformed addresses pre-staging and matches the change-email schema intent; the migration-012 header now accurately describes the idempotency mechanism; `token2 → sessionJwt` is complete with the wire field unchanged; both new tests (re-staging supersession, dispute-window expiry) are real mutation-kills (adversarial empirically confirmed dropping the supersede DELETE flips the row-count assertion RED). Learnings confirmed the sweep closes exactly the GDPR/CNPD carve-out anticipated in `recovery-defenses-vs-seed-phrase-holder-non-load-bearing-2026-05-25.md`. Two items held.
+
+### Items held (must fix before archive)
+
+**1. (P2, conf 100 — correctness + security corroborated) Stale forensic-survival rationale in `recover.ts` contradicts the round-2 GDPR sweep.** The comment block in the `/recover/verify` apply transaction (the docblock above the apply tx, plus the shorter note above the verify-token lookup) states the consumed `pending_recovery` row is "NOT swept by the account-delete anonymizer" and that "the forensic trail survives even the email-delete path" — this is the explicit rationale for storing the forensic digests (`request_ip_hash`, `old_email_hash`, timestamp) on the staging row rather than in `custody_audit_log`. The round-2 fix added `DELETE FROM pending_recovery WHERE username = $1` to the email-delete transaction, which now DOES sweep the consumed row. The comment is factually inverted. This was a deliberate Shape-A choice (data-minimization for right-to-erasure wins over forensic survival — defensible: you cannot retain forensic PII about a user who exercised erasure), but the rationale comment was not reconciled with it.
+
+Fix: update the `recover.ts` apply-tx comment (and the verify-token-lookup note) to reflect Shape A — the consumed row's forensic digests do NOT survive account-delete by design; data-minimization takes precedence; any surviving forensic trail lives in the anonymized `custody_audit_log` `account_recovery` row. Audit-own-replacement: no task-slug / round-number / line-number / SHA anchors in the new comment text. (Architect note: the api-contract doc-sync — currently blocked at `architect-recover-email-api-contract-update` pending this archive — should capture that the forensic trail does not survive the email-delete path; the architect folds that into that task when it unblocks.)
+
+**2. (P3, conf ~90 — adversarial + testing corroborated) Non-load-bearing phase-2 assertion + misleading comment in the settings sweep test.** In the new `DELETE sweeps the pending_recovery staging row` spec, the real mutation-kill for the sweep is the `after.rows.length === 0` row-count assertion. The follow-on phase-2 `/recover/verify` → 400 block adds NO distinct mutation-kill: with the sweep dropped, the row survives, but the `accounts` row is deleted in the same transaction, so phase-2 hits the account-gone re-resolution branch and returns 400 INVALID_TOKEN regardless. The spec's comment ("phase-2 verify on the (now gone) token is rejected") mis-attributes the 400 to the row sweep.
+
+Fix: either drop the phase-2 verify block (the row-count assertion fully covers the sweep; the row-gone-then-token-rejected linkage is already covered by the supersession spec in `recover-two-phase.test.ts`), or reword the comment to state the 400 is driven by the account-gone re-resolution path, not the row sweep. Implementer's choice.
+
+### Items dismissed at architect triage
+
+- **(P3, maintainability) `sessionJwt` is a naming outlier** — every other `jwt.sign` site (`recover.ts` `/recover` mint, `auth.ts` ×2) binds `const token`. Dismissed: this was the architect's own round-1 item-4 prescription (rename `token2 → sessionJwt`); the name is unambiguous and the cosmetic inconsistency does not warrant another round. (Implementer may rename to `token` while addressing item 1 if convenient, but it is not held.)
+- **(P3, kieran-typescript) `.min(1)` redundant before `.email()`** — Zod's `.email()` already rejects the empty string. Dismissed as cosmetic noise per the preemptive-hardening posture; the adjacent comment documents the `.min(1)` history so removing it is optional.
+
+### Filed as new tasks (out of scope for this archive — pre-existing, surfaced by the round-2 review)
+
+- `tasks/pending/backend-settings-email-delete-fresh-auth-gate.md` — `DELETE /api/settings/email` is reachable with a Bearer JWT alone (no `fresh_auth_proof`), unlike the sibling change-email / set-password routes. Account deletion is destructive — the §6.5 invariant-#1 "JWT-only on a critical action" pattern. The action is not enumerated in §6.4's re-auth contract. Predates this commit; needs an architect call on whether DELETE-email should require fresh-auth.
+- `tasks/pending/backend-pending-recovery-ageing-purge.md` — no ageing-purge job for `pending_recovery`; consumed/expired rows (plaintext `new_email` + argon2id hash) persist until account deletion. Add a TTL-based purge.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+Recommendation: item 1 is a `recover.ts` comment fix; item 2 is a `settings.test.ts` comment/assertion fix. Two files, naturally one small bundled commit.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
