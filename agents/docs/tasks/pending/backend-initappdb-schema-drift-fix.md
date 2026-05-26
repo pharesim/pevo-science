@@ -95,3 +95,39 @@ Verification:
 [TODO Architect] `agents/docs/ARCHITECTURE.md` needs a `§ Migrations` paragraph that states: "Migrations are authoritative. Application code never issues DDL on startup. The backend's `verifyAppDbMigrations` probe in `backend/src/app-db.ts` reads `schema_migrations` on boot and aborts via `BootFatalError` if any `backend/migrations/*.sql` file present on disk lacks a row there. Operators must run `./deploy.sh migrate` (or apply the migration set manually against `APP_DATABASE_URL`) before starting the backend; `deploy.sh cmd_restart` enforces that order." Do NOT document a dual-source pattern; that path is explicitly removed.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Architect review (2026-05-26) — HELD PENDING FIXES
+
+Reviewed via `/ce-code-review` on commit `ceb90317` (correctness, adversarial,
+reliability, data-migrations, testing, maintainability, project-standards,
+kieran-typescript, learnings) plus a deployment Go/No-Go pass. The core fix is
+sound: `initAppDb` is gone, `verifyAppDbMigrations` aborts boot loudly on a
+schema gap, `deploy.sh` gates on `pg_isready` and runs migrations before the
+backend, the Dockerfile ships `backend/migrations`, and rollback is clean.
+Deployment verdict was GO. Two items to land before archive (triaged with the
+user 2026-05-26):
+
+1. **Remove the contradictory `node-pg-migrate` tooling.** `backend/package.json`
+   still ships `migrate` / `migrate:up` / `migrate:down` scripts and the
+   `node-pg-migrate` dependency. The real migrate path is `deploy.sh`'s raw-psql
+   loop (each `*.sql` self-records into `schema_migrations` via a trailing
+   UPSERT). `node-pg-migrate` uses its own tracking table and would NOT populate
+   `schema_migrations` the way the new boot probe requires — an operator running
+   `npm run migrate:up` then booting hits `BootFatalError`. This directly
+   contradicts the task's "migrations are the sole authority" goal. Remove the
+   three scripts and the dependency (or, if any real use exists, repoint them at
+   `./deploy.sh migrate`); confirm nothing in `deploy.sh` or CI invokes them.
+
+2. **Wrap the `readdir` ENOENT path as `BootFatalError`.** In
+   `listExpectedMigrations` (`backend/src/app-db.ts`), `readdir(MIGRATIONS_DIR)`
+   throws a raw ENOENT if the directory is ever absent, surfacing as a generic
+   "Failed to verify app database schema" rather than an actionable
+   `BootFatalError` naming `MIGRATIONS_DIR`. The process still aborts loudly and
+   the Dockerfile guarantees the dir ships, so this is low-severity defensive
+   hardening — but cheap: catch the `readdir` throw and rethrow
+   `new BootFatalError('migrations directory not found at ' + MIGRATIONS_DIR …)`.
+
+Architect note: the `[TODO Architect]` § Migrations paragraph above is still
+owed; the architect will land it in `ARCHITECTURE.md` at archive time (it
+documents already-shipped, correct behavior and is not blocked by the two items
+here). When the two items land, `git mv` this file back to `tasks/review/`.
