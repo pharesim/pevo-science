@@ -22,15 +22,21 @@
  *     leaving orphaned pending-upload rows and their pins until the
  *     malformed post is edited or removed.
  *
- * Carve-out clause-(c): synthetic-VALUES is justified because real-corpus
+ * Carve-out clause-(a): synthetic-VALUES is justified because real-corpus
  * seeding of malformed-image Hive posts is impractical (the test corpus is
  * Mahdi's HAF; we do not control its content). The assertion (cascade-fail
  * defense + match-row shape) is exactly what the carve-out is for. The
  * shape mirrors the `citing_papers CROSS JOIN LATERAL cascade-fail defense`
- * test in `hafsql.test.ts` (the canonical reference pattern). Real-path
- * companion: the routes are exercised by existing IPFS upload/cleanup
- * tests against well-formed data; this file is the dedicated coverage for
- * the malformed-image cascade-fail class.
+ * test in `hafsql.test.ts` (the canonical reference pattern).
+ *
+ * Carve-out clause-(c) real-path companion: the routes are exercised by
+ * existing IPFS upload/cleanup tests against well-formed data, and the
+ * source-level guard-presence canary in the second describe block below
+ * pins the live `cidIsKnown` / `cidReferencedInHaf` call sites (the
+ * behavioral block above runs a hand-copied SQL shape, so a revert of the
+ * CASE-WHEN at either production site would not fail it). Together they
+ * cover the malformed-image cascade-fail class at both the behavioral and
+ * source-presence layers.
  *
  * See conventions:
  *   - pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16
@@ -38,6 +44,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { getPool } from '../../src/db.js';
 
 // Mirror of the production SRF shape in both `cidIsKnown` and
@@ -63,7 +71,7 @@ describe('IPFS image SRF-argument array-guard (real Postgres, synthetic rows)', 
   it('does not throw on non-array image shapes (null, string, integer, object, missing)', { timeout: 30_000 }, async (ctx) => {
     const pool = getPool();
     if (!pool) {
-      ctx.skip('no app pool available');
+      ctx.skip('no HAF pool available');
       return;
     }
 
@@ -89,7 +97,7 @@ describe('IPFS image SRF-argument array-guard (real Postgres, synthetic rows)', 
   it('matches a CID substring inside a well-formed image array (control case)', { timeout: 30_000 }, async (ctx) => {
     const pool = getPool();
     if (!pool) {
-      ctx.skip('no app pool available');
+      ctx.skip('no HAF pool available');
       return;
     }
 
@@ -111,7 +119,7 @@ describe('IPFS image SRF-argument array-guard (real Postgres, synthetic rows)', 
   it('returns false for a well-formed image array with no matching CID', { timeout: 30_000 }, async (ctx) => {
     const pool = getPool();
     if (!pool) {
-      ctx.skip('no app pool available');
+      ctx.skip('no HAF pool available');
       return;
     }
 
@@ -126,7 +134,7 @@ describe('IPFS image SRF-argument array-guard (real Postgres, synthetic rows)', 
   it('does not throw on top-level NULL json_metadata (SQL NULL, not JSONB null)', { timeout: 30_000 }, async (ctx) => {
     const pool = getPool();
     if (!pool) {
-      ctx.skip('no app pool available');
+      ctx.skip('no HAF pool available');
       return;
     }
 
@@ -148,4 +156,57 @@ describe('IPFS image SRF-argument array-guard (real Postgres, synthetic rows)', 
     const result = await pool.query(sql, ['QmFakeCid']);
     expect(result.rows).toEqual([{ matched: false }]);
   });
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Source-level guard-presence canary.
+//
+// The behavioral block above runs a hand-copied `guardedSrfShape`, not the
+// live production query, so a revert of the CASE-WHEN at either call site
+// would leave it green. This canary reads the two production files and
+// asserts every code-level `jsonb_array_elements_text(` SRF call wraps its
+// argument in the `CASE WHEN jsonb_typeof(...) = 'array'` type guard, so a
+// revert that drops the guard at either site fails red. Modeled on
+// `excludeSelfReviewWhere-callsite-canaries.test.ts`.
+// ──────────────────────────────────────────────────────────────────────
+
+const PROJECT_ROOT = resolve(__dirname, '..', '..');
+
+interface GuardSite {
+  /** Project-relative path of the file carrying the SRF call. */
+  file: string;
+  /** Function whose query composes the SRF, for the failure message. */
+  fn: string;
+}
+
+const GUARD_SITES: GuardSite[] = [
+  { file: 'src/routes/ipfs.ts', fn: 'cidIsKnown' },
+  { file: 'src/ipfs-cleanup.ts', fn: 'cidReferencedInHaf' },
+];
+
+describe('IPFS image SRF guard — source-level call-site presence canary', () => {
+  for (const { file, fn } of GUARD_SITES) {
+    it(`${file} guards every jsonb_array_elements_text() SRF argument with the CASE-WHEN jsonb_typeof array check (${fn})`, () => {
+      const source = readFileSync(resolve(PROJECT_ROOT, file), 'utf-8');
+      const normalized = source.replace(/\s+/g, ' ');
+
+      // The trailing `(` excludes prose mentions of the function name in the
+      // comment blocks (e.g. "jsonb_array_elements_text would raise").
+      const totalCalls = (normalized.match(/jsonb_array_elements_text\(/g) ?? []).length;
+      // Calls whose argument opens with the CASE-WHEN type guard.
+      const guardedCalls = (normalized.match(/jsonb_array_elements_text\(\s*CASE WHEN jsonb_typeof\(/g) ?? []).length;
+
+      expect(
+        totalCalls,
+        `expected at least one jsonb_array_elements_text() SRF call in ${file} (${fn})`,
+      ).toBeGreaterThanOrEqual(1);
+      expect(
+        guardedCalls,
+        `every jsonb_array_elements_text() SRF argument in ${file} (${fn}) must wrap its input in ` +
+        `CASE WHEN jsonb_typeof(...) = 'array' ... ELSE '[]'::jsonb END — the LATERAL evaluates before the ` +
+        `surrounding WHERE, so a WHERE-side type guard is a placebo (see ` +
+        `pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16). Found ${guardedCalls} guarded of ${totalCalls} total.`,
+      ).toBe(totalCalls);
+    });
+  }
 });
