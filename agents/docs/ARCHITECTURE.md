@@ -111,6 +111,12 @@ Per-domain rules:
 
 Unaccredited users can still read PEvO surfaces and post on Hive (affecting Hive reward payouts), but their `APP_TAG`-tagged content does not become a PEvO object and does not feed into reputation, ranking, or rating systems. This prevents Sybil attacks and ensures scientific quality.
 
+### Schema Migrations
+
+Migrations are authoritative. Application code never issues DDL on startup. The application schema is defined solely by the numbered `backend/migrations/*.sql` files; each file self-records into the `schema_migrations` table via a trailing idempotent UPSERT, and `deploy.sh migrate` applies them with a raw `psql` loop (no migration framework).
+
+On boot the backend runs the `verifyAppDbMigrations` probe (`backend/src/app-db.ts`): it reads `schema_migrations` and aborts with a `BootFatalError` if any `*.sql` file present on disk lacks a row there (or if the tracking table itself is absent). The backend therefore never auto-creates or alters tables to "catch up" a stale database; it fails loud instead. Operators must run `./deploy.sh migrate` (or apply the migration set manually against `APP_DATABASE_URL`) before starting the backend. `deploy.sh restart` enforces that order by bringing up Postgres, running migrations, then starting the backend.
+
 ## 2. Data Model
 
 ### Paper (Hive post)
