@@ -18,8 +18,7 @@ import { getPool, isHafConfigured } from './db.js';
 import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { T } from './hafsql.js';
-import { imageSrfGuardExpr, toPinBackend, unpinFromIpfs } from './lib/ipfs-shared.js';
+import { cidReferencedByAppTag, toPinBackend, unpinFromIpfs } from './lib/ipfs-shared.js';
 
 const CLEANUP_INTERVAL_MS = 30 * 60_000; // 30 minutes
 const MAX_AGE_MS = 24 * 60 * 60_000; // 24 hours
@@ -27,51 +26,19 @@ const MAX_AGE_MS = 24 * 60 * 60_000; // 24 hours
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Check if a CID is referenced by any PEvO post in HAF.
- * Checks both `metadata.<appTag>.ipfs_cid` and
- * `metadata.<appTag>.supplementary_files[].cid`, scoped to PEvO-tagged comments.
+ * Cleanup-side CID-in-use check: is this CID still referenced by a PEvO post on
+ * chain? Delegates the tags-scoped containment query to the shared
+ * `cidReferencedByAppTag` (lib/ipfs-shared.ts) — same definition the gateway's
+ * CID-known check consumes — and only owns the HAF-pool null-guard here. A false
+ * result routes the expired pending-upload row to the unpin branch in
+ * `runCleanup`, so the shared query's tags-scope / appTag-namespace /
+ * image-SRF-guard invariants are what stand between this and unpinning a live
+ * on-chain-referenced file.
  */
 async function cidReferencedInHaf(cid: string): Promise<boolean> {
   const pool = getPool();
   if (!pool) return false;
-
-  // Scope to PEvO-tagged comments via the tags-GIN index. hafsql.comments has
-  // no GIN index on metadata, so an unscoped containment predicate full-scans
-  // the corpus; tags is the only index-assisted PEvO subset on this HAF. All
-  // CID-carrying PEvO content is appTag-tagged, so the scope drops no real
-  // reference — over-inclusive (keep pinned) beats under-inclusive (unpin a
-  // live file). The containment namespace must match the published shape
-  // (metadata.<appTag>.…), NOT a literal `pevo` key — verified against live
-  // HAF. Keep both the tags scope and the appTag namespace; reverting either
-  // reintroduces the full-scan or unpins on-chain-referenced files.
-  const result = await pool.query(
-    `SELECT 1 FROM ${T.comments} c
-     WHERE c.tags @> $1::jsonb
-       AND (
-            c.json_metadata @> $2::jsonb
-         OR c.json_metadata @> $3::jsonb
-         OR EXISTS (
-              -- Array-type guard for the broadcaster-controlled image field is
-              -- centralized in imageSrfGuardExpr (lib/ipfs-shared.ts); it must
-              -- sit INSIDE the SRF argument because the LATERAL evaluates before
-              -- the surrounding WHERE. Without it, a non-array image raises
-              -- "cannot extract elements from a scalar" mid-loop and aborts the
-              -- orphan-cleanup sweep, leaking stale pending-upload rows and pins.
-              -- The 'c' arg is the comment-relation alias used in this query's FROM.
-              SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
-              WHERE img LIKE '%' || $4 || '%'
-            )
-       )
-     LIMIT 1`,
-    [
-      JSON.stringify([config.appTag]),
-      JSON.stringify({ [config.appTag]: { ipfs_cid: cid } }),
-      JSON.stringify({ [config.appTag]: { supplementary_files: [{ cid }] } }),
-      cid,
-    ],
-  );
-
-  return result.rowCount !== null && result.rowCount > 0;
+  return cidReferencedByAppTag(pool, cid);
 }
 
 /** Process all expired pending CIDs. Exported for the backend-dispatch test. */

@@ -7,9 +7,8 @@ import { getAccreditation } from './profile.js';
 import { getRedis } from '../redis.js';
 import { getPool, isHafConfigured } from '../db.js';
 import { getAppPool } from '../app-db.js';
-import { T } from '../hafsql.js';
 import { logger } from '../logger.js';
-import { type PinBackend, imageSrfGuardExpr, unpinFromIpfs } from '../lib/ipfs-shared.js';
+import { type PinBackend, cidReferencedByAppTag, unpinFromIpfs } from '../lib/ipfs-shared.js';
 import multer from 'multer';
 
 function sanitizeFilename(name: string): string {
@@ -330,48 +329,16 @@ async function cidIsKnown(cid: string): Promise<boolean> {
     if (pendingRow.rowCount !== null && pendingRow.rowCount > 0) return true;
   }
 
-  // Check HAF for published references
+  // Check HAF for published references via the shared tags-scoped containment
+  // query (cidReferencedByAppTag, lib/ipfs-shared.ts) — the same definition the
+  // cleanup job's CID-in-use check consumes. The pending-row short-circuit above
+  // stays ahead of this so a freshly-uploaded CID still resolves before it lands
+  // on chain.
   if (!isHafConfigured()) return false;
   const pool = getPool();
   if (!pool) return false;
 
-  // Scope to PEvO-tagged comments via the tags-GIN index. hafsql.comments has
-  // no GIN index on metadata, so an unscoped containment predicate full-scans
-  // the whole corpus; tags is the only index-assisted PEvO subset on this HAF.
-  // All CID-carrying PEvO content is appTag-tagged, so the scope drops no real
-  // reference. The containment namespace must match the published shape
-  // (metadata.<appTag>.ipfs_cid), NOT a literal `pevo` key — verified against
-  // live HAF, where zero posts carry a `pevo` top-level key. Keep both the
-  // tags scope and the appTag namespace; reverting either reintroduces the
-  // full-scan or the never-matching predicate.
-  const result = await pool.query(
-    `SELECT 1 FROM ${T.comments} c
-     WHERE c.tags @> $1::jsonb
-       AND (
-            c.json_metadata @> $2::jsonb
-         OR c.json_metadata @> $3::jsonb
-         OR EXISTS (
-              -- Array-type guard for the broadcaster-controlled image field is
-              -- centralized in imageSrfGuardExpr (lib/ipfs-shared.ts); it must
-              -- sit INSIDE the SRF argument because the LATERAL evaluates before
-              -- the surrounding WHERE, so a WHERE-side guard is a placebo. Without
-              -- it, a non-array image raises "cannot extract elements from a
-              -- scalar" and fails the per-request CID-known check. The 'c' arg is
-              -- the comment-relation alias used in this query's FROM.
-              SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
-              WHERE img LIKE '%' || $4 || '%'
-            )
-       )
-     LIMIT 1`,
-    [
-      JSON.stringify([config.appTag]),
-      JSON.stringify({ [config.appTag]: { ipfs_cid: cid } }),
-      JSON.stringify({ [config.appTag]: { supplementary_files: [{ cid }] } }),
-      cid,
-    ],
-  );
-
-  return result.rowCount !== null && result.rowCount > 0;
+  return cidReferencedByAppTag(pool, cid);
 }
 
 router.get('/:cid', ipfsDownloadLimiter, async (req: Request, res: Response) => {

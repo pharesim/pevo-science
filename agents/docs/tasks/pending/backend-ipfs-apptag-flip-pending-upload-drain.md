@@ -38,5 +38,53 @@ Make the eventual APP_TAG flip safe against unpinning live `pevotest`-era files.
 ## References
 
 - `backend/src/ipfs-cleanup.ts` (`cidReferencedInHaf`, `runCleanup`, `MAX_AGE_MS`)
-- `backend/src/config.ts` (`appTag`)
+- `backend/src/config.ts` (`appTag`, `appTagsHistorical`)
+- `backend/src/lib/ipfs-shared.ts` (`cidReferencedByAppTag` — the widened containment query)
 - `agents/docs/ARCHITECTURE.md` (IPFS cleanup + appTag sections, for the runbook note)
+
+## Backend implementation note (2026-05-27)
+
+**Decision: implemented the code-hardening path (both mitigations land).**
+
+- `config.appTagsHistorical` reads `APP_TAGS_HISTORICAL` (comma-separated,
+  trimmed, empties filtered). Empty by default → steady-state single-appTag
+  behavior is byte-identical to before (the generated query collapses to the
+  single-tag form; covered by the `ipfs-shared-cid-containment.test.ts`
+  steady-state case).
+- `cidReferencedByAppTag` (the helper extracted in the predecessor
+  de-duplication task) now scopes over `[appTag, ...appTagsHistorical]`,
+  de-duplicated: one OR'd `c.tags @> $N` containment per tag (each GIN-indexable
+  so the planner BitmapOrs index scans — indexed scope preserved) plus one
+  ipfs_cid + one supplementary_files namespace containment per tag. The bias
+  stays over-inclusive (keep pinned), the safe direction for an unpin decision.
+- Both `cidReferencedInHaf` (cleanup unpin decision — the data-loss path this
+  task closes) and `cidIsKnown` (gateway) consume the shared helper, so during a
+  transition window a historical-tag CID also resolves at the gateway instead of
+  404-ing. That is a harmless over-inclusive improvement on the read path; the
+  non-goal #2 carve-out (gateway 404 is a read miss, not data loss) is about not
+  *requiring* a gateway fix, not forbidding the shared-helper benefit.
+- Tests added: `backend/tests/lib/ipfs-shared-cid-containment.test.ts` (SQL-shape
+  contract — steady-state single-tag form, historical-tag OR widening across
+  tags-scope + namespace, current==historical de-dup, rowCount true/null return).
+
+### [TODO Architect]
+
+Two architect-zone edits remain (both outside the backend zone, so they could
+not land in the backend commit):
+
+1. **`agents/docs/ARCHITECTURE.md` — flip-day drain runbook step** (the
+   operational floor). Near the IPFS-cleanup / appTag description, add: before
+   changing `APP_TAG` to its production value, either (a) drain
+   `pending_ipfs_uploads` — hold the flip until the table is empty, or let all
+   rows age past the 24h `MAX_AGE` and be reaped by a cleanup sweep so no
+   stale-namespace row reaches a post-flip sweep — or (b) set
+   `APP_TAGS_HISTORICAL=<old-tag>` (e.g. `pevotest`) before the flip so the
+   cleanup reference check still matches old-tag on-chain papers during the
+   transition, then clear it once the old-tag pending rows have drained. The
+   drain is the floor; the env var is the in-code belt-and-suspenders.
+
+2. **`.env.example` — document `APP_TAGS_HISTORICAL`.** Near `APP_TAG=pevo`
+   (line ~13), add a commented entry, e.g.:
+   `# Comma-separated prior APP_TAG values during a beta→prod tag flip; OR'd into the IPFS-cleanup reference check so old-tag pinned files are not unpinned. Empty in steady state.`
+   then `APP_TAGS_HISTORICAL=`. The config reader already defaults to empty, so
+   this is documentation only — no behavioral dependency on the entry.
