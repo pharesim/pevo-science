@@ -1,6 +1,7 @@
 ---
 title: "Bare `git commit` sweeps sibling-staged paths between verify and commit; the `-- <paths>` pathspec form is the defense"
 date: 2026-05-21
+last_updated: 2026-05-26
 category: conventions
 module: agent-coordination
 problem_type: convention
@@ -12,6 +13,7 @@ applies_when:
   - "Composing a sequence of hold-block commits or archive moves in quick succession (each commit re-opens the race window)"
   - "Recovering from a contaminated commit via `git reset --soft <my-sha>` + `git restore --staged <foreign-paths>` and about to recommit"
   - "Any commit on the shared `main` checkout where the chained `git add ... && git commit` mitigation from `parallel-agent-git-index-race-2026-05-15.md` is insufficient because the contamination is occurring at commit time, not staging time"
+  - "`git status` after a commit you intended as a rename shows a stray `D` on the source path — the pathspec named only the destination and split the `git mv`"
 tags:
   - git
   - staging-discipline
@@ -138,6 +140,10 @@ git commit -m "..." -- agents/docs/tasks/pending/backend-foo.md agents/docs/task
 ```
 
 This is the cleanest shape — one commit captures the full rename, no follow-up needed. The alternative (commit destination, then commit the source-delete separately) is acceptable but produces two commits where one was intended and the second commit's subject must explain the leftover.
+
+**Detection.** A commit that reports `create mode …` (or `N insertion(s)(+)` with no `rename … =>` line) when you intended a rename has captured only one half. Confirm with `git status`: a stray `D <source-path>` (or an `A`/`??` on the destination) for the move's other half means the rename is split between the index and HEAD — the destination lives in HEAD while the source-delete dangles in the index. In PEvO's task tree this is worse than cosmetic: the same task file present in both `blocked/` and `review/` (or `pending/` and `review/`) at once corrupts the state machine the directories encode, and a sibling agent reading the tree at startup cannot tell which state is authoritative.
+
+**Recovery.** If the half-committed move is your own most recent, not-yet-pushed HEAD commit, fold the dangling half in with `git commit --amend --no-edit` — the commit re-renders as a single `rename <src> => <dst>` line. First run `git diff --cached --name-status` and confirm the staged set is ONLY the move's leftover half and nothing foreign: `--amend` with no pathspec commits the whole index, so an unverified amend re-opens the very sweep this convention exists to prevent. Amend is safe ONLY because the commit is yours and unpushed — on the shared `main` checkout never amend or rewind past a commit a sibling may have authored; use `git revert` instead (root `CLAUDE.md` "Shared-index race discipline" item 2).
 
 ## Related Conventions
 
