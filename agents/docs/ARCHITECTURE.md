@@ -117,6 +117,33 @@ Migrations are authoritative. Application code never issues DDL on startup. The 
 
 On boot the backend runs the `verifyAppDbMigrations` probe (`backend/src/app-db.ts`): it reads `schema_migrations` and aborts with a `BootFatalError` if any `*.sql` file present on disk lacks a row there (or if the tracking table itself is absent). The backend therefore never auto-creates or alters tables to "catch up" a stale database; it fails loud instead. Operators must run `./deploy.sh migrate` (or apply the migration set manually against `APP_DATABASE_URL`) before starting the backend. `deploy.sh restart` enforces that order by bringing up Postgres, running migrations, then starting the backend.
 
+#### Post-deploy cleanup: migration 011 (signup binding hash)
+
+Migration `011_accounts_signup_binding_hash.sql` adds a nullable `signup_binding_hash` column that back-fills NULL on existing rows. `/api/auth/confirm` and `/api/auth/link` fail closed on a NULL hash (the session-binding cookie cannot match a NULL stored hash), so any signup in-flight at deploy time is stranded. Email-flow rows self-recover via `/api/auth/resume-signup` (password re-verify re-mints the cookie and sets the hash). ORCID-only rows (`orcid` set, `password_hash` NULL) have no password and cannot, so they see a generic `400 "Invalid or expired ..."` until they re-start the full ORCID signup or the row's 24h `expires_at` lapses. Immediately after running the migration, clear any stranded ORCID-only pending rows so affected users get a clean re-signup:
+
+```sql
+-- Inspect first (confirm the set is the in-flight ORCID-only strand and nothing else):
+SELECT id, orcid, full_name, created_at, expires_at
+  FROM accounts
+ WHERE verify_token IS NOT NULL
+   AND signup_binding_hash IS NULL
+   AND orcid IS NOT NULL
+   AND password_hash IS NULL
+ ORDER BY created_at;
+
+-- Then DELETE (not merely NULL verify_token): the ORCID-direct /signup INSERT has no
+-- ON CONFLICT, and the migration-007 partial-unique index on orcid would make a re-signup
+-- collide on the lingering row. These rows are never-activated pending signups (no username,
+-- no custody), so deletion is non-destructive.
+DELETE FROM accounts
+ WHERE verify_token IS NOT NULL
+   AND signup_binding_hash IS NULL
+   AND orcid IS NOT NULL
+   AND password_hash IS NULL;
+```
+
+The window self-resolves within 24h via `expires_at` regardless; the cleanup just turns a confusing stuck `400` into an immediate clean re-signup for users mid-flight at deploy time.
+
 ## 2. Data Model
 
 ### Paper (Hive post)
