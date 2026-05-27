@@ -61,3 +61,14 @@ Dismissed / not held (P3 advisory): `author` reflecting the live `config.hiveBri
 When items 1-2 land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-2 review scopes to the fix commit(s) only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-28, working tree)
+
+Round-1 hold items 1-2 landed in the enriched-shape test (`bridge-register-enqueue.test.ts`):
+
+1. The collision entry now asserts `expect(collideEntry.title).toBe(TITLE)` (the row is seeded with TITLE), so a regression in collision-path title serialization is caught.
+2. The pending entry's `eta_seconds` is pinned with `expect(pendingEntry.eta_seconds).toBe(0)`, replacing the `typeof`/`>= 0` pair: the pending row is the sole non-terminal entry for the caller, so its dispatch rank is 1 and `etaSecondsForPosition(1)` is 0 — pinning both the correlated `queue_position` subquery (must be 1) and the formula, matching the 202 path's position-1 assertion already in this file.
+
+The optional second-pending-row position-2 case was intentionally NOT added: `queue_position` is the GLOBAL dispatch rank (per `serializeQueueRow`), so a position-2 assertion would couple to non-terminal rows created by parallel bridge test files and flake. The position-1 pin was validated stable when run in a parallel batch alongside `bridge-haf-lag-locks`, `bridge-register-rate-limit-skip-failed`, and `bridge-queue` (no global-queue_position pollution observed).
+
+Test-only change. Verification: `npm run typecheck` clean; the enriched-shape test and sibling bridge suites green against real Postgres.

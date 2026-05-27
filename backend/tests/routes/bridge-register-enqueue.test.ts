@@ -405,14 +405,18 @@ describe('GET /api/bridge/imports: status listing', () => {
 
     const collideEntry = byPermlink['bridge-arxiv-2999-00502'];
     expect(collideEntry.state).toBe('completed');
+    expect(collideEntry.title).toBe(TITLE); // collision-path title serialization
     expect(collideEntry.existing_author).toBe('someone.else');
     expect(collideEntry.author).toBe('someone.else'); // equals existing_author
 
     const pendingEntry = byPermlink['bridge-arxiv-2999-00503'];
     expect(pendingEntry.state).toBe('pending');
     expect(pendingEntry.title).toBe(TITLE);
-    expect(typeof pendingEntry.eta_seconds).toBe('number');
-    expect(pendingEntry.eta_seconds as number).toBeGreaterThanOrEqual(0);
+    // Sole non-terminal entry for this caller → dispatch rank 1 →
+    // etaSecondsForPosition(1) is 0. Pins both the correlated queue_position
+    // subquery (must be 1) and the formula, matching the 202 path's
+    // position-1 assertion above.
+    expect(pendingEntry.eta_seconds).toBe(0);
     expect(pendingEntry.author).toBeNull(); // non-terminal
   });
 
