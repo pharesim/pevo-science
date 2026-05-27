@@ -65,3 +65,15 @@ The outer `accreditedJoin` on `dc.author` stays; it's the author-side gate and c
 - `backend/tests/routes/comments.test.ts:58-71` (existing accreditation canary; this task adds a parent-accreditation companion)
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Architect review (2026-05-27) — HELD PENDING FIXES (round 1)
+
+`/ce-code-review` on commit `55ff696a` (correctness, security, adversarial, performance, testing). The descent-gate fix is CONFIRMED CORRECT: the recursive arm gates on `ct.author` (the parent), prunes whole subtrees rooted at non-accredited nodes transitively, the count query carries the identical EXISTS so `meta.total === data.length`, `active_accreditations` is authority-gated, the added EXISTS is a net perf win (prunes descent before the JOIN expands), and there is no injection vector. Two items hold before archive:
+
+1. **(P1, conf 100 — adversarial + testing convergence) The two new tests can pass vacuously on a silent-empty listing.** Both `hides accredited replies whose parent author is non-accredited` and `meta.total matches the unpaginated data length...` assert against the `pevo.science` whitepaper, but neither asserts any POSITIVE presence for THAT paper — the only positive canary (`PEVO_COMMENT`/`PEAKD_COMMENT` must appear) targets a DIFFERENT paper (`jesusalejos/...`). `fetchCommentsFromHaf` swallows a CTE/HAF error and returns `[]` (an over-prune logic bug is not a thrown error, so it never surfaces as 503); on `[]`, `.not.toContain(orphan)` passes and `0 === 0` passes — both green while the endpoint shows nothing, and the mutation-kill (revert the EXISTS → orphan reappears) only fires when the paper is non-empty. Fix: add a positive-presence floor on the SAME `pevo.science` whitepaper to the orphan test — minimally `expect(res.body.data.length).toBeGreaterThan(0)`, or `.toContain(<a known-present accredited sibling permlink on that paper>)`. That single assertion also de-vacuifies the `meta.total` test (shared response).
+
+2. **(P3, conf 75 — correctness + security) The base-arm safety comment's stated justification is imprecise.** The comment says the base arm is safe because "paper authorship requires accreditation (PEvO invariant)", but `paperExistsInHaf`'s native-paper arm is type-only (it does NOT gate on `active_accreditations`, unlike the `papers.ts` listing), and bridge papers are authored by `config.hiveBridgeAccount` which need not be in `active_accreditations`. The base arm is in fact orphan-safe because the parent IS the paper page itself (the rendered context), not because the paper author is guaranteed accredited. Reword the comment to anchor on "parent is the paper page itself". No code change — the descent fix is correct as-is.
+
+When both items land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-2 review scopes to the fix commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
