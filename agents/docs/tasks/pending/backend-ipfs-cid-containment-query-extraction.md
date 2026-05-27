@@ -58,3 +58,15 @@ These two cosmetic items from the same review live in `lib/ipfs-shared.ts`; clea
 - `backend/src/routes/ipfs.ts` (`cidIsKnown`)
 - `backend/src/ipfs-cleanup.ts` (`cidReferencedInHaf`)
 - `backend/src/lib/ipfs-shared.ts` (`imageSrfGuardExpr`, `toPinBackend`, `unpinFromIpfs`, `PinBackend`)
+
+## Architect re-review (2026-05-27) — HELD PENDING FIXES (round 1)
+
+`/ce-code-review` ran on the extraction diff (the commit that introduced `cidReferencedByAppTag`). The extraction itself is sound — correctness/security/performance came back clean, the forward call-site audit confirms `cidIsKnown` and `cidReferencedInHaf` are the only two consumers and both delegate to the shared helper, and the documented CROSS-JOIN-LATERAL SRF-guard pattern is preserved. Three items hold the archive, all in `backend/src/lib/ipfs-shared.ts`:
+
+1. **Stale `imageSrfGuardExpr` docblock.** The docblock states the guard is interpolated into `cidIsKnown` (`routes/ipfs.ts`) and `cidReferencedInHaf` (`ipfs-cleanup.ts`). After this extraction neither contains an SRF call — both delegate to `cidReferencedByAppTag`, which is now the sole interpolation site. Repoint the docblock at `cidReferencedByAppTag` (same file). Anchor on the symbol, not a line number. (maintainability, confidence 100.)
+
+2. **Drop the `export` on `unrecognizedPinBackendMessage`.** Both consumers (`toPinBackend` and the `unpinFromIpfs` switch default) live in `ipfs-shared.ts`; no other module imports it. The `export` signals a false public-API obligation on the exact string format. Make it module-local. (maintainability.)
+
+3. **Throw on null `rowCount` in `cidReferencedByAppTag` (irreversible-path guard).** The final return coerces a null `rowCount` to `false` = "not referenced", which on the cleanup path routes to `unpinFromIpfs` + DELETE (irreversible; Kubo `pin/rm` is not refcounted). This is pre-existing (the same coercion predated the extraction) and practically unreachable for a `SELECT 1 … LIMIT 1` under node-pg, so it is NOT a regression this task caused — but the cost asymmetry on the most dangerous line in the IPFS subsystem justifies the one-line guard while the file is open: `throw` on null `rowCount` so `runCleanup`'s per-row try/catch skips the row and keeps it pinned (uncertainty biases to keep-pinned). Add a unit case asserting the null-`rowCount` path does NOT yield an unpin on the cleanup side.
+
+When all three land, `git mv` this file back to `tasks/review/` — the move is the re-review signal. Do not edit this hold block; the commit diff is the evidence.
