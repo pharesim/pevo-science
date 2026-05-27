@@ -487,9 +487,9 @@ All scores decay with age: `decay(age) = max(decay_floor, 1 - decay_rate × mont
 
 ### Batch Computation
 
-Reputation is computed in batch cycles defaulting to 28,800 blocks (~1 day at 3s/block). This is the `cycle_blocks` parameter in `ReputationWeights`, configurable via on-chain `update_weights` custom_json. Each cycle is a single pass using the prior cycle's scores as voter weights (no convergence iterations). The batch job checks for new cycles hourly. Scores stored in Redis (`reputation:batch:{username}`). On-demand queries read voter weights from the latest batch; if no batch exists (fresh system), all voters weight at 1.0.
+Reputation is computed in batch cycles defaulting to 28,800 blocks (~1 day at 3s/block). This is the `cycle_blocks` parameter in `ReputationWeights`, configurable via on-chain `update_weights` custom_json. Each cycle is a single pass using the prior cycle's scores as voter weights (no convergence iterations). The batch job checks for new cycles hourly. Scores are stored in Redis under the app-tag prefix (`${APP_TAG}:reputation:batch:{username}`, JSON-encoded `{score, breakdown}`; the last completed cycle number lives at `${APP_TAG}:reputation:cycle:last`). On-demand queries read voter weights from the latest batch; if no batch exists (fresh system), all voters weight at 1.0. Readers parse defensively and surface a zero score on parse failure; they do not recompute at head block (the batch is the single source of truth for displayed reputation).
 
-Each PEvO instance runs its own Redis. Keys are not namespaced by `APP_TAG`.
+Each PEvO instance runs its own Redis, and every key is namespaced by `APP_TAG` (`${config.appTag}:`) per the project-wide Redis-key convention. See `reputation-algorithm.md` for the canonical batch-key spec.
 
 ## 4. API Contract
 
