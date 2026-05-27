@@ -1,7 +1,7 @@
 ---
 title: Mutation-kill claims in test headers and convention docs must match what the assertion actually catches against the corpus the test sees
 date: 2026-05-15
-last_updated: 2026-05-16
+last_updated: 2026-05-27
 category: conventions
 module: backend
 problem_type: convention
@@ -12,6 +12,7 @@ applies_when:
   - Updating a convention doc that generalizes mutation-kill criteria for a class of tests (logger spies, real-path companions, etc.)
   - Reviewing a real-path or wiring test whose load-bearing assertion runs against live corpus data
   - Auditing an implementer signal block that claims "covers mutation X" without showing the assertion mechanism
+  - Claiming a canary that imports a shared production helper or constant "pins" or "mutation-kills" the production call site
 tags:
   - mutation-testing
   - test-claims
@@ -42,6 +43,16 @@ When ANY of the three is unverified, weaken the claim. Use one of these honest p
 - "The spy-was-called check transitively pins the warn-BEFORE-throw ordering: a mutation moving warn after the throw would suppress the call entirely, failing the assertion." (Names the actual mechanism rather than overstating it as a `mock.invocationCallOrder` assertion.)
 - "Wiring-axis coverage: dropped import, short-circuited assignment branch, catch-all bypass. Transform-axis coverage (e.g., helper-self-mutation) is deferred to the mocked sibling that pins canon-lowering against a fixture corpus exercising the transform deterministically." (Names what IS covered and what isn't, instead of claiming both.)
 - "Warn-log emission asserted on arm 1 only; arm-2's translation behavior is asserted but the warn-call is not. Mutation class is rare because the warn lives outside any arm-specific branch in source, but a regression that gates the warn on arm-1 phrasing alone would not be caught." (Honest about the asymmetry rather than smoothing it into "both arms covered.")
+
+### Construction class determines mutation class
+
+A recurring special case on the wiring axis: how a canary is *constructed* bounds which mutation class it can possibly catch, independently of how exhaustive its cases look. Three constructions look equivalent and are not:
+
+1. **Interpolate the production constant** into test-local SQL/predicate text — catches constant/charset drift only. A production change that drops the wrapper *around* the constant ships green.
+2. **Import or build from the shared production helper** (test and production both call the same function) — catches a mutation inside the helper *body*. It does NOT catch a **call-site bypass**: production stops calling the helper and inlines the pre-fix shape, helper untouched, test still green (it builds from the still-correct helper).
+3. **Exercise the production call site** (real-path), or assert structurally that production routes through the helper — the only construction that catches a call-site bypass.
+
+A self-contained negative control that hardcodes the pre-fix shape (e.g. a raw `=` predicate written inline in the test) *demonstrates the delta* but reads no production code, so it detects no production mutation at all. So when the claim is "this canary pins the production predicate," name which of the three it actually is, and never claim call-site-bypass coverage from a constant-import, helper-import, or self-contained negative-control test. See the "Helper-import canary" example below.
 
 ## Why This Matters
 
@@ -140,10 +151,31 @@ True for the throw-translation behavior. Misleading for the warn-log emission: t
 
 States WHAT is covered on each arm and WHY single-arm coverage suffices structurally.
 
+### Helper-import canary kills the helper body, not the call-site bypass (construction-class subtype)
+
+This subtype is notable because the overclaim survived the architect's own prescribed fix and recurred across three re-review rounds — the canary kept *looking* like it pinned production while catching a strictly narrower mutation class.
+
+A reputation-cycle canary was meant to pin that the ORCID auto-accept arm BTRIM-normalizes the broadcaster-controlled chain ORCID before matching the attested value. Its construction migrated up the three levels above, and each migration was over-described:
+
+- **Round 3→4 (constant-import):** the canary only interpolated the production constant `CHAIN_ORCID_BTRIM_CHARSET` into its own inline SQL. A production-side revert of the BTRIM wrapper shipped green (the constant was unchanged) — claim "the canary pins the production arm" was false.
+- **Round 4 fix (helper-import):** the predicate was extracted into a shared `chainOrcidAutoAcceptMatchSql` builder that both production arms and the canary call. The canary now kills a mutation inside the builder *body* (drop the BTRIM → the tab-padded case reds). Correct as far as it goes.
+- **The re-overclaim:** the round-4 test comment then said a raw-`=` negative control "catches an inline call-site revert even if the helper is untouched." It does not. The negative control hardcodes the pre-fix raw shape and asserts non-match; it reads no production code, so if production's arm is reverted to an inline raw `=` with the builder left intact, every sub-case (built from the still-correct builder) stays green.
+
+**Corrected claim:**
+
+> "The canary builds its predicate from the production `chainOrcidAutoAcceptMatchSql` builder, so a mutation inside the builder body (e.g. dropping the BTRIM wrapper) reds the tab-padded case. A call-site bypass — production inlining a raw `=` instead of routing through the builder — is NOT caught by this canary or by the raw-`=` negative control; closing that requires a real-path exercise of the production arm or a structural 'production routes through the builder' assertion. The negative control demonstrates the BTRIM-vs-raw delta; it is not a production mutation detector."
+
+**Two sibling instances from the same review batch** (different surfaces, same root failure of claiming more than the construction catches):
+
+- **Absence assertion vacuous on an empty corpus.** Two live-HAF regression tests asserted `.not.toContain(orphanPermlink)` and `meta.total === data.length` against one paper, with no positive-presence assertion on that paper. The handler swallows query errors to `[]`, so a silent-empty listing passes both green and the mutation-kill fires only when the paper is non-empty. This is the corpus-conditional case above in `.not.toContain` form; the fix is a positive-presence floor (`expect(data.length).toBeGreaterThan(0)`) on the same paper so the absence assertion cannot pass vacuously.
+- **Parity canary asserting each surface independently.** A SQL/JS name-supersession parity canary ran one set of inputs through the SQL projection and another through the JS helper, asserting each in isolation. A divergence on an input neither side exercised passes both. Cross-compare the SAME input through both surfaces and assert identical output.
+
 ## Related
 
 - `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` — the principle this complements. That doc covers writing assertions correctly; this doc covers describing them honestly.
 - `agents/docs/solutions/conventions/real-path-companion-dismissal-criteria-2026-05-11.md` — generalized dismissal criteria for logger-spy clause (c). Its Examples section was the first site to apply this honesty principle (corrected at commit `a13f364`).
 - `agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md` — adjacent: when the assertion's mock-guard predicate doesn't pin the shape claimed, the kill is structurally absent. This convention covers the case where the kill is present but the description overstates the mechanism.
+- `agents/docs/solutions/conventions/dedup-shared-constant-defeats-test-value-pin-2026-05-26.md` — the constant-import construction (level 1 of "Construction class determines mutation class") in its dedup-trigger form: when test and production both import the same constant, a mutation to the constant updates both sides and the value-pin goes tautological. Keep an independent literal pin alongside the constant-sourced assertion.
+- `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` — its transform-vs-wiring axis is the coarser cut; the "Construction class determines mutation class" guidance above decomposes the wiring axis into constant-import, helper-import, and call-site-exercise.
 - `agents/docs/tasks-archive.md` BE-APP-SSR-REAL-PATH-COMPANION (when round-2 archives) — concrete instance of the corpus-conditional-kill case.
 - `agents/docs/tasks/pending/ui-e2e-edit-paper-flow.md` (when it archives) — round-2 and round-3 hold cycles are the canonical instance of the size-threshold subtype. Round-2 landed the assertion against a fixture that failed it on unmutated code; round-3 enlarged the fixture body to make the diff branch reachable. The fix took two architect re-review rounds to surface because round-2's review accepted the structural assertion without running the production transform against the fixture.
