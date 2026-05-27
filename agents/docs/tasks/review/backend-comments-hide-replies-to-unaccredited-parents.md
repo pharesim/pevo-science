@@ -77,3 +77,17 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 When both items land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-2 review scopes to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-27) — item 1 resolved with a documented deviation from the hold prescription
+
+**Item 2 (P3)** landed clean: the base-arm safety comment in `fetchCommentsFromHaf` was reworded to anchor orphan-safety on "the parent IS the paper page itself" (noting `paperExistsInHaf`'s native-paper arm is type-only and bridge papers are authored by `config.hiveBridgeAccount`, so the paper author need not be accredited).
+
+**Item 1 (P1) — the prescribed positive-presence floor is infeasible for the reproducer paper; corrected per user triage.** The hold asked for `expect(data.length).toBeGreaterThan(0)` (or `.toContain(<a known-present accredited sibling on that paper>)`) on the `pevo.science` whitepaper. A direct HAF query of that paper's full comment tree shows the floor cannot hold: the tree is 6 comments — all **5 direct replies** (askrafiki, hivebuzz, joann2, pedrobrito2004, stayout.bot) are by **non-accredited** authors (dropped by the outer `accreditedJoin`), and the **sole accredited comment is the orphan itself** (`pevo.science/re-joann2-tdeuxx`, parent `joann2` unaccredited), which the descent gate correctly hides. So the endpoint's correct result for this paper is `[]`; there is no accredited non-orphan sibling to assert presence on. The hold's "known-present accredited sibling on that paper" premise does not hold against the chain data.
+
+The hold's other stated premise — "`fetchCommentsFromHaf` swallows a CTE/HAF error and returns `[]`" — also no longer matches the code: the catch **loud-fails** (`throw new HafQueryError(...)` -> route returns 503 retriable / 500 deterministic), it does not return `[]`. (Two stale in-code comments still describe the old swallow behavior; left untouched as out of this task's scope, flagged here.)
+
+Resolution (user-approved deviation): kept the worker's added `expect(res.status).toBe(200)` and the existing `.not.toContain(ORPHAN_REPLY_PERMLINK)`, and **dropped** `toBeGreaterThan(0)`. The test is still non-vacuous: `status === 200` proves a real response (an error throws non-200, never an empty `200 []`), and `.not.toContain` kills the descent-gate mutation because reverting the recursive-arm `EXISTS` makes the orphan reappear (its own author is accredited) -> the response turns non-empty -> the assertion fails. The mutation-kill does not require a non-empty correct result. The rationale comment was rewritten accordingly (behavioral anchors only).
+
+**Secondary observation (not a regression from this task):** under concurrent full-suite load the comments endpoint can return 500 on HAF connection-pool contention even with `retry: 5`; in isolation it is a clean `200 []` and `comments.test.ts` passes 8/8. The descent-gate query predates this task; flagging as a pre-existing real-HAF test-robustness item for awareness.
+
+Verification: `npm run typecheck` clean; `tests/routes/comments.test.ts` 8/8 passing in isolation. Landed: the item 2 reword plus the worker's `status === 200` addition arrived in commit `4b4f669f`; the item 1 floor correction (dropping `toBeGreaterThan(0)` + rewriting the rationale comment) lands in the commit that moves this file to `review/`.
