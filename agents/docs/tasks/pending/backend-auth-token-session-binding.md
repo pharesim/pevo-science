@@ -140,3 +140,28 @@ The sibling-invalidation sweep (both `/confirm` and `/link`) keys on `WHERE orci
 Verification: typecheck (src + tests) + lint clean; `npx vitest run` of the affected files (`signup-verify-session-binding`, `signup-verify`, `signup-verify-stuck-recovery`, `settings-email-delete-fresh-auth`, `hafsql`) green (64 passed / 2 skipped) against real Postgres/Redis.
 
 The [TODO Architect] contract/ARCHITECTURE edits (auth.md cookie + login-409, § 6.x binding-as-auth-factor note, the stale "010"→"011" migration reference) remain architect-owned and untouched by backend.
+
+---
+
+## Architect re-review (2026-05-27, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on the round-2 commit `6e3cd97d` as part of a signup-binding cluster pass (12 personas, ce-agent-native skipped per PEvO; the cluster diff was scoped to `44b26476..HEAD` over signup-verify.ts + signup-session-binding.ts + migration 011 + the three test files). **Round-2 hold items 1-8 are VERIFIED SATISFIED at HEAD** and survived the subsequent concurrent-activation refactor: security + adversarial independently confirmed the malformed-cookie 500-oracle is closed (item 1), the `/link` JWT-replay bypass gate (`req.hiveAuthMethod === 'signature'`) holds (item 2, §6.5 invariant #1), the docstrings/migration-011 header scope the threat model correctly (items 3/4/8), the `/link` no-oracle message assertion is present (item 5), the `/link` coverage cluster landed (item 6), and the dead length-check is removed from `verifyBinding` (item 7). Three residual items block archive.
+
+### Items to address
+
+**1. (P2, test) The `/link` JWT-replay gate has no regression test.** The `req.hiveAuthMethod === 'signature'` gate on the `/link` stuck-recovery bypass is correct by inspection, but reverting it to an unconditional `if (!account)` passes every current suite. This is the §6.5 invariant #1 security gate added in round-2 — it must be pinned. Add an auth-focused test (real `verifyHiveSignature`, no mock fixture): seed a stuck self-custody row (`verify_token IS NULL`, `custody='self'`), send `/link` with a Bearer JWT (`hiveAuthMethod='jwt'`) + the consumed auth_token, assert the no-row `400 "Invalid or expired link request"` (never the bypass / accreditation broadcast).
+
+**2. (P2, convention) Comment-anchor rot in the new test file.** `signup-verify-session-binding.test.ts` docblock/comments cite hold-item numbers ("item 3 of the task", "(item 4)", "(item 1 post-condition)", "task item 4"). These violate the root-CLAUDE.md comment-anchor convention (round-number / task-item citations rot when the task archives). Reword to behavioral anchors (e.g. "Login PENDING_SIGNUP must not expose auth_token in the response body", "/confirm per-auth_token rate limit accumulates across rotated IPs", "successful /confirm clears the row's signup_binding_hash"). The replacement must NOT introduce a new rot class (no task slugs, line numbers, or SHAs) per the convention-enforcing-fix-must-audit-its-own-replacement rule.
+
+**3. (P3, dead code — resolves the item-6 backend flag) Remove the sibling `verify_token`-invalidation sweep.** Architect decision on the flagged un-seedable test: the sweep (`UPDATE ... SET verify_token = NULL, signup_binding_hash = NULL WHERE orcid = $1 AND id <> $2 AND verify_token IS NOT NULL`, in both `/confirm` and `/link`) is **provably unreachable**, not merely hard-to-seed — it keys on `orcid`, and (a) migration 007's partial-unique index forbids a second row with the same non-null orcid, (b) email signups have `orcid IS NULL` so `orcid = $1` (bound to the row's NULL orcid) matches nothing, and (c) the resume path replaces `verify_token` in place (`WHERE id = $3`) rather than inserting a sibling row. Defense-in-depth defends a reachable-under-bug scenario; this is unreachable by a foundational schema invariant, so it is dead code with a misleading "sibling-token invalidation" framing. **Remove the sweep (both routes) and its non-fatal `.catch` log; drop the un-seedable test sub-bullet** (the original task item 5 / round-2 item 6). If any residual comment is kept, anchor it on the migration-007 orcid uniqueness constraint, not the task.
+
+### [TODO Architect] (deferred to final archive — architect-owned, do NOT touch from backend)
+
+Carried forward plus one addition surfaced this round:
+- `auth.md` cookie + login-409 contract (the api-contract persona confirmed the prior cookie/login-409 edits already landed in `a4b35903`).
+- **NEW:** document the PENDING_SIGNUP `409` response envelope's top-level `data: { email }` as a sanctioned exception to `common.md`'s error shape (which has no `data` key). SPA-only consumer already handles it; this is doc self-consistency.
+- `ARCHITECTURE.md` § 6.x binding-as-auth-factor note; the stale "010"→"011" migration reference in the original [TODO Architect] block.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commits only.
