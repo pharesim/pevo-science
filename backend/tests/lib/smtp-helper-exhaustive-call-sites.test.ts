@@ -10,10 +10,13 @@
  * `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`
  * for the convention this implements.
  *
- * The grep matches comments as well as code (`// nodemailer.createTransport`
- * is still a hit) — the test's job is structural, not parser-aware. If a
- * future doc-block in some other file mentions the bare phrase, that is
- * also a violation: doc-blocks describing the helper belong in the helper.
+ * The grep matches nodemailer *import statements* — ES `from 'nodemailer'`
+ * or CJS `require('nodemailer')` — anywhere under `src/`, regardless of how
+ * `createTransport` is referenced afterward. A bare `// nodemailer.createTransport`
+ * comment is NOT a hit: the lock fires on the import that any direct call
+ * would require, not on the phrase. The test's job is structural, not
+ * parser-aware; routing every send through the helper means only the helper
+ * imports nodemailer.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -24,8 +27,8 @@ import { describe, it, expect } from 'vitest';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BACKEND_ROOT = resolve(__dirname, '../..');
 
-describe('nodemailer.createTransport — exhaustive call-site audit', () => {
-  it('only backend/src/lib/smtp.ts references nodemailer.createTransport', () => {
+describe('nodemailer imports — exhaustive call-site audit', () => {
+  it('only backend/src/lib/smtp.ts imports nodemailer', () => {
     let out = '';
     try {
       out = execFileSync(

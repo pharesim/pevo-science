@@ -20,9 +20,13 @@
  * `chainOrcidAutoAcceptMatchSql` helper that `reputation.ts` and
  * `authorshipClaimsCteBody` use, so a production-side change to the predicate
  * shape (e.g. dropping the BTRIM wrapper back to a raw `=`, or a charset
- * drift in `CHAIN_ORCID_BTRIM_CHARSET`) turns the tab-padded assertion red.
- * The raw-`=` negative control pins the pre-fix failure mode directly, so an
- * inline call-site revert is caught even if the helper itself is untouched.
+ * drift in `CHAIN_ORCID_BTRIM_CHARSET`) turns the tab-padded auto-accept
+ * assertion red, because that assertion's predicate is built from the helper.
+ * The raw-`=` negative control documents the BTRIM-vs-raw semantic contrast —
+ * the pre-fix failure mode — by building a raw predicate inline; it does not
+ * reference the production call site, so it is not itself a call-site-revert
+ * detector. The helper-body BTRIM revert is the mutation it guards against,
+ * and that is caught by the tab-padded assertion above.
  *
  * **Carve-out clause-(c) justification:** Synthetic-VALUES against real
  * Postgres (no `${T.customJson}` / `${T.comments}` substitution per-test).
@@ -124,9 +128,12 @@ describe('reputation ORCID auto-accept arm — chain-orcid trim parity (syntheti
 
       // (4) Negative control: the pre-fix raw-equality shape. The SAME
       // tab-padded claim that auto-accepts through the BTRIM helper above
-      // must NOT match under a raw `=`. This pins the failure mode the
-      // helper closes, so an inline call-site revert (replacing the helper
-      // call with a raw `=`) is caught even if the helper is untouched.
+      // must NOT match under a raw `=`. This documents the BTRIM-vs-raw
+      // semantic contrast — the pre-fix failure mode — directly: it builds
+      // the raw predicate inline and never references the production call
+      // site, so it is not itself a call-site-revert detector. The
+      // helper-body BTRIM revert is caught by sub-case (1), whose predicate
+      // is built from the helper.
       const rawAutoAccept = `
         SELECT EXISTS (
           SELECT 1 FROM paper c
