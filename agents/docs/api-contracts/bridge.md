@@ -131,13 +131,16 @@ A successful enqueue returns **HTTP 202 Accepted** (not 200). The body follows t
       "id": 42,
       "operation_kind": "register",
       "identifier": "2301.12345",
+      "title": "Attention Is All You Need",
       "permlink": "bridge-arxiv-2301-12345",
+      "author": null,
       "discipline": "Computer Science",
       "keywords": ["transformers"],
       "language": "en",
       "state": "pending",
       "attempts": 0,
       "scheduled_at": "2026-05-26T14:00:00.000Z",
+      "eta_seconds": 0,
       "tx_id": null,
       "error_code": null,
       "error_message": null,
@@ -158,7 +161,7 @@ A successful enqueue returns **HTTP 202 Accepted** (not 200). The body follows t
 }
 ```
 
-The `entry` object is the queue row (full field reference under `GET /api/bridge/imports` below). At enqueue time `state` is `"pending"`, `tx_id` is `null`, and `error_code`/`error_message` are `null`. The broadcast happens on a later worker tick: `tx_id` populates and `state` advances to `"completed"` (or `"failed"`) only after dispatch. The Hive post is authored by the bridge account (not the requesting user); the requesting user is recorded in the on-chain `pevo.source.registered_by` field. Poll `GET /api/bridge/imports` for the terminal outcome. `queue_position` is the entry's 1-based position in the dispatch order; `eta_seconds` is a best-effort estimate derived from the 5-minute chain cooldown (position 1 dispatches on the next tick, so its ETA is 0).
+The `entry` object is the queue row (full field reference under `GET /api/bridge/imports` below), so at enqueue time it carries `title` (resolved at register time, or `null`), `author` (`null` while pending), and a per-entry `eta_seconds` alongside the rest of the row. At enqueue time `state` is `"pending"`, `tx_id` is `null`, and `error_code`/`error_message` are `null`. The broadcast happens on a later worker tick: `tx_id` populates and `state` advances to `"completed"` (or `"failed"`) only after dispatch. The Hive post is authored by the bridge account (not the requesting user); the requesting user is recorded in the on-chain `pevo.source.registered_by` field. Poll `GET /api/bridge/imports` for the terminal outcome. `queue_position` is the entry's 1-based position in the dispatch order; the top-level `eta_seconds` is a best-effort estimate derived from the 5-minute chain cooldown (position 1 dispatches on the next tick, so its ETA is 0) and equals `entry.eta_seconds` for the 202 response (both are computed from `queue_position`).
 
 **Errors (synchronous, at enqueue time):**
 - `UNAUTHORIZED`: invalid signature.
@@ -273,7 +276,7 @@ Entries are scoped to the authenticated `X-Hive-Username`. There is no caller-co
 | `identifier` | string | The submitted identifier. |
 | `title` | string \| null | The source preprint title resolved at register time. `null` only if metadata had not resolved when the row was created. The SPA labels the row with this, falling back to `identifier`. |
 | `permlink` | string | The deterministic bridge permlink. |
-| `author` | string \| null | The Hive author of the resulting bridge post (`HIVE_BRIDGE_ACCOUNT`), populated once `state` is `completed`; `null` while non-terminal. On a permlink-collision short-circuit it equals `existing_author`. Together with `permlink` this is the link target for the completed post, so the SPA does not need the bridge account injected separately. |
+| `author` | string \| null | The Hive author of the resulting bridge post (`HIVE_BRIDGE_ACCOUNT`), populated once `state` is `completed`; `null` otherwise (while non-terminal, and for a terminal `failed` entry which never produced a post). On a permlink-collision short-circuit it equals `existing_author`. Together with `permlink` this is the link target for the completed post, so the SPA does not need the bridge account injected separately. |
 | `discipline`, `keywords`, `language` | | As submitted. |
 | `state` | string | `pending`, `in_progress`, `completed`, or `failed`. |
 | `attempts` | number | Broadcast attempts consumed. Pre-broadcast transient outages (metadata or HAF unavailable, or a post-broadcast completion-write failure) do NOT increment this. |
