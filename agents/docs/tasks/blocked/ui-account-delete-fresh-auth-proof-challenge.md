@@ -71,3 +71,43 @@ and the landed `settings.ts` DELETE /email handler.
   critical action is a defect).
 - `frontend/src/pages/settings.js` change-email handler — the proof-challenge UI
   pattern to reuse.
+
+## [BLOCKED by Architect] (2026-05-27, UI)
+
+The task instructs: "Reuse the existing change-email proof-challenge UI pattern
+(do not invent a new one)" and cross-references the settings.js change-email
+handler as that pattern. On inspection of the frontend, **no such UI pattern
+exists** — there is nothing to reuse, and satisfying the task would require
+inventing the settings-action proof-challenge flow, which the task explicitly
+forbids. Evidence:
+
+- `handleEmailSubmit` (change-email) calls `submitEmail(email)`, which POSTs
+  `{ email }` only — no `fresh_auth_proof`.
+- `handleSetPassword` (set-password) calls `setPassword(password)`, which POSTs
+  `{ password }` only — no `fresh_auth_proof`.
+- `settings.js` imports nothing from `lib/fresh-auth.js` and never mints,
+  retrieves, or sends a settings-action proof (no `getCachedConsentOpProof`,
+  no `startOrcid('fresh_auth', { action })`, no `custody/fresh-auth` call).
+  `authenticatedRequest` only attaches the Bearer header.
+- The only settings-action proof primitive in the UI is `orcid-callback.js`
+  `_handleFreshAuth`, which caches a consent-op proof keyed on
+  `(action, root_author, root_permlink)`. Its own comment names the consumer as
+  `ui-multi-author-consent-affordances` (currently in `blocked/`), and there is
+  no password-factor mint path in the UI for settings actions at all.
+
+**Implication worth the architect's attention:** because change-email and
+set-password send no proof, their JWT/light-account paths appear to be
+structurally `401 FRESH_AUTH_REQUIRED` against the now-live backend gates
+(`change_email` / `set_password` mint paths archived). They are effectively
+Keychain-only in the UI today. The "reusable pattern" the task assumes was
+never built; this delete-account task would be the *first* settings-action proof
+wiring in the frontend, not a reuse.
+
+**What's needed from the architect:** re-scope. Either (a) bless building the
+settings-action proof-challenge flow fresh and decide whether it should be a
+single canonical pattern task (covering change-email + set-password +
+delete-account, so the pattern is built once and reused) with this task
+sequenced to consume it, or (b) confirm delete-account should establish the
+pattern standalone and drop the "do not invent" / "reuse existing" instruction.
+The change-email/set-password JWT-path gap should be tracked regardless. Move
+back to `pending/` once the approach is decided.
