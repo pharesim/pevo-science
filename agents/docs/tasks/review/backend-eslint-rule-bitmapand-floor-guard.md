@@ -76,3 +76,15 @@ Residual to weigh while in item 1: the rule's visitor set omits `CallExpression`
 When items land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-2 review scopes to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-27, landed at commit 94f2305e)
+
+Round-2 hold items 1-3 landed.
+
+1. **(item 1 — decision: suppress-with-disable for wot.ts)** Broadened `CUSTOM_ID_RE` from `/\b\w+\.custom_id\b/` to `/\b(?:\w+\.)?custom_id\b/` so it matches both alias-qualified and bare/unaliased `custom_id` (the `\b` anchors still exclude `my_custom_id` substrings). Added an `eslint-disable-next-line` on `loadWotThreshold`'s query with a rationale anchored on the `loadWotThreshold` symbol (consistent with the existing 15; no SQL behavior change, so no real-HAF re-verification needed). Updated the module docstring + the rule's `meta.docs.description`/`messages.forbidden` to say "aliased or bare". Grep-vs-lint audit: 16 sites flagged and suppressed, `--report-unused-disable-directives` shows 0 unused floor-rule disables, `eslint src/` is 0 errors, no further unflagged toxic sites. Verified by mutation: stripping the wot.ts disable makes the broadened rule fire on the bare `custom_id` with the BitmapAnd message.
+
+2. **(item 2)** Added a valid RuleTester case splitting an identifier mid-token (`` `cj.custom_${suffix}` `` with `suffix='id'`): the NUL quasi-join keeps it silent; dropping the NUL separator concatenates the quasis to `cj.custom_id` and false-positives — kills the NUL-drop mutation.
+
+3. **(item 3 — decision: extracted the shared walker)** Extracted `foldStringExpr` + `foldArrayJoin` (TS-wrapper unwrap + Literal + BinaryExpression-`+` recursion), parameterized by per-rule TemplateLiteral/CallExpression handlers; the bridge rule's `resolveStringValue` and the floor rule's `flattenSqlString` both delegate, removing the ~25-line duplication. Also added `CallExpression` to the floor rule's visitor set with `foldArrayJoin` as the `.join()` handler, closing the residual where a `.join()`-assembled toxic fragment evaded the rule (pinned by a new invalid `.join(' AND ')` case).
+
+Verification: `npm run typecheck` clean; `npm run lint`/`eslint src/` 0 errors; RuleTester `no-custom-id-block-num-floor` 17 passed, `no-bridge-paper-literal` 30 passed (the shared-walker refactor preserved bridge behavior). An unrelated `no-restricted-imports` config block was added to `eslint.config.mjs` on main after the worker's branch point; it was preserved through the cherry-pick 3-way merge (verified present).
