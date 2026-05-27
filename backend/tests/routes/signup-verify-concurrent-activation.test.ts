@@ -6,9 +6,13 @@
  * the loser observes verify_token already cleared and takes the normal
  * "invalid or expired" reject.
  *
- * Mechanism under test: a per-auth_token transaction-scoped pg advisory lock
- * (lockSignupActivation) serializes the lookup-through-activation critical
- * section. This suite drives the real lock against real Postgres.
+ * Mechanism under test: a per-auth_token activation lock (Redis SET-NX CAS,
+ * with an in-process fallback when Redis is down — see signup-activation-lock.ts)
+ * serializes the lookup-through-finalize critical section. The pg connection is
+ * NOT held across the broadcast; the lock is what single-fires it. A concurrent
+ * same-token request waits for the holder to release, then re-reads its row and
+ * converges on the already-consumed reject (loser 400). This suite drives the
+ * real lock against real Redis + Postgres.
  *
  * Mock carve-out (root CLAUDE.md "Running Tests"): the chain-side surface is
  * mocked because exercising real account creation / Hive broadcast per-test is
@@ -16,8 +20,8 @@
  * `broadcastJsonWithTimeout`. The createClaimedAccount mock is given an
  * artificial in-flight delay so the two concurrent requests overlap; without
  * the delay the requests would serialize incidentally on event-loop ordering
- * and not exercise the race. The session-binding logic, the advisory lock, the
- * pg transaction, and the verify_token-clearing UPDATE all run real.
+ * and not exercise the race. The session-binding logic, the activation lock,
+ * the row lookup, and the verify_token-clearing UPDATE all run real.
  *
  * verifyHiveSignature runs REAL for the /link case (this is an auth-adjacent
  * route and the loser-reject correctness depends on the row state, not on
@@ -260,9 +264,10 @@ describe.skipIf(!dbReachable)('/link serializes concurrent same-token activation
 
     // Delay the accreditation broadcast so the two requests overlap. /link has
     // no createClaimedAccount; the activation UPDATE (verify_token clear,
-    // custody=self) happens inside the locked transaction BEFORE the broadcast.
-    // The lock guarantees only one request runs that UPDATE; the loser's locked
-    // lookup finds verify_token already NULL.
+    // custody=self) runs under the activation lock BEFORE the broadcast. The
+    // lock guarantees only one request runs that UPDATE; the loser waits for
+    // release, then its re-read finds verify_token already NULL and it either
+    // rejects or idempotently re-resolves via the stuck-resume path.
     broadcastJsonMock.mockImplementation(async () => {
       await new Promise((r) => setTimeout(r, 250));
       return { id: 'mock-tx' };

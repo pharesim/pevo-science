@@ -783,35 +783,22 @@ describe.skipIf(!dbReachable)('signup_verify.confirm.failed log shape', () => {
   it('fires from outer catch with event + route + err: <Error>', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
     const pool = getAppPool()!;
-    // The /confirm activation runs inside a locked transaction on a dedicated
-    // client (see lockSignupActivation): BEGIN, then the in-transaction
-    // statements (lock_timeout, advisory lock, row lookup) all run on that
-    // client, not the bare pool. Let BEGIN (the first client query) succeed so
-    // `inTransaction` becomes true, then fail the SECOND query — the first
-    // statement inside the open transaction — so the inner tx-catch's
-    // `if (inTransaction)` ROLLBACK branch runs before the error rethrows to
-    // the outer catch (the 500 + failure-log path this test pins). The ROLLBACK
-    // query itself is allowed through so the rollback actually completes. A
-    // pool.query stub would miss the lookup, and the handler would 400 on the
-    // (absent) token instead.
+    // The /confirm handler reads the pending row via a plain pool.query (no
+    // held transaction; the activation lock — acquired before any pg work and
+    // released in `finally` — is the single-fire guard). Fail that first
+    // pool.query to drive the error straight to the outer catch (the 500 +
+    // failure-log path this test pins). Later pool.query calls pass through so
+    // any cleanup behaves normally.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const origConnect = (pool as any).connect.bind(pool);
+    const origQuery = (pool as any).query.bind(pool);
+    let calls = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (pool as any).connect = async (...args: unknown[]) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const client = await (origConnect as (...a: unknown[]) => Promise<any>)(...args);
-      const origClientQuery = client.query.bind(client);
-      let calls = 0;
-      client.query = (...qargs: unknown[]) => {
-        calls += 1;
-        // Fail the first in-transaction statement (call 2), after BEGIN (call 1)
-        // has opened the transaction, to drive the inner-catch ROLLBACK branch.
-        if (calls === 2) {
-          return Promise.reject(new Error('synthetic mid-transaction failure for signup_verify.confirm.failed'));
-        }
-        return origClientQuery(...qargs);
-      };
-      return client;
+    (pool as any).query = (...qargs: unknown[]) => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.reject(new Error('synthetic pg failure for signup_verify.confirm.failed'));
+      }
+      return origQuery(...qargs);
     };
 
     try {
@@ -842,7 +829,7 @@ describe.skipIf(!dbReachable)('signup_verify.confirm.failed log shape', () => {
       expect(fields!.err).toBeInstanceOf(Error);
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (pool as any).connect = origConnect;
+      (pool as any).query = origQuery;
       errorSpy.mockRestore();
     }
   });
@@ -874,35 +861,23 @@ describe.skipIf(!dbReachable)('signup_verify.link.failed log shape', () => {
 
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
     const pool = getAppPool()!;
-    // The /link activation runs inside a locked transaction on a dedicated
-    // client (see lockSignupActivation): BEGIN, then the in-transaction
-    // statements (lock_timeout, advisory lock, row lookup) all run on that
-    // client, not the bare pool. Let BEGIN (the first client query) succeed so
-    // `inTransaction` becomes true, then fail the SECOND query — the first
-    // statement inside the open transaction — so the inner tx-catch's
-    // `if (inTransaction)` ROLLBACK branch runs before the error rethrows to
-    // the outer catch (the 500 + failure-log path this test pins). The ROLLBACK
-    // query itself is allowed through so the rollback actually completes. A
-    // pool.query stub would miss the lookup, and the handler would 400 on the
-    // (absent) token instead.
+    // The /link handler reads the pending row via a plain pool.query (no held
+    // transaction; the activation lock — acquired before any pg work and
+    // released in `finally` — is the single-fire guard). Fail that first
+    // pool.query to drive the error straight to the outer catch (the 500 +
+    // failure-log path this test pins). verifyHiveSignature runs first and uses
+    // the mocked Hive lookup, not the pool, so the row lookup is the first
+    // pool.query. Later calls pass through so cleanup behaves normally.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const origConnect = (pool as any).connect.bind(pool);
+    const origQuery = (pool as any).query.bind(pool);
+    let calls = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (pool as any).connect = async (...args: unknown[]) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const client = await (origConnect as (...a: unknown[]) => Promise<any>)(...args);
-      const origClientQuery = client.query.bind(client);
-      let calls = 0;
-      client.query = (...qargs: unknown[]) => {
-        calls += 1;
-        // Fail the first in-transaction statement (call 2), after BEGIN (call 1)
-        // has opened the transaction, to drive the inner-catch ROLLBACK branch.
-        if (calls === 2) {
-          return Promise.reject(new Error('synthetic mid-transaction failure for signup_verify.link.failed'));
-        }
-        return origClientQuery(...qargs);
-      };
-      return client;
+    (pool as any).query = (...qargs: unknown[]) => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.reject(new Error('synthetic pg failure for signup_verify.link.failed'));
+      }
+      return origQuery(...qargs);
     };
 
     try {
@@ -928,7 +903,7 @@ describe.skipIf(!dbReachable)('signup_verify.link.failed log shape', () => {
       expect(fields!.err).toBeInstanceOf(Error);
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (pool as any).connect = origConnect;
+      (pool as any).query = origQuery;
       errorSpy.mockRestore();
     }
   });
