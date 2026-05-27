@@ -709,33 +709,11 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
       }
     }
 
-    // Invalidate any other still-pending signup rows that share this
-    // account's identity. Defence-in-depth: PostgreSQL's UNIQUE constraints
-    // on `email`, `username`, and the partial `orcid` index already prevent
-    // the most obvious multi-row case (re-signup overwrites the same row),
-    // but a rare cross-identity scenario can still leave a sibling row with
-    // a live verify_token (e.g. an ORCID-only row was created at /signup
-    // and the same person later started an email-only signup tied to the
-    // same ORCID via a different identifier). Sweep them clean here so a
-    // leaked sibling auth_token can't be replayed against /confirm after
-    // this user has already completed.
-    if (confirmedAccount.orcid) {
-      await pool.query(
-        `UPDATE accounts
-           SET verify_token = NULL, signup_binding_hash = NULL
-         WHERE orcid = $1 AND id <> $2 AND verify_token IS NOT NULL`,
-        [confirmedAccount.orcid, confirmedAccount.id],
-      ).catch((sweepErr) => {
-        // Non-fatal: the user's own row is fully active and the leak
-        // window on a sibling row is bounded by its expires_at. Log so
-        // operators can investigate but do not fail the confirm.
-        logger.warn(
-          { event: 'signup_verify.confirm.sibling_invalidation_failed', err: sweepErr },
-          'signup_verify.confirm sibling-token invalidation sweep failed',
-        );
-      });
-    }
-
+    // No sibling-token invalidation sweep is needed here: migration 007's
+    // partial unique index on accounts(orcid) WHERE orcid IS NOT NULL forbids
+    // a second row sharing this account's non-null orcid, and email-only
+    // signups have orcid NULL (no sibling to match). A leaked sibling
+    // auth_token therefore has no reachable row to replay against.
     clearBindingCookie(res);
 
     // Issue JWT session
@@ -1033,23 +1011,10 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       }
     }
 
-    // Invalidate any sibling pending-signup rows that share this user's
-    // ORCID. See `/confirm` above for the rationale (replay defence on a
-    // leaked sibling auth_token after this user is fully active).
-    if (linkedAccount.orcid) {
-      await pool.query(
-        `UPDATE accounts
-           SET verify_token = NULL, signup_binding_hash = NULL
-         WHERE orcid = $1 AND id <> $2 AND verify_token IS NOT NULL`,
-        [linkedAccount.orcid, linkedAccount.id],
-      ).catch((sweepErr) => {
-        logger.warn(
-          { event: 'signup_verify.link.sibling_invalidation_failed', err: sweepErr },
-          'signup_verify.link sibling-token invalidation sweep failed',
-        );
-      });
-    }
-
+    // No sibling-token invalidation sweep here, for the same reason as
+    // `/confirm` above: migration 007's partial unique index on
+    // accounts(orcid) WHERE orcid IS NOT NULL makes a same-orcid sibling row
+    // impossible, so there is nothing to invalidate.
     clearBindingCookie(res);
 
     // Issue JWT session

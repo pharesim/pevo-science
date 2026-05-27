@@ -23,12 +23,11 @@
  *     oracle).
  *   - /link: same shape, against a verifyHiveSignature-signed request.
  *   - Login PENDING_SIGNUP no longer returns `auth_token` in the response
- *     body (item 3 of the task).
- *   - /confirm per-auth_token rate limit accumulates across rotated IPs
- *     (item 4).
- *   - Successful /confirm clears the row's `signup_binding_hash` (item 1
- *     post-condition; ensures replay of the cookie against a sibling row
- *     cannot succeed once the user is fully active).
+ *     body.
+ *   - /confirm per-auth_token rate limit accumulates across rotated IPs.
+ *   - Successful /confirm clears the row's `signup_binding_hash` so a
+ *     replayed cookie cannot complete a sibling row once the user is fully
+ *     active.
  *   - /link parity: the cross-session reject pins the same no-oracle message
  *     as /confirm, a forged-cookie (valid signature + wrong cookie) attack is
  *     rejected, the per-auth_token rate limit accumulates across rotated IPs,
@@ -38,11 +37,15 @@
  *     /confirm and never activated.
  *   - A malformed-percent-encoding cookie + a valid auth_token yields the
  *     same 400 as a wrong cookie, never a URIError 500 (no oracle).
+ *   - /link stuck-recovery bypass is unreachable via a Bearer JWT: a JWT for
+ *     a stuck self-custody row falls through to the no-row 400, since only a
+ *     fresh per-request signature satisfies the bypass gate.
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
 import argon2 from 'argon2';
+import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 import { signRequestBound as signRequestBoundShared } from '../support/sign-request.js';
@@ -396,8 +399,7 @@ describe.skipIf(!dbReachable)('/link rejects cross-session replay of a leaked au
 });
 
 // ─────────────────────────────────────────────────────────────────
-// Login PENDING_SIGNUP: response body must NOT carry auth_token
-// (task item 3).
+// Login PENDING_SIGNUP: response body must NOT carry auth_token.
 // ─────────────────────────────────────────────────────────────────
 
 describe.skipIf(!dbReachable)('/login PENDING_SIGNUP response does not leak auth_token', () => {
@@ -445,9 +447,8 @@ describe.skipIf(!dbReachable)('/login PENDING_SIGNUP response does not leak auth
 });
 
 // ─────────────────────────────────────────────────────────────────
-// /confirm rate-limit by auth_token (task item 4).
-// Brute-force attempts against the same token from rotated IPs share a
-// budget.
+// /confirm rate-limit by auth_token. Brute-force attempts against the
+// same token from rotated IPs share a budget.
 // ─────────────────────────────────────────────────────────────────
 
 describe.skipIf(!dbReachable)('/confirm per-auth_token rate limit', () => {
@@ -675,5 +676,82 @@ describe.skipIf(!dbReachable)('/confirm with a malformed binding cookie degrades
     expect(res.body.error?.code).toBe('BAD_REQUEST');
     expect(res.body.error?.message).toMatch(/Invalid or expired auth token/);
     expect(res.body.data?.token).toBeFalsy();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// /link JWT-replay gate: the stuck-recovery binding bypass is reachable
+// only with a FRESH per-request Hive signature, never a replayable Bearer
+// JWT. A self-custody account can hold a session JWT, so without the
+// `hiveAuthMethod === 'signature'` gate a stolen JWT for a stuck
+// self-custody row would skip the session-binding check and broadcast the
+// accreditation link with no fresh proof — re-opening a JWT-replay path on a
+// critical on-chain action (ARCHITECTURE.md § 6.5 invariant #1). Note the
+// asymmetry with /confirm, whose Option-C recovery requires a real
+// posting_private key proof, not a JWT.
+// ─────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)('/link stuck-recovery bypass is unreachable via a Bearer JWT', () => {
+  const jwtUser = `bndjwt${SUFFIX}`;
+  const email = `binding_jwtreplay_${RUN_ID}@example.com`;
+
+  beforeAll(async () => {
+    await cleanupByUsername(jwtUser);
+    await cleanupByEmail(email);
+  });
+
+  afterAll(async () => {
+    await cleanupByUsername(jwtUser);
+    await cleanupByEmail(email);
+  });
+
+  it('a Bearer JWT for a stuck self-custody row falls through to the no-row 400 (never the bypass / accreditation broadcast)', async () => {
+    await cleanupByUsername(jwtUser);
+    await cleanupByEmail(email);
+    await clearRateLimitKeys(['signup-link', 'signup-link-token']);
+
+    // Seed the stuck self-custody state: a prior /link consumed verify_token
+    // (now NULL) but the accreditation broadcast failed, leaving custody='self'
+    // with the username set. This is exactly the row the stuck-recovery
+    // fallback is designed to recover — but ONLY for a fresh signature.
+    const pool = getAppPool()!;
+    await pool.query(
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field,
+                             username, custody, verify_token, expires_at)
+       VALUES ($1, NULL, 'JWT Replay', 'MIT', 'physics',
+               $2, 'self', NULL, NOW() + INTERVAL '24 hours')`,
+      [email, jwtUser],
+    );
+
+    // A stolen/replayed session JWT for the self-custody user. verifyHiveSignature
+    // accepts it and sets req.hiveAuthMethod = 'jwt'.
+    const bearer = jwt.sign({ sub: jwtUser, custody: 'self' }, config.sessionSecret, { expiresIn: '1h' });
+
+    const res = await request(app)
+      .post('/api/auth/link')
+      .set('Authorization', `Bearer ${bearer}`)
+      .send({ auth_token: `confirmed:${'1a'.repeat(32)}` });
+
+    // The JWT path does NOT satisfy the `hiveAuthMethod === 'signature'` gate,
+    // so the stuck-recovery username lookup is skipped and the request falls
+    // through to the no-row reject with the standard no-oracle message.
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('BAD_REQUEST');
+    expect(res.body.error?.message).toMatch(/Invalid or expired link request/);
+    expect(res.body.data?.token).toBeFalsy();
+
+    // The bypass / accreditation broadcast must never fire on the JWT path.
+    // (If the gate were reverted to an unconditional `if (!account)`, this JWT
+    // would reach the bypass and broadcast — flipping this assertion RED.)
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+
+    // The row stays stuck (verify_token NULL, custody unchanged): the JWT
+    // request must not have activated or re-broadcast anything.
+    const after = await pool.query<{ verify_token: string | null; custody: string }>(
+      'SELECT verify_token, custody FROM accounts WHERE username = $1',
+      [jwtUser],
+    );
+    expect(after.rows[0]?.verify_token ?? null).toBeNull();
+    expect(after.rows[0]?.custody).toBe('self');
   });
 });

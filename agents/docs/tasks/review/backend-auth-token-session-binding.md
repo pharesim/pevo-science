@@ -165,3 +165,42 @@ Carried forward plus one addition surfaced this round:
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commits only.
+
+---
+
+## Backend re-review signal (2026-05-27)
+
+Round-3 hold items 1-3 landed in the commit that moves this file to `review/`.
+Mapping to the hold block above:
+
+- **Item 1 (/link JWT-replay gate regression test):** added a new describe
+  block to `signup-verify-session-binding.test.ts` (`/link stuck-recovery
+  bypass is unreachable via a Bearer JWT`). Real `verifyHiveSignature`, no mock
+  fixture. Seeds a stuck self-custody row (`verify_token IS NULL`,
+  `custody='self'`), sends `/link` with a Bearer JWT (`hiveAuthMethod='jwt'`) +
+  a consumed auth_token, and asserts the no-row `400 "Invalid or expired link
+  request"`, `broadcastJsonMock` never called, and the row stays stuck.
+  Reverting the gate to an unconditional `if (!account)` flips it RED (the JWT
+  would reach the bypass and broadcast).
+- **Item 2 (comment-anchor rot):** removed the task-item-number citations from
+  `signup-verify-session-binding.test.ts` (the coverage docblock and the two
+  section-header comments), rewording to behavioral anchors. No new rot class
+  introduced (no slugs / line numbers / SHAs).
+- **Item 3 (dead sibling-invalidation sweep):** removed the
+  `UPDATE ... WHERE orcid = $1 AND id <> $2 AND verify_token IS NOT NULL` sweep
+  and its non-fatal `.catch` log from BOTH `/confirm` and `/link`. Left a short
+  comment at each site anchored on migration 007's partial-unique orcid index
+  (the invariant that makes a same-orcid sibling row impossible), not on the
+  task.
+
+Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean for
+this change (the one residual warning is pre-existing in
+`lib/author-supersession.ts`, not touched here); scoped `npx vitest run` of the
+signup-verify cluster (`signup-verify-session-binding`, `signup-verify`,
+`signup-verify-stuck-recovery`, `signup-verify-concurrent-activation`) green —
+4 files / 26 tests passed against real Postgres/Redis.
+
+The [TODO Architect] contract/ARCHITECTURE edits (auth.md cookie + login-409,
+the PENDING_SIGNUP `data:{email}` envelope exception note, § 6.x
+binding-as-auth-factor note, the stale "010"→"011" migration reference) remain
+architect-owned and untouched by backend.
