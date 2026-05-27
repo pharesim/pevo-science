@@ -70,17 +70,21 @@ Confirm an email address via a one-time token (from the link sent by `POST /api/
 
 ### DELETE /api/settings/email
 
-Delete the authenticated account's email and all associated data (notification preferences, custody audit log, the account row itself). For light accounts this removes login access — Keychain self-custody users lose only their email subscription.
+Delete the authenticated account's email and all associated data (notification preferences, pending recovery rows, and the account row itself; custody audit log rows are anonymized in place rather than deleted). This is the de-facto right-to-erasure path: it removes the entire account, not just the email column. For light accounts this removes login access; Keychain self-custody users lose only their email subscription. The on-chain Hive account is untouched, so a light user who still holds their BIP39 seed phrase can re-import it into Keychain and continue as pure self-custody.
 
-**Auth:** `verifyHiveSignature`.
+**Auth:** `verifyHiveSignature` (Bearer JWT or Keychain signature).
 
-**Body:** `{ "confirm": true }` (literal)
+**Re-auth:** account erasure is a critical action, so a fresh-auth proof is required on the JWT path. The Keychain (Hive-signature) path is fresh at the middleware and needs no body proof. On the JWT path the body must carry a `fresh_auth_proof` bound to the `delete_account` action (target `(delete_account, <username>, '')`), and the proof's `mechanism` must match a factor registered on the account (state A: `password`; state B: `password` or `orcid`; state C: `orcid`; state D: matches the preserved password/orcid columns). A proof minted for a different action (`change_email` or `set_password`) is rejected as a cross-action replay. Mint via `POST /api/custody/fresh-auth action='delete_account'` (password factor) or `POST /api/orcid/start mode='fresh_auth' action='delete_account'` then `POST /api/orcid/callback` (ORCID factor). See ARCHITECTURE.md § 6.4 row "Delete account data / right-to-erasure" for the per-state contract. Implemented at `settings.ts` DELETE /email (commit `6dd1f8b5`).
+
+**Body:** `{ "confirm": true, "fresh_auth_proof": "<single-use token>" }`. The JWT path requires `fresh_auth_proof`; the Keychain path requires only `confirm: true`.
 
 **Response `data`:** `{ "deleted": true }`
 
 **Errors:**
-- `VALIDATION_ERROR` — `confirm: true` not provided
-- `NOT_FOUND` — no account row for the authenticated user
+- `VALIDATION_ERROR` (400) when `confirm: true` is not provided.
+- `UNAUTHORIZED` (401) when no account row exists for the authenticated user. Returned instead of 404 for the same enumeration-oracle reason documented under POST /api/settings/set-password: a holder of a stale JWT must not be able to distinguish account-deleted from other authed-error states by status code.
+- `FRESH_AUTH_REQUIRED` (401) with `details.reason ∈ {"missing", "expired", "malformed", "wrong_mechanism"}`. Same taxonomy as POST /api/settings/email above. `missing` fires when the JWT path body carries no `fresh_auth_proof`; `wrong_mechanism` fires when the proof's mechanism is not registered on the account (for example, an ORCID-mechanism proof against a state-A password-only account).
+- `FRESH_AUTH_REQUIRED` (403) with `details.reason ∈ {"username_mismatch", "target_mismatch", "kind_mismatch"}`. Same taxonomy as POST /api/settings/email above; a `change_email` or `set_password` proof replayed here returns `target_mismatch`.
 
 ---
 

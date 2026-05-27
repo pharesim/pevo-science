@@ -44,13 +44,23 @@ Keychain/self-custody path is fresh at the middleware and needs no body proof.
 
 ## Dependency / coordination
 
-**[BLOCKED by Backend]** — depends on `backend-settings-email-delete-fresh-auth-gate`
-landing (it defines the delete-account action target value, the proof contract, and
-the `401 FRESH_AUTH_REQUIRED` / target-mismatch error shapes; see
-`agents/docs/api-contracts/settings.md` once updated). Backend moves this file to
-`tasks/pending/` once the gate is implemented and the contract doc is current. Do
-not start the wiring against an unimplemented contract — the action-target value and
-error shapes must be read from the landed backend code / contract doc, not guessed.
+**[BLOCKED by Backend] — RESOLVED 2026-05-27 (moved to `tasks/pending/`)** — depended on
+`backend-settings-email-delete-fresh-auth-gate` landing (it defines the delete-account
+action target value, the proof contract, and the `401 FRESH_AUTH_REQUIRED` /
+target-mismatch error shapes). Do not start the wiring against an unimplemented
+contract — the action-target value and error shapes must be read from the landed
+backend code / contract doc, not guessed.
+
+**Resolution (architect, 2026-05-27):** the backend gate landed (commit `6dd1f8b5`) and
+was archived after a clean round-2 re-review. `agents/docs/api-contracts/settings.md`
+DELETE /api/settings/email now documents the `delete_account` fresh-auth proof
+contract, the mint paths (`POST /api/custody/fresh-auth action='delete_account'` and
+`POST /api/orcid/start mode='fresh_auth' action='delete_account'` then
+`POST /api/orcid/callback`), and the `401`/`403 FRESH_AUTH_REQUIRED` error shapes;
+ARCHITECTURE.md § 6.4 row "Delete account data / right-to-erasure" carries the
+per-state proof matrix (A: password; B: password or ORCID; C: ORCID; D: preserved
+factors). Read the action-target value and error shapes from those now-current docs
+and the landed `settings.ts` DELETE /email handler.
 
 ## Cross-references
 
