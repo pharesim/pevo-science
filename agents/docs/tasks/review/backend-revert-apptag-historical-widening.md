@@ -37,3 +37,14 @@ Remove the widening, restoring `cidReferencedByAppTag` to its single-tag form, w
 - `backend/src/config.ts` (`appTagsHistorical` — remove)
 - `backend/src/lib/ipfs-shared.ts` (`cidReferencedByAppTag` — restore single-tag form)
 - `backend/tests/lib/ipfs-shared-cid-containment.test.ts` (remove or reduce to single-tag)
+
+## Backend completion note (2026-05-27)
+
+Applied surgically rather than `git revert 28de10f8`, because the widening commit also carried an **orthogonal** test-robustness fix that must NOT be reverted: it tightened the SRF call-site canary regex in `backend/tests/lib/ipfs-image-srf-guard.test.ts` from `jsonb_array_elements_text\(` to `jsonb_array_elements_text\([^)]` to exclude empty-paren prose mentions (e.g. the `imageSrfGuardExpr` docblock's `jsonb_array_elements_text()` phrasing). That prose still exists, so a blanket `git revert` would re-break the canary's call-site count. Kept the regex fix; reverted only the tag-scoping behavior.
+
+What landed:
+- Removed `config.appTagsHistorical` + its `APP_TAGS_HISTORICAL` env read from `config.ts`.
+- Restored `cidReferencedByAppTag` to single-tag form (one tags-scope containment, one `ipfs_cid` + one `supplementary_files` namespace containment, image-SRF guard) and dropped the 4th "current + historical" docblock invariant; kept the extraction (both `cidIsKnown` and `cidReferencedInHaf` still delegate) and the null-`rowCount` throw from the predecessor extraction-hold task.
+- Reduced `tests/lib/ipfs-shared-cid-containment.test.ts`: removed the two historical-tag assertions, kept the single-tag SQL-shape test, the matching-row test, and the null-`rowCount`-throw test; rewrote the header.
+
+No `.env.example` / `ARCHITECTURE.md` edits — the widening commit never wrote them (they were `[TODO Architect]` items now dropped). Verified no `appTagsHistorical` / `APP_TAGS_HISTORICAL` references remain in `backend/src`, `backend/tests`, or `.env.example`. IPFS suite green (containment, cleanup-dispatch, SRF-guard, real-HAF `routes/ipfs.test.ts` — 17 tests), `typecheck` + `lint` clean. Sequenced after the extraction-hold fixes (committed first) so the two did not collide on `ipfs-shared.ts`.
