@@ -80,6 +80,7 @@ async function loadWotThreshold(): Promise<number> {
     await client.query('SET LOCAL statement_timeout = 5000');
 
     const result = await client.query(
+      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- loadWotThreshold: single-row latest-`update_params` read further narrowed by `json ->> 'action' = 'update_params'`, bounded by a 5s LOCAL statement_timeout, and cached for the WoT-threshold TTL; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT json FROM ${T.customJson}
        WHERE custom_id = $1
          AND json::jsonb ->> 'action' = 'update_params'

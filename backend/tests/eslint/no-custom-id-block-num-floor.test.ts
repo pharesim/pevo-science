@@ -28,6 +28,12 @@
  *     the two predicates (e.g. `${at}` in place of `$1`) — exercises the
  *     NUL-placeholder quasi join so the regex still sees both predicate
  *     tokens across the substitution gap.
+ *   - Violation: UNALIASED `custom_id` (no `<alias>.` prefix) co-occurring
+ *     with `block_num >=` — pins the bare-`custom_id` arm of the broadened
+ *     `\b(?:\w+\.)?custom_id\b` matcher (the `loadWotThreshold` shape).
+ *   - Violation: `.join()`-assembled fragment — an all-literal array of
+ *     clause strings reassembled with `.join(' AND ')` folds to the toxic
+ *     combined value and fires (CallExpression visitor + foldArrayJoin).
  *   - Allowed: custom_id only — no `block_num` predicate at all.
  *   - Allowed: block_num only — no `custom_id` reference (different pathology).
  *   - Allowed: strict `block_num >` — only the inclusive `>=` floor is the
@@ -37,6 +43,10 @@
  *     match `block_num >=` because the NUL placeholder breaks the token
  *     (no false positive across substitution boundaries when the substitution
  *     itself is the column identifier).
+ *   - Allowed: substitution splits an IDENTIFIER mid-token —
+ *     `cj.custom_${suffix}id` stays silent under the NUL join; this case
+ *     mutation-kills the NUL separator (dropping it would concatenate the
+ *     quasis into `cj.custom_id` and false-positive).
  *   - Allowed: unrelated SQL with neither predicate.
  *
  * The rule is exported from `eslint.config.mjs` so RuleTester can drive it
@@ -115,6 +125,23 @@ ruleTester.run('pevo/no-custom-id-block-num-floor', noCustomIdBlockNumFloorRule,
       filename: abs('src/routes/papers.ts'),
       code: 'const x = obj.custom_id; const y = b.block_num >= 0;',
     },
+    // Allowed: substitution splits an IDENTIFIER mid-token. The cooked quasis
+    // are "...cj.custom_" and "id = $1 AND cj.block_num >= $2", with a
+    // substitution sitting between them. `flattenSqlString` joins quasis with
+    // a NUL placeholder, so the matcher sees "cj.custom_" + "\0" + "id = $1
+    // ..." — the `custom_id` token never forms across the gap, no match,
+    // even though a `block_num >=` floor IS present in the second quasi.
+    // This is the case that KILLS the NUL-drop mutation: replace the `\0`
+    // separator with `''` and the two quasis concatenate to `cj.custom_id =
+    // $1 ... block_num >= $2`, the rule false-positives, and this valid case
+    // fails red. The column-side substitution cases above do NOT catch that
+    // mutation — there the substitution sits between whole tokens (`cj.` + `
+    // >= $1`), so joining with `''` vs `\0` yields the same no-match either
+    // way and the mutant survives green.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: 'const suffix = "x"; const sql = `SELECT * FROM op_view cj WHERE cj.custom_${suffix}id = $1 AND cj.block_num >= $2`;',
+    },
   ],
   invalid: [
     // Violation: CTE-body shape — `WHERE cj.custom_id = $1 AND cj.block_num >= $2`
@@ -181,6 +208,28 @@ ruleTester.run('pevo/no-custom-id-block-num-floor', noCustomIdBlockNumFloorRule,
     {
       filename: abs('src/routes/papers.ts'),
       code: 'const sql = `SELECT * FROM op_view cj WHERE cj.custom_id = $1 AND cj.block_num>=$2`;',
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // Violation: UNALIASED `custom_id` co-occurring with `block_num >=`.
+    // `loadWotThreshold` queries `FROM ${T.customJson}` without an alias and
+    // writes `WHERE custom_id = $1 ... AND block_num >= $2` — the same
+    // BitmapAnd plan profile. Pins the bare-`custom_id` arm of
+    // `\b(?:\w+\.)?custom_id\b`; the `\b...\b` anchors keep this from
+    // matching inside a longer identifier like `my_custom_id`.
+    {
+      filename: abs('src/wot.ts'),
+      code: 'const sql = `SELECT json FROM op_view WHERE custom_id = $1 AND block_num >= $2`;',
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // Violation: `.join()`-assembled fragment. A toxic SQL fragment split
+    // across an array of clause strings and reassembled with `.join(' AND ')`
+    // must still fire. Exercises the CallExpression visitor arm plus the
+    // `foldArrayJoin` handler in `flattenSqlString`: an all-literal array +
+    // literal separator folds to its concatenated value, so the assembled
+    // `... cj.custom_id = $1 AND ... cj.block_num >= $2` matches.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const sql = ['SELECT * FROM op_view cj WHERE cj.custom_id = $1', 'cj.block_num >= $2'].join(' AND ');",
       errors: [{ messageId: 'forbidden' }],
     },
   ],
