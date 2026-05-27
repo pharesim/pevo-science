@@ -88,3 +88,17 @@ not land in the backend commit):
    `# Comma-separated prior APP_TAG values during a beta→prod tag flip; OR'd into the IPFS-cleanup reference check so old-tag pinned files are not unpinned. Empty in steady state.`
    then `APP_TAGS_HISTORICAL=`. The config reader already defaults to empty, so
    this is documentation only — no behavioral dependency on the entry.
+
+## Architect review (2026-05-27) — PARKED, premise rejected (review → blocked)
+
+`/ce-code-review` ran on the widening diff (the commit that added `config.appTagsHistorical` and widened `cidReferencedByAppTag` to OR over `[appTag, ...appTagsHistorical]`). The code is correct and inert by default (empty `APP_TAGS_HISTORICAL`), but a product decision surfaced during triage rejects this task's premise.
+
+**Old-tag content does not need to be served or retained by the production app after an `APP_TAG` flip.** An old-tag corpus may instead live on a separate instance kept on the old tag — but that is not yet decided. This undercuts the feature on both consumer paths: the gateway (`cidIsKnown`) need not serve old-tag CIDs, and the cleanup (`cidReferencedInHaf`) unpinning old-tag files post-flip is therefore acceptable, not data loss. The "must not unpin live pevotest-era files" premise this task was built on does not hold.
+
+**Decision: revert the widening, keep the extraction.** A separate pending task — `backend-revert-apptag-historical-widening` — directs the backend agent to remove `config.appTagsHistorical`, restore `cidReferencedByAppTag` to its single-tag form, and remove the widening-specific test, leaving the de-duplication extraction intact. The review findings against the widening are moot once it is reverted:
+
+- unvalidated `APP_TAGS_HISTORICAL` format (silent zero-match → unpin) — the field is removed;
+- the `[TODO Architect]` `.env.example` + `ARCHITECTURE.md` flip-day drain runbook — deliberately NOT written, because it would bake in the still-open serve-old-tags decision;
+- the SQL-shape test's thin behavioral coverage of the widening — the test is removed.
+
+[BLOCKED by product decision] Stays blocked pending the decision on whether and how old-tag content is served and retained post-flip (the separate-instance approach). If that decision later calls for a transition-window safety mechanism, re-scope from here rather than restoring the reverted widening verbatim.
