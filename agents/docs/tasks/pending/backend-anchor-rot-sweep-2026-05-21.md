@@ -100,3 +100,30 @@ When the fix lands, `git mv` this file back to `tasks/review/` — the move is t
 The single held item landed in `b580a3f4`: axis 5 of the `excludeSelfReviewWhere behavioral matrix` docblock now states the case-different co-author is **excluded** because the helper canonicalizes the broadcast hive via `LOWER(TRIM(...))` + the Hive-account charset regex before matching — mirroring the accurate inline comment in the test body. No slug / SHA / line-number / round-N anchor introduced in the replacement; the dismissed over-long-line item required no action.
 
 Verification: the acceptance grep (`papers.ts:[0-9]|reputation.ts:[0-9]|hafsql.ts:[0-9]|round-[0-9]|task acceptance criteria|see the task`) returns zero hits. The change is comment-only; `hafsql.test.ts` runs at parity (the HAF-gated matrix specs skip when HAF is unconfigured).
+
+---
+
+## Architect addition (2026-05-27) — Cluster C: `§ N.M` schema-section-number comment anchors
+
+Clusters A and B already landed (per the `b580a3f4` signal above); this addition does NOT reopen them. A third instance of the same rot class surfaced during the 2026-05-27 review of `backend-approve-authorship-signer-gate` (commit `595a8c6e`), folded here so the section-number-anchor class is swept uniformly rather than as a one-off in that commit. The task moves back to `tasks/pending/` for Cluster C only.
+
+**The rot class.** Code comments cite `hive-schemas.md` section numbers (`§ 2.10`, `§ 2.11`) as the anchor for a behavioral rule. Section numbers renumber on a schema-doc restructure exactly like line numbers do, so per root `CLAUDE.md` "Comment anchors" they are a rot-prone anchor; the durable anchor is the op's `custom_json` action string (`approve_authorship` / `revoke_authorship`), the CTE label, or the config field name (`hiveBridgeAccount`). The architect's call: `§ N.M` citations into `hive-schemas.md` ARE subject to the comment-anchor rule.
+
+**Scope — sweep the `§ 2.10`/`§ 2.11` (and any sibling `§ N.M`) citations in:**
+
+- `backend/src/hafsql.ts` — `authorshipClaimsCteBody` (the `approve_authorship` signer-gate comments + the function docblock).
+- `backend/src/reputation.ts` — `computeReputationBatch`'s `accepted_claims` signer-gate comments.
+- `backend/tests/routes/authorship-approve-signer-gate.test.ts` — the file-header docblock's `§ 2.10` references. NOTE this test file is also touched by `backend-approve-authorship-signer-gate`'s round-1 hold (a new cycle-surface canary); coordinate so the reanchor and the canary land without clobbering each other (whichever PR touches the file last reanchors).
+
+**Acceptance:**
+
+1. Reanchor each `§ N.M` citation on a stable symbol — the op action string, the CTE label (`approvals` / `accepted_claims`), or the config field name — while preserving the behavioral statement the comment makes (signer must be post-author or bridge; revoke is signer-permissive).
+2. Audit-own-replacement: the replacement must not introduce a task slug, SHA, line-number, round-N marker, or a new `§ N.M` anchor.
+3. Post-sweep grep `grep -nE "§ ?[0-9]+\.[0-9]+" backend/src/hafsql.ts backend/src/reputation.ts backend/tests/routes/authorship-approve-signer-gate.test.ts` returns zero hits (or only hits the architect explicitly elects to keep, recorded in the re-review signal).
+4. Comment-only change; touched files run at parity with HEAD.
+
+Out of scope for Cluster C: a project-wide `§ N.M` audit. Other files carrying schema-section citations are added to this convention by default on next touch, not swept en masse here.
+
+When Cluster C lands, `git mv` this file back to `tasks/review/` — the move is the re-review signal, scoped to the Cluster-C commit(s).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
