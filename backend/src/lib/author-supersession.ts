@@ -25,6 +25,8 @@
  * `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md`).
  */
 
+import type { PaperAuthor } from '../types/domain.js';
+
 /**
  * Hive consensus restricts account names to `[a-z0-9.-]`. The chain enforces
  * this at the op layer, so every `account` value in `active_accreditations`
@@ -262,6 +264,16 @@ export function resolveAuthorName(
  * supersedes the broadcaster claim and a Hive-/ORCID-only entry still
  * surfaces a display name. See that helper for the SQL parity contract.
  *
+ * Name-soundness drop: an entry that resolves no `name` — every non-object
+ * entry, and a fully-empty object entry with no broadcaster name / hive /
+ * orcid — names no one and is dropped here, so the returned array is
+ * `PaperAuthor`-sound (`name` is a required `string`). The guard lives at
+ * this single shared projection site, so every consumer
+ * (`helpers.ts:toPaperSummary` for the profile summary, and the `?version=N`
+ * + `metadata_restored` detail branches in `routes/papers.ts`) inherits the
+ * soundness without re-asserting it. Mirrors the cumulative-union path's
+ * name-based exit guard in `buildCumulativeAuthorsForChain`.
+ *
  * The enumerated projection is load-bearing: it pins the JS-side output
  * shape to the same key set the SQL side emits, so a broadcaster posting
  * `authors: [{hive: 'alice', orcid: '...', evil_field: 'payload'}]` cannot
@@ -280,29 +292,29 @@ export function applyAuthorSupersession(
   authors: unknown,
   orcidMap: Map<string, string | null>,
   nameMap: Map<string, string>,
-): Array<Record<string, unknown>> {
+): Array<Record<string, unknown> & PaperAuthor> {
   if (!Array.isArray(authors)) return [];
-  return authors.map((entry) => {
-    // Non-object entries (null, strings, numbers, arrays interpreted as
-    // non-object, etc.) cannot carry name/hive/orcid/affiliation fields,
-    // so the projection collapses to the supersession defaults only. This
-    // keeps the output shape's supersession-key set total: every returned
-    // entry has both `orcid_verified` and `orcid_discrepancy` set, matching
-    // the SQL-side `jsonb_build_object` projection which always emits both
-    // keys (with the equivalent null/false defaults via its CASE arms).
-    if (!entry || typeof entry !== 'object') {
-      return { orcid_verified: null, orcid_discrepancy: false };
-    }
-    const e = entry as Record<string, unknown>;
-    const hive = typeof e.hive === 'string' ? e.hive : null;
-    const chainOrcid = typeof e.orcid === 'string' ? e.orcid : null;
-    const supersession = computeSupersession(hive, chainOrcid, orcidMap);
-    return {
-      name: resolveAuthorName(hive, e.name, e.orcid, nameMap),
-      hive: e.hive,
-      orcid: e.orcid,
-      affiliation: e.affiliation,
-      ...supersession,
-    };
-  });
+  return authors
+    .map((entry): Record<string, unknown> => {
+      // Non-object entries (null, strings, numbers, arrays interpreted as
+      // non-object, etc.) cannot carry name/hive/orcid/affiliation fields,
+      // so the projection resolves no `name` and the name-soundness filter
+      // below drops them. The supersession defaults are still emitted so the
+      // pre-filter shape stays uniform with the object-entry branch.
+      if (!entry || typeof entry !== 'object') {
+        return { orcid_verified: null, orcid_discrepancy: false };
+      }
+      const e = entry as Record<string, unknown>;
+      const hive = typeof e.hive === 'string' ? e.hive : null;
+      const chainOrcid = typeof e.orcid === 'string' ? e.orcid : null;
+      const supersession = computeSupersession(hive, chainOrcid, orcidMap);
+      return {
+        name: resolveAuthorName(hive, e.name, e.orcid, nameMap),
+        hive: e.hive,
+        orcid: e.orcid,
+        affiliation: e.affiliation,
+        ...supersession,
+      };
+    })
+    .filter((a): a is Record<string, unknown> & PaperAuthor => typeof a.name === 'string');
 }

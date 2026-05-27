@@ -1125,11 +1125,12 @@ describe('authorsWithSupersessionSelect SRF cascade-fail defense (real Postgres,
       expect(result.rows[0].authors_with_supersession, `non-array shape: ${shapeLabel}`).toEqual([]);
     }
 
-    // (2) Array-of-non-objects elements — must NOT raise, and bare-string
-    // / null / object-without-'hive' elements project with null name/hive/
-    // orcid (the ->> field accessors yield NULL on non-object or
-    // missing-key elements). The cascade-fail guard is at the SRF arg
-    // position; the element-shape handling is downstream and benign.
+    // (2) Array-of-non-objects elements — must NOT raise. The bare-string
+    // 'alice' and JSON null elements resolve no name: their name-COALESCE arms
+    // (researcher_name / ->>'name' / ->>'hive' / ->>'orcid') are all NULL on a
+    // non-object element, so the projection's degenerate-drop WHERE removes
+    // them. Only the { name: 'nohive' } object survives. The load-bearing
+    // assertion is that the SRF did not raise on the malformed array.
     const arrayOfNonObjects = JSON.stringify({
       pevotest: { type: 'paper', authors: ['alice', null, { name: 'nohive' }] },
     });
@@ -1141,13 +1142,14 @@ describe('authorsWithSupersessionSelect SRF cascade-fail defense (real Postgres,
       `;
       const result = await pool.query(sql, ['pevotest', arrayOfNonObjects]);
       const projected = result.rows[0].authors_with_supersession as Array<Record<string, unknown>>;
-      // Three elements enumerated (the SRF did not raise); each carries a
-      // null hive (no JOIN match), orcid_discrepancy=false.
-      expect(projected).toHaveLength(3);
-      for (const author of projected) {
-        expect(author.orcid_discrepancy).toBe(false);
-        expect(author.orcid_verified).toBeNull();
-      }
+      // The bare-string and null elements name no one and are dropped; only
+      // { name: 'nohive' } survives. It carries a null hive (no JOIN match)
+      // and orcid_discrepancy=false / orcid_verified=null.
+      expect(projected).toHaveLength(1);
+      expect(projected[0].name).toBe('nohive');
+      expect(projected[0].hive).toBeNull();
+      expect(projected[0].orcid_discrepancy).toBe(false);
+      expect(projected[0].orcid_verified).toBeNull();
     }
 
     // (3) Well-formed control — a single object author with a hive key
@@ -1173,6 +1175,32 @@ describe('authorsWithSupersessionSelect SRF cascade-fail defense (real Postgres,
       expect(projected[0].orcid).toBe('0000-0001-1234-5678');
       expect(projected[0].orcid_verified).toBeNull();
       expect(projected[0].orcid_discrepancy).toBe(false);
+    }
+
+    // (4) Positive degenerate-drop control — a well-named author beside a
+    // degenerate { affiliation: 'x' } entry that resolves no name (every
+    // name-COALESCE arm NULL). The degenerate entry is dropped from the
+    // projected rows; only the named author survives. This is the SQL surface
+    // of the name-soundness drop (the JS `applyAuthorSupersession` /
+    // cumulative-union paths drop the same entry), so single-link SQL no
+    // longer emits a `{ name: null }` author.
+    const withDegenerate = JSON.stringify({
+      pevotest: {
+        type: 'paper',
+        authors: [{ name: 'Keeper', hive: 'keeper' }, { affiliation: 'x' }],
+      },
+    });
+    {
+      const sql = `
+        ${withEmptyAccred}, paper(json_metadata) AS (SELECT $2::jsonb)
+        SELECT (${projection}) AS authors_with_supersession
+        FROM paper c
+      `;
+      const result = await pool.query(sql, ['pevotest', withDegenerate]);
+      const projected = result.rows[0].authors_with_supersession as Array<Record<string, unknown>>;
+      expect(projected).toHaveLength(1);
+      expect(projected[0].name).toBe('Keeper');
+      expect(projected[0].hive).toBe('keeper');
     }
   });
 });

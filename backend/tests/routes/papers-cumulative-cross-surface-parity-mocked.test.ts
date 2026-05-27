@@ -531,9 +531,23 @@ describe('name-supersession whitespace-only attested name — SQL/JS exact-empty
     // path (composite key null → skipped) and `toPaperSummary`'s post-
     // supersession name guard, keeping `PaperAuthor.name` a sound required
     // `string` on every surface.
+    //
+    // The behavioral drop is proven by the real-DB degenerate-drop case in
+    // `hafsql.test.ts`; this fragment pin only guards that the drop stays
+    // anchored on the same four name-COALESCE arms. Asserted arm-by-arm (and
+    // `IS NOT NULL` for the predicate) rather than via one full-WHERE regex —
+    // the latter couples to exact arm order / whitespace and is brittle to a
+    // benign SQL reflow. The no-BTRIM-on-`researcher_name` load-bearing guard
+    // lives in the sibling attested-arm test above.
     const fragment = authorsWithSupersessionSelect('c', '$3');
-    expect(fragment).toMatch(
-      /WHERE\s+COALESCE\(\s*NULLIF\(aa\.researcher_name, ''\),\s*NULLIF\(a\.elem ->> 'name', ''\),\s*NULLIF\(a\.elem ->> 'hive', ''\),\s*NULLIF\(a\.elem ->> 'orcid', ''\)\s*\) IS NOT NULL/,
-    );
+    for (const arm of [
+      "NULLIF(aa.researcher_name, '')",
+      "NULLIF(a.elem ->> 'name', '')",
+      "NULLIF(a.elem ->> 'hive', '')",
+      "NULLIF(a.elem ->> 'orcid', '')",
+    ]) {
+      expect(fragment).toContain(arm);
+    }
+    expect(fragment).toContain('IS NOT NULL');
   });
 });

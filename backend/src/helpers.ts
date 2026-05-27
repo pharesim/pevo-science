@@ -325,21 +325,20 @@ export function toPaperSummary(post: {
 }, meta: Record<string, unknown>, orcidMap: Map<string, string | null>, nameMap: Map<string, string>): PaperSummary {
   const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
   const rawAuthors = Array.isArray(pevo.authors) ? (pevo.authors as Array<Record<string, unknown>>) : [];
-  const supersededAuthors = applyAuthorSupersession(rawAuthors, orcidMap, nameMap);
-  const summaryAuthors: PaperAuthor[] = supersededAuthors
-    // Strip affiliation to honor the PaperSummary shape. `applyAuthorSupersession`
-    // emits the enumerated key set (name, hive, orcid, affiliation,
-    // orcid_verified, orcid_discrepancy) so PaperDetail consumers reuse it
-    // unchanged; here we drop the one PaperSummary-prohibited key.
-    .map(({ affiliation: _affiliation, ...rest }) => rest)
-    // Sound name-based exit guard (not an `as unknown as` cast), mirroring the
-    // cumulative-union path. `resolveAuthorName` makes `name` total for every
-    // realistic entry (a Hive-keyed entry resolves at least its handle, a
-    // Hive-less entry its broadcaster name / orcid). Only a fully-empty entry
-    // (no name, hive, or orcid) yields no `name`; such an entry names no one
-    // and is correctly dropped here, keeping `PaperAuthor.name` a sound
-    // required `string`.
-    .filter((a): a is Record<string, unknown> & PaperAuthor => typeof a.name === 'string');
+  // `applyAuthorSupersession` already drops any entry that resolves no `name`
+  // (its single shared name-soundness guard), so every element here is a sound
+  // `PaperAuthor` — no re-guard at this consumer. Strip affiliation to honor
+  // the PaperSummary runtime shape (the contract omits it): copy + delete the
+  // one PaperSummary-prohibited key, which preserves the sound `name: string`
+  // type that a `{ affiliation, ...rest }` destructure would collapse into the
+  // index signature.
+  const summaryAuthors: PaperAuthor[] = applyAuthorSupersession(rawAuthors, orcidMap, nameMap).map(
+    (a) => {
+      const copy = { ...a };
+      delete copy.affiliation;
+      return copy;
+    },
+  );
   return {
     author: post.author,
     permlink: post.permlink,
