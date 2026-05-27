@@ -1,7 +1,7 @@
 ---
 module: backend/tests
 date: 2026-05-17
-last_updated: 2026-05-26
+last_updated: 2026-05-28
 problem_type: test_failure
 category: test-failures
 component: testing_framework
@@ -114,7 +114,7 @@ This is not preemptive test hardening — the assertions in question are genuine
 
 **When a uniquely identifying token genuinely does not exist, document the brittleness rather than leave it silent.** Add a `BRITTLENESS WARNING` comment on the discriminator naming (a) the competing shape that could collide, (b) why the two are disjoint today, (c) the specific future change that would break it, and (d) the durable narrowing — a structural property absent from the competing shape, not a more-precise version of the fragile token. PEvO's `isForwardWalkContinuationProbe` in `backend/tests/routes/canonical-root-walker.test.ts` carries exactly this shape: it keys on `c.author = ANY($4::text[])`, notes the `/enrichment` query binds `c.author` to `$5` and `v.voter` to `$4` (disjoint today by bind-numbering coincidence), names bind-renumbering as the break, and gives the durable narrowing (also require the probe's `JOIN comment_ops` / `co.block_num` selection, which the enrichment query lacks). Keep such discriminators mutually exclusive with their siblings (`isInitialBackwardProbe`, `isHeadAuthorsLookup`) when any regex changes. Choosing a unique token, or warning when you cannot, is a near-zero-cost correctness decision made while writing the double (the script/query bodies sit in the same file) — it is writing the double correctly, not preemptive hardening against an impossible state.
 
-**Negative-outcome assertions are MOST susceptible to vacuity-by-upstream-bail.** Assertions of the shape `expect(...).toBeUndefined()`, `expect(spy).not.toHaveBeenCalled()`, `expect(arr).toHaveLength(0)` are satisfied by ANY upstream short-circuit that prevents the assertion target from being produced. Positive-outcome assertions are self-protecting: a bail makes them fail loudly. When writing a negative-outcome canary, pair it with at least one positive-control canary on the same fixture so a bail cannot satisfy both simultaneously.
+**Negative-outcome assertions are MOST susceptible to vacuity-by-upstream-bail.** Assertions of the shape `expect(...).toBeUndefined()`, `expect(spy).not.toHaveBeenCalled()`, `expect(arr).toHaveLength(0)` are satisfied by ANY upstream short-circuit that prevents the assertion target from being produced. Positive-outcome assertions are self-protecting: a bail makes them fail loudly. When writing a negative-outcome canary, pair it with at least one positive-control canary on the same fixture so a bail cannot satisfy both simultaneously. (Boundary for real-HAF tests: when the data path **throws** on failure rather than swallowing to `[]`, and the under-test corpus's correct result is legitimately empty, the positive control may live in a SIBLING spec rather than on the same fixture — a `2xx` status then proves real execution closed the swallowed-error bail, and the sibling canary proves the query path reaches non-empty. See the "Absence assertion vacuous on an empty corpus" boundary in `agents/docs/solutions/conventions/mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md`.)
 
 ## Files of record
 
