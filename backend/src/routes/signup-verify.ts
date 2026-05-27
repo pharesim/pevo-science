@@ -92,8 +92,11 @@ async function verifyPostingKeyAuthorized(username: string, postingPrivate: stri
  * the first request has already cleared verify_token, so the in-transaction
  * lookup returns 0 rows and the second request falls through to the normal
  * "invalid or expired" reject — exactly the already-consumed path. The lock
- * is keyed per-token, so it only contends on the precise double-fire race
- * (concurrent requests for the same token); distinct tokens never serialize.
+ * is keyed per-token, so it contends only on the precise double-fire race
+ * (concurrent requests for the same token); distinct tokens almost never
+ * serialize. `hashtext()` returns int4, so a rare birthday collision can
+ * briefly serialize an unrelated token pair — harmless, because each request
+ * re-reads its own row by its own verify_token and proceeds independently.
  *
  * Mirrors the `pg_advisory_xact_lock(hashtext(...))` pattern in
  * `tryEnqueueBridgeImport` (bridge-queue.ts). The lock releases automatically
@@ -424,6 +427,15 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
     try {
       await client.query('BEGIN');
       inTransaction = true;
+      // Bound the advisory-lock wait. The app pool has no statement_timeout, so
+      // a second same-token request blocked on pg_advisory_xact_lock would
+      // otherwise pin its pool connection for the full holder duration (the
+      // holder can be inside the ~30s createClaimedAccount broadcast). A
+      // lock_timeout makes a stuck waiter fail (pg 55P03 → outer-catch 500) and
+      // release its connection. The 45s ceiling sits just above the expected
+      // worst-case holder, so it rarely fires in normal operation. Interim
+      // bound — the activation redesign may rework the lock-hold duration.
+      await client.query("SET LOCAL lock_timeout = '45000'");
       await lockSignupActivation(client, auth_token);
 
       // Look up account by auth token (must be in confirmed state). Re-read
@@ -523,7 +535,13 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
           return sendError(res, 409, 'DUPLICATE', 'Username is already taken on Hive');
         }
 
-        // Create the Hive account
+        // Create the Hive account. This runs INSIDE the held transaction (and
+        // its pinned pool connection) on purpose: the advisory lock must span
+        // this single-use chain broadcast so a concurrent same-token request
+        // cannot double-fire it. The cost is one pool connection held for the
+        // ~30s broadcast (a known pool-pressure vector tracked by the activation
+        // redesign). Do NOT move this broadcast outside the lock as an
+        // "optimization" — that reopens the double-fire race.
         createResult = await createClaimedAccount(
           normalizedUsername,
           owner_public,
@@ -787,6 +805,11 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
     try {
       await client.query('BEGIN');
       inTransaction = true;
+      // Bound the advisory-lock wait so a blocked waiter cannot pin its pool
+      // connection for the holder's full duration. See the /confirm equivalent
+      // for the full rationale; a /link waiter can serialize behind a /confirm
+      // holder because both key the lock on the same auth_token namespace.
+      await client.query("SET LOCAL lock_timeout = '45000'");
       await lockSignupActivation(client, auth_token);
 
       // Look up account by auth token (must be in confirmed state). Re-read

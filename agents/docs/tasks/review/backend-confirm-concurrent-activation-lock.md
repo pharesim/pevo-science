@@ -60,3 +60,62 @@ The advisory scaffold/`SignupRow`/`LinkRow` duplication + the load-bearing `inTr
 ### Re-review signal
 
 When items 1-6 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commits only.
+
+---
+
+## Backend re-review signal (2026-05-27)
+
+Round-2 hold items 1-6 landed in the commit that moves this file to `review/`.
+Mapping to the hold block above:
+
+- **Item 1 (BEGIN-failure-only log-shape test):** repointed the synthetic-failure
+  injection in BOTH the `/confirm` and `/link` `*.failed log shape` tests
+  (`signup-verify.test.ts`) to fail the SECOND client query — the first statement
+  inside the open transaction, after `BEGIN` succeeds and `inTransaction` is set
+  — so the inner-catch `if (inTransaction)` ROLLBACK branch is now genuinely
+  exercised (the ROLLBACK query itself passes through). The comment is rewritten
+  to describe that path accurately. **Deviation from the literal hold text,
+  flagged for your call:** the item asked to (must) scope the comment to the
+  BEGIN-failure path and (optionally) add ROLLBACK coverage. I instead delivered
+  the optional ROLLBACK coverage by repurposing the existing test (so the
+  comment honestly describes ROLLBACK), rather than keeping a BEGIN-failure-only
+  test plus a second ~45-line near-duplicate per route. Net: the load-bearing
+  ROLLBACK branch is covered and the comment matches reality, at zero added test
+  count. If you'd rather keep an explicit BEGIN-failure-scoped test as well, hold
+  and I'll add it.
+- **Item 2 (/link broadcast call-count):** the `/link` concurrent test now
+  asserts `broadcastJsonMock.mock.calls.length` is `>= 1` (the winner always
+  broadcasts) and `<= okCount` (at most one broadcast per 200 response). This
+  catches a fan-out-beyond-one-per-activation regression while tolerating the
+  legitimate best-effort stuck-resume re-broadcast.
+- **Item 3 (lock_timeout):** `SET LOCAL lock_timeout = '45000'` added immediately
+  after `BEGIN`, before `pg_advisory_xact_lock`, in both `/confirm` and `/link`.
+  A stuck waiter now fails (pg `55P03`) and frees its pool connection instead of
+  blocking for the full holder duration. Commented as an interim bound the
+  activation redesign may supersede.
+- **Item 4 (docblock collision overclaim):** `lockSignupActivation` docblock
+  corrected — "distinct tokens almost never serialize; `hashtext()` returns int4
+  so a rare birthday collision can briefly serialize an unrelated pair, harmless
+  because each request re-reads its own row by its own verify_token."
+- **Item 5 (HAF-probe-deduped overstated):** the `/link` concurrent-test comment
+  reworded to "best-effort deduped, not single-fire; the HAF probe can lag the
+  winner's just-landed custom_json so a stuck-resume loser MAY re-broadcast; the
+  read-time `ROW_NUMBER() OVER (ORDER BY block_num DESC)` dedup and the
+  `seedAccreditationBonus` SET-NX are the backstops."
+- **Item 6 (connection-hold comment):** added a comment at the
+  `createClaimedAccount` call site noting the connection is intentionally held
+  across the broadcast inside the lock (the double-fire defense), with a
+  do-not-move-outside-the-lock warning, so it is not "optimized" out before the
+  activation redesign lands.
+
+Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean for
+this change (the one residual warning is pre-existing in
+`lib/author-supersession.ts`, untouched); scoped `npx vitest run` of the
+signup-verify cluster (`signup-verify-concurrent-activation`, `signup-verify`,
+`signup-verify-postbroadcast-severity`, `signup-verify-stuck-recovery`,
+`signup-verify-session-binding`) green — 5 files / 28 tests passed against real
+Postgres/Redis.
+
+The two larger concerns (recovery gap + pool saturation) remain filed in
+`tasks/pending/backend-signup-activation-failure-recovery-and-pool-hold.md` and
+are NOT addressed here, per the hold block's split.

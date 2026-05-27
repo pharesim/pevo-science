@@ -292,12 +292,28 @@ describe.skipIf(!dbReachable)('/link serializes concurrent same-token activation
     // Neither request 500s. At least one succeeds; the loser either rejects
     // (400) or recovers idempotently via the stuck-resume path (200, since it
     // re-finds the winner's activated row through a fresh signature). The lock
-    // guarantees the activation UPDATE ran exactly once regardless — verified
-    // below — and the stuck-resume re-broadcast is HAF-probe-deduped.
+    // guarantees the activation UPDATE ran exactly once regardless (verified
+    // below). The accreditation broadcast is best-effort deduped, not
+    // single-fire: the HAF probe can lag the winner's just-landed custom_json,
+    // so a stuck-resume loser MAY re-broadcast. The read-time
+    // ROW_NUMBER() OVER (ORDER BY block_num DESC) dedup and the
+    // seedAccreditationBonus Redis SET-NX are the backstops, so a duplicate is
+    // low-harm.
     expect([200, 400, 409]).toContain(a.status);
     expect([200, 400, 409]).toContain(b.status);
     const okCount = [a, b].filter((r) => r.status === 200).length;
     expect(okCount, `expected at least one success, got ${[a.status, b.status]}`).toBeGreaterThanOrEqual(1);
+
+    // The accreditation broadcast fires at most once per successful (200)
+    // response: the winner always broadcasts once; a stuck-resume loser
+    // re-broadcasts only when the HAF probe has not yet observed the winner's
+    // custom_json. The <= okCount bound catches a regression that fans the
+    // broadcast out beyond one-per-activation while tolerating the legitimate
+    // best-effort re-broadcast. (400/409 losers never reach the broadcast, and
+    // a 502 would already have failed the status assertions above.)
+    const broadcastCalls = broadcastJsonMock.mock.calls.length;
+    expect(broadcastCalls, `expected >= 1 broadcast (the winner), got ${broadcastCalls}`).toBeGreaterThanOrEqual(1);
+    expect(broadcastCalls, `expected <= one broadcast per 200 (okCount=${okCount}), got ${broadcastCalls}`).toBeLessThanOrEqual(okCount);
 
     // Exactly one activated row: the fresh-activation INSERT->UPDATE ran once
     // (no second `custody='self'` row was created, no duplicate username).
