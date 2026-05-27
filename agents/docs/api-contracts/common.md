@@ -57,6 +57,8 @@ Error:
 }
 ```
 
+**Error envelopes carry no top-level `data` key, with one sanctioned exception.** The standard error shape is `{ status: "error", error: { code, message, details? } }`. The sole exception is the login `409 PENDING_SIGNUP` response (`POST /api/auth/login`), which carries a top-level `data: { email }` alongside the `error` object so the SPA can route the user to `POST /api/auth/resume-signup` without re-prompting for the email. It deliberately omits the `auth_token` (returning it leaked the row-lookup credential via referer and proxy logs). See the `POST /api/auth/login` Errors in `auth.md`. No other error response includes `data`; consumers must not depend on `data` being present on any other error code.
+
 ### Standard Error Codes
 
 | HTTP | Code | Description |
