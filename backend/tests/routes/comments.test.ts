@@ -116,6 +116,12 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
   // This canary pins a real on-chain orphan: `pevo.science` replied to a
   // comment authored by `joann2`, who is not accredited. The reply must
   // be absent from the response (parent is gone; reply has no context).
+  //
+  // Positive-presence floor: `fetchCommentsFromHaf` swallows a CTE/HAF
+  // error and returns `[]`, on which `.not.toContain(orphan)` passes
+  // vacuously and the mutation-kill (revert the descent EXISTS -> orphan
+  // reappears) never fires. Assert this paper's listing is non-empty so
+  // the absence assertion only counts against a live, populated response.
   it('hides accredited replies whose parent author is non-accredited', { timeout: 60_000, retry: 5 }, async () => {
     const PAPER_AUTHOR = 'pevo.science';
     const PAPER_PERMLINK = 'pevo-original-whitepaper-2016-2026-revision-mnczwwdm';
@@ -123,6 +129,10 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
     const res = await request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=200`);
     expect(res.status).toBe(200);
     const permlinks = res.body.data.map((c: { permlink: string }) => c.permlink);
+    expect(
+      res.body.data.length,
+      'paper listing must be non-empty; a silent-empty `[]` from a swallowed CTE/HAF error would pass the absence assertion vacuously',
+    ).toBeGreaterThan(0);
     expect(
       permlinks,
       'accredited reply with non-accredited parent must be hidden; if present, the recursive CTE descent is not gated on parent accreditation',

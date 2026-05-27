@@ -100,14 +100,17 @@ async function fetchCommentsFromHaf(
     //
     // Descent gate: the recursive arm additionally requires the parent
     // (`ct.author`) to be in `active_accreditations`. The base arm matches
-    // `parent_author = paperAuthor`, and paper authorship requires
-    // accreditation (PEvO invariant), so the base arm is structurally safe
-    // without an explicit EXISTS check. Without the recursive-arm gate, an
-    // accredited reply whose parent was authored by a non-accredited Hive
-    // account (e.g. posted via peakd/ecency by an unaccredited user) would
-    // survive the outer `accreditedJoin` (which only checks `dc.author`) and
-    // render as an orphan against missing context. The outer
-    // `accreditedJoin` stays as the author-side gate.
+    // `parent_author = paperAuthor`, i.e. the parent IS the paper page
+    // itself — the rendered context — so a base-arm row is never an orphan
+    // and needs no EXISTS check (the paper author need not be accredited:
+    // `paperExistsInHaf`'s native-paper arm is type-only and bridge papers
+    // are authored by `config.hiveBridgeAccount`; orphan-safety here rests
+    // on the parent being the paper, not on parent accreditation). Without
+    // the recursive-arm gate, an accredited reply whose parent was authored
+    // by a non-accredited Hive account (e.g. posted via peakd/ecency by an
+    // unaccredited user) would survive the outer `accreditedJoin` (which
+    // only checks `dc.author`) and render as an orphan against missing
+    // context. The outer `accreditedJoin` stays as the author-side gate.
     const query = `
       WITH RECURSIVE ${accredCte.sql},
       comment_tree AS (
