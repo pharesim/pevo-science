@@ -60,3 +60,19 @@ For this task, each site was suppressed with an `eslint-disable-next-line pevo/n
 - `backend/src/routes/profile.ts` — profile-page accreditation read (per-account).
 
 The fix shape per site is the same as `285e7c14` / `e31c984f`: drop the `cj.block_num >= $genesis` predicate (the additional JSONB filter is already selective enough; the genesis floor is by-construction inert because pre-genesis PEvO-namespace custom_jsons cannot exist), then remove the disable directive. Each site needs its own behavioral test pass against a real HAF to confirm the row count and ordering are unchanged.
+
+## Architect review (2026-05-27) — HELD PENDING FIXES (round 1)
+
+`/ce-code-review` on commit `058fad47` (correctness, testing, maintainability, project-standards). The rule is well-built and the 15 disable rationales are clean (anchored on helper/route symbols; the "pending audit per the BitmapAnd-floor sweep follow-up" phrasing is acceptable — no slug). The RuleTester suite passes and `npx eslint src/` is clean with all 15 suppressions live. Three items hold:
+
+1. **(P2, conf 100 — correctness) `wot.ts` `loadWotThreshold` is an unflagged 16th BitmapAnd-toxic site.** It runs `FROM ${T.customJson}` with `WHERE custom_id = $1 ... AND block_num >= $2` — both columns UNALIASED. `CUSTOM_ID_RE = /\b\w+\.custom_id\b/` requires an `<alias>.` prefix, so the rule never fires there (`npx eslint src/wot.ts` → 0 errors). This is both a rule false-negative class (the docstring's "every PEvO callsite uses an alias" assumption is already false) AND a real unguarded toxic site with the same plan profile as several of the 15 suppressed sites — and it fails this task's acceptance #6 ("the rule fires on the pre-existing toxic sites; any divergence from the grep audit is a rule-shape bug"). Fix: broaden `CUSTOM_ID_RE` to also match bare/unaliased `custom_id` (at minimum when co-occurring with the `block_num >=` floor — the rule already requires both predicates present), then handle `wot.ts` (alias the query + add the disable with rationale, OR drop its `block_num >=` floor). Re-run the grep-vs-lint audit and confirm no further unflagged sites.
+
+2. **(P3, conf 75 — testing) The NUL-placeholder quasi-join is not mutation-killed.** The two substitution-boundary valid cases split on the COLUMN side (`cj.${col}` / `cj.${otherCol}`), where joining quasis with `\0` vs `''` produces the identical no-match — so a mutation dropping the NUL separator survives green. Add a valid case where a substitution splits an IDENTIFIER mid-token (e.g. `cj.custom_${suffix}` with `suffix='id'`): with the NUL join it stays silent; without it the quasis concatenate to `cj.custom_id` and false-positive. That case kills the NUL-drop mutation.
+
+3. **(P2, conf 75 — maintainability) `flattenSqlString` duplicates ~25 lines of the bridge rule's `resolveStringValue`** (TS-wrapper unwrap + Literal + BinaryExpression recursion), diverging only at TemplateLiteral and CallExpression handling. Acceptable at two rules, but a third would copy it again. Extract a shared string-flattening walker both rules parameterize. If you judge the extraction churn not worth it now, say so in the re-review signal and this item can be dismissed — but see the residual below, which may make the shared walker worth it anyway.
+
+Residual to weigh while in item 1: the rule's visitor set omits `CallExpression` (the bridge rule includes it), so a `.join()`-assembled toxic SQL fragment would evade the rule. Not required, but consider adding it alongside the matcher broadening (and it interacts with item 3's shared-walker decision).
+
+When items land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-2 review scopes to the fix commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
