@@ -216,9 +216,13 @@ export function computeSupersession(
  * NULLIF(a.elem ->> 'hive', ''), NULLIF(a.elem ->> 'orcid', ''))` — the
  * LEFT JOIN to `active_accreditations` makes arm 1 active-only, matching
  * `nameMap`'s currently-accredited-only membership. Both sides treat only an
- * exactly-empty string as absent (no whitespace trimming) so the two
- * surfaces agree on the common case; the same extended-whitespace residual
- * noted on `computeSupersession` applies but is benign for names.
+ * exactly-empty string as absent (no whitespace trimming): the SQL arm uses
+ * `NULLIF(aa.researcher_name, '')` and `getAccreditedNamesByAccount`'s WHERE
+ * uses `NULLIF(researcher_name, '')` (charset-free, no BTRIM), so a
+ * whitespace-only attested name is carried — and superseded — identically on
+ * every surface rather than dropped on one. No discrepancy field, no audit,
+ * so even a whitespace-only attested name resolving as the display name is a
+ * benign cosmetic outcome.
  *
  * @param hive - the entry's chain `hive` value; canonicalized internally via
  *   `normalizeHiveAccount` for the `nameMap` lookup. The raw value (when a

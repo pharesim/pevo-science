@@ -934,7 +934,34 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
  * broadcaster omitted it (a Hive-only or ORCID-only credit still surfaces a
  * display name). Mirrors `resolveAuthorName` in `author-supersession.ts`
  * exactly; both treat only an exactly-empty string as absent (the SQL/JS
- * parity contract).
+ * parity contract). The attested-name source on the JS side
+ * (`getAccreditedNamesByAccount`) filters with the same charset-free
+ * `NULLIF(researcher_name, '')` test this arm uses — no BTRIM on either side
+ * — so a whitespace-only attested name is superseded identically across the
+ * SQL and JS surfaces rather than dropped on one. (Contrast the chain `orcid`
+ * arms below, which DO BTRIM-strip the broadcaster-controlled chain value; the
+ * attested `researcher_name` is authority-gated and stored raw, so no
+ * stripping applies to it.)
+ *
+ * **Degenerate-entry drop (name-total parity).** The subselect's
+ * `WHERE COALESCE(NULLIF(aa.researcher_name,''), NULLIF(a.elem ->> 'name',''),
+ * NULLIF(a.elem ->> 'hive',''), NULLIF(a.elem ->> 'orcid','')) IS NOT NULL`
+ * drops any author entry whose projected `name` would resolve to NULL — a
+ * fully-empty `{}` or bare-`{affiliation}` chain entry that names no one,
+ * reachable only via malformed broadcaster input. Without it the SQL surface
+ * would emit a `{name: null, ...}` object, violating the mandatory-`string`
+ * `name` contract on `PaperAuthor`. The drop matches the JS side, where
+ * `buildCumulativeAuthorsForChain` skips a no-name/no-orcid/no-normalizable-hive
+ * entry (composite key null) and `toPaperSummary`'s post-supersession filter
+ * drops an entry whose `resolveAuthorName` returned `undefined`. One residual
+ * cosmetic difference remains, malformed-input-only: a `{hive: '  '}`
+ * whitespace-only-hive entry resolves `name` to the raw `'  '` here (and on
+ * the `applyAuthorSupersession` single-link JS surfaces this projection's
+ * counterpart feeds), whereas the multi-link `buildCumulativeAuthorsForChain`
+ * drops it (its hive fails normalization and it carries no name/orcid). This
+ * single-link-keeps / multi-link-drops split on whitespace-hive is accepted as
+ * malformed-input-only; the load-bearing parity (no `name: null` emitted on any
+ * surface) holds.
  *
  * The LEFT JOIN canonicalizes the chain `authors[i].hive` via
  * `LOWER(TRIM(...))` AND a Hive-account regex `~ '^[a-z0-9.-]+$'` before
@@ -1060,6 +1087,12 @@ export function authorsWithSupersessionSelect(
     LEFT JOIN active_accreditations aa
       ON LOWER(TRIM(a.elem ->> 'hive')) ~ '^[a-z0-9.-]+$'
      AND aa.account = LOWER(TRIM(a.elem ->> 'hive'))
+    WHERE COALESCE(
+            NULLIF(aa.researcher_name, ''),
+            NULLIF(a.elem ->> 'name', ''),
+            NULLIF(a.elem ->> 'hive', ''),
+            NULLIF(a.elem ->> 'orcid', '')
+          ) IS NOT NULL
   ), '[]'::jsonb)`;
 }
 

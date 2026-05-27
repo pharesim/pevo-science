@@ -153,11 +153,20 @@ export async function getAccreditedOrcidsByAccount(): Promise<Map<string, string
  * `pevo.authors[i].name`, exactly as `getAccreditedOrcidsByAccount` is the
  * source for ORCID supersession.
  *
- * Only accounts with a NON-EMPTY attested name are included — an empty
- * `researcher_name` carries no authority and would shadow the broadcaster
- * claim with nothing. Callers treat a missing key as "no attested name,
- * keep the broadcaster value" (the name-resolution fallback in
- * `resolveAuthorName`). This is the active-only analogue of
+ * Only accounts with a NON-EMPTY attested name are included — an
+ * exactly-empty `researcher_name` carries no authority and would shadow the
+ * broadcaster claim with nothing. "Non-empty" here means exactly-empty-string
+ * absent (`NULLIF(researcher_name, '')`), with NO whitespace trimming — the
+ * same charset-free emptiness test the SQL-side name-supersession arm in
+ * `authorsWithSupersessionSelect` applies (`NULLIF(aa.researcher_name, '')`),
+ * and the stored value is the raw attested name unchanged. A whitespace-only
+ * attested name is therefore present on BOTH surfaces alike (no trim mutation,
+ * no surface-specific drop); `resolveAuthorName`'s length check honors it as
+ * the resolved name. Aligning on exact-empty (rather than trimming one side)
+ * is what keeps the two surfaces in lockstep per the SQL/JS parity doctrine.
+ * Callers treat a missing key as "no attested name, keep the broadcaster
+ * value" (the name-resolution fallback in `resolveAuthorName`). This is the
+ * active-only analogue of
  * `getAccreditedOrcidsByAccount`: name-supersession applies only to
  * currently-accredited accounts, so revoked accounts are intentionally
  * absent (the LEFT JOIN to `active_accreditations` on the SQL side has the
@@ -184,7 +193,7 @@ export async function getAccreditedNamesByAccount(): Promise<Map<string, string>
         const result = await pool.query(
           `WITH ${cte.sql}
            SELECT account, researcher_name FROM active_accreditations
-           WHERE NULLIF(BTRIM(researcher_name), '') IS NOT NULL`,
+           WHERE NULLIF(researcher_name, '') IS NOT NULL`,
           cte.params,
         );
         return result.rows.map((r: { account: string; researcher_name: string }) => ({

@@ -326,18 +326,20 @@ export function toPaperSummary(post: {
   const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
   const rawAuthors = Array.isArray(pevo.authors) ? (pevo.authors as Array<Record<string, unknown>>) : [];
   const supersededAuthors = applyAuthorSupersession(rawAuthors, orcidMap, nameMap);
-  const summaryAuthors: PaperAuthor[] = supersededAuthors.map((entry) => {
+  const summaryAuthors: PaperAuthor[] = supersededAuthors
     // Strip affiliation to honor the PaperSummary shape. `applyAuthorSupersession`
     // emits the enumerated key set (name, hive, orcid, affiliation,
     // orcid_verified, orcid_discrepancy) so PaperDetail consumers reuse it
-    // unchanged; here we drop the one PaperSummary-prohibited key. The
-    // double cast through `unknown` is the TS-prescribed pattern for
-    // narrowing the structurally-typed object literal to the nominal
-    // PaperAuthor interface — chain shape is trustable per `parseMeta`'s
-    // upstream parse, but TS can't infer that.
-    const { affiliation: _affiliation, ...rest } = entry;
-    return rest as unknown as PaperAuthor;
-  });
+    // unchanged; here we drop the one PaperSummary-prohibited key.
+    .map(({ affiliation: _affiliation, ...rest }) => rest)
+    // Sound name-based exit guard (not an `as unknown as` cast), mirroring the
+    // cumulative-union path. `resolveAuthorName` makes `name` total for every
+    // realistic entry (a Hive-keyed entry resolves at least its handle, a
+    // Hive-less entry its broadcaster name / orcid). Only a fully-empty entry
+    // (no name, hive, or orcid) yields no `name`; such an entry names no one
+    // and is correctly dropped here, keeping `PaperAuthor.name` a sound
+    // required `string`.
+    .filter((a): a is Record<string, unknown> & PaperAuthor => typeof a.name === 'string');
   return {
     author: post.author,
     permlink: post.permlink,

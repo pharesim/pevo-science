@@ -17,6 +17,13 @@
  * supersedes the broadcaster claim with no discrepancy field), and the
  * name read-time fallback chain (attested → broadcaster → hive → orcid).
  *
+ * The final describe block pins the whitespace-only-attested-name SQL/JS
+ * exact-empty parity: the JS arm exercises the cumulative helper, and the SQL
+ * arm is a pure string-shape assertion on `authorsWithSupersessionSelect`'s
+ * emitted fragment (the function is a deterministic SQL builder over no DB
+ * connection, so asserting its text needs no pool — the real-DB execution of
+ * that fragment is pinned in `hafsql.test.ts`).
+ *
  * **Carve-out (CLAUDE.md "Running Tests"):** this test exercises the
  * helper's algorithmic behavior in isolation via the `prebuiltChainPosts`
  * fast-path. Per the carve-out clauses:
@@ -37,6 +44,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { resolveChainCumulativeAuthors } from '../../src/routes/papers.js';
+import { authorsWithSupersessionSelect } from '../../src/hafsql.js';
 import { hafCache } from '../../src/cache.js';
 
 beforeEach(async () => {
@@ -464,5 +472,68 @@ describe('resolveChainCumulativeAuthors — name-supersession + fallback', () =>
     });
     const byName = result!.authors.map((a) => a.name).sort();
     expect(byName).toEqual(['0000-0003-4444-5555', 'Named Person', 'bob']);
+  });
+});
+
+describe('name-supersession whitespace-only attested name — SQL/JS exact-empty parity', () => {
+  // A whitespace-only attested `researcher_name` is the boundary case where
+  // the SQL supersession arm and the JS attested-name map could drift if one
+  // side whitespace-trims and the other does not. Both sides apply the same
+  // charset-free exactly-empty test (`NULLIF(researcher_name, '')`), so a
+  // whitespace-only attested name is carried — and supersedes — identically
+  // across surfaces rather than being dropped on one. This block pins both
+  // arms of that parity deterministically: the JS resolution via the
+  // cumulative helper, and the SQL fragment's attested-name arm shape.
+
+  it('JS surface: a whitespace-only attested name supersedes the broadcaster name', async () => {
+    // alice is accredited with a whitespace-only attested name. The JS
+    // attested-name map carries it (its loader uses exact-empty filtering, so
+    // a whitespace-only name is present, not excluded). `resolveAuthorName`'s
+    // length check honors a non-zero-length attested string, so the attested
+    // whitespace value wins over the broadcaster's "Al" — silently, with no
+    // discrepancy field. Matches the SQL arm, which COALESCEs to the same
+    // non-empty attested value.
+    const chainPosts = [
+      { author: 'alice', permlink: 'p1', pevo: { type: 'paper', authors: [{ name: 'Al', hive: 'alice' }] } },
+      { author: 'alice', permlink: 'v2', pevo: { type: 'paper', authors: [{ name: 'Al', hive: 'alice' }, { name: 'Bob', hive: 'bob' }] } },
+    ];
+    const result = await resolveChainCumulativeAuthors('alice', 'p1', {
+      accreditedAccounts: new Set(['alice', 'bob']),
+      accreditedOrcids: new Map(),
+      accreditationOrcidStatus: new Map(),
+      accreditedNames: new Map([['alice', '   ']]),
+      prebuiltChainPosts: chainPosts,
+    });
+    const alice = result!.authors.find((a) => a.hive === 'alice')!;
+    expect(alice.name).toBe('   ');
+    expect(alice).not.toHaveProperty('name_discrepancy');
+    expect(alice).not.toHaveProperty('name_verified');
+  });
+
+  it('SQL surface: the attested-name arm uses charset-free NULLIF (no BTRIM)', () => {
+    // The SQL name COALESCE's arm-1 (attested) must apply the SAME exact-empty
+    // test the JS attested-name map applies — a charset-free
+    // `NULLIF(aa.researcher_name, '')`, with NO BTRIM. If a BTRIM wrapper were
+    // (re)introduced on the attested arm, the SQL surface would exclude a
+    // whitespace-only attested name while the JS surface (exercised above)
+    // carries it, reopening the cross-surface drift. This string-shape pin is
+    // the deterministic SQL-side complement to the JS resolution assertion.
+    const fragment = authorsWithSupersessionSelect('c', '$3');
+    expect(fragment).toContain("NULLIF(aa.researcher_name, '')");
+    expect(fragment).not.toContain('BTRIM(aa.researcher_name');
+    expect(fragment).not.toMatch(/BTRIM\([^)]*researcher_name/);
+  });
+
+  it('SQL surface: a degenerate name-less/hive-less/orcid-less entry is dropped (no name: null emitted)', () => {
+    // The subselect filters with a WHERE on the same COALESCE that resolves
+    // `name`, so an entry that names no one (all four arms empty) is dropped
+    // rather than emitted as `{name: null}`. This matches the JS multi-link
+    // path (composite key null → skipped) and `toPaperSummary`'s post-
+    // supersession name guard, keeping `PaperAuthor.name` a sound required
+    // `string` on every surface.
+    const fragment = authorsWithSupersessionSelect('c', '$3');
+    expect(fragment).toMatch(
+      /WHERE\s+COALESCE\(\s*NULLIF\(aa\.researcher_name, ''\),\s*NULLIF\(a\.elem ->> 'name', ''\),\s*NULLIF\(a\.elem ->> 'hive', ''\),\s*NULLIF\(a\.elem ->> 'orcid', ''\)\s*\) IS NOT NULL/,
+    );
   });
 });
