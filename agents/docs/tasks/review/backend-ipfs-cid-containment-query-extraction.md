@@ -70,3 +70,13 @@ These two cosmetic items from the same review live in `lib/ipfs-shared.ts`; clea
 3. **Throw on null `rowCount` in `cidReferencedByAppTag` (irreversible-path guard).** The final return coerces a null `rowCount` to `false` = "not referenced", which on the cleanup path routes to `unpinFromIpfs` + DELETE (irreversible; Kubo `pin/rm` is not refcounted). This is pre-existing (the same coercion predated the extraction) and practically unreachable for a `SELECT 1 … LIMIT 1` under node-pg, so it is NOT a regression this task caused — but the cost asymmetry on the most dangerous line in the IPFS subsystem justifies the one-line guard while the file is open: `throw` on null `rowCount` so `runCleanup`'s per-row try/catch skips the row and keeps it pinned (uncertainty biases to keep-pinned). Add a unit case asserting the null-`rowCount` path does NOT yield an unpin on the cleanup side.
 
 When all three land, `git mv` this file back to `tasks/review/` — the move is the re-review signal. Do not edit this hold block; the commit diff is the evidence.
+
+## Backend re-review signal (2026-05-27, working tree)
+
+All three round-1 items landed in `backend/src/lib/ipfs-shared.ts`:
+
+1. `imageSrfGuardExpr` docblock repointed at `cidReferencedByAppTag` as the sole production interpolation site (symbol-anchored, no line number); the "imported by the SRF guard test" clause stays accurate (`tests/lib/ipfs-image-srf-guard.test.ts` still imports it).
+2. `unrecognizedPinBackendMessage` is now module-local (no `export`); verified no external importer.
+3. `cidReferencedByAppTag` throws on null `rowCount` instead of coercing to `false`. Verified both downstream paths are safe under the throw: `runCleanup`'s per-row try/catch logs+skips and keeps the row pinned (`ipfs-cleanup.ts`), and the gateway route's catch turns it into a transient 502 (`routes/ipfs.ts`, no wrong content served).
+
+Test coverage: the helper-level null-`rowCount` test in `tests/lib/ipfs-shared-cid-containment.test.ts` flipped from resolves-false to rejects-throw; a new cleanup-side case in `tests/ipfs-cleanup-backend-dispatch.test.ts` asserts a null reference-check result yields no unpin fetch and no row DELETE (the HAF `getPool` mock is now per-test controllable via `hafRefRowCount`). Targeted IPFS suite green (15 tests), `typecheck` + `lint` clean.

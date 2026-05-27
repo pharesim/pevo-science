@@ -48,16 +48,19 @@ vi.mock('../src/app-db.js', () => ({
   closeAppPool: vi.fn(async () => {}),
 }));
 
-// HAF: report "configured" so runCleanup does not early-return, and make the
-// reference check resolve instantly to not-referenced (rowCount 0) so the row
-// routes to the unpin branch. Spreads the real module so non-overridden
-// exports (e.g. the table-name constants consumed transitively) stay intact.
+// HAF: report "configured" so runCleanup does not early-return. The reference
+// check's result is per-test controllable via `hafRefRowCount` — default 0
+// (not-referenced) routes the row to the unpin branch; null exercises the
+// indeterminate-driver path where cidReferencedByAppTag throws. Spreads the real
+// module so non-overridden exports (e.g. table-name constants consumed
+// transitively) stay intact.
+let hafRefRowCount: number | null = 0;
 vi.mock('../src/db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/db.js')>();
   return {
     ...actual,
     isHafConfigured: () => true,
-    getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
+    getPool: () => ({ query: async () => ({ rows: [], rowCount: hafRefRowCount }) }),
   };
 });
 
@@ -86,6 +89,7 @@ beforeEach(() => {
   originalFetch = globalThis.fetch;
   appQueryMock.mockReset();
   appPoolHandle = { query: appQueryMock };
+  hafRefRowCount = 0;
 });
 
 afterEach(() => {
@@ -156,6 +160,31 @@ describe('IPFS cleanup — per-backend unpin dispatch', () => {
     // live forever with no record of it. toPinBackend throws, runCleanup's
     // per-row try/catch logs and skips, and the row survives for an operator.
     seedSingleRow('s3');
+    stubUnpinFetch();
+
+    await runCleanup();
+
+    const anyUnpin = fetchCalls.filter(
+      (c) => c.url.includes('/api/v0/pin/rm') || c.url.includes('pinata.cloud/pinning/unpin/'),
+    );
+    const deletes = appQueryMock.mock.calls.filter(
+      ([sql]) => typeof sql === 'string' && sql.includes('DELETE FROM pending_ipfs_uploads'),
+    );
+
+    expect(anyUnpin).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
+  });
+
+  it('skips an orphan when the HAF reference check returns a null rowCount: no unpin, no row DELETE', async () => {
+    // A null rowCount means the driver could not determine whether the CID is
+    // still referenced on chain. cidReferencedByAppTag throws rather than
+    // coercing that to "not referenced" — coercing would route an indeterminate
+    // result to an irreversible unpin (Kubo pin/rm is not refcounted). The throw
+    // is caught by runCleanup's per-row try/catch, which logs and skips, so the
+    // pin and its tracking row both survive for the next sweep. Uncertainty
+    // biases to keep-pinned.
+    hafRefRowCount = null;
+    seedSingleRow('kubo');
     stubUnpinFetch();
 
     await runCleanup();

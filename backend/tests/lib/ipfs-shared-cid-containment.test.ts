@@ -144,11 +144,15 @@ describe('cidReferencedByAppTag — tags-scope + namespace SQL shape', () => {
     await expect(cidReferencedByAppTag(matchingPool as any, FAKE_CID)).resolves.toBe(true);
   });
 
-  it('returns false on a null rowCount (driver could not report) — conservative for the gateway, not the unpin path', async () => {
+  it('throws on a null rowCount (driver could not report) rather than coercing to not-referenced', async () => {
+    // Coercing a null rowCount to false would route the cleanup path to an
+    // irreversible unpin on an indeterminate result. Throwing lets runCleanup's
+    // per-row catch keep the file pinned; the cleanup-side no-unpin consequence
+    // is asserted in ipfs-cleanup-backend-dispatch.test.ts.
     const nullCountPool = {
       query: async () => ({ rowCount: null }),
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(cidReferencedByAppTag(nullCountPool as any, FAKE_CID)).resolves.toBe(false);
+    await expect(cidReferencedByAppTag(nullCountPool as any, FAKE_CID)).rejects.toThrow(/null rowCount/);
   });
 });

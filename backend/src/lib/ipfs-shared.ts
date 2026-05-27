@@ -20,9 +20,10 @@ const PIN_BACKENDS: readonly PinBackend[] = ['kubo', 'pinata'];
  * The unrecognized-pin-backend error message, in one place. Raised by both the
  * read-time narrowing in `toPinBackend` and the exhaustive-switch default in
  * `unpinFromIpfs`; sharing the source keeps the two from drifting if the union
- * widens.
+ * widens. Module-local — both consumers live in this file, so it carries no
+ * cross-module obligation on the exact string format.
  */
-export function unrecognizedPinBackendMessage(value: unknown): string {
+function unrecognizedPinBackendMessage(value: unknown): string {
   return `Unrecognized pin backend: ${JSON.stringify(value)}`;
 }
 
@@ -76,9 +77,11 @@ export function toPinBackend(value: string): PinBackend {
  * it is interpolated, not bound — SRF-argument SQL cannot take a placeholder —
  * and call sites pass compile-time literals, never user input.
  *
- * Interpolated into `cidIsKnown` (`routes/ipfs.ts`) and `cidReferencedInHaf`
- * (`ipfs-cleanup.ts`), and imported by the SRF guard test so the test fragment
- * stays definitionally in sync with production. See
+ * Interpolated into the shared `cidReferencedByAppTag` containment query (below
+ * in this file) — its sole production interpolation site after that query was
+ * de-duplicated out of `cidIsKnown` and `cidReferencedInHaf` — and imported by
+ * the SRF guard test so the test fragment stays definitionally in sync with
+ * production. See
  * `agents/docs/solutions/conventions/pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md`.
  */
 export function imageSrfGuardExpr(alias: string): string {
@@ -178,7 +181,18 @@ export async function cidReferencedByAppTag(pool: pg.Pool, cid: string): Promise
     params,
   );
 
-  return result.rowCount !== null && result.rowCount > 0;
+  // A `SELECT 1 … LIMIT 1` always reports a row count under node-pg, so a null
+  // here means the driver could not determine one. Coercing that to "not
+  // referenced" (false) routes the cleanup path to an irreversible unpin (Kubo
+  // pin/rm is not refcounted) on an indeterminate result. Throw instead:
+  // runCleanup's per-row try/catch logs and skips the row, keeping the pin and
+  // its tracking row for the next sweep, and the gateway route's catch turns it
+  // into a transient 502 rather than serving wrong content. Uncertainty biases
+  // to keep-pinned, the safe direction on the most dangerous line here.
+  if (result.rowCount === null) {
+    throw new Error('cidReferencedByAppTag: query returned null rowCount; cannot safely determine CID reference');
+  }
+  return result.rowCount > 0;
 }
 
 /**
