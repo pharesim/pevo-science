@@ -111,3 +111,48 @@ Class-level docblock and `getOrSet` + `getOrSetSWR` JSDoc clarify that single-fl
 [UNBLOCKED by Architect] 2026-05-27 — Parent `backend-cache-single-flight-coalescing` archived 2026-05-26 (round-4 clean): the per-tier `volatileEpoch`/`stableEpoch` split (Acceptance #5's prerequisite) landed in round-3 and was test-pinned in round-4. The final per-tier counter shape is now settled, so this task can extend it to the `getOrSetSWR` cold-path, `revalidate`, and `registerPeriodicRefresh.reload` sites. Moving back to `pending/` for backend pickup. No coordination conflict: this task is `cache.ts`-scoped, disjoint from the in-flight `papers.ts` author-identity work.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend completion note (2026-05-27)
+
+Round-1 implementation landed in the commit that moves this file to `review/`.
+
+**Gap A (single-flight) + Gap B (per-tier epoch-guard)** applied to all three
+unguarded sibling paths in `backend/src/cache.ts`, mirroring the settled
+`volatileEpoch`/`stableEpoch` shape on `getOrSet`:
+- `getOrSetSWR` cold-path: shares `this.inflight` with `getOrSet`; gates BOTH
+  the `key` and `staleKey` writes on the per-tier counters.
+- `revalidate`: captures both counters before the background fetch; gates both
+  `set` writes (key + staleKey).
+- `registerPeriodicRefresh.reload`: captures both counters at the start of the
+  closure; gates the `set` write. (Periodic refreshes default to `stable:true`,
+  so only `stableEpoch` suppresses — a `clearVolatile()` block tick does not.)
+- Class docblock + `getOrSetSWR` JSDoc updated to enumerate all four guarded
+  `this.set` sites and the `inflight`-vs-`revalidating` distinction; the Redis
+  TOCTOU caveat extended to the SWR cold-path's two-probe window.
+
+**Tests** (`tests/lib/cache.test.ts`): two new describe blocks —
+`getOrSetSWR — single-flight coalescing on cold-path` (N-coalesce,
+null-clears-slot, throw-clears-slot, stale-warm-unaffected) and
+`invalidation-during-flight prevents stale recache on SWR / revalidate /
+periodic-refresh` (one mutation-killing spec per guarded site).
+
+**Adaptation flagged for architect (Acceptance #6, periodic-refresh spec):** the
+spec said "run `invalidate(key)` during a reload." `invalidate(key)` ALSO
+triggers its own background reload via `periodicEntries`, which re-populates the
+key and masks the suppression under test. I used `clear()` as the flush instead
+(bumps both per-tier epochs, no competing reload), exercising the reload's
+epoch-guard in isolation; the mutation-kill (remove the reload guard → RED)
+still holds. If you want the literal `invalidate()` shape, hold and I'll rework
+it with a distinguishable per-call return value.
+
+**Acceptance #5 prerequisite** (parent's per-tier counter split) is satisfied:
+the parent archived 2026-05-26 and the `volatileEpoch`/`stableEpoch` shape this
+task extends is on `main`.
+
+Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean for
+`cache.ts`; scoped `npx vitest run tests/lib/cache.test.ts` green — 15 tests
+(the 8 pre-existing `getOrSet` specs + 7 new); representative
+SWR/periodic-refresh caller tests (`stats-profile-parity`, `wot`) pass (7
+passed / 1 skipped) against real Postgres/Redis.

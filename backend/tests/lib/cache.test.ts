@@ -283,3 +283,213 @@ describe('QueryCache.getOrSet — single-flight coalescing', () => {
     expect(result).toEqual({ value: 'recovered' });
   });
 });
+
+describe('QueryCache.getOrSetSWR — single-flight coalescing on cold-path', () => {
+  let cache: QueryCache;
+
+  beforeEach(() => {
+    cache = new QueryCache(
+      30_000,
+      `test:cache-swr-sf:${Date.now()}:${Math.random().toString(36).slice(2)}:`,
+    );
+  });
+
+  it('coalesces N concurrent cold-path misses for the same key into 1 fetcher invocation', async () => {
+    // Cold start: both the fresh key and the swr: stale key are absent, so all
+    // N concurrent callers reach the cold-path and must share ONE fetcher via
+    // the in-flight map (the same map `getOrSet` uses).
+    const fetcher = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return { value: 'swr-shared' };
+    });
+
+    const results = await Promise.all([
+      cache.getOrSetSWR('swr-coalesce', fetcher),
+      cache.getOrSetSWR('swr-coalesce', fetcher),
+      cache.getOrSetSWR('swr-coalesce', fetcher),
+      cache.getOrSetSWR('swr-coalesce', fetcher),
+      cache.getOrSetSWR('swr-coalesce', fetcher),
+    ]);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(results).toHaveLength(5);
+    for (const r of results) expect(r).toEqual({ value: 'swr-shared' });
+    // Both the fresh key and the stale key were populated by the single fetch.
+    expect(await cache.get('swr-coalesce')).toEqual({ value: 'swr-shared' });
+    expect(await cache.get('swr:swr-coalesce')).toEqual({ value: 'swr-shared' });
+  });
+
+  it('does NOT cache null cold-path results AND clears the in-flight slot (next wave retries fresh)', async () => {
+    const firstWaveFetcher = vi.fn().mockResolvedValue(null);
+
+    const wave1 = await Promise.all([
+      cache.getOrSetSWR('swr-null', firstWaveFetcher),
+      cache.getOrSetSWR('swr-null', firstWaveFetcher),
+      cache.getOrSetSWR('swr-null', firstWaveFetcher),
+    ]);
+
+    expect(firstWaveFetcher).toHaveBeenCalledTimes(1);
+    for (const r of wave1) expect(r).toBeNull();
+    // Neither the fresh key nor the stale key is written on null.
+    expect(await cache.get('swr-null')).toBeUndefined();
+    expect(await cache.get('swr:swr-null')).toBeUndefined();
+
+    // The in-flight slot was cleared on the null resolution, so a fresh
+    // fetcher runs for the next wave.
+    const secondWaveFetcher = vi.fn().mockResolvedValue({ value: 'recovered' });
+    const wave2 = await cache.getOrSetSWR('swr-null', secondWaveFetcher);
+    expect(secondWaveFetcher).toHaveBeenCalledTimes(1);
+    expect(wave2).toEqual({ value: 'recovered' });
+  });
+
+  it('clears the in-flight slot on a cold-path fetcher throw (next call retries fresh)', async () => {
+    const throwingFetcher = vi.fn().mockRejectedValue(new Error('transient HAF outage'));
+
+    const settled = await Promise.allSettled([
+      cache.getOrSetSWR('swr-throw', throwingFetcher),
+      cache.getOrSetSWR('swr-throw', throwingFetcher),
+      cache.getOrSetSWR('swr-throw', throwingFetcher),
+    ]);
+
+    expect(throwingFetcher).toHaveBeenCalledTimes(1);
+    for (const r of settled) {
+      expect(r.status).toBe('rejected');
+      if (r.status === 'rejected') {
+        expect((r.reason as Error).message).toBe('transient HAF outage');
+      }
+    }
+
+    const recoveryFetcher = vi.fn().mockResolvedValue({ value: 'recovered' });
+    const result = await cache.getOrSetSWR('swr-throw', recoveryFetcher);
+    expect(recoveryFetcher).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ value: 'recovered' });
+  });
+
+  it('stale-warm path is unaffected: concurrent callers get stale data + ONE background refresh', async () => {
+    // Prime with a short fresh TTL and a long stale TTL so the fresh key
+    // expires while the stale key survives — the stale-warm regime.
+    const primeFetcher = vi.fn().mockResolvedValue({ value: 'v1' });
+    await cache.getOrSetSWR('swr-warm', primeFetcher, 25, 300_000);
+    expect(primeFetcher).toHaveBeenCalledTimes(1);
+
+    // Let the fresh key expire (the stale key remains).
+    await new Promise((r) => setTimeout(r, 80));
+
+    // Concurrent callers in the stale-warm regime take the stale branch (NOT
+    // the cold-path single-flight): they return stale immediately and the
+    // `revalidating` Set deduplicates the background refresh to ONE fetch.
+    const refreshFetcher = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return { value: 'v2' };
+    });
+
+    const results = await Promise.all([
+      cache.getOrSetSWR('swr-warm', refreshFetcher, 25, 300_000),
+      cache.getOrSetSWR('swr-warm', refreshFetcher, 25, 300_000),
+      cache.getOrSetSWR('swr-warm', refreshFetcher, 25, 300_000),
+    ]);
+
+    for (const r of results) expect(r).toEqual({ value: 'v1' });
+    expect(refreshFetcher).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('QueryCache — invalidation-during-flight prevents stale recache on SWR / revalidate / periodic-refresh', () => {
+  let cache: QueryCache;
+
+  beforeEach(() => {
+    cache = new QueryCache(
+      30_000,
+      `test:cache-swr-inval:${Date.now()}:${Math.random().toString(36).slice(2)}:`,
+    );
+  });
+
+  it('getOrSetSWR cold-path: invalidate() during the in-flight fetcher prevents the pre-invalidation snapshot from being cached', async () => {
+    // Mutation-kill: removing the per-tier epoch guard from the getOrSetSWR
+    // cold-path lets the pre-invalidation snapshot land in the cache, flipping
+    // the post-condition assertions RED.
+    const fetcher = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return { value: 'pre-invalidation-snapshot' };
+    });
+
+    const inflightCall = cache.getOrSetSWR('swr-race', fetcher);
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.invalidate('swr-race');
+
+    const inflightResult = await inflightCall;
+    // The caller still receives the resolved value; only the cache write is
+    // suppressed.
+    expect(inflightResult).toEqual({ value: 'pre-invalidation-snapshot' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Both the fresh key and the stale key stay cold (the cold-path gates BOTH
+    // writes on the same epoch check).
+    expect(await cache.get('swr-race')).toBeUndefined();
+    expect(await cache.get('swr:swr-race')).toBeUndefined();
+  });
+
+  it('revalidate: invalidate() during the background refresh prevents the snapshot from being re-cached', async () => {
+    // Mutation-kill: removing the epoch guard from `revalidate` lets the
+    // background refresh write its snapshot back into the cache after the
+    // invalidate flushed it, flipping the final assertion RED.
+    await cache.getOrSetSWR('swr-reval', vi.fn().mockResolvedValue({ value: 'v1' }), 25, 300_000);
+    // Expire the fresh key so the next call takes the stale-warm path and
+    // triggers a background `revalidate`.
+    await new Promise((r) => setTimeout(r, 80));
+
+    const slowRefresh = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      return { value: 'v2-stale-snapshot' };
+    });
+    const stale = await cache.getOrSetSWR('swr-reval', slowRefresh, 25, 300_000);
+    expect(stale).toEqual({ value: 'v1' });
+
+    // The background revalidate is in flight. Invalidate the key mid-refresh.
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.invalidate('swr-reval');
+
+    // Let the revalidate resolve.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(slowRefresh).toHaveBeenCalledTimes(1);
+
+    // The revalidate's write was suppressed by the epoch bump: the fresh key
+    // (deleted by invalidate) stays cold rather than being re-populated with
+    // the pre-invalidation snapshot.
+    expect(await cache.get('swr-reval')).toBeUndefined();
+  });
+
+  it('registerPeriodicRefresh.reload: a flush during an in-flight reload suppresses the reload cache-write', async () => {
+    // The reload closure captures both epochs at its start and gates its write
+    // on them. A flush firing mid-reload must leave the key cold rather than
+    // letting the reload re-populate the pre-flush snapshot.
+    //
+    // `clear()` is used as the flush rather than `invalidate(key)`: invalidate
+    // ALSO triggers its own background reload via periodicEntries, which would
+    // re-populate the key and mask the suppression under test. `clear()` bumps
+    // both per-tier epochs (suppressing the stable reload — periodic refreshes
+    // default to stable) without spawning a competing reload, so the guard is
+    // exercised in isolation. A long interval keeps the periodic timer from
+    // firing a second reload during the test.
+    //
+    // Mutation-kill: removing the epoch guard from the reload closure lets the
+    // in-flight reload write 'periodic-snapshot' after the clear(), flipping
+    // the final assertion RED.
+    const slowFetcher = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      return { value: 'periodic-snapshot' };
+    });
+
+    // Do NOT await: let the initial reload run in the background so it is
+    // in-flight when the flush fires. Interval is long so it never re-fires.
+    const regPromise = cache.registerPeriodicRefresh('periodic-key', slowFetcher, 600_000);
+
+    await new Promise((r) => setTimeout(r, 15));
+    await cache.clear();
+
+    // The initial reload completes; its write is suppressed by the epoch bump.
+    await regPromise;
+    expect(slowFetcher).toHaveBeenCalledTimes(1);
+    expect(await cache.get('periodic-key')).toBeUndefined();
+  });
+});

@@ -2,16 +2,20 @@
  * TTL cache with optional Redis backend.
  * Falls back to in-memory Map when Redis is not available.
  *
- * Single-flight coalescing: `getOrSet` deduplicates concurrent same-key
- * fetcher invocations via an in-process `Map<prefixedKey, Promise<T|null>>`.
- * On cache miss, the first caller's fetcher runs once; concurrent callers
- * for the same key await that same promise. Null resolutions are NOT
- * cached (honoring the existing skip-on-null rule) AND the in-flight slot
- * is cleared so the next wave gets a fresh chance. The in-flight slot is
- * also cleared on fetcher rejection so a transient failure does not poison
- * subsequent retries. Independent of Redis: the coalescing layer is an
- * in-process coordination primitive and works whether the cache backend is
- * Redis or the in-memory fallback.
+ * Single-flight coalescing: `getOrSet` and the `getOrSetSWR` cold-path
+ * deduplicate concurrent same-key fetcher invocations via a SHARED in-process
+ * `Map<prefixedKey, Promise<T|null>>` (`this.inflight`). On cache miss (for
+ * SWR, when both the fresh and stale keys are absent), the first caller's
+ * fetcher runs once; concurrent callers for the same key await that same
+ * promise. Null resolutions are NOT cached (honoring the existing skip-on-null
+ * rule) AND the in-flight slot is cleared so the next wave gets a fresh
+ * chance. The in-flight slot is also cleared on fetcher rejection so a
+ * transient failure does not poison subsequent retries. The SWR stale-warm
+ * path (stale present, fresh expired) is a SEPARATE concern deduplicated by
+ * the `revalidating` Set, not `this.inflight`: it returns stale immediately
+ * and fires at most one background `revalidate`. Independent of Redis: the
+ * coalescing layer is an in-process coordination primitive and works whether
+ * the cache backend is Redis or the in-memory fallback.
  *
  * Coalescing strength: this primitive eliminates duplicate fetcher
  * invocations within an event-loop tick (concurrent callers that arrive
@@ -23,7 +27,10 @@
  * first; both fetchers run to completion. Net effect: coalescing is
  * complete for within-tick concurrency, and *reduces* duplication for
  * concurrent cache-miss probes under the Redis backend (one fetcher
- * runs instead of N). Correctness is preserved in both regimes.
+ * runs instead of N). Correctness is preserved in both regimes. The same
+ * TOCTOU window applies to the `getOrSetSWR` cold-path, which has TWO async
+ * probes (fresh `key` then `staleKey`) before the in-flight check — a
+ * marginally wider window, same correctness guarantee.
  *
  * Invalidation-during-flight: an in-flight fetcher that started BEFORE
  * an `invalidate*` / `clear*` call must not silently re-cache its
@@ -34,12 +41,15 @@
  * stable entries it never touches must keep their in-flight writes.
  * `clear()` flushes everything, so it bumps BOTH. `invalidate(key)` and
  * `invalidatePrefix(prefix)` target specific keys regardless of
- * stable-ness, so they bump BOTH. `getOrSet` captures both counters at
- * fetcher start; on resolution it gates its cache-write on the counter(s)
- * relevant to the entry's tier: a non-stable entry requires BOTH counters
- * unchanged, a stable entry requires only `stableEpoch` unchanged (a
- * concurrent `clearVolatile()` advancing `volatileEpoch` must not suppress
- * the stable write). In-flight callers still receive the resolved value
+ * stable-ness, so they bump BOTH. All four success-path `this.set` write
+ * sites capture both counters at fetcher start and gate their cache-write on
+ * the counter(s) relevant to the entry's tier: `getOrSet`, the `getOrSetSWR`
+ * cold-path (both the `key` and `staleKey` writes), the `revalidate`
+ * background-refresh helper (both writes), and the `registerPeriodicRefresh`
+ * reload closure. A non-stable entry requires BOTH counters unchanged; a
+ * stable entry requires only `stableEpoch` unchanged (a concurrent
+ * `clearVolatile()` advancing `volatileEpoch` must not suppress the stable
+ * write). In-flight callers still receive the resolved value
  * (the request that triggered the fetcher gets data), but the cache stays
  * cold for the affected tier so the next caller picks up fresh
  * post-invalidation data.
@@ -208,6 +218,24 @@ export class QueryCache {
   /**
    * Stale-while-revalidate: returns stale data instantly when fresh cache
    * expires, while triggering a background refresh.
+   *
+   * Single-flight: the COLD-path (both the fresh `key` and the `staleKey`
+   * absent — true cold start, post-`invalidatePrefix`, post-`clearVolatile`,
+   * or post-`clear`) shares the same `this.inflight` map as `getOrSet`, so N
+   * concurrent cold-path callers for the same key run ONE fetcher and all
+   * await it. The stale-warm path (stale present, fresh expired) is a SEPARATE
+   * concern guarded by the `revalidating` Set: it returns stale immediately
+   * and fires at most one background `revalidate`. The two primitives serve
+   * different paths and are intentionally NOT merged — `this.inflight`
+   * deduplicates synchronous cold-misses, `revalidating` deduplicates
+   * background refreshes.
+   *
+   * Invalidation-during-flight: the cold-path fetcher captures both per-tier
+   * epochs at start and gates BOTH the `key` and `staleKey` writes on the
+   * counter(s) for the entry's tier, identically to `getOrSet`. See the
+   * class-level docblock.
+   *
+   * @param stable - If true, this entry survives block-change cache clears.
    */
   async getOrSetSWR<T>(
     key: string,
@@ -226,12 +254,38 @@ export class QueryCache {
       return stale;
     }
 
-    const data = await fn();
-    if (data !== null && data !== undefined) {
-      await this.set(key, data, ttlMs, stable);
-      await this.set(staleKey, data, staleMs, stable);
+    // Cold-path single-flight: coalesce concurrent cold-misses on the shared
+    // in-flight map (keyed on the prefixed cache key, as in `getOrSet`).
+    const inflightKey = this.prefix + key;
+    const existing = this.inflight.get(inflightKey) as Promise<T> | undefined;
+    if (existing !== undefined) {
+      return existing;
     }
-    return data;
+
+    // Capture both per-tier epochs at fetcher start; gate the cold-path writes
+    // (key + staleKey) on the counter(s) for this entry's tier, mirroring
+    // `getOrSet`. The caller still receives the resolved value; only the
+    // cache-write is suppressed when an invalidation fired mid-flight.
+    const capturedVolatileEpoch = this.volatileEpoch;
+    const capturedStableEpoch = this.stableEpoch;
+    const promise = (async (): Promise<T> => {
+      try {
+        const data = await fn();
+        const notInvalidated = stable
+          ? capturedStableEpoch === this.stableEpoch
+          : capturedVolatileEpoch === this.volatileEpoch &&
+            capturedStableEpoch === this.stableEpoch;
+        if (data !== null && data !== undefined && notInvalidated) {
+          await this.set(key, data, ttlMs, stable);
+          await this.set(staleKey, data, staleMs, stable);
+        }
+        return data;
+      } finally {
+        this.inflight.delete(inflightKey);
+      }
+    })();
+    this.inflight.set(inflightKey, promise);
+    return promise;
   }
 
   private revalidating = new Set<string>();
@@ -246,9 +300,21 @@ export class QueryCache {
   ): Promise<void> {
     if (this.revalidating.has(key)) return;
     this.revalidating.add(key);
+    // Capture both per-tier epochs before the background fetch; gate BOTH the
+    // `key` and `staleKey` re-cache writes so an invalidate*/clear* that fires
+    // mid-revalidation is not silently undone by writing back the
+    // pre-invalidation snapshot. The `staleKey` write is gated on the same
+    // condition because callers served from the stale key for the next
+    // `staleMs` window must not see a re-cached pre-invalidation snapshot.
+    const capturedVolatileEpoch = this.volatileEpoch;
+    const capturedStableEpoch = this.stableEpoch;
     try {
       const data = await fn();
-      if (data !== null && data !== undefined) {
+      const notInvalidated = stable
+        ? capturedStableEpoch === this.stableEpoch
+        : capturedVolatileEpoch === this.volatileEpoch &&
+          capturedStableEpoch === this.stableEpoch;
+      if (data !== null && data !== undefined && notInvalidated) {
         await this.set(key, data, ttlMs, stable);
         await this.set(staleKey, data, staleMs, stable);
       }
@@ -368,9 +434,23 @@ export class QueryCache {
    */
   async registerPeriodicRefresh<T>(key: string, fn: () => Promise<T>, intervalMs: number, stable = true): Promise<void> {
     const reload = async () => {
+      // Capture both per-tier epochs at the START of the reload (before the
+      // fetch) and gate the cache-write on the counter(s) for this entry's
+      // tier. A clear/clearVolatile/invalidate firing during a periodic-refresh
+      // tick must not be undone by re-populating the cleared key with the
+      // pre-invalidation snapshot; when it fires, the key stays cold until the
+      // next demand-driven cache-fill (or the next reload tick). Periodic
+      // refreshes default to `stable: true`, so a `clearVolatile()` block tick
+      // (which bumps only `volatileEpoch`) does not suppress the reload write.
+      const capturedVolatileEpoch = this.volatileEpoch;
+      const capturedStableEpoch = this.stableEpoch;
       try {
         const data = await fn();
-        if (data !== null && data !== undefined) {
+        const notInvalidated = stable
+          ? capturedStableEpoch === this.stableEpoch
+          : capturedVolatileEpoch === this.volatileEpoch &&
+            capturedStableEpoch === this.stableEpoch;
+        if (data !== null && data !== undefined && notInvalidated) {
           await this.set(key, data, intervalMs * 2, stable);
         }
       } catch (err) {
