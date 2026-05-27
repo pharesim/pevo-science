@@ -68,7 +68,7 @@ export function toPinBackend(value: string): PinBackend {
  * `'[]'::jsonb` before the SRF runs.
  *
  * `alias` is the SQL alias of the comment relation at the call site
- * (`cidIsKnown` and `cidReferencedInHaf` both alias `comments` as `c`).
+ * (`cidReferencedByAppTag` aliases `comments` as `c` in its containment scan).
  * Taking it as a parameter makes the relation-alias dependency an explicit,
  * enforced part of the call rather than an invisible contract baked into a
  * constant: a site using a different alias substitutes it correctly instead of
