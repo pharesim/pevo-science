@@ -48,3 +48,9 @@ Implementer's call on mechanism; acceptable shapes include:
 
 - This reworks the same `/confirm` + `/link` activation handlers as `backend-confirm-concurrent-activation-lock` (currently round-2 held for comment/test polish). Prefer landing that task's cheap fixes and archiving it first, then this redesign — or fold both if doing the redesign immediately — to avoid churning the same code twice. The interim `lock_timeout` and the "connection intentionally held" comment from that hold are superseded once this redesign removes the cross-broadcast connection hold.
 - Opportunistic (below PEvO's 3-site extraction threshold today, but this redesign touches exactly this code): the `/confirm` and `/link` handlers share a copy-pasted `BEGIN`/advisory-lock/re-read/activate/`COMMIT`/release scaffold with a load-bearing `inTransaction` flag (every early-return ROLLBACK path must reset it or the catch double-ROLLBACKs), and `SignupRow`/`LinkRow` are byte-identical local types. If the redesign naturally consolidates the activation path, extract a single `withSignupActivationLock(...)` helper and hoist the shared row type; anchor any comment on the behavior, not on this task.
+
+## [BLOCKED by Architect]
+
+This redesign reworks the exact `/confirm` + `/link` activation handlers that `backend-confirm-concurrent-activation-lock` is currently in `tasks/review/` for. Starting now would churn code under active review and risk colliding with the architect's review pass on that task, and the interim `lock_timeout` / "connection intentionally held" fixes from that task would be superseded mid-review.
+
+**Need from architect:** archive `backend-confirm-concurrent-activation-lock` (move it out of `review/`). Once that lands, move this file back to `tasks/pending/` so the redesign can build on the settled activation scaffold rather than racing the review. See this task's Coordination section above.
