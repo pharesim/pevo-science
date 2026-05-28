@@ -1,8 +1,9 @@
 /**
  * Unit tests for the inline ESLint rule `pevo/no-custom-id-block-num-floor`
  * defined in `backend/eslint.config.mjs`. The rule fires on SQL fragments
- * that combine `<alias>.custom_id` with a `block_num >=` predicate in the
- * same template literal (or string-concat chain). That combination forces
+ * that combine a `custom_id` reference (aliased or bare) with a `block_num >=`
+ * predicate in the same template literal (or string-concat chain). That
+ * combination forces
  * PostgreSQL into a BitmapAnd plan against `hafsql.operation_custom_json_view`
  * on the live HAF that scans tens of millions of operation rows and blows
  * the per-request walker budget. The known-safe remediation is to drop the
@@ -15,12 +16,11 @@
  *     in a single template literal.
  *   - Violation: inline pool.query — the same shape across multiple SQL lines
  *     inside one template literal (the actual production pattern).
- *   - Violation: alias other than `cj` — the matcher is `\b\w+\.custom_id\b`,
+ *   - Violation: alias other than `cj` — the matcher is `\b(?:\w+\.)?custom_id\b`,
  *     so `c.custom_id` / `op.custom_id` co-occurring with `block_num >=` fires.
- *   - Violation: unaliased `block_num >=` — only the `custom_id` reference
- *     needs an alias prefix; bare `block_num >=` co-occurring with
- *     `<alias>.custom_id` still fires (pins the alias-optionality on the
- *     block_num side of the regex).
+ *   - Violation: unaliased `block_num >=` — the block_num reference accepts
+ *     bare or aliased; here `cj.custom_id` stays aliased while `block_num` is
+ *     bare. Pins the alias-optionality on the block_num side of the regex.
  *   - Violation: BinaryExpression '+' concat splitting the two predicates
  *     across two string literals — exercises the `flattenSqlString`
  *     recursion through `+`.
@@ -167,16 +167,16 @@ ruleTester.run('pevo/no-custom-id-block-num-floor', noCustomIdBlockNumFloorRule,
       ].join('\n'),
       errors: [{ messageId: 'forbidden' }],
     },
-    // Violation: alias other than `cj` — exercises `\b\w+\.custom_id\b`'s
+    // Violation: alias other than `cj` — exercises `\b(?:\w+\.)?custom_id\b`'s
     // generality. `c.custom_id` is just as toxic on the planner level.
     {
       filename: abs('src/routes/papers.ts'),
       code: 'const sql = `SELECT * FROM op_view c WHERE c.custom_id = $1 AND c.block_num >= $2`;',
       errors: [{ messageId: 'forbidden' }],
     },
-    // Violation: unaliased `block_num >=` — only the `custom_id` reference
-    // needs an alias prefix; the block_num side accepts bare or aliased.
-    // Pins the `\b(?:\w+\.)?block_num\s*>=` arm of the regex.
+    // Violation: unaliased `block_num >=` — the block_num reference accepts
+    // bare or aliased (here `cj.custom_id` stays aliased while `block_num` is
+    // bare). Pins the `\b(?:\w+\.)?block_num\s*>=` arm of the regex.
     {
       filename: abs('src/routes/papers.ts'),
       code: 'const sql = `SELECT * FROM op_view cj WHERE cj.custom_id = $1 AND block_num >= $2`;',

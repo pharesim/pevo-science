@@ -108,3 +108,13 @@ Verification: `npm run typecheck` clean; `npm run lint`/`eslint src/` 0 errors; 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-3 architect review scopes `/ce-code-review` to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-28, landed in the commit that moves this file to review/)
+
+Round-3 hold item 1 landed (doc-only; no production change to the rule).
+
+1. **(item 1 — stale regex citations in the test docblock)** Updated every pre-broadening `\b\w+\.custom_id\b` (alias-required) citation in `backend/tests/eslint/no-custom-id-block-num-floor.test.ts` to the shipped `\b(?:\w+\.)?custom_id\b` form, and reworded the `<alias>.custom_id` phrasings to "`custom_id` (aliased or bare)". The fix touched **five** sites, not the four the hold enumerated: the header file-summary line ("combine `<alias>.custom_id` with a `block_num >=` predicate") carried a stale `<alias>.custom_id` the hold's count missed; fixed alongside the matcher-citation bullet, the unaliased-`block_num` coverage bullet, and the two inline comments (alias-other-than-`cj` and unaliased-`block_num`). The two "only the `custom_id` reference needs an alias prefix" claims — themselves stale post-broadening — were rewritten to describe the block_num-side alias-optionality those cases actually pin. Anchor-rot audit of the replacement (per `convention-enforcing-fix-must-audit-its-own-new-code`): the new text cites only the production regex source (`\b(?:\w+\.)?custom_id\b`, `\b(?:\w+\.)?block_num\s*>=`) and stable identifier examples (`cj.custom_id`, `block_num`) — no task slugs, SHAs, or line numbers introduced.
+
+Verification: `npm run typecheck` (src + tests) clean; `npm run lint` 0 errors (the lone warning is a pre-existing unused-`eslint-disable` in `src/lib/author-supersession.ts`, untouched here); scoped `npx vitest run tests/eslint/no-custom-id-block-num-floor.test.ts` green (17 passed). grep confirms zero remaining `\b\w+\.custom_id\b` / `<alias>.custom_id` / "needs an alias prefix" citations in the test file.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
