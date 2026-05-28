@@ -662,6 +662,55 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
   });
 });
 
+describe('applyAuthorSupersession name-soundness drop (load-bearing PaperAuthor.name guard)', () => {
+  // The trailing `.filter((a): a is Record<string, unknown> & PaperAuthor =>
+  // typeof a.name === 'string')` in `applyAuthorSupersession` is the single
+  // shared name-soundness guard all three consumers
+  // (`toPaperSummary`, the `?version=N` branch, and the `metadata_restored`
+  // branch) inherit. Without it, a nameless / non-object entry projects to
+  // `{orcid_verified, orcid_discrepancy}` with `name === undefined`, breaking
+  // the `PaperAuthor.name: string` invariant at the route surfaces.
+  //
+  // Existing direct `applyAuthorSupersession` tests stage only hive-bearing
+  // entries (which always resolve a name via the fallback chain), so the drop
+  // itself is not exercised by them. The matching SQL-side degenerate drop is
+  // pinned by `hafsql.test.ts`'s real-Postgres cascade-fail defense; this is
+  // the JS-side mutation-kill companion.
+
+  it('drops entries that resolve no name via the soundness filter', () => {
+    // Mutation-kill: comment out the `.filter((a): a is ... => typeof a.name
+    // === 'string')` line at the end of `applyAuthorSupersession` → the
+    // nameless `{affiliation:'x'}` entry survives with `name === undefined`,
+    // length becomes 2, and the survivor assertion below fails.
+    const out = applyAuthorSupersession(
+      [{ affiliation: 'x' }, { name: 'Alice', hive: 'alice' }],
+      new Map(),
+      new Map(),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe('Alice');
+    expect(out[0].hive).toBe('alice');
+    // Supersession defaults still ride along on the survivor — the drop is
+    // about the nameless entry only.
+    expect(out[0].orcid_verified).toBeNull();
+    expect(out[0].orcid_discrepancy).toBe(false);
+  });
+
+  it('drops non-object entries (string, null) that resolve no name', () => {
+    // Non-object entries take the `!entry || typeof entry !== 'object'` arm
+    // and project to `{orcid_verified: null, orcid_discrepancy: false}` with
+    // no `name` key, so the soundness filter drops them.
+    const out = applyAuthorSupersession(
+      ['alice', null, { name: 'Bob', hive: 'bob' }],
+      new Map(),
+      new Map(),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe('Bob');
+    expect(out[0].hive).toBe('bob');
+  });
+});
+
 describe('affiliation parameterization (PaperSummary omits, PaperDetail retains)', () => {
   it('list endpoint SQL omits the affiliation projection from the authors jsonb_build_object', async () => {
     // PaperSummary's `authors[]` schema (see `agents/docs/api-contracts/papers.md`)

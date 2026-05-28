@@ -16,11 +16,16 @@ export interface PaperAuthor {
    *   - SQL surfaces (`authorsWithSupersessionSelect` projection): the
    *     `jsonb_build_object` emits both supersession keys for every author
    *     entry the projection processes, defaulting to null/false via the
-   *     CASE arms.
-   *   - JS surfaces (`applyAuthorSupersession`): both supersession keys are
-   *     emitted for every output entry, including the non-object-entry
-   *     branch which projects to `{orcid_verified: null, orcid_discrepancy:
-   *     false}` (no name/hive/orcid/affiliation propagation).
+   *     CASE arms. The projection's outer WHERE drops entries that resolve
+   *     no `name` via the name-COALESCE chain, so degenerate / nameless
+   *     entries never reach the response.
+   *   - JS surfaces (`applyAuthorSupersession`): non-object entries and
+   *     fully-empty object entries resolve no `name` via the fallback chain
+   *     and are filtered out by the helper's name-soundness drop before
+   *     reaching any caller. Only entries that resolve a `name` survive,
+   *     and those survivors always carry both supersession keys (defaulting
+   *     to null/false when the hive is absent / unaccredited / carries no
+   *     attested ORCID).
    *
    *  Both fields stay type-optional on `PaperAuthor` so partial-fixture
    *  construction (test inputs that pre-date supersession, manual
