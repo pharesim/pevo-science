@@ -53,3 +53,11 @@ Folded elsewhere, NOT held here: the `§ 2.10`/`§ 2.11` section-number comment 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-2 review scopes to the fix commit(s) only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-28, working tree)
+
+Round-1 hold item 1 landed. New HAF-free SQL-shape canary for the reputation-cycle surface: `tests/routes/reputation-approve-signer-gate-cycle-sql-shape.test.ts`. It mocks `getPool` with a capturing pool, drives `computeReputationBatch(['some-target-user'], {}, 12345)` (cycleEndBlock + prevScores provided so the run reaches the inline `accepted_claims` query without the head-block / prev-score reads), captures the emitted SQL, and asserts `ap.approver IN (ap.paper_author, $18)` appears EXACTLY TWICE — once in the "Explicitly approved" EXISTS arm and once in the revoke-override `MAX(approve_block)` subquery. Pinning the exact `$18` catches a bridge-param insertion/drift; requiring two occurrences catches a predicate removal from either arm alone. Runs regardless of HAF configuration (carve-out (a)(b)(c) header documents the mocked getPool).
+
+Placement deviation from the hold's filing assumption: the canary landed in a NEW file rather than `authorship-approve-signer-gate.test.ts`. That file's existing synthetic-VALUES tests use the REAL `getPool` against real Postgres, so a file-level `getPool` mock for the cycle canary is incompatible with them; the new file isolates the mock. A side effect is that `authorship-approve-signer-gate.test.ts` is no longer touched by this task, so the `backend-anchor-rot-sweep` Cluster-C §-anchor reanchor of that file proceeds with no clobber.
+
+Test-only change (no production source touched). Verification: `npm run typecheck` (src + tests) clean; the new canary green; the existing read-surface synthetic-VALUES tests in `authorship-approve-signer-gate.test.ts` are untouched and green.
