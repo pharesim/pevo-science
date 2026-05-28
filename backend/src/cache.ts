@@ -4,7 +4,14 @@
  *
  * Single-flight coalescing: `getOrSet` and the `getOrSetSWR` cold-path
  * deduplicate concurrent same-key fetcher invocations via a SHARED in-process
- * `Map<prefixedKey, Promise<T|null>>` (`this.inflight`). On cache miss (for
+ * `Map<string, Promise<unknown>>` (`this.inflight`); each method casts the
+ * retrieved promise to its local `T` on lookup. The two methods use DISTINCT
+ * in-flight keys for the same logical cache key — `getOrSet` keys on the
+ * prefixed cache key, the `getOrSetSWR` cold-path prefixes a `swr-cold:`
+ * segment — so a key used by both methods never coalesces ACROSS them (which
+ * would let an SWR caller await a `getOrSet` promise that never writes the
+ * stale key, silently disabling stale-while-revalidate); concurrent
+ * cold-misses WITHIN a method still share one fetcher. On cache miss (for
  * SWR, when both the fresh and stale keys are absent), the first caller's
  * fetcher runs once; concurrent callers for the same key await that same
  * promise. Null resolutions are NOT cached (honoring the existing skip-on-null
@@ -87,9 +94,11 @@ export class QueryCache {
   // `clear`/`invalidate`/`invalidatePrefix` which can target either tier).
   // `stableEpoch` is bumped only by methods that flush stable entries
   // (`clear`/`invalidate`/`invalidatePrefix` — NOT `clearVolatile`, which
-  // never deletes stable entries). `getOrSet` captures both at fetcher
-  // start and gates its cache-write on the counter(s) for the entry's
-  // tier. See class-level docblock.
+  // never deletes stable entries). All four success-path write sites —
+  // `getOrSet`, the `getOrSetSWR` cold-path, the `revalidate` helper, and the
+  // `registerPeriodicRefresh` reload closure — capture both at fetcher start
+  // and gate their cache-write on the counter(s) for the entry's tier. See
+  // class-level docblock.
   private volatileEpoch = 0;
   private stableEpoch = 0;
   private defaultTtlMs: number;
@@ -255,8 +264,16 @@ export class QueryCache {
     }
 
     // Cold-path single-flight: coalesce concurrent cold-misses on the shared
-    // in-flight map (keyed on the prefixed cache key, as in `getOrSet`).
-    const inflightKey = this.prefix + key;
+    // in-flight map. The key carries a `swr-cold:` segment so it can NEVER
+    // collide with a `getOrSet` in-flight slot for the same logical cache key:
+    // the two methods are independently generic and write different things
+    // (`getOrSet` writes only the fresh key; this cold-path writes the fresh
+    // key AND the stale key), so an SWR caller coalescing onto a `getOrSet`
+    // promise would silently skip the stale-key write and disable
+    // stale-while-revalidate. Distinct in-flight keys make that collision
+    // impossible by construction; concurrent cold-misses within this method
+    // still share one fetcher (same namespaced key).
+    const inflightKey = `${this.prefix}swr-cold:${key}`;
     const existing = this.inflight.get(inflightKey) as Promise<T> | undefined;
     if (existing !== undefined) {
       return existing;

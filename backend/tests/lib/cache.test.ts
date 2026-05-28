@@ -457,6 +457,18 @@ describe('QueryCache — invalidation-during-flight prevents stale recache on SW
     // (deleted by invalidate) stays cold rather than being re-populated with
     // the pre-invalidation snapshot.
     expect(await cache.get('swr-reval')).toBeUndefined();
+
+    // Stale-key suppression: `invalidate('swr-reval')` deletes only the fresh
+    // key, NOT the `swr:` stale key (invalidate is not a stale-key delete
+    // primitive today). So the load-bearing check is that the epoch-suppressed
+    // revalidate did NOT overwrite the stale key with its pre-invalidation
+    // snapshot: the stale key still holds the pre-revalidate 'v1', not
+    // 'v2-stale-snapshot'. A split-gate regression that gated the fresh-key
+    // write but left the stale-key write ungated would flip this to
+    // 'v2-stale-snapshot'. (The cold-path spec asserts both keys undefined
+    // because nothing pre-existed there; here a prior stale value exists, so
+    // suppression manifests as the OLD value surviving rather than undefined.)
+    expect(await cache.get('swr:swr-reval')).toEqual({ value: 'v1' });
   });
 
   it('registerPeriodicRefresh.reload: a flush during an in-flight reload suppresses the reload cache-write', async () => {
@@ -491,5 +503,152 @@ describe('QueryCache — invalidation-during-flight prevents stale recache on SW
     await regPromise;
     expect(slowFetcher).toHaveBeenCalledTimes(1);
     expect(await cache.get('periodic-key')).toBeUndefined();
+  });
+});
+
+describe('QueryCache — clearVolatile() tier distinction on SWR cold-path / revalidate / periodic-refresh', () => {
+  let cache: QueryCache;
+
+  beforeEach(() => {
+    cache = new QueryCache(
+      30_000,
+      `test:cache-swr-tier:${Date.now()}:${Math.random().toString(36).slice(2)}:`,
+    );
+  });
+
+  // The `clear()` / `invalidate()` invalidation specs above bump BOTH per-tier
+  // counters, so they pass whether a guard reads the correct counter or the
+  // wrong one. These companions use `clearVolatile()` — which bumps ONLY
+  // `volatileEpoch` and deletes only non-stable entries — to distinguish the
+  // tier each NEW guarded site reads, mirroring the existing `getOrSet`
+  // clearVolatile STABLE / NON-stable specs.
+
+  it('getOrSetSWR cold-path STABLE: clearVolatile() mid-flight does NOT suppress the write (gate reads stableEpoch)', async () => {
+    // A STABLE cold-path entry whose fetcher is in flight when a block tick
+    // calls clearVolatile() must STILL write on resolution — clearVolatile
+    // bumps only volatileEpoch and never deletes stable entries.
+    //
+    // Mutation-kill: if the cold-path stable gate read volatileEpoch instead
+    // of stableEpoch, clearVolatile would suppress the write and both keys
+    // would be undefined — flipping these assertions RED.
+    const fetcher = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return { value: 'stable-swr' };
+    });
+
+    const inflightCall = cache.getOrSetSWR('swr-stable', fetcher, undefined, 300_000, true);
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.clearVolatile();
+
+    expect(await inflightCall).toEqual({ value: 'stable-swr' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    // Stable gate reads stableEpoch (untouched by clearVolatile), so BOTH the
+    // fresh-key and stale-key writes proceed.
+    expect(await cache.get('swr-stable')).toEqual({ value: 'stable-swr' });
+    expect(await cache.get('swr:swr-stable')).toEqual({ value: 'stable-swr' });
+  });
+
+  it('getOrSetSWR cold-path NON-stable: clearVolatile() mid-flight suppresses BOTH writes (gate reads volatileEpoch)', async () => {
+    // A NON-stable cold-path entry IS flushed by clearVolatile(), so its
+    // in-flight fetcher must NOT write its pre-flush snapshot back.
+    //
+    // Mutation-kill: dropping the volatileEpoch conjunct from the cold-path
+    // non-stable gate (so it reads only stableEpoch, which clearVolatile
+    // leaves untouched) lets both writes proceed — flipping these RED.
+    const fetcher = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return { value: 'volatile-swr' };
+    });
+
+    const inflightCall = cache.getOrSetSWR('swr-volatile', fetcher); // non-stable default
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.clearVolatile();
+
+    expect(await inflightCall).toEqual({ value: 'volatile-swr' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    // Non-stable gate reads BOTH epochs; clearVolatile bumped volatileEpoch, so
+    // both the fresh-key and stale-key writes are suppressed.
+    expect(await cache.get('swr-volatile')).toBeUndefined();
+    expect(await cache.get('swr:swr-volatile')).toBeUndefined();
+  });
+
+  it('revalidate STABLE: clearVolatile() mid-refresh does NOT suppress the re-cache (gate reads stableEpoch)', async () => {
+    // Prime a STABLE entry, expire the fresh key, take the stale-warm path to
+    // trigger a background revalidate, then fire clearVolatile() mid-refresh.
+    // The stable revalidate gate reads stableEpoch (untouched), so the write
+    // proceeds.
+    //
+    // Mutation-kill: if revalidate's stable gate read volatileEpoch,
+    // clearVolatile would suppress and the stale key would keep 'v1' — RED.
+    await cache.getOrSetSWR('swr-reval-stable', vi.fn().mockResolvedValue({ value: 'v1' }), 25, 300_000, true);
+    await new Promise((r) => setTimeout(r, 80));
+
+    const slowRefresh = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      return { value: 'v2' };
+    });
+    const stale = await cache.getOrSetSWR('swr-reval-stable', slowRefresh, 25, 300_000, true);
+    expect(stale).toEqual({ value: 'v1' });
+
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.clearVolatile();
+
+    await new Promise((r) => setTimeout(r, 80));
+    expect(slowRefresh).toHaveBeenCalledTimes(1);
+    // Stable revalidate write proceeded. The long-lived stale key is the robust
+    // witness: the fresh key's 25ms TTL would already have re-expired by now.
+    expect(await cache.get('swr:swr-reval-stable')).toEqual({ value: 'v2' });
+  });
+
+  it('revalidate NON-stable: clearVolatile() mid-refresh suppresses the re-cache (gate reads volatileEpoch)', async () => {
+    // NON-stable converse: clearVolatile() bumps volatileEpoch AND deletes the
+    // non-stable stale key, so the suppressed revalidate leaves both keys cold.
+    //
+    // Mutation-kill: dropping the volatileEpoch conjunct from revalidate's
+    // non-stable gate lets the re-cache proceed — flipping these RED.
+    await cache.getOrSetSWR('swr-reval-vol', vi.fn().mockResolvedValue({ value: 'v1' }), 25, 300_000);
+    await new Promise((r) => setTimeout(r, 80));
+
+    const slowRefresh = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      return { value: 'v2-stale-snapshot' };
+    });
+    const stale = await cache.getOrSetSWR('swr-reval-vol', slowRefresh, 25, 300_000);
+    expect(stale).toEqual({ value: 'v1' });
+
+    await new Promise((r) => setTimeout(r, 10));
+    await cache.clearVolatile();
+
+    await new Promise((r) => setTimeout(r, 80));
+    expect(slowRefresh).toHaveBeenCalledTimes(1);
+    // clearVolatile bumped volatileEpoch (suppressing the re-cache) AND deleted
+    // the non-stable stale key, so both keys end cold.
+    expect(await cache.get('swr-reval-vol')).toBeUndefined();
+    expect(await cache.get('swr:swr-reval-vol')).toBeUndefined();
+  });
+
+  it('registerPeriodicRefresh.reload STABLE: clearVolatile() mid-reload does NOT suppress the write (gate reads stableEpoch)', async () => {
+    // Periodic refreshes default to stable:true. A clearVolatile() block tick
+    // firing during an in-flight reload must NOT suppress the reload's write —
+    // the stable gate reads stableEpoch, which clearVolatile leaves untouched.
+    //
+    // Mutation-kill: if the reload's stable gate read volatileEpoch,
+    // clearVolatile would suppress and the key would be undefined — RED.
+    const slowFetcher = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      return { value: 'periodic-stable' };
+    });
+
+    // Do NOT await: let the initial reload run in the background so it is
+    // in-flight when the flush fires. Long interval so it never re-fires.
+    const regPromise = cache.registerPeriodicRefresh('periodic-stable-key', slowFetcher, 600_000);
+
+    await new Promise((r) => setTimeout(r, 15));
+    await cache.clearVolatile();
+
+    await regPromise;
+    expect(slowFetcher).toHaveBeenCalledTimes(1);
+    // Stable reload gate reads stableEpoch (untouched), so the write proceeds.
+    expect(await cache.get('periodic-stable-key')).toEqual({ value: 'periodic-stable' });
   });
 });
