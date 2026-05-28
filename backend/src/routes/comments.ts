@@ -95,8 +95,9 @@ async function fetchCommentsFromHaf(
     // Recursive CTE to get all discussion comments in the tree.
     // `WITH RECURSIVE` is required because `comment_tree` self-references in
     // the UNION ALL arm; PostgreSQL rejects forward references inside a
-    // non-RECURSIVE WITH (the failure is silent here — the caller catches
-    // the parse error and returns []).
+    // non-RECURSIVE WITH. A parse error here is not silent: the catch below
+    // throws `HafQueryError`, so the route returns 503/500 — it is never a
+    // silent `200 []`.
     //
     // Descent gate: the recursive arm additionally requires the parent
     // (`ct.author`) to be in `active_accreditations`. The base arm matches

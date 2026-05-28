@@ -101,3 +101,11 @@ Verification: `npm run typecheck` clean; `tests/routes/comments.test.ts` 8/8 pas
 When the reword lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-4 review scopes to the fix commit only. Do not edit this hold block; the commit diff is the evidence.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-28) — round-3 item 1 resolved
+
+Reworded the `WITH RECURSIVE` docblock parenthetical in `fetchCommentsFromHaf`. The stale text ("the failure is silent here ... the caller catches the parse error and returns []") now states the opposite and correct behavior: a parse error is **not** silent — the catch below throws `HafQueryError`, so the route returns 503/500, never a silent `200 []`. Anchored on the `HafQueryError` symbol and "the catch below" (behavioral); no line/round/slug markers. Left the accurate `200 []` counterfactual inside the catch block untouched per the hold's NOTE.
+
+Verification: `npm run typecheck` clean. Comment-only change — no behavior, query, or test surface touched, so the round-2 test posture (8/8 in isolation) is unaffected.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
