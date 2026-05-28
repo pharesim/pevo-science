@@ -51,8 +51,7 @@
  * Spec
  * ----
  * `agents/docs/ARCHITECTURE.md` section 2 "Light-account signing of consent
- * ops". Round-3 implementation of
- * `agents/docs/tasks/pending/backend-coauthor-trust-model.md`.
+ * ops".
  */
 
 import crypto from 'node:crypto';
@@ -334,9 +333,7 @@ interface IssuedFreshAuth {
  * (route handler) is responsible for verifying the user actually proved
  * control via that mechanism BEFORE calling this function. The caller is
  * also responsible for sourcing the target from the actual op the user
- * intends to authorize — see the SPA wire-shape note in the `[TODO UI]`
- * paragraph of the round-5 signal block in
- * `agents/docs/tasks/pending/backend-coauthor-trust-model.md`.
+ * intends to authorize.
  *
  * Round-5 hold #3: the proof is bound to the consent op via a SHA-256 of
  * the target triple. Without this bind the proof was 1-fold-amplifiable: a

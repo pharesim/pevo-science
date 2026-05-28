@@ -1,9 +1,12 @@
 /**
  * Multi-author trust model: vouched-set computation helpers.
  *
- * Round 1 of the Phase 2 implementation of `backend-coauthor-trust-model`.
- * Ships the read-time vouched-set computation as a fetch + pure compute
- * split. Round 2 wires it into `resolveContinuationChain`'s admit gate.
+ * Read-time vouched-set computation as a fetch + pure-compute split
+ * (`fetchConsentOpsForPaper` + `computeVouchedAuthors`). NOTE: these
+ * primitives are not yet wired into any read path — `resolveContinuationChain`
+ * currently reconstructs cumulative-union membership only and does not apply
+ * accept/resign vouched-status decay. Wiring the consent layer into the
+ * admit gate is pending follow-up.
  *
  * Spec: `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust Model"
  *   - "Vouched vs claimed authorship": a claimed author is **vouched** iff
@@ -18,9 +21,7 @@
  *     `hafsql.operation_custom_json_view` does NOT expose `trx_in_block`,
  *     but its `id` column is the HAF operation id (monotonic per chain;
  *     within a block, higher `id` = later op). Using `id` as the same-block
- *     tie-breaker is operationally equivalent. See [TODO Architect] in the
- *     round-1 signal block of `backend-coauthor-trust-model.md` for the
- *     ARCH.md/convention-doc spec update.
+ *     tie-breaker is operationally equivalent.
  *   - Rule 5: signer-to-payload-subject binding. The `author_accept` /
  *     `author_resign` payload schema has no subject identity field; the
  *     chain signer IS the implicit accepter/resigner. The validity rule

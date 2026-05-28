@@ -75,7 +75,7 @@ After implementation, append a row to the API contract index (`agents/docs/api-c
 
 ---
 
-## [BLOCKED by Backend] (backend startup triage 2026-05-05) — block-note refreshed 2026-05-11
+## [BLOCKED by Architect] (originally backend startup triage 2026-05-05; refreshed 2026-05-11, 2026-05-28 — re-owned to Architect, see latest refresh)
 
 The `GET /api/me/authorships/pending` endpoint requires the vouched-set computation specified in `backend-coauthor-trust-model.md` Phase 2 (see this task's "Dependencies" clause above). Phase 2 has not started in code — none of the new `custom_json` op handlers (`AuthorAcceptAction`/`AuthorResignAction`), the read-time vouched-set lookup, or the migration-day flag exist yet. Without those, this endpoint cannot identify "claimed-pending" authorships.
 
@@ -89,3 +89,17 @@ The dependency framing above is partly stale. Status today:
 - **Phase 4 (migration-day flag) has not started.** Until the flag flips, every existing co-author is implicitly vouched and this endpoint's "pending" set is empty by construction. The migration banner the endpoint serves cannot fire pre-flag.
 
 Net: task remains blocked. The accurate gate now is "`backend-multi-author-cumulative-union.md` archives AND the Phase 4 migration-day flag starts." When the cumulative-union task archives, re-evaluate whether this endpoint can ship ahead of the migration-day flag (the primitives would let it answer correctly; the only consumer is the migration banner which doesn't exist yet).
+
+### Block-note refresh 2026-05-28 (backend startup triage) — re-owned to Architect
+
+The 2026-05-11 framing above is now itself stale, and the underlying rollout has fragmented. Verified state as of 2026-05-28:
+
+- **The named gate is gone.** The "cumulative-union / `backend-coauthor-trust-model`" work archived (`backend-coauthor-trust-model` at commit `d7a25b6e`, round-5 clean), and the entry has since been trimmed out of `tasks-archive.md`'s 250-line cap. The membership/identity successor `backend-author-identity-model` is in `tasks/review/` (not archived); it scopes name-supersession + Hive-less co-author persistence in the cumulative union, NOT the consent layer.
+- **The "implicitly vouched until flag-day" premise was imprecise.** `computeVouchedAuthors` (`consent-ops.ts`) grandfathers no one — vouched = root-broadcaster OR a valid `author_accept`. The real reason the pending set is empty today is structural, not a flag state: **the consent-decay layer is not wired into any read path at all.** The `fetchConsentOpsForPaper` / `computeVouchedAuthors` primitives exist but are orphaned (zero read-path callers); `resolveContinuationChain` reconstructs cumulative-union *membership* only and never applies accept/resign decay (see the reworded comment in `papers.ts`'s detail head-meta block). So no co-author is demoted to claimed-pending in production today and no user is stranded — this endpoint is correct-but-premature, not urgent.
+- **Real remaining prerequisites, both untracked by any live task:** (a) wire the consent-decay layer (apply `computeVouchedAuthors` at read time so "vouched vs claimed-pending" is a real product state), and (b) the migration-day hard-cutover flag (ARCH.md § 2 "Hard cutover"). Per ARCH.md § 2 (the "flag-day deploy depends on two follow-up surfaces" paragraph), this endpoint is a **co-requisite of** flag-day, not downstream of it — flag-day must not ship without it and the UI banner.
+
+**Why re-owned to Architect:** the unblock path is no longer prior *backend* work (the primitive it needs already exists). It is a rollout-sequencing + task-creation decision the architect owns: the trust-model consent layer landed its primitives and then stalled with no live task tracking the read-path integration or the migration flag, and `ARCHITECTURE.md` § 2 still describes a flag-day cutover that has no implementation path scheduled.
+
+**[TODO Architect]** Re-scope the multi-author consent-layer rollout: (1) decide whether to file a task to wire `computeVouchedAuthors` into `resolveContinuationChain`'s read path (the "Phase 2 consent layer" the orphaned primitives were built for), (2) scope the migration-day flag, and (3) sequence this endpoint + `ui-multi-author-consent-affordances` into that cutover bundle. Until that sequencing exists, this task stays blocked. The primitives and this endpoint's data shape are ready whenever the bundle is scheduled.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

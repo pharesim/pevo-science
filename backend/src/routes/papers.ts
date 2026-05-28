@@ -1566,10 +1566,11 @@ async function fetchPaperDetailFromHaf(
         //     citations, language, supplementary_files) evolve normally
         //     as part of legitimate version progression and are
         //     head-preferred.
-        // Phase 2 of `backend-coauthor-trust-model.md` layers the full
-        // accept/resign consent ops on top of the cumulative union; the
-        // union is monotonic membership, vouched-status decays under
-        // resign — orthogonal dimensions.
+        // The accept/resign consent layer (read-time vouched-status decay)
+        // is a separate dimension layered on top of this cumulative union:
+        // the union is monotonic membership, vouched-status decays under
+        // resign — orthogonal. The `computeVouchedAuthors` primitive exists
+        // but no read path applies it yet (membership-only reconstruction).
         const headMeta = latest.json_metadata;
         if (isPevoAnyPaper(headMeta, latest.post_author)) {
           const rootPevo = safePevoMeta(meta);
