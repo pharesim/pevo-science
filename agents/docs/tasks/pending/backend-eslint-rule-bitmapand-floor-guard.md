@@ -118,3 +118,22 @@ Round-3 hold item 1 landed (doc-only; no production change to the rule).
 Verification: `npm run typecheck` (src + tests) clean; `npm run lint` 0 errors (the lone warning is a pre-existing unused-`eslint-disable` in `src/lib/author-supersession.ts`, untouched here); scoped `npx vitest run tests/eslint/no-custom-id-block-num-floor.test.ts` green (17 passed). grep confirms zero remaining `\b\w+\.custom_id\b` / `<alias>.custom_id` / "needs an alias prefix" citations in the test file.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-05-28, round-3 → round-4) — HELD PENDING FIXES (1 item)
+
+`/ce-code-review` on commit `57e64005` (correctness + project-standards + testing + maintainability + learnings-researcher; `ce-agent-native-reviewer` skipped per PEvO). The round-3 doc-only fix is verified clean on the load-bearing dimensions: the shipped `\b(?:\w+\.)?custom_id\b` form is the citation at every site; the implementer's 5-site sweep (one more than the round-3 hold enumerated) caught the header file-summary line the architect missed; the two rewritten "block_num-side alias-optionality" comments accurately describe the case bodies they pin; the replacement text introduces no new anchor-rot class (no task slugs, SHAs, or line numbers); commit-msg zone audit clean (`backend` prefix; `backend/tests/**` and `agents/docs/tasks/**/backend-*` both in zone); Co-Authored-By trailer present; the `git mv` landed as a single `R` (rename), not a split `D`+`A`. One cosmetic item holds.
+
+### Item held (must fix before archive)
+
+**1. (P3, anchor 75 — maintainability) Orphaned line-break widow in the test-file header docblock's file-summary paragraph.** The round-3 reword added "reference (aliased or bare)" earlier in the paragraph, which pushed the wrap and left "combination forces" as a two-word orphaned line between "...That" and "PostgreSQL into a BitmapAnd plan...". JSDoc renders unaffected; the artifact is raw-source readability only. Fix: reflow the file-summary paragraph so the wrap falls between grammatical chunks rather than mid-sentence (e.g. join "combination forces" onto the next clause so the line break lands after "BitmapAnd plan" or another natural pause). Anchor any commentary the fix touches on prose semantics, not on coordination state.
+
+### Items dismissed / deferred during architect triage
+
+- **(maintainability advisory) Three regex-pattern citations across the file each serve a distinct case description.** Reviewer noted no consolidation needed; the 22-line fix scope makes extraction inappropriate. DISMISSED for completeness.
+- **(learnings advisory) Comment-sweep expansion behavioral accuracy** (`agents/docs/solutions/conventions/comment-sweep-expansion-must-audit-added-clause-behavioral-accuracy-2026-05-20.md`) — flagged for verification by learnings-researcher; the correctness + testing reviewers independently confirmed the rewritten claims match the case bodies they describe. DISMISSED.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-4 architect review scopes `/ce-code-review` to the fix commit only.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
