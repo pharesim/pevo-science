@@ -1,5 +1,5 @@
 /**
- * HAF-free SQL-shape canary for the §2.10 approve_authorship signer gate on the
+ * HAF-free SQL-shape canary for the approve_authorship signer gate on the
  * REPUTATION CYCLE surface (`computeReputationBatch`'s inline `accepted_claims`
  * CTE in `reputation.ts`).
  *

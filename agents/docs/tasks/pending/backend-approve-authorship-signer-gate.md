@@ -71,3 +71,7 @@ Test-only change (no production source touched). Verification: `npm run typechec
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-3 review scopes to the fix commit(s) only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-28, working tree)
+
+Round-2 hold item 1 landed. Dropped the `§2.10` schema-section prefix from the canary file's header docblock (`reputation-approve-signer-gate-cycle-sql-shape.test.ts`); the opening line now reads "HAF-free SQL-shape canary for the approve_authorship signer gate on the REPUTATION CYCLE surface…", anchoring on the stable op-action string. Swept the whole file for other `§ N.N` / schema-section citations: none found (the original `§2.10` was the sole occurrence). Replacement text introduces no slug/round/line/SHA anchor — the remaining anchors are stable symbols (`computeReputationBatch`, `accepted_claims`, `authorshipClaimsCteBody`, `authorship-approve-signer-gate.test.ts`) and behavioral names. Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean (0 errors; the 1 pre-existing warning in `lib/author-supersession.ts` is untouched); the canary green (1 test passed) when run directly.
