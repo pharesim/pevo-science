@@ -64,3 +64,24 @@ The round-2 re-review of `backend-confirm-concurrent-activation-lock` surfaced t
 3. **`lock_timeout`→55P03→500 path is untested.** The round-2 log-shape test injects its synthetic failure on the no-op `SET LOCAL lock_timeout` statement (before any lock is held or row written), so the inner-catch ROLLBACK it drives is empty and the real lock-acquisition-timeout→500 mapping plus connection-release-on-timeout has no direct coverage. The redesign will write fresh tests for whatever timeout/dedup mechanism replaces `lock_timeout`; **acceptance below should pin that mechanism's contention-timeout behavior** — a synthetic 55P03-coded injection at the lock-acquisition query is the cheap shape (mirrors the existing `(pool as any).connect` injection shim), or assert the connection-releases-without-500 property if the redesign removes the timeout entirely.
 
 See this task's Coordination section above (the interim `lock_timeout` and "connection intentionally held" comment are explicitly superseded by this redesign).
+
+## Backend completion signal (2026-05-28) — implemented in commit `e48b1d60`; task file was stranded in `pending/`
+
+The redesign landed in `e48b1d60` (a prior backend session) but the task file was never `git mv`d out of `pending/`. A subsequent backend startup verified the implementation against the acceptance criteria and the carried-forward review residuals, ran the targeted suite green, and moved the file to `review/`. No re-implementation; this is the normal pending→review transition.
+
+**What landed (`e48b1d60`):**
+- New `backend/src/lib/signup-activation-lock.ts` — per-`auth_token` activation lock (`acquireSignupActivationLock`) replacing the cross-broadcast pg advisory lock. The broadcast now runs with NO pooled connection held (closes Facet 2 pool-saturation); the lock survives connection release and gives single-fire across the ~30s broadcast.
+- `signup-verify.ts` `/confirm` + `/link` reworked: encrypt-before-broadcast (key-config error → 500 before any claim-token burn), `resumeChainExists` path (verify_token-set + chain-account-exists crash gap → resumes storing keys + clearing verify_token WITHOUT re-broadcasting, closes Facet 1), and the slow-holder lock-contention path now returns a retriable 409 LOCK_HELD instead of a spurious 500 (carried-forward residual #1).
+
+**Acceptance ↔ test mapping (`signup-verify-activation-recovery.test.ts` + `-concurrent-activation.test.ts`):**
+- Crash-resume w/o re-broadcast or 2nd token burn → `resumes (stores keys, clears verify_token) without re-broadcasting ... or burning a second token`
+- Encrypt-fail-fast before chain op → `misconfigured CUSTODY_ENCRYPTION_KEY fails (500) BEFORE createClaimedAccount fires`
+- No pool starvation across broadcast → `max concurrent distinct-token activations leave the pool free for other queries mid-broadcast`
+- Single-fire invariant → `two concurrent /confirm ... exactly one 200, createClaimedAccount called at most once` (+ `/link` variant)
+- Residual #1 (slow-holder → graceful, not 500) → `returns a retriable 409 LOCK_HELD (not 500) when a holder keeps the lock past the wait budget`
+
+**Verification (2026-05-28):** `signup-verify-activation-recovery.test.ts`, `signup-verify-concurrent-activation.test.ts`, `signup-verify.test.ts` → 19/19 passing against real Postgres/Redis (file-serialized). `npm run typecheck` was clean as of `e48b1d60`; no further source change in this transition.
+
+**Residuals #2/#3 disposition:** both are conditioned on the interim `lock_timeout` mechanism, which this redesign removed. #2 (the `hashtext`-collision docblock that referenced the 45s bound) and #3 (the untested `lock_timeout`→55P03→500 path) are obsolete; the new lock-contention behavior is instead covered by the `retriable 409 LOCK_HELD` test above. Flagging for architect confirmation during review.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
