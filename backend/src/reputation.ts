@@ -472,8 +472,8 @@ export async function computeReputationBatch(
           cj.json::jsonb ->> 'paper_author' AS paper_author,
           cj.json::jsonb ->> 'paper_permlink' AS paper_permlink,
           (cj.json::jsonb ->> 'author_index')::int AS author_index,
-          -- On-chain signer of the op; for approve_authorship (§2.10) this is
-          -- the approver, gated to post author / bridge in the arms below.
+          -- On-chain signer of the op; for approve_authorship this is the
+          -- approver, gated to post author / bridge in the arms below.
           cj.required_posting_auths ->> 0 AS approver,
           cj.block_num
         FROM ${T.customJson} cj
@@ -515,11 +515,12 @@ export async function computeReputationBatch(
               ), 0)
           )
           AND (
-            -- Explicitly approved. §2.10 signer gate: a self-signed approve
-            -- (signer = claimer) is not a valid trust grant; only the post
-            -- author or the bridge account can approve a co-author claim.
-            -- Mirrors authorshipClaimsCteBody's approvals arm on the read
-            -- surface so cycle and read surfaces resolve claims identically.
+            -- Explicitly approved. approve_authorship signer gate: a
+            -- self-signed approve (signer = claimer) is not a valid trust
+            -- grant; only the post author or the bridge account can approve a
+            -- co-author claim. Mirrors authorshipClaimsCteBody's approvals arm
+            -- on the read surface so cycle and read surfaces resolve claims
+            -- identically.
             EXISTS (
               SELECT 1 FROM claim_events ap
               WHERE ap.action = 'approve_authorship'

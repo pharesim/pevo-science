@@ -127,3 +127,19 @@ Out of scope for Cluster C: a project-wide `§ N.M` audit. Other files carrying 
 When Cluster C lands, `git mv` this file back to `tasks/review/` — the move is the re-review signal, scoped to the Cluster-C commit(s).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-28, working tree) — Cluster C
+
+Reanchored every authorship signer-gate `§ N.M` citation onto the op `action` string (`claim_authorship` / `approve_authorship` / `revoke_authorship`), preserving each behavioral statement (an approve is valid only when signed by the post author or the bridge account; revoke is signer-permissive — the claimer may self-revoke):
+
+- `backend/src/hafsql.ts` `authorshipClaimsCteBody`: the docblock's `§2.9/§2.10/§2.11` op-asymmetry list (now anchored on the action strings), the `approve_authorship signer gate` comment above `bridgeIdx`, the `claim_events` `approver` projection comment, and the `approvals`-arm `§2.10 signer gate` comment.
+- `backend/src/reputation.ts` `computeReputationBatch` `accepted_claims`: the `approver` projection comment and the "Explicitly approved" `§2.10 signer gate` comment.
+- `backend/tests/routes/authorship-approve-signer-gate.test.ts`: the file-header `§2.10` reference plus the three inline `§2.10`/`§2.11` comments.
+
+Audit-own-replacement: no task slug, SHA, line-number, round-N marker, or new `§ N.M` anchor introduced.
+
+**Escape-hatch retention (acceptance item 3).** The post-sweep grep over the three files retains exactly THREE hits — the `§ 1.1` "Canonical SQL pattern" supersession citations in `authorsWithSupersessionSelect` (a different function and concern: name/ORCID supersession, not the authorship signer gate). These are OUT of Cluster C's named scope (`authorshipClaimsCteBody` + `accepted_claims` + the test header), and Cluster C explicitly excludes "a project-wide `§ N.M` audit … not swept en masse here." They cite a section TITLE ("Canonical SQL pattern"), not a bare number, and are coupled to the pending `§ 1.1` doc rewrite in `architect-cumulative-union-doc-edits` (blocked). Electing to KEEP them per the acceptance item-3 escape hatch; recommend folding their reanchor into the `§ 1.1` doc-rewrite work, or sweeping on the next touch of `authorsWithSupersessionSelect` per the convention's "added by default on next touch."
+
+Coordination note (resolved): the `backend-approve-authorship-signer-gate` cycle-surface canary landed in a NEW file (`reputation-approve-signer-gate-cycle-sql-shape.test.ts`), so `authorship-approve-signer-gate.test.ts` was NOT touched by that task — no clobber; this sweep reanchored that file cleanly.
+
+Comment-only change. Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean (1 pre-existing unrelated `no-control-regex` unused-disable warning in `author-supersession.ts`, untouched); touched files green at parity (`hafsql.test.ts`, `authorship-approve-signer-gate.test.ts`, `reputation-orcid-auto-accept-authority-gate.test.ts`, and the new cycle canary).

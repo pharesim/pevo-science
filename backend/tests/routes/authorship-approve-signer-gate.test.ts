@@ -1,5 +1,5 @@
 /**
- * Behavioral regression for the §2.10 signer gate on the approve_authorship
+ * Behavioral regression for the signer gate on the approve_authorship
  * arm of `authorshipClaimsCteBody` (the read-surface claim resolver in
  * `hafsql.ts`). The reputation cycle's inline `accepted_claims` CTE in
  * `reputation.ts` applies the identical predicate; the two surfaces are kept
@@ -113,8 +113,9 @@ describe('authorshipClaimsCteBody approve_authorship signer gate (synthetic-VALU
       if (!pool) return ctx.skip(true, 'no pool available');
 
       // Self-signed: approver = claimer, neither post author nor bridge → the
-      // §2.10 gate rejects it → claim stays pending. Reverting the predicate
-      // admits the self-signed approve and flips this to 'accepted'.
+      // approve_authorship signer gate rejects it → claim stays pending.
+      // Reverting the predicate admits the self-signed approve and flips this
+      // to 'accepted'.
       expect(
         await resolveClaimStatus(pool, [claim, approveBy('claimant')]),
         'a self-signed approve must NOT resolve the claim to accepted',
@@ -127,7 +128,7 @@ describe('authorshipClaimsCteBody approve_authorship signer gate (synthetic-VALU
       ).toBe('accepted');
 
       // Control: bridge account signed the approve → accepted (the bridge
-      // approved-co-author flow per §2.10).
+      // approved-co-author flow for approve_authorship).
       expect(
         await resolveClaimStatus(pool, [claim, approveBy(config.hiveBridgeAccount)]),
         'an approve signed by the bridge account must accept',
@@ -142,7 +143,8 @@ describe('authorshipClaimsCteBody approve_authorship signer gate (synthetic-VALU
       const pool = getPool();
       if (!pool) return ctx.skip(true, 'no pool available');
 
-      // Claimer self-revokes at block 110 (permitted per §2.11). The
+      // Claimer self-revokes at block 110 (revoke_authorship is
+      // signer-permissive — the claimer may self-revoke). The
       // revoke-override MAX(approve_block) subquery uses the same signer gate,
       // so a later self-signed approve (block 120) is NOT counted and cannot
       // make the revoke look stale → the claim resolves to 'revoked'.

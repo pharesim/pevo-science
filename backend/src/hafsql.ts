@@ -633,14 +633,15 @@ export type AuthorshipClaimsScope =
  *
  * Claimer derivation:
  *   COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0)
- * This asymmetry is load-bearing, per agents/docs/hive-schemas.md:
- *   - §2.9 claim_authorship    — JSON omits `claimer` (signer IS the claimer;
- *                                 proven by required_posting_auths).
- *   - §2.10 approve_authorship — JSON includes `claimer` explicitly (signer is
- *                                 the approver, not the claimer).
- *   - §2.11 revoke_authorship  — JSON includes `claimer` explicitly (signer is
- *                                 the approver, post author, admin, or the
- *                                 claimer themselves).
+ * This asymmetry is load-bearing, per the authorship-op schemas in
+ * agents/docs/hive-schemas.md (anchored on the op `action` strings):
+ *   - claim_authorship   — JSON omits `claimer` (signer IS the claimer;
+ *                          proven by required_posting_auths).
+ *   - approve_authorship — JSON includes `claimer` explicitly (signer is
+ *                          the approver, not the claimer).
+ *   - revoke_authorship  — JSON includes `claimer` explicitly (signer is
+ *                          the approver, post author, admin, or the
+ *                          claimer themselves).
  * COALESCE yields the correct claimer for all three actions. The claimer-scope
  * filter below MUST use the identical expression as `claims_base.claimer` so
  * scoped queries see the same row set the unscoped CASE correlates against.
@@ -657,9 +658,10 @@ export function authorshipClaimsCteBody(
   scope?: AuthorshipClaimsScope,
 ): SqlFragment {
   const p = startIdx;
-  // approve_authorship signer gate (hive-schemas §2.10): an approve is only
-  // valid when signed by the post author or the bridge account. bridgeIdx
-  // binds config.hiveBridgeAccount for that IN-list; scope params follow it.
+  // approve_authorship signer gate (per agents/docs/hive-schemas.md): an
+  // approve is only valid when signed by the post author or the bridge account.
+  // bridgeIdx binds config.hiveBridgeAccount for that IN-list; scope params
+  // follow it.
   const bridgeIdx = p + 3;
   let scopeIdx = p + 4;
   let scopeFilter = '';
@@ -689,7 +691,7 @@ export function authorshipClaimsCteBody(
       cj.json::jsonb ->> 'paper_permlink' AS paper_permlink,
       (cj.json::jsonb ->> 'author_index')::int AS author_index,
       cj.block_num,
-      -- On-chain signer of the op. For approve_authorship (§2.10) this is the
+      -- On-chain signer of the op. For approve_authorship this is the
       -- approver, which the approvals arm below gates to post author / bridge.
       cj.required_posting_auths ->> 0 AS approver,
       cj.json::jsonb ->> 'timestamp' AS event_timestamp
@@ -741,9 +743,10 @@ export function authorshipClaimsCteBody(
             AND ap.paper_author = cb.paper_author
             AND ap.paper_permlink = cb.paper_permlink
             AND ap.block_num > cb.block_num
-            -- §2.10 signer gate: a self-signed approve (signer = claimer) is
-            -- not a valid trust grant; only the post author or bridge can
-            -- approve a co-author claim. Mirrors reputation.ts accepted_claims.
+            -- approve_authorship signer gate: a self-signed approve (signer =
+            -- claimer) is not a valid trust grant; only the post author or
+            -- bridge can approve a co-author claim. Mirrors reputation.ts
+            -- accepted_claims.
             AND ap.approver IN (ap.paper_author, $${bridgeIdx})
         ) THEN 'accepted'
         WHEN cb.author_index IS NOT NULL AND EXISTS (
