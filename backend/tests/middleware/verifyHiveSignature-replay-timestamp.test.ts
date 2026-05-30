@@ -99,6 +99,27 @@ describe('verifyHiveSignature — replay-guard in-memory backstop', () => {
     expect(second.status).toBe(401);
     expect(second.body.error.code).toBe('UNAUTHORIZED');
   });
+
+  it('rejects a replay in the throw-then-recover ordering (SETNX throws on request 1, succeeds on request 2)', async () => {
+    // Request 1: SETNX throws (Redis flap) so the replay key is NEVER written to
+    // Redis; the sig is recorded only in the in-memory store. Redis then recovers.
+    // Request 2: SETNX succeeds against the now-absent key and would report "new"
+    // — the replay is caught only because the in-memory store is consulted
+    // unconditionally and OR-ed with the Redis result.
+    redisSetMock.mockRejectedValueOnce(new Error('command timeout during flap')).mockResolvedValue('OK');
+
+    const app = makeApp();
+    const timestamp = new Date().toISOString();
+    const body = { probe: 'throw-then-recover' };
+    const signature = sign('POST', '/probe', body, timestamp);
+
+    const first = await probe(app, signature, timestamp, body);
+    expect(first.status).toBe(200);
+
+    const second = await probe(app, signature, timestamp, body);
+    expect(second.status).toBe(401);
+    expect(second.body.error.code).toBe('UNAUTHORIZED');
+  });
 });
 
 describe('verifyHiveSignature — timestamp window (past-biased)', () => {

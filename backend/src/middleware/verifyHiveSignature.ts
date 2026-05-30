@@ -49,19 +49,26 @@ const cleanupInterval = setInterval(() => {
 cleanupInterval.unref();
 
 async function isReplaySignature(signature: string): Promise<boolean> {
+  // The in-memory store is an UNCONDITIONAL backstop: a signature recorded on a
+  // prior successful verification must be detected regardless of Redis state on
+  // EITHER request. Reading it only on the Redis-down/throw branch missed the
+  // throw-then-recover ordering — request 1's SETNX throws (so the Redis key is
+  // never written), the sig lives only in seenSignatures; Redis recovers; then
+  // request 2's SETNX succeeds against the now-absent key and reports "new". OR-ing
+  // the in-memory hit with the Redis result closes that window. Pairs with the
+  // unconditional recordSignatureInMemory on the success path.
+  const seenInMemory = seenSignatures.has(signature);
   if (isRedisAvailable()) {
     try {
       const redis = getRedis()!;
-      // SETNX returns 1 if key was set (new), 0 if already existed (replay)
+      // SETNX returns null if the key already existed (replay), non-null if new.
       const result = await redis.set(`${config.appTag}:replay:${signature}`, '1', 'EX', SEEN_SIGNATURES_TTL_SEC, 'NX');
-      return result === null; // null means key already existed
+      return result === null || seenInMemory;
     } catch (err) {
       logger.warn({ err }, 'Redis replay check failed, falling back to in-memory');
     }
   }
-  // In-memory fallback
-  if (seenSignatures.has(signature)) return true;
-  return false;
+  return seenInMemory;
 }
 
 function recordSignatureInMemory(signature: string): void {
