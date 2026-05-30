@@ -71,3 +71,40 @@ notification handling; both folded into this task with user approval:
 No i18n keys added/changed (existing placeholders reused), so no `STUBS.md`
 entry. No contract change: `notifications.md` already documents the correct wire
 shape; the frontend was the side out of sync.
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES:
+
+`/ce-code-review` of commit f5295b75 (6-persona fleet: correctness, testing,
+maintainability, project-standards, julik-frontend-races, learnings-researcher)
+confirmed the change is **functionally correct** — correctness found no logic bug,
+julik confirmed the dedup key is mechanically sound (stable across polls, no
+unbounded growth), project-standards is clean (no emdashes, comment anchors
+durable, no new i18n keys), and learnings verified the new snake_case reads match
+`api-contracts/notifications.md` exactly. One test-coverage gap blocks archive:
+
+1. **Dedup fallback legs `citing_permlink` + `paper_permlink` are untested.** This
+   commit introduced a 3-leg fallback in the store dedup key
+   (`permlink || target_permlink || citing_permlink || paper_permlink`) but added
+   keep-distinct + still-dedup tests only for the `target_permlink` (new_vote) leg.
+   Four reviewers converged here (testing P2; corroborated by correctness,
+   maintainability, julik — promoted to confidence 100). The `citing_permlink`
+   (new_citation) and `paper_permlink` (claim_*) legs face the identical
+   same-block / same-actor / different-target scenario the fix exists to handle, so
+   they need the same regression guard the vote leg got. Add to
+   `frontend/tests/unit/notifications.test.js`, each mirroring the existing
+   `target_permlink` keep-distinct test:
+   - two same-block, same-actor `new_citation` events differing only by
+     `citing_permlink` survive dedup as 2 events.
+   - two same-block, same-actor `claim_*` events (e.g. `claim_pending`) differing
+     only by `paper_permlink` survive dedup as 2 events.
+   (The still-dedup-identical case is already covered by the vote test; a second
+   copy is optional.)
+
+Surfaced but **NOT held** (tracked elsewhere, do not block on these):
+- Pre-existing `has_more` non-read in the notifications store (julik) — separate
+  reliability concern, predates this commit.
+- Pre-existing `claim_*` raw-token render + missing `notifications.md` contract
+  entry — filed as its own follow-up task (`ui-notification-claim-event-rendering`).
+- Advisory casing/comment polish (maintainability) — optional, not required.
+
+When the two tests land, `git mv` this file back to `tasks/review/`.
