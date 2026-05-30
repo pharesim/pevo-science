@@ -30,6 +30,10 @@ import { buildCanonicalAuthMessage } from '../lib/authMessage.js';
  */
 
 const MAX_SIGNATURE_AGE_MS = 60_000; // 60 seconds
+// Small forward-skew tolerance for client clock drift. The accepted window is
+// past-biased: [Date.now() - MAX_SIGNATURE_AGE_MS, Date.now() + SIGNATURE_FUTURE_SKEW_MS].
+// Mirrors the custody upgrade-proof timestamp form so the two auth paths agree.
+const SIGNATURE_FUTURE_SKEW_MS = 5_000;
 const SEEN_SIGNATURES_TTL_SEC = 300; // 5 minutes
 
 // In-memory replay cache — fallback when Redis is unavailable
@@ -121,7 +125,14 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
                 }
               }
             } catch (dbErr) {
-              logger.warn({ err: dbErr }, 'Session invalidation check failed — allowing request');
+              // Fail closed: the session-invalidation lookup is the revocation
+              // mechanism for stolen JWTs (password reset, key rotation). Honoring
+              // the JWT on a DB hiccup silently re-grants every previously-revoked
+              // token for the outage's duration. PEvO is single-instance, so a
+              // Postgres blip is whole-product downtime, not a load-balanced edge —
+              // 503 (retry) is the correct posture, not allow-through.
+              logger.error({ err: dbErr }, 'Session invalidation check failed');
+              return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Session check temporarily unavailable. Please retry.');
             }
           }
         }
@@ -152,10 +163,13 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
     return sendError(res, 401, 'UNAUTHORIZED', 'Signature already used — replay rejected');
   }
 
-  // Timestamp validation: enforce 60s window
+  // Timestamp validation: past-biased 60s window with a small forward-skew
+  // tolerance. The absolute-value form previously accepted timestamps up to 60s
+  // in the future as well, doubling a signature's effective usability window to
+  // ~120s. Reject anything beyond the forward skew or older than the max age.
   const ts = new Date(timestamp).getTime();
-  if (isNaN(ts) || Math.abs(Date.now() - ts) > MAX_SIGNATURE_AGE_MS) {
-    return sendError(res, 401, 'UNAUTHORIZED', 'Request timestamp expired or invalid (must be within 60 seconds)');
+  if (isNaN(ts) || ts > Date.now() + SIGNATURE_FUTURE_SKEW_MS || Date.now() - ts > MAX_SIGNATURE_AGE_MS) {
+    return sendError(res, 401, 'UNAUTHORIZED', 'Request timestamp expired or invalid (must be within 60 seconds).');
   }
 
   try {
@@ -199,8 +213,12 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid signature — does not match account posting key');
     }
 
-    // Record signature in memory fallback (Redis already recorded via SETNX above)
-    if (!isRedisAvailable()) recordSignatureInMemory(signature);
+    // Always record in the in-memory store after a successful verification, even
+    // when Redis is the primary replay guard. If Redis is `ready` but a later
+    // SETNX throws (network blip, command timeout, OOM eviction), isReplaySignature
+    // falls back to this store — which only detects the replay if the signature was
+    // recorded here on the original request, regardless of Redis state at the time.
+    recordSignatureInMemory(signature);
 
     req.hiveUsername = username;
     req.hiveCustody = 'self';
