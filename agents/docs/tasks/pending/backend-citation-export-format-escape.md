@@ -63,3 +63,12 @@ Apply at every interpolation site in the BibTeX and RIS builders. Audit for any 
 - RIS format spec (Research Information Systems) — line-oriented two-letter tag format, no escape mechanism.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES:
+
+`/ce-code-review` confirmed the BibTeX `@`-breakout is defeated (the brace escape neutralizes it), the single-pass `bibtexEscape` does not double-escape its own `\textbackslash{}`, and the implementation went beyond scope to cover APA too. Two items before archive:
+
+1. **Line-terminator class is too narrow.** `risEscape`, `singleLine`, and `bibtexEscape`'s CR/LF flatten strip only `[\r\n]`. Form-feed (U+000C), vertical-tab (U+000B), NEL (U+0085), U+2028, and U+2029 survive — a crafted title smuggles a forged RIS record (`TY`/`TI`/`AU`/`ER` lines) into lenient importers and splits the one-line APA citation. This is the same file-format-injection class the task exists to close, reached through a wider separator alphabet. Broaden all three helpers to a shared line-terminator class, e.g. `/[\r\n\u000b\u000c\u0085\u2028\u2029]+/g` (single shared constant so they can't drift). Add tests asserting a U+000C / U+2028 title cannot emit more than one `ER  -`/`TY  -` line and the APA stays one line.
+2. **`as string` casts now crash-reachable.** `detail.title`/`author`/`created` are cast `as string` and fed straight into the `.replace()`-calling helpers; an absent chain field would 500. Unreachable today via Hive's empty-string-title convention, but coerce defensively (`s == null ? '' : s` at the helper entry, or guard at the call site).
+
+While fixing item 1, also cover the currently-untested empty-`pevo.authors` fallback branch and the RIS `DO  -` (doi) branch. Two notes, low priority: `detail.doi` is never populated on the live `/cite` path (DOI lives at `pevo.source.doi`), so the doi-escape branch is effectively dead — decide whether to wire `detail.doi = pevo.source.doi` (so citations carry the DOI and the escape applies) or remove the dead branch. The `year = NaN` edge on a malformed `created` is unreachable (chain timestamp) — no action.

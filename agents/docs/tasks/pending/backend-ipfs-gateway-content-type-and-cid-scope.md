@@ -77,3 +77,12 @@ a new `requireAccreditedAuthor` parameter that ONLY the gateway's `cidIsKnown`
 passes; the cleanup path keeps the byte-identical `$1..$4` query. This satisfies
 the task's "existing pin-lifecycle logic stays as-is" out-of-scope clause while
 closing the gateway-whitelisting hole.
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES:
+
+`/ce-code-review` confirmed all four controls work and compose; the same-origin script-execution chain is closed (CSP `sandbox` + nosniff are the load-bearing backstop). Two items before archive:
+
+1. **`GATEWAY_SAFE_MIMES` comment is now false + no linkage to `ACCEPTED_MIMES`.** The "Mirrors ACCEPTED_MIMES minus SVG" comment no longer holds (SVG is gone from both; the two sets are byte-identical), and there is no mechanical linkage — a future MIME added to the upload accept-list will be silently served as octet-stream by the gateway. Either correct the comment to describe the deliberate-divergence intent, or derive `GATEWAY_SAFE_MIMES` from `ACCEPTED_MIMES` so they can't drift.
+2. **Test-header carve-out clause (b) is factually wrong.** `ipfs-gateway-hardening.test.ts` claims SVG rejection "fires at multer's fileFilter before any auth/accred work", but `verifyHiveSignature` runs first (before the inline handler that invokes multer). The crypto bypass is justified by the file-type-gate focus, not by pre-auth ordering — correct the rationale text.
+
+Not blocking (handled elsewhere): the accreditation gate's provenance limitation (an accredited account can self-whitelist an external CID) is tracked in `backend-ipfs-cid-provenance-gate`. PDF-inline / CORP-same-site / negative-CID-cache are accepted residuals. Acceptance-#3's real-DB unaccredited→false flip is covered at the SQL-shape + mock-pool behavioral + accredited-real-path levels (real unaccredited HAF seeding is impractical) — no further test required.

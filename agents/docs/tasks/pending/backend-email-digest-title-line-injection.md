@@ -56,3 +56,11 @@ If the digest also has an HTML variant, the same fields need HTML-escape there. 
 - CLAUDE.md project policy on integrator-facing surfaces.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES:
+
+`/ce-code-review` confirmed the core threat is fully closed: `paper_title` is the only free-form chain field interpolated (actor is a Hive username, target_type an enum), there is no `html:` variant, and no email-header injection path (subject is static; from/to are not chain-derived). One item before archive:
+
+1. **`singleLine` misses U+0085 (NEL).** NEL matches neither `[\r\n]` nor `\s` in V8, so it survives both passes — a NEL-bearing title can forge a line in mail clients that render NEL as a break (client-dependent, not the dominant clients, hence bounded). Same root cause as the citation task. Add `\u0085` to the first replace, and fold in `\u2028`/`\u2029` so neutralization no longer rides on `\s` membership. Add a NEL test. If practical, share the line-terminator constant with `backend-citation-export-format-escape` — the two `singleLine` helpers are near-duplicates and should not drift.
+
+U+2028/U+2029/VT/FF are already caught here by the second `\s+` pass (this helper has one; the citation helpers do not), so only NEL is the live gap for the digest.

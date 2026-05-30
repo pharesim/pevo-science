@@ -69,3 +69,12 @@ User-facing message uses period-separated sentences (CLAUDE.md: no emdashes in u
 - CLAUDE.md "Carve-out for deterministic edge-case coverage" — mock-pool injection is permitted under clause (a) for this test (the real DB-failure path is impractical to exercise per-test).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES:
+
+`/ce-code-review` (scoped to `0d264ff3`, the shared replay/timestamp/session commit) confirmed the fail-closed posture is correct: a DB-lookup throw now 503s instead of honoring a revoked JWT, covering the post-key-rotation race; the null-pool startup skip is preserved; clause (b) real-crypto verification runs. Two items before archive:
+
+1. **The 503 lacks `details: { retriable: true }`.** The SPA's `isRetriable503()` gates on `err?.details?.retriable === true`; without it the session-invalidation 503 is treated as non-retriable, so users are wedged (manual reload) during a DB blip instead of auto-retrying. Add `{ retriable: true }` to the `sendError(503, ...)` call (optionally a `Retry-After` header) and assert the flag in the test. The fail-closed security semantics do not change.
+2. **Two pre-existing emdashes in user-facing HTTP response strings in the same file** (`verifyHiveSignature.ts`): "Signature already used — replay rejected" and "Invalid signature — does not match account posting key". Replace the emdash with a period or restructure (no-emdash rule covers HTTP response strings). You are already editing this file for item 1.
+
+Not blocking (handled elsewhere): the concurrent-replay TOCTOU, same-second revocation off-by-one, and iat-absent skip are pre-existing and tracked in `backend-verifyhivesignature-preexisting-replay-revocation-hardening`. The `logger.error`-per-request-during-outage is accepted (the 503 rate is the operator signal; keep the level).

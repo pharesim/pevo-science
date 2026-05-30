@@ -94,3 +94,14 @@ path), then `POST /upload` with the returned token in `X-Upload-Token`. This is
 a `ui-*` task (UI zone), so the backend cannot create the task file itself
 without tripping the commit zone-audit hook — flagging it here for the architect
 to spin up.
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES:
+
+`/ce-code-review` (scoped to `5ad6bdbf` + `f8cbfc87`) confirmed the core goals are met: the descriptor is bound into the signed envelope, the sha256 binding is strong, `hiveAuthMethod` cannot be bypassed, and there is no JWT-only pin path. Four items before archive:
+
+1. **Double-spend: the token store dropped the two single-use defenses its sibling `fresh-auth.ts` ships** (and the docblock claims to "mirror"): the synchronous in-flight-consume lock, AND the compensating `redis.del` on the memStore-fallback leg. A Redis-throw-on-consume (ready-but-throwing) lets request A consume from memStore while the Redis copy stays alive for request B to GETDEL after recovery — the same single-use token consumed twice. Add both (mirror `fresh-auth.ts` exactly). Add a regression test: issue with Redis present, force GETDEL to throw on consume A, assert consume B against the still-alive Redis copy is rejected.
+2. **`X-Upload-Token` header cast lies about the `string[]` case.** `req.headers['x-upload-token'] as string | undefined` is wrong when the header is sent twice. Use `Array.isArray(raw) ? raw[0] : raw`. Safe today (consumeUploadToken rejects non-string) but the cast is dishonest.
+3. **AC4 not asserted: `uploader_account` recording.** The happy-path test mocks `getAppPool` but never checks the query args, so "records `uploader_account = user` in `pending_ipfs_uploads`" (an explicit acceptance criterion) has no mutation-killing assertion. Add it.
+4. **Clause-(c) real-path gap.** `ipfs-upload-real-path-verifyhivesignature.test.ts` exercises only `/upload` (which 400s on no-file before the token gate), NOT `/upload-token`. The sha256-binding-via-signed-envelope path has no real-crypto coverage, so the test header's clause-(c) claim is unmet. Per CLAUDE.md, either add a real-signature body-tamper test on `/upload-token` (sign one descriptor, submit a different `file_sha256` → 401) or correct the header and file a tracked follow-up.
+
+Not blocking (handled elsewhere): the cross-surface session-proof scope is a design decision tracked in `backend-ipfs-upload-token-proof-binding`. The status-code mapping (only `username_mismatch`→403) is acceptable — session-consume never returns `target_mismatch`/`kind_mismatch`, so the collapsed branch is unreachable (optional defensive consistency only). Token-burned-on-pin-failure and proof-consumed-before-accreditation are accepted single-use UX residuals. The UI round-trip is filed as `ui-ipfs-upload-token-roundtrip`.
