@@ -41,10 +41,22 @@ export function verifyUnsubscribeToken(username: string, token: string): boolean
 
 // ── Event descriptions ──────────────────────────
 
-function describeEvent(event: NotificationEvent): string {
+/**
+ * Flatten a chain-derived free-form string to a single line for safe
+ * interpolation into the plain-text email body. Strips CR/LF (which would
+ * otherwise let an attacker-controlled paper title forge digest lines or
+ * inject a header-spoofing line that starts at column 0) and collapses
+ * internal whitespace runs. Apply to any free-form chain field; Hive
+ * usernames and internal enums are constrained and do not need it.
+ */
+export function singleLine(s: string | null | undefined): string {
+  return (s ?? '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export function describeEvent(event: NotificationEvent): string {
   switch (event.type) {
     case 'new_review':
-      return `${event.actor} reviewed your paper "${event.paper_title}"`;
+      return `${event.actor} reviewed your paper "${singleLine(event.paper_title)}"`;
     case 'new_vote':
       return event.weight < 0
         ? `${event.actor} raised concerns about your ${event.target_type}`
@@ -58,7 +70,7 @@ function describeEvent(event: NotificationEvent): string {
         ? 'Your accreditation has been approved'
         : 'Your accreditation has been revoked';
     case 'new_citation':
-      return `${event.actor} cited your paper "${event.paper_title}"`;
+      return `${event.actor} cited your paper "${singleLine(event.paper_title)}"`;
     case 'claim_pending':
       return `${event.actor} claimed authorship on your paper`;
     case 'claim_approved':
