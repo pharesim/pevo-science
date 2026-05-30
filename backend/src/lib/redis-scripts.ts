@@ -71,6 +71,41 @@ end
 ` as const;
 
 /**
+ * Atomic cycle swap for batch reputation. Renames every staging key into its
+ * production counterpart, advances `cycle:last`, and DELs the in-progress
+ * sentinel inside a single server-side execution so readers see either the
+ * full new cycle or none of it.
+ *
+ * KEYS[1..N-1] = staging key paths
+ * KEYS[N]      = in-progress sentinel key (DEL'd inside the script after the
+ *                cycle:last advance, so a surviving sentinel on the next
+ *                startup proves the crash happened BEFORE the script executed)
+ * ARGV[1]      = new cycle number (string)
+ * ARGV[2]      = cycle:last key path
+ * ARGV[3]      = staging substring to strip (e.g. ':batch:staging:')
+ * ARGV[4]      = prod substring to inject (e.g. ':batch:')
+ *
+ * The substrings are passed as ARGV instead of hard-coded so the Lua side and
+ * the TS-side constructors share a single source of truth in the caller
+ * (`reputation-batch.ts`); the staging-vs-prod naming is a reputation-batch
+ * concern, not a redis-scripts concern, which is why the substring constants
+ * stay at the caller.
+ */
+export const CYCLE_SWAP_LUA = `
+local nKeys = #KEYS
+local stagingCount = nKeys - 1
+local sentinel = KEYS[nKeys]
+for i = 1, stagingCount do
+  local staging = KEYS[i]
+  local prod = string.gsub(staging, ARGV[3], ARGV[4])
+  redis.call('RENAME', staging, prod)
+end
+redis.call('SET', ARGV[2], ARGV[1])
+redis.call('DEL', sentinel)
+return stagingCount
+` as const;
+
+/**
  * Atomic rate-limit check-and-consume Lua script.
  *
  * KEYS[1] = redis key for this (limiter-name, account/ip) bucket
@@ -139,6 +174,7 @@ export const SHARED_SCRIPTS = {
   INCR_AND_EXPIRE_ON_ZERO_TO_ONE: INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA,
   RELEASE_LOCK_IF_TOKEN_MATCHES: RELEASE_LOCK_IF_TOKEN_MATCHES_LUA,
   RATE_LIMIT_CHECK_AND_CONSUME: RATE_LIMIT_CHECK_AND_CONSUME_LUA,
+  CYCLE_SWAP: CYCLE_SWAP_LUA,
 } as const;
 
 export type SharedScriptName = keyof typeof SHARED_SCRIPTS;
@@ -176,6 +212,7 @@ const _SCRIPT_RETURN_SHAPE = {
   INCR_AND_EXPIRE_ON_ZERO_TO_ONE: 0 as number,
   RELEASE_LOCK_IF_TOKEN_MATCHES: 0 as 0 | 1,
   RATE_LIMIT_CHECK_AND_CONSUME: [0, 0] as [number, number],
+  CYCLE_SWAP: 0 as number,
 } satisfies Record<SharedScriptName, unknown>;
 export type ScriptReturn = typeof _SCRIPT_RETURN_SHAPE;
 

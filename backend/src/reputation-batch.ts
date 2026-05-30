@@ -37,7 +37,7 @@ import {
 // staging-vs-prod swap cannot drift across the three.
 import { getAllAccreditedAccounts } from './accreditation.js';
 import { getCachedGenesisBlock, T } from './hafsql.js';
-import { evalScript } from './lib/redis-scripts.js';
+import { CYCLE_SWAP_LUA, evalScript } from './lib/redis-scripts.js';
 
 const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
 const DEFAULT_MAX_DURATION_MS = 30 * 60_000; // 30 minutes
@@ -76,40 +76,18 @@ let batchTimer: ReturnType<typeof setInterval> | null = null;
 let batchRunning = false;
 
 /**
- * Lua script for the atomic cycle swap. Runs server-side under Redis's
- * single-threaded execution model, so other clients see either the entire
- * new cycle or none of it.
+ * Staging/prod substring pair passed as ARGV to the registry's `CYCLE_SWAP`
+ * Lua script. The body lives in `lib/redis-scripts.ts` (dispatched via
+ * `evalScript`), but the substrings stay here because they're a reputation-
+ * batch concern — `:batch:staging:` and `:batch:` derive from
+ * `BATCH_KEY_PREFIX` / `STAGING_SEGMENT` in `reputation.ts`, not from any
+ * registry-level convention. Keeping them at the caller avoids inverting
+ * the layering (the registry would otherwise have to know about reputation
+ * key shapes).
  *
- * KEYS[1..N-1] = staging key paths
- * KEYS[N]      = in-progress sentinel key (DEL'd inside the script after the
- *                cycle:last advance, so a surviving sentinel on the next
- *                startup proves the crash happened BEFORE the Lua executed)
- * ARGV[1]      = new cycle number (string)
- * ARGV[2]      = cycle:last key path
- * ARGV[3]      = staging substring to strip (e.g. ':batch:staging:')
- * ARGV[4]      = prod substring to inject (e.g. ':batch:')
- *
- * The substring substrings are passed as ARGV instead of hard-coded so the
- * Lua side and the TS-side constructors share a single source of truth —
- * both `staging:` swap and any future prefix migration update one place.
- */
-const CYCLE_SWAP_LUA = `
-local nKeys = #KEYS
-local stagingCount = nKeys - 1
-local sentinel = KEYS[nKeys]
-for i = 1, stagingCount do
-  local staging = KEYS[i]
-  local prod = string.gsub(staging, ARGV[3], ARGV[4])
-  redis.call('RENAME', staging, prod)
-end
-redis.call('SET', ARGV[2], ARGV[1])
-redis.call('DEL', sentinel)
-return stagingCount
-`;
-/**
  * Lua's `string.gsub` first arg is a pattern, where `%` and other characters
- * are special. Our prefixes have no special pattern chars, but we keep the
- * derivation explicit so a future change to prefix structure cannot
+ * are special. Our prefixes have no special pattern chars, but the
+ * derivation stays explicit so a future change to prefix structure cannot
  * silently introduce a pattern char.
  */
 const CYCLE_SWAP_STAGING_SUBSTRING = `:batch:${STAGING_SEGMENT}`;
@@ -350,15 +328,11 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       const sentinelKey = `${REDIS_KEY_IN_PROGRESS_PREFIX}${cycle}`;
       await redis.set(sentinelKey, String(cycle));
 
-      await redis.eval(
-        CYCLE_SWAP_LUA,
-        stagingKeys.length + 1,
-        ...stagingKeys,
-        sentinelKey,
-        String(cycle),
-        REDIS_KEY_LAST_CYCLE,
-        CYCLE_SWAP_STAGING_SUBSTRING,
-        CYCLE_SWAP_PROD_SUBSTRING,
+      await evalScript(
+        redis,
+        'CYCLE_SWAP',
+        [...stagingKeys, sentinelKey],
+        [String(cycle), REDIS_KEY_LAST_CYCLE, CYCLE_SWAP_STAGING_SUBSTRING, CYCLE_SWAP_PROD_SUBSTRING],
       );
 
       // Use this cycle's scores as prev scores for the next cycle (score-only
