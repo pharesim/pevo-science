@@ -35,16 +35,16 @@ Every Hive-signature-authenticated request signs one canonical, request-bound st
 - `sha256_hex(body)` is `sha256(JSON.stringify(body ?? {}))`, hex-encoded. No method-based branching. Bodyless requests hash `'{}'` uniformly.
 - `timestamp` is the same ISO-8601 string sent in `X-Hive-Timestamp`.
 
-Required headers: `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Timestamp`. Missing or >60s-old timestamp is rejected.
+Required headers: `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Timestamp`. A missing timestamp is rejected, as is one outside the accepted window (see the timestamp guardrail below).
 
-Server-side guardrails:
-- 60-second timestamp window, `MAX_SIGNATURE_AGE_MS` at [backend/src/middleware/verifyHiveSignature.ts:32](../../../../backend/src/middleware/verifyHiveSignature.ts#L32).
-- 5-minute Redis replay cache keyed by signature, SETNX semantics, with in-memory fallback if Redis is down, at [backend/src/middleware/verifyHiveSignature.ts:47-61](../../../../backend/src/middleware/verifyHiveSignature.ts#L47-L61).
-- Timing-safe public-key comparison at [backend/src/middleware/verifyHiveSignature.ts:164-172](../../../../backend/src/middleware/verifyHiveSignature.ts#L164-L172).
-- JWT Bearer path is unchanged and runs first at [backend/src/middleware/verifyHiveSignature.ts:77-111](../../../../backend/src/middleware/verifyHiveSignature.ts#L77-L111). This convention only touches the Hive-signature branch.
-- CORS `allowedHeaders` at [backend/src/app.ts:103](../../../../backend/src/app.ts#L103) lists exactly `Content-Type, Authorization, X-Hive-Username, X-Hive-Signature, X-Hive-Timestamp`. No `X-Hive-Message`.
+Server-side guardrails (all live in the `verifyHiveSignature` middleware; anchor on the symbol names, not line numbers):
+- **Past-biased timestamp window.** The accepted range is `[Date.now() - MAX_SIGNATURE_AGE_MS, Date.now() + SIGNATURE_FUTURE_SKEW_MS]` — 60 seconds into the past plus a small (5-second) forward-skew tolerance for client clock drift, mirroring the custody upgrade-proof form. The earlier absolute-value form (`Math.abs(now - ts) > 60s`) also accepted timestamps up to 60s in the *future*, doubling a signature's effective usable life to ~120s; the past-biased form closes that.
+- **Replay cache with an unconditional in-memory backstop.** A `SEEN_SIGNATURES_TTL_SEC` (5-minute) Redis cache keyed `${config.appTag}:replay:${signature}` via SETNX is the primary guard. After every successful verification the signature is ALSO written to the in-memory `seenSignatures` map (`recordSignatureInMemory`) — unconditionally, not only when Redis is down. `isReplaySignature` reads the in-memory hit upfront and OR-s it with the SETNX result (`result === null || seenInMemory`). This closes two Redis-flap windows: SETNX throwing on a `ready` connection (ready-but-throwing), and the throw-then-recover ordering where request 1's SETNX never wrote the key but request 2's SETNX then succeeds against the now-absent key. The in-memory map is pruned by a `cleanupInterval` at the same TTL.
+- **Timing-safe public-key comparison** against the account's on-chain posting `key_auths`.
+- **The JWT Bearer path runs first and is separate.** This convention only touches the Hive-signature branch.
+- CORS `allowedHeaders` in `backend/src/app.ts` lists exactly `Content-Type, Authorization, X-Hive-Username, X-Hive-Signature, X-Hive-Timestamp`. No `X-Hive-Message`.
 
-Drift prevention is mechanical, not by discipline. The single canonical builder lives at [backend/src/lib/authMessage.ts](../../../../backend/src/lib/authMessage.ts) and is imported directly by the frontend equivalence test at [frontend/tests/unit/sec-001-equivalence.test.js:25](../../../../frontend/tests/unit/sec-001-equivalence.test.js#L25), so any byte-level divergence between `signRequest` and `buildCanonicalAuthMessage` fails CI.
+Drift prevention is mechanical, not by discipline. The single canonical builder lives at [backend/src/lib/authMessage.ts](../../../../backend/src/lib/authMessage.ts) (`buildCanonicalAuthMessage`) and is imported directly by the frontend equivalence test [frontend/tests/unit/sec-001-equivalence.test.js](../../../../frontend/tests/unit/sec-001-equivalence.test.js), so any byte-level divergence between `signRequest` and `buildCanonicalAuthMessage` fails CI.
 
 ## Why This Matters
 
@@ -56,8 +56,8 @@ Drift prevention is mechanical, not by discipline. The single canonical builder 
 | Cross-deployment replay (beta to prod, fork to prod, shared posting keys) | `APP_TAG` in the separator. A signature captured on `pevotest` cannot verify against `pevo`. |
 | Cross-endpoint reuse on PEvO | `METHOD` and `path` in the signed string. |
 | Body-tamper | `sha256_hex(body)` in the signed string. |
-| Time-shift / stale replay | Required `X-Hive-Timestamp`, 60-second window. |
-| In-window replay (same signature within 60s) | 5-minute Redis replay cache, SETNX. |
+| Time-shift / stale replay | Required `X-Hive-Timestamp`, past-biased window (60s past + 5s forward skew). |
+| In-window replay (same signature) | Redis SETNX replay cache plus an unconditional in-memory backstop (detects replays even across a Redis flap). |
 
 ### Why request-binding rather than the auditor's separate-challenge design
 
@@ -94,7 +94,7 @@ If the hash is method-branched (hash only on POST/PUT/PATCH, skip on GET/DELETE,
 Live code:
 
 - [backend/src/lib/authMessage.ts](../../../../backend/src/lib/authMessage.ts) single canonical builder.
-- [backend/src/middleware/verifyHiveSignature.ts](../../../../backend/src/middleware/verifyHiveSignature.ts) verifier. Path extraction at `:150`, required-timestamp check at `:122-124`.
+- [backend/src/middleware/verifyHiveSignature.ts](../../../../backend/src/middleware/verifyHiveSignature.ts) verifier. Path is extracted from `req.originalUrl` with the query string stripped; the required-timestamp check, the past-biased window, and the replay guard (`isReplaySignature` / `recordSignatureInMemory`) all live in this one function.
 - [frontend/src/sign-request.js](../../../../frontend/src/sign-request.js) the client helper. Returns `{ headers, body }` ready to spread into `fetch`. GET/HEAD get `body: undefined` on the wire but still hash `'{}'`.
 - [frontend/src/auth.js](../../../../frontend/src/auth.js) `connect()` live caller signing `POST /api/auth/session` with body `{}`.
 - [frontend/src/api.js](../../../../frontend/src/api.js) `linkExistingAccount()` live caller signing `POST /api/auth/link` with an `{ auth_token }` body.
