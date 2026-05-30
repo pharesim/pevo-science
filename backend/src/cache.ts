@@ -86,8 +86,10 @@ interface MemoryCacheEntry<T> {
 export class QueryCache {
   private memStore = new Map<string, MemoryCacheEntry<unknown>>();
   private stableKeys = new Set<string>();
-  // Single-flight: in-flight fetcher promises keyed by the prefixed cache
-  // key (`${config.appTag}:cache:<routeKey>`). See class-level docblock.
+  // Single-flight: in-flight fetcher promises keyed on prefixed cache keys.
+  // `getOrSet` and the `getOrSetSWR` cold-path use DIFFERENT namespaces for the
+  // same logical cache key (see class-level docblock for the full key shape,
+  // the per-caller cast invariant, and the cross-method collision rationale).
   private inflight = new Map<string, Promise<unknown>>();
   // Per-tier invalidation epochs. `volatileEpoch` is bumped by every
   // method that flushes non-stable entries (`clearVolatile`, plus
@@ -264,15 +266,17 @@ export class QueryCache {
     }
 
     // Cold-path single-flight: coalesce concurrent cold-misses on the shared
-    // in-flight map. The key carries a `swr-cold:` segment so it can NEVER
-    // collide with a `getOrSet` in-flight slot for the same logical cache key:
-    // the two methods are independently generic and write different things
-    // (`getOrSet` writes only the fresh key; this cold-path writes the fresh
-    // key AND the stale key), so an SWR caller coalescing onto a `getOrSet`
-    // promise would silently skip the stale-key write and disable
-    // stale-while-revalidate. Distinct in-flight keys make that collision
-    // impossible by construction; concurrent cold-misses within this method
-    // still share one fetcher (same namespaced key).
+    // in-flight map. The key carries a reserved `swr-cold:` segment that no
+    // `getOrSet` caller is expected to construct, so a key used by both methods
+    // does not collide ACROSS them — which would let an SWR caller await a
+    // `getOrSet` promise that never writes the stale key, silently disabling
+    // stale-while-revalidate (the two methods are independently generic and
+    // write different things: `getOrSet` writes only the fresh key; this
+    // cold-path writes the fresh key AND the stale key). The reserved-prefix
+    // invariant is enforced by convention — all callers are first-party in
+    // `backend/src/` and exhaustive grep shows none construct a
+    // `swr-cold:`-prefixed key — not by runtime check. Concurrent cold-misses
+    // within this method still share one fetcher (same namespaced key).
     const inflightKey = `${this.prefix}swr-cold:${key}`;
     const existing = this.inflight.get(inflightKey) as Promise<T> | undefined;
     if (existing !== undefined) {

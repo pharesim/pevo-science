@@ -235,3 +235,17 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 - `tests/routes/papers-cumulative-route-error-isolation-mocked.test.ts` (1 test, cumulative-union enrichment content): passes 2/2 in isolation -> flaky under full-suite concurrency, unrelated to inflight-key namespacing.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-30, landed in the commit that moves this file to review/)
+
+Both round-3 hold items landed as comment-only fixes in `backend/src/cache.ts`.
+
+**Item 1 — `inflight` field comment stale-example contradicts namespacing.** Replaced the partial `${config.appTag}:cache:<routeKey>` example on the `inflight` field declaration with a description that defers to the class-level docblock: "in-flight fetcher promises keyed on prefixed cache keys. `getOrSet` and the `getOrSetSWR` cold-path use DIFFERENT namespaces for the same logical cache key (see class-level docblock for the full key shape, the per-caller cast invariant, and the cross-method collision rationale)." Anchors on symbol-level invariants (method names + "cold-path") with no SHA/slug/round-number citations.
+
+**Item 2 — cold-path inflight-key comment overclaims "impossible by construction".** Rewrote the comment above `const inflightKey = ${this.prefix}swr-cold:${key}` in `getOrSetSWR`'s cold-path to state the reserved-prefix invariant honestly: "The key carries a reserved `swr-cold:` segment that no `getOrSet` caller is expected to construct ... The reserved-prefix invariant is enforced by convention — all callers are first-party in `backend/src/` and exhaustive grep shows none construct a `swr-cold:`-prefixed key — not by runtime check." Preserves the cross-method-collision rationale (different writes: fresh-only vs fresh+stale) and the within-method coalescing note. Comment anchored on stable symbol/directory anchors with no coordination-state citations.
+
+No production logic changed; no test changes required (the existing specs continue to exercise the same behavior). Verification: `npm run typecheck` clean, `npm run lint` clean for `cache.ts`, scoped vitest on `tests/lib/cache.test.ts` green.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
