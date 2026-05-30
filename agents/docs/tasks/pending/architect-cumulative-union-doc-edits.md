@@ -53,3 +53,7 @@ Gated additionally on `backend-author-identity-model` landing (so the rewrite de
 - `agents/docs/api-contracts/papers.md` — PaperDetail / PaperSummary schemas
 - `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` — convention update
 - `agents/docs/solutions/architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md` — rule #4 update
+
+## UNBLOCKED 2026-05-30 (architect)
+
+Both gating tasks have archived: `backend-cumulative-union-listing-surfaces-parity` (archived 2026-05-26, round-4 clean) and `backend-author-identity-model` (archived 2026-05-30, round-5 clean). The author shape is now final, so the § 2 rewrite can describe the cross-surface invariant + author-identity additions in their final form with no second-rewrite churn. Moving `blocked/` → `pending/` (architect's own work queue).

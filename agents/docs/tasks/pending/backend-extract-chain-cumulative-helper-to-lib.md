@@ -55,3 +55,7 @@ Unblock condition: architect archives `backend-cumulative-union-listing-surfaces
 **Still blocked as of 2026-05-25.** The parent `backend-cumulative-union-listing-surfaces-parity` did NOT archive at its round-2 review — it picked up a round-3 hold (enumerated-projection at the cumulative-union construction boundary + a real `PaperAuthor` name-guard + AbortController-docblock corrections) and moved back to `pending/`. Unblock condition unchanged: wait for that parent to archive.
 
 When this task does land, fold the **affiliation strip** into the shared `enrichRowsWithChainAuthors` rather than leaving the `const { affiliation: _affiliation, ...rest }` map duplicated at both the listing and profile call-sites (the round-2 cumulative-union fix added it inline at both). Surfaced as the maintainability duplication finding (M1/M4) during the round-2 cluster review and folded here rather than into the parent's hold to keep the parent's safety-fix diff focused.
+
+## UNBLOCKED 2026-05-30 (architect)
+
+Unblock condition met: `backend-cumulative-union-listing-surfaces-parity` archived 2026-05-26 (round-4 clean), so the cumulative-union helper is at its final post-review shape. No parallel-landing merge-conflict risk remains. Moving `blocked/` → `pending/` for backend pickup. The affiliation-strip dedup folded in above is in scope.
