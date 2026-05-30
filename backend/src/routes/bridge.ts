@@ -9,6 +9,7 @@ import { logger } from '../logger.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { findBridgeDuplicate } from '../bridge-haf.js';
+import { isHafConfigured } from '../db.js';
 import { assertNever } from '../util/assertNever.js';
 import {
   parseIdentifier,
@@ -333,6 +334,16 @@ async function checkExistingBridge(
   // read, not the whole ParsedIdentifier object).
   const canonical = { type: parsed.type, id: parsed.id };
   const permlink = bridgePermlink(parsed);
+
+  // Dev-without-HAF short-circuit: when HAF is not configured,
+  // `findBridgeDuplicate` returns null (fail-open). Skip the cache entirely
+  // on this path — caching the "no-pool" exists:false would survive a
+  // subsequent HAF coming online and serve a stale fail-open answer for
+  // up to 30s, including on /register where it would license a duplicate
+  // broadcast.
+  if (!isHafConfigured()) {
+    return { status: 'ok', exists: false, author: null, permlink: null, title: null, created: null };
+  }
 
   // Cache probe shared across `/check` and `/register`. The 30s TTL bounds
   // staleness; the haf_unavailable sentinel is never cached so a HAF blip

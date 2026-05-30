@@ -23,12 +23,14 @@
  *       `/api/search?type=review` remains a follow-up.
  *
  * Canary pinned in this file:
- *   1. Both the count query and the data query carry the parent-paper
+ *   1. The review-search SQL carries the parent-paper
  *      `validPevoPaperWhere(source:'all')` gate — pinned via the `'paper'`
- *      and `'bridge_paper'` substrings emitted by the helper.
+ *      and `'bridge_paper'` substrings emitted by the helper. The count and
+ *      data fields share one query via `count(*) OVER ()`, so a single SQL
+ *      carries the gate.
  *
  * Mutation kill: dropping the validPevoPaperWhere paper-class substrings
- * from either query fires the canary red.
+ * from the review-search SQL fires the canary red.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -61,23 +63,24 @@ describe('GET /api/search?type=review — parent-paper gate', () => {
   const nativePaperSubstring = "= 'paper'";
   const bridgePaperSubstring = "= 'bridge_paper'";
 
-  it('count and data queries both compose validPevoPaperWhere on parent paper (mutation-kill)', async () => {
+  it('review-search SQL composes validPevoPaperWhere on parent paper (mutation-kill)', async () => {
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
-      if (sql.includes('count(*)')) return { rows: [{ total: 0 }] };
       return { rows: [] };
     });
     const res = await request(app).get('/api/search?q=method&type=review');
     expect(res.status).toBe(200);
     // Filter to the review-search SQLs (those carrying `c.parent_author != ''`
-    // — the unique review-search predicate). This grabs both the count
-    // query and the data query (both share the `where` clause).
+    // — the unique review-search predicate). The count+data consolidation via
+    // `count(*) OVER ()` collapses these to a single query that carries the
+    // gate predicates exactly once.
     const reviewSqls = capturedSqls.filter((s) => s.includes(`c.parent_author != ''`));
-    expect(reviewSqls.length, 'expected count + data review-search SQLs').toBeGreaterThanOrEqual(2);
+    expect(reviewSqls.length, 'expected one consolidated review-search SQL').toBeGreaterThanOrEqual(1);
     for (const sql of reviewSqls) {
       expect(sql, 'review-search SQL missing native-paper arm').toContain(nativePaperSubstring);
       expect(sql, 'review-search SQL missing bridge_paper arm — validPevoPaperWhere source:"all" requires both').toContain(bridgePaperSubstring);
+      expect(sql, 'review-search SQL missing window-function consolidation').toMatch(/count\s*\(\s*\*\s*\)\s*OVER\s*\(\s*\)/i);
     }
   });
 });
