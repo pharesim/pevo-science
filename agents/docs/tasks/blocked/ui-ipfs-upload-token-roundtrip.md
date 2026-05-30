@@ -32,4 +32,17 @@ Confirm the proof kind with `backend-ipfs-upload-token-proof-binding` before wir
 - `agents/docs/api-contracts/ipfs.md` — the `/upload-token` + `/upload` contract (request/response/error shapes, `X-Upload-Token`).
 - `backend/src/routes/ipfs.ts` — the server side (for the exact field names and error codes).
 
+## [BLOCKED by Backend] (2026-05-30)
+
+The JWT-path proof kind is still undecided. `backend-ipfs-upload-token-proof-binding`
+remains in `tasks/pending/` with its (a) session-class vs (b) per-action target-binding
+decision unresolved, and ARCHITECTURE.md § 6.4 (Issue IPFS upload token row) still carries
+"The session-proof choice (vs a per-action target binding) is under review in
+`backend-ipfs-upload-token-proof-binding`." Per this task's "Blocked-by note", the SPA must
+not be wired until the proof kind is fixed, or it will mint the wrong proof for the JWT path.
+
+Unblock condition: backend lands the posture decision, removes the § 6.4 "under review" note,
+and (if the decision is (b)) documents the per-action `action`/target the client must bind.
+Backend moves this file back to `tasks/pending/` once resolved.
+
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
