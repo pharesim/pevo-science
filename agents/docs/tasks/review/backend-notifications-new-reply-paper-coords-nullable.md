@@ -42,3 +42,11 @@ Drop the misleading required fields from the event type and contract — resolvi
 - [backend/src/notification-queries.ts](backend/src/notification-queries.ts) lines 310-319 (arm 5 SELECT), 518-529 (handler).
 - [agents/docs/api-contracts/notifications.md](agents/docs/api-contracts/notifications.md) row 70-79 and example.
 - HAF-query review run `w274tijk0` rank #26.
+
+## [TODO Architect] — contract edit (api-contracts/notifications.md, architect-owned)
+
+Backend landed the code half: `NewReplyEvent` no longer declares `paper_author` / `paper_permlink`, and the handler no longer assigns them (the arm-5 SELECT keeps the positional NULL columns because the UNION ALL requires uniform column counts; a clarifying comment marks them intentionally NULL). The contract half is architect-owned per the api-contracts ownership rule:
+
+- In `agents/docs/api-contracts/notifications.md`, drop `paper_author` and `paper_permlink` from the `new_reply` event row (around row 70-79) and from the JSON example so the documented shape matches the emitted object (which never carried real coords — it emitted nulls cast to required strings).
+
+Verification done backend-side: no backend (`digest.ts`) or frontend consumer reads `new_reply.paper_author` / `paper_permlink`; `frontend/src/components/header.js` renders `new_reply` via the `notifications.newReply` i18n key with no paper-coord interpolation, so dropping the fields is consumer-safe. `npm run typecheck` (src) passes, confirming no backend reference broke.

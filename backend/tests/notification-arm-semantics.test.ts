@@ -349,6 +349,25 @@ describe('notification-queries.ts arm semantics', () => {
     expect(voteArms.match(/AND v\.voter != v\.author/g)?.length).toBe(3);
   });
 
+  // ── Arm 5 (new_reply) emits no paper coords ─────────────────────
+  it('arm-5 new_reply: NewReplyEvent type and handler omit paper_author/paper_permlink', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(
+      fileURLToPath(new URL('../src/notification-queries.ts', import.meta.url)),
+      'utf8',
+    );
+    // The NewReplyEvent interface must not declare paper coords as fields
+    // (match a field declaration at line start, not the explanatory comment).
+    const iface = src.slice(src.indexOf('interface NewReplyEvent'), src.indexOf('interface ClaimPendingEvent'));
+    expect(iface).not.toMatch(/^\s*paper_author\??:/m);
+    expect(iface).not.toMatch(/^\s*paper_permlink\??:/m);
+    // The handler's new_reply case must not assign null-valued paper coords.
+    const handlerCase = src.slice(src.indexOf("case 'new_reply':"), src.indexOf("case 'claim_pending':"));
+    expect(handlerCase).not.toMatch(/^\s*paper_author:/m);
+    expect(handlerCase).not.toMatch(/^\s*paper_permlink:/m);
+  });
+
   it('arms 3/4/7/8/9 custom_json arms: each gates on required_posting_auths', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');

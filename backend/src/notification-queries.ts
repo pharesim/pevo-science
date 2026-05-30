@@ -70,8 +70,11 @@ export interface NewReplyEvent extends BaseNotificationEvent {
   actor: string;
   parent_author: string;
   parent_permlink: string;
-  paper_author: string;
-  paper_permlink: string;
+  // No paper_author / paper_permlink: a reply can sit N levels deep in a
+  // comment chain, and resolving the root paper coords would require unbounded
+  // recursive SQL. The arm emitted NULLs cast to required strings, so any
+  // consumer building /papers/${paper_author}/${paper_permlink} would land on
+  // /papers/null/null. Dropped rather than mis-resolved.
   permlink: string;
 }
 
@@ -350,7 +353,11 @@ export async function fetchNotificationsFromHaf(
 
       UNION ALL
 
-      -- 5. New replies to your discussion comments (accredited users only)
+      -- 5. New replies to your discussion comments (accredited users only).
+      -- The paper_author / paper_permlink / paper_title positions are
+      -- intentionally NULL here: a reply can sit N levels deep, so the root
+      -- paper coords are not resolvable without unbounded recursive SQL. The
+      -- emitted NewReplyEvent omits them rather than carry null-valued coords.
       SELECT
         'new_reply'::text,
         co.block_num,
@@ -603,8 +610,6 @@ export async function fetchNotificationsFromHaf(
             actor: r.actor as string,
             parent_author: r.parent_author as string,
             parent_permlink: r.parent_permlink_ref as string,
-            paper_author: r.paper_author as string,
-            paper_permlink: r.paper_permlink as string,
             permlink: r.event_permlink as string,
           });
           break;
