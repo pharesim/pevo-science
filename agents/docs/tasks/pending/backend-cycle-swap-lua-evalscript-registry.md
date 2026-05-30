@@ -40,3 +40,11 @@ Route `CYCLE_SWAP` through the same registry the sibling lock-release uses.
 - [backend/src/reputation-batch.ts](backend/src/reputation-batch.ts) lines 96-108, 353-362, 389-394.
 - `SHARED_SCRIPTS`, `evalScript`, `_SCRIPT_RETURN_SHAPE` (grep for the precise file).
 - HAF-query review run `w274tijk0` rank #32.
+
+---
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES
+
+Round-1 review on commit `25e49feb`. Code verified correct: Lua body byte-identical after the move, KEYS/ARGV order preserved exactly, atomicity intact (single EVAL/EVALSHA), return value ignored by the caller. One item holds archive:
+
+1. **New `evalScript('CYCLE_SWAP')` dispatch path untested** (P1, tests). The only CYCLE_SWAP test still calls `redis.eval` on the re-exported `__test_seams.CYCLE_SWAP_LUA` body directly, bypassing the registry path production now uses (script-name lookup, EVALSHA-warm / EVAL-cold / NOSCRIPT-recovery, the `_SCRIPT_RETURN_SHAPE` boundary). `RELEASE_LOCK_IF_TOKEN_MATCHES` has an `evalScript`-path test; CYCLE_SWAP needs the equivalent. Add a test that calls `evalScript(redis, 'CYCLE_SWAP', keys, argv)` against real Redis and asserts the staging-key rename + sentinel DEL; also add a `SHARED_SCRIPTS.CYCLE_SWAP === CYCLE_SWAP_LUA` membership assertion alongside the existing two.

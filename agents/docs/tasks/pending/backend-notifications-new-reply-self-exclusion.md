@@ -38,3 +38,11 @@ Extend the per-arm SQL-shape canary at [notifications-arm-sql-shape.test.ts:165-
 - [backend/src/notification-queries.ts](backend/src/notification-queries.ts) lines 320-325 (arm 5).
 - [backend/tests/notifications-arm-sql-shape.test.ts](backend/tests/notifications-arm-sql-shape.test.ts) lines 165-181 (existing canary to extend).
 - HAF-query review run `w274tijk0` rank #25.
+
+---
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES
+
+Round-1 review on commit `f972f4b9`. The arm-5 `co.author != $1` fix itself is verified correct (right arm, right boolean position, right alias semantics; the behavioral test covers both self-reply-excluded and stranger-fires). One item holds archive:
+
+1. **SQL-shape canary acceptance only half-met** (P2, tests). The task required the canary to assert the self-exclusion across arms 1a, 1b, 5, 6a, 6b so a future arm inherits the discipline; the diff added the canary for arm 5 only. Extend it to slice arms 1a/1b (assert `co.author != $1`) and 6a/6b (assert `citing.author <> $1` / `!= $1`).

@@ -41,3 +41,15 @@ Promote `cited_paper` to `INNER JOIN` with `validPevoPaperWhere({alias:'cited_pa
 - [backend/src/notification-queries.ts](backend/src/notification-queries.ts) lines 340-401 (arms 6a/6b).
 - `validPevoPaperWhere` in [backend/src/hafsql.ts](backend/src/hafsql.ts).
 - HAF-query review run `w274tijk0` rank #15.
+
+---
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES
+
+Round-1 review on commit `c345053d`. The arm-6a existence gate is verified correct (author+permlink pinning, no JOIN fanout, `validPevoPaperWhere(source:'all')` covers native + bridge). Three items hold archive:
+
+1. **Residual duplicate-citation spam vector** (P2, security). The INNER-JOIN gate closes fake-permlink spam but not duplicate-real-permlink: one broadcast listing the victim's real paper N times in the `citations` array fans out (via `jsonb_array_elements`) to N notifications + N digest-email lines (no `DISTINCT`, no per-pair dedup; the citing side is op-granular so re-edits re-amplify). The task's stated goal ("spam unlimited citation notifications") is only partially met. Fix: `SELECT DISTINCT cite_elem->>'author', cite_elem->>'permlink'` in the `cited_ref` lateral so a (citing-post, cited-paper) pair yields at most one notification regardless of array repetition.
+
+2. **Arm 6b (bridge) has no behavioral test** (P1, tests). The new `it.skipIf` test exercises only arm 6a (no `user_bridge_papers` CTE/JOIN). Add a sibling behavioral test mirroring arm 6b: seed a `user_bridge_papers` row, apply the INNER JOIN + `validPevoPaperWhere` gate, assert `hit_count=0` for a fake permlink and `hit_count=1` with populated title for a registered bridge paper.
+
+3. **Dropped COALESCE on title may emit null** (P2). INNER JOIN guarantees the row exists, not that `title` is non-null (`validPevoPaperWhere` gates on type/author only); the sibling `new_review` arms 1a/1b keep `COALESCE(p.title,'')` under the identical pattern. Restore `COALESCE(cited_paper.title,'') AS paper_title` in both arms 6a/6b, and flip the regression guard (which currently asserts COALESCE-absent) to assert COALESCE-present. Alternatively, if `comments.title` is provably NOT NULL, remove COALESCE across all arms in a separate change — do not leave 1a/1b vs 6a/6b split-brain.

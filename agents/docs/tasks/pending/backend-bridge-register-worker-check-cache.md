@@ -42,3 +42,13 @@ Add the cache probe inside `checkExistingBridge`, but ONLY for the `/register` c
 - [backend/src/bridge-worker.ts](backend/src/bridge-worker.ts) line 101 (`checkExistingOnChain`).
 - `checkExistingBridge` / `findBridgeDuplicate` helpers (path verify during impl).
 - HAF-query review run `w274tijk0` rank #27.
+
+---
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES
+
+Round-1 review (`/ce-code-review`, full persona fan-out) on commit `283a0b7f`. Correctness, security, reliability, and performance reviewed clean: the `haf_unavailable`-never-cached invariant and the worker-stays-uncached invariant are both intact. Two items hold archive:
+
+1. **Cache-key / permlink canonicalization divergence** (P2). `bridgeCheckCacheKey` keys on the raw `parsed.id`, but the dedup unit everywhere else (`bridgePermlink`, the Postgres partial-unique index, the worker's permlink-fallback query) lowercases + slugifies. Case-variant (or separator-variant) DOIs collapse to one permlink but produce distinct cache keys, so the `/check`→`/register` cache hit silently misses — the optimization this task exists to deliver. No safety impact (worker uncached; the `type` segment + distinct raw ids prevent any false cross-paper `exists:true`). Fix: key the cache on `bridgePermlink(parsed)` (or canonicalize DOI ids in `parseIdentifier` so `parsed.id` is canonical everywhere) so the cache unit matches the dedup unit.
+
+2. **`describe`-label anchor rot** (P2, newly introduced). The new `describe` block in `bridge-haf-lag-locks.test.ts` encodes the task slug (`BE-BRIDGE-CHECK-CACHE`) plus an emdash. Reword to a behavioral description with no slug and no emdash, e.g. "bridge /check + /register shared HAF cache: /check populates; /register hits within TTL; worker bypasses".

@@ -37,3 +37,17 @@ Cache one canonical tree per paper as `comments:tree:${author}:${permlink}` hold
 - [backend/src/routes/comments.ts](backend/src/routes/comments.ts) lines 115-180 (recursive CTE + LIMIT/OFFSET + count duplicate).
 - [backend/src/cache.ts](backend/src/cache.ts) — `hafCache` and `stable` flag semantics.
 - HAF-query review run `w274tijk0` rank #19.
+
+---
+
+## Architect re-review (2026-05-30) — HELD PENDING FIXES
+
+Round-1 review on commit `b80d1dec`. Response-shape/contract preserved and the count-walk elimination verified. Four items hold archive:
+
+1. **Missing sort tie-breaker → page tearing** (P2, code). `paginateTree`'s comparator has no secondary key, and the recursive CTE has no `ORDER BY`, so tied rows (`net_votes` ties, same-block `created`) keep arbitrary scan order that can differ between the page-1 and page-2 fetches (separate 30s `stable` cache windows) — duplicating one comment and skipping another across pages. The docblock's "deterministic ordering" claim is false. Fix: add `permlink` (then `author`) as deterministic secondary/tertiary tiebreakers applied before the order flip, and correct the docblock.
+
+2. **Sort/pagination tests too weak** (P1, tests). The sort-parity test asserts only SET equality, never ORDER (an inverted asc/desc or a wrong sort key passes). Add: per-variant ordering assertions (`data[i] <= data[i+1]` in the declared direction; asc keys === desc keys reversed); an `offset >= total` case asserting `data:[]` and `meta.total === full count`; and `meta.total === data.length` on a non-empty `limit=200` fetch (the `total = rows.length` invariant is currently pinned only by the 0-comment orphan paper). These are what would catch item 1's regression.
+
+3. **Orphaned task-slug anchor** (P2). The enrichment-map comment cites `BACKEND-REPUTATION-SSOT`, inside the block this commit refactored. Reword to the behavioral statement it stands for ("chain is SSoT; the reputation batch map is a performance cache; a stale entry for a revoked account must not produce a non-zero score").
+
+4. **Type-soundness** (P2). `hafCache.getOrSet(...)` lacks an explicit generic, so the `tree!` non-null assertion discards the null branch rather than the checker enforcing it; use `getOrSet<{ rows: EnrichedComment[]; total: number }>(...)` + a real `if (!tree) return sendError(...)` guard. Also type the row query via `pool.query<RawCommentRow>(...)` with a named interface to drop the unsound `as string`/`as number` casts.
