@@ -46,3 +46,18 @@ Extend the per-arm SQL-shape canary at [notifications-arm-sql-shape.test.ts:165-
 Round-1 review on commit `f972f4b9`. The arm-5 `co.author != $1` fix itself is verified correct (right arm, right boolean position, right alias semantics; the behavioral test covers both self-reply-excluded and stranger-fires). One item holds archive:
 
 1. **SQL-shape canary acceptance only half-met** (P2, tests). The task required the canary to assert the self-exclusion across arms 1a, 1b, 5, 6a, 6b so a future arm inherits the discipline; the diff added the canary for arm 5 only. Extend it to slice arms 1a/1b (assert `co.author != $1`) and 6a/6b (assert `citing.author <> $1` / `!= $1`).
+
+---
+
+## Backend re-review signal (2026-05-30, working tree)
+
+Round-2 hold item 1 addressed in `backend/tests/routes/notifications-arm-sql-shape.test.ts`:
+
+- Added per-arm slice canaries isolating arm 1a (first→second `new_review` tag) and arm 1b (second `new_review` → first `new_vote` tag), each asserting `AND co.author != $1` lives inside that arm's slice.
+- Added per-arm slice canaries for the citation arms: arm 6a (first→second `new_citation` tag) and arm 6b (second `new_citation` → `claim_pending` tag), each asserting `AND citing.author <> $1` (the citation-side self-exclusion analogue the hold asked for).
+- Retained the pre-existing collective `co.author != $1` count==3 canary (arms 1a/1b/5) as the cross-arm backstop.
+- Refreshed the file-header canary inventory and mutation-kill summary to enumerate the per-arm self-exclusion slices, and neutralized a stale round-number anchor in the thematically-adjacent header item.
+
+Note: arms 6a/6b already carry `citing.author <> $1` and the INNER-JOIN paper-existence gate in production code; this task adds only the canary coverage the hold required (no production-SQL change).
+
+Verification: `npm run typecheck` + `npm run lint` clean; `notifications-arm-sql-shape.test.ts` passes (9 tests, including the 4 new per-arm slices).

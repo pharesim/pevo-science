@@ -38,18 +38,27 @@
  *   2. Arm 1a's JOIN carries validPevoPaperWhere(source='all') against
  *      the parent comment p, enforcing paper-class identity (the LEFT
  *      JOIN-to-non-paper griefing vector).
- *   3. Arms 1a and 1b both carry `co.author != $1` self-author exclusion
- *      (paired with the self-review-exclusion task hold item #6 ask:
- *      reverting either inline filter would let a paper author receive
- *      "you reviewed your own paper" notifications).
- *   4. The accreditation_update arm carries the required_posting_auths
+ *   3. Comment-derived arms (1a, 1b, 5) each carry `co.author != $1`
+ *      self-author exclusion: reverting either inline filter would let a
+ *      paper author receive "you reviewed your own paper" notifications, or
+ *      a commenter a notification for replying to their own comment. Pinned
+ *      both collectively (per-arm count == 3) and per-arm via slices that
+ *      isolate arm 1a (first→second `new_review` tag) and arm 1b (second
+ *      `new_review` → first `new_vote` tag).
+ *   4. Citation arms (6a, 6b) each carry `citing.author <> $1` self-citation
+ *      exclusion — the citation-side analogue of the comment arms' filter:
+ *      a user citing their own paper must not notify themselves. Pinned
+ *      per-arm via slices that isolate arm 6a (first→second `new_citation`
+ *      tag) and arm 6b (second `new_citation` → `claim_pending` tag).
+ *   5. The accreditation_update arm carries the required_posting_auths
  *      authority gate, so only an accredit/revoke op signed by an
  *      accreditation authority produces a notification — a self-broadcast
  *      op naming the recipient cannot push a spurious accreditation_update.
  *
  * Mutation kill: removing INNER from arm 1a's JOIN, dropping the
  * validPevoPaperWhere predicate from arm 1a, removing `co.author != $1`
- * from either arm, or dropping the required_posting_auths gate from the
+ * from any comment-derived arm, removing `citing.author <> $1` from either
+ * citation arm, or dropping the required_posting_auths gate from the
  * accreditation_update arm fails the corresponding canary below.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -180,6 +189,51 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     // fails red.
     const occurrences = (sql.match(/AND co\.author != \$1/g) ?? []).length;
     expect(occurrences).toBe(3);
+  });
+
+  it('arm 1a (native new_review) carries co.author != $1 in its own slice', async () => {
+    const { sql } = await captureNotificationsSql();
+    // Per-arm slice (complements the collective count above): isolate arm 1a
+    // from the first `'new_review'::text` tag up to arm 1b's tag, and assert
+    // the self-exclusion lives inside that slice. A revert that drops the
+    // filter from arm 1a specifically — while another arm still carries it —
+    // would keep the collective count at 3 only if the removed filter were
+    // re-added elsewhere; the slice pins the predicate to the native arm.
+    const arm1a = sql.match(/'new_review'::text([\s\S]*?)'new_review'::text/);
+    expect(arm1a, 'arm 1a slice (first→second new_review tag) not found').not.toBeNull();
+    expect(arm1a![1]).toMatch(/AND co\.author != \$1/);
+  });
+
+  it('arm 1b (bridge new_review) carries co.author != $1 in its own slice', async () => {
+    const { sql } = await captureNotificationsSql();
+    // Slice arm 1b from the second `'new_review'::text` tag up to the first
+    // `'new_vote'::text` tag (arm 2a). The bridge-review arm must carry the
+    // same self-exclusion as the native arm.
+    const arm1b = sql.match(/'new_review'::text[\s\S]*?'new_review'::text([\s\S]*?)'new_vote'::text/);
+    expect(arm1b, 'arm 1b slice (second new_review→first new_vote tag) not found').not.toBeNull();
+    expect(arm1b![1]).toMatch(/AND co\.author != \$1/);
+  });
+
+  it('citation arm 6a carries citing.author <> $1 self-citation exclusion in its own slice', async () => {
+    const { sql } = await captureNotificationsSql();
+    // The citation arms notify the cited author. A user citing their own
+    // paper must not notify themselves: the citation-side analogue of the
+    // comment arms' `co.author != $1` is `citing.author <> $1` on the citing
+    // post's broadcaster. Slice arm 6a from the first `'new_citation'::text`
+    // tag to the second (arm 6b's tag).
+    const arm6a = sql.match(/'new_citation'::text([\s\S]*?)'new_citation'::text/);
+    expect(arm6a, 'arm 6a slice (first→second new_citation tag) not found').not.toBeNull();
+    expect(arm6a![1]).toMatch(/AND citing\.author <> \$1/);
+  });
+
+  it('citation arm 6b carries citing.author <> $1 self-citation exclusion in its own slice', async () => {
+    const { sql } = await captureNotificationsSql();
+    // Slice arm 6b from the second `'new_citation'::text` tag to the
+    // `'claim_pending'::text` tag (arm 7). The bridge-citation arm carries
+    // the same self-citation exclusion as the native arm.
+    const arm6b = sql.match(/'new_citation'::text[\s\S]*?'new_citation'::text([\s\S]*?)'claim_pending'::text/);
+    expect(arm6b, 'arm 6b slice (second new_citation→claim_pending tag) not found').not.toBeNull();
+    expect(arm6b![1]).toMatch(/AND citing\.author <> \$1/);
   });
 
   it('accreditation_update arm carries the required_posting_auths authority gate', async () => {
