@@ -21,6 +21,20 @@ function parseCommentParams(req: Request) {
   return { page, limit, offset, sort, order };
 }
 
+// Shape of an enriched comment row returned to the SPA. Held by the canonical
+// per-paper tree cache as the JS-side slice/sort/order inputs.
+interface EnrichedComment {
+  author: string;
+  permlink: string;
+  body: string;
+  created: string;
+  net_votes: number;
+  is_accredited: boolean;
+  author_reputation: number;
+  parent_author: string;
+  parent_permlink: string;
+}
+
 // ──────────────────────────────────────────────
 // HAF SQL implementation
 // ──────────────────────────────────────────────
@@ -53,15 +67,20 @@ async function paperExistsInHaf(author: string, permlink: string): Promise<boole
   }
 }
 
-async function fetchCommentsFromHaf(
+/**
+ * Fetch the FULL discussion-comment tree for a paper, enriched, with no
+ * pagination/sort applied. One query (no LIMIT/OFFSET, no duplicate count
+ * walk — `total = rows.length`). The route handler caches this once per
+ * paper and applies sort/order/slice in JS, so a paper polled across N
+ * pagination/sort variants reuses a single canonical entry instead of
+ * fanning out N tree walks per cache-key.
+ */
+async function fetchCommentsTreeFromHaf(
   paperAuthor: string,
   paperPermlink: string,
-  params: ReturnType<typeof parseCommentParams>,
-) {
+): Promise<{ rows: EnrichedComment[]; total: number } | null> {
   const pool = getPool();
   if (!pool) return null;
-
-  const { limit, offset, sort, order } = params;
 
   try {
     // PEvO object-identity gate is unconditional: comments are author-vouched
@@ -70,12 +89,6 @@ async function fetchCommentsFromHaf(
     // `?accredited_only=false` opt-out is silently ignored per Express
     // convention (api-contracts/common.md).
     const accreditedJoin = `JOIN active_accreditations aa ON aa.account = dc.author`;
-
-    // ORDER BY runs on the outer `SELECT * FROM filtered`, where the
-    // `dc` alias from inside the `filtered` CTE is no longer in scope.
-    // Reference the projected column names directly.
-    const sortCol = sort === 'votes' ? 'accredited_votes' : 'created';
-    const safeOrder = order === 'asc' ? 'ASC' : 'DESC';
 
     // Build parameterized CTE
     const accredCte = activeAccreditationsCteBody();
@@ -87,10 +100,8 @@ async function fetchCommentsFromHaf(
     const appTagIdx = accredCte.nextIdx;
     const paperAuthorIdx = accredCte.nextIdx + 1;
     const paperPermlinkIdx = accredCte.nextIdx + 2;
-    const limitIdx = accredCte.nextIdx + 3;
-    const offsetIdx = accredCte.nextIdx + 4;
 
-    const baseParams = [...accredCte.params, config.appTag, paperAuthor, paperPermlink];
+    const params = [...accredCte.params, config.appTag, paperAuthor, paperPermlink];
 
     // Recursive CTE to get all discussion comments in the tree.
     // `WITH RECURSIVE` is required because `comment_tree` self-references in
@@ -98,6 +109,10 @@ async function fetchCommentsFromHaf(
     // non-RECURSIVE WITH. A parse error here is not silent: the catch below
     // throws `HafQueryError`, so the route returns 503/500 — it is never a
     // silent `200 []`.
+    //
+    // No LIMIT/OFFSET/ORDER BY: the canonical tree is cached as a whole and
+    // the route handler sorts + slices in JS. Pagination correctness rests on
+    // `total = rows.length` (no duplicate count walk).
     //
     // Descent gate: the recursive arm additionally requires the parent
     // (`ct.author`) to be in `active_accreditations`. The base arm matches
@@ -140,46 +155,15 @@ async function fetchCommentsFromHaf(
         WHERE (c.json_metadata -> $${appTagIdx} ->> 'type') IS DISTINCT FROM 'review'
           AND ct.depth < 20
           AND EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = ct.author)
-      ),
-      filtered AS (
-        SELECT
-          dc.author, dc.permlink, dc.body, dc.created,
-          dc.parent_author, dc.parent_permlink,
-          ${accreditedVoteCount('dc.author', 'dc.permlink')} AS accredited_votes
-        FROM comment_tree dc
-        ${accreditedJoin}
       )
-      SELECT * FROM filtered
-      ORDER BY ${sortCol} ${safeOrder}
-      LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
-
-    // Count query must apply the same descent restriction so
-    // `meta.total` matches `data.length` after pagination.
-    const countQuery = `
-      WITH RECURSIVE ${accredCte.sql},
-      comment_tree AS (
-        SELECT c.author, c.permlink, c.parent_author, c.parent_permlink, 0 AS depth
-        FROM ${T.comments} c
-        WHERE c.parent_author = $${paperAuthorIdx} AND c.parent_permlink = $${paperPermlinkIdx}
-          AND (c.json_metadata -> $${appTagIdx} ->> 'type') IS DISTINCT FROM 'review'
-        UNION ALL
-        SELECT c.author, c.permlink, c.parent_author, c.parent_permlink, ct.depth + 1
-        FROM ${T.comments} c
-        JOIN comment_tree ct ON c.parent_author = ct.author AND c.parent_permlink = ct.permlink
-        WHERE (c.json_metadata -> $${appTagIdx} ->> 'type') IS DISTINCT FROM 'review'
-          AND ct.depth < 20
-          AND EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = ct.author)
-      )
-      SELECT count(*)::int AS total
+      SELECT
+        dc.author, dc.permlink, dc.body, dc.created,
+        dc.parent_author, dc.parent_permlink,
+        ${accreditedVoteCount('dc.author', 'dc.permlink')} AS accredited_votes
       FROM comment_tree dc
       ${accreditedJoin}`;
 
-    const [dataResult, countResult] = await Promise.all([
-      pool.query(query, [...baseParams, limit, offset]),
-      pool.query(countQuery, baseParams),
-    ]);
-
-    const total = countResult.rows[0]?.total ?? 0;
+    const dataResult = await pool.query(query, params);
 
     // Enrich with accreditation + reputation
     const authors = [...new Set(dataResult.rows.map((r: Record<string, unknown>) => r.author as string))];
@@ -188,25 +172,26 @@ async function fetchCommentsFromHaf(
       getReputationScores(authors),
     ]);
 
-    const rows = dataResult.rows.map((r: Record<string, unknown>) => {
-      const authorAccredited = accreditedSet.has(r.author as string);
+    const rows: EnrichedComment[] = dataResult.rows.map((r: Record<string, unknown>) => {
+      const author = r.author as string;
+      const authorAccredited = accreditedSet.has(author);
       return {
-        author: r.author,
-        permlink: r.permlink,
-        body: r.body,
-        created: r.created,
+        author,
+        permlink: r.permlink as string,
+        body: r.body as string,
+        created: r.created as string,
         net_votes: r.accredited_votes as number,
         is_accredited: authorAccredited,
         // Symmetric chain pre-check: non-accredited commenter shows score 0
         // even if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
         // direction-of-truth: chain is SSoT, batch map is a perf cache).
-        author_reputation: authorAccredited ? (reputationMap.get(r.author as string) ?? 0) : 0,
-        parent_author: r.parent_author,
-        parent_permlink: r.parent_permlink,
+        author_reputation: authorAccredited ? (reputationMap.get(author) ?? 0) : 0,
+        parent_author: r.parent_author as string,
+        parent_permlink: r.parent_permlink as string,
       };
     });
 
-    return { rows, total };
+    return { rows, total: rows.length };
   } catch (err) {
     // Loud-fail on HAF query failure so the route handler can translate
     // to `503 SERVICE_UNAVAILABLE` with `details.retriable: true`. The
@@ -220,8 +205,33 @@ async function fetchCommentsFromHaf(
     // on null AND on rejection (try/finally cleanup), so the throw does
     // not poison the cache for subsequent recovery-window callers.
     logger.error({ err }, 'HAF comments query failed');
-    throw new HafQueryError('fetchCommentsFromHaf', { cause: err });
+    throw new HafQueryError('fetchCommentsTreeFromHaf', { cause: err });
   }
+}
+
+/**
+ * Sort + slice an already-fetched canonical tree. Pure, no I/O — runs on
+ * every request against the cached tree so an active paper polled across N
+ * pagination/sort variants amortises to one tree walk per cache window.
+ */
+function paginateTree(
+  tree: { rows: EnrichedComment[]; total: number },
+  params: ReturnType<typeof parseCommentParams>,
+): { rows: EnrichedComment[]; total: number } {
+  const { sort, order, offset, limit } = params;
+  // Stable, deterministic ordering: copy then sort (do not mutate the cached
+  // array). `created` is a chain timestamp string sortable lexicographically;
+  // `votes` uses the precomputed `net_votes` projection.
+  const sorted = [...tree.rows].sort((a, b) => {
+    let cmp: number;
+    if (sort === 'votes') {
+      cmp = a.net_votes - b.net_votes;
+    } else {
+      cmp = a.created < b.created ? -1 : a.created > b.created ? 1 : 0;
+    }
+    return order === 'asc' ? cmp : -cmp;
+  });
+  return { rows: sorted.slice(offset, offset + limit), total: tree.total };
 }
 
 // ──────────────────────────────────────────────
@@ -239,15 +249,26 @@ router.get('/', async (req: Request, res: Response) => {
       return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
     }
 
-    const cacheKey = `comments:${author}:${permlink}:p=${params.page}:l=${params.limit}:s=${params.sort}:o=${params.order}`;
-    const result = await hafCache.getOrSet(cacheKey, () =>
-      fetchCommentsFromHaf(author, permlink, params),
+    // Canonical per-paper tree cache: one entry holds the full enriched tree;
+    // sort/order/slice happen in JS below. `stable: true` + 30s TTL: the
+    // block-watcher's ~3s `clearVolatile()` tick would otherwise wipe the
+    // entry roughly synchronously with HAF ingest, giving back most of the
+    // benefit, and there is no backend-side broadcast hook to issue a
+    // precise DEL on new replies (comments are signed by the SPA via
+    // Keychain and broadcast directly to the chain).
+    const cacheKey = `comments:tree:${author}:${permlink}`;
+    const tree = await hafCache.getOrSet(
+      cacheKey,
+      () => fetchCommentsTreeFromHaf(author, permlink),
+      30_000,
+      true,
     );
-    // result is non-null at this site: the paperExistsInHaf preflight
-    // above already 404s when getPool() is null, so fetchCommentsFromHaf's
+    // tree is non-null at this site: the paperExistsInHaf preflight
+    // above already 404s when getPool() is null, so fetchCommentsTreeFromHaf's
     // own null-pool short-circuit is structurally unreachable here. The
     // failure path now throws HafQueryError (caught below).
-    sendOk(res, result!.rows, { page: params.page, limit: params.limit, total: result!.total });
+    const page = paginateTree(tree!, params);
+    sendOk(res, page.rows, { page: params.page, limit: params.limit, total: page.total });
   } catch (err) {
     if (err instanceof HafQueryError && isRetriableHafError(err)) {
       // Cause-discriminated retriable envelope. Deterministic pg failures

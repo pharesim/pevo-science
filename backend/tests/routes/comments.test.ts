@@ -174,4 +174,71 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
     const key = (c: { author: string; permlink: string }) => `${c.author}/${c.permlink}`;
     expect(new Set(withFalseParam.body.data.map(key))).toEqual(new Set(withoutParam.body.data.map(key)));
   });
+
+  // Canonical per-paper tree cache invariant: every sort/order/page
+  // combination must yield the same UNDERLYING set of comments. Sort/order
+  // only reorder; pagination only slices. The JS-side paginator runs against
+  // a single cached tree, so a regression that drops rows in the slice or
+  // skips the deep copy before sort would surface here as a set divergence
+  // between (sort=date, order=asc) and (sort=votes, order=desc) on the
+  // bug-paper that has a known multi-comment tree.
+  it('JS-side sort/order produce identical sets across all four (sort,order) variants', { timeout: 60_000, retry: 5 }, async () => {
+    const PAPER_AUTHOR = 'jesusalejos';
+    const PAPER_PERMLINK = 'tica-y-meta-antropologa-una-aproximacin-al-sentido-de-la-tecnologa-hoy-en-hans-urs-von-balthasar-mp2t81qb';
+    const variants = [
+      { sort: 'date', order: 'asc' },
+      { sort: 'date', order: 'desc' },
+      { sort: 'votes', order: 'asc' },
+      { sort: 'votes', order: 'desc' },
+    ];
+    const responses = await Promise.all(
+      variants.map((v) =>
+        request(app).get(
+          `/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=200&sort=${v.sort}&order=${v.order}`,
+        ),
+      ),
+    );
+    const sets = responses.map((r) => {
+      expect(r.status).toBe(200);
+      return new Set(r.body.data.map((c: { author: string; permlink: string }) => `${c.author}/${c.permlink}`));
+    });
+    // All four variants must produce the same underlying set.
+    for (let i = 1; i < sets.length; i++) {
+      expect(sets[i]).toEqual(sets[0]);
+    }
+    // meta.total must agree across variants (canonical tree's `total` is
+    // sort-independent; only the slice changes).
+    for (let i = 1; i < responses.length; i++) {
+      expect(responses[i].body.meta.total).toBe(responses[0].body.meta.total);
+    }
+  });
+
+  // Pagination boundary: page-2 must not duplicate or skip rows relative to
+  // page-1 (the JS-side slice would drop a row if `offset` were miscomputed,
+  // or duplicate one if the sort was unstable across pages). Use limit=2 to
+  // force a real page boundary on the canonical tree.
+  it('paginated slices concatenate to the unpaginated list (no skips, no duplicates)', { timeout: 60_000, retry: 5 }, async () => {
+    const PAPER_AUTHOR = 'jesusalejos';
+    const PAPER_PERMLINK = 'tica-y-meta-antropologa-una-aproximacin-al-sentido-de-la-tecnologa-hoy-en-hans-urs-von-balthasar-mp2t81qb';
+    const all = await request(app).get(
+      `/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=200&sort=date&order=asc`,
+    );
+    expect(all.status).toBe(200);
+    if (all.body.data.length < 3) return; // not enough to exercise the boundary
+    const [p1, p2] = await Promise.all([
+      request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=2&page=1&sort=date&order=asc`),
+      request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=2&page=2&sort=date&order=asc`),
+    ]);
+    expect(p1.status).toBe(200);
+    expect(p2.status).toBe(200);
+    const key = (c: { author: string; permlink: string }) => `${c.author}/${c.permlink}`;
+    const concat = [...p1.body.data, ...p2.body.data].map(key);
+    const expected = all.body.data.slice(0, concat.length).map(key);
+    expect(concat).toEqual(expected);
+    // No row appears in both pages.
+    const p1Keys = new Set(p1.body.data.map(key));
+    for (const c of p2.body.data) {
+      expect(p1Keys.has(key(c))).toBe(false);
+    }
+  });
 });
