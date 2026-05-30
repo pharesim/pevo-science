@@ -566,7 +566,7 @@ Six dimensions of the `accounts` row affect auth and state transitions: `verify_
 | A | NULL | SET | SET | NULL | `'light'` | NULL | Email signup, no ORCID linked |
 | B | NULL | SET | SET | SET | `'light'` | NULL | A with ORCID linked, or combined email+ORCID signup |
 | C | NULL | SET | NULL | SET | `'light'` | NULL | ORCID-only signup, or A/B after `/recover` with `orcid_token` and no `new_password` |
-| D | NULL | SET | (preserved from A/B/C) | (preserved) | `'self'` | SET | A/B/C after `/api/custody/upgrade` |
+| D | NULL | SET | (preserved from A/B/C) or NULL (signup-verify(self) path) | (preserved) or NULL (signup-verify(self) path) | `'self'` | SET | A/B/C after `/api/custody/upgrade`, OR a fresh F → D via `POST /api/auth/link` (signup-verify(self), self-custody-linking finalization for a Hive account the user already controls) |
 | E | random hex | NULL | SET | NULL | NULL | NULL | Email signup, after `/api/auth/signup`, before email-verify-link click |
 | F | `'confirmed:<hex>'` | NULL | SET (email path) or NULL (ORCID path) | NULL or SET | NULL | NULL | Email signup after verify-link click, OR ORCID signup (skips E directly per `auth.ts:460-490`) |
 
@@ -603,6 +603,7 @@ Initial → finalized:
   [no row] ──signup(email+password)──> E ──email-verify-link──> F ──signup-verify(light)──> A
   [no row] ──signup(orcid_token only)─────────────────────────> F ──signup-verify(light)──> C
   [no row] ──signup(email+password+orcid_token)──────────────> F ──signup-verify(light)──> B
+  [no row] ──signup(...)──> E or F ──signup-verify(self)──> D   (POST /api/auth/link, fresh self-custody finalization linking to a Hive account the user already controls; password_hash and orcid stay NULL on this path, distinguishing it from the A/B/C → D upgrade flow which preserves those fields)
   [no row] ──(bring own Hive account)──────> no-row case
 
 Adding auth factors:
