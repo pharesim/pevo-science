@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { fetchPaperComments, isRetriable503 } from '../api.js';
 import { renderMarkdown } from './markdown-renderer.js';
+import { escapeHtml } from '../lib/escape-html.js';
 
 function formatTimeAgo(iso, t) {
   const diff = Date.now() - new Date(iso).getTime();
@@ -20,12 +21,6 @@ function countComments(comments) {
     count += 1 + countComments(c.replies || []);
   }
   return count;
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 function escapeAttr(text) {

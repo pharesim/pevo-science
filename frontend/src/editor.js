@@ -15,6 +15,7 @@ import remarkGfm from 'remark-gfm';
 import DOMPurify from 'dompurify';
 import { visit } from 'unist-util-visit';
 import { uploadToIpfs } from './api.js';
+import { escapeHtml } from './lib/escape-html.js';
 
 // --- Markdown -> HTML conversion ---
 
@@ -392,9 +393,9 @@ export class PevoEditor {
   }
 
   _esc(s) {
-    const d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
+    // Attribute-context safe: several _esc callers interpolate into
+    // quoted attributes (placeholder, value, aria-label). See escape-html.js.
+    return escapeHtml(s);
   }
 
   _toolbarHtml() {
