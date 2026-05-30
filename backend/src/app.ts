@@ -367,7 +367,7 @@ export function createApp() {
         { '@type': 'ListItem', position: 2, name: title },
       ],
     };
-    const jsonLdScript = `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>\n  <script type="application/ld+json">${JSON.stringify(breadcrumb)}</script>`;
+    const jsonLdScript = `<script type="application/ld+json">${jsonLdSafe(jsonLd)}</script>\n  <script type="application/ld+json">${jsonLdSafe(breadcrumb)}</script>`;
 
     const hreflangTags = buildHreflangTags(pathWithoutLocale);
 
@@ -392,6 +392,21 @@ export function createApp() {
   }
   function escHtml(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  // Serialize an object for embedding inside an inline <script type="application/ld+json">
+  // block. JSON.stringify alone does NOT escape `<`/`>`, so a chain-derived string
+  // containing the byte sequence `</script>` would close the script element in the
+  // HTML parser and allow arbitrary script injection. Escaping `<`, `>`, `&` to their
+  // \uXXXX JSON forms (plus the U+2028/U+2029 line separators that break inline-script
+  // parsing) preserves JSON semantics for schema.org crawlers while keeping the
+  // serialized value inert in HTML-parser context.
+  function jsonLdSafe(obj: unknown): string {
+    return JSON.stringify(obj)
+      .replace(/</g, '\\u003C')
+      .replace(/>/g, '\\u003E')
+      .replace(/&/g, '\\u0026')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
   }
 
   // JSON 404 for unmatched /api/* requests (any HTTP method).
@@ -476,7 +491,7 @@ export function createApp() {
           name: username,
           url: fullUrl,
         };
-        const personLdScript = `<script type="application/ld+json">${JSON.stringify(personLd)}</script>`;
+        const personLdScript = `<script type="application/ld+json">${jsonLdSafe(personLd)}</script>`;
 
         const html = indexHtml
           .replace(`<title>${defaultTitle}</title>`, `<title>${escHtml(pageTitle)}</title>`)
