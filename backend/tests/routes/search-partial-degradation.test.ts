@@ -166,6 +166,24 @@ function mockBothBranchesThrow(): void {
   );
 }
 
+/**
+ * Both branches succeed, each carrying its own `count(*) OVER ()` total on
+ * every returned row. The papers branch reports `paperTotal`, the reviews
+ * branch `reviewTotal`. One synthetic row per branch is enough: the route
+ * reads the window-function total from `dataResult.rows[0].total`, so the
+ * branch total is decoupled from the returned row count (and from the page
+ * limit). Distinct, non-equal totals let the summation assertion below
+ * distinguish `a + b` from `Math.max(a, b)` and from either branch alone.
+ */
+function mockBothBranchesSucceed(paperTotal: number, reviewTotal: number): void {
+  hafQueryMock.mockImplementation((sql: string): Promise<MockQueryResult> => {
+    if (isReviewsBranchSql(sql)) {
+      return Promise.resolve({ rows: [{ ...SYNTHETIC_REVIEW_ROW, total: reviewTotal }] });
+    }
+    return Promise.resolve({ rows: [{ ...SYNTHETIC_PAPER_ROW, total: paperTotal }] });
+  });
+}
+
 describe('GET /api/search?type=all partial degradation (allSettled)', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -272,5 +290,28 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
     // Pinning both closes the "new filter added but not threaded" gap.
     expect(payload.queryParams.source).toBeUndefined();
     expect(payload.queryParams.includeRetracted).toBe(false);
+  });
+});
+
+describe('GET /api/search?type=all total summation', () => {
+  beforeEach(async () => {
+    await hafCache.clear();
+    hafQueryMock.mockReset();
+  });
+
+  it('meta.total is the sum of both branch totals when both branches succeed', async () => {
+    // Papers branch reports total 3, reviews branch reports total 5. The
+    // route computes `total = (paperResult?.total ?? 0) + (reviewResult?.total
+    // ?? 0)`, so meta.total must be 8. A regression that swapped the sum for
+    // `Math.max(...)` would yield 5; one that returned only a single branch's
+    // total would yield 3 or 5 — both fail this assertion.
+    mockBothBranchesSucceed(3, 5);
+    const res = await request(app).get('/api/search?q=science&type=all');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(res.body.meta.total).toBe(8);
+    // One row per branch flows through into the merged result; total is a
+    // window-function value independent of this count.
+    expect(res.body.data.length).toBe(2);
   });
 });
