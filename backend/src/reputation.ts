@@ -1060,8 +1060,15 @@ export async function computeReputationBatch(
 
     return results;
   } catch (err) {
+    // Re-throw, do NOT return a partial map. This is a single batch query for
+    // every user at once (no per-user loop), so there is no partial success to
+    // salvage. Swallowing the error returned an empty map that the batch
+    // orchestrator could not distinguish from a legitimately empty cycle: it
+    // advanced cycle:last and wiped the next cycle's voter weights on any HAF
+    // transient. The outer try/catch in runBatchComputation handles the throw
+    // by bailing without advancing the cycle.
     logger.error({ err }, 'Batch SQL reputation computation failed');
-    return results;
+    throw err;
   }
 }
 
