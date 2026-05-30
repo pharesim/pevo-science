@@ -820,7 +820,10 @@ export function authorshipClaimsCteBody(
  * Nothing PEvO-related exists before this block — use it as a floor for all
  * queries that accept a since_block parameter.
  *
- * Discovered once from HAF on first call, then cached permanently.
+ * Cached permanently only once the primary query finds a real genesis (the
+ * first `accredit` op). Until then each call re-runs the primary query and
+ * the HEAD fallback returns a safe floor WITHOUT caching, so the running
+ * process captures the real genesis the moment the first accreditation lands.
  */
 let genesisBlock: number | null = null;
 
@@ -845,14 +848,20 @@ export async function getGenesisBlock(pool: { query: (sql: string, params: unkno
     logger.error({ err }, 'Failed to query genesis block');
   }
 
-  // Fallback: use current head block — nothing PEvO-related can exist before now
+  // Fallback: use current head block — nothing PEvO-related can exist before now.
+  // Deliberately NOT cached. Caching HEAD here would pin genesisBlock at
+  // boot-time HEAD forever; once the first accreditation lands, the running
+  // backend's `cj.block_num >= genesis` predicates would keep filtering above
+  // that pinned floor and return zero rows until a restart. Returning HEAD for
+  // this call only keeps the safe floor while leaving the primary query to
+  // re-run on the next call (one cheap indexed query per call until the first
+  // accreditation exists) so genesis is captured the moment it does.
   try {
     const headResult = await pool.query(`SELECT MAX(block_num) AS head FROM ${T.blocks}`, []);
     const head = Number(headResult.rows[0]?.head);
     if (head && head > 0) {
-      genesisBlock = head;
-      logger.info({ genesisBlock: head }, 'No accreditations yet — using head block as genesis floor');
-      return genesisBlock;
+      logger.info({ headFloor: head }, 'No accreditations yet — using head block as genesis floor (not cached)');
+      return head;
     }
   } catch (headErr) {
     logger.error({ err: headErr }, 'Failed to query head block for genesis fallback');
