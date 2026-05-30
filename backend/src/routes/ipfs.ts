@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -9,6 +10,8 @@ import { getPool, isHafConfigured } from '../db.js';
 import { getAppPool } from '../app-db.js';
 import { logger } from '../logger.js';
 import { type PinBackend, cidReferencedByAppTag, unpinFromIpfs } from '../lib/ipfs-shared.js';
+import { consumeSessionFreshAuthToken } from '../lib/fresh-auth.js';
+import { issueUploadToken, consumeUploadToken } from '../lib/ipfs-upload-token.js';
 import multer from 'multer';
 
 function sanitizeFilename(name: string): string {
@@ -194,6 +197,68 @@ async function pinToIpfs(buffer: Buffer, filename: string): Promise<PinResult> {
   throw new Error('No IPFS backend available — configure IPFS_API_URL or Pinata keys');
 }
 
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+// ──────────────────────────────────────────────
+// POST /api/ipfs/upload-token — bind a declared file to the auth envelope
+// ──────────────────────────────────────────────
+//
+// Pre-flight that mints a single-use token scoped to a declared file sha256.
+// The actual upload then proves it carries the same bytes. Two properties:
+//
+//  - **File binding.** On the signature path, verifyHiveSignature body-hashes
+//    this JSON pre-flight into the signed envelope, so a captured signature is
+//    bound to one file_sha256. The upload re-checks sha256(file.buffer) against
+//    the token, so a captured pre-flight cannot pin a different file.
+//  - **No JWT-only pinning.** A Bearer JWT is replayable, so the JWT path
+//    additionally requires a single-use session fresh-auth proof (ARCH.md § 6.5
+//    invariant #1). The per-request signature path is itself fresh and needs no
+//    extra proof. A stolen JWT alone therefore cannot obtain a token, and
+//    without a token the upload is refused.
+router.post('/upload-token', verifyHiveSignature, ipfsUploadLimiter, async (req: Request, res: Response) => {
+  const username = req.hiveUsername!;
+
+  if (req.hiveAuthMethod === 'jwt') {
+    const proofRaw = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
+    const proofToken = typeof proofRaw === 'string' ? proofRaw : undefined;
+    const result = await consumeSessionFreshAuthToken(proofToken, username);
+    if (!result.valid) {
+      const status = result.reason === 'username_mismatch' ? 403 : 401;
+      return sendError(
+        res,
+        status,
+        'FRESH_AUTH_REQUIRED',
+        'Re-authentication required to request an upload token. Please complete the fresh-auth challenge and retry.',
+        { reason: result.reason },
+      );
+    }
+  }
+
+  const body = (req.body ?? {}) as { file_sha256?: unknown; mimetype?: unknown; size?: unknown };
+  const fileSha256 = typeof body.file_sha256 === 'string' ? body.file_sha256.toLowerCase() : '';
+  const mimetype = typeof body.mimetype === 'string' ? body.mimetype : '';
+  const size = typeof body.size === 'number' ? body.size : NaN;
+
+  if (!SHA256_HEX_RE.test(fileSha256)) {
+    return sendError(res, 400, 'BAD_REQUEST', 'file_sha256 must be a 64-character hex SHA-256 digest');
+  }
+  if (!ACCEPTED_MIMES.has(mimetype)) {
+    return sendError(res, 422, 'INVALID_FILE_TYPE', ACCEPTED_TYPES_MSG);
+  }
+  if (!Number.isInteger(size) || size <= 0 || size > MAX_FILE_SIZE) {
+    return sendError(res, 413, 'FILE_TOO_LARGE', `File exceeds ${Math.round(MAX_FILE_SIZE / (1024 * 1024))}MB limit`);
+  }
+
+  // Same accreditation gate as the upload itself — fail fast at the pre-flight.
+  const accreditation = await getAccreditation(username);
+  if (!accreditation) {
+    return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can upload files');
+  }
+
+  const token = await issueUploadToken({ account: username, file_sha256: fileSha256, mimetype, size });
+  sendOk(res, { upload_token: token, expires_in: 60 });
+});
+
 // ──────────────────────────────────────────────
 // POST /api/ipfs/upload
 // ──────────────────────────────────────────────
@@ -223,6 +288,32 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
     const accreditation = await getAccreditation(req.hiveUsername!);
     if (!accreditation) {
       return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can upload files');
+    }
+
+    // Single-use upload-token gate. The token was minted by /upload-token under
+    // a freshly-authenticated pre-flight (signed request, or JWT + fresh-auth),
+    // scoped to a declared file sha256. Consuming it here and matching the
+    // actual file bytes binds the upload to that envelope: a stolen JWT cannot
+    // pin (no token), and a captured pre-flight cannot pin a different file
+    // (sha256 mismatch).
+    const uploadToken = req.headers['x-upload-token'] as string | undefined;
+    const binding = await consumeUploadToken(uploadToken, req.hiveUsername!);
+    if (!binding) {
+      return sendError(
+        res,
+        401,
+        'UNAUTHORIZED',
+        'A valid single-use upload token is required. Request one from /api/ipfs/upload-token first.',
+      );
+    }
+    const actualSha256 = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+    if (actualSha256 !== binding.file_sha256) {
+      return sendError(
+        res,
+        400,
+        'BAD_REQUEST',
+        'Uploaded file does not match the sha256 declared for this upload token.',
+      );
     }
 
     if (!config.ipfsApiUrl && !config.pinataApiKey) {

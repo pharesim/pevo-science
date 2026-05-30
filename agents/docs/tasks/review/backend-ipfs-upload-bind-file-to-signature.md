@@ -59,3 +59,38 @@ Implementer's call on whether to land (1) and (2) together or stage them. Landin
 - `agents/docs/ARCHITECTURE.md` § 6.5 — invariant that JWT-only access on critical actions is a security defect.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend implementation note (2026-05-30)
+
+Landed the full approach (1)+(2) per the user's call.
+
+**What shipped (backend):**
+- New `POST /api/ipfs/upload-token` pre-flight. Body `{ file_sha256, mimetype,
+  size }`. On the signature path the body is hashed into the signed envelope
+  (so the declared sha256 is bound); on the JWT path it additionally requires a
+  single-use **session** fresh-auth proof (`fresh_auth_proof` in body, consumed
+  via `consumeSessionFreshAuthToken`). Returns `{ upload_token, expires_in: 60 }`.
+- `POST /api/ipfs/upload` now requires an `X-Upload-Token` header. After multer
+  parses, the handler consumes the token (single-use) and rejects unless
+  `sha256(file.buffer)` matches the token's declared hash. A stolen JWT alone
+  cannot pin (it cannot mint a token without fresh-auth); a captured pre-flight
+  cannot pin a different file (sha256 mismatch).
+- New single-use store `backend/src/lib/ipfs-upload-token.ts` (Redis-primary +
+  in-memory fallback, 60s TTL, account-bound), mirroring the fresh-auth store.
+- Error codes reused (no new `ErrorCode`): missing/invalid token → 401
+  `UNAUTHORIZED`; sha256 mismatch → 400 `BAD_REQUEST`; JWT-without-fresh-auth →
+  401 `FRESH_AUTH_REQUIRED`.
+
+**[TODO Architect] `api-contracts/ipfs.md` contract updates:**
+1. Document `POST /api/ipfs/upload-token` (request body, the JWT-path
+   `fresh_auth_proof` requirement, the `{ upload_token, expires_in }` response).
+2. `POST /api/ipfs/upload` now requires the `X-Upload-Token` header and 401s
+   without a valid one; note the sha256-binding 400.
+
+**[TODO Architect] file a UI follow-up task.** The SPA's `frontend/src/api.js`
+upload flow must change to a two-step round-trip: compute the file sha256,
+`POST /upload-token` (attaching a fresh-auth proof on the light-account/JWT
+path), then `POST /upload` with the returned token in `X-Upload-Token`. This is
+a `ui-*` task (UI zone), so the backend cannot create the task file itself
+without tripping the commit zone-audit hook — flagging it here for the architect
+to spin up.
