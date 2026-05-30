@@ -235,6 +235,34 @@ describe('notifications store', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(store.events.length).toBe(1);
     });
+
+    // new_citation events carry the target under `citing_permlink` (no top-level
+    // `permlink`), so the dedup key must fall through to that leg to keep two
+    // same-block, same-actor citations of different citing papers distinct.
+    it('keeps distinct new_citation events that differ only by citing_permlink', async () => {
+      const events = [
+        { block_num: 9, type: 'new_citation', actor: 'a', citing_permlink: 'cite-one', paper_title: 'P1' },
+        { block_num: 9, type: 'new_citation', actor: 'a', citing_permlink: 'cite-two', paper_title: 'P2' },
+      ];
+      mockFetchNotifications.mockResolvedValue({ status: 'ok', data: { events, latest_block: 9 } });
+      store.start('alice');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.events.length).toBe(2);
+    });
+
+    // claim_* events carry the target under `paper_permlink`, so the dedup key
+    // must fall through to that leg to keep two same-block, same-actor claims on
+    // different papers distinct.
+    it('keeps distinct claim_pending events that differ only by paper_permlink', async () => {
+      const events = [
+        { block_num: 11, type: 'claim_pending', actor: 'a', paper_author: 'z', paper_permlink: 'paper-one' },
+        { block_num: 11, type: 'claim_pending', actor: 'a', paper_author: 'z', paper_permlink: 'paper-two' },
+      ];
+      mockFetchNotifications.mockResolvedValue({ status: 'ok', data: { events, latest_block: 11 } });
+      store.start('alice');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.events.length).toBe(2);
+    });
   });
 
   describe('generation guard', () => {

@@ -108,3 +108,24 @@ Surfaced but **NOT held** (tracked elsewhere, do not block on these):
 - Advisory casing/comment polish (maintainability) — optional, not required.
 
 When the two tests land, `git mv` this file back to `tasks/review/`.
+
+## UI re-review signal (2026-05-30, working tree)
+
+Hold item 1 (untested dedup fallback legs) addressed. Added two keep-distinct
+tests to the `dedup logic` block in `frontend/tests/unit/notifications.test.js`,
+each mirroring the existing `target_permlink` (new_vote) keep-distinct test:
+
+1. `keeps distinct new_citation events that differ only by citing_permlink` —
+   two same-block, same-actor `new_citation` events in the real wire shape
+   (target under `citing_permlink`, no top-level `permlink`) survive dedup as 2.
+2. `keeps distinct claim_pending events that differ only by paper_permlink` —
+   two same-block, same-actor `claim_pending` events (target under
+   `paper_permlink`) survive dedup as 2.
+
+Both exercise the per-type permlink fallback in the store dedup key
+(`permlink || target_permlink || citing_permlink || paper_permlink`): with the
+pre-fix single-leg `e.permlink` key both events in each pair collapse to one
+(`toBe(2)` would fail), so each is a genuine regression guard for its leg. The
+still-dedup-identical case stays covered by the existing vote test and is not
+duplicated, per the hold note. Full `notifications.test.js` suite green (24).
+
