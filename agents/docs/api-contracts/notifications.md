@@ -73,8 +73,6 @@ Fetch notification events for the authenticated user since a given Hive block nu
       "actor": "scientist5",
       "parent_author": "scientist1",
       "parent_permlink": "re-neural-network-comment-1",
-      "paper_author": "scientist1",
-      "paper_permlink": "neural-network-plasticity-2026",
       "permlink": "re-neural-network-comment-2"
     }
   ],
@@ -95,7 +93,7 @@ Fetch notification events for the authenticated user since a given Hive block nu
 |------|---------|-----------------|
 | `new_review` | New review on your paper. Trigger conditions: `type='review'`, authored by an accredited reviewer or the anon proxy, with a structurally-valid 4-dim rating object (each dimension an integer in `[1,5]`), parent is a PEvO paper (native or bridge), and not authored by the paper author or a named co-author. Source of truth: `validReviewWhere()` in `backend/src/hafsql.ts`. | Paper author |
 | `new_citation` | New paper whose pevo.citations references your paper | Cited paper author |
-| `new_vote` | New vote on your paper or review from an accredited voter | Content author |
+| `new_vote` | New vote on your paper or review from an accredited voter. `target_type` is `"paper"` for votes on a native or bridge paper and `"review"` for votes on a review. Self-votes do not fire. | Content author |
 | `accreditation_update` | Your accreditation is granted or revoked | Target account |
 | `new_vouch` | Someone vouches for you in WoT | Vouchee |
 | `new_reply` | New discussion comment (pevo.type=comment) replying to your comment | Parent comment author |
@@ -108,6 +106,7 @@ Fetch notification events for the authenticated user since a given Hive block nu
 
 **Notes:**
 - Only accredited-voter votes trigger `new_vote` events, consistent with the platform-wide accredited-only policy.
+- `new_reply` carries no `paper_author` / `paper_permlink`. A reply can sit any number of levels deep in a comment chain, so the root paper coordinates are not resolvable without unbounded recursive queries. Clients that want the paper context should resolve it from the `parent_author` / `parent_permlink` chain.
 - The backend queries HAF for events in the block range `(since_block, latest_head_block]`.
 - The first poll: if the client has no stored `since_block`, it should call `GET /api/health` to get the current timestamp, then use the corresponding block number (or simply use `0` to get the most recent events up to `limit`).
 - This design is suitable for both web (localStorage cursor) and mobile (SharedPreferences cursor) clients. No persistent connections or server-side state.
