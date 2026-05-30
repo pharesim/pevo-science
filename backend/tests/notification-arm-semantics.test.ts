@@ -68,4 +68,79 @@ describe('notification-queries.ts arm semantics', () => {
     const arm5 = src.slice(src.indexOf("'new_reply'::text"), src.indexOf("-- 6a."));
     expect(arm5).toContain('co.author != $1');
   });
+
+  // ── Arms 6a/6b (new_citation) paper-existence gate ──────────────
+  // The cited (author, permlink) must actually exist as a PEvO paper, else a
+  // broadcaster spams unlimited fake-citation notifications.
+  it.skipIf(!isHafConfigured())(
+    'arm-6a new_citation: fake citation of a non-existent paper produces no notification; a real one does',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      // Mirror arm 6a: CROSS JOIN LATERAL over citing.pevo.citations, then the
+      // post-fix INNER JOIN to cited_paper gated by validPevoPaperWhere(all).
+      // cited_paper VALUES stands in for the comments table: it holds ONE real
+      // PEvO paper (alice/real) and nothing for the fake permlink.
+      const sql = `
+        WITH
+          citing(author, json_metadata, block_num) AS (VALUES ('bob'::text, $2::jsonb, 100)),
+          cited_paper(author, permlink, title, json_metadata) AS (
+            VALUES ('alice'::text, 'real'::text, 'Real Paper'::text,
+                    '{"pevotest":{"type":"paper"}}'::jsonb)
+          )
+        SELECT COUNT(*)::int AS hit_count, MIN(cited_paper.title) AS title
+        FROM citing
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(citing.json_metadata -> 'pevotest' -> 'citations') = 'array'
+            THEN citing.json_metadata -> 'pevotest' -> 'citations'
+            ELSE '[]'::jsonb
+          END
+        ) AS cite_elem
+        CROSS JOIN LATERAL (
+          SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
+        ) AS cited_ref
+        JOIN cited_paper
+          ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
+          AND ((cited_paper.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+               OR (cited_paper.author = 'pevo.bridge'
+                   AND (cited_paper.json_metadata -> 'pevotest' ->> 'type') = 'bridge_paper'))
+        WHERE citing.author <> $1
+          AND cited_ref.author = $1
+          AND (citing.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+      `;
+
+      // Fake-citation spam: alice/fake does not exist in cited_paper -> dropped.
+      const spam = JSON.stringify({ pevotest: { type: 'paper', citations: [{ author: 'alice', permlink: 'fake' }] } });
+      const spamResult = await pool.query<{ hit_count: number }>(sql, ['alice', spam]);
+      expect(spamResult.rows[0]?.hit_count).toBe(0);
+
+      // Legitimate citation: alice/real exists -> one notification, title set
+      // (no COALESCE needed — INNER JOIN guarantees the row).
+      const legit = JSON.stringify({ pevotest: { type: 'paper', citations: [{ author: 'alice', permlink: 'real' }] } });
+      const legitResult = await pool.query<{ hit_count: number; title: string }>(sql, ['alice', legit]);
+      expect(legitResult.rows[0]?.hit_count).toBe(1);
+      expect(legitResult.rows[0]?.title).toBe('Real Paper');
+    },
+  );
+
+  it('arms 6a/6b new_citation: source gates cited_paper with validPevoPaperWhere (INNER JOIN, no title COALESCE)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(
+      fileURLToPath(new URL('../src/notification-queries.ts', import.meta.url)),
+      'utf8',
+    );
+    const citationArms = src.slice(src.indexOf("-- 6a."), src.indexOf('-- 7.'));
+    // Both arms INNER JOIN cited_paper (no LEFT JOIN) with a validPevoPaperWhere gate.
+    expect(citationArms).not.toContain('LEFT JOIN ${T.comments} cited_paper');
+    expect(citationArms.match(/JOIN \$\{T\.comments\} cited_paper/g)?.length).toBe(2);
+    expect(citationArms.match(/validPevoPaperWhere\(\{ commentAlias: 'cited_paper'/g)?.length).toBe(2);
+    // INNER JOIN guarantees the row, so the title COALESCE is gone.
+    expect(citationArms).not.toContain("COALESCE(cited_paper.title");
+  });
 });

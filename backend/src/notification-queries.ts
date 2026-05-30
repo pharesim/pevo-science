@@ -338,7 +338,7 @@ export async function fetchNotificationsFromHaf(
         citing.author,
         cited_ref.author AS paper_author,
         cited_ref.permlink AS paper_permlink,
-        COALESCE(cited_paper.title, '') AS paper_title,
+        cited_paper.title AS paper_title,
         citing.permlink,
         NULL, NULL, NULL, NULL, NULL, NULL, NULL
       FROM ${T.commentOps} citing
@@ -360,8 +360,15 @@ export async function fetchNotificationsFromHaf(
       CROSS JOIN LATERAL (
         SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
       ) AS cited_ref
-      LEFT JOIN ${T.comments} cited_paper
+      -- INNER JOIN + paper-existence gate: the cited (author, permlink) must
+      -- actually exist as a PEvO paper. Without it, a broadcaster can stuff
+      -- thousands of fake {author: $1, permlink: 'fake-N'} citation refs into
+      -- a "paper" and spam unlimited citation notifications + digest emails to
+      -- the victim. cited_ref.author = $1 below pins the recipient as the
+      -- cited native author.
+      JOIN ${T.comments} cited_paper
         ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
+        AND ${validPevoPaperWhere({ commentAlias: 'cited_paper', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
       WHERE citing.block_num > $2
         AND citing.author <> $1
         AND cited_ref.author = $1
@@ -378,7 +385,7 @@ export async function fetchNotificationsFromHaf(
         citing.author,
         cited_ref.author AS paper_author,
         cited_ref.permlink AS paper_permlink,
-        COALESCE(cited_paper.title, '') AS paper_title,
+        cited_paper.title AS paper_title,
         citing.permlink,
         NULL, NULL, NULL, NULL, NULL, NULL, NULL
       FROM ${T.commentOps} citing
@@ -397,8 +404,13 @@ export async function fetchNotificationsFromHaf(
         SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
       ) AS cited_ref
       JOIN user_bridge_papers bp ON bp.author = cited_ref.author AND bp.permlink = cited_ref.permlink
-      LEFT JOIN ${T.comments} cited_paper
+      -- user_bridge_papers already proves the cited paper exists as a bridge
+      -- paper registered by the recipient; the INNER JOIN + paper-existence
+      -- gate here is belt-and-suspenders against the same fake-citation spam
+      -- vector closed in arm 6a.
+      JOIN ${T.comments} cited_paper
         ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
+        AND ${validPevoPaperWhere({ commentAlias: 'cited_paper', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
       WHERE citing.block_num > $2
         AND citing.author <> $1
         AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
