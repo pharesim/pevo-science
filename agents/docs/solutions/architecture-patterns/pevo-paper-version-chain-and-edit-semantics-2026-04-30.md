@@ -95,7 +95,7 @@ When co-author A clicks "edit" on a paper whose current head is owned by B, the 
 
 - Edit form pre-fills from the user's own last-authored chain entry instead of the head → A overwrites B's revisions on the next save, silently losing chain progress.
 - Authorization checks assume `paper.author === editor` → blocks legitimate co-author continuations, or worse, allows native-edit attempts that the Hive node will reject anyway, producing a confusing UX.
-- Triage and security review confuse continuation hijack (display-layer trust gap, `pevo.continues` is currently spoofable) with authorship spoofing (chain-layer, not possible) — leading to either over-broad fixes or missed gaps. The active security gate task (`backend-continuation-post-author-consent-gate.md`) is exactly this distinction made operational.
+- Triage and security review confuse continuation hijack (display-layer trust gap, closed by the continuation-author-consent gate) with authorship spoofing (chain-layer, not possible) — leading to either over-broad fixes or missed gaps. The continuation-author-consent gate in `resolveContinuationChain` (via `extractAuthorizedContinuationAuthors`) is exactly this distinction made operational.
 - "Edit my version" flows that ignore the head and write against a stale base produce diff patches that don't apply cleanly, corrupting the reconstructed body (`reconstructVersionsFromHaf` at `backend/src/routes/papers.ts:801`).
 
 ## When to Apply
@@ -105,9 +105,9 @@ Reach for this model whenever you are:
 - Designing or reviewing the edit flow (`/edit/:author/:permlink` route, edit-form pre-fill source, save-button broadcast target).
 - Building authorization gates on edit, continuation, retract, or claim endpoints.
 - Reading `versions[]` from `GET /api/papers/:author/:permlink` and reasoning about who authored which entry — note that each version entry carries its own `author`/`permlink` precisely because they can differ from the canonical root.
-- Triaging a security-review finding about "spoofed paper authorship" — disambiguate chain-layer author (never spoofable) from `pevo.continues` claim (currently spoofable, gate pending) from `pevo.authors[]` metadata claim (separate convention, separate gate).
+- Triaging a security-review finding about "spoofed paper authorship" — disambiguate chain-layer author (never spoofable) from `pevo.continues` claim (admitted only from cumulative-chain `pevo.authors[]` members by `resolveContinuationChain`) from `pevo.authors[]` metadata claim (separate convention, separate gate).
 - Implementing review-version flagging — `reviewed_version` references a chain-entry version, not just a root-post edit.
-- Writing or updating UI affordances for co-author editing (`agents/docs/tasks/pending/ui-coauthor-continuation-publishing.md`).
+- Writing or updating UI affordances for co-author editing (the publish-continuation flow).
 
 ## Examples
 
@@ -145,7 +145,6 @@ Citations always reference `canonical_author`/`canonical_permlink`. The displaye
 
 - `backend/src/routes/papers.ts` — `resolveContinuationChain` at line 681; head-version replacement around lines 569–601; `reconstructVersionsFromHaf` at line 801; consumer call sites at lines 913, 1029, 1066.
 - `agents/docs/api-contracts/papers.md` — `versions[]`, `head_author`/`head_permlink`, `canonical_author`/`canonical_permlink` field notes.
-- `agents/docs/tasks/pending/backend-continuation-post-author-consent-gate.md` — security gate task (P1) closing the `pevo.continues` trust gap.
-- `agents/docs/tasks/pending/ui-coauthor-continuation-publishing.md` — UI affordance task (P2) for the publish-continuation flow + chain-head pre-fill rule.
+- `backend/src/helpers.ts` (`extractAuthorizedContinuationAuthors`) and `backend/src/routes/papers.ts` (`resolveContinuationChain`) — the live continuation-author-consent gate (claimed-membership admission) implementing this pattern.
 - `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` — meta-convention. The continuation gate is a second concrete instance after the bridge-paper gate; the predicate is set-membership in `pevo.authors[].hive` rather than equality to a single pinned account.
 - Auto memory `~/.claude/projects/-home-micha-workspace-pevo/memory/project_edit_flow_decisions.md` (2026-04-12) — canonical edit-flow design decisions including linear-chain invariant and monotonic-authors rule.
