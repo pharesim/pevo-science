@@ -137,3 +137,13 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-4 architect review scopes `/ce-code-review` to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-30, landed in the commit that moves this file to review/)
+
+Round-4 hold item 1 landed (cosmetic reflow; no production change, no test-body change).
+
+1. **(item 1 — orphaned line-break widow in the test-file header docblock)** Reflowed the file-summary paragraph in `backend/tests/eslint/no-custom-id-block-num-floor.test.ts` so the wrap no longer leaves "combination forces" as a two-word orphaned line. The new wrap pattern keeps "That combination forces PostgreSQL into a BitmapAnd plan against" on one logical chunk and breaks before the backtick-identifier `hafsql.operation_custom_json_view`; subsequent line breaks now fall at clause boundaries ("the live HAF that scans tens of / millions of operation rows", "walker budget. The / known-safe remediation", "Mahdi's HAF. / See the docstring on..."). Every original word is preserved verbatim; only whitespace shifted. Anchor-rot audit of the reflowed prose: the citations are stable identifiers (`backend/eslint.config.mjs`, `activeAccreditationsCteBody`, `backend/src/hafsql.ts`, `hafsql.operation_custom_json_view`, the literal regex tokens `custom_id` and `block_num >=`) — no task slugs, SHAs, line numbers, or round numbers introduced.
+
+Verification: `npm run typecheck` (src + tests) clean; `npm run lint` 0 errors (the lone warning is the pre-existing unused-`eslint-disable` in `src/lib/author-supersession.ts`, untouched here); scoped `npx vitest run tests/eslint/no-custom-id-block-num-floor.test.ts` green (17 passed).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

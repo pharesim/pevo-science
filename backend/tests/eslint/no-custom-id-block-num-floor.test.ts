@@ -3,13 +3,13 @@
  * defined in `backend/eslint.config.mjs`. The rule fires on SQL fragments
  * that combine a `custom_id` reference (aliased or bare) with a `block_num >=`
  * predicate in the same template literal (or string-concat chain). That
- * combination forces
- * PostgreSQL into a BitmapAnd plan against `hafsql.operation_custom_json_view`
- * on the live HAF that scans tens of millions of operation rows and blows
- * the per-request walker budget. The known-safe remediation is to drop the
- * `block_num >=` floor; the `custom_id = $appTag` filter alone is selective
- * enough on Mahdi's HAF. See the docstring on `activeAccreditationsCteBody`
- * (backend/src/hafsql.ts) for the planner reasoning.
+ * combination forces PostgreSQL into a BitmapAnd plan against
+ * `hafsql.operation_custom_json_view` on the live HAF that scans tens of
+ * millions of operation rows and blows the per-request walker budget. The
+ * known-safe remediation is to drop the `block_num >=` floor; the
+ * `custom_id = $appTag` filter alone is selective enough on Mahdi's HAF.
+ * See the docstring on `activeAccreditationsCteBody` (backend/src/hafsql.ts)
+ * for the planner reasoning.
  *
  * Coverage:
  *   - Violation: CTE-body shape — `WHERE cj.custom_id = $1 AND cj.block_num >= $2`
