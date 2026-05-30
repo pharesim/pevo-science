@@ -45,3 +45,15 @@ Drop the now-redundant byte-equality `clv.voter != cp.citing_author` (subsumed b
 - [backend/src/reputation.ts](backend/src/reputation.ts) lines 915-960 (`citing_paper_quality.weighted_upvotes`), lines 674-682 (`paper_resolved_votes` canonicalization shape).
 - [agents/docs/reputation-algorithm.md](agents/docs/reputation-algorithm.md) line 71 (co-author exclusion invariant).
 - HAF-query review run `w274tijk0` rank #13.
+
+---
+
+## Backend completion note (2026-05-30) — DEVIATION from "Suggested approach"
+
+Implemented in `backend/src/reputation.ts` (`citing_paper_quality.weighted_upvotes`): added the canonicalizing co-author `NOT EXISTS` over `cp.citing_meta -> $appTag -> 'authors'`, mirroring `paper_resolved_votes` exactly (jsonb_typeof array guard at the SRF arg, inner object guard, `LOWER(TRIM(a ->> 'hive')) ~ '^[a-z0-9.-]+$'`, `= clv.voter`). No extra JOIN — `cp.citing_meta` was already SELECTed in `citing_papers` and in scope.
+
+**Deviation requiring architect sign-off:** the byte-equality `clv.voter != cp.citing_author` was **RETAINED, not dropped** as the "Suggested approach" and acceptance line instructed. The instruction's premise — "`citing_author` is always present in `pevo.authors[]`, so the byte-equality is subsumed by the canonicalizing NOT EXISTS" — does **not** hold: a citing paper may omit its own author from `authors[]`, or broadcast a malformed / non-array `authors` field that the inner CASE-WHEN guard collapses to `'[]'`. In those cases the NOT EXISTS admits zero rows and the citing author's own self-upvote would re-enter `weighted_upvotes` without the byte-equality conjunct. Verified empirically against the dev Postgres. The sibling `paper_resolved_votes` likewise keeps `plv.voter != up.author` alongside its NOT EXISTS, so retaining the byte-equality makes `citing_paper_quality` a faithful mirror; dropping it would make the citing path strictly weaker than the paper path. The acceptance bullet "The author of the citing paper is still excluded (no regression)" holds precisely because it was kept.
+
+Architect: please treat the "drop the now-redundant byte-equality" acceptance bullet as superseded, or request a change if you disagree.
+
+Tests: added `backend/tests/routes/reputation-citing-coauthor-exclusion-canary.test.ts` — source-level shape pins (the canonicalization matches `paper_resolved_votes`; a separate pin asserts the byte-equality is retained alongside the NOT EXISTS) plus a synthetic-VALUES behavioral canary (real Postgres, skips when HAF unconfigured) proving a mixed-case confederate co-author upvote does not inflate `weighted_upvotes` and the author self-upvote stays excluded even when absent from `authors[]`. Carve-out clauses (a)/(b)/(c) documented in the file header. `npm run typecheck` + `npm run lint` clean; the file passes (9 tests).
