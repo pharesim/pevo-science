@@ -73,13 +73,15 @@ The chain is linear. Each new continuation continues the latest head. If two con
 
 `pevo.authors[]` may be added to over the chain's lifetime but never removed. A continuation post can introduce a new co-author; subsequent edits cannot drop one. (auto memory)
 
+Monotonicity is now **enforced by construction** rather than by a check-and-reject mechanism. The displayed `authors[]` is the cumulative union of `pevo.authors[]` across every admitted chain post (`buildCumulativeAuthorsForChain`, per `ARCHITECTURE.md § 2 "Display construction (cumulative union)"`). Because the read path unions rather than projecting the head post's metadata, a head edit that omits an earlier-credited name cannot drop it — the name still appears on the earlier post the union reads. There is no longer a `headAuthorsCoverRoot` cover-check or a "reject the override when the head fails to cover the root" step (the superseded model); drops are structurally impossible within a single resolvable-chain read. (The invariant is per-request over the resolvable chain — a truncated walk falls back to the head-meta projection rather than caching a partial union; see the § 2 subsection for that scope boundary.)
+
 ### 5. Edit form pre-fill is sourced from the chain head, not the user's own last version
 
 When co-author A clicks "edit" on a paper whose current head is owned by B, the form pre-fills with **B's most recent content** (title, body, keywords, supplementary files, IPFS CID). A then either native-edits A's earlier post (producing a new chain entry that builds on B's revisions) or publishes a new continuation post under A's account. The pre-fill source is the **chain head's content**, regardless of which post in the chain the editor will broadcast against.
 
-### 6. Continuation pointer trust (current state)
+### 6. Continuation pointer trust (gated)
 
-`pevo.continues` is currently unauthenticated: any Hive account can claim continuation against any paper, and `resolveContinuationChain` admits the claim. The display-side trust gate is filed as `agents/docs/tasks/pending/backend-continuation-post-author-consent-gate.md`. Until that lands, treat the continuation pointer as "claimed, not vouched" — the chain layer is correct about who broadcast each post, but not about whether the upstream owner consented to the continuation.
+`pevo.continues` is authenticated at the display layer: `resolveContinuationChain` admits a continuation post only when its broadcaster is in the predecessor's authorized-author set, computed via `extractAuthorizedContinuationAuthors`. The membership set is the cumulative chain `authors[]` (the append-only union across admitted chain posts, per `ARCHITECTURE.md § 2 "Display construction (cumulative union)"`), so a co-author added mid-chain can continue but an unrelated account cannot. The chain layer is correct about who broadcast each post; this gate adds the upstream-consent check before extending the chain across the boundary. See `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` for the identity-predicate rule this gate instantiates.
 
 ## Why This Matters
 
@@ -137,7 +139,7 @@ Citations always reference `canonical_author`/`canonical_permlink`. The displaye
 
 ### Example 4 — The bug the security gate closes
 
-`mallory` (no relationship to the paper, not in `pevo.authors`) broadcasts `mallory/fake-continuation` with `pevo.continues = {alice, alice/v1}`. Today, `resolveContinuationChain` admits it: chain becomes `[alice/v1, mallory/fake-continuation]`, head display flips to mallory's content. `backend-continuation-post-author-consent-gate.md` fixes this by requiring the upstream owner to vouch (e.g., membership in `pevo.authors[]`) before a continuation is admitted to the chain. The chain-layer `author` of `mallory/fake-continuation` is and always was `mallory` — that part was never spoofed; what was missing is a trust check before extending the chain across the boundary.
+`mallory` (no relationship to the paper, not in `pevo.authors`) broadcasts `mallory/fake-continuation` with `pevo.continues = {alice, alice/v1}`. The continuation gate rejects it: `resolveContinuationChain` admits a continuation only when its broadcaster is in the predecessor's authorized-author set (the cumulative chain `authors[]`), and `mallory` is not, so the chain stays `[alice/v1]` and the head display does not flip to mallory's content. The chain-layer `author` of `mallory/fake-continuation` is and always was `mallory` — that part was never spoofed; what was missing, and is now enforced, is the upstream-consent check before extending the chain across the boundary.
 
 ## Related
 

@@ -57,3 +57,19 @@ Gated additionally on `backend-author-identity-model` landing (so the rewrite de
 ## UNBLOCKED 2026-05-30 (architect)
 
 Both gating tasks have archived: `backend-cumulative-union-listing-surfaces-parity` (archived 2026-05-26, round-4 clean) and `backend-author-identity-model` (archived 2026-05-30, round-5 clean). The author shape is now final, so the § 2 rewrite can describe the cross-surface invariant + author-identity additions in their final form with no second-rewrite churn. Moving `blocked/` → `pending/` (architect's own work queue).
+
+## IMPLEMENTED 2026-05-30 (architect)
+
+All doc edits landed, grounded against the final implemented code (`buildCumulativeAuthorsForChain`, `resolveChainCumulativeAuthors`, `backend/src/lib/author-supersession.ts`):
+
+1. **`ARCHITECTURE.md § 2`** — added `#### Display construction (cumulative union)` subsection (cumulative union across chain posts, first-occurrence order, two never-merging tracks (Hive-keyed + Hive-less composite-key), sub-field resolution, ORCID server-override + `orcid_claim_mismatch` audit schema (active/revoked arms + suppress-to-null), name-supersession reference, `accredited_authors` intersection, cross-surface parity via the shared helper + per-root Redis cache, per-request invariant scope for "drops forbidden by construction"). Rewrote the contradictory no-shrink / `headAuthorsCoverRoot` reject-override paragraph in "Authors mutation" to the cumulative-union construction.
+2. **`api-contracts/papers.md`** — PaperSummary + PaperDetail Notes: `authors[]` cumulative-union, `authors[].name` mandatory (name-supersession + fallback chain), `accredited_authors` rebuild semantics.
+3. **`hive-schemas.md § 1.1`** — added the **Name-supersession rule (read time)** block (silent, currently-accredited-only, fallback order attested→broadcaster→hive→orcid); marked read-time `name` mandatory in the `authors` field note.
+4. **`pevo-object-identity-...-2026-04-28.md`** — continuation-gate predicate updated: membership set is the cumulative chain `authors[]`, not the root's; structural identity-predicate rule preserved.
+5. **`pevo-paper-version-chain-...-2026-04-30.md`** rule #4 — appended the cumulative-union "monotonic by construction" paragraph.
+
+**Adjacent-scope corrections (flag for review):** while in `pevo-paper-version-chain-...-2026-04-30.md`, corrected now-stale doc-vs-code drift in **rule #6** and **Example 4**, which described the continuation-consent gate as unimplemented ("currently unauthenticated… Until that lands", "Today resolveContinuationChain admits it"). The gate has landed (`extractAuthorizedContinuationAuthors` is live; the gate task archived), so those statements were factually wrong. Not enumerated in the original acceptance list — surfaced here for the archive-review pass.
+
+**Acceptance crit 5 (code-comment recheck):** no production code comment cites the removed no-shrink/cover-check text (grep for `cover-check|coverRoot|no-shrink|override is rejected|superset of root` in `backend/src`+`frontend/src` returns nothing — the code was already on the cumulative-union path; only the doc lagged). `papers.ts:529`'s `§ 2` citation points at the ORCID-authoritative rule, which the rewrite now documents explicitly.
+
+Moving `pending/` → `review/` for the archive pass.

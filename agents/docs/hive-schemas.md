@@ -94,7 +94,7 @@ A PEvO paper is a top-level Hive post (comment with no parent author).
 ```
 
 **Field Notes:**
-- `authors` — array of co-authors. The first entry should match the posting `author`. Fields `hive`, `orcid`, and `affiliation` are all optional.
+- `authors` — array of co-authors. The first entry should match the posting `author`. On chain, fields `name`, `hive`, `orcid`, and `affiliation` are all optional (a direct Keychain broadcast may omit any of them). At **read time**, `name` is resolved to a mandatory non-empty string via the name-supersession fallback chain below; the other fields stay nullable on read surfaces. On multi-link papers the displayed `authors[]` is the cumulative union across the continuation chain, not this single post's array — see `agents/docs/ARCHITECTURE.md § 2 "Display construction (cumulative union)"`.
 - `ipfs_cid` / `ipfs_filename` / `document_hash` — required together if a PDF is uploaded; all null if the paper is text-only.
 - `citations` — array of references to other PEvO papers. Omitted when empty. Each citation has an optional `reputation_relevant` field (default `true`). When `false`, the citation appears in the reference list but is excluded from reputation computation — use this when citing work for context, contrast, or refutation without endorsing it.
 - `supplementary_files` — array of IPFS-pinned supplementary materials (datasets, code, etc.). Omitted when empty.
@@ -117,6 +117,17 @@ When the chain-stored `authors[i].orcid` differs from the accreditation-attested
 This rule is purely about **read-time interpretation** of the chain data. The chain post is immutable; PEvO does not rewrite history. The supersession operates on the existing `{hive, orcid}` fields — no new on-chain `verified_orcid` field is introduced.
 
 The same supersession rule applies to reputation queries that aggregate by ORCID. See [reputation-algorithm.md § "ORCID-keyed Aggregations"](reputation-algorithm.md#orcid-keyed-aggregations) for the canonical pattern.
+
+**Name-supersession rule (read time).** Like ORCID, an accredited author's chain-claimed `authors[i].name` is the broadcaster's stated claim, not authoritative when a more trustworthy attestation exists. Backends and frontends MUST resolve the **canonical display name** for each `authors[i]` row via this fallback chain (first non-empty wins):
+
+1. **Attested name** — the accreditation-attested `researcher_name` when `authors[i].hive` is set AND that account is **currently accredited** (per `active_accreditations`, latest action wins). The attested name supersedes the broadcaster claim.
+2. **Broadcaster name** — the chain-claimed `authors[i].name`.
+3. **Hive handle** — `authors[i].hive`, for a co-author with an account but no typed name.
+4. **ORCID** — `authors[i].orcid`, last-resort identifier.
+
+An entry resolving none of the above names no one and is dropped from the displayed `authors[]`. Consequently `authors[i].name` is **mandatory** (a non-empty string) on every read surface, even though the broadcaster MAY omit it on chain.
+
+**Name-supersession is silent — this is the key contrast with ORCID.** When the attested name differs from the broadcaster claim, surfaces render NO discrepancy indicator and emit NO audit event. Name variation (Rob/Robert, maiden names, transliterations, initials, diacritics) is benign and high-noise, so a "claimed vs verified" badge would be pure noise; ORCID divergence, by contrast, is a potential identity-spoof signal and is audited (`orcid_claim_mismatch`). No new on-chain field is introduced — supersession operates on the existing `{hive, name, orcid}` fields at read time. Only the **currently-accredited** arm is active (a revoked account's last-attested name does NOT supersede), matching the JS `resolveAuthorName` / SQL `authorsWithSupersessionSelect` `name`-arm parity. See `agents/docs/ARCHITECTURE.md § 2 "Display construction (cumulative union)"` for how supersession composes with the cumulative author union.
 
 **Canonical SQL pattern.** Backends resolving `authors[i]` for display MUST LEFT JOIN per-author against the `active_accreditations` CTE (defined in `backend/src/hafsql.ts:activeAccreditationsCteBody`). The CTE already encodes the latest-action-wins predicate (`IN ('accredit','revoke')`, partitioned by account, `rn = 1 AND action = 'accredit'`) and exposes the attested `orcid` per accredited account. There is no separate query to author; reuse the existing CTE and project the supersession fields:
 
