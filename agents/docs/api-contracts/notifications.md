@@ -1,4 +1,4 @@
-# PEvO API Contract — Notifications
+# PEvO API Contract: Notifications
 
 Endpoints for polling notification events.
 
@@ -93,7 +93,7 @@ Fetch notification events for the authenticated user since a given Hive block nu
 |------|---------|-----------------|
 | `new_review` | New review on your paper. Trigger conditions: `type='review'`, authored by an accredited reviewer or the anon proxy, with a structurally-valid 4-dim rating object (each dimension an integer in `[1,5]`), parent is a PEvO paper (native or bridge), and not authored by the paper author or a named co-author. Source of truth: `validReviewWhere()` in `backend/src/hafsql.ts`. | Paper author |
 | `new_citation` | New paper whose pevo.citations references your paper | Cited paper author |
-| `new_vote` | New vote on your paper or review from an accredited voter. `target_type` is `"paper"` for votes on a native or bridge paper and `"review"` for votes on a review. Self-votes do not fire. | Content author |
+| `new_vote` | New vote on your paper or review from an accredited voter. `target_type` is `"paper"` for votes on a native or bridge paper and `"review"` for votes on a review. Self-votes do not fire. Votes on discussion comments do not fire. | Content author |
 | `accreditation_update` | Your accreditation is granted or revoked | Target account |
 | `new_vouch` | Someone vouches for you in WoT | Vouchee |
 | `new_reply` | New discussion comment (pevo.type=comment) replying to your comment | Parent comment author |
