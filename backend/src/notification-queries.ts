@@ -373,7 +373,7 @@ export async function fetchNotificationsFromHaf(
       WHERE co.parent_author = $1
         AND co.block_num > $2
         -- Self-exclusion: a user replying to their own comment must not
-        -- notify themselves. Mirrors the co.author != $1 guard the sibling
+        -- notify themselves. Mirrors the self-exclusion guard the sibling
         -- comment-derived arms (1a, 1b) carry.
         AND co.author != $1
         AND (co.json_metadata -> ${at} ->> 'type') = 'comment'

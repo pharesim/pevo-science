@@ -162,22 +162,24 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     // source='all' composition.
   });
 
-  it('arms 1a + 1b both apply co.author != $1 self-author exclusion (mutation-kill for self-review-exclusion item #6, per-arm count)', async () => {
+  it('comment-derived arms (1a, 1b, 5) each apply co.author != $1 self-author exclusion (per-arm count)', async () => {
     const { sql } = await captureNotificationsSql();
     // Reverting the inline `AND co.author != $1` filter lets a paper
-    // author receive `new_review` notifications for their own self-reply.
+    // author receive `new_review` notifications for their own self-reply,
+    // and a commenter a `new_reply` notification for replying to themselves.
     // Asymmetric vs `excludeSelfReviewWhere` is deliberate — co-author
     // reviews of a shared paper ARE wanted notifications (notification
     // surface ≠ aggregation surface).
     //
-    // Per-arm count: arm 1a (native new-review) AND arm 1b (bridge
-    // new-review) each carry their own `co.author != $1` inline filter.
-    // A revert that drops one but leaves the other is invisible to a
-    // bare `toContain` substring check. Pin the count at 2 so a single-
-    // arm regression fails red (BACKEND-SELF-REVIEW-EXCLUSION round-1
-    // hold #6 + `defense-in-depth-canary-must-pin-each-layer-2026-05-07`).
-    const occurrences = (sql.match(/co\.author != \$1/g) ?? []).length;
-    expect(occurrences).toBe(2);
+    // Per-arm count: arm 1a (native new-review), arm 1b (bridge new-review),
+    // and arm 5 (new_reply) each carry their own inline self-exclusion
+    // filter. A revert that drops one but leaves the others is invisible to
+    // a bare `toContain` substring check. Match the clause-form (with the
+    // leading `AND`) so an explanatory SQL comment mentioning the predicate
+    // does not inflate the count, and pin at 3 so a single-arm regression
+    // fails red.
+    const occurrences = (sql.match(/AND co\.author != \$1/g) ?? []).length;
+    expect(occurrences).toBe(3);
   });
 
   it('accreditation_update arm carries the required_posting_auths authority gate', async () => {
