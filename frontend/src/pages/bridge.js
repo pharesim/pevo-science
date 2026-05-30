@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { fetchBridgeLookup, fetchBridgeCheck, registerBridgePaper } from '../api.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { formatEta } from '../lib/format-eta.js';
+import { safeExternalUrl } from '../lib/safe-url.js';
 
 const DISCIPLINE_TAXONOMY = [
   { field: 'Natural Sciences', subfields: ['Mathematics', 'Computer Science', 'Physics', 'Chemistry', 'Earth Sciences', 'Biology', 'Astronomy'] },
@@ -78,10 +79,10 @@ const template = `
                   </span>
                   <span>
                     <span class="font-medium" x-text="$t('bridge.source') + ':'"></span>
-                    <a :href="lookup.source_url" target="_blank" rel="noopener noreferrer" class="text-pevo-teal hover:underline" x-text="lookup.source_name"></a>
+                    <a :href="safeExternalUrl(lookup.source_url)" target="_blank" rel="noopener noreferrer" class="text-pevo-teal hover:underline" x-text="lookup.source_name"></a>
                   </span>
                   <template x-if="lookup.pdf_url">
-                    <a :href="lookup.pdf_url" target="_blank" rel="noopener noreferrer" class="text-pevo-teal hover:underline" x-text="$t('bridge.pdfLink')"></a>
+                    <a :href="safeExternalUrl(lookup.pdf_url)" target="_blank" rel="noopener noreferrer" class="text-pevo-teal hover:underline" x-text="$t('bridge.pdfLink')"></a>
                   </template>
                 </div>
                 <!-- Duplicate warning -->
@@ -211,6 +212,9 @@ export function initBridgePage() {
   Alpine.data('bridgePage', () => ({
     // Post-teardown setTimeout guard. See frontend/src/lib/timer-guard.js.
     ...createTimerGuard(),
+
+    // Protocol-whitelist for chain-derived external source/PDF links.
+    safeExternalUrl,
 
     identifier: '',
     lookingUp: false,

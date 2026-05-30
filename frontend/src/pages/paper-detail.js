@@ -6,6 +6,7 @@ import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
 import { titleCaseDiscipline } from '../lib/discipline-display.js';
 import { canonicalOrcid, shouldShowDiscrepancyIndicator } from '../lib/authors.js';
+import { safeExternalUrl } from '../lib/safe-url.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
@@ -251,7 +252,7 @@ const template = `
                   </span>
                   <template x-if="bridgeSource.url">
                     <span class="ml-2">
-                      <a :href="bridgeSource.url" target="_blank" rel="noopener noreferrer" class="text-pevo-teal hover:underline text-sm"
+                      <a :href="safeExternalUrl(bridgeSource.url)" target="_blank" rel="noopener noreferrer" class="text-pevo-teal hover:underline text-sm"
                          x-text="$t('bridge.viewSource', { source: bridgeSource.source_name || bridgeSource.type || '' })"></a>
                     </span>
                   </template>
@@ -832,6 +833,7 @@ export function initPaperDetailPage() {
     formatDate,
     canonicalOrcid,
     shouldShowDiscrepancyIndicator,
+    safeExternalUrl,
 
     get author() {
       return this.$store.router.params.author;
