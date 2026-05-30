@@ -203,43 +203,108 @@ describe('BE-WOT-BROADCAST-TIMEOUT-HANDLING — broadcastWotAccreditation tagged
 /**
  * Helpers to drive cascadeRevocation's HAF query pattern.
  *
- * The cascade does three query shapes per vouchee:
- *  1) "find vouchees of revokedAccount" — one per cascade level.
- *  2) "is this vouchee WoT-accredited?" — per vouchee.
- *  3) "recount remaining vouches excluding revoker" — per vouchee.
+ * The cascade does ONE discovery query shape per cascade level (folding
+ * the previous per-vouchee accreditation-check + recount round-trips into
+ * a single query that returns only the vouchees whose accreditation must
+ * be revoked):
+ *  - "discover wot-accredited vouchees of revokedAccount whose remaining
+ *     voucher count would fall below threshold" — one per cascade level.
  *
- * We route each shape to a distinct fixture response.
+ * The fixture filters the union of vouchees by `wotVouchees` to emulate
+ * the SQL `aa_target.method = 'wot'` and HAVING-threshold gates, returning
+ * only the to-be-revoked subset (matching the production query's contract).
  */
 function makeCascadeHafMock(opts: {
-  // map from revokedAccount => child vouchees to cascade to
+  // map from revokedAccount => child vouchees that the discovery query
+  // identifies as needing revocation (already filtered by wot+threshold).
   childrenByRevoker: Record<string, string[]>;
-  // vouchees treated as wot-accredited below threshold (will be revoked)
+  // vouchees treated as wot-accredited below threshold (will be revoked);
+  // children not in this set are dropped to emulate the SQL gates.
   wotVouchees: Set<string>;
 }) {
   return async (sql: string, params: unknown[]) => {
-    // Shape 3: recount — most specific; matches the `av.voucher != $N+1`
-    // predicate that only the recount query uses.
-    if (sql.includes('COUNT(*)::int')) {
-      return { rows: [{ cnt: 0 }] };
-    }
-    // Shape 2: WoT-accredited check — matches the `SELECT method FROM
-    // active_accreditations` projection.
-    if (sql.includes('SELECT method FROM active_accreditations')) {
-      const vouchee = params[params.length - 1] as string;
-      if (opts.wotVouchees.has(vouchee)) return { rows: [{ method: 'wot' }] };
-      return { rows: [] };
-    }
-    // Shape 1: find vouchees — matches the `SELECT av.vouchee FROM
-    // active_vouches` projection.
-    if (sql.includes('SELECT av.vouchee')) {
-      const revoker = params[params.length - 1] as string;
+    // Discovery query — matches the `JOIN active_accreditations aa_target`
+    // projection (only shape emitted by cascadeRevocation post-collapse).
+    if (sql.includes('SELECT av_target.vouchee')) {
+      // params: [...cteParams, revokedAccount, threshold]
+      const revoker = params[params.length - 2] as string;
       const kids = opts.childrenByRevoker[revoker] ?? [];
-      return { rows: kids.map((v) => ({ vouchee: v })) };
+      const filtered = kids.filter((k) => opts.wotVouchees.has(k));
+      return { rows: filtered.map((v) => ({ vouchee: v })) };
     }
     // Threshold params loader / fallback.
     return { rows: [] };
   };
 }
+
+// cascadeRevocation discovery-query collapse: the per-level loop must fire
+// exactly one HAF discovery query (not 1+2K). Regression-pins the rewrite
+// against the prior find + per-vouchee accreditation-check + per-vouchee
+// recount triplet.
+describe('cascadeRevocation — single discovery query per level', () => {
+  it('fires exactly one HAF query for a K-vouchee level (not 1+2K)', async () => {
+    hafQueryMock.mockImplementation(
+      makeCascadeHafMock({
+        // Leaf-only cascade: boss has 3 vouchees; none of them have further
+        // vouchees, so the recursive descendants each issue exactly one
+        // (zero-row) discovery query.
+        childrenByRevoker: { boss: ['v1', 'v2', 'v3'] },
+        wotVouchees: new Set(['v1', 'v2', 'v3']),
+      }),
+    );
+    broadcastJsonMock.mockImplementation(async (payload: { json: string }) => {
+      const parsed = JSON.parse(payload.json) as { account: string };
+      return { id: `tx-${parsed.account}` };
+    });
+
+    const completed = await cascadeRevocation('boss');
+    expect(completed).toEqual(['tx-v1', 'tx-v2', 'tx-v3']);
+    // 1 top-level discovery + 3 leaf-level discoveries (one per cascaded
+    // vouchee, all returning zero further children) = 4 HAF queries.
+    // Previously: 1 + (2 * 3) = 7 for the top level alone (plus per-leaf
+    // recursion). The collapse pins 4.
+    expect(hafQueryMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('selects only wot-accredited vouchees that fall below threshold (parity with prior loop)', async () => {
+    // The fixture's `wotVouchees` set emulates the SQL gates
+    // (aa_target.method = 'wot' AND HAVING count < threshold). Vouchees
+    // outside the set are dropped — mirroring the previous loop's
+    // per-vouchee accreditation + recount filters.
+    hafQueryMock.mockImplementation(
+      makeCascadeHafMock({
+        childrenByRevoker: { boss: ['wot-low', 'wot-high', 'non-wot'] },
+        // Only wot-low survives both gates; wot-high has >= threshold
+        // remaining vouchers (not in wotVouchees), non-wot fails the method
+        // gate (not in wotVouchees).
+        wotVouchees: new Set(['wot-low']),
+      }),
+    );
+    broadcastJsonMock.mockImplementation(async (payload: { json: string }) => {
+      const parsed = JSON.parse(payload.json) as { account: string };
+      return { id: `tx-${parsed.account}` };
+    });
+
+    const completed = await cascadeRevocation('boss');
+    expect(completed).toEqual(['tx-wot-low']);
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds revokedAccount and threshold to the discovery query', async () => {
+    // Pin the parameter slot contract: cteParams come first, then
+    // revokedAccount, then threshold. Off-by-one in the bind order would
+    // silently flip filter semantics.
+    hafQueryMock.mockImplementation(async (_sql: string, params: unknown[]) => {
+      // Capture: last two params should be revokedAccount + threshold.
+      expect(params[params.length - 2]).toBe('boss');
+      expect(typeof params[params.length - 1]).toBe('number');
+      return { rows: [] };
+    });
+
+    await cascadeRevocation('boss');
+    expect(hafQueryMock).toHaveBeenCalled();
+  });
+});
 
 describe('BE-WOT-BROADCAST-TIMEOUT-HANDLING — cascadeRevocation per-vouchee timeout', () => {
   it('continues cascade when a middle vouchee times out (under aggregate budget)', async () => {

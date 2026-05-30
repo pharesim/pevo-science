@@ -293,14 +293,34 @@ export async function cascadeRevocation(
   try {
     const threshold = await getWotThreshold();
 
-    // Find all vouchees that were vouched by the revoked account
+    // Single discovery query per cascade level: returns the set of vouchees
+    // that (a) were vouched by `revokedAccount`, (b) are currently WoT-
+    // accredited, and (c) would fall below the threshold once `revokedAccount`
+    // is excluded from their voucher set. Collapses the previous 1+2K
+    // round-trips per level (one find + per-vouchee accreditation check +
+    // per-vouchee recount) into a single HAF query whose cost is amortized
+    // across all K vouchees.
+    //
+    // The `JOIN active_accreditations aa ... aa.method = 'wot'` clause folds
+    // the per-vouchee accreditation check into the discovery; the COUNT/FILTER
+    // aggregate folds the per-vouchee recount. Only accredited voucher rows
+    // contribute to the count, mirroring the recount query's accredited-only
+    // join semantics.
     const findCte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
+    const revokedParam = `$${findCte.nextIdx}`;
+    const thresholdParam = `$${findCte.nextIdx + 1}`;
     const result = await pool.query(
       `${findCte.sql}
-       SELECT av.vouchee
-       FROM active_vouches av
-       WHERE av.voucher = $${findCte.nextIdx}`,
-      [...findCte.params, revokedAccount],
+       SELECT av_target.vouchee
+       FROM active_vouches av_target
+       JOIN active_accreditations aa_target
+         ON aa_target.account = av_target.vouchee AND aa_target.method = 'wot'
+       JOIN active_vouches av_all ON av_all.vouchee = av_target.vouchee
+       JOIN active_accreditations aa_voucher ON aa_voucher.account = av_all.voucher
+       WHERE av_target.voucher = ${revokedParam}
+       GROUP BY av_target.vouchee
+       HAVING COUNT(*) FILTER (WHERE av_all.voucher != ${revokedParam}) < ${thresholdParam}`,
+      [...findCte.params, revokedAccount, threshold],
     );
 
     const { PrivateKey } = await import('@hiveio/dhive');
@@ -317,31 +337,6 @@ export async function cascadeRevocation(
         for (const r of remainingRows) pending.push(r.vouchee as string);
         throw new PartialCascadeError({ completed, pending, rootRevocation: revokedAccount });
       }
-
-      // Check if this vouchee was WoT-accredited
-      const accredCte = activeAccreditationsCteBody();
-      const accredResult = await pool.query(
-        `WITH ${accredCte.sql}
-         SELECT method FROM active_accreditations WHERE account = $${accredCte.nextIdx}`,
-        [...accredCte.params, vouchee],
-      );
-      if (accredResult.rows.length === 0) continue;
-      if (accredResult.rows[0].method !== 'wot') continue;
-
-      // Recount vouches excluding the revoked account
-      const countCte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
-      const vouchCount = await pool.query(
-        `${countCte.sql}
-         SELECT COUNT(*)::int AS cnt
-         FROM active_vouches av
-         JOIN active_accreditations aa ON aa.account = av.voucher
-         WHERE av.vouchee = $${countCte.nextIdx}
-           AND av.voucher != $${countCte.nextIdx + 1}`,
-        [...countCte.params, vouchee, revokedAccount],
-      );
-
-      const remaining = vouchCount.rows[0]?.cnt ?? 0;
-      if (remaining >= threshold) continue;
 
       // Revoke the vouchee's WoT accreditation
       const payload = {
