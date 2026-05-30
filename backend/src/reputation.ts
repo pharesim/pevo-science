@@ -407,10 +407,21 @@ export async function computeReputationBatch(
         SELECT unnest AS username FROM unnest($1::text[])
       ),
 
+      -- Reference timestamp for the cycle's decay age. Resolve the most
+      -- recent block at or before the cycle's last block rather than an exact
+      -- equality on the end block: an exact match returns zero rows whenever
+      -- the cycle's end block has not been produced yet (a caller passing an
+      -- in-progress cycleEndBlock), and the CROSS JOINs below would then
+      -- collapse every score arm to NULL. The bounded order-by-descending
+      -- single-row form always yields the latest existing block, so a stray
+      -- in-progress end block degrades to scoring against head instead of
+      -- zeroing out.
       cycle_ref AS (
         SELECT b.timestamp AS ref_ts
         FROM ${T.blocks} b
-        WHERE b.block_num = $6 - 1
+        WHERE b.block_num <= $6 - 1
+        ORDER BY b.block_num DESC
+        LIMIT 1
       ),
 
       prev_scores AS (

@@ -278,6 +278,19 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       const cycleStart = Date.now();
       const cycleEndBlock = genesisBlock + (cycle + 1) * cycleBlocks;
 
+      // Only score fully-elapsed cycles. `currentCycle` is
+      // floor((head - genesis) / cycle_blocks), which is the IN-PROGRESS
+      // cycle: its cycleEndBlock is strictly greater than the current head.
+      // Scoring it resolves every block-relative arm (`cycle_ref`, the decay
+      // age) against a block that does not exist yet, collapsing papers /
+      // reviews / citations to zero, and then freezes that mis-scored
+      // snapshot as the next cycle's prev_scores. Break rather than continue:
+      // every later cycle has a strictly larger end block, so none qualify.
+      if (cycleEndBlock > headBlock) {
+        logger.info({ cycle, cycleEndBlock, headBlock }, 'Cycle not fully elapsed; stopping before scoring it');
+        break;
+      }
+
       // Score every currently-accredited account. Per the Standard, non-
       // accredited users have score 0, so there's no point computing them.
       // The "active authors" subset (gates the activity-based voter-weight
