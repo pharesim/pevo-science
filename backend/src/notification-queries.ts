@@ -126,6 +126,7 @@ export async function fetchNotificationsFromHaf(
     const at = `$${accredCte.nextIdx}`;       // appTag for WHERE clauses
     const al = `$${accredCte.nextIdx + 1}`;   // appTag/% LIKE pattern
     const bridgeParam = `$${accredCte.nextIdx + 2}`; // hiveBridgeAccount
+    const adminParam = `$${accredCte.nextIdx + 3}`;  // hiveAdminAccount (arm 9 revoke signer set)
     // accreditationAuthorities is the 2nd of activeAccreditationsCteBody's two
     // params (custom_id at startIdx, authorities array at startIdx + 1). Anchor
     // forward on the CTE start index so a new bound param in that CTE shifts
@@ -302,6 +303,12 @@ export async function fetchNotificationsFromHaf(
       WHERE cj.custom_id = ${at}
         AND cj.json::jsonb ->> 'vouchee' = $1
         AND cj.json::jsonb ->> 'action' = 'vouch'
+        -- Signer gate (per hive-schemas.md § 2.7): a vouch is only valid when
+        -- signed by the named voucher, and the voucher must be accredited.
+        -- Without it anyone can forge a vouch naming a random voucher and the
+        -- vouchee gets a spurious new_vouch notification + digest email.
+        AND cj.required_posting_auths ->> 0 = cj.json::jsonb ->> 'voucher'
+        AND cj.required_posting_auths ->> 0 IN (SELECT account FROM active_accreditations)
         AND cj.block_num > $2
 
       UNION ALL
@@ -431,6 +438,11 @@ export async function fetchNotificationsFromHaf(
       WHERE cj.custom_id = ${at}
         AND cj.json::jsonb ->> 'action' = 'claim_authorship'
         AND cj.json::jsonb ->> 'paper_author' = $1
+        -- Signer gate (per hive-schemas.md § 2.9): the signer IS the claimer
+        -- and only accredited users may claim. Without it a stranger can forge
+        -- a claim_authorship naming the victim's paper and spam the post
+        -- author with claim_pending notifications.
+        AND cj.required_posting_auths ->> 0 IN (SELECT account FROM active_accreditations)
         AND cj.block_num > $2
 
       UNION ALL
@@ -448,6 +460,11 @@ export async function fetchNotificationsFromHaf(
       WHERE cj.custom_id = ${at}
         AND cj.json::jsonb ->> 'action' = 'approve_authorship'
         AND cj.json::jsonb ->> 'claimer' = $1
+        -- Signer gate (per hive-schemas.md § 2.10): an approve is only valid
+        -- when signed by the original post author or the bridge account.
+        -- Without it a stranger can forge an approve and the claimer gets a
+        -- spurious "your claim was approved" notification + digest email.
+        AND cj.required_posting_auths ->> 0 IN (cj.json::jsonb ->> 'paper_author', ${bridgeParam})
         AND cj.block_num > $2
 
       UNION ALL
@@ -465,11 +482,22 @@ export async function fetchNotificationsFromHaf(
       WHERE cj.custom_id = ${at}
         AND cj.json::jsonb ->> 'action' = 'revoke_authorship'
         AND cj.json::jsonb ->> 'claimer' = $1
+        -- Signer gate (per hive-schemas.md § 2.11): a revoke is valid when
+        -- signed by the post author, the claimer themselves, the bridge
+        -- account, or the admin account. Without it a stranger can forge a
+        -- revoke and the claimer gets a spurious "your claim was revoked"
+        -- notification + digest email.
+        AND cj.required_posting_auths ->> 0 IN (
+          cj.json::jsonb ->> 'paper_author',
+          cj.json::jsonb ->> 'claimer',
+          ${bridgeParam},
+          ${adminParam}
+        )
         AND cj.block_num > $2
 
       ORDER BY block_num ASC
       LIMIT $3`,
-      [account, sinceBlock, limit, ...accredCte.params, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
+      [account, sinceBlock, limit, ...accredCte.params, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount, config.hiveAdminAccount],
     );
 
     const events: NotificationEvent[] = [];

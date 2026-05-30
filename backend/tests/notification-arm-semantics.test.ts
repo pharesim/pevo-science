@@ -143,4 +143,129 @@ describe('notification-queries.ts arm semantics', () => {
     // INNER JOIN guarantees the row, so the title COALESCE is gone.
     expect(citationArms).not.toContain("COALESCE(cited_paper.title");
   });
+
+  // ── Arms 4/7/8/9 (vouch/claim) signer gates ─────────────────────
+  // custom_json arms previously gated only on JSON-field equality, so anyone
+  // could forge an op naming the victim and trigger an emotional notification.
+  it.skipIf(!isHafConfigured())(
+    'arm-4 new_vouch: only a vouch signed by the named, accredited voucher fires',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const sql = `
+        WITH active_accreditations(account) AS (VALUES ('carol'::text)),
+        cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+          ('["mallory"]'::jsonb, '{"action":"vouch","voucher":"carol","vouchee":"alice"}'::jsonb, 'pevotest'::text, 100),
+          ('["carol"]'::jsonb,   '{"action":"vouch","voucher":"carol","vouchee":"alice"}'::jsonb, 'pevotest'::text, 101),
+          ('["dave"]'::jsonb,    '{"action":"vouch","voucher":"dave","vouchee":"alice"}'::jsonb,  'pevotest'::text, 102)
+        )
+        SELECT COUNT(*)::int AS hit_count FROM cj
+        WHERE cj.custom_id = 'pevotest'
+          AND cj.json ->> 'vouchee' = $1
+          AND cj.json ->> 'action' = 'vouch'
+          AND cj.required_posting_auths ->> 0 = cj.json ->> 'voucher'
+          AND cj.required_posting_auths ->> 0 IN (SELECT account FROM active_accreditations)
+          AND cj.block_num > 0
+      `;
+      const r = await pool.query<{ hit_count: number }>(sql, ['alice']);
+      // mallory (signer != voucher) dropped; dave (voucher not accredited) dropped; only carol fires.
+      expect(r.rows[0]?.hit_count).toBe(1);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'arm-7 claim_pending: only an accredited signer firing a claim fires the notification',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const sql = `
+        WITH active_accreditations(account) AS (VALUES ('carol'::text)),
+        cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+          ('["mallory"]'::jsonb, '{"action":"claim_authorship","paper_author":"alice"}'::jsonb, 'pevotest'::text, 100),
+          ('["carol"]'::jsonb,   '{"action":"claim_authorship","paper_author":"alice"}'::jsonb, 'pevotest'::text, 101)
+        )
+        SELECT COUNT(*)::int AS hit_count FROM cj
+        WHERE cj.custom_id = 'pevotest'
+          AND cj.json ->> 'action' = 'claim_authorship'
+          AND cj.json ->> 'paper_author' = $1
+          AND cj.required_posting_auths ->> 0 IN (SELECT account FROM active_accreditations)
+          AND cj.block_num > 0
+      `;
+      const r = await pool.query<{ hit_count: number }>(sql, ['alice']);
+      // mallory unaccredited dropped; carol fires.
+      expect(r.rows[0]?.hit_count).toBe(1);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'arm-8 claim_approved: only post-author or bridge-account signers fire',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const sql = `
+        WITH cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+          ('["mallory"]'::jsonb,    '{"action":"approve_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 100),
+          ('["bob"]'::jsonb,        '{"action":"approve_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 101),
+          ('["pevo.bridge"]'::jsonb,'{"action":"approve_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 102)
+        )
+        SELECT COUNT(*)::int AS hit_count FROM cj
+        WHERE cj.custom_id = 'pevotest'
+          AND cj.json ->> 'action' = 'approve_authorship'
+          AND cj.json ->> 'claimer' = $1
+          AND cj.required_posting_auths ->> 0 IN (cj.json ->> 'paper_author', $2)
+          AND cj.block_num > 0
+      `;
+      const r = await pool.query<{ hit_count: number }>(sql, ['alice', 'pevo.bridge']);
+      // mallory dropped; bob (post author) + pevo.bridge fire.
+      expect(r.rows[0]?.hit_count).toBe(2);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'arm-9 claim_revoked: post-author, claimer-self, bridge, and admin signers fire; strangers do not',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const sql = `
+        WITH cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+          ('["mallory"]'::jsonb,    '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 100),
+          ('["bob"]'::jsonb,        '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 101),
+          ('["alice"]'::jsonb,      '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 102),
+          ('["pevo.bridge"]'::jsonb,'{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 103),
+          ('["pevo.admin"]'::jsonb, '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 104)
+        )
+        SELECT COUNT(*)::int AS hit_count FROM cj
+        WHERE cj.custom_id = 'pevotest'
+          AND cj.json ->> 'action' = 'revoke_authorship'
+          AND cj.json ->> 'claimer' = $1
+          AND cj.required_posting_auths ->> 0 IN (
+            cj.json ->> 'paper_author', cj.json ->> 'claimer', $2, $3
+          )
+          AND cj.block_num > 0
+      `;
+      const r = await pool.query<{ hit_count: number }>(sql, ['alice', 'pevo.bridge', 'pevo.admin']);
+      // mallory dropped; bob + alice(self) + bridge + admin fire.
+      expect(r.rows[0]?.hit_count).toBe(4);
+    },
+  );
+
+  it('arms 3/4/7/8/9 custom_json arms: each gates on required_posting_auths', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(
+      fileURLToPath(new URL('../src/notification-queries.ts', import.meta.url)),
+      'utf8',
+    );
+    const region = (from: string, to: string) =>
+      src.slice(src.indexOf(from), src.indexOf(to));
+    expect(region('-- 3.', '-- 4.')).toContain('required_posting_auths');
+    expect(region('-- 4.', '-- 5.')).toContain('required_posting_auths ->> 0');
+    expect(region('-- 7.', '-- 8.')).toContain('required_posting_auths ->> 0');
+    expect(region('-- 8.', '-- 9.')).toContain('required_posting_auths ->> 0');
+    expect(region('-- 9.', 'ORDER BY block_num')).toContain('required_posting_auths ->> 0');
+  });
 });
