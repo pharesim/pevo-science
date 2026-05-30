@@ -359,7 +359,10 @@
     "accreditationGranted": "Il tuo accreditamento è stato concesso",
     "accreditationRevoked": "Il tuo accreditamento è stato revocato",
     "newVouch": "{actor} ha garantito per te come {relationship}",
-    "newReply": "{actor} ha risposto al tuo commento"
+    "newReply": "{actor} ha risposto al tuo commento",
+    "claimPending": "{actor} claimed authorship of your paper",
+    "claimApproved": "Your authorship claim was approved",
+    "claimRevoked": "Your authorship claim was revoked"
   },
   "wot": {
     "title": "Rete di Fiducia",

@@ -359,7 +359,10 @@
     "accreditationGranted": "Votre accréditation a été accordée",
     "accreditationRevoked": "Votre accréditation a été révoquée",
     "newVouch": "{actor} s'est porté garant de vous en tant que {relationship}",
-    "newReply": "{actor} a répondu à votre commentaire"
+    "newReply": "{actor} a répondu à votre commentaire",
+    "claimPending": "{actor} claimed authorship of your paper",
+    "claimApproved": "Your authorship claim was approved",
+    "claimRevoked": "Your authorship claim was revoked"
   },
   "wot": {
     "title": "Réseau de confiance",

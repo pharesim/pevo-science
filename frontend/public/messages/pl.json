@@ -359,7 +359,10 @@
     "accreditationGranted": "Twoja akredytacja została przyznana",
     "accreditationRevoked": "Twoja akredytacja została cofnięta",
     "newVouch": "{actor} poręczył(a) za Ciebie jako {relationship}",
-    "newReply": "{actor} odpowiedział(a) na Twój komentarz"
+    "newReply": "{actor} odpowiedział(a) na Twój komentarz",
+    "claimPending": "{actor} claimed authorship of your paper",
+    "claimApproved": "Your authorship claim was approved",
+    "claimRevoked": "Your authorship claim was revoked"
   },
   "wot": {
     "title": "Sieć zaufania",

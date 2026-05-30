@@ -359,7 +359,10 @@
     "accreditationGranted": "اعتبارسنجی شما تایید شد",
     "accreditationRevoked": "اعتبارسنجی شما لغو شد",
     "newVouch": "{actor} شما را به عنوان {relationship} تایید کرد",
-    "newReply": "{actor} به نظر شما پاسخ داد"
+    "newReply": "{actor} به نظر شما پاسخ داد",
+    "claimPending": "{actor} claimed authorship of your paper",
+    "claimApproved": "Your authorship claim was approved",
+    "claimRevoked": "Your authorship claim was revoked"
   },
   "wot": {
     "title": "شبکه اعتماد",

@@ -112,6 +112,33 @@ describe('header', () => {
       expect(result).toContain('Plasticity');
     });
 
+    // Authorship-claim events (ClaimPendingEvent / ClaimApprovedEvent /
+    // ClaimRevokedEvent) reach formatNotification in their real snake_case wire
+    // shape. Without a typeMap entry they fell through `return event.type` and
+    // rendered the raw token (e.g. "claim_pending"); these feed the wire shape
+    // and assert a localized key renders with no raw `claim_` token leaking.
+    it('formats claim_pending with the claimer actor and no raw token', () => {
+      const comp = createComponent();
+      const result = comp.formatNotification({ type: 'claim_pending', actor: 'bob', paper_author: 'alice', paper_permlink: 'my-paper' });
+      expect(result).toContain('notifications.claimPending');
+      expect(result).toContain('bob');
+      expect(result).not.toContain('claim_');
+    });
+
+    it('formats claim_approved impersonally with no raw token', () => {
+      const comp = createComponent();
+      const result = comp.formatNotification({ type: 'claim_approved', paper_author: 'alice', paper_permlink: 'my-paper' });
+      expect(result).toContain('notifications.claimApproved');
+      expect(result).not.toContain('claim_');
+    });
+
+    it('formats claim_revoked impersonally with no raw token', () => {
+      const comp = createComponent();
+      const result = comp.formatNotification({ type: 'claim_revoked', paper_author: 'alice', paper_permlink: 'my-paper' });
+      expect(result).toContain('notifications.claimRevoked');
+      expect(result).not.toContain('claim_');
+    });
+
     it('formats accreditation_update grant', () => {
       const comp = createComponent();
       const result = comp.formatNotification({ type: 'accreditation_update', action: 'grant' });

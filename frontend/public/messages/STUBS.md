@@ -1978,3 +1978,53 @@ pt: seedPhrase.resumeFromLogin
 sv: seedPhrase.resumeFromLogin
 tr: seedPhrase.resumeFromLogin
 zh: seedPhrase.resumeFromLogin
+
+### Added 2026-05-30 (UI-NOTIFICATION-CLAIM-EVENT-RENDERING)
+
+ar: notifications.claimPending
+cs: notifications.claimPending
+da: notifications.claimPending
+de: notifications.claimPending
+es: notifications.claimPending
+fa: notifications.claimPending
+fr: notifications.claimPending
+he: notifications.claimPending
+it: notifications.claimPending
+nl: notifications.claimPending
+pl: notifications.claimPending
+pt: notifications.claimPending
+sv: notifications.claimPending
+tr: notifications.claimPending
+zh: notifications.claimPending
+
+ar: notifications.claimApproved
+cs: notifications.claimApproved
+da: notifications.claimApproved
+de: notifications.claimApproved
+es: notifications.claimApproved
+fa: notifications.claimApproved
+fr: notifications.claimApproved
+he: notifications.claimApproved
+it: notifications.claimApproved
+nl: notifications.claimApproved
+pl: notifications.claimApproved
+pt: notifications.claimApproved
+sv: notifications.claimApproved
+tr: notifications.claimApproved
+zh: notifications.claimApproved
+
+ar: notifications.claimRevoked
+cs: notifications.claimRevoked
+da: notifications.claimRevoked
+de: notifications.claimRevoked
+es: notifications.claimRevoked
+fa: notifications.claimRevoked
+fr: notifications.claimRevoked
+he: notifications.claimRevoked
+it: notifications.claimRevoked
+nl: notifications.claimRevoked
+pl: notifications.claimRevoked
+pt: notifications.claimRevoked
+sv: notifications.claimRevoked
+tr: notifications.claimRevoked
+zh: notifications.claimRevoked

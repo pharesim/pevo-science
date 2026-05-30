@@ -359,7 +359,10 @@
     "accreditationGranted": "Your accreditation has been granted",
     "accreditationRevoked": "Your accreditation has been revoked",
     "newVouch": "{actor} vouched for you as a {relationship}",
-    "newReply": "{actor} replied to your comment"
+    "newReply": "{actor} replied to your comment",
+    "claimPending": "{actor} claimed authorship of your paper",
+    "claimApproved": "Your authorship claim was approved",
+    "claimRevoked": "Your authorship claim was revoked"
   },
   "wot": {
     "title": "Web of Trust",

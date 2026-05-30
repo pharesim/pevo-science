@@ -359,7 +359,10 @@
     "accreditationGranted": "ההסמכה שלכם אושרה",
     "accreditationRevoked": "ההסמכה שלכם בוטלה",
     "newVouch": "{actor} ערב לכם כ{relationship}",
-    "newReply": "{actor} הגיב לתגובה שלכם"
+    "newReply": "{actor} הגיב לתגובה שלכם",
+    "claimPending": "{actor} claimed authorship of your paper",
+    "claimApproved": "Your authorship claim was approved",
+    "claimRevoked": "Your authorship claim was revoked"
   },
   "wot": {
     "title": "רשת אמון",

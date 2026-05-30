@@ -92,6 +92,12 @@ export function initHeader() {
         new_citation: 'notifications.newCitation',
         new_vouch: 'notifications.newVouch',
         new_reply: 'notifications.newReply',
+        // claim_pending carries `actor` (the claimer) and notifies the post
+        // author; claim_approved / claim_revoked carry no actor and notify the
+        // claimer, so their strings are impersonal. All three lack paper_title.
+        claim_pending: 'notifications.claimPending',
+        claim_approved: 'notifications.claimApproved',
+        claim_revoked: 'notifications.claimRevoked',
       };
       if (event.type === 'accreditation_update') {
         const key = event.action === 'revoke'

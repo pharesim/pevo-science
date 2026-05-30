@@ -39,3 +39,31 @@ Confirm the full `BaseNotificationEvent` field set and re-confirm whether `claim
 - `backend/src/notification-queries.ts` — `ClaimPendingEvent` / `ClaimApprovedEvent` / `ClaimRevokedEvent`.
 - `agents/docs/api-contracts/notifications.md` — missing claim_* contract entries.
 - Surfaced by architect `/ce-code-review` run 20260530-195129.
+
+## UI completion note (2026-05-30)
+
+Deliverable 1 (UI rendering) landed. Deliverable 2 (the `notifications.md`
+contract entries) is the architect companion's and is intentionally untouched
+here (outside the UI zone).
+
+Event shapes re-confirmed against `backend/src/notification-queries.ts` before
+authoring copy:
+- `claim_pending` carries `actor` (the claimer) and notifies the **post author**
+  (arm 7, `paper_author = $1`). Copy is actor-driven: "{actor} claimed authorship
+  of your paper".
+- `claim_approved` / `claim_revoked` carry **no `actor`** (the column is NULL) and
+  notify the **claimer** (arms 8/9, `claimer = $1`). Copy is impersonal and in the
+  claimer's voice: "Your authorship claim was approved" / "...was revoked".
+- None of the three carry `paper_title`, so no copy references a title.
+
+Changes:
+- `header.js`: three `typeMap` entries (claim_pending/approved/revoked →
+  `notifications.claimPending/claimApproved/claimRevoked`). The generic branch
+  already passes `actor`, satisfying claim_pending.
+- `en.json`: three real-English keys after `newReply`. The 15 non-English locales
+  carry the same English as stubs, tracked in `STUBS.md` under a new
+  `### Added 2026-05-30 (UI-NOTIFICATION-CLAIM-EVENT-RENDERING)` sweep (45 lines).
+- `components-header.test.js`: three `formatNotification` tests feeding the real
+  snake_case claim wire shape, asserting the localized key renders, the claimer
+  actor appears for claim_pending, and no raw `claim_` token leaks. Each fails
+  against the pre-fix `return event.type` fall-through. Suite green (15).
