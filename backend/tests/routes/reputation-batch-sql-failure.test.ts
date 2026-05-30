@@ -86,8 +86,12 @@ afterEach(async () => {
   await clearKeys();
 });
 
+// retry on the runBatchComputation tests: the global config runs files
+// 2-at-a-time, so a sibling real-Redis file holding the batch lock (or its
+// setup flush) can make a single attempt skip. Matches the sibling internals
+// test's retry budget for the same lock/flush contention.
 describe('reputation batch: a SQL failure does not advance cycle:last', () => {
-  it('bails without advancing cycle:last or wiping prod scores when computeReputationBatch throws', async (ctx) => {
+  it('bails without advancing cycle:last or wiping prod scores when computeReputationBatch throws', { retry: 5 }, async (ctx) => {
     const redis = getRedis();
     if (!redis) return ctx.skip(true, 'Redis unavailable');
 
@@ -135,7 +139,7 @@ describe('reputation batch: a SQL failure does not advance cycle:last', () => {
 });
 
 describe('reputation batch: an empty accredited set completes cleanly', () => {
-  it('never reaches scoring (belt-and-suspenders does not engage) and advances only the elapsed empty cycle', async (ctx) => {
+  it('never reaches scoring (belt-and-suspenders does not engage) and advances only the elapsed empty cycle', { retry: 5 }, async (ctx) => {
     const redis = getRedis();
     if (!redis) return ctx.skip(true, 'Redis unavailable');
 

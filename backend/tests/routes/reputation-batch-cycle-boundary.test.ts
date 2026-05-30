@@ -93,7 +93,11 @@ describe('reputation batch: only fully-elapsed cycles are scored', () => {
   beforeEach(clearBoundaryKeys);
   afterEach(clearBoundaryKeys);
 
-  it('scores the elapsed cycle 0 and stops before the in-progress cycle 1 when head - genesis = cycle_blocks * 1.5', async (ctx) => {
+  // retry: the global config runs files 2-at-a-time; a sibling real-Redis
+  // file holding the batch lock (or its setup flush) can make a single
+  // runBatchComputation attempt skip. Match the sibling internals test's
+  // retry budget for the same lock/flush contention.
+  it('scores the elapsed cycle 0 and stops before the in-progress cycle 1 when head - genesis = cycle_blocks * 1.5', { retry: 5 }, async (ctx) => {
     const redis = getRedis();
     if (!redis) return ctx.skip(true, 'Redis unavailable');
 
