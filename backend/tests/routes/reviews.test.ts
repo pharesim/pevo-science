@@ -227,10 +227,17 @@ describe('GET /api/reviews/:author/:permlink — SQL accreditation gate (backend
         if (!sql.includes("~ '^[1-5]$'")) {
           throw new Error('Review fetch SQL is missing the rating-shape regex gate');
         }
-        // accredCte takes params[0..2], then author at [3], permlink [4],
-        // hiveAnonAccount at [5].
-        const author = params[3] as string;
-        const anonAccount = params[5] as string;
+        // Param-array shape from `fetchReviewFromHaf`, anchored on the
+        // `activeAccreditationsCteBody` helper's bind count:
+        //   [...accredCte.params, author, permlink, hiveAnonAccount, appTag, hiveBridgeAccount]
+        // The CTE helper binds (config.appTag, config.accreditationAuthorities)
+        // before the route's own params, so the route's `author` lives at
+        // `accredCte.params.length` and `hiveAnonAccount` two slots later.
+        // Deriving the offsets from the helper's params length keeps this
+        // mock honest if the CTE's bind count drifts again.
+        const accredBindCount = 2; // matches activeAccreditationsCteBody's [appTag, authorities] shape
+        const author = params[accredBindCount] as string;
+        const anonAccount = params[accredBindCount + 2] as string;
         const isAdmitted = accreditedAuthors.has(author) || (author !== '' && author === anonAccount);
         return { rows: isAdmitted ? [reviewRow(author)] : [] };
       }

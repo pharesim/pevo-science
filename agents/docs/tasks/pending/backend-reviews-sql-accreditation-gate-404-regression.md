@@ -71,3 +71,9 @@ Whichever shape lands, the existing structural SQL assertions in the same mock (
 - `backend/src/routes/reviews.ts` — `fetchReviewFromHaf` and the `paramIdx++` counter pattern at the call site.
 - `backend/src/hafsql.ts` — `activeAccreditationsCteBody`, the CTE helper whose current 2-bind shape is the source of truth.
 - `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-04-30.md` — the rationale for keeping the SQL-presence assertions in the mock.
+
+## Backend completion note (2026-05-30)
+
+Chose **shape #1 with a small decoupling improvement**: instead of hardcoded `params[2]` / `params[4]`, the mock now reads from `params[accredBindCount]` / `params[accredBindCount + 2]`, where `accredBindCount = 2` is annotated as matching `activeAccreditationsCteBody`'s `[appTag, accreditationAuthorities]` shape. The replacement comment anchors on the helper name and the param-array semantics (`[...accredCte.params, author, permlink, hiveAnonAccount, appTag, hiveBridgeAccount]`), not on numeric slot positions. The three structural SQL-presence assertions (`IN (SELECT account FROM active_accreditations)`, `OR c.author =`, `~ '^[1-5]$'`) are preserved verbatim — only the param-slot reads were adjusted. Shape #2 (exposing the CTE's bind count from the helper itself) was not necessary; the small fix smelled clean.
+
+Verification: `npx vitest run tests/routes/reviews.test.ts` → 8 passed (previously 2 failed); `npm run typecheck` clean; `npm run lint` shows 1 pre-existing warning in `src/lib/author-supersession.ts` unrelated to this change. No new comment anchors violate the rot rules (no task slug, round number, line number, or SHA).
