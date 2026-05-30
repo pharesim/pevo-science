@@ -44,6 +44,7 @@ vi.mock('../../src/db.js', () => ({
 const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');
 const { config } = await import('../../src/config.js');
+const { activeAccreditationsCte } = await import('../../src/hafsql.js');
 const app = createApp();
 
 beforeEach(async () => {
@@ -227,15 +228,15 @@ describe('GET /api/reviews/:author/:permlink — SQL accreditation gate (backend
         if (!sql.includes("~ '^[1-5]$'")) {
           throw new Error('Review fetch SQL is missing the rating-shape regex gate');
         }
-        // Param-array shape from `fetchReviewFromHaf`, anchored on the
-        // `activeAccreditationsCteBody` helper's bind count:
+        // Param-array shape from `fetchReviewFromHaf`, which prefixes its own
+        // params with the bindings from `activeAccreditationsCte()`:
         //   [...accredCte.params, author, permlink, hiveAnonAccount, appTag, hiveBridgeAccount]
-        // The CTE helper binds (config.appTag, config.accreditationAuthorities)
-        // before the route's own params, so the route's `author` lives at
-        // `accredCte.params.length` and `hiveAnonAccount` two slots later.
-        // Deriving the offsets from the helper's params length keeps this
-        // mock honest if the CTE's bind count drifts again.
-        const accredBindCount = 2; // matches activeAccreditationsCteBody's [appTag, authorities] shape
+        // Deriving the offset from the same helper the route calls keeps this
+        // mock honest if the CTE's bind count drifts: `author` lives at
+        // `accredCte.params.length`, `hiveAnonAccount` two slots later. The
+        // literal would silently re-introduce the param-slot 404 regression
+        // if the helper grew another bind.
+        const accredBindCount = activeAccreditationsCte().params.length;
         const author = params[accredBindCount] as string;
         const anonAccount = params[accredBindCount + 2] as string;
         const isAdmitted = accreditedAuthors.has(author) || (author !== '' && author === anonAccount);

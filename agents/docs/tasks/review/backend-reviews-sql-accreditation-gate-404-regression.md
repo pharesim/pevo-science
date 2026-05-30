@@ -95,3 +95,11 @@ Verification: `npx vitest run tests/routes/reviews.test.ts` → 8 passed (previo
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next architect review scopes `/ce-code-review` to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-05-30, working tree)
+
+Item 1 landed by choosing the architect's option (a): made the comment's claim true instead of rewording it. `accredBindCount` is now derived from the live helper the route actually calls — `const accredBindCount = activeAccreditationsCte().params.length` — replacing the relocated magic literal `2`. `activeAccreditationsCte` is imported via the file's existing top-level `await import('../../src/hafsql.js')` pattern, alongside `config`/`hafCache`. The mock now self-corrects if `activeAccreditationsCteBody`'s bind count drifts: the route prefixes its param array with `activeAccreditationsCte().params` (`fetchReviewFromHaf` at `routes/reviews.ts`), so the same `.params.length` that shifts the route's `author`/`hiveAnonAccount` slots shifts the mock's reads in lockstep — the 404 regression class is now structurally unreachable, not just re-pinned.
+
+The comment was rewritten to drop the false "deriving from the helper's params length" phrasing-that-described-a-literal; it now accurately states the derivation and names why the literal would silently re-introduce the regression. Anchored on the `activeAccreditationsCte` helper symbol and the param-array semantics, no numeric slot positions. The three structural SQL-presence canaries (`IN (SELECT account FROM active_accreditations)`, `OR c.author =`, `~ '^[1-5]$'`) are untouched.
+
+Verification: `npx vitest run tests/routes/reviews.test.ts` → 8 passed; `npm run typecheck` clean; `npm run lint` shows only the pre-existing `src/lib/author-supersession.ts` warning (unrelated; this change is test-only and lint scopes to `src/`).
