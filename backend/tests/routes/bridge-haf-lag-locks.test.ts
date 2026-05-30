@@ -50,6 +50,11 @@
  *   3. /check: HAF query throws → 200 with fail-open shape {exists: false}
  *      (no `status` field leaks on the wire); warn-log emits route:
  *      'bridge.check' (NOT bridge.register).
+ *   4. Shared duplicate-check cache: /check populates the 30s cache;
+ *      /register for the same identifier within TTL hits the cache and
+ *      skips the HAF round-trip. The worker's `findBridgeDuplicate` path
+ *      stays uncached (last defense against burning a chain cooldown on a
+ *      duplicate broadcast).
  */
 
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
@@ -528,8 +533,64 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /check fail-open on HAF outage (round-2 ho
   });
 });
 
+describe('BE-BRIDGE-CHECK-CACHE — /check populates the cache; /register hits it; worker bypasses', () => {
+  const ACCREDITED = 'cacheauthor';
+
+  beforeEach(async () => {
+    accreditedSet.add(ACCREDITED);
+    await cleanupQueueRowsFor(ACCREDITED);
+  });
+
+  it('/check then /register within TTL: the second call skips the HAF round-trip (cache hit)', async () => {
+    const body = { identifier: '2301.99999', discipline: 'CS' };
+
+    // First call: /check populates the cache. findBridgeDuplicate fires
+    // two queries (source-field probe + permlink-fallback probe) against
+    // pgQuery before returning no-duplicate.
+    const checkRes = await request(app).get('/api/bridge/check').query({ identifier: body.identifier });
+    expect(checkRes.status).toBe(200);
+    expect(checkRes.body.data.exists).toBe(false);
+    const checkCallCount = pgQuery.mock.calls.length;
+    expect(checkCallCount).toBeGreaterThan(0);
+
+    // Cache key matches the shared `bridgeCheckCacheKey` shape; it must be
+    // present in Redis so the next caller can hit it.
+    expect(fakeRedis.store.has(`${config.appTag}:cache:bridge-check:arxiv:2301.99999`)).toBe(true);
+
+    // Second call: /register for the SAME identifier must NOT trigger
+    // another findBridgeDuplicate. The route's enqueue path still fires
+    // its own queries against the bridge_import_queue table (those are
+    // the real Postgres pool, not pgQuery), so the assertion is keyed on
+    // pgQuery.mock.calls.length staying flat for the duplicate-check leg.
+    const registerRes = await signedPost('/api/bridge/register', ACCREDITED, body);
+    expect(registerRes.status).toBe(202);
+    expect(pgQuery.mock.calls.length).toBe(checkCallCount);
+
+    await cleanupQueueRowsFor(ACCREDITED);
+  });
+
+  it('worker tick (checkExistingOnChain) bypasses the cache: pgQuery fires even when the cache is warm', async () => {
+    // Populate the cache via /check.
+    const checkRes = await request(app).get('/api/bridge/check').query({ identifier: '2301.99999' });
+    expect(checkRes.status).toBe(200);
+    expect(fakeRedis.store.has(`${config.appTag}:cache:bridge-check:arxiv:2301.99999`)).toBe(true);
+    const warmCount = pgQuery.mock.calls.length;
+    expect(warmCount).toBeGreaterThan(0);
+
+    // Worker's pre-broadcast reconciliation path lives in `bridge-worker.ts`
+    // and calls `findBridgeDuplicate` directly via `checkExistingOnChain`.
+    // Invoking the underlying helper here proves the worker's call shape
+    // bypasses the route-side cache (the helper has no cache access).
+    const { findBridgeDuplicate } = await import('../../src/bridge-haf.js');
+    const dup = await findBridgeDuplicate({ type: 'arxiv', id: '2301.99999' }, 'bridge-arxiv-2301-99999');
+    expect(dup).toBeNull();
+    expect(pgQuery.mock.calls.length).toBeGreaterThan(warmCount);
+  });
+});
+
 afterAll(async () => {
   await cleanupQueueRowsFor('racingauthor').catch(() => undefined);
   await cleanupQueueRowsFor('hafoutageauthor').catch(() => undefined);
+  await cleanupQueueRowsFor('cacheauthor').catch(() => undefined);
   await closeAppPool().catch(() => undefined);
 });

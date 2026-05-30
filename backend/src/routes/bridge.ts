@@ -291,6 +291,20 @@ type BridgeCheckResult =
     }
   | { status: 'haf_unavailable' };
 
+// Shared cache-key helper. `/check` populates the cache after a successful
+// HAF lookup; `/register` (called within 30s of a matching `/check`) hits the
+// same key and skips the HAF round-trip. The bridge worker intentionally does
+// NOT participate in this cache — it calls `findBridgeDuplicate` directly via
+// `checkExistingOnChain` in `bridge-worker.ts`. The worker's check is the last
+// defense against burning a ~5-min chain cooldown on a duplicate broadcast,
+// and a 30s-stale `exists:false` hit there would re-introduce exactly the
+// duplicate-broadcast risk the fresh check exists to close.
+function bridgeCheckCacheKey(parsed: { type: 'arxiv' | 'doi'; id: string }): string {
+  return `bridge-check:${parsed.type}:${parsed.id}`;
+}
+
+type BridgeCheckOk = Extract<BridgeCheckResult, { status: 'ok' }>;
+
 async function checkExistingBridge(
   identifier: string,
   // Required (not optional). Both callers always pass the result of
@@ -320,14 +334,23 @@ async function checkExistingBridge(
   const canonical = { type: parsed.type, id: parsed.id };
   const permlink = bridgePermlink(parsed);
 
+  // Cache probe shared across `/check` and `/register`. The 30s TTL bounds
+  // staleness; the haf_unavailable sentinel is never cached so a HAF blip
+  // does not poison subsequent calls for up to 30s.
+  const cacheKey = bridgeCheckCacheKey(canonical);
+  const cached = await hafCache.get<BridgeCheckOk>(cacheKey);
+  if (cached !== undefined) return cached;
+
   try {
     // Two-query HAF duplicate lookup (source-field match + deterministic
     // permlink fallback, both pinned to the bridge account) shared with the
     // worker's pre-broadcast reconciliation via `findBridgeDuplicate`.
     const dup = await findBridgeDuplicate(canonical, permlink);
-    if (dup) {
-      return { status: 'ok', exists: true, author: dup.author, permlink: dup.permlink, title: dup.title, created: dup.created };
-    }
+    const result: BridgeCheckOk = dup
+      ? { status: 'ok', exists: true, author: dup.author, permlink: dup.permlink, title: dup.title, created: dup.created }
+      : { status: 'ok', exists: false, author: null, permlink: null, title: null, created: null };
+    await hafCache.set(cacheKey, result, 30_000);
+    return result;
   } catch (err) {
     // Fail-closed signal for /register. The route handler converts this to
     // 503 + {retriable: true} so a HAF outage can't license a duplicate
@@ -346,8 +369,6 @@ async function checkExistingBridge(
     );
     return { status: 'haf_unavailable' };
   }
-
-  return { status: 'ok', exists: false, author: null, permlink: null, title: null, created: null };
 }
 
 router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
@@ -362,25 +383,10 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier — try pasting a DOI or arXiv ID directly');
     }
 
-    // Resolve checkExistingBridge OUTSIDE getOrSet so the haf_unavailable
-    // sentinel never lands in the 30s cache. QueryCache caches any non-null
-    // object; the prior `hafCache.getOrSet(..., checkExistingBridge, 30_000)`
-    // poisoned subsequent /check calls with `{exists: false}` for up to 30s
-    // after HAF recovered in 1-2s. The cache is now probed for the ok shape
-    // only and writes through only the ok shape; haf_unavailable bypasses
-    // the cache entirely.
-    const cacheKey = `bridge-check:${parsed.type}:${parsed.id}`;
-    type OkShape = Extract<BridgeCheckResult, { status: 'ok' }>;
-    let result: BridgeCheckResult;
-    const cached = await hafCache.get<OkShape>(cacheKey);
-    if (cached !== undefined) {
-      result = cached;
-    } else {
-      result = await checkExistingBridge(identifier, parsed, 'bridge.check');
-      if (result.status === 'ok') {
-        await hafCache.set(cacheKey, result, 30_000);
-      }
-    }
+    // `checkExistingBridge` owns the cache probe + write-through. The
+    // haf_unavailable sentinel is NOT cached inside the helper, so a HAF
+    // blip can't poison subsequent /check or /register calls for up to 30s.
+    const result = await checkExistingBridge(identifier, parsed, 'bridge.check');
     // Read-only path stays fail-open: a HAF blip on /check returns
     // exists=false (the legacy shape) so the UI doesn't pop a 503 banner on
     // every preprint-resolve. The fail-closed policy is intentionally only on
