@@ -24,7 +24,7 @@
  *       path and the real verifyHiveSignature upload path lives in the
  *       middleware specs.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 
 vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
@@ -32,9 +32,20 @@ vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
   return MOCK_VERIFY_SIGNATURE;
 });
 
+// Make cidIsKnown resolve true deterministically for the wiring test below:
+// getRedis → null skips the Redis fast-path (which otherwise throws against a
+// configured-but-unreachable Redis in test), and getAppPool returns a pending
+// row so the durable-record branch reports known before HAF is consulted.
+vi.mock('../../src/redis.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/redis.js')>();
+  return { ...actual, getRedis: () => null, isRedisAvailable: () => false };
+});
+vi.mock('../../src/app-db.js', () => ({ getAppPool: () => ({ query: async () => ({ rowCount: 1 }) }) }));
+
 const { createApp } = await import('../../src/app.js');
 const { cidReferencedByAppTag } = await import('../../src/lib/ipfs-shared.js');
 const { gatewaySafeContentType } = await import('../../src/routes/ipfs.js');
+const { config } = await import('../../src/config.js');
 
 const app = createApp();
 
@@ -77,6 +88,41 @@ describe('gatewaySafeContentType — served Content-Type allow-list', () => {
 
   it('forces octet-stream when upstream advertises no Content-Type', () => {
     expect(gatewaySafeContentType(null, VALID_CID).contentType).toBe('application/octet-stream');
+  });
+});
+
+// HTTP-level proof that gatewaySafeContentType is actually WIRED into the route
+// streaming branch — pinning the helper alone would let a wiring revert (raw
+// upstream Content-Type passthrough, reopening the same-origin XSS) survive.
+describe('GET /api/ipfs/:cid — Content-Type allow-list applied on the proxy path', () => {
+  let origGateway: string | undefined;
+  beforeAll(() => {
+    origGateway = config.ipfsGatewayUrl;
+    config.ipfsGatewayUrl = 'http://upstream.test/ipfs';
+  });
+  afterAll(() => {
+    config.ipfsGatewayUrl = origGateway as string;
+    vi.unstubAllGlobals();
+  });
+
+  function stubUpstream(contentType: string) {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { 'content-type': contentType } })));
+  }
+
+  it('serves a text/html upstream as an inert octet-stream attachment (not raw passthrough)', async () => {
+    stubUpstream('text/html');
+    const res = await request(app).get(`/api/ipfs/${VALID_CID}`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/octet-stream');
+    expect(res.headers['content-disposition']).toBe(`attachment; filename="${VALID_CID}"`);
+  });
+
+  it('passes an allow-listed application/pdf upstream through unchanged', async () => {
+    stubUpstream('application/pdf');
+    const res = await request(app).get(`/api/ipfs/${VALID_CID}`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('application/pdf');
+    expect(res.headers['content-disposition']).toBeUndefined();
   });
 });
 
@@ -130,5 +176,17 @@ describe('cidReferencedByAppTag — accredited-author gate (gateway-only)', () =
     expect(values).toHaveLength(6);
     // The containment params now bind at $3..$6.
     expect(text).toContain('c.tags @> $3::jsonb');
+  });
+
+  it('resolves not-referenced (would 404 at the gateway) when no accredited-author row matches', async () => {
+    // Behavioral pin: with the gate on, a CID whose only references are from
+    // unaccredited authors yields zero matching rows → cidReferencedByAppTag
+    // false → the gateway returns 404. A row match yields true (served).
+    const zeroPool = { query: async () => ({ rowCount: 0 }) };
+    const onePool = { query: async () => ({ rowCount: 1 }) };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await cidReferencedByAppTag(zeroPool as any, VALID_CID, { requireAccreditedAuthor: true })).toBe(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await cidReferencedByAppTag(onePool as any, VALID_CID, { requireAccreditedAuthor: true })).toBe(true);
   });
 });

@@ -19,6 +19,12 @@ function sanitizeFilename(name: string): string {
 }
 
 const ipfsUploadLimiter = rateLimit({ name: 'ipfs-upload', windowMs: 60 * 60_000, max: 10, keyFn: byAccount });
+// The upload-token pre-flight gets its own, more generous bucket so it does not
+// consume the pin quota above: a multi-file paper needs one pre-flight per file,
+// and sharing the bucket would halve the effective uploads/hour. The pre-flight
+// only mints a single-use 60s token (no pin, no chain write), so abuse is already
+// bounded by the token TTL; the strict pin cap stays on POST /upload.
+const ipfsUploadTokenLimiter = rateLimit({ name: 'ipfs-upload-token', windowMs: 60 * 60_000, max: 30, keyFn: byAccount });
 
 const router = Router();
 
@@ -215,7 +221,7 @@ const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 //    invariant #1). The per-request signature path is itself fresh and needs no
 //    extra proof. A stolen JWT alone therefore cannot obtain a token, and
 //    without a token the upload is refused.
-router.post('/upload-token', verifyHiveSignature, ipfsUploadLimiter, async (req: Request, res: Response) => {
+router.post('/upload-token', verifyHiveSignature, ipfsUploadTokenLimiter, async (req: Request, res: Response) => {
   const username = req.hiveUsername!;
 
   if (req.hiveAuthMethod === 'jwt') {

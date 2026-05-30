@@ -3,7 +3,7 @@ import request from 'supertest';
 import { createApp } from '../../src/app.js';
 import { getPool, isHafConfigured } from '../../src/db.js';
 import { config } from '../../src/config.js';
-import { T } from '../../src/hafsql.js';
+import { T, activeAccreditationsCte } from '../../src/hafsql.js';
 import { queryWithRetry } from '../support/haf-query.js';
 
 // Carve-out (per root CLAUDE.md "Running Tests"): the POST /api/ipfs/upload
@@ -75,22 +75,32 @@ describe('GET /api/ipfs/:cid (cidIsKnown HAF reference check)', () => {
         return;
       }
 
-      // Find any PEvO-tagged comment carrying a non-empty ipfs_cid under the
-      // appTag namespace. Scoped via the same tags-GIN predicate the
-      // production query uses, so we exercise the real indexed shape.
+      // Find a PEvO-tagged comment carrying a non-empty ipfs_cid under the
+      // appTag namespace, AUTHORED BY A CURRENTLY-ACCREDITED account. The
+      // gateway's cidIsKnown now requires the referencing author to be
+      // accredited (requireAccreditedAuthor), so an unscoped candidate query
+      // could pick a CID whose author is unaccredited and make cidIsKnown
+      // return false — turning this assertion into a flaky non-bug 404. Scoping
+      // to accredited authors with the same active-accreditations CTE the gate
+      // uses keeps the candidate one the gate will actually resolve as known.
+      const accredCte = activeAccreditationsCte(1);
+      const tagsIdx = accredCte.nextIdx;
+      const nsIdx = accredCte.nextIdx + 1;
       const res = await queryWithRetry<{ cid: string }>(
         pool,
-        `SELECT c.json_metadata -> $2 ->> 'ipfs_cid' AS cid
+        `${accredCte.sql}
+         SELECT c.json_metadata -> $${nsIdx} ->> 'ipfs_cid' AS cid
            FROM ${T.comments} c
-          WHERE c.tags @> $1::jsonb
-            AND c.json_metadata -> $2 ->> 'ipfs_cid' IS NOT NULL
-            AND c.json_metadata -> $2 ->> 'ipfs_cid' <> ''
+          WHERE c.tags @> $${tagsIdx}::jsonb
+            AND c.author IN (SELECT account FROM active_accreditations)
+            AND c.json_metadata -> $${nsIdx} ->> 'ipfs_cid' IS NOT NULL
+            AND c.json_metadata -> $${nsIdx} ->> 'ipfs_cid' <> ''
           LIMIT 1`,
-        [JSON.stringify([config.appTag]), config.appTag],
+        [...accredCte.params, JSON.stringify([config.appTag]), config.appTag],
       );
 
       if (res.rows.length === 0) {
-        ctx.skip('HAF has no published paper with an appTag ipfs_cid — namespace fix not exercisable');
+        ctx.skip('HAF has no accredited-authored paper with an appTag ipfs_cid — gate not exercisable');
         return;
       }
 
