@@ -321,6 +321,10 @@ export async function fetchNotificationsFromHaf(
       JOIN active_accreditations aa_c ON aa_c.account = co.author
       WHERE co.parent_author = $1
         AND co.block_num > $2
+        -- Self-exclusion: a user replying to their own comment must not
+        -- notify themselves. Mirrors the co.author != $1 guard the sibling
+        -- comment-derived arms (1a, 1b) carry.
+        AND co.author != $1
         AND (co.json_metadata -> ${at} ->> 'type') = 'comment'
         AND co.json_metadata ->> 'app' LIKE ${al}
 
