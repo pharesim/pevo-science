@@ -223,7 +223,11 @@ export async function fetchNotificationsFromHaf(
 
       UNION ALL
 
-      -- 2a. New accredited votes on your own papers/reviews
+      -- 2a. New accredited votes on your own native papers.
+      -- JOIN comments + validPevoPaperWhere so a vote on the recipient's
+      -- non-PEvO Hive content (blog post, non-paper comment) does NOT surface
+      -- as "X endorsed your paper" (arm 1a was hardened against the same class
+      -- earlier; arm 2 was missed). v.voter != v.author drops self-votes.
       SELECT
         'new_vote'::text,
         v.block_num,
@@ -238,9 +242,13 @@ export async function fetchNotificationsFromHaf(
         NULL, NULL, NULL, NULL, NULL
       FROM ${T.voteOps} v
       JOIN active_accreditations aa ON aa.account = v.voter
+      JOIN ${T.comments} p
+        ON p.author = v.author AND p.permlink = v.permlink
+        AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
       WHERE v.author = $1
         AND v.block_num > $2
         AND v.weight != 0
+        AND v.voter != v.author
 
       UNION ALL
 
@@ -262,6 +270,35 @@ export async function fetchNotificationsFromHaf(
       JOIN user_bridge_papers bp ON bp.author = v.author AND bp.permlink = v.permlink
       WHERE v.block_num > $2
         AND v.weight != 0
+        AND v.voter != v.author
+
+      UNION ALL
+
+      -- 2c. New accredited votes on your reviews.
+      -- A vote on a recipient's review comment must surface as target_type
+      -- 'review', not the hardcoded 'paper' the merged arm 2 emitted.
+      -- validReviewWhere pins the voted post as a structurally-valid review.
+      SELECT
+        'new_vote'::text,
+        v.block_num,
+        v.timestamp,
+        v.voter,
+        v.author,
+        v.permlink,
+        NULL,
+        NULL,
+        'review',
+        v.weight::int,
+        NULL, NULL, NULL, NULL, NULL
+      FROM ${T.voteOps} v
+      JOIN active_accreditations aa ON aa.account = v.voter
+      JOIN ${T.comments} c
+        ON c.author = v.author AND c.permlink = v.permlink
+        AND ${validReviewWhere({ commentAlias: 'c', appTagParam: at })}
+      WHERE v.author = $1
+        AND v.block_num > $2
+        AND v.weight != 0
+        AND v.voter != v.author
 
       UNION ALL
 

@@ -253,6 +253,102 @@ describe('notification-queries.ts arm semantics', () => {
     },
   );
 
+  // ── Arms 2a/2b/2c (new_vote) content filter + target_type ───────
+  // Votes must only notify for PEvO papers/reviews, with the right
+  // target_type, and never for self-votes.
+  it.skipIf(!isHafConfigured())(
+    'arm-2a new_vote: vote on non-PEvO content drops; vote on a native paper fires as target_type=paper; self-vote drops',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      // p stands in for the comments table: only alice/paper1 is a PEvO paper.
+      const sql = `
+        WITH
+          active_accreditations(account) AS (VALUES ('bob'::text), ('alice'::text)),
+          p(author, permlink, json_metadata) AS (
+            VALUES ('alice'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
+          ),
+          v(voter, author, permlink, weight, block_num) AS (VALUES
+            ('bob'::text,   'alice'::text, 'paper1'::text, 100, 100),  -- vote on PEvO paper -> fires
+            ('bob'::text,   'alice'::text, 'blogpost'::text, 100, 101),-- vote on non-PEvO content -> drops
+            ('alice'::text, 'alice'::text, 'paper1'::text, 100, 102)   -- self-vote -> drops
+          )
+        SELECT COUNT(*)::int AS hit_count, MIN('paper') AS target_type
+        FROM v
+        JOIN active_accreditations aa ON aa.account = v.voter
+        JOIN p ON p.author = v.author AND p.permlink = v.permlink
+          AND ((p.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+               OR (p.author = 'pevo.bridge' AND (p.json_metadata -> 'pevotest' ->> 'type') = 'bridge_paper'))
+        WHERE v.author = $1
+          AND v.block_num > 0
+          AND v.weight != 0
+          AND v.voter != v.author
+      `;
+      const r = await pool.query<{ hit_count: number; target_type: string }>(sql, ['alice']);
+      expect(r.rows[0]?.hit_count).toBe(1);
+      expect(r.rows[0]?.target_type).toBe('paper');
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'arm-2c new_vote: vote on a review fires as target_type=review',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const reviewMeta = JSON.stringify({
+        pevotest: { type: 'review', rating: { methodology: 3, novelty: 4, clarity: 5, significance: 2 } },
+      });
+      const sql = `
+        WITH
+          active_accreditations(account) AS (VALUES ('bob'::text)),
+          c(author, permlink, json_metadata) AS (VALUES ('alice'::text, 'rev1'::text, $2::jsonb)),
+          v(voter, author, permlink, weight, block_num) AS (VALUES
+            ('bob'::text, 'alice'::text, 'rev1'::text, 100, 100)
+          )
+        SELECT COUNT(*)::int AS hit_count, MIN('review') AS target_type
+        FROM v
+        JOIN active_accreditations aa ON aa.account = v.voter
+        JOIN c ON c.author = v.author AND c.permlink = v.permlink
+          AND (
+            (c.json_metadata -> 'pevotest' ->> 'type') = 'review'
+            AND jsonb_typeof(c.json_metadata -> 'pevotest' -> 'rating') = 'object'
+            AND (c.json_metadata -> 'pevotest' -> 'rating' ->> 'methodology')  ~ '^[1-5]$'
+            AND (c.json_metadata -> 'pevotest' -> 'rating' ->> 'novelty')      ~ '^[1-5]$'
+            AND (c.json_metadata -> 'pevotest' -> 'rating' ->> 'clarity')      ~ '^[1-5]$'
+            AND (c.json_metadata -> 'pevotest' -> 'rating' ->> 'significance') ~ '^[1-5]$'
+          )
+        WHERE v.author = $1
+          AND v.block_num > 0
+          AND v.weight != 0
+          AND v.voter != v.author
+      `;
+      const r = await pool.query<{ hit_count: number; target_type: string }>(sql, ['alice', reviewMeta]);
+      expect(r.rows[0]?.hit_count).toBe(1);
+      expect(r.rows[0]?.target_type).toBe('review');
+    },
+  );
+
+  it('vote arms: split into native (2a), bridge (2b), review (2c) with content gates and target_type', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(
+      fileURLToPath(new URL('../src/notification-queries.ts', import.meta.url)),
+      'utf8',
+    );
+    const voteArms = src.slice(src.indexOf('-- 2a.'), src.indexOf('-- 3.'));
+    expect(voteArms).toContain('-- 2a.');
+    expect(voteArms).toContain('-- 2b.');
+    expect(voteArms).toContain('-- 2c.');
+    // 2a gates the native paper with validPevoPaperWhere; 2c gates the review.
+    expect(voteArms).toContain('validPevoPaperWhere');
+    expect(voteArms).toContain('validReviewWhere');
+    expect(voteArms).toContain("'review'");
+    // self-vote exclusion present in every vote sub-arm.
+    expect(voteArms.match(/AND v\.voter != v\.author/g)?.length).toBe(3);
+  });
+
   it('arms 3/4/7/8/9 custom_json arms: each gates on required_posting_auths', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
