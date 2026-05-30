@@ -931,8 +931,40 @@ export async function computeReputationBatch(
           cp.citing_created,
           cp.citing_author = cp.cited_author AS is_self,
           COALESCE(cpr.quality, 1.0) AS review_quality,
+          -- Co-author voter exclusion on the citing paper, mirroring the
+          -- paper_resolved_votes self-exclusion shape exactly. The byte-equality
+          -- clv.voter != cp.citing_author is RETAINED, not subsumed: a citing
+          -- paper may omit its own author from pevo.authors[] (or broadcast a
+          -- malformed/non-array authors field that the inner CASE-WHEN guard
+          -- collapses to '[]'), in which case the canonicalizing NOT EXISTS
+          -- admits zero rows and the author's own upvote would re-enter the
+          -- weighted_upvotes term without the byte-equality conjunct. The
+          -- NOT EXISTS adds the co-author dimension: a confederate listed in
+          -- citing.pevo.authors[].hive upvoting the citing paper would otherwise
+          -- inflate LEAST(weighted_upvotes, 1.0), which multiplies into the
+          -- cited author's citation_value. cp.citing_meta is the citing paper's
+          -- json_metadata carried from citing_papers; canonicalize the
+          -- broadcaster-controlled authors[i].hive via LOWER(TRIM(...)) plus the
+          -- Hive-account charset regex before byte-equality against the
+          -- chain-validated lowercase clv.voter, identical to
+          -- paper_resolved_votes. The jsonb_typeof array guard at the SRF arg
+          -- and the inner object guard are the same cascade-fail defenses as in
+          -- the sibling CTE (a non-array authors collapses to '[]'; bare-string
+          -- entries are rejected, not admitted as co-author identities).
           COALESCE(SUM(vw.vw * ABS(clv.weight) / 10000.0)
-            FILTER (WHERE clv.weight > 0 AND clv.voter != cp.citing_author AND clv.weight != 0), 0
+            FILTER (WHERE clv.weight > 0 AND clv.voter != cp.citing_author AND clv.weight != 0
+              AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(
+                  CASE WHEN jsonb_typeof(cp.citing_meta -> $3 -> 'authors') = 'array'
+                    THEN cp.citing_meta -> $3 -> 'authors'
+                    ELSE '[]'::jsonb
+                  END
+                ) a
+                WHERE jsonb_typeof(a) = 'object'
+                  AND LOWER(TRIM(a ->> 'hive')) ~ '^[a-z0-9.-]+$'
+                  AND LOWER(TRIM(a ->> 'hive')) = clv.voter
+              )
+            ), 0
           ) AS weighted_upvotes
         FROM citing_papers cp
         LEFT JOIN (
