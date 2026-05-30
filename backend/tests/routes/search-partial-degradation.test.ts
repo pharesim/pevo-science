@@ -91,7 +91,8 @@ interface MockQueryResult {
  * dataResult mapping inside `searchReviewsFromHaf` (`author`, `permlink`,
  * `snippet`, `created`, `paper_author`, `paper_permlink`). The route's
  * `type` field is hard-coded to `'review'` by the helper, not derived
- * from the row.
+ * from the row. The `total` field is the window-function `count(*) OVER ()`
+ * value the consolidated data query carries on every row.
  */
 const SYNTHETIC_REVIEW_ROW = {
   author: 'fixture-reviewer',
@@ -100,6 +101,7 @@ const SYNTHETIC_REVIEW_ROW = {
   created: '2026-05-16T00:00:00Z',
   paper_author: 'fixture-paper-author',
   paper_permlink: 'fixture-paper-1',
+  total: 1,
 };
 
 /**
@@ -107,7 +109,9 @@ const SYNTHETIC_REVIEW_ROW = {
  * dataResult mapping inside `searchPapersFromHaf` (`type`, `author`,
  * `permlink`, `title`, `snippet`, `created`). The helper passes the row's
  * `type` through verbatim from the `json_metadata.app_tag_obj.type` SELECT
- * expression; native PEvO papers stamp `paper`.
+ * expression; native PEvO papers stamp `paper`. The `total` field is the
+ * window-function `count(*) OVER ()` value the consolidated data query
+ * carries on every row.
  */
 const SYNTHETIC_PAPER_ROW = {
   type: 'paper',
@@ -116,24 +120,22 @@ const SYNTHETIC_PAPER_ROW = {
   title: 'fixture paper title',
   snippet: 'fixture paper snippet',
   created: '2026-05-16T00:00:00Z',
+  total: 1,
 };
 
 /**
  * Configure `hafQueryMock` so the papers branch throws and the reviews
- * branch returns ONE synthetic row (count = 1, data = 1 row). The route
- * should return reviews-only results with `data.length === 1` AND emit
- * `search.type_all.partial_degradation` with `branch: 'papers'`. The
- * synthetic-row return pins the surviving-branch data-flow: a regression
- * that swapped `paperResult?.rows ?? []` for an unconditional `[]` (i.e.
- * dropping the merge step) would pass the warn-event assertion but fail
- * the `data.length === 1` assertion.
+ * branch returns ONE synthetic row (data carries `count(*) OVER ()` total).
+ * The route should return reviews-only results with `data.length === 1`
+ * AND emit `search.type_all.partial_degradation` with `branch: 'papers'`.
+ * The synthetic-row return pins the surviving-branch data-flow: a
+ * regression that swapped `paperResult?.rows ?? []` for an unconditional
+ * `[]` (i.e. dropping the merge step) would pass the warn-event assertion
+ * but fail the `data.length === 1` assertion.
  */
 function mockPapersBranchThrows(): void {
   hafQueryMock.mockImplementation((sql: string): Promise<MockQueryResult> => {
     if (isReviewsBranchSql(sql)) {
-      if (/count\(\*\)/.test(sql)) {
-        return Promise.resolve({ rows: [{ total: 1 }] });
-      }
       return Promise.resolve({ rows: [SYNTHETIC_REVIEW_ROW] });
     }
     // Papers branch: throw a recognizable error class.
@@ -149,9 +151,6 @@ function mockReviewsBranchThrows(): void {
   hafQueryMock.mockImplementation((sql: string): Promise<MockQueryResult> => {
     if (isReviewsBranchSql(sql)) {
       return Promise.reject(new Error('simulated HAF reviews-branch failure'));
-    }
-    if (/count\(\*\)/.test(sql)) {
-      return Promise.resolve({ rows: [{ total: 1 }] });
     }
     return Promise.resolve({ rows: [SYNTHETIC_PAPER_ROW] });
   });

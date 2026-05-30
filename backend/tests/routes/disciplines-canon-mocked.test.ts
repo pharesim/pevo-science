@@ -491,15 +491,11 @@ describe('per-paper `discipline` response field — canon_name (lowercased) via 
   }
 
   it('GET /api/papers — list mapping lowercases + trims whitespace-padded mixed case to canon', async () => {
-    // Seed both halves of the Promise.all in fetchPapersFromHaf:
-    //   - papers-count query (matched via `count(*)::int AS total`) → 1
-    //   - papers-data query (matched via `LEFT(c.body, 300) AS abstract`) → 1
-    //     row with `pevo.discipline = '  Computer Science  '`. The helper
-    //     should trim + lowercase to `'computer science'`.
+    // Seed the single consolidated papers-data query in fetchPapersFromHaf
+    // (matched via `LEFT(c.body, 300) AS abstract`). The data query now
+    // carries `count(*) OVER ()::int AS total` on every row, so the row
+    // includes a `total` field that the route reads as page total.
     hafQueryMock.mockImplementation(async (sql: string) => {
-      if (sql.includes('count(*)::int AS total')) {
-        return { rows: [{ total: 1 }] };
-      }
       if (sql.includes('LEFT(c.body, 300) AS abstract')) {
         return {
           rows: [{
@@ -514,6 +510,7 @@ describe('per-paper `discipline` response field — canon_name (lowercased) via 
             citation_count: 0,
             avg_rating: 0,
             author_reputation: 0,
+            total: 1,
           }],
         };
       }

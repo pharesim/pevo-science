@@ -104,10 +104,9 @@ describe('GET /api/papers — per-row chain-enrichment failure isolation (integr
     const erroringMeta = buildPaperMeta(['erroring']);
 
     hafQueryMock.mockImplementation(async (sql: string) => {
-      if (sql.includes('count(*)::int AS total')) {
-        return { rows: [{ total: 2 }] };
-      }
       if (sql.includes('LEFT(c.body, 300) AS abstract')) {
+        // Consolidated count+data: every data row carries the window-function
+        // `count(*) OVER ()::int AS total`. Two rows → total = 2 on each.
         return {
           rows: [
             {
@@ -123,6 +122,7 @@ describe('GET /api/papers — per-row chain-enrichment failure isolation (integr
               avg_rating: 0,
               authors_with_supersession: [{ hive: 'sibling', name: null, orcid: null }],
               author_reputation: 0,
+              total: 2,
             },
             {
               author: 'erroring',
@@ -137,6 +137,7 @@ describe('GET /api/papers — per-row chain-enrichment failure isolation (integr
               avg_rating: 0,
               authors_with_supersession: [{ hive: 'erroring', name: null, orcid: null }],
               author_reputation: 0,
+              total: 2,
             },
           ],
         };

@@ -1041,10 +1041,9 @@ async function fetchPapersFromHaf(
   conditions.push(`(c.json_metadata -> ${appTagParam} -> 'continues') IS NULL`);
 
   const where = conditions.join(' AND ');
-  const countParams = [...cteParams, ...filterParams];
 
   // anonParam is only used in SELECT subqueries (review/citation count),
-  // not in WHERE, so it must not be in countParams (PostgreSQL rejects extra bind params).
+  // not in WHERE.
   const anonParam = `$${paramIdx++}`;
   const dataParams = [...cteParams, ...filterParams, config.hiveAnonAccount || ''];
 
@@ -1111,36 +1110,37 @@ async function fetchPapersFromHaf(
     const limitParam = `$${paramIdx++}`;
     const offsetParam = `$${paramIdx++}`;
 
-    const [countResult, dataResult] = await Promise.all([
-      pool.query(
-        `${cte.sql}
-         SELECT count(*)::int AS total FROM ${T.comments} c WHERE ${where}`,
-        countParams,
-      ),
-      pool.query(
-        `${cte.sql}
-         SELECT
-          c.author,
-          c.permlink,
-          c.title,
-          LEFT(c.body, 300) AS abstract,
-          c.json_metadata,
-          c.created,
-          ${voteSelect},
-          ${reviewCountSelect},
-          ${citationCountSelect},
-          ${avgRatingSelect},
-          ${authorsWithSupersessionSelect('c', appTagParam, { includeAffiliation: false })} AS authors_with_supersession,
-          0 AS author_reputation
-        FROM ${T.comments} c
-        WHERE ${where}
-        ORDER BY ${orderBy}
-        LIMIT ${limitParam} OFFSET ${offsetParam}`,
-        [...dataParams, limit, offset],
-      ),
-    ]);
+    // Single-pass count+data via `count(*) OVER ()`: the window function
+    // computes total across all rows matching WHERE in the same scan that
+    // materializes the page, eliminating the prior parallel count query
+    // (and its duplicate `active_accreditations + retracted_papers` CTE
+    // materialization + `accred_ranked` ROW_NUMBER scan). Empty-page case
+    // returns zero rows so `dataResult.rows[0]?.total ?? 0` degrades to 0.
+    // Matches the shape established at `fetchAccreditationsFromHaf`.
+    const dataResult = await pool.query(
+      `${cte.sql}
+       SELECT
+        c.author,
+        c.permlink,
+        c.title,
+        LEFT(c.body, 300) AS abstract,
+        c.json_metadata,
+        c.created,
+        ${voteSelect},
+        ${reviewCountSelect},
+        ${citationCountSelect},
+        ${avgRatingSelect},
+        ${authorsWithSupersessionSelect('c', appTagParam, { includeAffiliation: false })} AS authors_with_supersession,
+        0 AS author_reputation,
+        count(*) OVER ()::int AS total
+      FROM ${T.comments} c
+      WHERE ${where}
+      ORDER BY ${orderBy}
+      LIMIT ${limitParam} OFFSET ${offsetParam}`,
+      [...dataParams, limit, offset],
+    );
 
-    const total = countResult.rows[0]?.total ?? 0;
+    const total = dataResult.rows[0]?.total ?? 0;
     const authors = dataResult.rows.map((r: Record<string, unknown>) => r.author as string);
 
     // Use batch reputation scores only (no on-demand HAF computation).

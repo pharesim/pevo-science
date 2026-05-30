@@ -225,12 +225,10 @@ describe('GET /api/papers/:author/:permlink — ORCID supersession projection', 
 describe('GET /api/papers — ORCID supersession projection on list endpoint', () => {
   it('list response carries orcid_verified + orcid_discrepancy on every author', async () => {
     hafQueryMock.mockImplementation(async (sql: string) => {
-      // count query
-      if (sql.includes('count(*)::int AS total')) {
-        return { rows: [{ total: 1 }] };
-      }
-      // data query — distinguished from the count by the SELECT-clause
-      // referencing the supersession projection
+      // Consolidated data query: distinguished by the SELECT-clause
+      // referencing the supersession projection. The window-function
+      // `count(*) OVER ()::int AS total` carried on each row supplies
+      // the page total.
       if (sql.includes('authors_with_supersession')) {
         return {
           rows: [{
@@ -248,6 +246,7 @@ describe('GET /api/papers — ORCID supersession projection on list endpoint', (
             authors_with_supersession: [
               { name: 'Alice', hive: 'alice', orcid: '0000-0000-0000-0001', affiliation: null, orcid_verified: '0000-0000-0000-0001', orcid_discrepancy: false },
             ],
+            total: 1,
           }],
         };
       }
@@ -266,7 +265,6 @@ describe('GET /api/papers — ORCID supersession projection on list endpoint', (
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
-      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
       return { rows: [] };
     });
     await request(app).get('/api/papers?limit=1');
@@ -368,12 +366,11 @@ describe('hive-account normalization parity across SQL JOIN, computeSupersession
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
-      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
       return { rows: [] };
     });
     // List endpoint
     await request(app).get('/api/papers?limit=1');
-    const listSql = capturedSqls.find((s) => s.includes('authors_with_supersession') && !s.includes('count(*)::int AS total'));
+    const listSql = capturedSqls.find((s) => s.includes('authors_with_supersession'));
     expect(listSql).toBeDefined();
     expect(listSql).toMatch(/LOWER\(TRIM\(a\.elem ->> 'hive'\)\)/);
     expect(listSql).toMatch(/~\s*'\^\[a-z0-9\.-\]\+\$'/);
@@ -423,10 +420,9 @@ describe('hive-account normalization parity across SQL JOIN, computeSupersession
     // response row — proving the wrapper is adopted at the sibling lookup
     // sites (not just the supersession projection).
     hafQueryMock.mockImplementation(async (sql: string) => {
-      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 1 }] };
-      // List-endpoint data SELECT — includes authors_with_supersession and
-      // `c.parent_author = ''`. Discriminator: presence of the projection
-      // column plus the parent_author filter (root posts only).
+      // Consolidated list-endpoint data SELECT — discriminated by the
+      // supersession projection plus the `c.parent_author = ''` root-post
+      // filter. Carries window-function `total` on each row.
       if (sql.includes('authors_with_supersession') && sql.includes("c.parent_author = ''")) {
         return {
           rows: [{
@@ -451,6 +447,7 @@ describe('hive-account normalization parity across SQL JOIN, computeSupersession
               orcid_verified: '0000-0000-0000-AAAA',
               orcid_discrepancy: false,
             }],
+            total: 1,
           }],
         };
       }
@@ -514,7 +511,6 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
-      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
       return { rows: [] };
     });
     await request(app).get('/api/papers?limit=1');
@@ -635,7 +631,6 @@ describe('chain-orcid empty/whitespace parity between SQL BTRIM and JS .trim()',
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
-      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
       return { rows: [] };
     });
     await request(app).get('/api/papers?limit=1');
@@ -724,11 +719,10 @@ describe('affiliation parameterization (PaperSummary omits, PaperDetail retains)
     const capturedSqls: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string) => {
       capturedSqls.push(sql);
-      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
       return { rows: [] };
     });
     await request(app).get('/api/papers?limit=1');
-    const listSql = capturedSqls.find((s) => s.includes('authors_with_supersession') && !s.includes('count(*)::int AS total'));
+    const listSql = capturedSqls.find((s) => s.includes('authors_with_supersession'));
     expect(listSql).toBeDefined();
     expect(listSql).not.toMatch(/'affiliation',\s+a\.elem ->> 'affiliation'/);
   });

@@ -116,34 +116,31 @@ async function searchPapersFromHaf(
   const limitParam = `$${paramIdx++}`;
   const offsetParam = `$${paramIdx++}`;
 
-  const [countResult, dataResult] = await Promise.all([
-    pool.query(
-      `${cte.sql}
-       SELECT count(*)::int AS total
-       FROM ${T.comments} c
-       WHERE ${where}
-         AND ${textMatch}`,
-      [...params, ilikePattern],
-    ),
-    pool.query(
-      `${cte.sql}
-       SELECT
-        (c.json_metadata -> ${appTagParam} ->> 'type') AS type,
-        c.author,
-        c.permlink,
-        c.title,
-        ${snippetExpr} AS snippet,
-        c.created
-       FROM ${T.comments} c
-       WHERE ${where}
-         AND ${textMatch}
-       ORDER BY ${orderBy}
-       LIMIT ${limitParam} OFFSET ${offsetParam}`,
-      [...params, ilikePattern, limit, offset],
-    ),
-  ]);
+  // Single-pass count+data via `count(*) OVER ()`: eliminates the prior
+  // parallel count query that re-materialized the
+  // `active_accreditations + retracted_papers` CTEs and re-scanned the
+  // `accred_ranked` ROW_NUMBER set. Empty-result page returns zero rows so
+  // `dataResult.rows[0]?.total ?? 0` degrades to 0. Matches the shape
+  // established at `fetchAccreditationsFromHaf`.
+  const dataResult = await pool.query(
+    `${cte.sql}
+     SELECT
+      (c.json_metadata -> ${appTagParam} ->> 'type') AS type,
+      c.author,
+      c.permlink,
+      c.title,
+      ${snippetExpr} AS snippet,
+      c.created,
+      count(*) OVER ()::int AS total
+     FROM ${T.comments} c
+     WHERE ${where}
+       AND ${textMatch}
+     ORDER BY ${orderBy}
+     LIMIT ${limitParam} OFFSET ${offsetParam}`,
+    [...params, ilikePattern, limit, offset],
+  );
 
-  const total = countResult.rows[0]?.total ?? 0;
+  const total = dataResult.rows[0]?.total ?? 0;
   const rows: SearchRow[] = dataResult.rows.map((r: Record<string, unknown>) => ({
     type: r.type as string,
     author: r.author as string,
@@ -228,38 +225,33 @@ async function searchReviewsFromHaf(
   // prior ` p ON ` substring match) because it's emitted from the helper
   // itself rather than inferred from the rendered SQL shape.
   const branchSentinel = '/* search.reviews.branch */';
-  const [countResult, dataResult] = await Promise.all([
-    pool.query(
-      `${branchSentinel}
-       ${cte.sql}
-       SELECT count(*)::int AS total
-       FROM ${T.comments} c
-       ${parentJoin}
-       WHERE ${where}
-         AND ${textMatch}`,
-      [...params, ilikePattern],
-    ),
-    pool.query(
-      `${branchSentinel}
-       ${cte.sql}
-       SELECT
-        c.author,
-        c.permlink,
-        ${snippetExpr} AS snippet,
-        c.created,
-        c.parent_author AS paper_author,
-        c.parent_permlink AS paper_permlink
-       FROM ${T.comments} c
-       ${parentJoin}
-       WHERE ${where}
-         AND ${textMatch}
-       ORDER BY ${orderBy}
-       LIMIT ${limitParam} OFFSET ${offsetParam}`,
-      [...params, ilikePattern, limit, offset],
-    ),
-  ]);
+  // Single-pass count+data via `count(*) OVER ()`: eliminates the prior
+  // parallel count query that re-materialized the `active_accreditations`
+  // CTE and re-evaluated the parent-paper JOIN + accreditation gate. Empty-
+  // result page returns zero rows so `dataResult.rows[0]?.total ?? 0`
+  // degrades to 0. Matches the shape established at
+  // `fetchAccreditationsFromHaf`.
+  const dataResult = await pool.query(
+    `${branchSentinel}
+     ${cte.sql}
+     SELECT
+      c.author,
+      c.permlink,
+      ${snippetExpr} AS snippet,
+      c.created,
+      c.parent_author AS paper_author,
+      c.parent_permlink AS paper_permlink,
+      count(*) OVER ()::int AS total
+     FROM ${T.comments} c
+     ${parentJoin}
+     WHERE ${where}
+       AND ${textMatch}
+     ORDER BY ${orderBy}
+     LIMIT ${limitParam} OFFSET ${offsetParam}`,
+    [...params, ilikePattern, limit, offset],
+  );
 
-  const total = countResult.rows[0]?.total ?? 0;
+  const total = dataResult.rows[0]?.total ?? 0;
   const rows: SearchRow[] = dataResult.rows.map((r: Record<string, unknown>) => ({
     type: 'review',
     author: r.author as string,
