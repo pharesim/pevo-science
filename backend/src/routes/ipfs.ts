@@ -19,19 +19,39 @@ const ipfsUploadLimiter = rateLimit({ name: 'ipfs-upload', windowMs: 60 * 60_000
 
 const router = Router();
 
+// Defense-in-depth headers on every /api/ipfs/* response. The gateway proxies
+// arbitrary pinned bytes, so even with the Content-Type allow-list below these
+// reinforce isolation: `Content-Security-Policy: sandbox` (no allow-tokens)
+// drops the response into an opaque origin so even a text/html body cannot read
+// the parent origin's localStorage (light-account keys) or call same-origin
+// APIs; `nosniff` stops a forced octet-stream from being MIME-sniffed back into
+// HTML; `Cross-Origin-Resource-Policy: same-site` limits cross-site embedding.
+// Set per-route so the guarantee survives any future reordering of the global
+// helmet config. Harmless on the JSON upload response (JSON is not a document).
+router.use((_req, res, next) => {
+  res.setHeader('Content-Security-Policy', 'sandbox');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  next();
+});
+
 const MAX_FILE_SIZE = config.maxUploadSize;
 
 // ──────────────────────────────────────────────
 // Accepted MIME types and magic bytes validation
 // ──────────────────────────────────────────────
 
+// SVG is intentionally excluded: it is an XML document the browser parses as a
+// scriptable document (inline <script>, <foreignObject>, event-handler attrs,
+// javascript: hrefs), and the substring magic-byte check could not strip those.
+// Rejecting it on upload removes the scriptable-supplementary-file class
+// entirely rather than trying to sanitize it.
 const ACCEPTED_MIMES = new Set([
   'application/pdf',
   'image/png',
   'image/jpeg',
   'image/gif',
   'image/webp',
-  'image/svg+xml',
   'text/csv',
   'application/zip',
 ]);
@@ -48,14 +68,6 @@ function validateMagicBytes(buffer: Buffer, mimetype: string): boolean {
       return buffer.length >= 4 && buffer.subarray(0, 4).toString('ascii') === 'GIF8';
     case 'image/webp':
       return buffer.length >= 12 && buffer.subarray(8, 12).toString('ascii') === 'WEBP';
-    case 'image/svg+xml': {
-      // Strip BOM if present, check for <svg in first 1024 bytes
-      let head = buffer.subarray(0, Math.min(1024, buffer.length));
-      if (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) {
-        head = head.subarray(3);
-      }
-      return head.toString('utf8').includes('<svg');
-    }
     case 'application/zip':
       return buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04;
     case 'text/csv':
@@ -65,7 +77,40 @@ function validateMagicBytes(buffer: Buffer, mimetype: string): boolean {
   }
 }
 
-const ACCEPTED_TYPES_MSG = 'Accepted file types: PDF, PNG, JPEG, GIF, WebP, SVG, CSV, ZIP';
+const ACCEPTED_TYPES_MSG = 'Accepted file types: PDF, PNG, JPEG, GIF, WebP, CSV, ZIP';
+
+// MIME types the download gateway is willing to serve with their advertised
+// Content-Type. Anything outside this set (text/html, image/svg+xml,
+// application/javascript, application/xhtml+xml, ...) is forced to an inert
+// octet-stream attachment so a pinned CID cannot execute script under the SPA's
+// origin. Mirrors ACCEPTED_MIMES minus SVG (scriptable) — the upload path no
+// longer accepts SVG, but an externally-pinned CID reached via a chain
+// reference could still advertise it upstream.
+const GATEWAY_SAFE_MIMES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'text/csv',
+  'application/zip',
+]);
+
+// Decide the Content-Type the gateway serves for a proxied response. The bare
+// MIME (charset/params stripped) must be in GATEWAY_SAFE_MIMES to pass through;
+// anything else is served as an inert octet-stream attachment so a pinned
+// HTML/SVG/JS CID cannot execute script under the SPA's origin. Exported for
+// direct unit testing of the allow-list decision.
+export function gatewaySafeContentType(
+  rawContentType: string | null,
+  cid: string,
+): { contentType: string; disposition?: string } {
+  const bareMime = (rawContentType || '').split(';')[0].trim().toLowerCase();
+  if (bareMime && GATEWAY_SAFE_MIMES.has(bareMime)) {
+    return { contentType: rawContentType as string };
+  }
+  return { contentType: 'application/octet-stream', disposition: `attachment; filename="${cid}"` };
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -338,7 +383,11 @@ async function cidIsKnown(cid: string): Promise<boolean> {
   const pool = getPool();
   if (!pool) return false;
 
-  return cidReferencedByAppTag(pool, cid);
+  // Gateway path requires the referencing comment's author to be accredited, so
+  // a free unaccredited Hive account cannot whitelist an arbitrary
+  // externally-pinned CID into the gateway. The pending-row short-circuit above
+  // still serves a freshly-uploaded (accredited) CID before it lands on chain.
+  return cidReferencedByAppTag(pool, cid, { requireAccreditedAuthor: true });
 }
 
 router.get('/:cid', ipfsDownloadLimiter, async (req: Request, res: Response) => {
@@ -370,8 +419,12 @@ router.get('/:cid', ipfsDownloadLimiter, async (req: Request, res: Response) => 
       });
 
       if (upstream.ok && upstream.body) {
-        const contentType = upstream.headers.get('content-type');
-        if (contentType) res.setHeader('Content-Type', contentType);
+        // Content-Type allow-list: pass the upstream type through only if its
+        // bare MIME is script-execution-safe; otherwise serve an inert
+        // octet-stream attachment (defense-in-depth with the CSP sandbox above).
+        const served = gatewaySafeContentType(upstream.headers.get('content-type'), cid);
+        res.setHeader('Content-Type', served.contentType);
+        if (served.disposition) res.setHeader('Content-Disposition', served.disposition);
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
 
         const reader = upstream.body.getReader();

@@ -50,3 +50,30 @@ Layered fix — any single control would close the highest-impact path, but all 
 - MDN: `Content-Security-Policy: sandbox` directive (opaque-origin semantics).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend implementation note (2026-05-30)
+
+Landed all four controls. Two items for the architect at review:
+
+**[TODO Architect] `api-contracts/ipfs.md` contract updates.** Two behavioral
+changes affect the documented IPFS surface:
+1. **Upload no longer accepts SVG.** `image/svg+xml` was dropped from the
+   accepted MIME set (control 4, reject-not-sanitize). The accepted-types list
+   in the contract (and the `POST /api/ipfs/upload` 422 message, now "PDF, PNG,
+   JPEG, GIF, WebP, CSV, ZIP") should drop SVG.
+2. **`GET /api/ipfs/:cid` now serves non-allow-listed upstream MIME types as
+   `application/octet-stream` with `Content-Disposition: attachment`, and sets
+   `Content-Security-Policy: sandbox`, `X-Content-Type-Options: nosniff`, and
+   `Cross-Origin-Resource-Policy: same-site` on every response.** If the contract
+   documents response headers / content-type behavior for the gateway, note this.
+
+**Deviation from the fix sketch (control 3, intentional).** The task said to
+extend `cidReferencedByAppTag` to require an accredited author. That function is
+shared with the orphan-cleanup job (`ipfs-cleanup.ts`), where tightening the
+in-use predicate would unpin a live on-chain-referenced file once its author
+lost accreditation — irreversible, and the file's own docblock forbids
+under-inclusiveness on the cleanup side. So the accreditation gate is opt-in via
+a new `requireAccreditedAuthor` parameter that ONLY the gateway's `cidIsKnown`
+passes; the cleanup path keeps the byte-identical `$1..$4` query. This satisfies
+the task's "existing pin-lifecycle logic stays as-is" out-of-scope clause while
+closing the gateway-whitelisting hole.

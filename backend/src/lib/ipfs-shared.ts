@@ -10,7 +10,7 @@
 
 import type pg from 'pg';
 import { config } from '../config.js';
-import { T } from '../hafsql.js';
+import { T, activeAccreditationsCteBody } from '../hafsql.js';
 
 export type PinBackend = 'kubo' | 'pinata';
 
@@ -135,23 +135,55 @@ export function imageSrfGuardExpr(alias: string): string {
  *
  * Returns false when the HAF pool is unavailable so callers can layer their own
  * pre-checks (the gateway's Redis + pending-row short-circuit) ahead of this.
+ *
+ * **`requireAccreditedAuthor` is gateway-only.** When set, the containment scan
+ * additionally requires the referencing comment's author to be currently
+ * accredited (joined against `active_accreditations`). The gateway's
+ * `cidIsKnown` passes it so a free unaccredited Hive account cannot whitelist an
+ * arbitrary externally-pinned CID by broadcasting an appTag-tagged comment that
+ * names the CID. It is deliberately NOT set on the cleanup path: tightening the
+ * in-use check there would treat a live on-chain-referenced file as unreferenced
+ * once its author lost (or never held) accreditation and unpin it irreversibly —
+ * the asymmetric-cost rule above (over-inclusive beats under-inclusive on the
+ * cleanup side). With the flag unset the emitted SQL and its `$1..$4` parameters
+ * are byte-identical to the prior cleanup-path query.
  */
-export async function cidReferencedByAppTag(pool: pg.Pool, cid: string): Promise<boolean> {
+export async function cidReferencedByAppTag(
+  pool: pg.Pool,
+  cid: string,
+  opts: { requireAccreditedAuthor?: boolean } = {},
+): Promise<boolean> {
   const appTag = config.appTag;
 
+  // When the accreditation gate is requested, prepend the shared
+  // active-accreditations CTE (params $1,$2) and shift the containment params
+  // after it. When it is not, the CTE/predicate collapse to empty and the
+  // containment params stay at $1..$4 exactly as the cleanup path expects.
+  const accred = opts.requireAccreditedAuthor ? activeAccreditationsCteBody(1) : null;
+  const withClause = accred ? `WITH ${accred.sql}` : '';
+  const accredPredicate = accred ? 'AND c.author IN (SELECT account FROM active_accreditations)' : '';
+  const base = accred ? accred.params.length : 0;
+  const tagsP = base + 1;
+  const cidMetaP = base + 2;
+  const suppP = base + 3;
+  const cidLikeP = base + 4;
+
   const result = await pool.query(
-    `SELECT 1 FROM ${T.comments} c
-     WHERE c.tags @> $1::jsonb
+    `${withClause}
+     SELECT 1 FROM ${T.comments} c
+     WHERE c.tags @> $${tagsP}::jsonb
+       ${accredPredicate}
        AND (
-            c.json_metadata @> $2::jsonb
-         OR c.json_metadata @> $3::jsonb
+            c.json_metadata @> $${cidMetaP}::jsonb
+         OR c.json_metadata @> $${suppP}::jsonb
          OR EXISTS (
               SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
-              WHERE img LIKE '%' || $4 || '%'
+              WHERE img LIKE '%' || $${cidLikeP} || '%'
             )
        )
      LIMIT 1`,
     [
+      ...(accred ? accred.params : []),
       JSON.stringify([appTag]),
       JSON.stringify({ [appTag]: { ipfs_cid: cid } }),
       JSON.stringify({ [appTag]: { supplementary_files: [{ cid }] } }),
