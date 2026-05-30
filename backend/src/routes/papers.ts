@@ -3726,7 +3726,48 @@ router.post('/:author/:permlink/retract', validateRetractParams, verifyHiveSigna
 
 const VALID_CITE_FORMATS = new Set(['bibtex', 'ris', 'apa']);
 
-function generateBibtex(detail: Record<string, unknown>): string {
+/**
+ * Escape a free-form chain-sourced string for safe interpolation into a BibTeX
+ * `@article{...}` field value. BibTeX/TeX treats `{` `}` as grouping, `\` as an
+ * escape introducer, and `#$%&_^~` as specials; an un-escaped `}` (or a smuggled
+ * `} @article{evil,...`) closes the entry early and lets an attacker-controlled
+ * title forge additional records. CR/LF are flattened to a space since field
+ * values are written one-per-line. Backslash is rewritten first so the escape
+ * sequences this helper introduces are not themselves re-escaped.
+ */
+export function bibtexEscape(s: string): string {
+  // Flatten line terminators first, then escape every metacharacter in a SINGLE
+  // pass. A multi-pass approach (backslash -> braces -> specials) re-processes
+  // the braces this helper itself emits for `\textbackslash{}`, double-escaping
+  // them into `\textbackslash\{\}`. One pass over the original string avoids
+  // touching any character the replacement introduces.
+  return s.replace(/[\r\n]+/g, ' ').replace(/[\\{}#$%&_^~]/g, (c) => {
+    if (c === '\\') return '\\textbackslash{}';
+    return `\\${c}`;
+  });
+}
+
+/**
+ * Escape a free-form chain-sourced string for a single RIS line. RIS is strictly
+ * line-oriented (`XX  - value`) with no quoting mechanism, so any embedded CR/LF
+ * would split one field into multiple records or inject attacker-crafted tag
+ * lines (`AU  - Fake`, `ER  -`). Stripping line terminators to spaces is the only
+ * safe option; trailing/leading whitespace is trimmed for a clean record.
+ */
+export function risEscape(s: string): string {
+  return s.replace(/[\r\n]+/g, ' ').trim();
+}
+
+/**
+ * Flatten a free-form chain-sourced string to a single line for plain-text
+ * citation output (APA). Prevents a CR/LF in a title or author name from
+ * breaking the one-line citation into multiple lines.
+ */
+export function singleLine(s: string): string {
+  return s.replace(/[\r\n]+/g, ' ').trim();
+}
+
+export function generateBibtex(detail: Record<string, unknown>): string {
   const author = detail.author as string;
   const title = detail.title as string;
   const created = detail.created as string;
@@ -3740,18 +3781,21 @@ function generateBibtex(detail: Record<string, unknown>): string {
     : author;
   const doi = (detail as Record<string, unknown>).doi as string | undefined;
 
-  let bib = `@article{${key},\n`;
-  bib += `  title = {${title}},\n`;
-  bib += `  author = {${authorStr}},\n`;
+  // The cite key is composed from a Hive username, a [a-z]-sanitized title word,
+  // and a numeric year, so it cannot already contain BibTeX-breaking chars; the
+  // escape is a defensive backstop in case any component widens.
+  let bib = `@article{${bibtexEscape(key)},\n`;
+  bib += `  title = {${bibtexEscape(title)}},\n`;
+  bib += `  author = {${bibtexEscape(authorStr)}},\n`;
   bib += `  year = {${year}},\n`;
   bib += `  publisher = {PEvO (Publish and Evaluate Onchain)},\n`;
   bib += `  url = {https://pevo.science/papers/${author}/${detail.permlink}}`;
-  if (doi) bib += `,\n  doi = {${doi}}`;
+  if (doi) bib += `,\n  doi = {${bibtexEscape(doi)}}`;
   bib += `\n}`;
   return bib;
 }
 
-function generateRis(detail: Record<string, unknown>): string {
+export function generateRis(detail: Record<string, unknown>): string {
   const author = detail.author as string;
   const title = detail.title as string;
   const created = detail.created as string;
@@ -3762,22 +3806,22 @@ function generateRis(detail: Record<string, unknown>): string {
 
   const lines: string[] = [
     'TY  - JOUR',
-    `TI  - ${title}`,
+    `TI  - ${risEscape(title)}`,
   ];
   if (authors.length > 0) {
-    for (const a of authors) lines.push(`AU  - ${a.name}`);
+    for (const a of authors) lines.push(`AU  - ${risEscape(a.name)}`);
   } else {
     lines.push(`AU  - ${author}`);
   }
   lines.push(`PY  - ${year}`);
   lines.push('PB  - PEvO (Publish and Evaluate Onchain)');
   lines.push(`UR  - https://pevo.science/papers/${author}/${detail.permlink}`);
-  if (doi) lines.push(`DO  - ${doi}`);
+  if (doi) lines.push(`DO  - ${risEscape(doi)}`);
   lines.push('ER  - ');
   return lines.join('\n');
 }
 
-function generateApa(detail: Record<string, unknown>): string {
+export function generateApa(detail: Record<string, unknown>): string {
   const author = detail.author as string;
   const title = detail.title as string;
   const created = detail.created as string;
@@ -3786,10 +3830,10 @@ function generateApa(detail: Record<string, unknown>): string {
   const authors = (pevo.authors || []) as Array<{ name: string }>;
 
   const authorStr = authors.length > 0
-    ? authors.map((a) => a.name).join(', ')
+    ? authors.map((a) => singleLine(a.name)).join(', ')
     : author;
 
-  return `${authorStr} (${year}). ${title}. PEvO (Publish and Evaluate Onchain). https://pevo.science/papers/${author}/${detail.permlink}`;
+  return `${singleLine(authorStr)} (${year}). ${singleLine(title)}. PEvO (Publish and Evaluate Onchain). https://pevo.science/papers/${author}/${detail.permlink}`;
 }
 
 router.get('/:author/:permlink/cite', async (req: Request, res: Response) => {
