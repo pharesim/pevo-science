@@ -80,14 +80,15 @@ async function loadWotThreshold(): Promise<number> {
     await client.query('SET LOCAL statement_timeout = 5000');
 
     const result = await client.query(
-      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- loadWotThreshold: single-row latest-`update_params` read further narrowed by `json ->> 'action' = 'update_params'`, bounded by a 5s LOCAL statement_timeout, and cached for the WoT-threshold TTL; pending audit per the BitmapAnd-floor sweep follow-up
+      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- loadWotThreshold: single-row latest-`update_params` read further narrowed by `json ->> 'action' = 'update_params'` and the `required_posting_auths ?|` accreditation-authority signer gate, bounded by a 5s LOCAL statement_timeout, and cached for the WoT-threshold TTL; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT json FROM ${T.customJson}
        WHERE custom_id = $1
          AND json::jsonb ->> 'action' = 'update_params'
+         AND required_posting_auths ?| $3::text[]
          AND block_num >= $2
        ORDER BY block_num DESC
        LIMIT 1`,
-      [config.appTag, getCachedGenesisBlock()],
+      [config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
     );
     await client.query('COMMIT');
     client.release();
@@ -98,7 +99,13 @@ async function loadWotThreshold(): Promise<number> {
       ? JSON.parse(result.rows[0].json)
       : result.rows[0].json;
 
-    return payload.params?.min_accreditations_for_wot ?? DEFAULT_WOT_THRESHOLD;
+    // `??` only short-circuits null/undefined: a `min_accreditations_for_wot`
+    // of 0 (or a non-integer string from a malformed broadcast) would otherwise
+    // pass through and, at threshold 0, auto-accredit every account on its
+    // first vouch. Require a positive integer; fall back to the default
+    // otherwise.
+    const n = payload.params?.min_accreditations_for_wot;
+    return Number.isInteger(n) && n >= 1 ? n : DEFAULT_WOT_THRESHOLD;
   } catch (err) {
     if (client) {
       await client.query('ROLLBACK').catch(() => {});
