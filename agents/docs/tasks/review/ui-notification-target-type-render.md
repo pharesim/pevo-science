@@ -42,3 +42,32 @@ Prefer the ingestion-normalization approach if other snake_case fields are (or w
 - `backend/src/notification-queries.ts` — `NewVoteEvent` (`target_type: 'paper' | 'review'`) and the `new_vote` handler.
 - `agents/docs/api-contracts/notifications.md` — `new_vote` event contract.
 - Surfaced by architect `/ce-code-review` run `20260530-141618`.
+
+## UI completion note (2026-05-30)
+
+Core fix landed: `formatNotification` now reads `event.target_type` (both the
+`new_vote` case and the generic branch). Local-read approach chosen over
+ingestion-normalization, confirmed safe: the notifications dropdown
+(`index.html`, `x-text="formatNotification(event)"`) builds no links from
+`target_author`/`target_permlink` (criterion #3 named-field audit clean), and
+full snake→camel normalization would have broken the existing `block_num` /
+`permlink` snake reads in the store. Tests feed the real snake_case wire shape
+and were confirmed to fail against the pre-fix source.
+
+Audit (criterion #3) surfaced two further same-class wire-field mismatches in
+notification handling; both folded into this task with user approval:
+
+1. **`paper_title` (render):** the generic branch read `event.title`, but
+   `NewReviewEvent` / `NewCitationEvent` emit `paper_title` — so `new_review` /
+   `new_citation` rendered an empty paper title. Now reads `event.paper_title`;
+   `new_review` + `new_citation` tests assert the title renders.
+2. **per-type permlink (dedup):** the store dedup key read `e.permlink`, absent
+   on `new_vote` (`target_permlink`), `new_citation` (`citing_permlink`), and
+   `claim_*` (`paper_permlink`) events, so the key dropped its discriminator and
+   could over-dedup distinct same-block, same-actor events. The key now falls
+   through the per-type permlink fields; a test asserts two same-block votes on
+   different targets are both kept.
+
+No i18n keys added/changed (existing placeholders reused), so no `STUBS.md`
+entry. No contract change: `notifications.md` already documents the correct wire
+shape; the frontend was the side out of sync.

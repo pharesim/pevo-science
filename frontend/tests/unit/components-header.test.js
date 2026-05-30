@@ -76,22 +76,40 @@ describe('header', () => {
       expect(comp.formatNotification({})).toBe('');
     });
 
-    it('formats new_vote with positive weight', () => {
+    // Backend NewVoteEvent emits the noun as snake_case `target_type` (paper|review)
+    // and the notifications store ingests events verbatim, so formatNotification must
+    // read the snake_case wire field. These feed the real wire shape; reading a
+    // camelCase alias would drop the noun and render "endorsed your " (empty noun).
+    it('formats new_vote (paper) with positive weight and renders the noun', () => {
       const comp = createComponent();
-      const result = comp.formatNotification({ type: 'new_vote', weight: 100, actor: 'bob', targetType: 'paper' });
+      const result = comp.formatNotification({ type: 'new_vote', weight: 100, actor: 'bob', target_type: 'paper' });
       expect(result).toContain('notifications.newVote');
+      expect(result).toContain('paper');
     });
 
-    it('formats new_vote with negative weight as downvote', () => {
+    it('formats new_vote (review) with negative weight as downvote and renders the noun', () => {
       const comp = createComponent();
-      const result = comp.formatNotification({ type: 'new_vote', weight: -100, actor: 'bob', targetType: 'paper' });
+      const result = comp.formatNotification({ type: 'new_vote', weight: -100, actor: 'bob', target_type: 'review' });
       expect(result).toContain('notifications.newDownvote');
+      expect(result).toContain('review');
     });
 
-    it('formats new_review', () => {
+    // new_review / new_citation interpolate the paper title from the snake_case
+    // wire field `paper_title` (NewReviewEvent / NewCitationEvent). Feeding the
+    // real wire shape catches a wrong-field-name alias that would render an
+    // empty title.
+    it('formats new_review and renders the paper title', () => {
       const comp = createComponent();
-      const result = comp.formatNotification({ type: 'new_review', actor: 'bob', title: 'Paper' });
+      const result = comp.formatNotification({ type: 'new_review', actor: 'bob', paper_title: 'Plasticity' });
       expect(result).toContain('notifications.newReview');
+      expect(result).toContain('Plasticity');
+    });
+
+    it('formats new_citation and renders the paper title', () => {
+      const comp = createComponent();
+      const result = comp.formatNotification({ type: 'new_citation', actor: 'bob', paper_title: 'Plasticity' });
+      expect(result).toContain('notifications.newCitation');
+      expect(result).toContain('Plasticity');
     });
 
     it('formats accreditation_update grant', () => {

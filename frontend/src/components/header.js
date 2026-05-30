@@ -84,7 +84,7 @@ export function initHeader() {
         const key = event.weight < 0 ? 'notifications.newDownvote' : 'notifications.newVote';
         return this.$t(key, {
           actor: event.actor || '',
-          targetType: event.targetType || '',
+          targetType: event.target_type || '',
         });
       }
       const typeMap = {
@@ -103,8 +103,8 @@ export function initHeader() {
       if (!key) return event.type;
       return this.$t(key, {
         actor: event.actor || '',
-        title: event.title || '',
-        targetType: event.targetType || '',
+        title: event.paper_title || '',
+        targetType: event.target_type || '',
         relationship: event.relationship || '',
       });
     },

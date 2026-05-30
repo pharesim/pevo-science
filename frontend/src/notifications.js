@@ -92,7 +92,16 @@ export function initNotifications() {
             const merged = [...batch.events, ...this.events];
             const seen = new Set();
             this.events = merged.filter((e) => {
-              const key = `${e.block_num}_${e.type}_${'actor' in e ? e.actor : 'system'}_${e.permlink || ''}`;
+              const actor = 'actor' in e ? e.actor : 'system';
+              // Events carry their target's permlink under different keys by type
+              // (new_review/new_reply: permlink; new_vote: target_permlink;
+              // new_citation: citing_permlink; claim_*: paper_permlink). Fall
+              // through the known fields so the dedup key keeps a per-target
+              // discriminator instead of collapsing distinct same-block,
+              // same-actor events of these types into one.
+              const permlink = e.permlink || e.target_permlink
+                || e.citing_permlink || e.paper_permlink || '';
+              const key = `${e.block_num}_${e.type}_${actor}_${permlink}`;
               if (seen.has(key)) return false;
               seen.add(key);
               return true;

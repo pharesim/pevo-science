@@ -213,6 +213,28 @@ describe('notifications store', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(store.events.length).toBe(1);
     });
+
+    // new_vote events carry no top-level `permlink` (the target is under
+    // `target_permlink`), so the dedup key must read the per-type permlink field
+    // to keep two same-block, same-actor votes on different targets distinct.
+    it('keeps distinct new_vote events that differ only by target_permlink', async () => {
+      const events = [
+        { block_num: 7, type: 'new_vote', actor: 'a', target_permlink: 'paper-one', target_type: 'paper', weight: 100 },
+        { block_num: 7, type: 'new_vote', actor: 'a', target_permlink: 'paper-two', target_type: 'paper', weight: 100 },
+      ];
+      mockFetchNotifications.mockResolvedValue({ status: 'ok', data: { events, latest_block: 7 } });
+      store.start('alice');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.events.length).toBe(2);
+    });
+
+    it('still deduplicates new_vote events with the same target_permlink', async () => {
+      const ev = { block_num: 7, type: 'new_vote', actor: 'a', target_permlink: 'paper-one', target_type: 'paper', weight: 100 };
+      mockFetchNotifications.mockResolvedValue({ status: 'ok', data: { events: [ev, ev], latest_block: 7 } });
+      store.start('alice');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.events.length).toBe(1);
+    });
   });
 
   describe('generation guard', () => {
