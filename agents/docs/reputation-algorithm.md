@@ -356,11 +356,20 @@ target_users AS (
 ),
 
 -- ── Reference timestamp from cycle_end_block ────────────────────
--- Used for age-based decay. No NOW() or time functions.
+-- Used for age-based decay. No NOW() or time functions. Resolve the most
+-- recent block at or before the cycle's last block rather than an exact
+-- equality: an exact match returns zero rows whenever the cycle's end block
+-- has not been produced yet, which would collapse every CROSS JOIN cycle_ref
+-- arm (papers / reviews / citations) to NULL. The bounded descending
+-- single-row form always yields the latest existing block, so a stray
+-- in-progress end block degrades to scoring against the latest block instead
+-- of zeroing out.
 cycle_ref AS (
   SELECT b.timestamp AS ref_ts
   FROM hafsql.haf_blocks b
-  WHERE b.block_num = $6 - 1
+  WHERE b.block_num <= $6 - 1
+  ORDER BY b.block_num DESC
+  LIMIT 1
 ),
 
 -- ── Previous cycle scores (jsonb → table) ───────────────────────
