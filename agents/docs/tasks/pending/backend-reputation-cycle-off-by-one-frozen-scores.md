@@ -61,3 +61,23 @@ Both arms landed as specified.
 **Verification:** new file 2/2 passed; existing reputation suite green (`reputation-batch-internals`, `reputation-lifecycle`, `reputation-approve-signer-gate-cycle-sql-shape`, `reputation-prefix`, `reputation-paper-reviews-self-exclusion-canary` → 29/29); `npm run typecheck` clean; `npm run lint` clean except the pre-existing unrelated `author-supersession.ts` warning.
 
 Note: findings #2 (co-author claim zero-score) and #10 (SQL error silent advance) remain independent follow-ups; the `Cannot use a pool after calling end on the pool` errors visible in the `reputation-prefix` real-HAF log are that test's own post-teardown `runBatchComputation` call hitting the silent-swallow catch (#10's target), unrelated to this change.
+
+## Architect re-review (2026-05-31) — HELD PENDING FIXES (1 item)
+
+`/ce-code-review` (correctness + adversarial on Opus; testing, maintainability, project-standards, performance, kieran-typescript, reliability on Sonnet; learnings-researcher unstructured; ce-agent-native-reviewer skipped per PEvO) on the cycle-off-by-one commit. The core fix is verified CORRECT: the `cycleEndBlock > headBlock` break scores only fully-elapsed cycles and sits before the empty-user no-op advance, so an in-progress cycle can advance `cycle:last` through neither path; the boundary math is exact (`>` correctly admits the `cycleEndBlock == headBlock` elapsed cycle and skips only the in-progress one); the `cycle_ref` `<= $6 - 1 ORDER BY block_num DESC LIMIT 1` form resolves the identical block as the old equality for any elapsed cycle (no historical score shift) and degrades to latest-block instead of zero rows for a stray in-progress end block; the new query is a backward index scan on the blocks PK (no perf regression); `break` is valid because the loop is monotonic. One item holds.
+
+### Item held (must fix before archive)
+
+1. (P3, testing) Arm 2's `cycle_ref` SQL-shape canary asserts the predicate uses `<=` and `ORDER BY ... DESC`, and that the fragile exact `= $6 - 1` is absent, but it does NOT assert `LIMIT 1` is present. A regression that drops only `LIMIT 1` (keeping the other two tokens) would make `cycle_ref` return every block at or before the cycle end, turning the three `CROSS JOIN cycle_ref` arms into a Cartesian product and silently corrupting every score — and Arm 2 would still pass. Add an assertion that the emitted cycle query includes the single-row `LIMIT 1` clause (alongside the existing `<=` / `ORDER BY ... DESC` token assertions) so the single-row guarantee is pinned. Anchor the assertion on the SQL token, not a line number.
+
+### Items noted, not held (no action required)
+
+- **(project-standards, P2) Carve-out clause (c) wording ("which neither companion covers") — DISMISSED as a false positive.** This is the strict-mirror reading explicitly dismissed by `solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`. Clause (c) is risk-class equivalence: a complementary real-path companion that exercises the integrated path with real infra and catches a different mutation axis. The named companions (real-HAF `computeReputationBatch` in `reputation-lifecycle.test.ts`, real-Redis atomic swap in `reputation-batch-internals.test.ts`) satisfy that, and `reputation-prefix.test.ts` already exercises the boundary decision against live chain. No change required.
+- **(correctness/adversarial/testing) Exact-boundary `cycleEndBlock == headBlock` not pinned by an executed assertion — dismissed.** The math is mechanically proven and the live-HAF run exercises real geometry.
+- **(reliability, P2, pre-existing) `getHeadBlock` lacks a per-query `statement_timeout`** — filed as a separate follow-up task (`backend-reputation-gethead-statement-timeout`), out of scope here.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next architect review scopes `/ce-code-review` to the fix commit only.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
