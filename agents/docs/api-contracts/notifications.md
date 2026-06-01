@@ -74,6 +74,28 @@ Fetch notification events for the authenticated user since a given Hive block nu
       "parent_author": "scientist1",
       "parent_permlink": "re-neural-network-comment-1",
       "permlink": "re-neural-network-comment-2"
+    },
+    {
+      "type": "claim_pending",
+      "block_num": 82345950,
+      "timestamp": "2026-03-25T14:42:00Z",
+      "actor": "scientist6",
+      "paper_author": "scientist1",
+      "paper_permlink": "neural-network-plasticity-2026"
+    },
+    {
+      "type": "claim_approved",
+      "block_num": 82346000,
+      "timestamp": "2026-03-25T14:45:00Z",
+      "paper_author": "scientist1",
+      "paper_permlink": "neural-network-plasticity-2026"
+    },
+    {
+      "type": "claim_revoked",
+      "block_num": 82346010,
+      "timestamp": "2026-03-25T14:46:00Z",
+      "paper_author": "scientist1",
+      "paper_permlink": "neural-network-plasticity-2026"
     }
   ],
   "latest_block": 82345900,
@@ -97,6 +119,9 @@ Fetch notification events for the authenticated user since a given Hive block nu
 | `accreditation_update` | Your accreditation is granted or revoked | Target account |
 | `new_vouch` | Someone vouches for you in WoT | Vouchee |
 | `new_reply` | New discussion comment (pevo.type=comment) replying to your comment | Parent comment author |
+| `claim_pending` | Someone files an authorship claim (`action='claim_authorship'`) on your paper, signed by the accredited claimer. `actor` is the claimer. | Post author (`paper_author`) |
+| `claim_approved` | Your authorship claim is approved (`action='approve_authorship'`), signed by the original post author or the bridge account. No `actor`. | Claimer |
+| `claim_revoked` | Your authorship claim is revoked (`action='revoke_authorship'`), signed by the original post author or the bridge account. No `actor`. | Claimer |
 
 **Rate Limiting:** 30 requests per account per 5 minutes (one poll per 10 seconds burst, but expected interval is 5 minutes).
 
@@ -107,6 +132,7 @@ Fetch notification events for the authenticated user since a given Hive block nu
 **Notes:**
 - Only accredited-voter votes trigger `new_vote` events, consistent with the platform-wide accredited-only policy.
 - `new_reply` carries no `paper_author` / `paper_permlink`. A reply can sit any number of levels deep in a comment chain, so the root paper coordinates are not resolvable without unbounded recursive queries. Clients that want the paper context should resolve it from the `parent_author` / `parent_permlink` chain.
+- The `claim_*` events carry the paper coordinates (`paper_author`, `paper_permlink`) but no `paper_title`. `claim_pending` notifies the post author and carries `actor` (the claimer); `claim_approved` and `claim_revoked` notify the claimer and carry no `actor`. All three are signer-gated (per `hive-schemas.md` § 2.9, § 2.10, § 2.11) so a forged `claim_authorship` / `approve_authorship` / `revoke_authorship` cannot spam notifications.
 - The backend queries HAF for events in the block range `(since_block, latest_head_block]`.
 - The first poll: if the client has no stored `since_block`, it should call `GET /api/health` to get the current timestamp, then use the corresponding block number (or simply use `0` to get the most recent events up to `limit`).
 - This design is suitable for both web (localStorage cursor) and mobile (SharedPreferences cursor) clients. No persistent connections or server-side state.
