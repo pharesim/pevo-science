@@ -482,7 +482,7 @@ export async function computeReputationBatch(
           COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0) AS claimer,
           cj.json::jsonb ->> 'paper_author' AS paper_author,
           cj.json::jsonb ->> 'paper_permlink' AS paper_permlink,
-          (cj.json::jsonb ->> 'author_index')::int AS author_index,
+          CASE WHEN (cj.json::jsonb ->> 'author_index') ~ '^[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'author_index')::int END AS author_index,
           -- On-chain signer of the op; for approve_authorship this is the
           -- approver, gated to post author / bridge in the arms below.
           cj.required_posting_auths ->> 0 AS approver,
@@ -617,7 +617,7 @@ export async function computeReputationBatch(
             cj.required_posting_auths ->> 0 AS voter,
             cj.json::jsonb ->> 'author' AS author,
             cj.json::jsonb ->> 'permlink' AS permlink,
-            (cj.json::jsonb ->> 'weight')::int AS weight,
+            CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
             cj.block_num
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
@@ -806,7 +806,7 @@ export async function computeReputationBatch(
             cj.required_posting_auths ->> 0 AS voter,
             cj.json::jsonb ->> 'author' AS author,
             cj.json::jsonb ->> 'permlink' AS permlink,
-            (cj.json::jsonb ->> 'weight')::int AS weight,
+            CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
             cj.block_num
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
@@ -904,7 +904,7 @@ export async function computeReputationBatch(
             cj.required_posting_auths ->> 0 AS voter,
             cj.json::jsonb ->> 'permlink' AS permlink,
             cj.json::jsonb ->> 'author' AS author,
-            (cj.json::jsonb ->> 'weight')::int AS weight,
+            CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
             cj.block_num
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3

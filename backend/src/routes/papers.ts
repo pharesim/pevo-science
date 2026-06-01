@@ -116,7 +116,7 @@ async function batchResolveVotes(
       `SELECT cj.json::jsonb ->> 'author' AS author,
               cj.json::jsonb ->> 'permlink' AS permlink,
               cj.required_posting_auths ->> 0 AS voter,
-              (cj.json::jsonb ->> 'weight')::int AS weight,
+              CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
               cj.block_num
        FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
@@ -3319,7 +3319,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     // endpoint (reviews, voters, claims all silently empty on the SPA).
     const revoteResult = await pool.query(
       `SELECT cj.required_posting_auths ->> 0 AS voter,
-              (cj.json::jsonb ->> 'weight')::int AS weight,
+              CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
               cj.json::jsonb ->> 'version' AS version,
               cj.timestamp AS revote_ts,
               cj.block_num
