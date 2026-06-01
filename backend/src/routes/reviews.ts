@@ -6,7 +6,7 @@ import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCte, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, validPevoPaperWhere } from '../hafsql.js';
+import { T, buildWith, activeAccreditationsCteBody, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, validPevoPaperWhere } from '../hafsql.js';
 
 const router = Router();
 
@@ -45,7 +45,7 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
   if (!pool) return null;
 
   try {
-    const accredCte = activeAccreditationsCte();
+    const accredCte = buildWith(1, activeAccreditationsCteBody);
     // PEvO object-identity gate: a review is only a PEvO review if its author
     // is in `active_accreditations` OR equals `config.hiveAnonAccount`
     // (anon-proxy authoring on behalf of an accredited reviewer). Without

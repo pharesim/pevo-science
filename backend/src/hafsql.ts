@@ -162,14 +162,6 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
 }
 
 /**
- * Full CTE including WITH keyword for standalone use.
- */
-export function activeAccreditationsCte(startIdx = 1): SqlFragment {
-  const body = activeAccreditationsCteBody(startIdx);
-  return { sql: `WITH ${body.sql}`, params: body.params, nextIdx: body.nextIdx };
-}
-
-/**
  * CTE body that derives a per-account accreditation status row for every
  * account that has ever been accredited. Distinguishes 'active' from
  * 'revoked' so post-revocation audit visibility can be preserved on

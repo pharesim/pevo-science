@@ -3,7 +3,7 @@ import request from 'supertest';
 import { createApp } from '../../src/app.js';
 import { getPool, isHafConfigured } from '../../src/db.js';
 import { config } from '../../src/config.js';
-import { T, activeAccreditationsCte } from '../../src/hafsql.js';
+import { T, buildWith, activeAccreditationsCteBody } from '../../src/hafsql.js';
 import { queryWithRetry } from '../support/haf-query.js';
 
 // Carve-out (per root CLAUDE.md "Running Tests"): the POST /api/ipfs/upload
@@ -83,7 +83,7 @@ describe('GET /api/ipfs/:cid (cidIsKnown HAF reference check)', () => {
       // return false — turning this assertion into a flaky non-bug 404. Scoping
       // to accredited authors with the same active-accreditations CTE the gate
       // uses keeps the candidate one the gate will actually resolve as known.
-      const accredCte = activeAccreditationsCte(1);
+      const accredCte = buildWith(1, activeAccreditationsCteBody);
       const tagsIdx = accredCte.nextIdx;
       const nsIdx = accredCte.nextIdx + 1;
       const res = await queryWithRetry<{ cid: string }>(

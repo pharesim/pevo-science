@@ -876,8 +876,7 @@ export async function computeReputationBatch(
           citing.permlink AS citing_permlink,
           citing.created AS citing_created,
           citing.json_metadata AS citing_meta,
-          cit ->> 'author' AS cited_author,
-          COALESCE((cit ->> 'reputation_relevant')::boolean, true) AS reputation_relevant
+          cit ->> 'author' AS cited_author
         FROM ${T.comments} citing
         CROSS JOIN LATERAL jsonb_array_elements(
           CASE WHEN jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'
