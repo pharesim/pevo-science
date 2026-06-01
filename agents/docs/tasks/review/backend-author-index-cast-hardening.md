@@ -62,3 +62,32 @@ Apply at both `author_index` sites AND audit the three revote-arm `weight` casts
 - [backend/src/routes/papers.ts](backend/src/routes/papers.ts) line 3322 (revote weight cast).
 - Sibling `jsonb_typeof` / regex-guard examples already present in the codebase (grep for `~ '^` patterns over JSONB extracts).
 - HAF-query review run `w274tijk0` ranks #4 + #18.
+
+## Backend note (2026-06-01) — landed, with two flagged deviations
+
+All casts wrapped in `CASE WHEN <regex> THEN ...::int END`. typecheck + lint clean;
+real-Postgres canary + reputation-lifecycle / citing / papers-enrichment tests green.
+
+Two departures from the literal spec, both made to actually satisfy the task's goal
+(fail closed, query completes) rather than to expand scope. Flagging for review:
+
+1. **Weight regex bounds digits: `^-?[0-9]{1,9}$`, not the suggested `^-?[0-9]+$`.**
+   The unbounded form passes a 14-digit weight, which then overflows `::int`
+   (`integer out of range`) and still aborts the query, defeating the fix. `{1,9}`
+   (max +/-999,999,999) admits every legitimate Hive weight (+/-10000) while closing
+   the overflow vector. `author_index`'s `^[0-9]{1,9}$` (the task's own regex) is
+   already overflow-safe, so it is unchanged.
+
+2. **Six enumerated sites + one the task missed = 7 guarded.** `routes/papers.ts`
+   carries TWO identical `(cj.json::jsonb ->> 'weight')::int` revote casts (the
+   enumerated detail-enrichment one plus a second voters-enrichment query). Both are
+   the same broadcaster-controlled defect (a malformed revote weight 503s the
+   enrichment endpoint), so both are guarded rather than leaving a knowingly-inconsistent
+   half-fix in one file. Final inventory: 2 `author_index` + 5 `weight`.
+
+3. **Test placement.** The canary lives in a new `tests/cast-hardening-author-index-weight.test.ts`
+   (synthetic-VALUES behavioral + per-file source-shape canaries), not in the
+   triage-suggested `reputation-batch-sql-failure.test.ts` — that file is about the
+   batch orchestrator's cycle-advance decision under a mocked pool, an unrelated concern.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
