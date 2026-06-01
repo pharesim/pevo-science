@@ -238,6 +238,17 @@ export function accreditationStatusCteBody(startIdx = 1): SqlFragment {
  * parallel index scan over tens of millions of operation rows. The
  * `custom_id` index alone runs in low milliseconds.
  *
+ * The `required_posting_auths ? voucher` gate is load-bearing. Both `vouch`
+ * and `retract_vouch` encode the acting voucher in the `voucher` field, and a
+ * legitimate op is broadcast by that account signing with its own posting
+ * authority. A row whose `required_posting_auths` does not contain the named
+ * `voucher` is a forgery: an unsigned `vouch` would otherwise mint a forged
+ * web-of-trust edge (a direct path to unauthorized auto-accreditation), and an
+ * unsigned `retract_vouch` would otherwise supersede a legitimate prior vouch
+ * via the latest-block-wins `ROW_NUMBER` ranking. Singular `?` (not `?|`)
+ * because exactly one voucher signs each op; mirrors the signer gate in
+ * `retractedPapersCteBody` and `activeAccreditationsCteBody`.
+ *
  * @param startIdx - first available $N parameter index
  */
 export function activeVouchesCteBody(startIdx = 1): SqlFragment {
@@ -258,6 +269,7 @@ export function activeVouchesCteBody(startIdx = 1): SqlFragment {
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' IN ('vouch', 'retract_vouch')
+      AND cj.required_posting_auths ? (cj.json::jsonb ->> 'voucher')
   ),
   active_vouches AS (
     SELECT voucher, vouchee, relationship, event_timestamp
