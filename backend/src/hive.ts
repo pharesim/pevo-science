@@ -1,4 +1,4 @@
-import { Client, type PrivateKey } from '@hiveio/dhive';
+import { Client, PrivateKey } from '@hiveio/dhive';
 import { config } from './config.js';
 import { logger, getRequestId } from './logger.js';
 
@@ -186,4 +186,50 @@ export async function broadcastSendOperationsWithTimeout(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * Thrown by `broadcastAdminCustomJson` when the admin posting key
+ * (`config.pevoAdminPostingKey`) is unset. Each admin-broadcast caller maps
+ * this onto its own not-configured / broadcast-failure response shape (the WoT
+ * paths short-circuit to a `skipped` result before reaching the helper; the
+ * route handlers route it through `handleBroadcastError`).
+ */
+export class AdminKeyNotConfiguredError extends Error {
+  constructor() {
+    super('PEvO admin posting key is not configured; admin custom_json broadcast unavailable');
+    this.name = 'AdminKeyNotConfiguredError';
+  }
+}
+
+/**
+ * The PEvO admin account (`config.hiveAdminAccount`) signs platform
+ * attestations — WoT accreditation grants/revocations, authorship-claim
+ * revocations, and ORCID binding attestations — as a single posting authority.
+ * This helper is the one place the admin custom_json envelope (`id`,
+ * `required_auths`, `required_posting_auths`) and the admin posting key are
+ * assembled, so every admin-broadcast call site stays in lockstep.
+ *
+ * Throws `AdminKeyNotConfiguredError` when the admin posting key is unset.
+ * Broadcast failures (timeout, node rejection) propagate unchanged from
+ * `broadcastJsonWithTimeout` — `BroadcastTimeoutError` included — for the
+ * caller's existing catch to discriminate.
+ */
+export async function broadcastAdminCustomJson(
+  payload: Record<string, unknown>,
+  timeoutMs: number = DEFAULT_BROADCAST_TIMEOUT_MS,
+): Promise<BroadcastJsonResult> {
+  if (!config.pevoAdminPostingKey) {
+    throw new AdminKeyNotConfiguredError();
+  }
+  return broadcastJsonWithTimeout(
+    {
+      id: config.appTag,
+      required_auths: [],
+      required_posting_auths: [config.hiveAdminAccount],
+      json: JSON.stringify(payload),
+    },
+    PrivateKey.fromString(config.pevoAdminPostingKey),
+    timeoutMs,
+  );
 }

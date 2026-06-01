@@ -78,6 +78,20 @@ vi.mock('../src/hive.js', async () => {
   return {
     ...actual,
     broadcastJsonWithTimeout: broadcastJsonMock,
+    // The real broadcastAdminCustomJson would call the REAL
+    // broadcastJsonWithTimeout (its internal call binds lexically inside
+    // hive.js, not via the mocked export), reaching a live Hive node. Override
+    // it to route through broadcastJsonMock with the same admin envelope so the
+    // cascade/accreditation specs observe payload.json and call-count as before.
+    broadcastAdminCustomJson: async (payload: Record<string, unknown>) => {
+      const { config } = await import('../src/config.js');
+      return broadcastJsonMock({
+        id: config.appTag,
+        required_auths: [],
+        required_posting_auths: [config.hiveAdminAccount],
+        json: JSON.stringify(payload),
+      });
+    },
   };
 });
 

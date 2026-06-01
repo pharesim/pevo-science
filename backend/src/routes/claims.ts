@@ -1,7 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import { PrivateKey } from '@hiveio/dhive';
 import { getPool } from '../db.js';
-import { broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastAdminCustomJson, broadcastJsonWithTimeout } from '../hive.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
@@ -345,17 +344,8 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
     // by the original paper author. Consumers who audit `revoke_authorship`
     // ops should treat the `required_posting_auths[0]` as the revoker, not
     // the paper author.
-    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
     try {
-      const result = await broadcastJsonWithTimeout(
-        {
-          id: config.appTag,
-          json: JSON.stringify(payload),
-          required_auths: [],
-          required_posting_auths: [config.hiveAdminAccount],
-        },
-        key,
-      );
+      const result = await broadcastAdminCustomJson(payload);
       await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
       return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
     } catch (err) {

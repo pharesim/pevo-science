@@ -7,7 +7,7 @@
  */
 import pg from 'pg';
 import { getPool } from './db.js';
-import { broadcastJsonWithTimeout, BroadcastTimeoutError } from './hive.js';
+import { broadcastAdminCustomJson, BroadcastTimeoutError } from './hive.js';
 import { config } from './config.js';
 import { getAccreditedSet } from './accreditation.js';
 import { seedAccreditationBonus, invalidateOnRevocation } from './reputation.js';
@@ -214,8 +214,6 @@ export async function broadcastWotAccreditation(vouchee: string): Promise<WotAcc
   if (!pool) return { ok: false, reason: 'skipped' };
 
   try {
-    const { PrivateKey } = await import('@hiveio/dhive');
-
     const now = new Date().toISOString();
     const evidenceHash = `wot:${status.vouches.map((v) => v.voucher).sort().join(',')}`;
 
@@ -230,15 +228,7 @@ export async function broadcastWotAccreditation(vouchee: string): Promise<WotAcc
       timestamp: now,
     };
 
-    const result = await broadcastJsonWithTimeout(
-      {
-        id: config.appTag,
-        required_auths: [],
-        required_posting_auths: [config.hiveAdminAccount],
-        json: JSON.stringify(payload),
-      },
-      PrivateKey.fromString(config.pevoAdminPostingKey),
-    );
+    const result = await broadcastAdminCustomJson(payload);
 
     logger.info({ vouchee, txId: result.id }, 'WoT auto-accreditation broadcast');
     await seedAccreditationBonus(vouchee);
@@ -330,8 +320,6 @@ export async function cascadeRevocation(
       [...findCte.params, revokedAccount, threshold],
     );
 
-    const { PrivateKey } = await import('@hiveio/dhive');
-
     for (const [i, row] of result.rows.entries()) {
       const vouchee = row.vouchee as string;
 
@@ -364,15 +352,7 @@ export async function cascadeRevocation(
         // entry until manual cleanup.
         await invalidateOnRevocation(vouchee);
 
-        const txResult = await broadcastJsonWithTimeout(
-          {
-            id: config.appTag,
-            required_auths: [],
-            required_posting_auths: [config.hiveAdminAccount],
-            json: JSON.stringify(payload),
-          },
-          PrivateKey.fromString(config.pevoAdminPostingKey),
-        );
+        const txResult = await broadcastAdminCustomJson(payload);
 
         logger.info({ vouchee, revokedAccount, txId: txResult.id }, 'WoT cascading revocation broadcast');
         completed.push(txResult.id);

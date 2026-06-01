@@ -85,6 +85,19 @@ vi.mock('../../src/hive.js', () => ({
     },
   },
   broadcastJsonWithTimeout: (...args: unknown[]) => broadcastJson(...args),
+  // Admin-broadcast helper extracted into hive.js. Mirrors the real envelope
+  // (required_posting_auths: [hiveAdminAccount]) and routes through the same
+  // broadcastJson spy so call-count, op-shape, and mockRejectedValueOnce
+  // staging behave identically to the pre-extraction inline broadcast.
+  broadcastAdminCustomJson: async (payload: Record<string, unknown>) => {
+    const { config } = await import('../../src/config.js');
+    return broadcastJson({
+      id: config.appTag,
+      required_auths: [],
+      required_posting_auths: [config.hiveAdminAccount],
+      json: JSON.stringify(payload),
+    });
+  },
   BroadcastTimeoutError: MockBroadcastTimeoutError,
   DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
