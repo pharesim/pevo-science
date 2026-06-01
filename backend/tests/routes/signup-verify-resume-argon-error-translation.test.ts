@@ -78,19 +78,19 @@ type BranchCase = {
 
 const branches: BranchCase[] = [
   {
-    name: 'unknown-email branch (signup-verify.ts:119, burnSentinel)',
+    name: 'unknown-email branch (burnSentinel)',
     seed: () => appQueryMock.mockResolvedValueOnce({ rows: [] }),
   },
   {
-    name: 'non-confirmed verify_token branch (signup-verify.ts:130, burnSentinel)',
+    name: 'non-confirmed verify_token branch (burnSentinel)',
     seed: () =>
       appQueryMock.mockResolvedValueOnce({
-        // verify_token does NOT start with 'confirmed:' → :129 guard fires.
+        // verify_token does NOT start with 'confirmed:' → non-confirmed guard fires.
         rows: [{ id: 1, password_hash: '$argon2id$placeholder', verify_token: 'pending-abc' }],
       }),
   },
   {
-    name: 'confirmed-but-no-password_hash branch (signup-verify.ts:140, burnSentinel)',
+    name: 'confirmed-but-no-password_hash branch (burnSentinel)',
     seed: () =>
       appQueryMock.mockResolvedValueOnce({
         // ORCID-only: confirmed verify_token but password_hash is null.

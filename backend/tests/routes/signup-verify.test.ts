@@ -3,10 +3,21 @@ import request from 'supertest';
 import { PrivateKey } from '@hiveio/dhive';
 import { signRequestBound as signRequestBoundShared } from '../support/sign-request.js';
 
-// Mock chain-broadcasting bits before createApp() so the confirm flow does not
-// hit the real Hive network. We still use the real argon2, real pg pool, and
-// real verifyHiveSignature — the SEC-004-BE deliverable explicitly rules out
-// mock-auth for these tests.
+// Test-mock carve-out (per root CLAUDE.md "Running Tests"):
+//   (a) Why real-Hive broadcast is impractical per-test: a real accreditation
+//       broadcast against Hive takes up to the broadcast timeout (tens of
+//       seconds) to resolve, burns a finite claim-token on account creation,
+//       and its on-chain outcome is non-deterministic at test scope. So the
+//       chain-broadcasting seams (getAccounts, broadcast.json,
+//       createClaimedAccount, broadcastJsonWithTimeout) are mocked before
+//       createApp().
+//   (b) Auth/crypto runs real: argon2 hashing, the pg pool, and
+//       verifyHiveSignature are all real here. Cryptographic signature
+//       verification is NOT bypassed in this file — only the chain-write
+//       seams above are mocked.
+//   (c) Real-path companion: signed-request signature verification against
+//       the same /confirm + /link routes with a real broadcast outcome is
+//       exercised in signup-verify-concurrent-activation.test.ts.
 const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock } = vi.hoisted(() => ({
   getAccountsMock: vi.fn().mockResolvedValue([]),
   broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'mock-tx' }),
@@ -319,19 +330,19 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password'
 });
 
 // ──────────────────────────────────────────────────────────────
-// BE-AUTH-RESUME-SIGNUP-TIMING-GUARD — close unknown-email timing
-// oracle on /api/auth/resume-signup. Mirrors the three sibling
-// timing specs in recover.test.ts (unknown-user on /login, /recover,
-// /resend-verification). The FLOOR value is identical (35ms) because
-// the mutation-kill threshold is set by argon2.verify wall-time at
-// our ARGON2_OPTIONS, not by the endpoint under test.
+// Close the unknown-email timing oracle on /api/auth/resume-signup.
+// Mirrors the three sibling timing specs in recover.test.ts
+// (unknown-user on /login, /recover, /resend-verification). The FLOOR
+// value is identical (35ms) because the mutation-kill threshold is set
+// by argon2.verify wall-time at our ARGON2_OPTIONS, not by the endpoint
+// under test.
 // ──────────────────────────────────────────────────────────────
 
 // TIMING_ORACLE_FLOOR_MS lives in ../support/timing-constants.ts; see that
 // file for the argon2-tuning rationale on the 35ms floor.
 
-// Round-2 parametrization: the oracle closes across THREE branches that all
-// must equal the confirmed+wrong-password wall-time (~argon2.verify cost):
+// The oracle closes across THREE branches that all must equal the
+// confirmed+wrong-password wall-time (~argon2.verify cost):
 //   (a) unknown-email                 → rows.length === 0 early-return
 //   (b) non-confirmed-state           → row exists, verify_token not
 //                                       `confirmed:…` (raw 64-hex pre-verify)
@@ -345,7 +356,7 @@ type ResumeTimingScenario = {
 };
 const TIMING_RUN_ID = Date.now();
 
-describe.skipIf(!dbReachable)('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signup burns sentinel on all non-verify-path branches', () => {
+describe.skipIf(!dbReachable)('/resume-signup burns sentinel on all non-verify-path branches', () => {
   const pool = dbReachable ? getAppPool()! : null;
 
   const unknownEmail = `resume_unknown_${TIMING_RUN_ID}@example.com`;
@@ -415,21 +426,19 @@ describe.skipIf(!dbReachable)('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signu
 });
 
 // ──────────────────────────────────────────────────────────────
-// BE-LOG-PII-EMAIL-HASH round-1 hold item 2c: ORCID-only broadcast-rejection
-// harness. Pins both halves of the round-1 P1 fix on the /confirm and /link
-// catch-block log emissions:
+// ORCID-only broadcast-rejection harness. Pins both halves of the PII-safe
+// logging fix on the /confirm and /link catch-block log emissions:
 //
-//   (1) account.email IS NULL (ORCID-only signup state). Pre-fix
-//       hashEmailForLogs(account.email) called null.trim() and threw a
-//       synchronous TypeError, which propagated to the outer catch and
-//       converted the recoverable `logger.error + handled response` flow
-//       into a 500 INTERNAL_ERROR. The post-fix path uses
+//   (1) account.email IS NULL (ORCID-only signup state). A naive
+//       hashEmailForLogs(account.email) would call null.trim() and throw a
+//       synchronous TypeError, which propagates to the outer catch and
+//       converts the recoverable `logger.error + handled response` flow
+//       into a 500 INTERNAL_ERROR. The correct path uses
 //       safeHashEmailForLogs, which returns `undefined` for nullish input
-//       (round-2 hold item 1 aligned the return type from `null` to
-//       `undefined` to match LogContext.email_hash?: string). The route
-//       then proceeds to the BACKEND-REPUTATION-SSOT round-1 hold #8
-//       handler: broadcast failure now returns 502 BROADCAST_FAILED (no
-//       dangling JWT), NOT the previous 200 + JWT.
+//       (the return type is `string | undefined` to match
+//       LogContext.email_hash?: string). The route then proceeds to the
+//       dangling-JWT-prevention handler: broadcast failure returns 502
+//       BROADCAST_FAILED (no dangling JWT), NOT a 200 + JWT.
 //   (2) The structured log payload carries `email_hash` (absent / omitted
 //       on this branch because pino strips `undefined` properties from
 //       emitted JSON), and crucially has NO top-level `email` key. The
@@ -439,15 +448,13 @@ describe.skipIf(!dbReachable)('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signu
 //       if the `email_hash` value matches.
 //
 // Without these specs, a revert of either fix passes every other suite. The
-// harness shape (account.email = NULL row + broadcastJsonMock rejecting) is
-// the strict subset called for by the architect's hold block — once it lands
-// the email_hash/email-shape checks are one extra line each.
+// harness shape is an account.email = NULL row + broadcastJsonMock rejecting.
 // ──────────────────────────────────────────────────────────────
 
 const PII_RUN_ID = Date.now();
 const PII_SUFFIX = (PII_RUN_ID % 100000).toString(36).padStart(4, '0').slice(-6);
 
-describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast-rejection on ORCID-only (email=NULL) row logs email_hash safely, returns 502 BROADCAST_FAILED', () => {
+describe.skipIf(!dbReachable)('/confirm broadcast-rejection on ORCID-only (email=NULL) row logs email_hash safely, returns 502 BROADCAST_FAILED', () => {
   const username = `piinul${PII_SUFFIX}`;
   const orcidId = '0000-0001-0000-1234';
   const confirmedToken = `confirmed:${'a1b2c3d4'.repeat(8)}`;
@@ -480,10 +487,10 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
     // The accreditation broadcast in the catch path is the failure we stage.
     // createClaimedAccount stays at its default success — the broadcast catch
     // is what exercises the safeHashEmailForLogs(account.email) call site.
-    // Per BACKEND-REPUTATION-SSOT round-1 hold #8: broadcast failure now
-    // produces 502 BROADCAST_FAILED instead of the prior 200 + dangling JWT.
-    // The PII-safe email_hash invariant still holds via the structured log
-    // emitted by handleBroadcastError.
+    // Broadcast failure produces 502 BROADCAST_FAILED, never a 200 + dangling
+    // JWT (no session token for an account whose chain op never landed). The
+    // PII-safe email_hash invariant still holds via the structured log emitted
+    // by handleBroadcastError.
     broadcastJsonMock.mockReset();
     broadcastJsonMock.mockRejectedValue(new Error('RPC node rejected: insufficient RC'));
     // Username lookup at confirm handler must return [] (Hive-side username
@@ -525,11 +532,11 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
       expect(emission, 'expected broadcast-failure logger.error emission in /confirm').toBeDefined();
       const [payload] = emission!;
       const obj = payload as Record<string, unknown>;
-      // The LogContext interface declares `email_hash?: string`. Per round-2
-      // hold item 1, safeHashEmailForLogs now returns `string | undefined`
-      // (was `string | null` in round 1, with a `?? undefined` coercion at
-      // the call site). The route now assigns the helper's return value
-      // directly; for ORCID-only signups (email = NULL) the field is
+      // The LogContext interface declares `email_hash?: string`.
+      // safeHashEmailForLogs returns `string | undefined`, so the route can
+      // assign the helper's return value directly into the typed interface
+      // without a `?? undefined` coercion at the call site. For ORCID-only
+      // signups (email = NULL) the field is
       // `undefined`, which pino omits from emitted JSON. The PII invariant
       // — no top-level `email` key, no raw email value anywhere in the
       // structured log — is what matters and remains pinned below.
@@ -549,7 +556,7 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
 // getAccountsMock to publish the matching public key on the test username,
 // so middleware succeeds end-to-end against the real signature path. No
 // mock-auth fixture is reused here.
-describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-rejection on ORCID-only (email=NULL) row logs email_hash safely, returns 502 BROADCAST_FAILED', () => {
+describe.skipIf(!dbReachable)('/link broadcast-rejection on ORCID-only (email=NULL) row logs email_hash safely, returns 502 BROADCAST_FAILED', () => {
   const username = `piilink${PII_SUFFIX}`;
   const orcidId = '0000-0001-0000-5678';
   const confirmedToken = `confirmed:${'b2c3d4e5'.repeat(8)}`;
@@ -578,8 +585,8 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
   });
 
   // Per-suite binding of the shared helper to TEST_KEY. The signing protocol
-  // is implemented once in `../support/sign-request.ts`
-  // (BE-LOG-PII-EMAIL-HASH round-2 hold item 3).
+  // is implemented once in `../support/sign-request.ts` so every suite signs
+  // requests identically.
   function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
     return signRequestBoundShared(TEST_KEY, method, fullPath, body, timestamp);
   }
@@ -589,10 +596,9 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
 
     // verifyHiveSignature looks up the account by username and reads
     // posting.key_auths to verify the recovered key. /link's route handler
-    // then calls getAccounts a second time at line 404 (existence check
-    // — same return value works there).
-    // Per BACKEND-REPUTATION-SSOT round-1 hold #8: broadcast failure now
-    // surfaces 502 BROADCAST_FAILED instead of 200 + JWT.
+    // then calls getAccounts a second time for an existence check (same
+    // return value works there). Broadcast failure surfaces 502
+    // BROADCAST_FAILED, never a 200 + dangling JWT.
     getAccountsMock.mockReset();
     getAccountsMock.mockImplementation(async (names: string[]) => {
       if (names.includes(username)) {
@@ -633,9 +639,9 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
       // PII invariant unchanged: no top-level `email` key, no raw email
       // anywhere. For ORCID-only rows the email_hash field is absent
       // because safeHashEmailForLogs returns `undefined` for nullish input
-      // (round-2 hold item 1) and pino omits `undefined` properties from
-      // emitted JSON. The route assigns the helper's return value directly
-      // to satisfy the LogContext.email_hash?: string typed interface.
+      // and pino omits `undefined` properties from emitted JSON. The route
+      // assigns the helper's return value directly to satisfy the
+      // LogContext.email_hash?: string typed interface.
       expect(obj).not.toHaveProperty('email');
       expect(obj.email_hash).toBeUndefined();
       expect(obj.username).toBe(username);
@@ -647,17 +653,15 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
 });
 
 // ──────────────────────────────────────────────────────────────
-// BE-LOG-SHAPE-CONVERGENCE-SIBLING-FILES round-2 hold-fix item 1:
-// mutation-killing spy assertions on the 4 outer-catch `*.failed`
-// events added in `backend/src/routes/signup-verify.ts` during the
-// canonical-shape migration.
+// Mutation-killing spy assertions on the 4 outer-catch `*.failed`
+// events emitted from `backend/src/routes/signup-verify.ts`.
 //
-// The 2 existing `errorSpy` blocks above (BE-LOG-PII-EMAIL-HASH item
-// 2c) match by log MESSAGE text emitted from broadcast-error.ts —
-// they do NOT cover these 4 outer-catch events whose `event` field
-// is the only stable discriminator. A typo or rename mutation on any
-// of the 4 event names passes every behavioral check while breaking
-// operator dashboards keyed on `event`.
+// The 2 ORCID-only `errorSpy` blocks above match by log MESSAGE text
+// emitted from broadcast-error.ts — they do NOT cover these 4
+// outer-catch events whose `event` field is the only stable
+// discriminator. A typo or rename mutation on any of the 4 event names
+// passes every behavioral check while breaking operator dashboards keyed
+// on `event`.
 //
 // Strategy mirrors `auth-log-shape.test.ts`: spy on `logger.error`,
 // trigger each handler's outer catch by patching the live `pool.query`
@@ -678,9 +682,9 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
 //       spy that captures without suppressing). All other middleware
 //       — rateLimit, verifyHiveSignature, abort-signal — runs real.
 //   (c) Real-HAF behavioral coverage of the same routes lives in the
-//       BE-LOG-PII-EMAIL-HASH /confirm and /link specs above (and the
-//       BE-AUTH-RESUME-SIGNUP-TIMING-GUARD spec for /resume-signup);
-//       this block is the complementary log-shape pin.
+//       ORCID-only /confirm and /link broadcast-rejection specs above
+//       (and the /resume-signup timing-guard spec); this block is the
+//       complementary log-shape pin.
 // ──────────────────────────────────────────────────────────────
 
 // Helper: search a spy's call list for the first call whose first

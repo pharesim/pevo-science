@@ -1,24 +1,22 @@
 /**
  * Regression pin: signup-verify `/confirm` + `/link` PostBroadcastWriteError
- * severity discrimination (BACKEND-REPUTATION-SSOT round-2 hold #1; round-3
- * hold #2 extended `/link` coverage so a mutation at either call site fails
- * red).
+ * severity discrimination. Both routes' post-broadcast seed-failure call
+ * sites are covered so a mutation at either site fails red.
  *
- * The round-2 hold #1 fix is that both call sites pass
- * `classifyPostBroadcastSeverity(postErr)` as the 4th argument to
- * `new PostBroadcastWriteError(...)`. Without it, the default 'transient'
- * severity routes a permanent-class TypeError (programmer error in the
- * reputation-seed pipeline) through the user-facing "will reconcile
- * automatically" copy and the dashboard's transient-class disposition
- * instead of the operator-required path.
+ * The invariant: both call sites pass `classifyPostBroadcastSeverity(postErr)`
+ * as the 4th argument to `new PostBroadcastWriteError(...)`. Without it, the
+ * default 'transient' severity routes a permanent-class TypeError (programmer
+ * error in the reputation-seed pipeline) through the user-facing "will
+ * reconcile automatically" copy and the dashboard's transient-class
+ * disposition instead of the operator-required path.
  *
- * Real-path companion: `broadcast-error.test.ts:364` pins the handler
- * branch (`severity:'permanent'` → 502 POST_BROADCAST_OPERATOR_REQUIRED);
- * `accreditation-idempotency.test.ts:402` pins the symmetric route-level
+ * Real-path companion: `broadcast-error.test.ts` pins the handler branch
+ * (`severity:'permanent'` → 502 POST_BROADCAST_OPERATOR_REQUIRED);
+ * `accreditation-idempotency.test.ts` pins the symmetric route-level
  * behavior on the accreditation surface. This file pins the signup-verify
  * call sites specifically with parallel describe blocks for `/confirm` and
- * `/link` — a mutation removing `classifyPostBroadcastSeverity(postErr)`
- * from either call site is now caught at its own site, not via a sibling
+ * `/link`, so a mutation removing `classifyPostBroadcastSeverity(postErr)`
+ * from either call site is caught at its own site, not via a sibling
  * route's coverage.
  *
  * **Carve-out clause-(a) justification:** Mocks
@@ -27,10 +25,10 @@
  * The real path requires a Hive broadcast to land + an in-process
  * TypeError to fire from the reputation seed pipeline; both are
  * non-deterministic at unit test scope. Real-path companion for the
- * **broadcast-error handler branch**: `broadcast-error.test.ts:364`
+ * **broadcast-error handler branch**: `broadcast-error.test.ts`
  * exercises `severity:'permanent'` → POST_BROADCAST_OPERATOR_REQUIRED
  * with real `handleBroadcastError`. Real-path companion for the
- * **route-level seed-throw cascade**: `accreditation-idempotency.test.ts:402`
+ * **route-level seed-throw cascade**: `accreditation-idempotency.test.ts`
  * exercises the same `seedAccreditationBonus → TypeError → 502
  * POST_BROADCAST_OPERATOR_REQUIRED` cascade through the accreditation
  * route. Both companion paths use real `verifyHiveSignature` /
@@ -168,14 +166,15 @@ describe.skipIf(!dbReachable)('signup-verify /confirm: seedAccreditationBonus Ty
   it('TypeError from seedAccreditationBonus → POST_BROADCAST_OPERATOR_REQUIRED, not POST_BROADCAST_FAILED', async () => {
     // Reseed inside the it() body so vitest's `retry:1` (set in
     // backend/vitest.config.ts) replays cleanly — /confirm consumes the
-    // verify_token at signup-verify.ts:303 (sets to NULL) before the
+    // verify_token (sets it to NULL during the pg activation step) before the
     // broadcast even fires, so a retry without a fresh row would 400
     // "Invalid or expired token".
     await reseedRow();
 
     // Broadcast succeeds (chain op landed), then seed throws TypeError —
-    // the permanent class that `seedAccreditationBonus` re-throws per
-    // `broadcast-error.ts:47-55`. Without `classifyPostBroadcastSeverity`,
+    // the permanent class that `seedAccreditationBonus` re-throws and
+    // `classifyPostBroadcastSeverity` maps to 'permanent'. Without
+    // `classifyPostBroadcastSeverity`,
     // the default 'transient' severity emits POST_BROADCAST_FAILED + the
     // "reconcile automatically" copy. With it, POST_BROADCAST_OPERATOR_REQUIRED
     // + "please contact support".
@@ -216,19 +215,20 @@ describe.skipIf(!dbReachable)('signup-verify /confirm: seedAccreditationBonus Ty
     // Internal error must not leak.
     const bodyStr = JSON.stringify(res.body);
     expect(bodyStr).not.toContain('reputation seed shape regression');
-    // No JWT issued — the dangling-JWT class from round-1 hold #8 stays
+    // No JWT issued — the dangling-JWT class (a session token must never
+    // be issued when the post-broadcast cascade fails permanently) stays
     // closed.
     expect(res.body.data?.token).toBeFalsy();
   });
 });
 
 describe.skipIf(!dbReachable)('signup-verify /link: seedAccreditationBonus TypeError → 502 POST_BROADCAST_OPERATOR_REQUIRED', () => {
-  // Round-3 hold #2: parallel coverage for the `/link` call site. The
-  // `/confirm` block above pins one site; this block pins the sibling. A
-  // mutation removing `classifyPostBroadcastSeverity(postErr)` from
-  // signup-verify.ts:732 (the /link post-broadcast cascade) is now caught
-  // here directly instead of relying on the accreditation-route companion
-  // to catch the same risk class at a different surface.
+  // Parallel coverage for the `/link` call site. The `/confirm` block above
+  // pins one site; this block pins the sibling. A mutation removing
+  // `classifyPostBroadcastSeverity(postErr)` from the /link post-broadcast
+  // seed cascade is caught here directly instead of relying on the
+  // accreditation-route companion to catch the same risk class at a
+  // different surface.
   const username = `sevlnk${SUFFIX}`;
   const email = `sev_link_${RUN_ID}@example.com`;
   const verifyToken = `confirmed:${'c3d4e5f6'.repeat(8)}`;
@@ -260,7 +260,7 @@ describe.skipIf(!dbReachable)('signup-verify /link: seedAccreditationBonus TypeE
   it('TypeError from seedAccreditationBonus → POST_BROADCAST_OPERATOR_REQUIRED, not POST_BROADCAST_FAILED', async () => {
     // Reseed inside the it() body so vitest's `retry:1` replays cleanly —
     // `/link` activates the row (clears verify_token + sets username +
-    // custody='self' at signup-verify.ts:634-639) before the broadcast
+    // custody='self' during the pg activation step) before the broadcast
     // even fires, so a retry without a fresh row would 400 "Invalid or
     // expired link request".
     await reseedRow();
@@ -268,8 +268,8 @@ describe.skipIf(!dbReachable)('signup-verify /link: seedAccreditationBonus TypeE
 
     // verifyHiveSignature looks up the account by username and reads
     // posting.key_auths to verify the recovered key. The /link route then
-    // calls getAccounts a second time at signup-verify.ts:618 for an
-    // existence check — same return value works there.
+    // calls getAccounts a second time for an existence check — same return
+    // value works there.
     getAccountsMock.mockReset();
     getAccountsMock.mockImplementation(async (names: string[]) => {
       if (names.includes(username)) {
@@ -279,10 +279,11 @@ describe.skipIf(!dbReachable)('signup-verify /link: seedAccreditationBonus TypeE
     });
 
     // Broadcast succeeds (chain op landed), then seed throws TypeError —
-    // the permanent class that `seedAccreditationBonus` re-throws per
-    // broadcast-error.ts:47-55. Without `classifyPostBroadcastSeverity`,
-    // the default 'transient' severity emits POST_BROADCAST_FAILED + the
-    // "reconcile automatically" copy. With it, POST_BROADCAST_OPERATOR_REQUIRED.
+    // the permanent class that `seedAccreditationBonus` re-throws and
+    // `classifyPostBroadcastSeverity` maps to 'permanent'. Without
+    // `classifyPostBroadcastSeverity`, the default 'transient' severity emits
+    // POST_BROADCAST_FAILED + the "reconcile automatically" copy. With it,
+    // POST_BROADCAST_OPERATOR_REQUIRED.
     broadcastJsonMock.mockResolvedValue({ id: 'signup-link-tx-permanent' });
     seedBonusMock.mockRejectedValueOnce(new TypeError('reputation seed shape regression'));
 

@@ -49,9 +49,9 @@ const BAD_SEGMENT_RE = /[.-]{2}/;
  * Verify the supplied posting private key derives a public key that matches
  * one of the authorized posting keys on the named Hive account.
  *
- * Used by the stuck-account recovery path (Option C / BACKEND-SIGNUP-VERIFY-
- * STUCK-ACCOUNT-RECOVERY): when a user retries /confirm after a broadcast
- * failure, the original verify_token has been consumed (verify_token = NULL
+ * Used by the stuck-account recovery path (Option C): when a user retries
+ * /confirm after a broadcast failure, the original verify_token has been
+ * consumed (verify_token = NULL
  * after the pg activation step). The supplied posting_private becomes the
  * auth proof for the resume — anyone who owns the Hive account's posting
  * authority can recover the session.
@@ -557,11 +557,11 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
     // post-broadcast cascade failure (permanent seed error) produces 502
     // POST_BROADCAST_FAILED with `failed_step:'reputation_seed'`. Without
     // this, prior code returned 200 + JWT for an account whose chain op
-    // never landed (the "dangling JWT" class — BACKEND-REPUTATION-SSOT
-    // round-1 hold #8).
+    // never landed (the "dangling JWT" class: a session token must never be
+    // issued for an account whose accreditation op never reached the chain).
     //
-    // Stuck-resume path (BACKEND-SIGNUP-VERIFY-STUCK-ACCOUNT-RECOVERY,
-    // Option C): if we detected the user is in stuck state above, first
+    // Stuck-resume path (Option C): if we detected the user is in stuck
+    // state above, first
     // probe HAF for an existing accreditation custom_json. A prior attempt
     // whose broadcast was ambiguous (timeout / network failure mid-flight)
     // may have actually landed on chain; re-broadcasting would emit a
@@ -670,8 +670,9 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
         // broadcast failure routes through the operator-required code path
         // instead of the default 'transient' user copy claiming automatic
         // reconciliation. seedAccreditationBonus re-throws only permanent-
-        // class errors per broadcast-error.ts:47-55 (BACKEND-REPUTATION-SSOT
-        // round-2 hold #1; mirror orcid.ts:886).
+        // class errors, which classifyPostBroadcastSeverity then maps to
+        // 'permanent'. Mirrors orcid.ts handleAccredit's post-broadcast
+        // seed cascade.
         handleBroadcastError(
           res,
           new PostBroadcastWriteError(txId, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
@@ -869,13 +870,13 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
     await lock.release();
 
     // Broadcast accreditation custom_json + seed reputation in a single
-    // discrimination block. See /confirm above for full rationale
-    // (BACKEND-REPUTATION-SSOT round-1 hold #8). Mirrors the orcid.ts
-    // handleLink pattern: broadcast failure → 502/504; post-broadcast
+    // discrimination block. See /confirm above for full rationale (no
+    // dangling JWT for an account whose chain op never landed). Mirrors the
+    // orcid.ts handleLink pattern: broadcast failure → 502/504; post-broadcast
     // permanent seed failure → 502 POST_BROADCAST_FAILED.
     //
-    // Stuck-resume path (BACKEND-SIGNUP-VERIFY-STUCK-ACCOUNT-RECOVERY,
-    // Option C): if we detected the user is in stuck state above, first
+    // Stuck-resume path (Option C): if we detected the user is in stuck
+    // state above, first
     // probe HAF for an existing accreditation custom_json. See /confirm
     // above for the full rationale of HAF probe-before-retry.
     if (config.pevoAdminPostingKey) {
@@ -955,7 +956,8 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       try {
         await seedAccreditationBonus(hiveUsername);
       } catch (postErr) {
-        // See /confirm above for severity rationale (round-2 hold #1).
+        // See /confirm above for severity rationale: permanent-class
+        // post-broadcast seed failures route to the operator-required path.
         handleBroadcastError(
           res,
           new PostBroadcastWriteError(txId, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),

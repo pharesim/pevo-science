@@ -1,8 +1,8 @@
 /**
  * Stuck-account recovery (Option C) tests for /api/auth/confirm.
  *
- * Per BACKEND-SIGNUP-VERIFY-STUCK-ACCOUNT-RECOVERY task acceptance
- * criterion #6:
+ * Covers the recovery scenarios for a user whose first /confirm broadcast
+ * failed after the verify_token was already consumed (the stuck state):
  *
  *   (a) Stuck /confirm → recovery via /confirm-retry → successful session.
  *   (b) Stuck /confirm → broadcast-actually-landed-during-timeout → retry
@@ -294,7 +294,8 @@ describe.skipIf(!dbReachable)('signup-verify /confirm stuck-account recovery (Op
         keys,
       });
 
-    // Permanent severity → POST_BROADCAST_OPERATOR_REQUIRED (per round-2 hold #1).
+    // Permanent severity → POST_BROADCAST_OPERATOR_REQUIRED (a permanent-class
+    // post-broadcast seed failure routes to the operator-required path).
     expect(res.status).toBe(502);
     expect(res.body.error?.code).toBe('POST_BROADCAST_OPERATOR_REQUIRED');
     expect(res.body.error?.details).toMatchObject({
