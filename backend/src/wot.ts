@@ -369,6 +369,14 @@ export async function cascadeRevocation(
             // Fold nested progress into our aggregate and re-throw.
             completed.push(...nestedErr.completed);
             pending.push(...nestedErr.pending);
+            // Same-level vouchees after the current index were identified but
+            // never attempted once the nested cascade blew the budget. Fold
+            // them into pending, symmetric with the deadline-check branch's
+            // slice(i). Use slice(i + 1) (not slice(i)) because the vouchee at
+            // i was already broadcast above and is recorded in `completed`.
+            for (const r of result.rows.slice(i + 1)) {
+              pending.push(r.vouchee as string);
+            }
             throw new PartialCascadeError({
               completed,
               pending,

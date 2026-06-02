@@ -434,6 +434,52 @@ describe('BE-WOT-BROADCAST-TIMEOUT-HANDLING — cascadeRevocation aggregate budg
       vi.useRealTimers();
     }
   });
+
+  it('folds same-level unprocessed vouchees into pending when the budget blows inside a nested cascade', async () => {
+    vi.useFakeTimers();
+    try {
+      // boss → [v1, v2, v3]; v1 → [g1]. v1's revocation lands, then the cascade
+      // recurses into v1, where the budget blows on g1's deadline check (before
+      // g1 is broadcast). The nested-error catch must fold BOTH g1 (surfaced by
+      // the nested level) AND v2, v3 (same-level, identified but never attempted
+      // — slice(i + 1)) into pending. The asymmetry this pins: the deadline-check
+      // branch already slices same-level remainders, but the nested-error branch
+      // used to drop them, so v2/v3 vanished from the operator's follow-up list.
+      hafQueryMock.mockImplementation(
+        makeCascadeHafMock({
+          childrenByRevoker: { boss: ['v1', 'v2', 'v3'], v1: ['g1'] },
+          wotVouchees: new Set(['v1', 'v2', 'v3', 'g1']),
+        }),
+      );
+
+      broadcastJsonMock.mockImplementation(async (payload: { json: string }) => {
+        const parsed = JSON.parse(payload.json) as { account: string };
+        // After v1's revocation lands, jump wall-clock past the 60s budget so
+        // the nested cascade for v1's children aborts on its first deadline
+        // check rather than broadcasting g1.
+        if (parsed.account === 'v1') {
+          vi.setSystemTime(Date.now() + 61_000);
+        }
+        return { id: `tx-${parsed.account}` };
+      });
+
+      await expect(cascadeRevocation('boss')).rejects.toSatisfy((err: unknown) => {
+        if (!(err instanceof PartialCascadeError)) return false;
+        expect(err.rootRevocation).toBe('boss');
+        // Only v1's revocation broadcast landed before the nested budget blow.
+        expect(err.completed).toEqual(['tx-v1']);
+        // g1 (nested, never attempted) + v2, v3 (same-level slice(i + 1), never
+        // attempted). Pre-fix, pending would be just ['g1'] — v2/v3 silently lost.
+        expect(new Set(err.pending)).toEqual(new Set(['g1', 'v2', 'v3']));
+        // completed ∪ pending covers every originally-identified account.
+        const union = new Set([...err.completed.map((id) => id.replace('tx-', '')), ...err.pending]);
+        expect(union).toEqual(new Set(['v1', 'g1', 'v2', 'v3']));
+        return true;
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // Suppress linter on unused import (kept to document the export surface).
