@@ -43,14 +43,19 @@ export function verifyUnsubscribeToken(username: string, token: string): boolean
 
 /**
  * Flatten a chain-derived free-form string to a single line for safe
- * interpolation into the plain-text email body. Strips CR/LF (which would
- * otherwise let an attacker-controlled paper title forge digest lines or
- * inject a header-spoofing line that starts at column 0) and collapses
- * internal whitespace runs. Apply to any free-form chain field; Hive
- * usernames and internal enums are constrained and do not need it.
+ * interpolation into the plain-text email body. The first pass strips every
+ * Unicode line terminator explicitly — CR, LF, NEL (U+0085), and the
+ * line/paragraph separators (U+2028/U+2029) — rather than leaning on the
+ * whitespace-collapse pass that follows, because NEL is neither `\r`/`\n` nor
+ * a `\s` member in V8 and would otherwise survive both passes and forge a line
+ * break in clients that render it. This stops an attacker-controlled paper
+ * title from forging digest lines or injecting a header-spoofing line that
+ * starts at column 0. The second pass then collapses remaining whitespace
+ * runs. Apply to any free-form chain field; Hive usernames and internal enums
+ * are constrained and do not need it.
  */
 export function singleLine(s: string | null | undefined): string {
-  return (s ?? '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return (s ?? '').replace(/[\r\n\u0085\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 export function describeEvent(event: NotificationEvent): string {

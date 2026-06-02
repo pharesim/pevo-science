@@ -46,6 +46,14 @@ describe('singleLine', () => {
     expect(singleLine('a\r\nb')).toBe('a b');
   });
 
+  it('strips Unicode line terminators that are not \\s members in V8 (NEL, LS, PS)', () => {
+    // NEL (U+0085) matches neither \r/\n nor \s in V8, so the explicit
+    // line-terminator pass — not the whitespace collapse — has to catch it.
+    expect(singleLine('a\u0085b')).toBe('a b');
+    expect(singleLine('a\u2028b')).toBe('a b');
+    expect(singleLine('a\u2029b')).toBe('a b');
+  });
+
   it('collapses internal whitespace runs to a single space', () => {
     expect(singleLine('foo   bar\t\tbaz')).toBe('foo bar baz');
   });
@@ -75,6 +83,15 @@ describe('describeEvent line-forgery defense', () => {
     // The whole thing collapses to one line; no embedded line begins with "- ".
     const embeddedLines = line.split('\n');
     expect(embeddedLines).toHaveLength(1);
+    expect(line).toBe('- bob cited your paper "Real Paper - mallory endorsed your paper"');
+  });
+
+  it('neuters a NEL-forged line a whitespace-only strip would miss', () => {
+    // U+0085 is not a whitespace member in V8; a CR/LF-only strip leaves it
+    // intact, and it renders as a line break in some mail clients.
+    const payload = 'Real Paper\u0085- mallory endorsed your paper';
+    const line = `- ${describeEvent(citationEvent(payload))}`;
+    expect(line.includes('\u0085')).toBe(false);
     expect(line).toBe('- bob cited your paper "Real Paper - mallory endorsed your paper"');
   });
 
