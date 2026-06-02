@@ -137,12 +137,18 @@ function jwtFor(username: string): string {
 const VOUCHER = 'alice';
 const VOUCHEE = 'bob';
 
+// The vouchee's vouch set includes the voucher so the route's pre-broadcast
+// pollForVouch finds the just-broadcast vouch on its first read and returns
+// immediately (no real-time poll loop). Without this entry the poll would
+// spin the full ~6s cap on every test waiting for a vouch that never appears
+// in the mocked status. The poll mechanics (bust-then-read, cap timeout) are
+// covered directly in `wot-vouch-poll.test.ts`.
 const VOUCH_STATUS_FIXTURE = {
   username: VOUCHEE,
   vouch_count: 3,
   threshold: 3,
   eligible: false,
-  vouches: [],
+  vouches: [{ voucher: VOUCHER, relationship: 'colleague', timestamp: '2026-01-01T00:00:00Z' }],
 } satisfies VouchStatus;
 
 beforeEach(() => {

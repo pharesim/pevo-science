@@ -9,11 +9,51 @@ import { Router, type Request, type Response } from 'express';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { getAccreditedSet } from '../accreditation.js';
-import { getVouchStatus, broadcastWotAccreditation, cascadeRevocation, PartialCascadeError } from '../wot.js';
+import { getVouchStatus, broadcastWotAccreditation, cascadeRevocation, PartialCascadeError, type VouchStatus } from '../wot.js';
 import { logger } from '../logger.js';
 import { isHafConfigured } from '../db.js';
+import { hafCache } from '../cache.js';
 
 const router = Router();
+
+// Vouch-status poll window. The vouch custom_json is broadcast by the frontend
+// BEFORE /api/wot/vouch is called; HAF block-ingestion lags that broadcast by
+// ~3s+, and a prior reader may have populated the 60s `getVouchStatus` cache
+// with pre-vouch state. The cap is kept tight (~2 Hive blocks); on timeout the
+// flow falls through to the existing skipped path.
+const VOUCH_POLL_CAP_MS = 6_000;
+const VOUCH_POLL_INTERVAL_MS = 1_500;
+
+/**
+ * Bust the cached vouch status for `vouchee` and poll HAF until the vouch from
+ * `voucher` surfaces, or the cap elapses. Returns the freshest status seen
+ * (null if HAF is unavailable, or a status still missing the vouch on timeout)
+ * so the caller can run the threshold check and build the response from it.
+ *
+ * Each iteration invalidates the cache BEFORE reading: busting alone would
+ * re-read still-lagging HAF and re-cache the stale answer; polling without
+ * busting would re-read the just-populated cache. Both are required. The cap /
+ * interval are injectable so the timing-sensitive paths can be exercised
+ * deterministically without real-time sleeps.
+ */
+export async function pollForVouch(
+  vouchee: string,
+  voucher: string,
+  opts: { capMs?: number; intervalMs?: number } = {},
+): Promise<VouchStatus | null> {
+  const capMs = opts.capMs ?? VOUCH_POLL_CAP_MS;
+  const intervalMs = opts.intervalMs ?? VOUCH_POLL_INTERVAL_MS;
+  const deadline = Date.now() + capMs;
+
+  let status: VouchStatus | null = null;
+  for (;;) {
+    await hafCache.invalidate(`vouch_status:${vouchee}`);
+    status = await getVouchStatus(vouchee);
+    if (status?.vouches.some((v) => v.voucher === voucher)) return status;
+    if (Date.now() + intervalMs >= deadline) return status;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
 
 // ──────────────────────────────────────────────
 // GET /api/wot/:username — vouch status
@@ -59,9 +99,17 @@ router.post('/vouch', verifyHiveSignature, async (req: Request, res: Response) =
     return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can vouch');
   }
 
+  // Bust the stale vouch-status cache and poll HAF for the just-broadcast
+  // vouch before the threshold check, so an over-threshold vouch accredits in
+  // this same request instead of waiting for the next vouch or the 60s cache
+  // expiry (see pollForVouch). On timeout this returns the latest status and
+  // the flow falls through to the existing skipped path. Reuse the polled
+  // status for the response: broadcastWotAccreditation does not change the
+  // vouch count, and its own getVouchStatus read hits the poll's fresh cache.
+  const status = await pollForVouch(vouchee, voucher);
+
   // Check if the vouchee now meets the threshold
   const accreditResult = await broadcastWotAccreditation(vouchee);
-  const status = await getVouchStatus(vouchee);
 
   if (accreditResult.ok) {
     logger.info(
