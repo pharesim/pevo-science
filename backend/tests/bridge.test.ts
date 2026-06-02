@@ -108,6 +108,19 @@ describe('bridgePermlink', () => {
     expect(bridgePermlink({ type: 'doi', id: '10.1101/2026.01.01.123456' }))
       .toBe('bridge-doi-10-1101-2026-01-01-123456');
   });
+
+  it('collapses case-variant DOIs to one permlink (the shared bridge-check cache key matches this dedup unit)', () => {
+    // bridgePermlink is BOTH the dedup unit (Postgres partial-unique index,
+    // worker permlink-fallback query) AND the /check + /register shared-cache
+    // key. DOIs are case-insensitive, so case-variants of one DOI MUST map to
+    // one permlink — else /register's cache probe misses the entry /check
+    // populated for the same paper, and the partial-unique index would not
+    // dedup them either.
+    const canonical = bridgePermlink({ type: 'doi', id: '10.1234/AbC.DeF' });
+    expect(canonical).toBe('bridge-doi-10-1234-abc-def');
+    expect(bridgePermlink({ type: 'doi', id: '10.1234/ABC.DEF' })).toBe(canonical);
+    expect(bridgePermlink({ type: 'doi', id: '10.1234/abc.def' })).toBe(canonical);
+  });
 });
 
 const SAMPLE_LOOKUP: BridgeLookupResult = {

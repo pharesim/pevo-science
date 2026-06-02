@@ -294,14 +294,21 @@ type BridgeCheckResult =
 
 // Shared cache-key helper. `/check` populates the cache after a successful
 // HAF lookup; `/register` (called within 30s of a matching `/check`) hits the
-// same key and skips the HAF round-trip. The bridge worker intentionally does
-// NOT participate in this cache — it calls `findBridgeDuplicate` directly via
-// `checkExistingOnChain` in `bridge-worker.ts`. The worker's check is the last
-// defense against burning a ~5-min chain cooldown on a duplicate broadcast,
-// and a 30s-stale `exists:false` hit there would re-introduce exactly the
-// duplicate-broadcast risk the fresh check exists to close.
-function bridgeCheckCacheKey(parsed: { type: 'arxiv' | 'doi'; id: string }): string {
-  return `bridge-check:${parsed.type}:${parsed.id}`;
+// same key and skips the HAF round-trip. The key is the canonical
+// `bridgePermlink` — the same lowercased+slugified dedup unit used by the
+// Postgres partial-unique index and the worker's permlink-fallback query — so
+// case- or separator-variant identifiers that collapse to one permlink also
+// collapse to one cache key. Keying on the raw parsed id instead would let a
+// case-variant DOI produce a distinct cache key and silently miss the cache
+// the matching `/check` just populated, defeating the optimization. The bridge
+// worker intentionally does NOT participate in this cache — it calls
+// `findBridgeDuplicate` directly via `checkExistingOnChain` in
+// `bridge-worker.ts`. The worker's check is the last defense against burning a
+// ~5-min chain cooldown on a duplicate broadcast, and a 30s-stale
+// `exists:false` hit there would re-introduce exactly the duplicate-broadcast
+// risk the fresh check exists to close.
+function bridgeCheckCacheKey(permlink: string): string {
+  return `bridge-check:${permlink}`;
 }
 
 type BridgeCheckOk = Extract<BridgeCheckResult, { status: 'ok' }>;
@@ -348,7 +355,7 @@ async function checkExistingBridge(
   // Cache probe shared across `/check` and `/register`. The 30s TTL bounds
   // staleness; the haf_unavailable sentinel is never cached so a HAF blip
   // does not poison subsequent calls for up to 30s.
-  const cacheKey = bridgeCheckCacheKey(canonical);
+  const cacheKey = bridgeCheckCacheKey(permlink);
   const cached = await hafCache.get<BridgeCheckOk>(cacheKey);
   if (cached !== undefined) return cached;
 

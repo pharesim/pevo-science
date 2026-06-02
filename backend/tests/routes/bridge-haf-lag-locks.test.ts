@@ -524,16 +524,16 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /check fail-open on HAF outage (round-2 ho
       // calling `hafCache.set` on the haf_unavailable branch would write
       // the QueryCache-prefixed key into fakeRedis.store. The expected
       // shape matches `hafCache`'s prefix (`${config.appTag}:cache:`)
-      // concatenated with the route-side cache key
-      // (`bridge-check:${parsed.type}:${parsed.id}`).
-      expect(fakeRedis.store.has(`${config.appTag}:cache:bridge-check:arxiv:2301.99999`)).toBe(false);
+      // concatenated with the route-side cache key (`bridge-check:` + the
+      // canonical `bridgePermlink`).
+      expect(fakeRedis.store.has(`${config.appTag}:cache:bridge-check:bridge-arxiv-2301-99999`)).toBe(false);
     } finally {
       warnSpy.mockRestore();
     }
   });
 });
 
-describe('BE-BRIDGE-CHECK-CACHE — /check populates the cache; /register hits it; worker bypasses', () => {
+describe('bridge /check + /register shared HAF cache: /check populates, /register hits within TTL, worker bypasses', () => {
   const ACCREDITED = 'cacheauthor';
 
   beforeEach(async () => {
@@ -553,9 +553,10 @@ describe('BE-BRIDGE-CHECK-CACHE — /check populates the cache; /register hits i
     const checkCallCount = pgQuery.mock.calls.length;
     expect(checkCallCount).toBeGreaterThan(0);
 
-    // Cache key matches the shared `bridgeCheckCacheKey` shape; it must be
-    // present in Redis so the next caller can hit it.
-    expect(fakeRedis.store.has(`${config.appTag}:cache:bridge-check:arxiv:2301.99999`)).toBe(true);
+    // Cache key matches the shared `bridgeCheckCacheKey` shape (keyed on the
+    // canonical `bridgePermlink`); it must be present in Redis so the next
+    // caller can hit it.
+    expect(fakeRedis.store.has(`${config.appTag}:cache:bridge-check:bridge-arxiv-2301-99999`)).toBe(true);
 
     // Second call: /register for the SAME identifier must NOT trigger
     // another findBridgeDuplicate. The route's enqueue path still fires
@@ -573,7 +574,7 @@ describe('BE-BRIDGE-CHECK-CACHE — /check populates the cache; /register hits i
     // Populate the cache via /check.
     const checkRes = await request(app).get('/api/bridge/check').query({ identifier: '2301.99999' });
     expect(checkRes.status).toBe(200);
-    expect(fakeRedis.store.has(`${config.appTag}:cache:bridge-check:arxiv:2301.99999`)).toBe(true);
+    expect(fakeRedis.store.has(`${config.appTag}:cache:bridge-check:bridge-arxiv-2301-99999`)).toBe(true);
     const warmCount = pgQuery.mock.calls.length;
     expect(warmCount).toBeGreaterThan(0);
 

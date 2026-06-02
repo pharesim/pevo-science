@@ -52,3 +52,14 @@ Round-1 review (`/ce-code-review`, full persona fan-out) on commit `283a0b7f`. C
 1. **Cache-key / permlink canonicalization divergence** (P2). `bridgeCheckCacheKey` keys on the raw `parsed.id`, but the dedup unit everywhere else (`bridgePermlink`, the Postgres partial-unique index, the worker's permlink-fallback query) lowercases + slugifies. Case-variant (or separator-variant) DOIs collapse to one permlink but produce distinct cache keys, so the `/check`→`/register` cache hit silently misses — the optimization this task exists to deliver. No safety impact (worker uncached; the `type` segment + distinct raw ids prevent any false cross-paper `exists:true`). Fix: key the cache on `bridgePermlink(parsed)` (or canonicalize DOI ids in `parseIdentifier` so `parsed.id` is canonical everywhere) so the cache unit matches the dedup unit.
 
 2. **`describe`-label anchor rot** (P2, newly introduced). The new `describe` block in `bridge-haf-lag-locks.test.ts` encodes the task slug (`BE-BRIDGE-CHECK-CACHE`) plus an emdash. Reword to a behavioral description with no slug and no emdash, e.g. "bridge /check + /register shared HAF cache: /check populates; /register hits within TTL; worker bypasses".
+
+---
+
+## Backend re-review signal (2026-06-02, working tree)
+
+Both HELD-PENDING-FIXES items landed:
+
+- **Item #1 (cache-key canonicalization):** `bridgeCheckCacheKey` now takes the canonical permlink and returns `bridge-check:${permlink}`; the sole call site in `checkExistingBridge` passes the already-computed `bridgePermlink(parsed)`. Raw-`parsed.id` keying is removed, so the cache unit now equals the dedup unit (Postgres partial-unique index + worker permlink-fallback query). Case-/separator-variant identifiers that collapse to one permlink now share one cache entry, so the `/check`→`/register` hit no longer silently misses. The three cache-key assertions in `bridge-haf-lag-locks.test.ts` were updated to the permlink-based key (`bridge-check:bridge-arxiv-2301-99999`), and a new pure-function test in `bridge.test.ts` pins the case-variant collapse invariant the fix relies on.
+- **Item #2 (describe-label rot):** the `describe` label in `bridge-haf-lag-locks.test.ts` is reworded to a behavioral description with no task slug and no emdash.
+
+Verification: `npm run typecheck` clean for the touched files; `npm run lint` clean (no new findings from this diff); `bridge.test.ts` (21) and `bridge-haf-lag-locks.test.ts` (5) green. The worker-uncached and `haf_unavailable`-never-cached invariants are unchanged (the change is confined to the cache-key derivation).
