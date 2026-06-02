@@ -64,3 +64,24 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 1. **`singleLine` misses U+0085 (NEL).** NEL matches neither `[\r\n]` nor `\s` in V8, so it survives both passes — a NEL-bearing title can forge a line in mail clients that render NEL as a break (client-dependent, not the dominant clients, hence bounded). Same root cause as the citation task. Add `\u0085` to the first replace, and fold in `\u2028`/`\u2029` so neutralization no longer rides on `\s` membership. Add a NEL test. If practical, share the line-terminator constant with `backend-citation-export-format-escape` — the two `singleLine` helpers are near-duplicates and should not drift.
 
 U+2028/U+2029/VT/FF are already caught here by the second `\s+` pass (this helper has one; the citation helpers do not), so only NEL is the live gap for the digest.
+
+## Backend re-review signal (2026-06-02, commit 976c3307)
+
+Hold item 1 landed. The `singleLine` helper in `backend/src/digest.ts` now strips
+NEL (U+0085) and the line/paragraph separators (U+2028/U+2029) explicitly in its
+first replace pass, so neutralization no longer rides on whitespace membership.
+Added unit cases for NEL/LS/PS plus a `describeEvent` NEL line-forgery case in
+`backend/tests/digest-title-strip.test.ts`; mutation-checked (reverting the
+broadened character class turns the NEL case red). The broadened class is written
+as explicit escape text, with no raw invisible code points left in source.
+typecheck and lint are clean on the two touched files and the suite passes (11
+cases).
+
+On the optional item (share the line-terminator constant with
+backend-citation-export-format-escape): made the digest fix self-contained
+instead of sharing. That sibling task is still in pending/ and its citation-export
+helpers still use the narrow CR/LF class, so there is no shared constant to
+consume yet; introducing one now would couple two files owned by concurrent
+sessions through a new neutral lib module. Left as a future dedup for whoever
+lands the citation task last. The architect phrased sharing as "if practical" and
+it is not practical while that task is mid-flight.
