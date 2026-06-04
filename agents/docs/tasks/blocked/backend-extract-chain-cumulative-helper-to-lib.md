@@ -59,3 +59,52 @@ When this task does land, fold the **affiliation strip** into the shared `enrich
 ## UNBLOCKED 2026-05-30 (architect)
 
 Unblock condition met: `backend-cumulative-union-listing-surfaces-parity` archived 2026-05-26 (round-4 clean), so the cumulative-union helper is at its final post-review shape. No parallel-landing merge-conflict risk remains. Moving `blocked/` → `pending/` for backend pickup. The affiliation-strip dedup folded in above is in scope.
+
+## [BLOCKED by Architect] (2026-06-02)
+
+Backend verification before pickup surfaced a design fork the task spec does not
+resolve, so this needs an architect layering decision before it can land cleanly.
+
+**The fork.** The extraction requires `computeChainCumulativeFromHaf` to move into
+the new `backend/src/lib/chain-cumulative.ts` (it is reached only via
+`resolveChainCumulativeAuthors`, which moves). But `computeChainCumulativeFromHaf`
+depends on `resolveContinuationChain`, `reconstructVersionsFromHaf`, and
+`safePevoMeta` — all three of which the Out-of-scope section explicitly keeps in
+`papers.ts`, and none of which are currently exported. So extraction forces one of:
+
+- (a) **Export the walker internals from `papers.ts` and import them lib->routes.**
+  This is an inverse-layering smell, and it directly undercuts this task's own M1
+  motivation (it removes a route-to-route import only to introduce a lib-to-route
+  one). `safePevoMeta` alone has ~11 call-sites in `papers.ts`, the walkers ~20+.
+- (b) **Widen scope to move `resolveContinuationChain` / `reconstructVersionsFromHaf`
+  / `safePevoMeta` into the lib too.** Clean routes->lib layering, but explicitly
+  out of this task's scope and a much larger blast radius (~20+ call-site updates
+  in `papers.ts`).
+
+Need the architect to pick (a) or (b) — or a third shape (e.g. dependency-inject
+the walkers into the helper to keep the signature stable) — and update the
+Out-of-scope section accordingly.
+
+**Mandatory test re-points (not called out in the task body).** Two tests
+hard-depend on the symbol's current location, so the "all tests pass, no
+behavioral change" acceptance cannot hold without editing them:
+`papers-cumulative-cross-surface-parity-mocked.test.ts` imports
+`resolveChainCumulativeAuthors` from `src/routes/papers.js`, and
+`profile-papers-empty-cumulative-fallback.test.ts` does `vi.mock` on
+`src/routes/papers.js` for it. After the move both must re-point to the lib
+module, and the fallback test's mock injection point must be re-verified because
+the profile handler will call `enrichRowsWithChainAuthors` (which internally calls
+`resolveChainCumulativeAuthors`) rather than the symbol directly. Flagging so the
+re-pointing is part of the agreed scope, not a surprise at re-review.
+
+**Live sibling overlap.** `backend/src/routes/profile.ts` (one of the two files
+this task edits) is modified in the working tree by a concurrent session right
+now, and pending siblings `backend-papers-listing-correlated-subqueries` and
+`backend-citation-count-inverted-cte` both edit `fetchPapersFromHaf` in
+`papers.ts` (different regions from the enrichment loop, but same function).
+Landing the extraction while those are in flight risks merge churn even once the
+layering question is answered.
+
+**Unblock condition.** Architect rules on the layering fork (a / b / DI) and
+updates the Out-of-scope + Acceptance sections, then `git mv`s this file back to
+`pending/`. Backend then extracts per the agreed shape and re-points the two tests.
