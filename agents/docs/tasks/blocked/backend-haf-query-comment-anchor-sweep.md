@@ -52,3 +52,49 @@ Replace stale anchors with symbol names; preserve the load-bearing behavioral do
 - [agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md](agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md).
 - [agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md](agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md).
 - HAF-query review run `w274tijk0` rank #36.
+
+## [BLOCKED by Backend] (2026-06-02)
+
+Premature. This task's own Notes say to land it "as one focused commit after the
+substantive fixes (#1-#10) ... those will reshape some of the cited lines anyway."
+That is a WAIT condition, and it is not yet met. The substantive HAF-query review
+findings map to a batch of `backend-reputation-*` and `backend-notifications-*`
+tasks still sitting in `pending/`, several being edited by concurrent backend
+sessions right now (`backend/src/reputation.ts` is modified in the working tree at
+the time of this move).
+
+Concrete conflict surface:
+
+- The three target files (`reputation.ts`, `reputation-batch.ts`,
+  `notification-queries.ts`) are all touched by still-pending substantive tasks
+  (e.g. `backend-reputation-claims-cte-dedup` extracts ~100 lines and will
+  massively reshape `reputation.ts` line context; `backend-reputation-decay-
+  multiplier-helper` reshapes the exact `citation_scores`/`review_scores` region
+  the drifted anchors sit in).
+- `backend-notifications-citation-arms-paper-exists-gate` and
+  `backend-notifications-edit-revote-dedup` restructure the exact arms 6a/6b whose
+  citation-array SRF guard this task wants to extract into `citationsArrayGuardSql`
+  — head-on conflict, not adjacent.
+- The line-number cross-references this task cites have ALREADY drifted vs current
+  code (verified), which is itself proof the churn is ongoing.
+- A sibling commit shows the architect is sequencing per-arm comment-anchor cleanup
+  INTO the substantive notification tasks themselves, so part of this task's
+  notification-queries.ts scope may be absorbed before it ever runs.
+
+**Unblock condition.** The substantive `backend-reputation-*` and
+`backend-notifications-*` tasks that touch these three files archive. At that point
+the implementer must RE-ENUMERATE the live stale anchors (the snapshot in this file
+will have drifted, and some anchors may already be cleaned by the per-arm work)
+rather than trusting the line/anchor list above, then sweep whatever remains in one
+focused commit and extract `citationsArrayGuardSql`. Whoever lands the last of
+those substantive tasks (or the architect, noticing the batch has cleared) moves
+this file back to `pending/`.
+
+Verified-and-still-true facts for the eventual implementer: the three cited slugs
+(BACKEND-REPUTATION-SSOT, BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS,
+BACKEND-SELF-REVIEW-EXCLUSION) are genuinely absent from `tasks/` and
+`tasks-archive.md`; no `citationsArrayGuardSql` helper exists yet; the arm 6a/6b
+SRF guards are byte-identical; `imageSrfGuardExpr` in `lib/ipfs-shared.ts` is the
+precedent, but the citations guard needs a second `appTagParam` argument (a $N
+placeholder threaded through the appTag index) and that param must NOT be
+identifier-validated like the alias.
