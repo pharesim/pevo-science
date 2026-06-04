@@ -486,11 +486,14 @@ async function cidIsKnown(cid: string): Promise<boolean> {
   const pool = getPool();
   if (!pool) return false;
 
-  // Gateway path requires the referencing comment's author to be accredited, so
-  // a free unaccredited Hive account cannot whitelist an arbitrary
-  // externally-pinned CID into the gateway. The pending-row short-circuit above
+  // Gateway path requires (a) the referencing comment's author to be accredited
+  // — so a free unaccredited Hive account cannot whitelist an external CID — and
+  // (b) a STRUCTURED reference (`ipfs_cid` / `supplementary_files[].cid`), via
+  // excludeImageReference, so an accredited author cannot self-whitelist an
+  // arbitrary external CID by merely naming it in a free-text markdown image URL
+  // (the cheapest self-whitelist vector). The pending-row short-circuit above
   // still serves a freshly-uploaded (accredited) CID before it lands on chain.
-  return cidReferencedByAppTag(pool, cid, { requireAccreditedAuthor: true });
+  return cidReferencedByAppTag(pool, cid, { requireAccreditedAuthor: true, excludeImageReference: true });
 }
 
 router.get('/:cid', ipfsDownloadLimiter, async (req: Request, res: Response) => {

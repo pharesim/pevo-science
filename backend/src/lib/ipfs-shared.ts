@@ -145,13 +145,25 @@ export function imageSrfGuardExpr(alias: string): string {
  * in-use check there would treat a live on-chain-referenced file as unreferenced
  * once its author lost (or never held) accreditation and unpin it irreversibly —
  * the asymmetric-cost rule above (over-inclusive beats under-inclusive on the
- * cleanup side). With the flag unset the emitted SQL and its `$1..$4` parameters
- * are byte-identical to the prior cleanup-path query.
+ * cleanup side). With both flags unset the emitted SQL and its `$1..$4`
+ * parameters are byte-identical to the prior cleanup-path query.
+ *
+ * **`excludeImageReference` is gateway-only.** When set, the broadcaster-
+ * controlled `image[]`-substring OR-branch is dropped from the predicate, so a
+ * CID named only inside a free-text markdown image URL no longer counts —
+ * only the structured `metadata.<appTag>.ipfs_cid` and
+ * `supplementary_files[].cid` positions whitelist a CID into the gateway. This
+ * closes the cheapest self-whitelist vector (an accredited author embedding an
+ * external CID in any `image[]` URL). It is deliberately NOT set on the cleanup
+ * path: dropping the over-inclusive image match there would risk unpinning a
+ * live file referenced only via that branch (under-inclusive = data loss on the
+ * cleanup side). The `cid` (`$…4`) bind exists solely for this branch, so it is
+ * omitted from the params when the branch is dropped.
  */
 export async function cidReferencedByAppTag(
   pool: pg.Pool,
   cid: string,
-  opts: { requireAccreditedAuthor?: boolean } = {},
+  opts: { requireAccreditedAuthor?: boolean; excludeImageReference?: boolean } = {},
 ): Promise<boolean> {
   const appTag = config.appTag;
 
@@ -168,6 +180,27 @@ export async function cidReferencedByAppTag(
   const suppP = base + 3;
   const cidLikeP = base + 4;
 
+  // Gateway-only: drop the broadcaster-controlled image[]-substring OR-branch
+  // (and its sole consumer, the cidLike param) so only structured references
+  // whitelist a CID. Left unset on the cleanup path, which keeps the
+  // over-inclusive image match AND the byte-identical $1..$4 params/SQL the
+  // cleanup contract requires.
+  const imageOrBranch = opts.excludeImageReference
+    ? ''
+    : `
+         OR EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
+              WHERE img LIKE '%' || $${cidLikeP} || '%'
+            )`;
+
+  const params: unknown[] = [
+    ...(accred ? accred.params : []),
+    JSON.stringify([appTag]),
+    JSON.stringify({ [appTag]: { ipfs_cid: cid } }),
+    JSON.stringify({ [appTag]: { supplementary_files: [{ cid }] } }),
+  ];
+  if (!opts.excludeImageReference) params.push(cid);
+
   const result = await pool.query(
     `${withClause}
      SELECT 1 FROM ${T.comments} c
@@ -175,20 +208,10 @@ export async function cidReferencedByAppTag(
        ${accredPredicate}
        AND (
             c.json_metadata @> $${cidMetaP}::jsonb
-         OR c.json_metadata @> $${suppP}::jsonb
-         OR EXISTS (
-              SELECT 1 FROM jsonb_array_elements_text(${imageSrfGuardExpr('c')}) img
-              WHERE img LIKE '%' || $${cidLikeP} || '%'
-            )
+         OR c.json_metadata @> $${suppP}::jsonb${imageOrBranch}
        )
      LIMIT 1`,
-    [
-      ...(accred ? accred.params : []),
-      JSON.stringify([appTag]),
-      JSON.stringify({ [appTag]: { ipfs_cid: cid } }),
-      JSON.stringify({ [appTag]: { supplementary_files: [{ cid }] } }),
-      cid,
-    ],
+    params,
   );
 
   // A `SELECT 1 … LIMIT 1` always reports a row count under node-pg, so a null

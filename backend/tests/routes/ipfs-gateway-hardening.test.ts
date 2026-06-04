@@ -66,6 +66,19 @@ describe('GET /api/ipfs/:cid — per-route isolation headers', () => {
     expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.headers['cross-origin-resource-policy']).toBe('same-site');
   });
+
+  // The provenance gate (backend-ipfs-cid-provenance-gate) accepts a residual:
+  // an accredited author can still host content under the app origin via a
+  // structured reference. The CSP sandbox is then the load-bearing barrier that
+  // keeps that content in an opaque origin — so it MUST carry no allow-tokens. A
+  // `sandbox allow-scripts allow-same-origin` would re-grant script execution +
+  // parent-origin access, reopening the same-origin XSS chain. Pin the bare token.
+  it('CSP sandbox carries NO allow-tokens (the load-bearing opaque-origin barrier)', async () => {
+    const res = await request(app).get('/api/ipfs/not-a-valid-cid');
+    const csp = res.headers['content-security-policy'];
+    expect(csp).toBe('sandbox');
+    expect(csp).not.toMatch(/allow-/);
+  });
 });
 
 describe('gatewaySafeContentType — served Content-Type allow-list', () => {
@@ -181,6 +194,37 @@ describe('cidReferencedByAppTag — accredited-author gate (gateway-only)', () =
     // CTE contributes 2 params ahead of the 4 containment params.
     expect(values).toHaveLength(6);
     // The containment params now bind at $3..$6.
+    expect(text).toContain('c.tags @> $3::jsonb');
+  });
+
+  it('excludeImageReference drops the image-SRF branch and its cid param (gateway provenance gate)', async () => {
+    const captured: { text: string; values: unknown[] }[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await cidReferencedByAppTag(captureStubPool(captured) as any, VALID_CID, { excludeImageReference: true });
+    const { text, values } = captured[0];
+    // The broadcaster-controlled image[]-substring branch is gone: no SRF guard,
+    // and the cid param (its sole consumer) is dropped — 3 params, not 4.
+    expect(text).not.toContain('jsonb_array_elements_text');
+    expect(text).not.toContain('img LIKE');
+    expect(values).toHaveLength(3);
+    // The two structured-reference containments survive.
+    expect((text.match(/c\.json_metadata @>/g) ?? []).length).toBe(2);
+  });
+
+  it('the gateway combination (accredited-author + structured-only) keeps the CTE and drops the image branch', async () => {
+    const captured: { text: string; values: unknown[] }[] = [];
+    await cidReferencedByAppTag(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      captureStubPool(captured) as any,
+      VALID_CID,
+      { requireAccreditedAuthor: true, excludeImageReference: true },
+    );
+    const { text, values } = captured[0];
+    expect(text).toContain('c.author IN (SELECT account FROM active_accreditations)');
+    expect(text).not.toContain('jsonb_array_elements_text');
+    // 2 CTE params + 3 containment params (tags, ipfs_cid, supplementary_files);
+    // no trailing cid param since the image branch is gone.
+    expect(values).toHaveLength(5);
     expect(text).toContain('c.tags @> $3::jsonb');
   });
 
