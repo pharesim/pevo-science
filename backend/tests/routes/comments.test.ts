@@ -241,4 +241,85 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
       expect(p1Keys.has(key(c))).toBe(false);
     }
   });
+
+  // Ordering contract: the set-equality test above proves the underlying set
+  // is stable across variants but never checks ORDER — an inverted asc/desc or
+  // a wrong sort key would pass it. paginateTree now applies a TOTAL order
+  // (primary key, then permlink, then author), so within a variant the primary
+  // key is monotonic and desc is exactly asc reversed. Both assertions kill the
+  // page-tearing regression: a non-total comparator would let ties order
+  // differently between the asc and desc reads, breaking the reversed-equality.
+  it('orders each (sort,order) variant monotonically; desc is exactly asc reversed', { timeout: 60_000, retry: 5 }, async () => {
+    const PAPER_AUTHOR = 'jesusalejos';
+    const PAPER_PERMLINK = 'tica-y-meta-antropologa-una-aproximacin-al-sentido-de-la-tecnologa-hoy-en-hans-urs-von-balthasar-mp2t81qb';
+    const key = (c: { author: string; permlink: string }) => `${c.author}/${c.permlink}`;
+    const fetchVariant = (sort: string, order: string) =>
+      request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=200&sort=${sort}&order=${order}`);
+
+    for (const sort of ['date', 'votes']) {
+      const [asc, desc] = await Promise.all([fetchVariant(sort, 'asc'), fetchVariant(sort, 'desc')]);
+      expect(asc.status).toBe(200);
+      expect(desc.status).toBe(200);
+      if (asc.body.data.length < 2) continue; // need >=2 rows to assert ordering
+
+      // Primary key monotonic in the declared direction. `created` compares
+      // lexicographically (chain timestamp string), `votes` numerically —
+      // mirroring paginateTree's comparator.
+      const primary = (c: { net_votes: number; created: string }) =>
+        sort === 'votes' ? c.net_votes : c.created;
+      for (let i = 1; i < asc.body.data.length; i++) {
+        expect(
+          primary(asc.body.data[i - 1]) <= primary(asc.body.data[i]),
+          `${sort} asc not monotonic at index ${i}`,
+        ).toBe(true);
+      }
+      for (let i = 1; i < desc.body.data.length; i++) {
+        expect(
+          primary(desc.body.data[i - 1]) >= primary(desc.body.data[i]),
+          `${sort} desc not monotonic at index ${i}`,
+        ).toBe(true);
+      }
+      // Total order: desc === asc reversed. Only holds because the comparator
+      // breaks primary-key ties on (permlink, author), a unique pair.
+      const ascKeys = asc.body.data.map(key);
+      const descKeys = desc.body.data.map(key);
+      expect(descKeys).toEqual([...ascKeys].reverse());
+    }
+  });
+
+  // Pagination edge: a page whose offset exceeds total must return an empty
+  // slice WITHOUT changing meta.total (the canonical tree's `total` is the full
+  // count regardless of the requested window). A slice mis-computation that
+  // clamped or wrapped the offset would surface here.
+  it('returns empty data with the full total when offset exceeds total', { timeout: 60_000, retry: 5 }, async () => {
+    const PAPER_AUTHOR = 'jesusalejos';
+    const PAPER_PERMLINK = 'tica-y-meta-antropologa-una-aproximacin-al-sentido-de-la-tecnologa-hoy-en-hans-urs-von-balthasar-mp2t81qb';
+    const full = await request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=200`);
+    expect(full.status).toBe(200);
+    const total = full.body.meta.total;
+    // page=9999 at limit=50 puts offset far beyond any real tree.
+    const pastEnd = await request(app).get(
+      `/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=50&page=9999`,
+    );
+    expect(pastEnd.status).toBe(200);
+    expect(pastEnd.body.data).toEqual([]);
+    expect(pastEnd.body.meta.total).toBe(total);
+  });
+
+  // `total = rows.length` invariant on a NON-EMPTY tree. The orphan-paper test
+  // above pins this only at 0; this paper has a known multi-comment tree, so it
+  // pins the invariant where a count-walk/length divergence would actually show
+  // (the prior duplicate count query is gone — total now derives from the
+  // cached tree's length).
+  it('meta.total equals data.length on a non-empty unpaginated (limit=200) fetch', { timeout: 60_000, retry: 5 }, async () => {
+    const PAPER_AUTHOR = 'jesusalejos';
+    const PAPER_PERMLINK = 'tica-y-meta-antropologa-una-aproximacin-al-sentido-de-la-tecnologa-hoy-en-hans-urs-von-balthasar-mp2t81qb';
+    const res = await request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=200`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    // Only valid when the tree is not capped by the limit; this paper's tree is
+    // well under 200.
+    expect(res.body.meta.total).toBeLessThanOrEqual(200);
+    expect(res.body.meta.total).toBe(res.body.data.length);
+  });
 });

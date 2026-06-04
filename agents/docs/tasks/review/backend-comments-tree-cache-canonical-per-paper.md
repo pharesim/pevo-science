@@ -51,3 +51,16 @@ Round-1 review on commit `b80d1dec`. Response-shape/contract preserved and the c
 3. **Orphaned task-slug anchor** (P2). The enrichment-map comment cites `BACKEND-REPUTATION-SSOT`, inside the block this commit refactored. Reword to the behavioral statement it stands for ("chain is SSoT; the reputation batch map is a performance cache; a stale entry for a revoked account must not produce a non-zero score").
 
 4. **Type-soundness** (P2). `hafCache.getOrSet(...)` lacks an explicit generic, so the `tree!` non-null assertion discards the null branch rather than the checker enforcing it; use `getOrSet<{ rows: EnrichedComment[]; total: number }>(...)` + a real `if (!tree) return sendError(...)` guard. Also type the row query via `pool.query<RawCommentRow>(...)` with a named interface to drop the unsound `as string`/`as number` casts.
+
+---
+
+## Backend re-review signal (2026-06-04)
+
+All four round-1 hold items landed in `routes/comments.ts` + `tests/routes/comments.test.ts`:
+
+1. **Sort tie-breaker.** `paginateTree`'s comparator now applies `permlink` then `author` as secondary/tertiary keys before the order flip. (permlink, author) is unique per comment, so the comparator is a total order and the whole composite is negated for `desc`, making desc exactly asc reversed. The docblock now documents this and notes the recursive CTE intentionally has no `ORDER BY` (the JS total order fully determines output regardless of scan order, so an SQL sort would only add cost rather than affect correctness).
+2. **Sort/pagination tests.** Added three specs: per-variant monotonic-ordering assertions plus `desc === asc reversed` (kills an inverted/wrong sort key, which the prior SET-equality test could not); an `offset > total` case asserting `data:[]` with `meta.total === full count`; and `meta.total === data.length` on a non-empty `limit=200` fetch (the `total = rows.length` invariant was previously pinned only by the 0-comment orphan paper).
+3. **Orphaned task-slug anchor.** The enrichment-map comment no longer cites the task slug; it states the behavioral invariant directly (chain is SSoT; the reputation batch map is a performance cache; a stale entry for a revoked/unaccredited account must not surface a non-zero score).
+4. **Type-soundness.** `getOrSet<{ rows: EnrichedComment[]; total: number } | null>(...)` plus an explicit `if (!tree) return sendError(503, …, { retriable: true })` guard (no `!` assertion, so the checker enforces the null branch). The row query is typed via `pool.query<RawCommentRow>(...)` with a named `RawCommentRow` interface (`accredited_votes` is `::int` → JS number), dropping the `as string`/`as number` casts.
+
+Verified: `comments.test.ts` green against real HAF; `npm run typecheck` + `npm run lint` clean. Response shape unchanged.
