@@ -54,6 +54,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
+import crypto from 'node:crypto';
 
 vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
   const { MOCK_VERIFY_SIGNATURE } = await import('../fixtures/index.js');
@@ -100,6 +101,11 @@ vi.mock('../../src/redis.js', () => ({
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
 const { logger } = await import('../../src/logger.js');
+// The upload-token store is NOT mocked: with redis mocked to null (below) it
+// uses its in-memory tier, so minting a real single-use token here lets each
+// /upload request clear the token+sha256 gate the route now requires before it
+// reaches the durability state machine these tests exercise.
+const { issueUploadToken, _resetUploadTokenStoreForTests } = await import('../../src/lib/ipfs-upload-token.js');
 
 const app = createApp();
 
@@ -111,6 +117,7 @@ const ORIG_PINATA_API_KEY = config.pinataApiKey;
 const ORIG_PINATA_SECRET_KEY = config.pinataSecretKey;
 
 const PDF_BYTES = Buffer.from('%PDF-1.4 fake pin durability test content');
+const PDF_SHA = crypto.createHash('sha256').update(PDF_BYTES).digest('hex');
 const FAKE_CID = 'QmTestCidDurabilityFixture000000000000000000000';
 const FAKE_SIZE = PDF_BYTES.length;
 
@@ -122,12 +129,32 @@ interface FetchCall {
 let fetchCalls: FetchCall[] = [];
 let originalFetch: typeof globalThis.fetch;
 
+// Distinct account per test so each gets its own ipfsUploadLimiter bucket
+// (byAccount, in-memory here since redis is mocked null), keeping a vitest
+// retry on one spec from exhausting the limiter for the others.
+let uid = 0;
+let user: string;
+
 beforeEach(() => {
   fetchCalls = [];
   originalFetch = globalThis.fetch;
   appQueryMock.mockReset();
   appPoolHandle = { query: appQueryMock };
+  _resetUploadTokenStoreForTests();
+  user = `pindur${uid++}`;
 });
+
+/** Mint a real single-use upload token bound to PDF_BYTES for `user`, so the
+ *  upcoming /upload request clears the token+sha256 gate. The token store falls
+ *  to its in-memory tier here (redis mocked null), so no Redis is needed. */
+async function mintUploadToken(): Promise<string> {
+  return issueUploadToken({
+    account: user,
+    file_sha256: PDF_SHA,
+    mimetype: 'application/pdf',
+    size: PDF_BYTES.length,
+  });
+}
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -185,10 +212,12 @@ describe('POST /api/ipfs/upload — DB-durability refusal', () => {
       throw new Error('fetch should not be reached when app DB is null');
     }) as typeof globalThis.fetch;
 
+    const token = await mintUploadToken();
     const res = await request(app)
       .post('/api/ipfs/upload')
-      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Username', user)
       .set('X-Hive-Signature', 'mock-sig')
+      .set('X-Upload-Token', token)
       .attach('file', PDF_BYTES, {
         filename: 'durability.pdf',
         contentType: 'application/pdf',
@@ -210,10 +239,12 @@ describe('POST /api/ipfs/upload — DB-insert compensation', () => {
     appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
     appQueryMock.mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
+    const token = await mintUploadToken();
     const res = await request(app)
       .post('/api/ipfs/upload')
-      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Username', user)
       .set('X-Hive-Signature', 'mock-sig')
+      .set('X-Upload-Token', token)
       .attach('file', PDF_BYTES, {
         filename: 'durability.pdf',
         contentType: 'application/pdf',
@@ -247,10 +278,12 @@ describe('POST /api/ipfs/upload — DB-insert compensation', () => {
     appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
     appQueryMock.mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: 1 }] });
 
+    const token = await mintUploadToken();
     const res = await request(app)
       .post('/api/ipfs/upload')
-      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Username', user)
       .set('X-Hive-Signature', 'mock-sig')
+      .set('X-Upload-Token', token)
       .attach('file', PDF_BYTES, {
         filename: 'durability.pdf',
         contentType: 'application/pdf',
@@ -276,10 +309,12 @@ describe('POST /api/ipfs/upload — DB-insert compensation', () => {
     appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
     appQueryMock.mockRejectedValueOnce(new Error('still unreachable'));
 
+    const token = await mintUploadToken();
     const res = await request(app)
       .post('/api/ipfs/upload')
-      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Username', user)
       .set('X-Hive-Signature', 'mock-sig')
+      .set('X-Upload-Token', token)
       .attach('file', PDF_BYTES, {
         filename: 'durability.pdf',
         contentType: 'application/pdf',
@@ -307,10 +342,12 @@ describe('POST /api/ipfs/upload — DB-insert compensation', () => {
     appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
     appQueryMock.mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
+    const token = await mintUploadToken();
     const res = await request(app)
       .post('/api/ipfs/upload')
-      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Username', user)
       .set('X-Hive-Signature', 'mock-sig')
+      .set('X-Upload-Token', token)
       .attach('file', PDF_BYTES, {
         filename: 'durability.pdf',
         contentType: 'application/pdf',
@@ -356,10 +393,12 @@ describe('POST /api/ipfs/upload — DB-insert compensation', () => {
     appQueryMock.mockRejectedValueOnce(new Error('connection terminated'));
     appQueryMock.mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
+    const token = await mintUploadToken();
     const res = await request(app)
       .post('/api/ipfs/upload')
-      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Username', user)
       .set('X-Hive-Signature', 'mock-sig')
+      .set('X-Upload-Token', token)
       .attach('file', PDF_BYTES, {
         filename: 'durability.pdf',
         contentType: 'application/pdf',
@@ -383,10 +422,12 @@ describe('POST /api/ipfs/upload — DB-insert compensation', () => {
 
     appQueryMock.mockResolvedValueOnce({ rowCount: 1, rows: [] });
 
+    const token = await mintUploadToken();
     const res = await request(app)
       .post('/api/ipfs/upload')
-      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Username', user)
       .set('X-Hive-Signature', 'mock-sig')
+      .set('X-Upload-Token', token)
       .attach('file', PDF_BYTES, {
         filename: 'durability.pdf',
         contentType: 'application/pdf',

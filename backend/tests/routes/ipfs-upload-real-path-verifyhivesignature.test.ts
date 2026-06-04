@@ -1,14 +1,23 @@
 /**
  * Real-path integration tests for `verifyHiveSignature` on
- * `POST /api/ipfs/upload`.
+ * `POST /api/ipfs/upload` and `POST /api/ipfs/upload-token`.
  *
  * This file is the real-path companion required by the test-mock carve-out
- * (root CLAUDE.md "Running Tests") for the sibling `ipfs-pin-durability.test.ts`
- * and `ipfs.test.ts`, both of which apply `MOCK_VERIFY_SIGNATURE` to focus on
- * downstream behavior (DB-durability state machine / compensation call shape /
- * route plumbing). Cryptographic verification of `X-Hive-Signature` against the
+ * (root CLAUDE.md "Running Tests") for the siblings `ipfs-pin-durability.test.ts`,
+ * `ipfs.test.ts`, and `ipfs-upload-token.test.ts`, all of which apply
+ * `MOCK_VERIFY_SIGNATURE` to focus on downstream behavior (DB-durability state
+ * machine / compensation call shape / route plumbing / upload-token + sha256
+ * binding). Cryptographic verification of `X-Hive-Signature` against the
  * recovered posting key, the timestamp freshness window, the replay-cache
  * `SETNX`, and the 401-on-missing-header gate must all run real here.
+ *
+ * The `/upload-token` block specifically closes the gap that `/upload` cannot
+ * cover: `/upload` 400s on the no-file branch before the token gate, so it never
+ * exercises the signed-descriptor path. `/upload-token` body-hashes the declared
+ * `{file_sha256, mimetype, size}` descriptor into the signed envelope, so a
+ * descriptor tampered after signing must fail the real signature verify — that
+ * is the real-crypto proof the declared file_sha256 is bound to the auth
+ * envelope, which the mocked `ipfs-upload-token.test.ts` cannot assert.
  *
  * Carve-out justification (root CLAUDE.md "Running Tests"):
  *
@@ -255,6 +264,90 @@ describe.skipIf(!redisReachable)(
 
       expect(res.status).toBe(401);
       expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+  },
+);
+
+describe.skipIf(!redisReachable)(
+  'POST /api/ipfs/upload-token — real-path verifyHiveSignature (descriptor bound to the signed envelope)',
+  () => {
+    const TOKEN_PATH = '/api/ipfs/upload-token';
+    const SHA_A = 'a'.repeat(64);
+    const SHA_B = 'b'.repeat(64);
+
+    beforeEach(async () => {
+      getAccountsMock.mockReset();
+      getAccountsMock.mockResolvedValue([fakeChainAccount(TEST_USERNAME, TEST_PUBLIC_KEY)]);
+      // The pre-flight has its own (byAccount) limiter bucket; clear it so a
+      // 429 from an earlier run cannot mask the auth-stage assertion.
+      await clearRateLimitKeys(['ipfs-upload-token']);
+    });
+
+    afterAll(async () => {
+      await clearRateLimitKeys(['ipfs-upload-token']);
+    });
+
+    // ─── POSITIVE: real signature over the descriptor passes auth ────────
+
+    it('a correctly signed descriptor passes verifyHiveSignature and reaches the handler (400, not 401)', async () => {
+      // Sign and send the SAME body, but with a structurally invalid
+      // file_sha256. The signature is valid over this body (matching body sent),
+      // so verifyHiveSignature passes; the handler then 400s at descriptor
+      // validation, which sits BEFORE the accreditation HAF read. The 400 (not a
+      // 401) is the proof the signed descriptor body was accepted by the real
+      // verifier — deterministic and HAF-free, unlike asserting on the
+      // downstream accreditation outcome.
+      const body = { file_sha256: 'not-a-valid-sha256', mimetype: 'application/pdf', size: 1234 };
+      const timestamp = new Date().toISOString();
+      const signature = signRequestBound('POST', TOKEN_PATH, body, timestamp);
+
+      const res = await request(app)
+        .post(TOKEN_PATH)
+        .set('X-Hive-Username', TEST_USERNAME)
+        .set('X-Hive-Signature', signature)
+        .set('X-Hive-Timestamp', timestamp)
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      // Chain key was consulted by the real signature verifier.
+      expect(getAccountsMock).toHaveBeenCalledWith([TEST_USERNAME]);
+    });
+
+    // ─── NEGATIVE: descriptor tampered after signing → 401 ───────────────
+
+    it('a descriptor tampered after signing is rejected with 401 (file_sha256 bound into the envelope)', async () => {
+      const signedBody = { file_sha256: SHA_A, mimetype: 'application/pdf', size: 1234 };
+      const sentBody = { file_sha256: SHA_B, mimetype: 'application/pdf', size: 1234 };
+      const timestamp = new Date().toISOString();
+      // Sign the SHA_A descriptor, submit the SHA_B descriptor. The canonical
+      // message body-hashes the request body, so the recovered pubkey differs
+      // from the chain key → 401. This is the real-crypto proof that the
+      // declared file_sha256 is bound to the auth envelope.
+      const signature = signRequestBound('POST', TOKEN_PATH, signedBody, timestamp);
+
+      const res = await request(app)
+        .post(TOKEN_PATH)
+        .set('X-Hive-Username', TEST_USERNAME)
+        .set('X-Hive-Signature', signature)
+        .set('X-Hive-Timestamp', timestamp)
+        .send(sentBody);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    // ─── NEGATIVE: missing signature header ──────────────────────────────
+
+    it('missing X-Hive-Signature header is rejected with 401', async () => {
+      const res = await request(app)
+        .post(TOKEN_PATH)
+        .set('X-Hive-Username', TEST_USERNAME)
+        .send({ file_sha256: SHA_A, mimetype: 'application/pdf', size: 1234 });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+      expect(getAccountsMock).not.toHaveBeenCalled();
     });
   },
 );

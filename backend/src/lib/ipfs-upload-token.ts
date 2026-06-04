@@ -41,6 +41,19 @@ interface StoredToken extends UploadTokenBinding {
 
 const memStore = new Map<string, StoredToken>();
 
+/** In-process single-use lock for `consumeUploadToken`, mirroring the
+ *  `inFlightConsumes` set in `fresh-auth.ts`. Closes the concurrent
+ *  dual-consume race on the memStore-fallback path: on a Redis flap both
+ *  callers' GETDEL throw, both fall through to memStore, and without the lock
+ *  both could read the entry before either deletes it — the same token consumed
+ *  twice. The synchronous `has` → `add` pair is an uninterruptible critical
+ *  section under the single-threaded JS event loop, so exactly one caller
+ *  reaches the body; the loser returns null (the same outcome a stale replay
+ *  observes). Single-instance scope per memory `project_single_instance_only`; a
+ *  multi-instance topology would re-open the race and require a Redis-side
+ *  sentinel, which the in-process lock is not a substitute for. */
+const inFlightConsumes = new Set<string>();
+
 const cleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [token, entry] of memStore) {
@@ -95,7 +108,25 @@ export async function consumeUploadToken(
 ): Promise<UploadTokenBinding | null> {
   if (!token || typeof token !== 'string' || token.length === 0) return null;
 
+  // In-process single-use lock (mirrors fresh-auth.ts). The synchronous
+  // `has` → `add` pair is an uninterruptible critical section, so a concurrent
+  // dual-consume for the same token has exactly one caller reach the body; the
+  // loser returns null. Released in `finally` so a throwing consume cleans up.
+  if (inFlightConsumes.has(token)) return null;
+  inFlightConsumes.add(token);
+  try {
+    return await consumeUploadTokenLocked(token, account);
+  } finally {
+    inFlightConsumes.delete(token);
+  }
+}
+
+async function consumeUploadTokenLocked(
+  token: string,
+  account: string,
+): Promise<UploadTokenBinding | null> {
   let raw: string | null = null;
+  let consumedFromMemStore = false;
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
     try {
@@ -110,6 +141,8 @@ export async function consumeUploadToken(
 
   let binding: UploadTokenBinding | null = null;
   if (raw) {
+    // Redis GETDEL succeeded — also drop the memStore backup so a sibling
+    // consume can't replay the token via the fallback path.
     memStore.delete(token);
     try {
       const parsed: unknown = JSON.parse(raw);
@@ -123,7 +156,27 @@ export async function consumeUploadToken(
       memStore.delete(token);
       if (cached.expiresAtMs > Date.now()) {
         binding = { account: cached.account, file_sha256: cached.file_sha256, mimetype: cached.mimetype, size: cached.size };
+        consumedFromMemStore = true;
       }
+    }
+  }
+
+  // Compensating Redis del on the memStore-fallback leg (mirrors fresh-auth.ts's
+  // symmetric dual-tier deletion). When the GETDEL above THREW mid-call (a
+  // Redis flap) it may not have actually deleted the canonical entry; we
+  // consumed the memStore copy while the Redis copy stayed alive, so a replay
+  // within the TTL once Redis recovers would hit GETDEL and return the binding a
+  // SECOND time (double-spend). Best-effort: the memStore consume already
+  // authorized this upload, so a failed del only leaves the pre-existing replay
+  // window until the token's TTL expires.
+  if (consumedFromMemStore && redis) {
+    try {
+      await redis.del(KEY_PREFIX + token);
+    } catch (err) {
+      logger.warn(
+        { err, event: 'ipfs.upload_token.redis_compensating_del_failed' },
+        'Compensating Redis del after memStore-fallback consume failed; replay window remains until TTL',
+      );
     }
   }
 
@@ -134,7 +187,11 @@ export async function consumeUploadToken(
   return binding;
 }
 
-/** Test helper: clear the in-memory tier between cases. */
+/** Test helper: clear the in-memory tier (and the in-flight lock set) between
+ *  cases. The lock self-releases in `consumeUploadToken`'s `finally`, so this is
+ *  defensive — it keeps a test that planted state via a throwing consume from
+ *  leaking a held token into the next case. */
 export function _resetUploadTokenStoreForTests(): void {
   memStore.clear();
+  inFlightConsumes.clear();
 }

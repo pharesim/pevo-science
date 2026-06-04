@@ -47,17 +47,36 @@ vi.mock('../../src/routes/profile.js', async (importActual) => {
   };
 });
 
-const { getAppPoolMock } = vi.hoisted(() => ({
-  getAppPoolMock: vi.fn(() => ({ query: async () => ({ rows: [], rowCount: 1 }) })),
-}));
+// A stable query mock (not a fresh inline closure per getAppPool() call) so the
+// happy-path test can assert the pending_ipfs_uploads INSERT args — AC4's
+// `uploader_account = user` recording.
+const { getAppPoolMock, appQueryMock } = vi.hoisted(() => {
+  const appQueryMock = vi.fn(async (..._args: unknown[]) => ({ rows: [] as unknown[], rowCount: 1 }));
+  return { getAppPoolMock: vi.fn(() => ({ query: appQueryMock })), appQueryMock };
+});
 vi.mock('../../src/app-db.js', () => ({ getAppPool: getAppPoolMock }));
 
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
 const uploadTokenStore = await import('../../src/lib/ipfs-upload-token.js');
+const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
 
 const app = createApp();
 const USER = 'testuser';
+
+// Redis-present gate for the dual-tier single-use tests below. Mirrors the
+// poll-for-ready pattern in tests/lib/fresh-auth.test.ts: getRedis() returns the
+// instance before connect() resolves, so poll status briefly before deciding to
+// skip. Resolving at registration time surfaces Redis absence as a `skipped`
+// count rather than a silent pass.
+const redisAvailable = await (async () => {
+  const r = getRedis();
+  if (!r) return false;
+  for (let i = 0; i < 20 && r.status !== 'ready'; i++) {
+    await new Promise((res) => setTimeout(res, 50));
+  }
+  return Boolean(r && isRedisAvailable());
+})();
 
 const PDF = Buffer.from('%PDF-1.4 genuine content here');
 const PDF_SHA = crypto.createHash('sha256').update(PDF).digest('hex');
@@ -74,6 +93,7 @@ beforeEach(() => {
   freshAuth.valid = true;
   accred.value = true;
   uploadTokenStore._resetUploadTokenStoreForTests();
+  appQueryMock.mockClear();
   user = `upltest${uid++}`;
 });
 
@@ -98,6 +118,77 @@ describe('ipfs-upload-token store', () => {
   it('returns null for a missing/undefined token', async () => {
     expect(await uploadTokenStore.consumeUploadToken(undefined, USER)).toBeNull();
     expect(await uploadTokenStore.consumeUploadToken('never-issued', USER)).toBeNull();
+  });
+});
+
+// ── upload-token store: dual-tier single-use under a Redis flap ──
+// These pin the two single-use defenses the store mirrors from fresh-auth.ts:
+// the compensating redis.del on the memStore-fallback leg, and the in-process
+// lock that serializes concurrent consumes. Both close double-spend windows a
+// stolen/leaked token could otherwise exploit to pin twice.
+describe('ipfs-upload-token store — double-spend defenses', () => {
+  it.skipIf(!redisAvailable)(
+    'memStore-fallback consume issues a compensating redis.del so a Redis-recovered replay is rejected',
+    async () => {
+      const redis = getRedis()!;
+      const token = await uploadTokenStore.issueUploadToken({
+        account: USER, file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length,
+      });
+
+      // Force the first consume's GETDEL to throw (a Redis flap) so it falls
+      // through to the memStore backup written at issuance. The flap may NOT
+      // have deleted the canonical Redis copy — the compensating redis.del is
+      // what closes the replay window.
+      const getdelSpy = vi.spyOn(redis, 'getdel').mockRejectedValueOnce(new Error('simulated Redis flap on getdel'));
+      let first;
+      try {
+        first = await uploadTokenStore.consumeUploadToken(token, USER);
+      } finally {
+        getdelSpy.mockRestore();
+      }
+      expect(first).not.toBeNull();
+      expect(first!.file_sha256).toBe(PDF_SHA);
+
+      // Redis recovered (no spy). The replay must be rejected: memStore was
+      // burned on the fallback leg, and the compensating redis.del cleared the
+      // canonical Redis entry so GETDEL now returns nil. A pre-fix variant (no
+      // compensating del) would have left the Redis copy alive → this consume
+      // would GETDEL it and return the binding a SECOND time (double-spend).
+      expect(await uploadTokenStore.consumeUploadToken(token, USER)).toBeNull();
+    },
+  );
+
+  it.skipIf(!redisAvailable)(
+    'compensating del is best-effort: a throwing redis.del still lets the memStore-fallback consume succeed',
+    async () => {
+      const redis = getRedis()!;
+      const token = await uploadTokenStore.issueUploadToken({
+        account: USER, file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length,
+      });
+      const getdelSpy = vi.spyOn(redis, 'getdel').mockRejectedValueOnce(new Error('flap on getdel'));
+      const delSpy = vi.spyOn(redis, 'del').mockRejectedValueOnce(new Error('flap persists on del'));
+      try {
+        const result = await uploadTokenStore.consumeUploadToken(token, USER);
+        expect(result).not.toBeNull();
+        expect(result!.file_sha256).toBe(PDF_SHA);
+      } finally {
+        getdelSpy.mockRestore();
+        delSpy.mockRestore();
+      }
+    },
+  );
+
+  it('two concurrent consumes of one token yield the binding at most once (single-use under concurrency)', async () => {
+    const token = await uploadTokenStore.issueUploadToken({
+      account: USER, file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length,
+    });
+    const [a, b] = await Promise.all([
+      uploadTokenStore.consumeUploadToken(token, USER),
+      uploadTokenStore.consumeUploadToken(token, USER),
+    ]);
+    const wins = [a, b].filter((x) => x !== null);
+    expect(wins).toHaveLength(1);
+    expect(wins[0]!.file_sha256).toBe(PDF_SHA);
   });
 });
 
@@ -205,6 +296,15 @@ describe('POST /api/ipfs/upload — upload-token binding', () => {
       .attach('file', PDF, { filename: 'p.pdf', contentType: 'application/pdf' });
     expect(res.status).toBe(200);
     expect(res.body.data.cid).toBe('QmTestCid');
+    // AC4: the pin is durably tracked with uploader_account = the authenticated
+    // user. Find the INSERT among the pool's calls and pin its args so a
+    // mutation that drops or mis-attributes uploader_account goes red.
+    const insertCall = appQueryMock.mock.calls.find(
+      ([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO pending_ipfs_uploads'),
+    );
+    expect(insertCall).toBeDefined();
+    // Params: [cid, uploader_account, size_bytes, pin_backend].
+    expect(insertCall![1]).toEqual(['QmTestCid', user, 29, 'kubo']);
   });
 
   it('cannot reuse a token across two uploads (single-use)', async () => {

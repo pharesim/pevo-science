@@ -92,18 +92,19 @@ const ACCEPTED_TYPES_MSG = 'Accepted file types: PDF, PNG, JPEG, GIF, WebP, CSV,
 // Content-Type. Anything outside this set (text/html, image/svg+xml,
 // application/javascript, application/xhtml+xml, ...) is forced to an inert
 // octet-stream attachment so a pinned CID cannot execute script under the SPA's
-// origin. Mirrors ACCEPTED_MIMES minus SVG (scriptable) — the upload path no
-// longer accepts SVG, but an externally-pinned CID reached via a chain
-// reference could still advertise it upstream.
-const GATEWAY_SAFE_MIMES = new Set([
-  'application/pdf',
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'text/csv',
-  'application/zip',
-]);
+// origin.
+//
+// Derived from ACCEPTED_MIMES rather than a parallel literal so the two cannot
+// silently drift: the upload accept-list is curated to hold only
+// browser-inert types (no SVG/HTML/JS — see the ACCEPTED_MIMES note above), so
+// echoing any accepted type back from the gateway is script-execution-safe, and
+// a MIME later added to the upload list becomes gateway-servable automatically
+// instead of being silently downgraded to an octet-stream attachment. The copy
+// (not an alias) keeps a deliberate divergence expressible: should a scriptable
+// type ever be accepted on upload (e.g. server-sanitized SVG), `delete` it from
+// this set so the gateway keeps forcing it to an inert attachment even though
+// the upload path admits it.
+const GATEWAY_SAFE_MIMES = new Set(ACCEPTED_MIMES);
 
 // Decide the Content-Type the gateway serves for a proxied response. The bare
 // MIME (charset/params stripped) must be in GATEWAY_SAFE_MIMES to pass through;
@@ -302,7 +303,12 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
     // actual file bytes binds the upload to that envelope: a stolen JWT cannot
     // pin (no token), and a captured pre-flight cannot pin a different file
     // (sha256 mismatch).
-    const uploadToken = req.headers['x-upload-token'] as string | undefined;
+    // A header sent twice arrives as string[]; take the first rather than
+    // casting the array to string (which would stringify to "a,b" and never
+    // match a real token). consumeUploadToken rejects non-strings anyway, but
+    // the cast must not lie about the type.
+    const rawUploadToken = req.headers['x-upload-token'];
+    const uploadToken = Array.isArray(rawUploadToken) ? rawUploadToken[0] : rawUploadToken;
     const binding = await consumeUploadToken(uploadToken, req.hiveUsername!);
     if (!binding) {
       return sendError(

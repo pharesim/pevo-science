@@ -18,8 +18,14 @@
  *       file-type gate, not signature crypto (the fixture keeps the
  *       401-on-missing-header gate and username extraction). The accreditation
  *       SQL-shape spec uses a capture stub pool (no infra).
- *   (b) The SVG rejection fires at multer's fileFilter before any auth/accred
- *       work; the crypto check being bypassed does not affect what it asserts.
+ *   (b) The SVG-rejection spec mocks verifyHiveSignature because its focus is
+ *       the file-type gate (multer's fileFilter), not signature crypto — NOT
+ *       because of middleware ordering. verifyHiveSignature actually runs FIRST:
+ *       the inline POST /upload handler invokes multer only after the middleware
+ *       chain. The fixture preserves the 401-on-missing-header gate and username
+ *       extraction, so a request carrying the mock signature header passes auth,
+ *       and the SVG is then rejected at multer's fileFilter with 422. The
+ *       bypassed cryptographic check does not affect that outcome.
  *   (c) Real-path companion: ipfs.test.ts exercises the real cidIsKnown HAF
  *       path and the real verifyHiveSignature upload path lives in the
  *       middleware specs.
