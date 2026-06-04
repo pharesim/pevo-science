@@ -28,6 +28,7 @@ import { seedAccreditationBonus } from '../reputation.js';
 import {
   changeEmailFreshAuthTarget,
   deleteAccountFreshAuthTarget,
+  ipfsUploadFreshAuthTarget,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
   setPasswordFreshAuthTarget,
@@ -351,7 +352,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   let freshAuthTarget: FreshAuthTarget | undefined;
   if (mode === 'fresh_auth') {
     const { action, root_author: rootAuthor, root_permlink: rootPermlink } = startParsed.data;
-    if (action === 'set_password' || action === 'change_email' || action === 'delete_account') {
+    if (action === 'set_password' || action === 'change_email' || action === 'delete_account' || action === 'ipfs_upload') {
       // Non-broadcast actions bind the target to the authenticated
       // username. The invariant "`username` is set when `mode === 'fresh_auth'`"
       // is enforced by middleware composition (`AUTHENTICATED_MODES`
@@ -378,6 +379,11 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         // body does not carry root_author / root_permlink. Helper enforces
         // the bind so a future refactor cannot re-introduce the inline literal.
         freshAuthTarget = deleteAccountFreshAuthTarget(username);
+      } else if (action === 'ipfs_upload') {
+        // Non-broadcast target for the ORCID-mechanism issuance side (state C
+        // ORCID-only and state B). Binds to (ipfs_upload, <username>, ''),
+        // consumed at POST /api/ipfs/upload-token on the JWT path.
+        freshAuthTarget = ipfsUploadFreshAuthTarget(username);
       } else {
         // Non-broadcast target. Same shape as set_password / delete_account:
         // target binds to (action, <authenticated username>, ''); request body
@@ -402,7 +408,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         res,
         400,
         'VALIDATION_ERROR',
-        'action must be one of: author_accept, author_resign, set_password, change_email, delete_account',
+        'action must be one of: author_accept, author_resign, set_password, change_email, delete_account, ipfs_upload',
       );
     }
   }

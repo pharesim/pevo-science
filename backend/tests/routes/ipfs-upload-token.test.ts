@@ -8,15 +8,19 @@
  *       (focus is the upload-token/sha256 plumbing, not signature crypto — the
  *       fixture keeps the 401-on-missing-header gate and the jwt/signature
  *       discriminator that THIS task's JWT-path branch depends on).
- *       `getAccreditation` (real HAF read), `consumeSessionFreshAuthToken`
- *       (re-auth ceremony), `getAppPool` (tracking-row insert), and the Kubo
- *       `fetch` (real IPFS node) are stubbed so the binding logic is exercised
- *       deterministically. The upload-token store itself runs real (in-memory
- *       tier) so single-use / sha256-binding is genuinely tested.
- *   (b) The fresh-auth requirement is asserted to run on the JWT path; the
- *       discriminator is the real fixture's, not bypassed.
- *   (c) Real-path companion: the real verifyHiveSignature upload path is pinned
- *       in tests/routes/ipfs-upload-real-path-verifyhivesignature.test.ts.
+ *       `getAccreditation` (real HAF read), `getAppPool` (tracking-row insert),
+ *       and the Kubo `fetch` (real IPFS node) are stubbed so the binding logic
+ *       is exercised deterministically. The upload-token store AND the
+ *       fresh-auth store both run REAL (in-memory + Redis tiers): the JWT path
+ *       consumes a real per-action (`ipfs_upload`-targeted) proof, so single-use
+ *       / sha256-binding / the kind+target binding are all genuinely exercised.
+ *   (b) The fresh-auth requirement runs real on the JWT path: tests mint real
+ *       proofs and assert a session proof is rejected (kind_mismatch) while an
+ *       ipfs_upload proof is accepted. The jwt/signature discriminator is the
+ *       real fixture's, not bypassed.
+ *   (c) Real-path companion: the real verifyHiveSignature upload + upload-token
+ *       paths are pinned in
+ *       tests/routes/ipfs-upload-real-path-verifyhivesignature.test.ts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
@@ -27,16 +31,10 @@ vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
   return MOCK_VERIFY_SIGNATURE;
 });
 
-const { freshAuth } = vi.hoisted(() => ({ freshAuth: { valid: true } }));
-vi.mock('../../src/lib/fresh-auth.js', async (importActual) => {
-  const actual = await importActual<typeof import('../../src/lib/fresh-auth.js')>();
-  return {
-    ...actual,
-    consumeSessionFreshAuthToken: vi.fn(async () =>
-      freshAuth.valid ? { valid: true, mechanism: 'password' } : { valid: false, reason: 'missing' },
-    ),
-  };
-});
+// fresh-auth is NOT mocked: the JWT path now consumes a REAL per-action
+// (`ipfs_upload`-targeted) proof via consumeFreshAuthToken, so the tests mint
+// real proofs through the real store and exercise the genuine kind/target
+// binding (a session proof must be rejected; only an ipfs_upload proof works).
 
 const { accred } = vi.hoisted(() => ({ accred: { value: true } }));
 vi.mock('../../src/routes/profile.js', async (importActual) => {
@@ -60,6 +58,12 @@ const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
 const uploadTokenStore = await import('../../src/lib/ipfs-upload-token.js');
 const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
+const {
+  issueFreshAuthToken,
+  issueSessionFreshAuthToken,
+  ipfsUploadFreshAuthTarget,
+  _resetFreshAuthMemStoreForTests,
+} = await import('../../src/lib/fresh-auth.js');
 
 const app = createApp();
 const USER = 'testuser';
@@ -90,12 +94,19 @@ let uid = 0;
 let user: string;
 
 beforeEach(() => {
-  freshAuth.valid = true;
   accred.value = true;
   uploadTokenStore._resetUploadTokenStoreForTests();
+  _resetFreshAuthMemStoreForTests();
   appQueryMock.mockClear();
   user = `upltest${uid++}`;
 });
+
+/** Mint a real per-action (`ipfs_upload`-targeted) fresh-auth proof for the
+ *  current `user` — the kind the JWT path now requires. */
+async function mintUploadProof(): Promise<string> {
+  const { token } = await issueFreshAuthToken(user, 'password', ipfsUploadFreshAuthTarget(user));
+  return token;
+}
 
 // ── upload-token store unit ──────────────────────────────────────
 describe('ipfs-upload-token store', () => {
@@ -207,8 +218,7 @@ describe('POST /api/ipfs/upload-token', () => {
     expect(res.body.data.upload_token.length).toBeGreaterThan(0);
   });
 
-  it('requires a fresh-auth proof on the JWT path', async () => {
-    freshAuth.valid = false;
+  it('requires a fresh-auth proof on the JWT path (none supplied)', async () => {
     const res = await preflight(
       { file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length },
       { Authorization: 'Bearer header.eyJzdWIiOiJ0ZXN0dXNlciJ9.sig' },
@@ -217,14 +227,28 @@ describe('POST /api/ipfs/upload-token', () => {
     expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
   });
 
-  it('mints a token on the JWT path when the fresh-auth proof is valid', async () => {
-    freshAuth.valid = true;
+  it('mints a token on the JWT path with a valid ipfs_upload-targeted proof', async () => {
+    const proof = await mintUploadProof();
     const res = await preflight(
-      { file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length, fresh_auth_proof: 'good' },
+      { file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length, fresh_auth_proof: proof },
       { Authorization: 'Bearer header.eyJzdWIiOiJ0ZXN0dXNlciJ9.sig' },
     );
     expect(res.status).toBe(200);
     expect(typeof res.body.data.upload_token).toBe('string');
+  });
+
+  it('REJECTS a target-less session proof on the JWT path (per-action binding, option b)', async () => {
+    // A session proof the victim minted for a vote/comment must NOT be
+    // redirectable to /upload-token: consumeFreshAuthToken rejects a
+    // session-kind entry on the consent-op consume path (kind_mismatch).
+    const { token: sessionProof } = await issueSessionFreshAuthToken(user, 'password');
+    const res = await preflight(
+      { file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length, fresh_auth_proof: sessionProof },
+      { Authorization: 'Bearer header.eyJzdWIiOiJ0ZXN0dXNlciJ9.sig' },
+    );
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+    expect(res.body.error.details.reason).toBe('kind_mismatch');
   });
 
   it('rejects a malformed file_sha256', async () => {

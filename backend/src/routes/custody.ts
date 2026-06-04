@@ -24,6 +24,7 @@ import {
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
   deleteAccountFreshAuthTarget,
+  ipfsUploadFreshAuthTarget,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
   type FreshAuthMechanism,
@@ -152,7 +153,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
   const password = requireStringField(body, 'password', PASSWORD_MAX_LEN, 'Password is required');
   if (!password.ok) return sendError(res, 400, 'VALIDATION_ERROR', password.error);
   const action = body.action;
-  if (action === 'change_email' || action === 'delete_account') {
+  if (action === 'change_email' || action === 'delete_account' || action === 'ipfs_upload') {
     // No additional fields required; target is derived from authenticated
     // username inside the handler.
     return next();
@@ -169,7 +170,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     res,
     400,
     'VALIDATION_ERROR',
-    'action must be one of: author_accept, author_resign, change_email, delete_account',
+    'action must be one of: author_accept, author_resign, change_email, delete_account, ipfs_upload',
   );
 }
 
@@ -875,6 +876,13 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
     target = changeEmailFreshAuthTarget(username);
   } else if (action === 'delete_account') {
     target = deleteAccountFreshAuthTarget(username);
+  } else if (action === 'ipfs_upload') {
+    // Per-user (not per-paper) critical action: target binds to (ipfs_upload,
+    // <username>, ''), no root_author / root_permlink in the body. Consumed at
+    // POST /api/ipfs/upload-token on the JWT path. Password-mechanism issuance
+    // here serves state A/B accounts; state C (passwordless) mints via
+    // /api/orcid/start { mode: 'fresh_auth', action: 'ipfs_upload' }.
+    target = ipfsUploadFreshAuthTarget(username);
   } else if (action === 'author_accept' || action === 'author_resign') {
     // Identifier slugs — trim=true, matching validateFreshAuthBodyShape.
     const rootAuthorResult = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
@@ -891,7 +899,7 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
       res,
       400,
       'VALIDATION_ERROR',
-      'action must be one of: author_accept, author_resign, change_email, delete_account',
+      'action must be one of: author_accept, author_resign, change_email, delete_account, ipfs_upload',
     );
   }
 

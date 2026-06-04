@@ -10,7 +10,7 @@ import { getPool, isHafConfigured } from '../db.js';
 import { getAppPool } from '../app-db.js';
 import { logger } from '../logger.js';
 import { type PinBackend, cidReferencedByAppTag, unpinFromIpfs } from '../lib/ipfs-shared.js';
-import { consumeSessionFreshAuthToken } from '../lib/fresh-auth.js';
+import { consumeFreshAuthToken, computeFreshAuthTargetHash, ipfsUploadFreshAuthTarget } from '../lib/fresh-auth.js';
 import { issueUploadToken, consumeUploadToken } from '../lib/ipfs-upload-token.js';
 import multer from 'multer';
 
@@ -217,18 +217,24 @@ const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 //    this JSON pre-flight into the signed envelope, so a captured signature is
 //    bound to one file_sha256. The upload re-checks sha256(file.buffer) against
 //    the token, so a captured pre-flight cannot pin a different file.
-//  - **No JWT-only pinning.** A Bearer JWT is replayable, so the JWT path
-//    additionally requires a single-use session fresh-auth proof (ARCH.md § 6.5
-//    invariant #1). The per-request signature path is itself fresh and needs no
-//    extra proof. A stolen JWT alone therefore cannot obtain a token, and
-//    without a token the upload is refused.
+//  - **No JWT-only pinning, per-action bound.** A Bearer JWT is replayable, so
+//    the JWT path additionally requires a single-use fresh-auth proof minted
+//    for the `ipfs_upload` action (target = (ipfs_upload, <username>, '')),
+//    consumed via `consumeFreshAuthToken`. Binding to the action (vs accepting
+//    a target-less session proof) is load-bearing: a session proof the victim
+//    minted for a vote/comment, or a consent-op proof for a different action,
+//    cannot be redirected here to mint an upload token under a stolen JWT
+//    (session proofs fail the consent-op kind check; wrong-action proofs fail
+//    the target-hash compare). The per-request signature path is itself fresh
+//    and needs no extra proof. ARCH.md § 6.4/§ 6.5 invariant #1.
 router.post('/upload-token', verifyHiveSignature, ipfsUploadTokenLimiter, async (req: Request, res: Response) => {
   const username = req.hiveUsername!;
 
   if (req.hiveAuthMethod === 'jwt') {
     const proofRaw = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
     const proofToken = typeof proofRaw === 'string' ? proofRaw : undefined;
-    const result = await consumeSessionFreshAuthToken(proofToken, username);
+    const expectedTargetHash = computeFreshAuthTargetHash(ipfsUploadFreshAuthTarget(username));
+    const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
     if (!result.valid) {
       const status = result.reason === 'username_mismatch' ? 403 : 401;
       return sendError(

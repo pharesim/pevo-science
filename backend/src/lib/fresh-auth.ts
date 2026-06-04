@@ -81,10 +81,11 @@ export type FreshAuthMechanism = 'password' | 'orcid';
  *    actions issue a `custom_json` op on chain (see `CONSENT_OP_ACTIONS`
  *    above), and the `root_*` fields come from the paper being acted on.
  *
- *  - **Non-broadcast critical actions:** `set_password`, `change_email`, and
- *    `delete_account` bind to `(action, <authenticated username>, '')` via
- *    per-action helpers below (`setPasswordFreshAuthTarget`,
- *    `changeEmailFreshAuthTarget`, `deleteAccountFreshAuthTarget`).
+ *  - **Non-broadcast critical actions:** `set_password`, `change_email`,
+ *    `delete_account`, and `ipfs_upload` bind to
+ *    `(action, <authenticated username>, '')` via per-action helpers below
+ *    (`setPasswordFreshAuthTarget`, `changeEmailFreshAuthTarget`,
+ *    `deleteAccountFreshAuthTarget`, `ipfsUploadFreshAuthTarget`).
  *    Empty `root_permlink` is collision-free against consent-op proofs
  *    because the route layer for consent ops forbids empty `root_permlink`
  *    strings. `set_password` transitions state C → state B per
@@ -93,7 +94,12 @@ export type FreshAuthMechanism = 'password' | 'orcid';
  *    tokens (auth-adjacent factor), so the JWT-only path is closed via a
  *    body-proof check per § 6.5 invariant #1; `delete_account` erases the
  *    account row (the de-facto right-to-erasure exit, A/B/C/D → [no row] per
- *    § 6.3) and so is likewise a critical action gated per § 6.4.
+ *    § 6.3) and so is likewise a critical action gated per § 6.4;
+ *    `ipfs_upload` authorizes a `POST /api/ipfs/upload-token` mint (which lets
+ *    the holder pin content under their account — illegal-content-liability
+ *    stakes), so the JWT path binds a per-action proof rather than accepting
+ *    a target-less session proof, closing the cross-surface session-proof
+ *    redirect per § 6.5 invariant #1.
  *
  *  Collision-freedom across the union hinges on the `action` field in
  *  `computeFreshAuthTargetHash`: even two non-broadcast actions that share
@@ -106,7 +112,8 @@ export type FreshAuthTargetAction =
   | 'author_resign'
   | 'set_password'
   | 'change_email'
-  | 'delete_account';
+  | 'delete_account'
+  | 'ipfs_upload';
 
 /** Round-5 hold #3: shape of the per-op target the fresh-auth proof
  *  binds to. The triple is reduced to a SHA-256 hash at issuance time
@@ -257,6 +264,25 @@ export function changeEmailFreshAuthTarget(username: string): FreshAuthTarget {
  *  (password) and `POST /api/orcid/start { mode: 'fresh_auth' }` (ORCID). */
 export function deleteAccountFreshAuthTarget(username: string): FreshAuthTarget {
   return { action: 'delete_account', root_author: username, root_permlink: '' };
+}
+
+/** Target-binding helper for the `ipfs_upload` critical action.
+ *  Issuing an IPFS upload token (`POST /api/ipfs/upload-token`) lets the holder
+ *  pin arbitrary content under their account — an illegal-content-liability
+ *  surface — so the JWT path binds a per-action proof instead of accepting a
+ *  target-less session proof. Like the other non-broadcast criticals it is
+ *  per-user (not per-paper): the proof binds to `(ipfs_upload, <username>, '')`;
+ *  empty `root_permlink` keeps the target-hash domain collision-free against
+ *  consent-op proofs (which require non-empty `root_permlink` at the route
+ *  layer). The distinct `action` value is load-bearing: it is what stops a
+ *  vote/comment SESSION proof, or a consent-op proof minted for a different
+ *  action, from being redirected to `/upload-token` under a stolen JWT (a
+ *  session proof fails the consent-op `kind` check; a wrong-action consent-op
+ *  proof fails the target-hash compare). Issuance side: `POST
+ *  /api/custody/fresh-auth { action: 'ipfs_upload' }` (password) and `POST
+ *  /api/orcid/start { mode: 'fresh_auth', action: 'ipfs_upload' }` (ORCID). */
+export function ipfsUploadFreshAuthTarget(username: string): FreshAuthTarget {
+  return { action: 'ipfs_upload', root_author: username, root_permlink: '' };
 }
 
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are

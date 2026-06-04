@@ -20,6 +20,11 @@
  *     status assertion fails.
  *   - "leak the null-hash discriminator via a different error code or
  *     message": the byte-equivalent envelope assertion below fails.
+ *
+ * Also pins the `ipfs_upload` issuance action (option b of
+ * backend-ipfs-upload-token-proof-binding): the route mints an
+ * `ipfs_upload`-targeted proof for a valid password, and the minted proof is
+ * genuinely bound to that target. Reuses the seeded real-password account.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
@@ -30,6 +35,11 @@ import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { config } from '../../src/config.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import {
+  computeFreshAuthTargetHash,
+  consumeFreshAuthToken,
+  ipfsUploadFreshAuthTarget,
+} from '../../src/lib/fresh-auth.js';
 
 const app = createApp();
 const RUN_ID = Date.now();
@@ -162,6 +172,26 @@ describe.skipIf(!dbReachable)(
       expect(nullHashRes.body.error.message).toBe(wrongPwdRes.body.error.message);
 
       verifySpy.mockRestore();
+    });
+
+    it('issues an ipfs_upload-targeted proof for a valid password (option b issuance side)', async () => {
+      // The /api/ipfs/upload-token JWT path now requires an ipfs_upload-targeted
+      // proof. Confirm this route mints one for a password account, and that the
+      // minted proof is genuinely bound to the ipfs_upload target (consuming it
+      // with that target hash succeeds). A mutation that drops the ipfs_upload
+      // branch from the handler/validator returns 400 here.
+      const res = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerForLight(REAL_HASH_USER))
+        .send({ password: KNOWN_PASSWORD, action: 'ipfs_upload' });
+
+      expect(res.status).toBe(200);
+      const proof = res.body.data.fresh_auth_proof;
+      expect(typeof proof).toBe('string');
+
+      const targetHash = computeFreshAuthTargetHash(ipfsUploadFreshAuthTarget(REAL_HASH_USER));
+      const consumed = await consumeFreshAuthToken(proof, REAL_HASH_USER, targetHash);
+      expect(consumed.valid).toBe(true);
     });
   },
 );
