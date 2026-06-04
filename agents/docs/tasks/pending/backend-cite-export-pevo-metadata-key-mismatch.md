@@ -1,0 +1,48 @@
+# BACKEND-CITE-EXPORT-PEVO-METADATA-KEY-MISMATCH — citation exports read `detail.json_metadata.pevo` but live metadata is keyed under `meta[APP_TAG]`, dropping co-author names and DOIs
+
+**Owner:** backend
+**Created:** 2026-06-04 (surfaced by the backend-citation-export-format-escape re-review + adversarial verification)
+**Priority:** P2 (correctness: exported citations silently omit co-authors and DOIs on the live path; not a security issue)
+
+## Problem
+
+The `/cite` generators (`generateBibtex` / `generateRis` / `generateApa` in `backend/src/routes/papers.ts`) read the PEvO object as `((detail.json_metadata)?.pevo || {})`. But chain metadata stores the PEvO object under `meta[config.appTag]` (`pevotest` in beta), which the rest of the codebase accesses via `safePevoMeta(meta)` (returns `meta[config.appTag]`, papers.ts ~202).
+
+On the live `/cite` path, `detail.json_metadata` IS the raw chain `meta` (set in `buildPaperDetail` ~3061 as `json_metadata: meta`, and in `fetchPaperDetailFromHaf` as `detail.json_metadata = headMeta`). So `detail.json_metadata.pevo` is `undefined`, and:
+
+- `pevo.authors` resolves to `[]` -> the author list ALWAYS falls back to the posting account. **Exported citations never list co-author names.**
+- `pevo.source.doi` is unreachable -> **DOIs never appear**. (This is why the DOI wiring was reverted in `backend-citation-export-format-escape`; that task surfaced this bug.)
+
+Not caught by existing tests: `papers-cite-escape.test.ts` unit-tests the generators with a synthetic `{ pevo: { authors } }` object (matching the buggy read, not the live shape), and `cite.test.ts` only exercises the 400 (bad format) and 404 (missing paper) paths. The live metadata shape is untested.
+
+## Goal
+
+Make the generators read the correctly-keyed PEvO data:
+
+- **Author list:** use `detail.authors` (which `buildPaperDetail` already exposes via `safePevoMeta`) or `safePevoMeta(detail.json_metadata)`. Pick whichever reliably carries the display `name`.
+- **DOI:** read `safePevoMeta(detail.json_metadata).source.doi` and re-wire the DO/doi line, keeping the existing `bibtexEscape`/`risEscape` escaping.
+
+**Why this is its own task (not a drive-by in the escape task):** `detail.authors` is NOT a single stable shape. On the continuation/supersession paths in `fetchPaperDetailFromHaf`, `detail.authors` is overridden with `authors_with_supersession` / `cumulativeAuthors`, whose element shape may carry only `hive`/`orcid`/supersession fields and lack the display `name`. The fix must AUDIT the `detail.authors` (and underlying `pevo.authors`) shape across:
+
+- single-link papers (`buildPaperDetail`: `detail.authors = pevo.authors` with `{name, hive, orcid}`),
+- multi-link / continuation papers (`detail.authors` = supersession/cumulative projection — confirm whether `name` is present; if not, source names from `safePevoMeta(headMeta).authors` or join on `hive`),
+
+and choose a name source that is correct on every path before wiring it. Getting this wrong would put `undefined`/empty names into exports for multi-link papers.
+
+## Acceptance
+
+1. A route-level test (real or representative paper) on the live `/cite` path asserts the BibTeX/RIS/APA author list contains the actual co-author NAMES (not just the posting account) when `pevo.authors` has multiple entries.
+2. A paper carrying `pevo.source.doi` exports a DOI line (RIS `DO`, BibTeX `doi`), escaped via the existing helpers; a paper without a DOI emits no DO/doi line.
+3. Single-link AND continuation/multi-link papers both produce correct author names (covers the `detail.authors` shape variance).
+4. The escape behavior from `backend-citation-export-format-escape` is preserved (LINE_TERMINATORS flattening, non-string coercion) — re-running that task's canary stays green.
+5. Mutation-kill: a test goes RED if the generators revert to reading `detail.json_metadata.pevo`.
+
+## Out of scope
+
+- The escaping itself (landed in `backend-citation-export-format-escape`).
+- Changing the `/cite` response envelope (stays `{ format, content }`).
+
+## References
+
+- `backend/src/routes/papers.ts` — `generateBibtex` / `generateRis` / `generateApa`; `buildPaperDetail` (~3061, `detail.authors` + `json_metadata: meta`); `fetchPaperDetailFromHaf` (`detail.authors` continuation/supersession overrides); `safePevoMeta` (~202, the canonical `meta[config.appTag]` accessor).
+- `agents/docs/tasks/review/backend-citation-export-format-escape.md` — the re-review signal "[Surfaced finding]" that this task formalizes.
