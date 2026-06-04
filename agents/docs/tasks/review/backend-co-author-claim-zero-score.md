@@ -43,3 +43,35 @@ Make `user_papers` carry both the credit-recipient identity (the claimer) AND th
 - [backend/src/reputation.ts](backend/src/reputation.ts) lines 572-746 (`user_papers` and downstream paper scoring CTEs).
 - [agents/docs/reputation-algorithm.md](agents/docs/reputation-algorithm.md) line 31 (co-author credit promise).
 - HAF-query review run `w274tijk0` rank #2.
+
+## Implementation note (backend, 2026-06-02):
+
+Implemented and validated. `user_papers` now projects `chain_author`/`chain_permlink`
+on both arms; a deduped `chain_papers` CTE was added; `paper_vote_signals` (both
+arms), `paper_resolved_votes`, `paper_reviews`, and `paper_scores` were rekeyed to
+the on-chain post identity while credit attribution stays on `up.author` (the
+claimer). All four points of the suggested approach landed.
+
+Validation: `backend/tests/routes/reputation-coauthor-claim-credit.test.ts`
+(source-shape pins + synthetic-VALUES behavioral canary) and the
+reputation-lifecycle idempotency test (real production query against HAF) PASS.
+The behavioral canary pins: claim credit flows to the claimer; the chain-author
+self-vote is excluded (so a poster cannot inflate the claimer's score); the
+native arm is unregressed; a co-credited post does NOT fan out (the dedup gives
+each recipient one copy of the score, not a multiplied one); and a non-target
+chain author receives no credit. An adversarial multi-lens verification cleared
+the shared-credit semantics against `reputation-algorithm.md`.
+
+WHERE THE CODE LANDED (for review): the `reputation.ts` changes are in commit
+`1ab97151` (backend(custom-id-block-num-floor-sweep)), NOT a dedicated task-6
+commit. A concurrent backend session's floor sweep removed a param from
+`computeReputationBatch` and renumbered the refs ($18 -> $17 bridge, $19 -> $18
+anon, activeAccreditationsCteBody(20) -> (19)) across the whole query, including
+the param refs inside the CTE lines this task added. The two changes became
+entangled line-by-line in the shared working tree; the floor-sweep session staged
+`reputation.ts` whole-file and carried this task's CTE work into `1ab97151`. The
+result is internally consistent and functional (idempotency passes at the
+renumbered scheme). The co-author canary test lands in the accompanying
+backend(reputation) commit (this task-state move). To review the code:
+`git show 1ab97151 -- backend/src/reputation.ts` (the chain_papers / chain_author
+/ rekeyed-join hunks) plus the canary test.
