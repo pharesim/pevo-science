@@ -1096,15 +1096,18 @@ async function fetchPapersFromHaf(
     ) sub
   ), 0) AS avg_rating`;
 
-  // Citation count: accredited papers that cite this one (native papers only; bridge papers use Semantic Scholar)
-  const citationCountSelect = `COALESCE((
-    SELECT count(*)::int FROM ${T.comments} ci
-    JOIN active_accreditations aa ON aa.account = ci.author
-    WHERE ci.parent_author = '' AND ci.parent_permlink = ${appTagParam}
-      AND (ci.json_metadata -> ${appTagParam} ->> 'type') = 'paper'
-      AND ci.json_metadata ->> 'app' LIKE ${appLikeParam}
-      AND ci.json_metadata -> ${appTagParam} -> 'citations' @> jsonb_build_array(jsonb_build_object('author', c.author, 'permlink', c.permlink))
-  ), 0) AS citation_count`;
+  // Citation count: accredited papers that cite this one (native papers only;
+  // bridge papers use Semantic Scholar). Sourced from the
+  // `paper_citation_counts` CTE (appended to the WITH clause in the data query
+  // below) and LEFT JOINed onto the page row, NOT a per-row correlated
+  // containment subquery. The prior shape ran one full PEvO-paper scan per
+  // output row (N scans per cold-cache page), each constructing a fresh
+  // `jsonb_build_array(jsonb_build_object(...))` from the outer row that
+  // defeated constant folding and could not use any index. The CTE unnests
+  // every accredited paper's `pevo.citations` ONCE and groups by the cited
+  // (author, permlink). Empty-citation papers have no CTE row, so the LEFT JOIN
+  // yields NULL and COALESCE degrades to 0.
+  const citationCountSelect = `COALESCE(pcc.citation_count, 0) AS citation_count`;
 
   try {
     const limitParam = `$${paramIdx++}`;
@@ -1118,7 +1121,43 @@ async function fetchPapersFromHaf(
     // returns zero rows so `dataResult.rows[0]?.total ?? 0` degrades to 0.
     // Matches the shape established at `fetchAccreditationsFromHaf`.
     const dataResult = await pool.query(
-      `${cte.sql}
+      `${cte.sql},
+       paper_citation_counts AS (
+         -- Inverted citation aggregation (replaces a per-row correlated @>
+         -- containment): unnest every accredited PEvO paper's pevo.citations
+         -- ONCE and group by the cited (author, permlink), so a page render
+         -- scans the corpus a single time instead of once per page row. The
+         -- jsonb_typeof array guard is a cascade-fail defense — a chain post
+         -- broadcasting a non-array pevo.citations (null, string, object) would
+         -- otherwise raise "cannot extract elements from a scalar" and fail the
+         -- whole listing (per the pg-jsonb-null-vs-sql-null convention). The
+         -- inner DISTINCT collapses a citation listed twice within one citing
+         -- paper so it counts the citing paper once, matching the prior @>
+         -- containment (which counted citing papers, not citation elements).
+         SELECT cited_author, cited_permlink, count(*)::int AS citation_count
+         FROM (
+           SELECT DISTINCT
+             ci.author AS citing_author,
+             ci.permlink AS citing_permlink,
+             cit ->> 'author' AS cited_author,
+             cit ->> 'permlink' AS cited_permlink
+           FROM ${T.comments} ci
+           JOIN active_accreditations aa ON aa.account = ci.author
+           CROSS JOIN LATERAL jsonb_array_elements(
+             CASE WHEN jsonb_typeof(ci.json_metadata -> ${appTagParam} -> 'citations') = 'array'
+               THEN ci.json_metadata -> ${appTagParam} -> 'citations'
+               ELSE '[]'::jsonb
+             END
+           ) cit
+           WHERE ci.parent_author = '' AND ci.parent_permlink = ${appTagParam}
+             AND (ci.json_metadata -> ${appTagParam} ->> 'type') = 'paper'
+             AND ci.json_metadata ->> 'app' LIKE ${appLikeParam}
+             AND jsonb_typeof(cit) = 'object'
+             AND cit ->> 'author' IS NOT NULL
+             AND cit ->> 'permlink' IS NOT NULL
+         ) deduped
+         GROUP BY cited_author, cited_permlink
+       )
        SELECT
         c.author,
         c.permlink,
@@ -1134,6 +1173,7 @@ async function fetchPapersFromHaf(
         0 AS author_reputation,
         count(*) OVER ()::int AS total
       FROM ${T.comments} c
+      LEFT JOIN paper_citation_counts pcc ON pcc.cited_author = c.author AND pcc.cited_permlink = c.permlink
       WHERE ${where}
       ORDER BY ${orderBy}
       LIMIT ${limitParam} OFFSET ${offsetParam}`,
@@ -3727,13 +3767,27 @@ router.post('/:author/:permlink/retract', validateRetractParams, verifyHiveSigna
 const VALID_CITE_FORMATS = new Set(['bibtex', 'ris', 'apa']);
 
 /**
+ * Line/paragraph separators that can split a line-oriented citation record,
+ * break out of a one-line citation, or smuggle a forged record into a lenient
+ * importer. Broader than `[\r\n]`: a crafted title can use form-feed (U+000C),
+ * vertical-tab (U+000B), NEL (U+0085), LINE SEPARATOR (U+2028), or PARAGRAPH
+ * SEPARATOR (U+2029) to reach the same file-format-injection class through a
+ * wider separator alphabet — many RIS importers and any text renderer treat
+ * these as line breaks. Single shared constant so `bibtexEscape`, `risEscape`,
+ * and `singleLine` cannot drift to different separator alphabets.
+ */
+const LINE_TERMINATORS = /[\r\n\u000b\u000c\u0085\u2028\u2029]+/g;
+
+/**
  * Escape a free-form chain-sourced string for safe interpolation into a BibTeX
  * `@article{...}` field value. BibTeX/TeX treats `{` `}` as grouping, `\` as an
  * escape introducer, and `#$%&_^~` as specials; an un-escaped `}` (or a smuggled
  * `} @article{evil,...`) closes the entry early and lets an attacker-controlled
- * title forge additional records. CR/LF are flattened to a space since field
- * values are written one-per-line. Backslash is rewritten first so the escape
- * sequences this helper introduces are not themselves re-escaped.
+ * title forge additional records. Line terminators (the full LINE_TERMINATORS
+ * alphabet, not just CR/LF) are flattened to a space since field values are
+ * written one-per-line. Backslash is rewritten first so the escape sequences
+ * this helper introduces are not themselves re-escaped. A non-string input (null/undefined or a wrong-typed chain field) coerces
+ * to '' so a missing chain field cannot 500 the export at `.replace`.
  */
 export function bibtexEscape(s: string): string {
   // Flatten line terminators first, then escape every metacharacter in a SINGLE
@@ -3741,7 +3795,8 @@ export function bibtexEscape(s: string): string {
   // the braces this helper itself emits for `\textbackslash{}`, double-escaping
   // them into `\textbackslash\{\}`. One pass over the original string avoids
   // touching any character the replacement introduces.
-  return s.replace(/[\r\n]+/g, ' ').replace(/[\\{}#$%&_^~]/g, (c) => {
+  const v = typeof s === 'string' ? s : '';
+  return v.replace(LINE_TERMINATORS, ' ').replace(/[\\{}#$%&_^~]/g, (c) => {
     if (c === '\\') return '\\textbackslash{}';
     return `\\${c}`;
   });
@@ -3749,27 +3804,35 @@ export function bibtexEscape(s: string): string {
 
 /**
  * Escape a free-form chain-sourced string for a single RIS line. RIS is strictly
- * line-oriented (`XX  - value`) with no quoting mechanism, so any embedded CR/LF
- * would split one field into multiple records or inject attacker-crafted tag
- * lines (`AU  - Fake`, `ER  -`). Stripping line terminators to spaces is the only
- * safe option; trailing/leading whitespace is trimmed for a clean record.
+ * line-oriented (`XX  - value`) with no quoting mechanism, so any embedded line
+ * terminator would split one field into multiple records or inject
+ * attacker-crafted tag lines (`AU  - Fake`, `ER  -`). Stripping line terminators
+ * (the full LINE_TERMINATORS alphabet) to spaces is the only safe option;
+ * trailing/leading whitespace is trimmed for a clean record. A non-string input (null/undefined or a wrong-typed chain field)
+ * coerces to ''.
  */
 export function risEscape(s: string): string {
-  return s.replace(/[\r\n]+/g, ' ').trim();
+  const v = typeof s === 'string' ? s : '';
+  return v.replace(LINE_TERMINATORS, ' ').trim();
 }
 
 /**
  * Flatten a free-form chain-sourced string to a single line for plain-text
- * citation output (APA). Prevents a CR/LF in a title or author name from
- * breaking the one-line citation into multiple lines.
+ * citation output (APA). Prevents a line terminator (the full LINE_TERMINATORS
+ * alphabet) in a title or author name from breaking the one-line citation into
+ * multiple lines. A non-string input (null/undefined or a wrong-typed chain field) coerces to ''.
  */
 export function singleLine(s: string): string {
-  return s.replace(/[\r\n]+/g, ' ').trim();
+  const v = typeof s === 'string' ? s : '';
+  return v.replace(LINE_TERMINATORS, ' ').trim();
 }
 
 export function generateBibtex(detail: Record<string, unknown>): string {
-  const author = detail.author as string;
-  const title = detail.title as string;
+  // Chain fields are coerced from their `as string` casts defensively: a
+  // wrong-typed or absent title is unreachable today via Hive's chain-string
+  // convention, but the cast is otherwise crash-reachable at `.split`.
+  const author = typeof detail.author === 'string' ? detail.author : '';
+  const title = typeof detail.title === 'string' ? detail.title : '';
   const created = detail.created as string;
   const year = new Date(created).getFullYear();
   const pevo = ((detail.json_metadata as Record<string, unknown>)?.pevo || {}) as Record<string, unknown>;
@@ -3779,7 +3842,7 @@ export function generateBibtex(detail: Record<string, unknown>): string {
   const authorStr = authors.length > 0
     ? authors.map((a) => a.name).join(' and ')
     : author;
-  const doi = (detail as Record<string, unknown>).doi as string | undefined;
+  const doi = detail.doi as string | undefined;
 
   // The cite key is composed from a Hive username, a [a-z]-sanitized title word,
   // and a numeric year, so it cannot already contain BibTeX-breaking chars; the
@@ -3796,13 +3859,13 @@ export function generateBibtex(detail: Record<string, unknown>): string {
 }
 
 export function generateRis(detail: Record<string, unknown>): string {
-  const author = detail.author as string;
-  const title = detail.title as string;
+  const author = typeof detail.author === 'string' ? detail.author : '';
+  const title = typeof detail.title === 'string' ? detail.title : '';
   const created = detail.created as string;
   const year = new Date(created).getFullYear();
   const pevo = ((detail.json_metadata as Record<string, unknown>)?.pevo || {}) as Record<string, unknown>;
   const authors = (pevo.authors || []) as Array<{ name: string }>;
-  const doi = (detail as Record<string, unknown>).doi as string | undefined;
+  const doi = detail.doi as string | undefined;
 
   const lines: string[] = [
     'TY  - JOUR',
@@ -3811,7 +3874,7 @@ export function generateRis(detail: Record<string, unknown>): string {
   if (authors.length > 0) {
     for (const a of authors) lines.push(`AU  - ${risEscape(a.name)}`);
   } else {
-    lines.push(`AU  - ${author}`);
+    lines.push(`AU  - ${risEscape(author)}`);
   }
   lines.push(`PY  - ${year}`);
   lines.push('PB  - PEvO (Publish and Evaluate Onchain)');
@@ -3822,8 +3885,8 @@ export function generateRis(detail: Record<string, unknown>): string {
 }
 
 export function generateApa(detail: Record<string, unknown>): string {
-  const author = detail.author as string;
-  const title = detail.title as string;
+  const author = typeof detail.author === 'string' ? detail.author : '';
+  const title = typeof detail.title === 'string' ? detail.title : '';
   const created = detail.created as string;
   const year = new Date(created).getFullYear();
   const pevo = ((detail.json_metadata as Record<string, unknown>)?.pevo || {}) as Record<string, unknown>;
