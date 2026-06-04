@@ -22,6 +22,7 @@ import {
   getCachedSha,
   INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA,
   RELEASE_LOCK_IF_TOKEN_MATCHES_LUA,
+  CYCLE_SWAP_LUA,
 } from '../../src/lib/redis-scripts.js';
 import { getRedis } from '../../src/redis.js';
 import { config } from '../../src/config.js';
@@ -59,6 +60,7 @@ describe.skipIf(skipIfNoRedis)('evalScript / loadAllScripts', () => {
   it('SHARED_SCRIPTS exposes the canonical bodies under their registry names', () => {
     expect(SHARED_SCRIPTS.INCR_AND_EXPIRE_ON_ZERO_TO_ONE).toBe(INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA);
     expect(SHARED_SCRIPTS.RELEASE_LOCK_IF_TOKEN_MATCHES).toBe(RELEASE_LOCK_IF_TOKEN_MATCHES_LUA);
+    expect(SHARED_SCRIPTS.CYCLE_SWAP).toBe(CYCLE_SWAP_LUA);
   });
 
   it('cold path: with no SHA cached, evalScript falls back to EVAL and the script executes', async () => {
@@ -193,6 +195,55 @@ describe.skipIf(skipIfNoRedis)('evalScript / loadAllScripts', () => {
       expect(await redis.get(lockKey)).toBe('other-holder');
     } finally {
       await redis.del(lockKey);
+    }
+  });
+
+  it('CYCLE_SWAP dispatches via evalScript: renames staging keys into prod, advances cycle:last, DELs the sentinel', async () => {
+    if (!redis) throw new Error('redis required');
+    // Warm the SHA cache so the registry's EVALSHA path is exercised — the
+    // sibling production caller (reputation-batch CYCLE_SWAP) routes through
+    // evalScript exactly like RELEASE_LOCK_IF_TOKEN_MATCHES; this is the
+    // equivalent registry-path spec for CYCLE_SWAP (the direct-redis.eval
+    // CYCLE_SWAP test pins the Lua body but bypasses the dispatch helper).
+    await loadAllScripts(redis);
+
+    const tag = crypto.randomBytes(6).toString('hex');
+    // Substrings must avoid Lua-pattern metacharacters (string.gsub treats its
+    // 2nd arg as a Lua pattern): use alnum-only segments, no '-' or '.'.
+    const stagingSub = ':csbatch:staging:';
+    const prodSub = ':csbatch:';
+    const stagingKey = `${config.appTag}:csbatch:staging:cs${tag}`;
+    const prodKey = `${config.appTag}:csbatch:cs${tag}`;
+    const lastCycleKey = `${config.appTag}:cscyclelast${tag}`;
+    const sentinelKey = `${config.appTag}:csinprogress${tag}`;
+    const cycle = '7';
+
+    const evalshaSpy = vi.spyOn(redis, 'evalsha');
+    try {
+      await redis.set(stagingKey, 'staged-payload');
+      await redis.set(sentinelKey, cycle);
+
+      const stagingCount = await evalScript(
+        redis,
+        'CYCLE_SWAP',
+        [stagingKey, sentinelKey],
+        [cycle, lastCycleKey, stagingSub, prodSub],
+      );
+
+      // Registry path used EVALSHA (warm cache), not a direct redis.eval.
+      expect(evalshaSpy).toHaveBeenCalledTimes(1);
+      // Return value is the staging-key count (KEYS minus the trailing sentinel).
+      expect(Number(stagingCount)).toBe(1);
+      // Staging key renamed into its prod counterpart, payload preserved.
+      expect(await redis.get(prodKey)).toBe('staged-payload');
+      expect(await redis.get(stagingKey)).toBeNull();
+      // cycle:last advanced and the in-progress sentinel cleared in the same
+      // atomic script.
+      expect(await redis.get(lastCycleKey)).toBe(cycle);
+      expect(await redis.get(sentinelKey)).toBeNull();
+    } finally {
+      evalshaSpy.mockRestore();
+      await redis.del(stagingKey, prodKey, lastCycleKey, sentinelKey);
     }
   });
 });
