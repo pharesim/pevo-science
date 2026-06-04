@@ -33,3 +33,21 @@ Architect note: lean toward (b) given the content-liability stakes the parent ta
 - ARCHITECTURE.md § 6.4 (upload-token row) and § 6.5 invariant #1.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend implementation note (2026-06-04)
+
+User chose **Option (b): per-action binding** (the architect's lean, given the content-liability stakes).
+
+**What shipped (backend):**
+- `lib/fresh-auth.ts`: new `'ipfs_upload'` member of `FreshAuthTargetAction` + an `ipfsUploadFreshAuthTarget(username)` helper binding to `(ipfs_upload, <username>, '')` (per-user, empty `root_permlink` collision-free against consent-op proofs, distinct `action` blocks redirect of a vote/comment session proof or a wrong-action consent-op proof). Docblock updated.
+- `routes/ipfs.ts` `/upload-token` JWT path now consumes via `consumeFreshAuthToken(proof, username, computeFreshAuthTargetHash(ipfsUploadFreshAuthTarget(username)))` instead of `consumeSessionFreshAuthToken`. A session proof fails the consent-op `kind` check (`kind_mismatch`); a wrong-action proof fails the target-hash compare (`target_mismatch`); both surface as 401 `FRESH_AUTH_REQUIRED`. The signature path is unchanged (per-request signature is itself fresh). Route docblock updated.
+- **Issuance side extended so the proof can actually be minted:** `routes/custody.ts` `/fresh-auth` (password mechanism, states A/B) and `routes/orcid.ts` `mode='fresh_auth'` (ORCID mechanism, states B/C) both accept `action: 'ipfs_upload'` (no `root_*` fields; target derived from the authenticated username). Validator + handler error messages updated to include the new action.
+
+**Tests:**
+- `ipfs-upload-token.test.ts` no longer mocks fresh-auth — it mints REAL proofs and asserts a `kind: 'session'` proof is REJECTED at `/upload-token` (`reason: 'kind_mismatch'`) while an `ipfs_upload`-targeted proof is ACCEPTED (the acceptance-#2 pair).
+- `custody-fresh-auth-null-hash.test.ts` gains an issuance test: `POST /api/custody/fresh-auth { action: 'ipfs_upload' }` with a valid password → 200, and the minted proof consumes valid against the `ipfs_upload` target hash (proves the issuance branch binds the right target).
+- No regression: custody (`-non-consent-fresh-auth`, `-fresh-auth-null-hash`, `-consent-ops`), `orcid.test.ts` (94), and `fresh-auth.test.ts` all green.
+
+**[TODO Architect] ARCHITECTURE.md § 6.4/§ 6.5 (architect-owned).** Record posture (b) and **remove the "under review" note** from the § 6.4 "Issue IPFS upload token" row: the JWT path now requires a per-action `ipfs_upload`-targeted fresh-auth proof (not a target-less session proof), so a vote/comment session proof can no longer be redirected to `/upload-token`. The issuance factor is still per-account (password for A/B via `/api/custody/fresh-auth { action: 'ipfs_upload' }`, ORCID for B/C via `/api/orcid/start { mode: 'fresh_auth', action: 'ipfs_upload' }`).
+
+**[TODO UI] `ui-ipfs-upload-token-roundtrip` must mint the `ipfs_upload` proof kind.** The SPA's light-account/JWT upload flow must now obtain a fresh-auth proof minted for `action: 'ipfs_upload'` (via custody `/fresh-auth` or ORCID `fresh_auth`), NOT a session proof, before `POST /api/ipfs/upload-token`. (Architect to relay to the UI agent / annotate the existing `ui-ipfs-upload-token-roundtrip` task.)
