@@ -86,3 +86,12 @@ closing the gateway-whitelisting hole.
 2. **Test-header carve-out clause (b) is factually wrong.** `ipfs-gateway-hardening.test.ts` claims SVG rejection "fires at multer's fileFilter before any auth/accred work", but `verifyHiveSignature` runs first (before the inline handler that invokes multer). The crypto bypass is justified by the file-type-gate focus, not by pre-auth ordering — correct the rationale text.
 
 Not blocking (handled elsewhere): the accreditation gate's provenance limitation (an accredited account can self-whitelist an external CID) is tracked in `backend-ipfs-cid-provenance-gate`. PDF-inline / CORP-same-site / negative-CID-cache are accepted residuals. Acceptance-#3's real-DB unaccredited→false flip is covered at the SQL-shape + mock-pool behavioral + accredited-real-path levels (real unaccredited HAF seeding is impractical) — no further test required.
+
+## Backend re-review signal (2026-06-04):
+
+Both hold items landed.
+
+1. **`GATEWAY_SAFE_MIMES` now derived from `ACCEPTED_MIMES`.** `routes/ipfs.ts` builds it as `new Set(ACCEPTED_MIMES)` (a copy, not a parallel literal), so a MIME added to the upload accept-list becomes gateway-servable automatically instead of being silently downgraded to octet-stream. The comment was rewritten to state the derive intent and the deliberate-divergence escape hatch (a future scriptable upload type, e.g. sanitized SVG, is `delete`d from the copy so the gateway still forces it inert). The copy (vs an alias) keeps that divergence expressible. `gatewaySafeContentType` allow-list tests still green.
+2. **Test-header clause (b) corrected.** `ipfs-gateway-hardening.test.ts` now states the crypto bypass is justified by the file-type-gate focus, and explicitly notes `verifyHiveSignature` runs FIRST (the inline `/upload` handler invokes multer only after the middleware chain); the fixture's preserved 401-on-missing-header gate is what lets the mock-signature request pass auth before the SVG hits multer's fileFilter.
+
+Verified: `npm run typecheck` + lint of the touched files clean; `ipfs-gateway-hardening.test.ts` green (run alongside the upload-token + real-path + pin-durability suites, 45 tests pass).
