@@ -2,7 +2,7 @@ import { getPool } from './db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
-import { T, activeAccreditationsCteBody, accreditationStatusCteBody, getCachedGenesisBlock } from './hafsql.js';
+import { T, activeAccreditationsCteBody, accreditationStatusCteBody } from './hafsql.js';
 
 export type AccreditationStatus = 'active' | 'revoked';
 
@@ -53,10 +53,9 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
     try {
       const unique = [...new Set(usernames)];
 
-      // $1 = appTag, $2 = whitelist, $3 = genesis, $4+ = usernames
-      const userPlaceholders = unique.map((_, i) => `$${i + 4}`).join(', ');
+      // $1 = appTag, $2 = whitelist, $3+ = usernames
+      const userPlaceholders = unique.map((_, i) => `$${i + 3}`).join(', ');
       const result = await pool.query(
-        // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- getAccreditedSet: batch lookup further narrowed by `account IN (...)`; pending audit per the BitmapAnd-floor sweep follow-up
         `WITH ranked AS (
           SELECT
             cj.json::jsonb ->> 'action' AS action,
@@ -66,11 +65,10 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
           WHERE cj.custom_id = $1
             AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
             AND cj.required_posting_auths ?| $2::text[]
-            AND cj.block_num >= $3
             AND cj.json::jsonb ->> 'account' IN (${userPlaceholders})
         )
         SELECT account FROM ranked WHERE rn = 1 AND action = 'accredit'`,
-        [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock(), ...unique],
+        [config.appTag, config.accreditationAuthorities, ...unique],
       );
 
       return new Set(result.rows.map((r: { account: string }) => r.account));

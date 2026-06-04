@@ -5,16 +5,16 @@
  *
  * The read surface (`authorshipClaimsCteBody` in `hafsql.ts`) is covered
  * behaviorally by `authorship-approve-signer-gate.test.ts`. The cycle applies
- * the IDENTICAL predicate — `ap.approver IN (ap.paper_author, $18)` — in TWO
+ * the IDENTICAL predicate — `ap.approver IN (ap.paper_author, $17)` — in TWO
  * places: the "Explicitly approved" EXISTS arm AND the revoke-override
- * `MAX(approve_block)` subquery, where `$18` binds `config.hiveBridgeAccount`.
+ * `MAX(approve_block)` subquery, where `$17` binds `config.hiveBridgeAccount`.
  * The two surfaces are kept in sync only by mirrored comments and a hardcoded
- * `$18`, and the cycle is where the forged co-author reputation credit actually
- * accrues. A param insertion before `$18`, or a predicate removal in
+ * `$17`, and the cycle is where the forged co-author reputation credit actually
+ * accrues. A param insertion before `$17`, or a predicate removal in
  * `reputation.ts` alone, would silently re-open the forgery on the cycle while
  * the read-surface behavioral test stays green.
  *
- * This canary pins the predicate's presence at BOTH arms and the exact `$18`
+ * This canary pins the predicate's presence at BOTH arms and the exact `$17`
  * param on the cycle's emitted SQL, independently of the read surface and of
  * whether HAF is configured — so predicate-removal and bridge-param drift on
  * the cycle are caught.
@@ -68,7 +68,7 @@ afterEach(() => {
 });
 
 describe('reputation cycle accepted_claims — approve_authorship signer gate SQL shape', () => {
-  it('emits `ap.approver IN (ap.paper_author, $18)` at BOTH the approved-EXISTS arm and the revoke-override MAX subquery', async () => {
+  it('emits `ap.approver IN (ap.paper_author, $17)` at BOTH the approved-EXISTS arm and the revoke-override MAX subquery', async () => {
     getPoolMock.mockReturnValue(capturingPool as unknown as ReturnType<typeof getPoolMock>);
 
     // cycleEndBlock provided (skips the head-block lookup); prevScores provided
@@ -80,9 +80,9 @@ describe('reputation cycle accepted_claims — approve_authorship signer gate SQ
 
     // The signer gate appears once in the revoke-override MAX(approve_block)
     // subquery and once in the "Explicitly approved" EXISTS arm. Pinning the
-    // exact `$18` catches a param insertion that would drift the bridge param;
+    // exact `$17` catches a param insertion that would drift the bridge param;
     // requiring TWO occurrences catches a removal from either arm alone.
-    const matches = cycleSql!.match(/ap\.approver IN \(ap\.paper_author, \$18\)/g) ?? [];
+    const matches = cycleSql!.match(/ap\.approver IN \(ap\.paper_author, \$17\)/g) ?? [];
     expect(matches).toHaveLength(2);
   });
 });

@@ -20,11 +20,12 @@
  * auth/permission middleware are NOT mocked.
  *
  * Risk classes covered by THIS file:
- *   - SQL-string shape: `cj.custom_id = $1`, `cj.block_num >= $2`,
- *     the action whitelist, root_author / root_permlink binding, the
- *     `cj.id::text` projection, the `ORDER BY cj.id DESC` clause, and
- *     the `LIMIT 1000` cap (see `describe('fetchConsentOpsForPaper —
- *     SQL contract')`).
+ *   - SQL-string shape: `cj.custom_id = $1`, the action whitelist,
+ *     root_author / root_permlink binding, the `cj.id::text`
+ *     projection, the `ORDER BY cj.id DESC` clause, and the `LIMIT
+ *     1000` cap (see `describe('fetchConsentOpsForPaper — SQL
+ *     contract')`). The genesis-block floor was BitmapAnd-toxic and
+ *     inert, so it was dropped from the query.
  *   - Validity rules in `computeVouchedAuthors` (temporal-ordering,
  *     signer-binding, same-block tie-break, resign supersession,
  *     bridge-paper claimed-set membership).
@@ -49,16 +50,6 @@ vi.mock('../src/db.js', () => ({
   getPool: getPoolMock,
   isHafConfigured: () => getPoolMock() !== null,
 }));
-
-// Stub `getCachedGenesisBlock` so the SQL-shape assertions don't depend on
-// the global cache being warm in this isolated unit-test context.
-vi.mock('../src/hafsql.js', async () => {
-  const actual = await vi.importActual<typeof import('../src/hafsql.js')>('../src/hafsql.js');
-  return {
-    ...actual,
-    getCachedGenesisBlock: () => 100_000_000,
-  };
-});
 
 import {
   type ConsentOp,
@@ -397,7 +388,7 @@ describe('fetchConsentOpsForPaper — SQL contract', () => {
   // placeholders to bind against.
   const TEST_CLAIMED = new Set(['alice', 'bob']);
 
-  it('filters by appTag, action whitelist, root_author, root_permlink, claimed-signer set, and genesis block', async () => {
+  it('filters by appTag, action whitelist, root_author, root_permlink, and claimed-signer set', async () => {
     hafQueryMock.mockResolvedValue({ rows: [] });
     await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink, TEST_CLAIMED);
 
@@ -406,18 +397,19 @@ describe('fetchConsentOpsForPaper — SQL contract', () => {
 
     // appTag binds via custom_id ($1).
     expect(sql).toMatch(/cj\.custom_id\s*=\s*\$1/);
-    // genesis block ≥ floor ($2) — prevents full-history scan.
-    expect(sql).toMatch(/cj\.block_num\s*>=\s*\$2/);
+    // No block_num >= floor: the genesis floor was BitmapAnd-toxic and inert
+    // (pre-genesis PEvO custom_jsons cannot exist), so it was dropped.
+    expect(sql).not.toMatch(/block_num\s*>=/);
     // Action whitelist — restricts to consent ops only.
     expect(sql).toMatch(/'action'\s+IN\s*\(\s*'author_accept'\s*,\s*'author_resign'\s*\)/);
-    // Paper identity binds via $3 / $4.
-    expect(sql).toMatch(/'root_author'\s*=\s*\$3/);
-    expect(sql).toMatch(/'root_permlink'\s*=\s*\$4/);
+    // Paper identity binds via $2 / $3.
+    expect(sql).toMatch(/'root_author'\s*=\s*\$2/);
+    expect(sql).toMatch(/'root_permlink'\s*=\s*\$3/);
     // Round-5 hold #2: claimed-signer filter — push the claimed-set
     // membership check INTO the SQL so the LIMIT 1000 cap can't be
     // exhausted by attacker-signed spam ops. Each claimed account
-    // becomes a separate $N placeholder starting at $5.
-    expect(sql).toMatch(/cj\.required_posting_auths\s*->>\s*0\s+IN\s*\(\s*\$5\s*,\s*\$6\s*\)/);
+    // becomes a separate $N placeholder starting at $4.
+    expect(sql).toMatch(/cj\.required_posting_auths\s*->>\s*0\s+IN\s*\(\s*\$4\s*,\s*\$5\s*\)/);
     // Required output columns for the ConsentOp shape.
     expect(sql).toMatch(/required_posting_auths\s*->>\s*0\s+AS\s+signer/);
     expect(sql).toMatch(/cj\.id::text\s+AS\s+op_id/);
@@ -431,7 +423,6 @@ describe('fetchConsentOpsForPaper — SQL contract', () => {
 
     expect(params).toEqual([
       config.appTag,
-      100_000_000,
       PAPER.rootAuthor,
       PAPER.rootPermlink,
       'alice',
@@ -502,10 +493,10 @@ describe('fetchConsentOpsForPaper — SQL contract', () => {
     // sanity check: a row with mallory as the signer is NOT in the
     // returned set even if HAF would otherwise have surfaced it.
     hafQueryMock.mockImplementation(async (_sql: string, params: unknown[]) => {
-      // The claimed-set is bound at $5..$N. Confirm mallory is NOT
+      // The claimed-set is bound at $4..$N. Confirm mallory is NOT
       // in the bound set (defense in depth — the filter pushes the
       // check into the database).
-      const claimedBindings = params.slice(4) as string[];
+      const claimedBindings = params.slice(3) as string[];
       expect(claimedBindings).not.toContain('mallory');
       expect(claimedBindings).toEqual(expect.arrayContaining(['alice', 'bob', 'carol']));
       // Return only legitimate-signer rows (HAF would filter

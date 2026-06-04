@@ -12,7 +12,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T, getCachedGenesisBlock, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, activeAccreditationsCteBody, chainOrcidAutoAcceptMatchSql } from './hafsql.js';
+import { T, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, activeAccreditationsCteBody, chainOrcidAutoAcceptMatchSql } from './hafsql.js';
 
 // ─── Batch key helpers ──────────────────────────────────────────
 
@@ -273,13 +273,11 @@ async function loadReputationWeights(): Promise<ReputationWeights> {
     await client.query('SET LOCAL statement_timeout = 2000');
 
     const exists = await client.query(
-      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- loadReputationWeights existence probe: bounded by a 2s LOCAL statement_timeout, runs at most once per reputation cycle; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT 1 FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
          AND cj.json LIKE '%update_weights%'
-         AND cj.block_num >= $2
        LIMIT 1`,
-      [config.appTag, getCachedGenesisBlock()],
+      [config.appTag],
     );
 
     if (exists.rows.length === 0) {
@@ -290,14 +288,12 @@ async function loadReputationWeights(): Promise<ReputationWeights> {
 
     await client.query('SET LOCAL statement_timeout = 5000');
     const result = await client.query(
-      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- loadReputationWeights latest-update read: bounded by a 5s LOCAL statement_timeout, runs at most once per reputation cycle; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT cj.json FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
          AND cj.json::jsonb ->> 'action' = 'update_weights'
-         AND cj.block_num >= $2
        ORDER BY cj.block_num DESC
        LIMIT 1`,
-      [config.appTag, getCachedGenesisBlock()],
+      [config.appTag],
     );
     await client.query('COMMIT');
     client.release();
@@ -337,15 +333,15 @@ export async function startReputationWeightsCache(): Promise<void> {
  *
  * Parameters: $1 = target usernames, $2 = accredited, $3 = app_tag,
  * $4 = app_like, $5 = prev scores jsonb, $6 = cycle_end_block,
- * $7 = genesis block, $8-$17 = weights (cast once in `w` CTE),
- * $18 = config.hiveBridgeAccount (for validPevoPaperWhere bridge-author pin),
- * $19 = config.hiveAnonAccount (for review-class anon-proxy OR-arm at
+ * $7-$16 = weights (cast once in `w` CTE),
+ * $17 = config.hiveBridgeAccount (for validPevoPaperWhere bridge-author pin),
+ * $18 = config.hiveAnonAccount (for review-class anon-proxy OR-arm at
  *       the FOUR review CTEs that compose `validReviewWhere` —
  *       `active_authors` review arm, `paper_reviews`, `user_reviews`,
  *       and `citing_paper_quality`'s inner subquery; mirrors the
  *       display-side accreditation-or-anon shape composed at
  *       profile.ts / reviews.ts).
- * $20 = config.appTag, $21 = config.accreditationAuthorities — the
+ * $19 = config.appTag, $20 = config.accreditationAuthorities — the
  *       authority-gated active_accreditations CTE (composed via
  *       activeAccreditationsCteBody) backing the co-author ORCID auto-accept
  *       arm; only authority-signed accredit/revoke ops are trusted.
@@ -386,21 +382,20 @@ export async function computeReputationBatch(
     const prevJson = prevScores ?? batchMapToScoreRecord(await getBatchReputationMap());
 
     const result = await pool.query(
-      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- computeReputationDelta: the batch reputation CTE bundles claim_events, accred_ranked, revote tallies, etc., each scoped by `target_users` / `target_authors` predicates that narrow well below the BitmapAnd-toxic threshold; runs as a scheduled background job not a request hot path; pending audit per the BitmapAnd-floor sweep follow-up
       `WITH
 
       -- Cast weight parameters once
       w AS (SELECT
-        $8::numeric  AS paper,
-        $9::numeric  AS review,
-        $10::numeric AS downvote,
-        $11::numeric AS citation,
-        $12::numeric AS citation_max,
-        $13::numeric AS accreditation_bonus,
-        $14::numeric AS self_citation_discount,
-        $15::numeric AS decay_rate,
-        $16::numeric AS decay_floor,
-        $17::numeric AS decay_grace_months
+        $7::numeric  AS paper,
+        $8::numeric  AS review,
+        $9::numeric AS downvote,
+        $10::numeric AS citation,
+        $11::numeric AS citation_max,
+        $12::numeric AS accreditation_bonus,
+        $13::numeric AS self_citation_discount,
+        $14::numeric AS decay_rate,
+        $15::numeric AS decay_floor,
+        $16::numeric AS decay_grace_months
       ),
 
       target_users AS (
@@ -433,7 +428,7 @@ export async function computeReputationBatch(
         SELECT DISTINCT author FROM (
           SELECT c.author FROM ${T.comments} c
           WHERE c.parent_author = '' AND c.parent_permlink = $3
-            AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
+            AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$17', source: 'all' })}
             AND c.json_metadata ->> 'app' LIKE $4
           UNION ALL
           -- Review arm: gate on accreditation (or the anon proxy), AND
@@ -452,11 +447,11 @@ export async function computeReputationBatch(
           SELECT c.author FROM ${T.comments} c
           JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
           WHERE p.parent_author = '' AND p.parent_permlink = $3
-            AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
+            AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$17', source: 'all' })}
             AND p.json_metadata ->> 'app' LIKE $4
             AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
             AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$3' })}
-            AND (c.author = ANY($2::text[]) OR c.author = $19)
+            AND (c.author = ANY($2::text[]) OR c.author = $18)
         ) t
       ),
 
@@ -490,7 +485,6 @@ export async function computeReputationBatch(
         FROM ${T.customJson} cj
         WHERE cj.custom_id = $3
           AND cj.json::jsonb ->> 'action' IN ('claim_authorship', 'approve_authorship', 'revoke_authorship')
-          AND cj.block_num >= $7
       ),
       -- Authority-gated accreditation source for the co-author ORCID
       -- auto-accept arm below. accred_ranked applies the
@@ -503,7 +497,7 @@ export async function computeReputationBatch(
       -- auto-accept ORCID here (rather than re-reading raw accredit ops)
       -- removes the divergence class entirely; a revoke clears the account
       -- from active_accreditations so a prior attestation stops matching.
-      ${activeAccreditationsCteBody(20).sql},
+      ${activeAccreditationsCteBody(19).sql},
       accepted_claims AS (
         SELECT DISTINCT ce.claimer, ce.paper_author, ce.paper_permlink
         FROM claim_events ce
@@ -522,7 +516,7 @@ export async function computeReputationBatch(
                   AND ap.claimer = ce.claimer
                   AND ap.paper_author = ce.paper_author
                   AND ap.paper_permlink = ce.paper_permlink
-                  AND ap.approver IN (ap.paper_author, $18)
+                  AND ap.approver IN (ap.paper_author, $17)
               ), 0)
           )
           AND (
@@ -539,7 +533,7 @@ export async function computeReputationBatch(
                 AND ap.paper_author = ce.paper_author
                 AND ap.paper_permlink = ce.paper_permlink
                 AND ap.block_num > ce.block_num
-                AND ap.approver IN (ap.paper_author, $18)
+                AND ap.approver IN (ap.paper_author, $17)
             )
             -- Auto-accept: ORCID match. This arm and the read-surface
             -- authorshipClaimsCteBody arm share the chainOrcidAutoAcceptMatchSql
@@ -581,37 +575,76 @@ export async function computeReputationBatch(
       ),
 
       -- ═══ PAPERS ═══
+      -- Each row carries two identities: author is the credit recipient (the
+      -- claimer for claim rows, the post author for native rows) and the final
+      -- SUM in totals attributes the paper score to it; (chain_author,
+      -- chain_permlink) is the on-chain post identity that votes and reviews
+      -- are signed against. Downstream vote/review CTEs MUST match on the chain
+      -- identity — votes/reviews target the original post author, never the
+      -- claimer — while credit accrues to author. Keying those joins on
+      -- author (as the pre-fix code did) silently scored every claimed paper
+      -- at 0: no vote or review is ever signed against the claimer's name, so
+      -- the joins found nothing and the documented co-author credit delivered
+      -- zero. permlink always equals chain_permlink (both arms take the
+      -- chain post's permlink); only the author identity diverges, but both
+      -- chain columns are projected for symmetric, self-evident joins.
       user_papers AS (
         -- Papers authored by user (native only — see validPevoPaperWhere 'native' arm)
-        SELECT c.author, c.permlink, c.created, c.json_metadata
+        SELECT c.author, c.permlink, c.created, c.json_metadata,
+               c.author AS chain_author, c.permlink AS chain_permlink
         FROM ${T.comments} c
         WHERE c.author IN (SELECT username FROM target_users)
           AND c.parent_author = '' AND c.parent_permlink = $3
-          AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$18', source: 'native' })}
+          AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$17', source: 'native' })}
           AND c.json_metadata ->> 'app' LIKE $4
           AND (c.json_metadata -> $3 -> 'continues') IS NULL
         UNION ALL
         -- Papers claimed by user (co-author credit) — bridge_paper claims allowed
         -- but only when authored by config.hiveBridgeAccount; spoofed bridge_paper
-        -- can't grant unearned co-author credit.
-        SELECT ac.claimer AS author, c.permlink, c.created, c.json_metadata
+        -- can't grant unearned co-author credit. Credit recipient is the claimer;
+        -- the chain identity stays the original post (ac.paper_author/permlink =
+        -- c.author/permlink via the join).
+        SELECT ac.claimer AS author, c.permlink, c.created, c.json_metadata,
+               c.author AS chain_author, c.permlink AS chain_permlink
         FROM accepted_claims ac
         JOIN ${T.comments} c ON c.author = ac.paper_author AND c.permlink = ac.paper_permlink
         WHERE c.parent_author = '' AND c.parent_permlink = $3
-          AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
+          AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$17', source: 'all' })}
           AND c.json_metadata ->> 'app' LIKE $4
           AND (c.json_metadata -> $3 -> 'continues') IS NULL
           AND ac.claimer != c.author  -- avoid double-counting
       ),
 
+      -- Distinct on-chain papers credited to at least one target user (via the
+      -- native or claim arm of user_papers). Dedup is load-bearing: when both
+      -- the post author and a claimer are target users for the same chain post,
+      -- user_papers holds two rows sharing one (chain_author, chain_permlink)
+      -- but crediting different recipients. The vote/review CTEs match against
+      -- THIS set so a chain post contributes one review-quality row and one
+      -- vote-aggregate row regardless of how many recipients it credits — no
+      -- per-recipient fan-out that would multiply a vote's weight. json_metadata
+      -- is identical across the two arms (same comments row), so DISTINCT
+      -- collapses cleanly and the co-author/self-vote exclusions below read the
+      -- one true authors[] for the post.
+      chain_papers AS (
+        SELECT DISTINCT chain_author AS author, chain_permlink AS permlink, json_metadata
+        FROM user_papers
+      ),
+
       paper_vote_signals AS (
+        -- Vote membership is scoped by chain_papers (the post being voted on must
+        -- be authored-or-claimed by a target user), NOT by vo.author IN
+        -- target_users. A claimed paper's votes are signed against the chain
+        -- author, who may not be a target user (e.g. the bridge account or an
+        -- unaccredited poster) — the prior target-user restriction dropped them
+        -- and starved the claimer's credit. chain_papers membership admits
+        -- exactly the votes on papers some target user is credited for.
         SELECT voter, author, permlink, weight, block_num FROM (
           SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
           FROM ${T.voteOps} vo
           WHERE vo.voter = ANY($2::text[])
-            AND vo.author IN (SELECT username FROM target_users)
-            AND EXISTS (SELECT 1 FROM user_papers up WHERE up.author = vo.author AND up.permlink = vo.permlink)
-            AND vo.block_num >= $7 AND vo.block_num < $6
+            AND EXISTS (SELECT 1 FROM chain_papers cp WHERE cp.author = vo.author AND cp.permlink = vo.permlink)
+            AND vo.block_num < $6
           UNION ALL
           SELECT
             cj.required_posting_auths ->> 0 AS voter,
@@ -622,8 +655,8 @@ export async function computeReputationBatch(
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
             AND cj.json::jsonb ->> 'action' = 'revote'
-            AND cj.json::jsonb ->> 'author' IN (SELECT username FROM target_users)
-            AND cj.block_num >= $7 AND cj.block_num < $6
+            AND EXISTS (SELECT 1 FROM chain_papers cp WHERE cp.author = cj.json::jsonb ->> 'author' AND cp.permlink = cj.json::jsonb ->> 'permlink')
+            AND cj.block_num < $6
             AND cj.required_posting_auths ->> 0 = ANY($2::text[])
         ) all_signals
       ),
@@ -652,7 +685,7 @@ export async function computeReputationBatch(
         -- reaching a ->> hive. The ->> operator on a JSONB scalar returns
         -- NULL silently; NULL = plv.voter evaluates to NULL (not TRUE), the
         -- EXISTS subquery yields 0 rows, and NOT EXISTS evaluates TRUE for
-        -- every voter -- falling back to the plv.voter != up.author first
+        -- every voter -- falling back to the plv.voter != cp.author first
         -- conjunct (which still excludes the paper author).
         --
         -- What this guard does NOT do: it does NOT exclude bare-string
@@ -668,10 +701,19 @@ export async function computeReputationBatch(
         -- co-author identity would enable a denial-of-vote attack -- anyone
         -- could broadcast authors: [target] to lock target out of voting
         -- on the paper.
+        --
+        -- The JOIN is on chain_papers (the on-chain post identity), NOT
+        -- user_papers (the credit recipient). plv.author/plv.permlink are the
+        -- voted post's chain coords, so this keys votes to the post they were
+        -- signed against; chain_papers is deduped so a post credited to several
+        -- recipients still contributes each vote exactly once. cp.author IS the
+        -- chain post author, so plv.voter != cp.author is the self-vote
+        -- exclusion against the actual poster (correct even for claimed papers,
+        -- where the credit recipient differs from the poster).
         SELECT plv.voter, plv.author, plv.permlink, plv.weight, plv.block_num
         FROM paper_latest_votes plv
-        JOIN user_papers up ON up.author = plv.author AND up.permlink = plv.permlink
-        WHERE plv.voter != up.author
+        JOIN chain_papers cp ON cp.author = plv.author AND cp.permlink = plv.permlink
+        WHERE plv.voter != cp.author
           AND plv.weight != 0
           AND NOT EXISTS (
             -- Co-author voter exclusion: canonicalize the broadcaster-
@@ -683,8 +725,8 @@ export async function computeReputationBatch(
             -- into the paper_resolved_votes set, inflating the paper-
             -- author's reputation score.
             SELECT 1 FROM jsonb_array_elements(
-              CASE WHEN jsonb_typeof(up.json_metadata -> $3 -> 'authors') = 'array'
-                THEN up.json_metadata -> $3 -> 'authors'
+              CASE WHEN jsonb_typeof(cp.json_metadata -> $3 -> 'authors') = 'array'
+                THEN cp.json_metadata -> $3 -> 'authors'
                 ELSE '[]'::jsonb
               END
             ) a
@@ -702,29 +744,35 @@ export async function computeReputationBatch(
         -- guarantees each dimension is an integer-shaped string the cast
         -- can consume. excludeSelfReviewWhere is also load-bearing: a
         -- self-5/5/5/5 would push pr.quality toward 1.0 (max), inflating
-        -- the paper's vote-derived score in paper_scores at line 591.
-        -- Mirrors the paper_resolved_votes self-exclusion at lines 555-560.
-        -- Accreditation gate ($2 = accredited, $19 = anon) — without it,
+        -- the paper's vote-derived score in the paper_scores CTE.
+        -- Mirrors the paper_resolved_votes self-exclusion above.
+        -- Accreditation gate ($2 = accredited, $18 = anon) — without it,
         -- any unaccredited Hive account broadcasting a valid-shape review
         -- to a target user paper would inflate pr.quality (5/5/5/5 ->
         -- AVG/4.0/5.0 = 1.0x max multiplier on the paper vote-derived
         -- score). The helper docstring documents that callers must
         -- compose accreditation; this CTE is one of three review-class
         -- composition sites flagged by the round-1 review.
-        SELECT up.author, up.permlink,
+        --
+        -- Keyed on chain_papers, NOT user_papers: reviews target the on-chain
+        -- post (parent_author = the chain author), and the self-exclusion's
+        -- paperRowAlias must be the chain author so a self-review by the actual
+        -- poster of a claimed paper is still excluded. paper_scores LEFT JOINs
+        -- this on the chain identity; credit then attributes to up.author.
+        SELECT cp.author, cp.permlink,
           AVG(
             ((c.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
              (c.json_metadata -> $3 -> 'rating' ->> 'novelty')::numeric +
              (c.json_metadata -> $3 -> 'rating' ->> 'clarity')::numeric +
              (c.json_metadata -> $3 -> 'rating' ->> 'significance')::numeric) / 4.0
           ) / 5.0 AS quality
-        FROM user_papers up
+        FROM chain_papers cp
         JOIN ${T.comments} c
-          ON c.parent_author = up.author AND c.parent_permlink = up.permlink
+          ON c.parent_author = cp.author AND c.parent_permlink = cp.permlink
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
-          AND ${excludeSelfReviewWhere({ paperRowAlias: 'up', appTagParam: '$3' })}
-          AND (c.author = ANY($2::text[]) OR c.author = $19)
-        GROUP BY up.author, up.permlink
+          AND ${excludeSelfReviewWhere({ paperRowAlias: 'cp', appTagParam: '$3' })}
+          AND (c.author = ANY($2::text[]) OR c.author = $18)
+        GROUP BY cp.author, cp.permlink
       ),
 
       paper_vote_agg AS (
@@ -752,8 +800,16 @@ export async function computeReputationBatch(
         FROM user_papers up
         CROSS JOIN cycle_ref cr
         CROSS JOIN w
-        LEFT JOIN paper_reviews pr ON pr.author = up.author AND pr.permlink = up.permlink
-        LEFT JOIN paper_vote_agg pva ON pva.author = up.author AND pva.permlink = up.permlink
+        -- Reviews and votes are keyed on the on-chain post identity (the
+        -- claimer's name never appears on a vote or review), so match on
+        -- up.chain_author/up.chain_permlink. The selected up.author is the
+        -- credit recipient (claimer or native author); totals SUM(score) GROUP
+        -- BY author then routes the paper's score to it. For a chain post
+        -- credited to both its author and a claimer, each gets one paper_scores
+        -- row carrying the same vote/review-derived score — the shared
+        -- co-author credit the algorithm documents.
+        LEFT JOIN paper_reviews pr ON pr.author = up.chain_author AND pr.permlink = up.chain_permlink
+        LEFT JOIN paper_vote_agg pva ON pva.author = up.chain_author AND pva.permlink = up.chain_permlink
       ),
 
       -- ═══ REVIEWS ═══
@@ -768,7 +824,7 @@ export async function computeReputationBatch(
       --     source='all' admits both arms; the bridge-author pin narrows
       --     the bridge arm. Per the pevo-object-identity-is-author-vouching
       --     convention.
-      --   - Accreditation gate (c.author = ANY($2::text[]) OR c.author = $19):
+      --   - Accreditation gate (c.author = ANY($2::text[]) OR c.author = $18):
       --     structurally required per the helper contract (callers compose
       --     accreditation), mirroring the sibling review-class CTEs and
       --     the display-side composition at profile.ts. In the current call-
@@ -785,11 +841,11 @@ export async function computeReputationBatch(
         FROM ${T.comments} c
         JOIN ${T.comments} up_for_self
           ON up_for_self.author = c.parent_author AND up_for_self.permlink = c.parent_permlink
-          AND ${validPevoPaperWhere({ commentAlias: 'up_for_self', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
+          AND ${validPevoPaperWhere({ commentAlias: 'up_for_self', appTagParam: '$3', bridgeAccountParam: '$17', source: 'all' })}
         WHERE c.author IN (SELECT username FROM target_users)
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
           AND ${excludeSelfReviewWhere({ paperRowAlias: 'up_for_self', appTagParam: '$3' })}
-          AND (c.author = ANY($2::text[]) OR c.author = $19)
+          AND (c.author = ANY($2::text[]) OR c.author = $18)
           AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
       ),
 
@@ -800,7 +856,7 @@ export async function computeReputationBatch(
           WHERE vo.voter = ANY($2::text[])
             AND vo.author IN (SELECT username FROM target_users)
             AND EXISTS (SELECT 1 FROM user_reviews ur WHERE ur.author = vo.author AND ur.permlink = vo.permlink)
-            AND vo.block_num >= $7 AND vo.block_num < $6
+            AND vo.block_num < $6
           UNION ALL
           SELECT
             cj.required_posting_auths ->> 0 AS voter,
@@ -812,7 +868,7 @@ export async function computeReputationBatch(
           WHERE cj.custom_id = $3
             AND cj.json::jsonb ->> 'action' = 'revote'
             AND cj.json::jsonb ->> 'author' IN (SELECT username FROM target_users)
-            AND cj.block_num >= $7 AND cj.block_num < $6
+            AND cj.block_num < $6
             AND cj.required_posting_auths ->> 0 = ANY($2::text[])
         ) all_signals
       ),
@@ -898,7 +954,7 @@ export async function computeReputationBatch(
           FROM ${T.voteOps} vo
           WHERE vo.voter = ANY($2::text[])
             AND (vo.author, vo.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
-            AND vo.block_num >= $7 AND vo.block_num < $6
+            AND vo.block_num < $6
           UNION ALL
           SELECT
             cj.required_posting_auths ->> 0 AS voter,
@@ -909,7 +965,7 @@ export async function computeReputationBatch(
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
             AND cj.json::jsonb ->> 'action' = 'revote'
-            AND cj.block_num >= $7 AND cj.block_num < $6
+            AND cj.block_num < $6
             AND cj.required_posting_auths ->> 0 = ANY($2::text[])
             AND (cj.json::jsonb ->> 'author', cj.json::jsonb ->> 'permlink')
               IN (SELECT citing_author, citing_permlink FROM citing_papers)
@@ -986,12 +1042,12 @@ export async function computeReputationBatch(
             ON c2.parent_author = up2.author AND c2.parent_permlink = up2.permlink
             AND ${validReviewWhere({ commentAlias: 'c2', appTagParam: '$3' })}
             AND ${excludeSelfReviewWhere({ commentAlias: 'c2', paperRowAlias: 'up2', appTagParam: '$3' })}
-            -- Accreditation gate ($2 = accredited, $19 = anon). Without
+            -- Accreditation gate ($2 = accredited, $18 = anon). Without
             -- it, an unaccredited reviewer on a citing paper inflates
             -- cpr.quality -> cpq.review_quality -> multiplies into
             -- citation_scores weighted_upvotes term -> boosts the cited
             -- author reputation for free.
-            AND (c2.author = ANY($2::text[]) OR c2.author = $19)
+            AND (c2.author = ANY($2::text[]) OR c2.author = $18)
           WHERE (up2.author, up2.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
           GROUP BY up2.permlink, up2.author
         ) cpr ON cpr.author = cp.citing_author AND cpr.permlink = cp.citing_permlink
@@ -1055,25 +1111,24 @@ export async function computeReputationBatch(
         `${config.appTag}/%`,             // $4
         JSON.stringify(prevJson),         // $5 (jsonb)
         endBlock,                         // $6
-        getCachedGenesisBlock(),          // $7
-        weights.paper,                    // $8
-        weights.review,                   // $9
-        weights.downvote,                 // $10
-        weights.citation,                 // $11
-        weights.citation_max,             // $12
-        weights.accreditation_bonus,      // $13
-        weights.self_citation_discount,   // $14
-        weights.decay_rate,               // $15
-        weights.decay_floor,              // $16
-        weights.decay_grace_months,       // $17
-        config.hiveBridgeAccount,         // $18
-        config.hiveAnonAccount || '',     // $19 (anon-proxy OR-arm; empty
+        weights.paper,                    // $7
+        weights.review,                   // $8
+        weights.downvote,                 // $9
+        weights.citation,                 // $10
+        weights.citation_max,             // $11
+        weights.accreditation_bonus,      // $12
+        weights.self_citation_discount,   // $13
+        weights.decay_rate,               // $14
+        weights.decay_floor,              // $15
+        weights.decay_grace_months,       // $16
+        config.hiveBridgeAccount,         // $17
+        config.hiveAnonAccount || '',     // $18 (anon-proxy OR-arm; empty
                                           //  string is a safe sentinel —
                                           //  Hive prohibits empty author
                                           //  names so `c.author = ''`
                                           //  never matches)
-        config.appTag,                    // $20 (active_accreditations custom_id)
-        config.accreditationAuthorities,  // $21 (required_posting_auths ?| authority gate)
+        config.appTag,                    // $19 (active_accreditations custom_id)
+        config.accreditationAuthorities,  // $20 (required_posting_auths ?| authority gate)
       ],
     );
 

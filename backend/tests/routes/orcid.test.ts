@@ -482,7 +482,7 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       // getExistingAccreditation would find this self-broadcast op and let the
       // /link flow burn the admin key to actually accredit X.
       //
-      // With the fix, the query filters on `required_posting_auths ?| $4::text[]`
+      // With the fix, the query filters on `required_posting_auths ?| $3::text[]`
       // where $4 is config.accreditationAuthorities. The mock below asserts the
       // filter is applied (params length includes authorities) and simulates the
       // filter's effect (no authority-signed op => no row).
@@ -493,7 +493,7 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
           // getExistingAccreditation for mallory. The fixed query includes the
           // authority filter; the self-broadcast op wouldn't match because its
           // required_posting_auths is ['mallory'], not an authority. Load-bearing
-          // call-shape assertions (authority-filter SQL fragment + params[3] ===
+          // call-shape assertions (authority-filter SQL fragment + params[2] ===
           // accreditationAuthorities) moved out of the mock guard and onto the
           // caller so they fire ONLY when a matching call actually happened;
           // the mock's fallback path returning { rows: [] } would otherwise
@@ -515,9 +515,9 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       // Call-shape assertion on the load-bearing HAF call: the authority-filtered
       // getExistingAccreditation query must have fired with both the action-set
       // predicate AND mallory + accreditationAuthorities in the params. A SQL
-      // refactor that drops `required_posting_auths ?| $4::text[]` or reorders
-      // the binds so authorities no longer sits at $4 would produce a matcher
-      // miss here. The positional pin on params[3] closes the arrayContaining
+      // refactor that drops `required_posting_auths ?| $3::text[]` or reorders
+      // the binds so authorities no longer sits at $3 would produce a matcher
+      // miss here. The positional pin on params[2] closes the arrayContaining
       // order-agnostic gap.
       expect(hafQueryMock).toHaveBeenCalledWith(
         expect.stringContaining("'action' IN ('accredit', 'revoke')"),
@@ -530,7 +530,7 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
           c[0].includes("'account' = $1"),
       );
       expect(authorityCall).toBeDefined();
-      expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
+      expect((authorityCall![1] as unknown[])[2]).toEqual(config.accreditationAuthorities);
     },
   );
 
@@ -572,8 +572,8 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
       // Call-shape assertion: the authority-filtered getExistingAccreditation
       // query fired with alice + accreditationAuthorities in the params. A
-      // positional pin on params[3] closes the arrayContaining order-agnostic
-      // gap (a mutant moving authorities off of $4 would pass arrayContaining
+      // positional pin on params[2] closes the arrayContaining order-agnostic
+      // gap (a mutant moving authorities off of $3 would pass arrayContaining
       // but fail the positional check).
       expect(hafQueryMock).toHaveBeenCalledWith(
         expect.stringContaining("'action' IN ('accredit', 'revoke')"),
@@ -586,7 +586,7 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
           c[0].includes("'account' = $1"),
       );
       expect(authorityCall).toBeDefined();
-      expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
+      expect((authorityCall![1] as unknown[])[2]).toEqual(config.accreditationAuthorities);
     },
   );
 

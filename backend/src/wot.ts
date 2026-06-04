@@ -13,7 +13,7 @@ import { getAccreditedSet } from './accreditation.js';
 import { seedAccreditationBonus, invalidateOnRevocation } from './reputation.js';
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
-import { T, activeAccreditationsCteBody, activeVouchesCteBody, buildWith, getCachedGenesisBlock } from './hafsql.js';
+import { T, activeAccreditationsCteBody, activeVouchesCteBody, buildWith } from './hafsql.js';
 
 const DEFAULT_WOT_THRESHOLD = 3;
 const MAX_REVOCATION_DEPTH = 20;
@@ -80,15 +80,13 @@ async function loadWotThreshold(): Promise<number> {
     await client.query('SET LOCAL statement_timeout = 5000');
 
     const result = await client.query(
-      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- loadWotThreshold: single-row latest-`update_params` read further narrowed by `json ->> 'action' = 'update_params'` and the `required_posting_auths ?|` accreditation-authority signer gate, bounded by a 5s LOCAL statement_timeout, and cached for the WoT-threshold TTL; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT json FROM ${T.customJson}
        WHERE custom_id = $1
          AND json::jsonb ->> 'action' = 'update_params'
-         AND required_posting_auths ?| $3::text[]
-         AND block_num >= $2
+         AND required_posting_auths ?| $2::text[]
        ORDER BY block_num DESC
        LIMIT 1`,
-      [config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
+      [config.appTag, config.accreditationAuthorities],
     );
     await client.query('COMMIT');
     client.release();

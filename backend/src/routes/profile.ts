@@ -15,7 +15,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, getCachedGenesisBlock, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
+import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -34,16 +34,14 @@ async function getAccreditationFromHaf(username: string) {
     // See SEC-AUTH-BYPASS. Mirrors the same filter in accreditations.ts and
     // orcid.ts's getExistingAccreditation.
     const result = await pool.query(
-      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- profile-page accreditation read: per-account lookup further narrowed by `account = $username` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT cj.json, cj.id AS event_id FROM ${T.customJson} cj
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-         AND cj.required_posting_auths ?| $4::text[]
+         AND cj.required_posting_auths ?| $3::text[]
          AND cj.json::jsonb ->> 'account' = $1
-         AND cj.block_num >= $3
        ORDER BY cj.block_num DESC
        LIMIT 1`,
-      [username, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
+      [username, config.appTag, config.accreditationAuthorities],
     );
     if (result.rows.length === 0) return null;
 

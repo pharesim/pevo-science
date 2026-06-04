@@ -104,31 +104,32 @@ describe('authorshipClaimsCteBody scope', () => {
  * wrong value).
  */
 describe('authorshipClaimsCteBody param arithmetic', () => {
-  it('unscoped: nextIdx and params have the base 4 entries', () => {
+  it('unscoped: nextIdx and params have the base 3 entries', () => {
     const frag = authorshipClaimsCteBody(5);
-    // base params: [appTag, genesisBlock, appTag, hiveBridgeAccount]; four $N
-    // consumed (5,6,7,8). The bridge account ($8 here) backs the §2.10 approve
-    // signer gate in the approvals arm.
+    // base params: [appTag, appTag, hiveBridgeAccount]; three $N consumed
+    // (5,6,7). The bridge account ($7 here) backs the §2.10 approve signer
+    // gate in the approvals arm. The inert genesis-block floor was dropped,
+    // so the base no longer carries a genesisBlock bind.
+    expect(frag.params).toHaveLength(3);
+    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
+    expect(frag.nextIdx).toBe(8);
+  });
+
+  it('claimer scope adds 1 param after the base 3 and advances nextIdx by 1', () => {
+    const frag = authorshipClaimsCteBody(5, { claimer: 'alice' });
     expect(frag.params).toHaveLength(4);
-    expect(frag.params[3]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[3]).toBe('alice');
     expect(frag.nextIdx).toBe(9);
   });
 
-  it('claimer scope adds 1 param after the base 4 and advances nextIdx by 1', () => {
-    const frag = authorshipClaimsCteBody(5, { claimer: 'alice' });
-    expect(frag.params).toHaveLength(5);
-    expect(frag.params[3]).toBe(config.hiveBridgeAccount);
-    expect(frag.params[4]).toBe('alice');
-    expect(frag.nextIdx).toBe(10);
-  });
-
-  it('paper scope adds 2 params after the base 4 and advances nextIdx by 2', () => {
+  it('paper scope adds 2 params after the base 3 and advances nextIdx by 2', () => {
     const frag = authorshipClaimsCteBody(5, { paperAuthor: 'bob', paperPermlink: 'p-1' });
-    expect(frag.params).toHaveLength(6);
-    expect(frag.params[3]).toBe(config.hiveBridgeAccount);
-    expect(frag.params[4]).toBe('bob');
-    expect(frag.params[5]).toBe('p-1');
-    expect(frag.nextIdx).toBe(11);
+    expect(frag.params).toHaveLength(5);
+    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[3]).toBe('bob');
+    expect(frag.params[4]).toBe('p-1');
+    expect(frag.nextIdx).toBe(10);
   });
 });
 
@@ -704,12 +705,12 @@ describe('authorshipClaimsCteBody hive-username auto-accept SQL-shape canary', (
     const frag = authorshipClaimsCteBody(1);
     // Charset guard conjunct on the broadcaster-controlled hive value.
     expect(frag.sql).toMatch(
-      /LOWER\(TRIM\(c\.json_metadata -> \$3 -> 'authors' -> cb\.author_index ->> 'hive'\)\) ~ '\^\[a-z0-9\.-\]\+\$'/,
+      /LOWER\(TRIM\(c\.json_metadata -> \$2 -> 'authors' -> cb\.author_index ->> 'hive'\)\) ~ '\^\[a-z0-9\.-\]\+\$'/,
     );
     // Equality conjunct after the same canonicalization, against the
     // chain-validated lowercase `cb.claimer`.
     expect(frag.sql).toMatch(
-      /LOWER\(TRIM\(c\.json_metadata -> \$3 -> 'authors' -> cb\.author_index ->> 'hive'\)\) = cb\.claimer/,
+      /LOWER\(TRIM\(c\.json_metadata -> \$2 -> 'authors' -> cb\.author_index ->> 'hive'\)\) = cb\.claimer/,
     );
   });
 });

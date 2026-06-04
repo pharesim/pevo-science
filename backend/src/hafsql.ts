@@ -666,8 +666,8 @@ export function authorshipClaimsCteBody(
   // approve is only valid when signed by the post author or the bridge account.
   // bridgeIdx binds config.hiveBridgeAccount for that IN-list; scope params
   // follow it.
-  const bridgeIdx = p + 3;
-  let scopeIdx = p + 4;
+  const bridgeIdx = p + 2;
+  let scopeIdx = p + 3;
   let scopeFilter = '';
   const scopeParams: unknown[] = [];
   if (scope) {
@@ -685,7 +685,6 @@ export function authorshipClaimsCteBody(
     }
   }
   return {
-    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- authorshipClaimsCteBody: callers pass a `scope` (claimer or paper-key) whose extra JSONB predicates further narrow the row set; pending audit per the BitmapAnd-floor sweep follow-up
     sql: `
   claim_events AS (
     SELECT
@@ -701,8 +700,7 @@ export function authorshipClaimsCteBody(
       cj.json::jsonb ->> 'timestamp' AS event_timestamp
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
-      AND cj.json::jsonb ->> 'action' IN ('claim_authorship', 'approve_authorship', 'revoke_authorship')
-      AND cj.block_num >= $${p + 1}${scopeFilter}
+      AND cj.json::jsonb ->> 'action' IN ('claim_authorship', 'approve_authorship', 'revoke_authorship')${scopeFilter}
   ),
   claims_base AS (
     SELECT claimer, paper_author, paper_permlink, author_index, block_num, event_timestamp
@@ -771,10 +769,10 @@ export function authorshipClaimsCteBody(
             AND c.permlink = cb.paper_permlink
             AND c.parent_author = ''
             AND (
-              (c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'orcid') IS NOT NULL
+              (c.json_metadata -> $${p + 1} -> 'authors' -> cb.author_index ->> 'orcid') IS NOT NULL
               AND aa.orcid IS NOT NULL
               AND aa.orcid != ''
-              AND ${chainOrcidAutoAcceptMatchSql({ metadataExpr: 'c.json_metadata', appTagParam: `$${p + 2}`, authorIndexExpr: 'cb.author_index', attestedOrcidExpr: 'aa.orcid' })}
+              AND ${chainOrcidAutoAcceptMatchSql({ metadataExpr: 'c.json_metadata', appTagParam: `$${p + 1}`, authorIndexExpr: 'cb.author_index', attestedOrcidExpr: 'aa.orcid' })}
             )
         ) THEN 'accepted'
         WHEN cb.author_index IS NOT NULL AND EXISTS (
@@ -805,14 +803,14 @@ export function authorshipClaimsCteBody(
           WHERE c.author = cb.paper_author
             AND c.permlink = cb.paper_permlink
             AND c.parent_author = ''
-            AND LOWER(TRIM(c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'hive')) ~ '^[a-z0-9.-]+$'
-            AND LOWER(TRIM(c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'hive')) = cb.claimer
+            AND LOWER(TRIM(c.json_metadata -> $${p + 1} -> 'authors' -> cb.author_index ->> 'hive')) ~ '^[a-z0-9.-]+$'
+            AND LOWER(TRIM(c.json_metadata -> $${p + 1} -> 'authors' -> cb.author_index ->> 'hive')) = cb.claimer
         ) THEN 'accepted'
         ELSE 'pending'
       END AS status
     FROM claims_base cb
   )`,
-    params: [config.appTag, getCachedGenesisBlock(), config.appTag, config.hiveBridgeAccount, ...scopeParams],
+    params: [config.appTag, config.appTag, config.hiveBridgeAccount, ...scopeParams],
     nextIdx: scopeIdx,
   };
 }

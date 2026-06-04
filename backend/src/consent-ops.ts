@@ -37,7 +37,7 @@
 import { config } from './config.js';
 import { getPool } from './db.js';
 import { logger } from './logger.js';
-import { T, getCachedGenesisBlock } from './hafsql.js';
+import { T } from './hafsql.js';
 
 export type ConsentAction = 'author_accept' | 'author_resign';
 
@@ -146,10 +146,9 @@ export async function fetchConsentOpsForPaper(
   // upstream caller that didn't pre-validate handle shape.
   const claimedArray = Array.from(claimedAuthors);
   const claimedPlaceholders = claimedArray
-    .map((_, idx) => `$${idx + 5}`)
+    .map((_, idx) => `$${idx + 4}`)
     .join(', ');
 
-  // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- fetchConsentOps: per-paper lookup further narrowed by `root_author`, `root_permlink`, and the `claimedPlaceholders` signer IN-list; pending audit per the BitmapAnd-floor sweep follow-up
   const sql = `
     SELECT
       cj.required_posting_auths ->> 0 AS signer,
@@ -160,17 +159,15 @@ export async function fetchConsentOpsForPaper(
       cj.id::text AS op_id
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $1
-      AND cj.block_num >= $2
       AND cj.json::jsonb ->> 'action' IN ('author_accept', 'author_resign')
-      AND cj.json::jsonb ->> 'root_author' = $3
-      AND cj.json::jsonb ->> 'root_permlink' = $4
+      AND cj.json::jsonb ->> 'root_author' = $2
+      AND cj.json::jsonb ->> 'root_permlink' = $3
       AND cj.required_posting_auths ->> 0 IN (${claimedPlaceholders})
     ORDER BY cj.id DESC
     LIMIT ${FETCH_CONSENT_OPS_LIMIT}
   `;
   const params = [
     config.appTag,
-    getCachedGenesisBlock(),
     rootAuthor,
     rootPermlink,
     ...claimedArray,

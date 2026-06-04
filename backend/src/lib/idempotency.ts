@@ -203,17 +203,15 @@ export async function findCustodyBroadcastByIdempotencyKey(
 
   // opType === undefined OR opType === 'custom_json'
   const customJsonHit = await pool.query<{ trx_id: string; block_num: number | null }>(
-    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- findOpByIdempotencyKey: per-key lookup further narrowed by `idempotency_key` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT op.included_trx_id AS trx_id, cj.block_num
      FROM ${T.customJson} cj
      JOIN hafsql.haf_operations op ON op.id = cj.id
      WHERE cj.custom_id = $1
        AND cj.required_posting_auths ?| $2::text[]
        AND (cj.json::jsonb ->> 'idempotency_key') = $3
-       AND cj.block_num >= $4
      ORDER BY cj.block_num DESC
      LIMIT 1`,
-    [config.appTag, [username], idempotencyKey, genesis],
+    [config.appTag, [username], idempotencyKey],
   );
   if (customJsonHit.rows.length > 0) {
     const row = customJsonHit.rows[0];
@@ -252,7 +250,6 @@ export async function findAccreditationBroadcastByIdempotencyKey(
   // vanishingly unlikely), but the convention-alignment matters across both
   // accreditation-state helpers.
   const result = await pool.query<{ trx_id: string; block_num: number | null }>(
-    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- findAccreditationBroadcastByIdempotencyKey: per-key lookup further narrowed by `idempotency_key`, `action = 'accredit'`, and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT op.included_trx_id AS trx_id, cj.block_num
      FROM ${T.customJson} cj
      JOIN hafsql.haf_operations op ON op.id = cj.id
@@ -260,10 +257,9 @@ export async function findAccreditationBroadcastByIdempotencyKey(
        AND cj.json::jsonb ->> 'action' = 'accredit'
        AND (cj.json::jsonb ->> 'idempotency_key') = $2
        AND cj.required_posting_auths ?| $3::text[]
-       AND cj.block_num >= $4
      ORDER BY cj.block_num DESC, cj.id DESC
      LIMIT 1`,
-    [config.appTag, idempotencyKey, config.accreditationAuthorities, getCachedGenesisBlock()],
+    [config.appTag, idempotencyKey, config.accreditationAuthorities],
   );
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
@@ -308,7 +304,6 @@ export async function findAccreditationBroadcastByIdempotencyKey(
  *     (signer-binding via authority whitelist — see Rule 5 of
  *     `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`,
  *     the "inverted-shape" admin-issued op case)
- *   - `cj.block_num >= getCachedGenesisBlock()` (genesis floor convention)
  *
  * Same-block tiebreaker: `ORDER BY cj.block_num DESC, cj.id DESC` per
  * convention Rule 2. `operation_custom_json_view` does NOT expose
@@ -325,7 +320,6 @@ export async function findExistingAccreditation(
   hiveUsername: string,
 ): Promise<IdempotencyHit | null> {
   const result = await pool.query<{ trx_id: string; block_num: number | null; action: string }>(
-    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- findExistingAccreditation: per-account lookup further narrowed by `account = $hiveUsername` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT op.included_trx_id AS trx_id, cj.block_num, cj.json::jsonb ->> 'action' AS action
      FROM ${T.customJson} cj
      JOIN hafsql.haf_operations op ON op.id = cj.id
@@ -333,10 +327,9 @@ export async function findExistingAccreditation(
        AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
        AND cj.json::jsonb ->> 'account' = $2
        AND cj.required_posting_auths ?| $3::text[]
-       AND cj.block_num >= $4
      ORDER BY cj.block_num DESC, cj.id DESC
      LIMIT 1`,
-    [config.appTag, hiveUsername, config.accreditationAuthorities, getCachedGenesisBlock()],
+    [config.appTag, hiveUsername, config.accreditationAuthorities],
   );
   if (result.rows.length === 0) return null;
   const row = result.rows[0];

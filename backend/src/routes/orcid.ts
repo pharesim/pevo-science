@@ -18,7 +18,7 @@ import {
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
 import { getPool } from '../db.js';
-import { T, getCachedGenesisBlock } from '../hafsql.js';
+import { T } from '../hafsql.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
@@ -1871,17 +1871,15 @@ async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string |
   // Latest authorized on-chain accredit op carrying this ORCID. Filter by
   // accreditationAuthorities so a self-broadcast custom_json can't poison the check.
   const recent = await pool.query<{ account: string | null }>(
-    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- getOrcidAccount recent-binding probe: per-orcid lookup further narrowed by `orcid = $orcidId` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT cj.json::jsonb ->> 'account' AS account
      FROM ${T.customJson} cj
      WHERE cj.custom_id = $2
        AND cj.json::jsonb ->> 'action' = 'accredit'
        AND cj.json::jsonb ->> 'orcid' = $1
-       AND cj.required_posting_auths ?| $4::text[]
-       AND cj.block_num >= $3
+       AND cj.required_posting_auths ?| $3::text[]
      ORDER BY cj.block_num DESC
      LIMIT 1`,
-    [orcidId, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
+    [orcidId, config.appTag, config.accreditationAuthorities],
   );
   if (recent.rows.length === 0) return null;
   const account = recent.rows[0].account;
@@ -1892,18 +1890,16 @@ async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string |
   // 'revoke' clears it, and a subsequent 'accredit' with a different orcid
   // means the account rebound to another identity (freeing this orcid).
   const status = await pool.query<{ action: string | null; orcid: string | null }>(
-    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- getOrcidAccount status re-check: per-account lookup further narrowed by `account = $account` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT cj.json::jsonb ->> 'action' AS action,
             cj.json::jsonb ->> 'orcid' AS orcid
      FROM ${T.customJson} cj
      WHERE cj.custom_id = $2
        AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
        AND cj.json::jsonb ->> 'account' = $1
-       AND cj.required_posting_auths ?| $4::text[]
-       AND cj.block_num >= $3
+       AND cj.required_posting_auths ?| $3::text[]
      ORDER BY cj.block_num DESC
      LIMIT 1`,
-    [account, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
+    [account, config.appTag, config.accreditationAuthorities],
   );
   if (status.rows.length === 0) return null;
   const latest = status.rows[0];
@@ -1921,16 +1917,14 @@ async function getExistingAccreditation(username: string): Promise<{
   // by the target account's own posting key) cannot masquerade as a real
   // accreditation and unlock the /link flow. See SEC-AUTH-BYPASS.
   const result = await pool.query(
-    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- getExistingAccreditation: per-account read further narrowed by `account = $username` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     `SELECT cj.json FROM ${T.customJson} cj
      WHERE cj.custom_id = $2
        AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
        AND cj.json::jsonb ->> 'account' = $1
-       AND cj.required_posting_auths ?| $4::text[]
-       AND cj.block_num >= $3
+       AND cj.required_posting_auths ?| $3::text[]
      ORDER BY cj.block_num DESC
      LIMIT 1`,
-    [username, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
+    [username, config.appTag, config.accreditationAuthorities],
   );
   if (result.rows.length === 0) return null;
 

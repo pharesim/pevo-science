@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, getCachedGenesisBlock } from '../hafsql.js';
+import { T } from '../hafsql.js';
 import { validateOptionalLikeFilter } from '../types/search-filters.js';
 
 const router = Router();
@@ -48,11 +48,10 @@ async function fetchAccreditationsFromHaf(
 
     const filterConditions = conditions.map((c) => `AND ${c}`).join(' ');
 
-    // $paramIdx for accreditationAuthorities, then genesis block, limit, offset
+    // $paramIdx for accreditationAuthorities, then limit, offset
     const authIdx = paramIdx++;
     params.push(config.accreditationAuthorities);
 
-    // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- fetchAccreditationsFromHaf: GET /api/accreditations listing wrapped in a 60s `hafCache.getOrSet`; the row set is bounded by the accreditation-authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
     const dataResult = await pool.query(`
       WITH ranked AS (
         SELECT
@@ -69,7 +68,6 @@ async function fetchAccreditationsFromHaf(
         WHERE cj.custom_id = $1
           AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
           AND cj.required_posting_auths ?| $${authIdx}::text[]
-          AND cj.block_num >= $${paramIdx++}
       )
       SELECT account AS username, name, institution, field, method, orcid, timestamp,
         count(*) OVER ()::int AS total
@@ -78,7 +76,7 @@ async function fetchAccreditationsFromHaf(
       ${filterConditions}
       ORDER BY timestamp DESC
       LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-      [...params, getCachedGenesisBlock(), limit, offset],
+      [...params, limit, offset],
     );
 
     const total = dataResult.rows[0]?.total ?? 0;
@@ -133,16 +131,14 @@ async function fetchAccreditationStatusFromHaf(username: string) {
 
   try {
     const result = await pool.query(
-      // eslint-disable-next-line pevo/no-custom-id-block-num-floor -- fetchAccreditationStatusFromHaf: per-account read further narrowed by `account = $username` and signer authority IN-list; pending audit per the BitmapAnd-floor sweep follow-up
       `SELECT cj.json, cj.id AS event_id FROM ${T.customJson} cj
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-         AND cj.required_posting_auths ?| $4::text[]
+         AND cj.required_posting_auths ?| $3::text[]
          AND cj.json::jsonb ->> 'account' = $1
-         AND cj.block_num >= $3
        ORDER BY cj.block_num DESC
        LIMIT 1`,
-      [username, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
+      [username, config.appTag, config.accreditationAuthorities],
     );
 
     if (result.rows.length === 0) {

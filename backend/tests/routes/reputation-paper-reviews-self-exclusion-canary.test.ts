@@ -72,8 +72,8 @@ describe('paper_reviews self-exclusion canary (synthetic-VALUES)', () => {
       // excludeSelfReviewWhere predicates, same accreditation gate
       // shape (array + anon scalar). Only `${T.comments}` is
       // substituted with a synthetic CTE. Param indexes are renumbered
-      // contiguously from $1 (the production CTE's $2/$3/$19 indexing
-      // belongs to its 19-param signature; this canary doesn't mirror
+      // contiguously from $1 (the production CTE's $2/$3/$18 indexing
+      // belongs to its 20-param signature; this canary doesn't mirror
       // those positions).
       const sql = `
         WITH up(author, permlink, json_metadata) AS (

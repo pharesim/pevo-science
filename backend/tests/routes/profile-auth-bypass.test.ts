@@ -15,7 +15,7 @@
  * waiting on indexing; the signing middleware + HAF latency make it
  * impractical per-test. Mocking the pool lets us deterministically assert:
  * (a) the query shape includes the authority filter,
- * (b) params[3] is `config.accreditationAuthorities`,
+ * (b) params[2] is `config.accreditationAuthorities`,
  * (c) when the filter yields zero rows, the response shows unaccredited.
  * The real `hiveClient.database.getAccounts` is mocked too (account-existence
  * check), but `verifyHiveSignature` is not touched (this endpoint is
@@ -94,28 +94,28 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     expect(res.body.data.accreditation).toBeNull();
     // Assert the authority-filtered query actually fired with the load-bearing
     // SQL fragment + authority params. A SQL refactor that drops
-    // `required_posting_auths ?| $4::text[]` or fails to pass
-    // config.accreditationAuthorities as params[3] would no longer match this
+    // `required_posting_auths ?| $3::text[]` or fails to pass
+    // config.accreditationAuthorities as params[2] would no longer match this
     // call shape — the matcher fails even though the mock was called (the
     // fallback path returns { rows: [] } which would otherwise leave outer
     // assertions green on a regressed query).
     expect(hafQueryMock).toHaveBeenCalledWith(
-      expect.stringContaining('required_posting_auths ?| $4::text[]'),
+      expect.stringContaining('required_posting_auths ?| $3::text[]'),
       expect.arrayContaining([victim, config.accreditationAuthorities]),
     );
-    // Positional pin on params[3]: arrayContaining is order-agnostic, so a
-    // mutant that moves accreditationAuthorities from $4 to $2 would still
-    // satisfy the matcher above. The `$4::text[]` bind MUST be the authorities
+    // Positional pin on params[2]: arrayContaining is order-agnostic, so a
+    // mutant that moves accreditationAuthorities off $3 would still satisfy
+    // the matcher above. The `$3::text[]` bind MUST be the authorities
     // array; nothing else. Locate the authority-filtered call explicitly to
     // avoid coupling to call ordering (profile.ts may fire other queries
     // before it).
     const authorityCall = hafQueryMock.mock.calls.find(
       (c) =>
         typeof c[0] === 'string' &&
-        c[0].includes('required_posting_auths ?| $4::text[]'),
+        c[0].includes('required_posting_auths ?| $3::text[]'),
     );
     expect(authorityCall).toBeDefined();
-    expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
+    expect((authorityCall![1] as unknown[])[2]).toEqual(config.accreditationAuthorities);
   });
 
   it('accepts an authority-signed accredit (is_accredited:true, accreditation payload)', async () => {
@@ -160,17 +160,17 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     // load-bearing SQL fragment and authorities param. See
     // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
     expect(hafQueryMock).toHaveBeenCalledWith(
-      expect.stringContaining('required_posting_auths ?| $4::text[]'),
+      expect.stringContaining('required_posting_auths ?| $3::text[]'),
       expect.arrayContaining([accredited, config.accreditationAuthorities]),
     );
-    // Positional pin on params[3]. See the fake-accredit spec above for rationale.
+    // Positional pin on params[2]. See the fake-accredit spec above for rationale.
     const authorityCall = hafQueryMock.mock.calls.find(
       (c) =>
         typeof c[0] === 'string' &&
-        c[0].includes('required_posting_auths ?| $4::text[]'),
+        c[0].includes('required_posting_auths ?| $3::text[]'),
     );
     expect(authorityCall).toBeDefined();
-    expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
+    expect((authorityCall![1] as unknown[])[2]).toEqual(config.accreditationAuthorities);
   });
 
   it('treats a revoke row as unaccredited (is_accredited:false, accreditation:null)', async () => {
@@ -206,16 +206,16 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     // load-bearing SQL fragment and authorities param. See
     // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
     expect(hafQueryMock).toHaveBeenCalledWith(
-      expect.stringContaining('required_posting_auths ?| $4::text[]'),
+      expect.stringContaining('required_posting_auths ?| $3::text[]'),
       expect.arrayContaining([revoked, config.accreditationAuthorities]),
     );
-    // Positional pin on params[3]. See the fake-accredit spec above for rationale.
+    // Positional pin on params[2]. See the fake-accredit spec above for rationale.
     const authorityCall = hafQueryMock.mock.calls.find(
       (c) =>
         typeof c[0] === 'string' &&
-        c[0].includes('required_posting_auths ?| $4::text[]'),
+        c[0].includes('required_posting_auths ?| $3::text[]'),
     );
     expect(authorityCall).toBeDefined();
-    expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
+    expect((authorityCall![1] as unknown[])[2]).toEqual(config.accreditationAuthorities);
   });
 });
