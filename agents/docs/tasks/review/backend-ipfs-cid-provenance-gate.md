@@ -36,3 +36,16 @@ The gateway hardening task achieved its stated narrower goal (a *free unaccredit
 - Archived task `ipfs-gateway-content-type-and-cid-scope` (tasks-archive.md) for the control-3 rationale.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend implementation note (2026-06-04)
+
+User chose **Option 3 + the CSP pin** (the question batched the three options; option 2 was flagged as broken-as-written because `ipfs-cleanup.ts` DELETEs the `pending_ipfs_uploads` row once a CID is confirmed on-chain, so gating the gateway on that table would 404 every published paper after 24h — it would need a new persistent provenance store).
+
+**What shipped:**
+- `cidReferencedByAppTag` (`lib/ipfs-shared.ts`) gains a second gateway-only opt-in, `excludeImageReference`. When set, the broadcaster-controlled `image[]`-substring OR-branch is dropped from the predicate (along with its sole `cid` bind param), so only the structured `metadata.<appTag>.ipfs_cid` / `supplementary_files[].cid` positions whitelist a CID into the gateway. This closes the cheapest self-whitelist vector (an accredited author embedding an external CID in any `image[]` URL).
+- The gateway's `cidIsKnown` (`routes/ipfs.ts`) now passes `{ requireAccreditedAuthor: true, excludeImageReference: true }`. The **cleanup path is untouched** — it passes neither flag, keeps the over-inclusive image match (under-inclusive there = irreversible unpin of a live file), and emits the byte-identical `$1..$4` SQL + params. Verified: `ipfs-shared-cid-containment.test.ts`, `ipfs-cleanup-backend-dispatch.test.ts`, and `ipfs-image-srf-guard.test.ts` all still green.
+- Tests added in `ipfs-gateway-hardening.test.ts`: `excludeImageReference` drops the SRF guard + the cid param (3 params, not 4); the gateway combination keeps the accreditation CTE + drops the image branch (5 params); and an explicit CSP-no-allow-tokens pin (the `/api/ipfs/*` CSP is exactly `sandbox`, no `allow-*` token) since the sandbox is the load-bearing barrier for the residual.
+
+**Residual (intentional, per the chosen posture):** an accredited author can still self-whitelist an external CID via a *structured* `ipfs_cid` / `supplementary_files[].cid` reference (i.e. by publishing it as their paper's file). Option 3 narrows the vector to the deliberate structured path and removes the cheap free-text-image path; the CSP sandbox remains the load-bearing control against script execution. Full provenance (option 2) is explicitly deferred — it needs a persistent provenance store, not the transient `pending_ipfs_uploads` table.
+
+**[TODO Architect] `api-contracts/ipfs.md` note (architect-owned).** The `GET /api/ipfs/:cid` known-CID gate now requires a STRUCTURED on-chain reference (`ipfs_cid` / `supplementary_files[].cid`) by an accredited author; a CID named only inside a free-text markdown `image[]` URL no longer resolves at the gateway. If the contract documents the CID-known gate, note the structured-reference requirement and the accepted structured-self-reference residual.
