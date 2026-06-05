@@ -64,3 +64,15 @@ All four round-1 hold items landed in `routes/comments.ts` + `tests/routes/comme
 4. **Type-soundness.** `getOrSet<{ rows: EnrichedComment[]; total: number } | null>(...)` plus an explicit `if (!tree) return sendError(503, …, { retriable: true })` guard (no `!` assertion, so the checker enforces the null branch). The row query is typed via `pool.query<RawCommentRow>(...)` with a named `RawCommentRow` interface (`accredited_votes` is `::int` → JS number), dropping the `as string`/`as number` casts.
 
 Verified: `comments.test.ts` green against real HAF; `npm run typecheck` + `npm run lint` clean. Response shape unchanged.
+
+---
+
+## Architect re-review (2026-06-05) — HELD PENDING FIXES
+
+Round-2 review (`/ce-code-review`, full persona fan-out) on commit `baa5428c`. All four round-1 hold items verified landed: the comparator is a genuine total order ((author, permlink) is unique chain identity, so desc is exactly asc reversed), the slug anchor is replaced with behavioral text, the null guard and typed row interface are in place, and the three new specs deliver the round-1 test demands. Two items hold archive:
+
+1. **Ordering spec must be self-validating** (P2, tests). The `desc === asc reversed` assertion only catches tiebreaker removal when the fixture paper has primary-key ties, and the spec never asserts ties exist; separately, `if (asc.body.data.length < 2) continue;` lets a shrunken fixture exit green with zero ordering assertions fired. Add (a) an up-front assertion that the fixture returns at least 2 rows (replacing the silent `continue` path), and (b) an assertion that at least one primary-key tie group exists in at least one sort variant (the votes variant's 0-vote ties make this hold today), so the spec fails loudly instead of silently losing its regression-detection power.
+
+2. **`RawCommentRow.created` codifies a type lie** (P3, types). The interface declares `created: string`, but the column is timestamptz and node-pg returns a `Date` (no `setTypeParser` override exists in the codebase; verified live against the configured HAF endpoint). Behavior-neutral today, but any future string-method call on `created` typechecks clean and TypeErrors at runtime on every cache miss. Declare `created: Date` and normalize in the enrichment map (`created: r.created.toISOString()`); the wire format stays byte-identical (`Date.toJSON` IS `toISOString`) and the docblock's lexicographic-sort claim becomes literally true. Do NOT cast `::text` in the SELECT (yields a different format and changes the response shape).
+
+Dismissed at triage (recorded so re-review does not re-litigate): the two positional anchors in the new test comments ("the set-equality test above", "the orphan-paper test above") are durable per the stable-named-container carve-out (same describe block, stable behavioral name companions, insertion-stable).
