@@ -753,7 +753,7 @@ export function authorshipClaimsCteBody(
                 AND ap.approver IN (ap.paper_author, $${bridgeIdx})
             ), 0)
         ) THEN 'revoked'
-        WHEN EXISTS (
+        WHEN cb.author_index IS NOT NULL AND EXISTS (
           SELECT 1 FROM approvals ap
           WHERE ap.claimer = cb.claimer
             AND ap.paper_author = cb.paper_author
@@ -764,6 +764,18 @@ export function authorshipClaimsCteBody(
             -- bridge can approve a co-author claim. Mirrors reputation.ts
             -- accepted_claims.
             AND ap.approver IN (ap.paper_author, $${bridgeIdx})
+        ) AND EXISTS (
+          -- List-final gate (hive-schemas.md §2.9/2.10): approval binds the
+          -- claimer to a slot NAMED AT POSTING; author_index must resolve to an
+          -- existing authors[] object entry. Mirrors reputation.ts accepted_claims
+          -- so the cycle and read surfaces accept identically; without it an
+          -- unlisted claimer (author_index null or past the end of authors[])
+          -- could be approved into co-author status that was never on the paper.
+          SELECT 1 FROM ${T.comments} c
+          WHERE c.author = cb.paper_author
+            AND c.permlink = cb.paper_permlink
+            AND c.parent_author = ''
+            AND jsonb_typeof(c.json_metadata -> $${p + 1} -> 'authors' -> cb.author_index) = 'object'
         ) THEN 'accepted'
         WHEN cb.author_index IS NOT NULL AND EXISTS (
           -- ORCID auto-accept arm: the broadcaster-controlled chain ORCID

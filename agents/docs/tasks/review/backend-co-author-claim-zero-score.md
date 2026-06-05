@@ -163,3 +163,69 @@ CURRENT auto-accept query:
   BOTH the current and the future model and carries forward unchanged.
 - The hold block's "keep the ORCID/hive auto-accept arms as-is" instruction holds
   for THIS task; the consented-model migration removes those arms later.
+
+## Backend re-review signal (2026-06-05) — Items 1+2 landed, canary rewritten
+
+Implemented against the current auto-accept query per the architect note above
+(auto-accept arms left as-is).
+
+**Item 1 — list-final gate on the explicit-approval arm (both surfaces).**
+- `reputation.ts` `accepted_claims`: the explicit-approval arm now requires
+  `ce.author_index IS NOT NULL` AND an EXISTS proving `authors[author_index]` is an
+  object on the chain post (`jsonb_typeof(... -> ce.author_index) = 'object'`).
+  Unlisted / out-of-range approvals grant no credit.
+- `hafsql.ts` `authorshipClaimsCteBody` approvals arm: mirrored the same gate
+  (`cb.author_index IS NOT NULL AND EXISTS(approve) AND EXISTS(slot)`).
+- The ORCID and hive auto-accept arms were already slot-gated (they require
+  `author_index IS NOT NULL` and resolve `authors[author_index].orcid/.hive`); only
+  the explicit-approval arm lacked the gate, so only it changed.
+
+**Item 2 — claimer self-vote / self-review exclusion (cycle).**
+- `paper_resolved_votes`: added `AND NOT EXISTS (accepted_claims ac WHERE
+  ac.paper_author = plv.author AND ac.paper_permlink = plv.permlink AND
+  ac.claimer = plv.voter)`. Replaced the misleading "correct even for claimed
+  papers" comment on `plv.voter != cp.author` (it covers only the poster).
+- `paper_reviews`: added the mirror exclusion keyed on `c.author` (the reviewer).
+- Both close the ORCID-/name-only-slot claimer self-dealing the chain-identity
+  rekey opened (such a claimer is absent from `authors[].hive`).
+
+**Item 2 read-surface scope — please confirm.** The self-dealing **score** inflation
+is cycle-only: the read surface (papers.ts enrichment, profile, reviews, search,
+stats) lists raw reviews + vote counts and does NOT compute a claimer-attributed
+aggregate score, so a claimer self-vote/self-review cannot inflate any displayed
+reputation there. The claims read surface (`authorshipClaimsCteBody`) gets Item 1's
+gate. NOT done: extending `excludeSelfReviewWhere` at the display callsites so a
+claimer's self-review is also dropped from the displayed third-party-review LISTS —
+that is the pre-existing deferred gap the helper docstring already tracks ("when the
+vote path picks up claims, this helper should too"), a display-consistency concern
+distinct from the security exploit. Flagged for a follow-up-task decision rather than
+silently widening scope into every display callsite (each would need the
+authorship_claims CTE in scope).
+
+**Sibling read-surface test maintenance (consequence of Item 1).**
+- `authorship-approve-signer-gate.test.ts` + `authorship-revoke-signer-gate.test.ts`:
+  the synthetic harness omitted `author_index` (to isolate the approval/revoke arms)
+  and redirected only `T.customJson`. The new slot gate requires a resolvable named
+  slot, so the harness now also redirects `T.comments` to a synthetic post carrying
+  a name-only slot at index 0 and sets `author_index: 0` on the claim (name-only
+  keeps the ORCID/hive arms silent, preserving the test's intent). Also removed a
+  stale `base[3] = 0` line that forced a no-longer-existent "genesis floor" and was
+  clobbering the appTag metadata-key param ($4) that the new gate now reads.
+
+**Canary (`reputation-coauthor-claim-credit.test.ts`).** Replaced the tautological
+`not.toBeCloseTo(2.0)` with a seeded **claimer** self-vote that must NOT credit the
+claimer; added a claimer self-review quality-path exclusion case; added an
+`accepted_claims` named-slot-gate behavioral test covering the approval and ORCID
+arms (incl. `author_index = null` and out-of-range → zero credit); added source pins
+for both new gates on both surfaces.
+
+**Verification (real HAF + local Postgres).**
+- canary 13/13; reputation-lifecycle (full production cycle, real HAF) 17/17;
+  sibling reputation shape/canary 16/16; read-surface (claims, approve/revoke signer
+  gate, hafsql) 62/62 (2 skipped); reputation-batch (cycle-boundary, internals,
+  prefix) green. `npm run typecheck` (src+tests) + `npm run lint` clean.
+- Pre-existing HAF-load flakiness (stats-profile-parity reader-parity; profile
+  `pevo.admin` papers-list 30s statement timeout) reproduces on clean HEAD with my
+  changes stashed — not introduced here.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

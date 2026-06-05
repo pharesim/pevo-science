@@ -582,14 +582,33 @@ export async function computeReputationBatch(
             -- co-author claim. Mirrors authorshipClaimsCteBody's approvals arm
             -- on the read surface so cycle and read surfaces resolve claims
             -- identically.
-            EXISTS (
-              SELECT 1 FROM claim_events ap
-              WHERE ap.action = 'approve_authorship'
-                AND ap.claimer = ce.claimer
-                AND ap.paper_author = ce.paper_author
-                AND ap.paper_permlink = ce.paper_permlink
-                AND ap.block_num > ce.block_num
-                AND ap.approver IN (ap.paper_author, $17)
+            --
+            -- List-final gate (hive-schemas.md §2.9/2.10): an approved claim
+            -- binds the claimer to an author slot NAMED AT POSTING; author_index
+            -- must resolve to an existing authors[] object entry. Without it the
+            -- post author or bridge could approve an unlisted claimer
+            -- (author_index null, or pointing past the end of authors[]) and mint
+            -- full co-author credit for an account that was never on the paper —
+            -- a credit-stuffing vector and the root of the claimer self-dealing
+            -- surface. The ORCID and hive auto-accept arms below already require
+            -- a resolvable slot; this brings the explicit-approval arm to parity.
+            (
+              ce.author_index IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM claim_events ap
+                WHERE ap.action = 'approve_authorship'
+                  AND ap.claimer = ce.claimer
+                  AND ap.paper_author = ce.paper_author
+                  AND ap.paper_permlink = ce.paper_permlink
+                  AND ap.block_num > ce.block_num
+                  AND ap.approver IN (ap.paper_author, $17)
+              )
+              AND EXISTS (
+                SELECT 1 FROM ${T.comments} c
+                WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
+                  AND c.parent_author = ''
+                  AND jsonb_typeof(c.json_metadata -> $3 -> 'authors' -> ce.author_index) = 'object'
+              )
             )
             -- Auto-accept: ORCID match. This arm and the read-surface
             -- authorshipClaimsCteBody arm share the chainOrcidAutoAcceptMatchSql
@@ -763,9 +782,11 @@ export async function computeReputationBatch(
         -- voted post's chain coords, so this keys votes to the post they were
         -- signed against; chain_papers is deduped so a post credited to several
         -- recipients still contributes each vote exactly once. cp.author IS the
-        -- chain post author, so plv.voter != cp.author is the self-vote
-        -- exclusion against the actual poster (correct even for claimed papers,
-        -- where the credit recipient differs from the poster).
+        -- chain post author, so plv.voter != cp.author excludes the actual
+        -- POSTER's self-vote. That gate alone does NOT cover a credited
+        -- claimer's self-vote: a claimer's name differs from the poster, so it
+        -- passes plv.voter != cp.author. The accepted_claims NOT EXISTS below is
+        -- the complementary gate that closes the claimer self-dealing path.
         SELECT plv.voter, plv.author, plv.permlink, plv.weight, plv.block_num
         FROM paper_latest_votes plv
         JOIN chain_papers cp ON cp.author = plv.author AND cp.permlink = plv.permlink
@@ -789,6 +810,21 @@ export async function computeReputationBatch(
             WHERE jsonb_typeof(a) = 'object'
               AND LOWER(TRIM(a ->> 'hive')) ~ '^[a-z0-9.-]+$'
               AND LOWER(TRIM(a ->> 'hive')) = plv.voter
+          )
+          AND NOT EXISTS (
+            -- Claimer self-vote exclusion (list-final self-dealing close): a
+            -- credited claimer of THIS chain post must not upvote it to inflate
+            -- their own co-author reputation. The authors[].hive exclusion above
+            -- misses claimers connected via ORCID match or a name-only slot —
+            -- their hive is absent from the raw on-chain authors[] — so without
+            -- this gate an ORCID/name-only claimer self-votes into their own
+            -- credit once the chain-identity rekey makes claimed papers score.
+            -- accepted_claims is the authoritative credited-claimer set for the
+            -- post (plv.author/plv.permlink are the chain post coords).
+            SELECT 1 FROM accepted_claims ac
+            WHERE ac.paper_author = plv.author
+              AND ac.paper_permlink = plv.permlink
+              AND ac.claimer = plv.voter
           )
       ),
 
@@ -827,6 +863,19 @@ export async function computeReputationBatch(
           ON c.parent_author = cp.author AND c.parent_permlink = cp.permlink
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
           AND ${excludeSelfReviewWhere({ paperRowAlias: 'cp', appTagParam: '$3' })}
+          AND NOT EXISTS (
+            -- Claimer self-review exclusion (list-final self-dealing close):
+            -- mirror of the paper_resolved_votes claimer gate. excludeSelfReviewWhere
+            -- above rejects the chain poster + authors[].hive members; a claimer
+            -- connected via ORCID or a name-only slot is in neither set, so without
+            -- this an ORCID/name-only claimer could 5/5/5/5 self-review the paper
+            -- they are credited for and drive pr.quality toward the max multiplier
+            -- on their own co-author score.
+            SELECT 1 FROM accepted_claims ac
+            WHERE ac.paper_author = cp.author
+              AND ac.paper_permlink = cp.permlink
+              AND ac.claimer = c.author
+          )
           AND (c.author = ANY($2::text[]) OR c.author = $18)
         GROUP BY cp.author, cp.permlink
       ),

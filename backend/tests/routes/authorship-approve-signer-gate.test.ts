@@ -58,13 +58,14 @@ async function resolveClaimStatus(
 ): Promise<string | null> {
   const accredFrag = activeAccreditationsCteBody(1);
   const claimsFrag = authorshipClaimsCteBody(accredFrag.nextIdx);
-  const accredBody = accredFrag.sql.replace(T.customJson, 'synthetic_cj');
-  const claimsBody = claimsFrag.sql.replace(T.customJson, 'synthetic_cj');
+  // Redirect both HAF view references: custom_json → synthetic ops, comments →
+  // the synthetic paper post below. The post is needed because the approval arm
+  // now resolves author_index to an existing authors[] slot (list-final gate);
+  // T.comments appears multiple times in claimsBody, so split/join replaces all.
+  const accredBody = accredFrag.sql.split(T.customJson).join('synthetic_cj');
+  const claimsBody = claimsFrag.sql.split(T.customJson).join('synthetic_cj').split(T.comments).join('synthetic_comments');
 
   const base: unknown[] = [...accredFrag.params, ...claimsFrag.params];
-  // claimsFrag's genesis param is its 2nd entry (base index 3, $4). Force it to
-  // 0 so the claim_events `block_num >= $4` floor admits the synthetic rows.
-  base[3] = 0;
 
   const valuesRows: string[] = [];
   const opParams: unknown[] = [];
@@ -75,25 +76,38 @@ async function resolveClaimStatus(
     opParams.push(op.id, config.appTag, JSON.stringify(op.json), JSON.stringify([op.signer]), op.block);
   });
 
+  // The synthetic victim/p1 post names a single name-only authors[] slot at
+  // index 0 (no hive, no orcid). The claim's author_index = 0 resolves to it, so
+  // the approval arm's list-final slot gate is satisfied; the absence of hive/
+  // orcid keeps the auto-accept arms silent so status is driven solely by the
+  // approval and revocation arms under test.
+  const metaParamIdx = base.length + ops.length * 5 + 1;
+  const metaJson = JSON.stringify({ [config.appTag]: { authors: [{ name: 'X' }] } });
+
   const sql = `
     WITH synthetic_cj(id, custom_id, json, required_posting_auths, block_num) AS (
       VALUES ${valuesRows.join(', ')}
+    ),
+    synthetic_comments(author, permlink, parent_author, json_metadata) AS (
+      VALUES ('victim'::text, 'p1'::text, ''::text, $${metaParamIdx}::jsonb)
     ),
     ${accredBody},
     ${claimsBody}
     SELECT status FROM authorship_claims
     WHERE claimer = 'claimant' AND paper_author = 'victim' AND paper_permlink = 'p1'
   `;
-  const res = await pool.query(sql, [...base, ...opParams]);
+  const res = await pool.query(sql, [...base, ...opParams, metaJson]);
   return res.rows.length > 0 ? (res.rows[0].status as string) : null;
 }
 
-// author_index is omitted from the claim so the ORCID/hive auto-accept arms
-// (both gated on `author_index IS NOT NULL`) never fire — status is then driven
-// solely by the approval and revocation arms under test.
+// author_index = 0 resolves to the name-only slot on the synthetic post, so the
+// approval arm's list-final slot gate is satisfied. The slot carries no hive/
+// orcid, so the ORCID/hive auto-accept arms (which additionally require a match
+// against authors[0]) never fire — status is then driven solely by the approval
+// and revocation arms under test.
 const claim: SyntheticOp = {
   id: 1,
-  json: { action: 'claim_authorship', paper_author: 'victim', paper_permlink: 'p1' },
+  json: { action: 'claim_authorship', paper_author: 'victim', paper_permlink: 'p1', author_index: 0 },
   signer: 'claimant',
   block: 100,
 };

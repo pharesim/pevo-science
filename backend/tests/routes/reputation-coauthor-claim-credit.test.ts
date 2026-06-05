@@ -35,10 +35,22 @@
  * credit flowing through the chain-identity joins, which the public corpus may
  * not exercise) is what the real-path coverage cannot guarantee.
  *
- * The existence of a `user_papers` claim row in the behavioral query stands in
- * for an APPROVED `accepted_claims` row; the approval/ORCID/username gating that
- * decides whether that row exists is unchanged by this fix and is covered by the
- * accepted_claims authority-gate canaries.
+ * The existence of a `user_papers` claim row in the vote-chain behavioral query
+ * stands in for an APPROVED `accepted_claims` row; the claim self-dealing and
+ * list-final gates layered on top of the original credit fix get their own
+ * coverage:
+ *
+ *   - List-final (hive-schemas.md §2.9/2.10): the explicit-approval arm credits
+ *     a claim only when `author_index` resolves to an existing `authors[]` slot.
+ *     Pinned at the source level (both `reputation.ts` accepted_claims and the
+ *     `hafsql.ts` authorshipClaimsCteBody read surface) and behaviorally by the
+ *     "named-slot gate" canary (approval + ORCID arms; unlisted / out-of-range
+ *     indexes grant zero credit).
+ *   - Claimer self-dealing: a credited claimer's self-vote / self-review on the
+ *     paper they are credited for is excluded (the chain-poster and `authors[].hive`
+ *     exclusions miss ORCID- and name-only-slot claimers). Pinned at the source
+ *     level and behaviorally by the claimer-self-vote scenario in the vote-chain
+ *     canary and the "claimer self-review exclusion (quality path)" canary.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -97,6 +109,39 @@ describe('co-author claim credit — source-level shape pin', () => {
       'the old credit-recipient join keys must be gone — they scored every claimed paper at 0',
     ).not.toContain('LEFT JOIN paper_reviews pr ON pr.author = up.author AND pr.permlink = up.permlink');
   });
+
+  // ── List-final gate (hive-schemas.md §2.9/2.10): the explicit-approval arm
+  //    must resolve author_index to an existing authors[] slot, else the post
+  //    author/bridge could approve an unlisted claimer into full co-author credit.
+  it('accepted_claims explicit-approval arm gates on a resolvable named slot', () => {
+    expect(
+      source,
+      'the approval arm must require author_index to resolve to an existing authors[] object entry',
+    ).toContain(`jsonb_typeof(c.json_metadata -> $3 -> 'authors' -> ce.author_index) = 'object'`);
+  });
+
+  // ── Claimer self-dealing close (Item 2): a credited claimer of a chain post
+  //    must not vote/review it. The authors[].hive exclusion misses ORCID- and
+  //    name-only-slot claimers, so an accepted_claims gate is required.
+  it('paper_resolved_votes excludes accepted_claims claimers (self-vote close)', () => {
+    expect(source).toContain('SELECT 1 FROM accepted_claims ac');
+    expect(source).toContain('AND ac.claimer = plv.voter');
+  });
+
+  it('paper_reviews excludes accepted_claims claimers (self-review close)', () => {
+    expect(source).toContain('AND ac.claimer = c.author');
+  });
+});
+
+describe('co-author claim credit — read-surface (hafsql.ts) parity pin', () => {
+  const hafsqlSource = readFileSync(resolve(PROJECT_ROOT, 'src/hafsql.ts'), 'utf-8');
+
+  it('authorshipClaimsCteBody approvals arm gates on a resolvable named slot', () => {
+    expect(
+      hafsqlSource,
+      'the read-surface approvals arm must mirror the cycle: author_index must resolve to an existing authors[] object entry',
+    ).toContain(`-> 'authors' -> cb.author_index) = 'object'`);
+  });
 });
 
 describe('co-author claim credit — synthetic-VALUES behavioral canary', () => {
@@ -112,18 +157,32 @@ describe('co-author claim credit — synthetic-VALUES behavioral canary', () => 
       //     - alice claims bob/paper-A  (bob is NOT a target → no native row for bob)
       //     - carol native paper-C
       //     - dave native paper-D  AND  erin claims dave/paper-D  (shared credit)
-      //   Synthetic votes (vo): an honest accredited upvote on each post, plus
-      //   bob upvoting his OWN paper-A (must be self-excluded against the chain
-      //   author even though the credit recipient is alice).
+      //   accepted_claims is derived from user_papers (claim rows are author <>
+      //   chain_author); it stands in for the production accepted_claims CTE so
+      //   the claimer self-vote exclusion can correlate on (paper_author,
+      //   paper_permlink, claimer) exactly as the cycle does.
+      //   Synthetic votes (vo): an honest accredited upvote on each post, PLUS
+      //   two self-votes on bob/paper-A that must both be excluded —
+      //     - bob upvoting his OWN post (chain-author self-vote → `!= cp.author`)
+      //     - alice (the credited CLAIMER) upvoting the post she is credited for
+      //       (claimer self-vote → accepted_claims NOT EXISTS). alice is not the
+      //       chain author and is absent from authors[].hive (the slot is empty),
+      //       so ONLY the accepted_claims gate stops her self-dealing upvote.
+      //   All three voters carry weight 1.0, so a dropped exclusion shows up as
+      //   inflated credit rather than a silently-zero-weight no-op.
       const sql = `
         WITH
-        accredited(account) AS (VALUES ('honest'::text), ('bob'::text)),
+        accredited(account) AS (VALUES ('honest'::text), ('bob'::text), ('alice'::text)),
         user_papers(author, permlink, json_metadata, chain_author, chain_permlink) AS (
           VALUES
             ('alice'::text, 'paper-A'::text, '{"pevotest":{"type":"paper","authors":[]}}'::jsonb, 'bob'::text,   'paper-A'::text),
             ('carol'::text, 'paper-C'::text, '{"pevotest":{"type":"paper","authors":[]}}'::jsonb, 'carol'::text, 'paper-C'::text),
             ('dave'::text,  'paper-D'::text, '{"pevotest":{"type":"paper","authors":[]}}'::jsonb, 'dave'::text,  'paper-D'::text),
             ('erin'::text,  'paper-D'::text, '{"pevotest":{"type":"paper","authors":[]}}'::jsonb, 'dave'::text,  'paper-D'::text)
+        ),
+        accepted_claims AS (
+          SELECT author AS claimer, chain_author AS paper_author, chain_permlink AS paper_permlink
+          FROM user_papers WHERE author <> chain_author
         ),
         chain_papers AS (
           SELECT DISTINCT chain_author AS author, chain_permlink AS permlink, json_metadata FROM user_papers
@@ -133,7 +192,8 @@ describe('co-author claim credit — synthetic-VALUES behavioral canary', () => 
             ('honest'::text, 'bob'::text,   'paper-A'::text, 10000, 100),
             ('honest'::text, 'carol'::text, 'paper-C'::text, 10000, 100),
             ('honest'::text, 'dave'::text,  'paper-D'::text, 10000, 100),
-            ('bob'::text,    'bob'::text,   'paper-A'::text, 10000, 100)
+            ('bob'::text,    'bob'::text,   'paper-A'::text, 10000, 100),
+            ('alice'::text,  'bob'::text,   'paper-A'::text, 10000, 100)
         ),
         paper_vote_signals AS (
           SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
@@ -163,8 +223,16 @@ describe('co-author claim credit — synthetic-VALUES behavioral canary', () => 
                 AND LOWER(TRIM(a ->> 'hive')) ~ '^[a-z0-9.-]+$'
                 AND LOWER(TRIM(a ->> 'hive')) = plv.voter
             )
+            AND NOT EXISTS (
+              SELECT 1 FROM accepted_claims ac
+              WHERE ac.paper_author = plv.author
+                AND ac.paper_permlink = plv.permlink
+                AND ac.claimer = plv.voter
+            )
         ),
-        voter_weights(voter, vw) AS (VALUES ('honest'::text, 1.0::numeric)),
+        voter_weights(voter, vw) AS (
+          VALUES ('honest'::text, 1.0::numeric), ('bob'::text, 1.0::numeric), ('alice'::text, 1.0::numeric)
+        ),
         paper_vote_agg AS (
           SELECT prv.author, prv.permlink,
             COALESCE(SUM(vw.vw * ABS(prv.weight) / 10000.0) FILTER (WHERE prv.weight > 0), 0) AS weighted_up
@@ -188,28 +256,206 @@ describe('co-author claim credit — synthetic-VALUES behavioral canary', () => 
 
       // 1. Claim credit flows to the claimer (was 0 pre-fix). The honest upvote
       //    on bob/paper-A reaches alice via the chain-identity join.
-      expect(papers.get('alice'), 'claimer must receive the chain paper score').toBeCloseTo(1.0, 5);
+      // 2. The CLAIMER self-vote is excluded: alice (credited via accepted_claims)
+      //    upvotes bob/paper-A with weight 1.0, but the accepted_claims NOT EXISTS
+      //    drops it, so alice stays at 1.0 (honest's vote only). Mutation-kill:
+      //    delete the accepted_claims NOT EXISTS in paper_resolved_votes → alice's
+      //    own weight-1.0 upvote counts → alice = 2.0 → this assertion goes red.
+      //    (This replaces the prior tautological `not.toBeCloseTo(2.0)`, which
+      //    passed whenever the 1.0 assertion did because no self-vote was seeded.)
+      expect(papers.get('alice'), 'claimer credit = honest vote only; claimer self-vote excluded').toBeCloseTo(1.0, 5);
 
-      // 2. The chain-author self-vote (bob upvoting his own paper-A) is excluded
-      //    by `plv.voter != cp.author` — correct even though the credit
-      //    recipient (alice) differs from the poster (bob). If the self-exclusion
-      //    keyed on the credit recipient, bob's self-vote would inflate alice to 2.0.
+      // 3. The chain-author self-vote (bob upvoting his own paper-A, weight 1.0)
+      //    is excluded by `plv.voter != cp.author`. Independent of the claimer
+      //    gate: removing `!= cp.author` would also push alice's credit to 2.0.
       expect(papers.get('alice'), 'chain-author self-vote must not inflate the claimer score').not.toBeCloseTo(2.0, 5);
 
-      // 3. Native (non-claim) author scoring is unchanged.
+      // 4. Native (non-claim) author scoring is unchanged.
       expect(papers.get('carol'), 'native author score must be unregressed').toBeCloseTo(1.0, 5);
 
-      // 4. Shared credit with NO fan-out double-count: dave (native) and erin
+      // 5. Shared credit with NO fan-out double-count: dave (native) and erin
       //    (claimer) both credit the same chain post; chain_papers dedup means
       //    the single honest vote aggregates once (1.0), and BOTH recipients
       //    read that same 1.0. Without the dedup the vote would fan out to 2.0 each.
       expect(papers.get('dave'), 'native author of a co-credited post → 1.0, not fanned out').toBeCloseTo(1.0, 5);
       expect(papers.get('erin'), 'claimer of a co-credited post → 1.0, not fanned out').toBeCloseTo(1.0, 5);
 
-      // 5. The on-chain author of a claimed paper who is NOT a target user gets
+      // 6. The on-chain author of a claimed paper who is NOT a target user gets
       //    no credit (bob has no user_papers row); credit flows only to the
       //    target users with a native or approved-claim row.
       expect(papers.has('bob'), 'a non-target chain author must not appear as a credit recipient').toBe(false);
+    },
+  );
+});
+
+describe('co-author claim credit — claimer self-review exclusion (quality path)', () => {
+  it.skipIf(!isHafConfigured())(
+    'a claimer 5/5/5/5 self-review does not lift the paper quality multiplier they are credited for',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) return ctx.skip(true, 'no pool available');
+
+      // alice claims bob/paper-A (a name-only slot → alice is absent from
+      // authors[].hive, so excludeSelfReviewWhere does NOT catch her; only the
+      // accepted_claims gate does). honest upvote → weighted_up = 1.0. The honest
+      // reviewer `rev` gives 3/3/3/3 → quality 0.6. The claimer alice AND the
+      // poster bob each 5/5/5/5-self-review. With both exclusions only `rev`
+      // counts → quality 0.6 → alice's credit = 0.6 * min(1.0, W) = 0.6.
+      //   Mutation-kill (claimer gate): drop the accepted_claims NOT EXISTS in
+      //   paper_reviews → alice's 5/5/5/5 counts → quality = avg(0.6,1.0)=0.8 →
+      //   alice = 0.8, assertion red.
+      //   Mutation-kill (poster gate): drop `r.reviewer != cp.author` → bob's
+      //   5/5/5/5 counts → quality 0.8 → red.
+      const sql = `
+        WITH
+        accredited(account) AS (VALUES ('honest'::text), ('rev'::text), ('alice'::text), ('bob'::text)),
+        user_papers(author, permlink, json_metadata, chain_author, chain_permlink) AS (
+          VALUES ('alice'::text, 'paper-A'::text, '{"pevotest":{"type":"paper","authors":[]}}'::jsonb, 'bob'::text, 'paper-A'::text)
+        ),
+        accepted_claims AS (
+          SELECT author AS claimer, chain_author AS paper_author, chain_permlink AS paper_permlink
+          FROM user_papers WHERE author <> chain_author
+        ),
+        chain_papers AS (
+          SELECT DISTINCT chain_author AS author, chain_permlink AS permlink, json_metadata FROM user_papers
+        ),
+        paper_vote_agg(author, permlink, weighted_up) AS (VALUES ('bob'::text, 'paper-A'::text, 1.0::numeric)),
+        reviews(reviewer, paper_author, paper_permlink, rating) AS (
+          VALUES
+            ('rev'::text,   'bob'::text, 'paper-A'::text, '{"methodology":3,"novelty":3,"clarity":3,"significance":3}'::jsonb),
+            ('alice'::text, 'bob'::text, 'paper-A'::text, '{"methodology":5,"novelty":5,"clarity":5,"significance":5}'::jsonb),
+            ('bob'::text,   'bob'::text, 'paper-A'::text, '{"methodology":5,"novelty":5,"clarity":5,"significance":5}'::jsonb)
+        ),
+        paper_reviews AS (
+          SELECT cp.author, cp.permlink,
+            AVG(((r.rating->>'methodology')::numeric + (r.rating->>'novelty')::numeric
+               + (r.rating->>'clarity')::numeric + (r.rating->>'significance')::numeric) / 4.0) / 5.0 AS quality
+          FROM chain_papers cp
+          JOIN reviews r ON r.paper_author = cp.author AND r.paper_permlink = cp.permlink
+            AND r.reviewer != cp.author
+            AND NOT EXISTS (
+              SELECT 1 FROM jsonb_array_elements(
+                CASE WHEN jsonb_typeof(cp.json_metadata -> $1 -> 'authors') = 'array'
+                  THEN cp.json_metadata -> $1 -> 'authors' ELSE '[]'::jsonb END
+              ) a
+              WHERE jsonb_typeof(a) = 'object'
+                AND LOWER(TRIM(a ->> 'hive')) = r.reviewer
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM accepted_claims ac
+              WHERE ac.paper_author = cp.author AND ac.paper_permlink = cp.permlink AND ac.claimer = r.reviewer
+            )
+            AND r.reviewer IN (SELECT account FROM accredited)
+          GROUP BY cp.author, cp.permlink
+        ),
+        paper_scores AS (
+          SELECT up.author, up.permlink,
+            COALESCE(pr.quality, 1.0) * LEAST(COALESCE(pva.weighted_up, 0), 20) AS score
+          FROM user_papers up
+          LEFT JOIN paper_reviews pr ON pr.author = up.chain_author AND pr.permlink = up.chain_permlink
+          LEFT JOIN paper_vote_agg pva ON pva.author = up.chain_author AND pva.permlink = up.chain_permlink
+        )
+        SELECT author, SUM(score)::float AS papers FROM paper_scores GROUP BY author
+      `;
+
+      const result = await pool.query<{ author: string; papers: number }>(sql, ['pevotest']);
+      const papers = new Map(result.rows.map((r) => [r.author, Number(r.papers)]));
+      expect(papers.get('alice'), 'claimer self-review must not lift the quality multiplier (only rev 0.6 counts)').toBeCloseTo(0.6, 5);
+    },
+  );
+});
+
+describe('co-author claim credit — accepted_claims named-slot gate (list-final, Item 1)', () => {
+  it.skipIf(!isHafConfigured())(
+    'an approved claim is credited only when author_index resolves to an existing authors[] slot; ORCID arm is slot-gated too',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) return ctx.skip(true, 'no pool available');
+
+      // Reconstruct the accepted_claims approval + ORCID arms (the two non-trivial
+      // arms) with the list-final slot gate. The post bob/paper-A names two slots:
+      //   authors[0] = a name-only slot (connected via approval)
+      //   authors[1] = an ORCID slot (auto-accepted when the claimer's accredited
+      //                ORCID matches). The ORCID equality here is simplified — the
+      //                whitespace-canonicalization (chainOrcidAutoAcceptMatchSql)
+      //                is covered by its own tests; this canary pins the arm's
+      //                author_index/slot gating, not the BTRIM charset.
+      // Claims:
+      //   alice  → author_index 0, approved by bob  → ACCEPTED (slot 0 exists)
+      //   frank  → author_index NULL, approved by bob → REJECTED (unlisted)
+      //   grace  → author_index 5, approved by bob   → REJECTED (slot 5 absent)
+      //   hank   → author_index 1, ORCID match        → ACCEPTED (slot 1 exists)
+      //   ivan   → author_index 9, ORCID match        → REJECTED (slot 9 absent)
+      // Mutation-kill: drop the `jsonb_typeof(... -> author_index) = 'object'`
+      // gate → frank, grace, ivan all become accepted → assertions red.
+      const sql = `
+        WITH
+        posts(author, permlink, parent_author, json_metadata) AS (
+          VALUES ('bob'::text, 'paper-A'::text, ''::text,
+            '{"pevotest":{"type":"paper","authors":[{"name":"Alice X"},{"orcid":"0000-0002-1111-2222"}]}}'::jsonb)
+        ),
+        active_accreditations(account, orcid) AS (
+          VALUES ('hank'::text, '0000-0002-1111-2222'::text), ('ivan'::text, '0000-0002-1111-2222'::text)
+        ),
+        claim_events(action, claimer, paper_author, paper_permlink, author_index, approver, block_num) AS (
+          VALUES
+            ('claim_authorship'::text,   'alice'::text, 'bob'::text, 'paper-A'::text, 0::int,    'alice'::text, 10),
+            ('approve_authorship'::text, 'alice'::text, 'bob'::text, 'paper-A'::text, 0::int,    'bob'::text,   20),
+            ('claim_authorship'::text,   'frank'::text, 'bob'::text, 'paper-A'::text, NULL::int, 'frank'::text, 10),
+            ('approve_authorship'::text, 'frank'::text, 'bob'::text, 'paper-A'::text, NULL::int, 'bob'::text,   20),
+            ('claim_authorship'::text,   'grace'::text, 'bob'::text, 'paper-A'::text, 5::int,    'grace'::text, 10),
+            ('approve_authorship'::text, 'grace'::text, 'bob'::text, 'paper-A'::text, 5::int,    'bob'::text,   20),
+            ('claim_authorship'::text,   'hank'::text,  'bob'::text, 'paper-A'::text, 1::int,    'hank'::text,  10),
+            ('claim_authorship'::text,   'ivan'::text,  'bob'::text, 'paper-A'::text, 9::int,    'ivan'::text,  10)
+        ),
+        accepted_claims AS (
+          SELECT DISTINCT ce.claimer, ce.paper_author, ce.paper_permlink
+          FROM claim_events ce
+          WHERE ce.action = 'claim_authorship'
+            AND (
+              -- Explicit-approval arm, list-final gated
+              (
+                ce.author_index IS NOT NULL
+                AND EXISTS (
+                  SELECT 1 FROM claim_events ap
+                  WHERE ap.action = 'approve_authorship'
+                    AND ap.claimer = ce.claimer AND ap.paper_author = ce.paper_author
+                    AND ap.paper_permlink = ce.paper_permlink AND ap.block_num > ce.block_num
+                    AND ap.approver IN (ap.paper_author, 'bridge')
+                )
+                AND EXISTS (
+                  SELECT 1 FROM posts c
+                  WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
+                    AND c.parent_author = ''
+                    AND jsonb_typeof(c.json_metadata -> $1 -> 'authors' -> ce.author_index) = 'object'
+                )
+              )
+              -- ORCID auto-accept arm (already requires author_index IS NOT NULL;
+              -- the orcid subscript only resolves on an existing slot, so it is
+              -- inherently slot-gated — ivan's out-of-range index returns NULL)
+              OR (ce.author_index IS NOT NULL AND EXISTS (
+                SELECT 1 FROM posts c
+                JOIN active_accreditations aa ON aa.account = ce.claimer
+                WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
+                  AND c.parent_author = ''
+                  AND aa.orcid IS NOT NULL AND aa.orcid != ''
+                  AND (c.json_metadata -> $1 -> 'authors' -> ce.author_index ->> 'orcid') = aa.orcid
+              ))
+            )
+        )
+        SELECT claimer FROM accepted_claims ORDER BY claimer
+      `;
+
+      const result = await pool.query<{ claimer: string }>(sql, ['pevotest']);
+      const accepted = new Set(result.rows.map((r) => r.claimer));
+
+      expect(accepted.has('alice'), 'approval of a claim resolving to a named slot must be credited').toBe(true);
+      expect(accepted.has('hank'), 'ORCID match on an existing slot must be credited').toBe(true);
+      expect(accepted.has('frank'), 'an author_index=null (unlisted) approval grants no credit').toBe(false);
+      expect(accepted.has('grace'), 'an out-of-range author_index approval grants no credit').toBe(false);
+      expect(accepted.has('ivan'), 'an out-of-range author_index ORCID match grants no credit').toBe(false);
     },
   );
 });
