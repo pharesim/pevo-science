@@ -570,7 +570,9 @@ Updates configurable platform parameters.
 
 ### 2.9 Claim Authorship
 
-Broadcast by an accredited user to claim an author slot on a paper. The claim is auto-accepted when: (a) the claimer's on-chain verified ORCID matches `authors[i].orcid` in the paper metadata, or (b) `authors[i].hive === claimer` for native papers. Otherwise, the claim is pending until approved by the original post author (native papers) or bridge account (bridged papers).
+Broadcast by an accredited user to claim an author slot **that was named at posting** on a paper (`author_index` references an existing entry in the paper's `authors[]`). The claim is auto-accepted when: (a) the claimer's on-chain verified ORCID matches `authors[i].orcid` in the paper metadata, or (b) `authors[i].hive === claimer` for native papers. Otherwise (a slot named without a matching ORCID or `hive` — e.g. a name-only or hive-less co-author), the claim is pending until approved by the original post author (native papers) or bridge account (bridged papers). Approval **connects the claimer's Hive account to that named slot**; it does not add a co-author who was not named at posting.
+
+**The author list is fixed at posting time.** Claim/approval only binds a Hive account to a slot named in the paper's `authors[]` at publication; it never adds a new name. New co-authors are added only through a continuation revision that names them (see `ARCHITECTURE.md` § 6 "Authors mutation"), not through claim/approval. A claim whose `author_index` does not resolve to an existing `authors[]` slot grants no authorship credit.
 
 ```json
 {
@@ -593,7 +595,7 @@ Broadcast by an accredited user to claim an author slot on a paper. The claim is
 
 **Field Notes:**
 - `paper_author` / `paper_permlink` — identify the canonical (root) paper post. For bridged papers, `paper_author` is the bridge account.
-- `author_index` — zero-based index into the paper's `authors` array that the claimer is claiming. For claims by users not listed in the author array, `author_index` is `null` (unlisted claim, requires approval from the original post author or bridge account).
+- `author_index` — zero-based index into the paper's `authors` array identifying the slot the claimer is claiming. **Required**: the claim must reference a slot that was named at posting. A claim that does not resolve to an existing `authors[]` slot grants no authorship credit (the author list is fixed at posting; see § 2.10). Auto-accept compares the claimer against `authors[author_index]` by ORCID or `hive`; a name-only or hive-less slot is connected via approval (§ 2.10).
 - The claimer's identity is proven by the posting key signature (`required_posting_auths`).
 - Only accredited users may claim. The backend validates this before processing.
 
@@ -622,7 +624,7 @@ Broadcast to approve a pending authorship claim. The approver depends on context
 | `json` | Stringified JSON above |
 
 **Field Notes:**
-- `author_index` — if `null` in the original claim (unlisted author), the approver specifies the index at which the author is inserted, or `null` to append. The backend adds the author to the paper's displayed author list at read time.
+- `author_index` — identifies the existing `authors[]` slot (named at posting) that the approval connects the claimer's Hive account to. Approval **binds a Hive account to a slot named at posting**; it does not insert or append a new author. The displayed author list is the cumulative union of names present across the paper's chain posts (`ARCHITECTURE.md` § 6 "Display construction"); approval adds a Hive-account binding to an existing entry, not a new name. To credit a co-author who was not named at posting, broadcast a continuation revision that names them, not an approval.
 - For bridged papers, the bridge account admin triggers this via a backend admin endpoint.
 
 ### 2.11 Revoke Authorship
