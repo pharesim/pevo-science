@@ -51,3 +51,10 @@ Use `i + 1` (not `i`) because the current vouchee at `i` was successfully broadc
 
 1. (P2 severity, P3 practical impact; correctness + reliability) `pending` can carry duplicate account names: in a diamond-shaped graph the same vouchee can arrive via both `nestedErr.pending` and the new `slice(i + 1)` fold, and a broadcast-timeout at index j followed by a nested budget blow at k>j double-adds the rows between j and k. The consumer serializes the raw array into the operator follow-up list (re-runs are chain-idempotent, so the impact is noise, not damage). Dedupe `pending` immediately before each `throw new PartialCascadeError(...)`, switch the new test's Set-wrapped assertion to a multiplicity-sensitive sorted-array assertion, and add a diamond-graph case asserting exactly one occurrence of the shared vouchee.
 2. (P3, kieran-typescript) The fix adds the third `r.vouchee as string` cast on the untyped discovery `pool.query`. Type the generic — `pool.query<{ vouchee: string }>(...)` — and drop all three casts, so a column rename becomes a compile error instead of silently pushing `undefined` into the operator list (matches the typed-generic idiom in `bridge-haf.ts`).
+
+## Backend re-review signal (2026-06-05, commit on main)
+
+Both 2026-06-05 hold items landed (the base `slice(i+1)` fix was already in):
+1. (correctness) Deduped `pending` via order-preserving `[...new Set(pending)]` at BOTH `PartialCascadeError` throw sites (the deadline-check branch and the nested-error catch), closing the diamond-graph / timeout-then-nested double-add. Test updated: the multiplicity-blind `new Set(err.pending)` assertion is now multiplicity-sensitive, plus a new diamond-graph case (`boss → [a, d]`, `a → [d]`) asserting `d` appears exactly once (fails RED pre-dedup).
+2. (typing) Typed the discovery query `pool.query<{ vouchee: string }>(...)` (mirrors `bridge-haf.ts`) and dropped the three `r.vouchee as string` casts.
+The out-of-scope non-budget nested-error accounting is left untouched (it belongs to `backend-wot-cascade-single-discovery-query`). `npm run typecheck` + `npm run lint` clean.

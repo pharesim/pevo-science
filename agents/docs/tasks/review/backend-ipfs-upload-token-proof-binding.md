@@ -65,3 +65,12 @@ User chose **Option (b): per-action binding** (the architect's lean, given the c
 4. **Test gap: ORCID-mechanism `ipfs_upload` issuance is untested.** The password-mechanism issuance branch is pinned in `custody-fresh-auth-null-hash.test.ts`, but the ORCID-mechanism branch (`routes/orcid.ts` `/start` `mode='fresh_auth' action='ipfs_upload'`) has no coverage. A mutation routing `ipfs_upload` into the `change_email` else-arm would mint a wrong-target proof and slip the issuance suite (caught only downstream at consume). Add an issuance test exercising the ORCID `fresh_auth` path and asserting the minted proof consumes valid against `ipfsUploadFreshAuthTarget(username)`; a targeted ORCID-callback mock with a documented carve-out is acceptable given the state-C seeding difficulty.
 
 Architect-owned, not your work: I will update `ARCHITECTURE.md` §6.4/§6.5 (record posture (b), remove the "under review" note on the upload-token row) at final archive of this task.
+
+## Backend re-review signal (2026-06-05, commit on main)
+
+All four 2026-06-05 hold items landed:
+1. `/upload-token` JWT-path consume-failure mapping aligned to the custody consent-op 3-way 403 (`username_mismatch || target_mismatch || kind_mismatch → 403`, else 401) in `routes/ipfs.ts`; the redirected-session-proof test now expects 403.
+2. Removed the task-slug citation from the `custody-fresh-auth-null-hash.test.ts` header docblock.
+3. Stripped the "(per-action binding, option b)" / "(option b issuance side)" anchor-rot from the two test titles.
+4. Added ORCID-mechanism `ipfs_upload` issuance coverage in `orcid.test.ts` (the `fresh_auth mode` describe block).
+`npm run typecheck` + `npm run lint` clean.
