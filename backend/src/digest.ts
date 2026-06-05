@@ -13,9 +13,15 @@ import crypto from 'node:crypto';
 import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { fetchNotificationsFromHaf } from './notification-queries.js';
+import {
+  fetchNotificationsFromHaf,
+  computeNotificationWindowFloor,
+  filterEventsAfter,
+  NOTIFICATION_WINDOW_FETCH_CAP,
+} from './notification-queries.js';
 import { getGenesisBlock } from './hafsql.js';
 import { getPool } from './db.js';
+import { getLastBlock } from './block-watcher.js';
 import type { NotificationEvent } from './notification-queries.js';
 
 // ── Types ───────────────────────────────────────
@@ -176,20 +182,48 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
   const pool = getPool();
   const genesis = pool ? await getGenesisBlock(pool) : 0;
 
+  // Consume the batch the same way the SPA route does: fetch against the wide
+  // window floor (so the per-arm DISTINCT ON dedup runs across a window that
+  // includes each event's publication row — an edit or revote of pre-cursor
+  // content collapses against its publication instead of re-firing as a fresh
+  // digest line), then apply the per-user cursor in-app. Computing the batch
+  // against `last_digest_block` (the old behavior) deduplicated only above the
+  // cursor, so an edit landing after the last digest had no publication row to
+  // lose against and re-fired every cycle.
+  const windowFloor = computeNotificationWindowFloor(getLastBlock(), genesis);
+
   for (const user of users) {
     try {
-      const sinceBlock = genesis > 0 && user.last_digest_block < genesis
+      // In-app cursor, genesis-clamped (no PEvO data exists before genesis).
+      const cursor = genesis > 0 && user.last_digest_block < genesis
         ? genesis - 1
         : user.last_digest_block;
-      const batch = await fetchNotificationsFromHaf(user.username, sinceBlock, 200);
+      const batch = await fetchNotificationsFromHaf(user.username, windowFloor, NOTIFICATION_WINDOW_FETCH_CAP);
 
-      if (!batch || batch.events.length === 0) {
+      if (!batch) {
         skipped++;
         continue;
       }
 
-      await sendDigestEmail(user, batch.events);
-      await updateLastDigestBlock(user.username, batch.latest_block);
+      const newEvents = filterEventsAfter(batch.events, cursor);
+      if (newEvents.length === 0) {
+        skipped++;
+        continue;
+      }
+
+      await sendDigestEmail(user, newEvents);
+
+      // Advance the stored cursor ONLY when the window fully drained
+      // (`has_more === false`). A truncated batch (`has_more === true`) means
+      // recipient-relevant events beyond the fetch cap are still undelivered —
+      // including a single block whose events overflowed the cap. Advancing past
+      // them would skip them permanently (the original boundary-drop bug);
+      // leaving the cursor lets the next digest re-fetch and drain further, so
+      // the overflow appears in a later digest rather than being lost. Advance to
+      // the highest delivered block (ascending order → last element).
+      if (!batch.has_more) {
+        await updateLastDigestBlock(user.username, newEvents[newEvents.length - 1].block_num);
+      }
       sent++;
     } catch (err) {
       logger.error({ err, username: user.username }, 'Failed to process digest for user');

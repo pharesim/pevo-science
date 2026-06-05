@@ -41,3 +41,15 @@ Make the digest consume the batch the same way the SPA route does, and never adv
 - backend/src/notification-queries.ts (per-arm DISTINCT ON dedup, `$2` floor semantics, `has_more` emission).
 - backend/src/routes/notifications.ts (`applySinceBlockFilter`, the SPA-path precedent for wide-floor + in-app cursor).
 - Frontend half of the original cursor-boundary task: `ui-notifications-block-cursor-boundary-rewind` (blocked on the route `has_more` fix).
+
+---
+
+## Backend completion note (2026-06-06)
+
+Both defects fixed by making `runDigest` consume `fetchNotificationsFromHaf` the same way the SPA route does. typecheck (src+tests) + lint clean; new `digest-window-cursor.test.ts` green (4/4); real-HAF `notifications.test.ts` still green (9/9); digest title-strip suite unaffected.
+
+- **Shared helpers extracted to `notification-queries.ts`** (so the route and digest cannot drift): `NOTIFICATION_WINDOW_BLOCKS`, `NOTIFICATION_WINDOW_FETCH_CAP`, `computeNotificationWindowFloor(head, genesis)`, `filterEventsAfter(events, sinceBlock)` (strict `>`). `routes/notifications.ts` now imports these (the inline constants + window-floor block + the in-app filter line are gone; behavior identical, confirmed by the 21 mocked + 9 real-HAF notification tests).
+- **Defect 1 (window-relative dedup re-fire):** `runDigest` now calls `fetchNotificationsFromHaf(user, computeNotificationWindowFloor(getLastBlock(), genesis), CAP)` — the wide floor, NOT `last_digest_block`. The per-arm DISTINCT ON now runs across a window that includes each event's publication row, so an edit/revote of pre-cursor content collapses against its publication instead of re-firing. The per-user `last_digest_block` is applied in-app via `filterEventsAfter`.
+- **Defect 2 (boundary-block overflow drop):** `updateLastDigestBlock` is now called ONLY when `batch.has_more === false` (window fully drained), advancing to the highest delivered block. On a truncated batch the cursor is left in place so the next digest re-fetches and drains further — the overflow surfaces in a later digest instead of being permanently skipped. This is the task's prescribed "simplest correct shape." Trade-off (documented in code): on the rare >cap-events-in-window case, the next run re-emails the already-delivered prefix once; that is strictly better than the current permanent drop, and a single digest window exceeding the 1000 cap is implausible at PEvO scale.
+- Tests pin: the wide-floor fetch arg (not last_digest_block); an edit-of-pre-cursor-content producing no duplicate line + no spurious advance in the next run; has_more=true → no advance, then has_more=false → advance with the rollover delivered exactly once; and the no-events-past-cursor skip.
+- The note's claim that the route `has_more` recomputation does NOT gate this task held: the digest consumes the raw SQL-layer `has_more` from `fetchNotificationsFromHaf`, not the route's recomputed value.

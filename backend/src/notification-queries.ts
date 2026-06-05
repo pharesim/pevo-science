@@ -114,6 +114,47 @@ export interface NotificationBatch {
   has_more: boolean;
 }
 
+// Fixed look-back window for cached/shareable notification computations. The
+// underlying query is computed relative to `chainHead - NOTIFICATION_WINDOW_BLOCKS`
+// (genesis-clamped) rather than a caller cursor, so the dedup runs across a wide
+// window — an edit/revote of content published within the window collapses
+// against its publication row instead of re-firing as a fresh notification — and
+// the SPA result is shareable across polls. ~100k blocks is roughly 3.5 days at
+// Hive's 3s cadence. Shared by the SPA route (routes/notifications.ts) and the
+// email digest (digest.ts) so both consume the batch the same way.
+export const NOTIFICATION_WINDOW_BLOCKS = 100_000;
+
+// Internal fetch cap for the window batch, deliberately larger than any response
+// `limit`. fetchNotificationsFromHaf orders ascending and LIMITs, so a small cap
+// would return only the OLDEST events above the floor and a caught-up cursor
+// would strip them all while newer in-window events sit beyond the cut. Callers
+// apply their cursor in-app over this wider batch. See the route's
+// applySinceBlockFilter and the digest's drain logic.
+export const NOTIFICATION_WINDOW_FETCH_CAP = 1000;
+
+/**
+ * Floor for the cached window computation: move forward from the chain head when
+ * the block-watcher has observed one, else fall back to the genesis floor so a
+ * cold backend (watcher not yet ticked) still produces a valid computation.
+ * Never dips below `genesis - 1`.
+ */
+export function computeNotificationWindowFloor(head: number, genesis: number): number {
+  const genesisFloor = genesis > 0 ? genesis - 1 : 0;
+  return head > 0
+    ? Math.max(genesisFloor, head - NOTIFICATION_WINDOW_BLOCKS)
+    : genesisFloor;
+}
+
+/**
+ * Re-apply a poll/digest cursor to a window-relative batch: keep only events
+ * strictly after `sinceBlock`. Strict `>` is the shared cursor contract — the
+ * SPA route and the digest both treat `latest_block` as already-delivered and
+ * resume past it. Centralized so the two consumers cannot drift on `>` vs `>=`.
+ */
+export function filterEventsAfter(events: NotificationEvent[], sinceBlock: number): NotificationEvent[] {
+  return events.filter((e) => e.block_num > sinceBlock);
+}
+
 export async function fetchNotificationsFromHaf(
   account: string,
   sinceBlock: number,

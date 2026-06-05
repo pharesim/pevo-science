@@ -3,36 +3,22 @@ import { getPool } from '../db.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { hafCache } from '../cache.js';
-import { fetchNotificationsFromHaf, type NotificationBatch } from '../notification-queries.js';
+import {
+  fetchNotificationsFromHaf,
+  computeNotificationWindowFloor,
+  filterEventsAfter,
+  NOTIFICATION_WINDOW_FETCH_CAP,
+  type NotificationBatch,
+} from '../notification-queries.js';
 import { getGenesisBlock } from '../hafsql.js';
 import { getLastBlock } from '../block-watcher.js';
 
 const router = Router();
 
-// Fixed look-back window for the cached HAF computation. The cached query is
-// computed relative to `chainHead - NOTIFICATION_WINDOW_BLOCKS` (clamped to
-// genesis) rather than the caller's `since_block`, so the result is shareable
-// across every poll and SPA tab for the same `(account, limit)`. ~100k blocks
-// is roughly 3.5 days at Hive's 3s block cadence — wide enough to cover a
-// client's catch-up after an offline gap without paying the genesis-to-head
-// scan on every poll.
-const NOTIFICATION_WINDOW_BLOCKS = 100_000;
-
 // TTL for the shared notification computation. Block-watcher's volatile sweep
 // runs on every ~3s block tick; flagging this entry `stable: true` keeps it out
 // of that sweep so one HAF computation serves the next minute of polls.
 const NOTIFICATION_CACHE_TTL_MS = 60_000;
-
-// Internal fetch cap for the cached window batch, deliberately decoupled from
-// the response `limit`. fetchNotificationsFromHaf orders ascending and LIMITs,
-// so keying the fetch to the small response `limit` would cache only the OLDEST
-// `limit` events above the window floor; applySinceBlockFilter can only subtract
-// from that, so a caught-up cursor strips the whole batch while newer in-window
-// events sit beyond the LIMIT cut — a silently frozen feed for any account
-// accruing more than `limit` events per window. Fetching up to this larger cap
-// gives the in-app cursor filter newer events to surface; the response is sliced
-// back to `limit` afterward. Still one HAF query per refill; the cache win holds.
-const NOTIFICATION_WINDOW_FETCH_CAP = 1000;
 
 // ──────────────────────────────────────────────
 // GET /api/notifications
@@ -57,15 +43,8 @@ router.get('/', verifyHiveSignature, async (req: Request, res: Response) => {
     }
   }
 
-  // Floor for the cached window computation. Move forward from the chain head
-  // when the block-watcher has observed one; otherwise fall back to the genesis
-  // floor so a cold backend (watcher not yet ticked, e.g. fresh boot or tests)
-  // still produces a valid, shareable computation. Never dip below genesis - 1.
-  const head = getLastBlock();
-  const genesisFloor = genesis > 0 ? genesis - 1 : 0;
-  const windowFloor = head > 0
-    ? Math.max(genesisFloor, head - NOTIFICATION_WINDOW_BLOCKS)
-    : genesisFloor;
+  // Floor for the cached window computation (shared with the digest path).
+  const windowFloor = computeNotificationWindowFloor(getLastBlock(), genesis);
 
   // Cache key omits `since_block` so every poll within the TTL shares one HAF
   // computation. The poll-specific `since_block` is re-applied in-app below.
@@ -103,7 +82,7 @@ router.get('/', verifyHiveSignature, async (req: Request, res: Response) => {
  * follow-up poll while undelivered in-window events still existed.
  */
 function applySinceBlockFilter(batch: NotificationBatch, sinceBlock: number, limit: number): NotificationBatch {
-  const filtered = batch.events.filter((e) => e.block_num > sinceBlock);
+  const filtered = filterEventsAfter(batch.events, sinceBlock);
   const events = filtered.slice(0, limit);
   const latestBlock = events.length > 0
     ? Math.max(...events.map((e) => e.block_num))

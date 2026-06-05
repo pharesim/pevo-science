@@ -1,0 +1,208 @@
+/**
+ * runDigest cursor-consumption tests: wide-floor dedup + advance-only-when-drained.
+ *
+ * Per CLAUDE.md "Running Tests" carve-out clauses (a)/(b)/(c):
+ *   (a) Real-corpus seeding is impractical: these canaries need to drive
+ *       runDigest across two consecutive runs with a DETERMINISTIC notification
+ *       batch (an edit-of-pre-cursor-content scenario, and a window that reports
+ *       has_more=true then false), plus an observable cursor-advance and email
+ *       payload. The public HAF corpus cannot be seeded with a published-then-
+ *       edited paper at exact block numbers at test time. The mocked surfaces are
+ *       all inside the carve-out's mock-target scope:
+ *         - `fetchNotificationsFromHaf` returns the controlled batch (its real
+ *           SQL dedup is pinned separately in notifications-arm-sql-shape.test.ts;
+ *           here it stands in for the earliest-wins dedup result so the test can
+ *           verify runDigest's in-app cursor + advance logic).
+ *         - `getAppPool` feeds the digest-user rows and captures
+ *           updateLastDigestBlock's (username, block) so the cursor advance is
+ *           observable.
+ *         - `getPool` (truthy stub) + `getGenesisBlock` → 0 (no genesis clamp).
+ *         - `getLastBlock` → a fixed head so the wide window floor is deterministic.
+ *         - `createSmtpTransporter` captures sendMail so the emailed events are
+ *           observable (nodemailer is a third-party boundary).
+ *   (b) No auth middleware is exercised by runDigest (it is a scheduled job, not
+ *       an HTTP route), so the clause-(b) cryptographic-verification refinement
+ *       does not apply here.
+ *   (c) Real-path companion: the real wide-floor DISTINCT ON dedup SQL is pinned
+ *       against the real query in notifications-arm-sql-shape.test.ts, and the
+ *       shared computeNotificationWindowFloor/filterEventsAfter helpers run real
+ *       in this test (only fetchNotificationsFromHaf's HAF round-trip is stubbed).
+ *
+ * Mutation kill: reverting runDigest to fetch against `last_digest_block` (the
+ * narrow floor) fails the wide-floor assertion; reverting to advance the cursor
+ * unconditionally fails the has_more=true no-advance assertion.
+ */
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
+import type { NotificationBatch, NotificationEvent } from '../src/notification-queries.js';
+
+const HEAD = 1_000_000;
+// computeNotificationWindowFloor(HEAD=1_000_000, genesis=0) = HEAD - 100_000.
+const WIDE_FLOOR = HEAD - 100_000;
+
+const { fetchMock } = vi.hoisted(() => ({
+  fetchMock: vi.fn(async (..._args: any[]): Promise<NotificationBatch | null> => null),
+}));
+
+vi.mock('../src/notification-queries.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/notification-queries.js')>('../src/notification-queries.js');
+  return { ...actual, fetchNotificationsFromHaf: fetchMock };
+});
+vi.mock('../src/hafsql.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/hafsql.js')>('../src/hafsql.js');
+  return { ...actual, getGenesisBlock: async () => 0 };
+});
+vi.mock('../src/block-watcher.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/block-watcher.js')>('../src/block-watcher.js');
+  return { ...actual, getLastBlock: () => HEAD };
+});
+vi.mock('../src/db.js', () => ({
+  getPool: () => ({}),
+  isHafConfigured: () => true,
+  closeHafPool: async () => { /* no-op */ },
+}));
+
+// Digest-user rows and captured cursor advances.
+let digestUsers: Array<{ username: string; email: string; digest_frequency: string; last_digest_block: number }> = [];
+const updateCalls: Array<{ username: string; block: number }> = [];
+
+vi.mock('../src/app-db.js', () => ({
+  getAppPool: () => ({
+    query: async (sql: string, params: unknown[]) => {
+      if (sql.includes('FROM notification_preferences') && sql.trimStart().startsWith('SELECT')) {
+        const freq = params[0];
+        return { rows: digestUsers.filter((u) => u.digest_frequency === freq) };
+      }
+      if (sql.includes('UPDATE notification_preferences')) {
+        updateCalls.push({ username: params[0] as string, block: params[1] as number });
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  }),
+}));
+
+// Capture emailed payloads via the SMTP transporter boundary.
+const sentMails: Array<{ to: string; text: string }> = [];
+vi.mock('../src/lib/smtp.js', () => ({
+  createSmtpTransporter: () => ({
+    sendMail: async (opts: { to: string; text: string }) => {
+      sentMails.push({ to: opts.to, text: opts.text });
+      return { messageId: 'test' };
+    },
+  }),
+}));
+
+const { runDigest } = await import('../src/digest.js');
+const { config } = await import('../src/config.js');
+
+function reviewEvent(block: number, title: string): NotificationEvent {
+  return {
+    type: 'new_review',
+    block_num: block,
+    timestamp: new Date(block * 1000).toISOString(),
+    actor: 'reviewer.acct',
+    paper_author: 'pevo.admin',
+    paper_permlink: `paper-${block}`,
+    paper_title: title,
+    permlink: `review-${block}`,
+  };
+}
+
+beforeAll(() => {
+  // sendDigestEmail short-circuits when smtpHost is empty; set it so the path
+  // reaches the (mocked) transporter and we can observe the emitted events.
+  config.smtpHost = 'smtp.test';
+});
+
+beforeEach(() => {
+  digestUsers = [];
+  updateCalls.length = 0;
+  sentMails.length = 0;
+  fetchMock.mockReset();
+});
+
+describe('runDigest — wide-floor dedup + advance-only-when-drained', () => {
+  it('fetches against the wide window floor, not the per-user last_digest_block', async () => {
+    digestUsers = [{ username: 'alice', email: 'a@x.test', digest_frequency: 'daily', last_digest_block: 950_000 }];
+    fetchMock.mockResolvedValue({ events: [reviewEvent(960_000, 'Paper P')], latest_block: 960_000, has_more: false });
+
+    await runDigest('daily');
+
+    // The dedup-re-fire fix hinges on the floor being the wide window floor so the
+    // DISTINCT ON sees each event's publication row, not last_digest_block.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [account, floor] = fetchMock.mock.calls[0] as unknown as [string, number, number];
+    expect(account).toBe('alice');
+    expect(floor).toBe(WIDE_FLOOR);
+    expect(floor).not.toBe(950_000);
+  });
+
+  it('an edit of pre-cursor content does not re-fire a digest line in the next run', async () => {
+    // Run N: paper published at 960_000 (after last_digest_block 950_000) → emailed,
+    // cursor advances to 960_000.
+    digestUsers = [{ username: 'alice', email: 'a@x.test', digest_frequency: 'daily', last_digest_block: 950_000 }];
+    fetchMock.mockResolvedValue({ events: [reviewEvent(960_000, 'Paper P')], latest_block: 960_000, has_more: false });
+    await runDigest('daily');
+    expect(sentMails).toHaveLength(1);
+    expect(sentMails[0].text).toContain('Paper P');
+    expect(updateCalls).toEqual([{ username: 'alice', block: 960_000 }]);
+
+    // Run N+1: the paper is edited at 970_000. The wide-floor DISTINCT ON collapses
+    // the edit against the 960_000 publication row (earliest-wins), so the batch
+    // still reports the canonical event at 960_000. The cursor (now 960_000) filters
+    // it out — no duplicate digest line, no spurious advance.
+    sentMails.length = 0;
+    updateCalls.length = 0;
+    digestUsers[0].last_digest_block = 960_000;
+    fetchMock.mockResolvedValue({ events: [reviewEvent(960_000, 'Paper P')], latest_block: 960_000, has_more: false });
+    await runDigest('daily');
+    expect(sentMails).toHaveLength(0);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('does not advance the cursor on a truncated (has_more) batch, and delivers the rollover next run exactly once', async () => {
+    // Run 1: a window with more recipient-relevant events than the fetch cap —
+    // batch truncated (has_more=true). Events are emailed but the cursor is NOT
+    // advanced, so the undelivered tail is not skipped.
+    digestUsers = [{ username: 'bob', email: 'b@x.test', digest_frequency: 'daily', last_digest_block: 905_000 }];
+    fetchMock.mockResolvedValue({
+      events: [reviewEvent(910_000, 'Paper A'), reviewEvent(915_000, 'Paper B'), reviewEvent(920_000, 'Paper C')],
+      latest_block: 920_000,
+      has_more: true,
+    });
+    await runDigest('daily');
+    expect(sentMails).toHaveLength(1);
+    expect(updateCalls).toHaveLength(0); // has_more=true → no advance (boundary not dropped)
+
+    // Run 2: the window now fully drains (has_more=false) and includes the
+    // rolled-over event at 930_000. The cursor advances to the final block, and
+    // the rollover is delivered exactly once (this run).
+    sentMails.length = 0;
+    updateCalls.length = 0;
+    fetchMock.mockResolvedValue({
+      events: [
+        reviewEvent(910_000, 'Paper A'),
+        reviewEvent(915_000, 'Paper B'),
+        reviewEvent(920_000, 'Paper C'),
+        reviewEvent(930_000, 'Paper D rollover'),
+      ],
+      latest_block: 930_000,
+      has_more: false,
+    });
+    await runDigest('daily');
+    expect(updateCalls).toEqual([{ username: 'bob', block: 930_000 }]);
+    expect(sentMails).toHaveLength(1);
+    expect(sentMails[0].text).toContain('Paper D rollover');
+  });
+
+  it('skips a user with no events past the cursor without advancing', async () => {
+    digestUsers = [{ username: 'carol', email: 'c@x.test', digest_frequency: 'daily', last_digest_block: 960_000 }];
+    // Batch holds only pre-cursor (already-delivered) events.
+    fetchMock.mockResolvedValue({ events: [reviewEvent(955_000, 'Old Paper')], latest_block: 955_000, has_more: false });
+    const result = await runDigest('daily');
+    expect(sentMails).toHaveLength(0);
+    expect(updateCalls).toHaveLength(0);
+    expect(result.skipped).toBe(1);
+    expect(result.sent).toBe(0);
+  });
+});
