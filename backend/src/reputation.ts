@@ -345,6 +345,11 @@ export async function startReputationWeightsCache(): Promise<void> {
  *       authority-gated active_accreditations CTE (composed via
  *       activeAccreditationsCteBody) backing the co-author ORCID auto-accept
  *       arm; only authority-signed accredit/revoke ops are trusted.
+ * $21 = config.hiveAdminAccount — the admin signer for the
+ *       revoke_authorship signer gate in accepted_claims (alongside
+ *       paper_author, the $17 bridge, and the claimer). Per
+ *       hive-schemas.md §2.11 a revoke is authoritative only when signed by
+ *       one of those four; a stranger-signed revoke must not void the claim.
  *
  * The same FOUR review CTEs also compose `excludeSelfReviewWhere` so
  * paper-authors and named co-authors reviewing their own paper are
@@ -510,6 +515,14 @@ export async function computeReputationBatch(
               AND rv.paper_author = ce.paper_author
               AND rv.paper_permlink = ce.paper_permlink
               AND rv.block_num > ce.block_num
+              -- revoke_authorship signer gate (hive-schemas.md §2.11): a
+              -- revoke voids a claim only when signed by the post author, the
+              -- bridge account, the admin account, or the claimer themselves.
+              -- Without it any Hive account could broadcast a forged revoke
+              -- naming a victim's claim and silently strip its co-author
+              -- reputation credit. Mirrors authorshipClaimsCteBody's revoked
+              -- arm so the cycle and read surfaces void claims identically.
+              AND rv.approver IN (rv.paper_author, $17, $21, rv.claimer)
               AND rv.block_num > COALESCE((
                 SELECT MAX(ap.block_num) FROM claim_events ap
                 WHERE ap.action = 'approve_authorship'
@@ -1129,6 +1142,9 @@ export async function computeReputationBatch(
                                           //  never matches)
         config.appTag,                    // $19 (active_accreditations custom_id)
         config.accreditationAuthorities,  // $20 (required_posting_auths ?| authority gate)
+        config.hiveAdminAccount,          // $21 (revoke_authorship admin signer
+                                          //  in accepted_claims, with paper_author /
+                                          //  $17 bridge / claimer per §2.11)
       ],
     );
 

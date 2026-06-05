@@ -104,32 +104,37 @@ describe('authorshipClaimsCteBody scope', () => {
  * wrong value).
  */
 describe('authorshipClaimsCteBody param arithmetic', () => {
-  it('unscoped: nextIdx and params have the base 3 entries', () => {
+  // Base params: [appTag, appTag, hiveBridgeAccount, ...scope, hiveAdminAccount].
+  // The bridge account backs the §2.10 approve signer gate; the admin account
+  // (appended LAST, after any scope params, so the bridge/scope indices stay
+  // fixed) backs the §2.11 revoke signer gate in the revoked arm. The inert
+  // genesis-block floor was dropped, so the base carries no genesisBlock bind.
+  it('unscoped: bridge + admin around an empty scope, nextIdx advances by 4', () => {
     const frag = authorshipClaimsCteBody(5);
-    // base params: [appTag, appTag, hiveBridgeAccount]; three $N consumed
-    // (5,6,7). The bridge account ($7 here) backs the §2.10 approve signer
-    // gate in the approvals arm. The inert genesis-block floor was dropped,
-    // so the base no longer carries a genesisBlock bind.
-    expect(frag.params).toHaveLength(3);
-    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
-    expect(frag.nextIdx).toBe(8);
-  });
-
-  it('claimer scope adds 1 param after the base 3 and advances nextIdx by 1', () => {
-    const frag = authorshipClaimsCteBody(5, { claimer: 'alice' });
+    // $5/$6 appTag, $7 bridge, $8 admin → four $N consumed, nextIdx 9.
     expect(frag.params).toHaveLength(4);
     expect(frag.params[2]).toBe(config.hiveBridgeAccount);
-    expect(frag.params[3]).toBe('alice');
+    expect(frag.params[3]).toBe(config.hiveAdminAccount);
     expect(frag.nextIdx).toBe(9);
   });
 
-  it('paper scope adds 2 params after the base 3 and advances nextIdx by 2', () => {
-    const frag = authorshipClaimsCteBody(5, { paperAuthor: 'bob', paperPermlink: 'p-1' });
+  it('claimer scope inserts 1 param between bridge and admin, nextIdx advances by 5', () => {
+    const frag = authorshipClaimsCteBody(5, { claimer: 'alice' });
     expect(frag.params).toHaveLength(5);
+    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[3]).toBe('alice');
+    expect(frag.params[4]).toBe(config.hiveAdminAccount);
+    expect(frag.nextIdx).toBe(10);
+  });
+
+  it('paper scope inserts 2 params between bridge and admin, nextIdx advances by 6', () => {
+    const frag = authorshipClaimsCteBody(5, { paperAuthor: 'bob', paperPermlink: 'p-1' });
+    expect(frag.params).toHaveLength(6);
     expect(frag.params[2]).toBe(config.hiveBridgeAccount);
     expect(frag.params[3]).toBe('bob');
     expect(frag.params[4]).toBe('p-1');
-    expect(frag.nextIdx).toBe(10);
+    expect(frag.params[5]).toBe(config.hiveAdminAccount);
+    expect(frag.nextIdx).toBe(11);
   });
 });
 

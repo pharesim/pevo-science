@@ -684,6 +684,12 @@ export function authorshipClaimsCteBody(
       scopeIdx += 2;
     }
   }
+  // revoke_authorship signer gate (per agents/docs/hive-schemas.md §2.11): a
+  // revoke voids a claim only when signed by the post author, the bridge
+  // account, the admin account, or the claimer themselves. adminIdx binds
+  // config.hiveAdminAccount for that IN-list. Appended AFTER the scope params
+  // so the bridge and scope param indices stay fixed.
+  const adminIdx = scopeIdx;
   return {
     sql: `
   claim_events AS (
@@ -713,7 +719,7 @@ export function authorshipClaimsCteBody(
     WHERE action = 'approve_authorship'
   ),
   revocations AS (
-    SELECT claimer, paper_author, paper_permlink, block_num
+    SELECT claimer, paper_author, paper_permlink, block_num, approver
     FROM claim_events
     WHERE action = 'revoke_authorship'
   ),
@@ -731,6 +737,14 @@ export function authorshipClaimsCteBody(
             AND rv.paper_author = cb.paper_author
             AND rv.paper_permlink = cb.paper_permlink
             AND rv.block_num > cb.block_num
+            -- revoke_authorship signer gate: a revoke voids a claim only when
+            -- signed by the post author, the bridge account, the admin
+            -- account, or the claimer themselves. Without it any Hive account
+            -- could broadcast a forged revoke naming a victim's claim and
+            -- silently strip it from the read surface. Mirrors reputation.ts
+            -- accepted_claims so cycle and read surfaces void claims
+            -- identically.
+            AND rv.approver IN (rv.paper_author, $${bridgeIdx}, $${adminIdx}, rv.claimer)
             AND rv.block_num > COALESCE((
               SELECT MAX(ap.block_num) FROM approvals ap
               WHERE ap.claimer = cb.claimer
@@ -810,8 +824,8 @@ export function authorshipClaimsCteBody(
       END AS status
     FROM claims_base cb
   )`,
-    params: [config.appTag, config.appTag, config.hiveBridgeAccount, ...scopeParams],
-    nextIdx: scopeIdx,
+    params: [config.appTag, config.appTag, config.hiveBridgeAccount, ...scopeParams, config.hiveAdminAccount],
+    nextIdx: adminIdx + 1,
   };
 }
 
