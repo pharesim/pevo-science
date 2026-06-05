@@ -266,4 +266,64 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     const placeholderIdx = Number(gate![1]);
     expect(params[placeholderIdx - 1]).toEqual(config.accreditationAuthorities);
   });
+
+  // ── Edit / revote dedup canaries ───────────────────────────────
+  // The raw operation_comment_view / operation_vote_view carry one row per
+  // edit and per revote. Without per-arm DISTINCT ON, a reviewer's typo fixes
+  // and a voter's weight toggles each surface as separate notifications. These
+  // canaries mutation-kill a revert of the dedup wrappers. Real chain-seeding
+  // of edit/revote sequences is impractical for the same reason documented in
+  // the file header (clauses a/c); the SQL-shape canary is the deterministic
+  // substitute and the real-HAF envelope/no-error companion lives in
+  // notifications.test.ts.
+
+  it('comment-derived arms (1a, 1b, 5) dedup via DISTINCT ON (co.author, co.permlink), earliest-wins', async () => {
+    const { sql } = await captureNotificationsSql();
+    // One wrapper per comment arm: a review/reply and all its later edits
+    // collapse to the publication row. block_num ASC keeps the earliest op so
+    // edits stay silent; a revert to a raw SELECT re-fires on every edit.
+    // Match the clause form `SELECT DISTINCT ON` (not a bare `DISTINCT ON`) so an
+    // explanatory SQL comment naming the dedup key does not inflate the count —
+    // same guard the self-exclusion count canary above applies.
+    const distinctOn = (sql.match(/SELECT DISTINCT ON \(co\.author, co\.permlink\)/g) ?? []).length;
+    expect(distinctOn).toBe(3);
+    const earliest = (sql.match(/ORDER BY co\.author, co\.permlink, co\.block_num ASC/g) ?? []).length;
+    expect(earliest).toBe(3);
+  });
+
+  it('vote arms (2a, 2b, 2c) dedup via DISTINCT ON (v.author, v.permlink, v.voter), latest-wins', async () => {
+    const { sql } = await captureNotificationsSql();
+    // One wrapper per vote arm (native paper, bridge paper, review): a
+    // (post, voter) pair collapses to the latest vote so a weight toggle fires
+    // once. block_num DESC selects the latest op.
+    const distinctOn = (sql.match(/SELECT DISTINCT ON \(v\.author, v\.permlink, v\.voter\)/g) ?? []).length;
+    expect(distinctOn).toBe(3);
+    const latest = (sql.match(/ORDER BY v\.author, v\.permlink, v\.voter, v\.block_num DESC/g) ?? []).length;
+    expect(latest).toBe(3);
+  });
+
+  it('vote arms hoist weight != 0 to the OUTER select so a vote-then-retract is suppressed', async () => {
+    const { sql } = await captureNotificationsSql();
+    // The dedup keeps the LATEST vote. If weight != 0 stayed in the INNER
+    // WHERE, a vote-then-retract would drop the retract row and surface the
+    // prior non-zero vote — a notification for a vote that was withdrawn.
+    // Hoisting the filter outside the DISTINCT ON wrapper drops the whole
+    // (post, voter) when its latest op is a retract. Pin: the outer
+    // `vote_weight != 0` appears once per vote arm, and the inner
+    // `v.weight != 0` predicate is gone entirely.
+    const outerFilter = (sql.match(/vote_weight != 0/g) ?? []).length;
+    expect(outerFilter).toBe(3);
+    const innerFilter = (sql.match(/v\.weight != 0/g) ?? []).length;
+    expect(innerFilter).toBe(0);
+  });
+
+  it('citation arms (6a, 6b) dedup via DISTINCT ON the (citing post, cited paper) 4-tuple', async () => {
+    const { sql } = await captureNotificationsSql();
+    // A citation newly introduced in an edit fires once (its first block);
+    // a citation surviving across edits does not re-fire. Dedup key is the
+    // full (citing.author, citing.permlink, cited_ref.author, cited_ref.permlink)
+    // tuple so distinct citations in the same post still each notify.
+    const distinctOn = (sql.match(/SELECT DISTINCT ON \(citing\.author, citing\.permlink, cited_ref\.author, cited_ref\.permlink\)/g) ?? []).length;
+    expect(distinctOn).toBe(2);
+  });
 });

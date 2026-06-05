@@ -166,63 +166,81 @@ export async function fetchNotificationsFromHaf(
       -- co.parent_author = $1 matches the chain author (recipient);
       -- bridge papers can never satisfy co.parent_author = $1 because
       -- their chain author is config.hiveBridgeAccount.
-      SELECT
-        'new_review'::text AS event_type,
-        co.block_num,
-        co.timestamp AS event_timestamp,
-        co.author AS actor,
-        co.parent_author AS paper_author,
-        co.parent_permlink AS paper_permlink,
-        COALESCE(p.title, '') AS paper_title,
-        co.permlink AS event_permlink,
-        NULL::text AS target_type,
-        NULL::int AS vote_weight,
-        NULL::text AS accredit_action,
-        NULL::text AS accredit_method,
-        NULL::text AS vouch_relationship,
-        NULL::text AS parent_author,
-        NULL::text AS parent_permlink_ref
-      FROM ${T.commentOps} co
-      JOIN ${T.comments} p
-        ON p.author = co.parent_author AND p.permlink = co.parent_permlink
-        AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
-      JOIN active_accreditations aa_r ON aa_r.account = co.author
-      WHERE co.parent_author = $1
-        AND co.block_num > $2
-        AND ${validReviewWhere({ commentAlias: 'co', appTagParam: at })}
-        AND co.author != $1
+      -- DISTINCT ON (co.author, co.permlink) ORDER BY co.block_num ASC collapses
+      -- a review and all its later edits to the single publication row, so a
+      -- reviewer fixing typos does not re-fire new_review on every edit. The raw
+      -- operation_comment_view carries one row per edit (see hive-schemas edit
+      -- semantics); earliest-wins makes edits silent.
+      SELECT * FROM (
+        SELECT DISTINCT ON (co.author, co.permlink)
+          'new_review'::text AS event_type,
+          co.block_num,
+          co.timestamp AS event_timestamp,
+          co.author AS actor,
+          co.parent_author AS paper_author,
+          co.parent_permlink AS paper_permlink,
+          COALESCE(p.title, '') AS paper_title,
+          co.permlink AS event_permlink,
+          NULL::text AS target_type,
+          NULL::int AS vote_weight,
+          NULL::text AS accredit_action,
+          NULL::text AS accredit_method,
+          NULL::text AS vouch_relationship,
+          NULL::text AS parent_author,
+          NULL::text AS parent_permlink_ref
+        FROM ${T.commentOps} co
+        JOIN ${T.comments} p
+          ON p.author = co.parent_author AND p.permlink = co.parent_permlink
+          AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
+        JOIN active_accreditations aa_r ON aa_r.account = co.author
+        WHERE co.parent_author = $1
+          AND co.block_num > $2
+          AND ${validReviewWhere({ commentAlias: 'co', appTagParam: at })}
+          AND co.author != $1
+        ORDER BY co.author, co.permlink, co.block_num ASC
+      ) AS arm_1a
 
       UNION ALL
 
       -- 1b. New reviews on your bridge papers
-      SELECT
-        'new_review'::text,
-        co.block_num,
-        co.timestamp,
-        co.author,
-        co.parent_author,
-        co.parent_permlink,
-        COALESCE(p.title, '') AS paper_title,
-        co.permlink,
-        NULL, NULL, NULL, NULL, NULL, NULL, NULL
-      FROM ${T.commentOps} co
-      JOIN user_bridge_papers bp ON bp.author = co.parent_author AND bp.permlink = co.parent_permlink
-      -- LEFT JOIN (vs the INNER JOIN + validPevoPaperWhere in arm 1a) is
-      -- safe here because user_bridge_papers is the parent-paper
-      -- existence proof: the bp.author/bp.permlink pair is itself produced
-      -- from a validPevoPaperWhere source=bridge filter upstream, so
-      -- the comments-side row IS guaranteed to be a PEvO bridge paper.
-      -- LEFT JOIN preserves the row if hafsql.comments lags behind the
-      -- comment_operations insert (rare but observable on heavy ingest);
-      -- p.title falls back to empty string via COALESCE above. The arm 1a
-      -- promotion to INNER + validPevoPaperWhere is needed because the
-      -- native arm has no equivalent pre-filtered CTE -- see
-      -- BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #8.
-      LEFT JOIN ${T.comments} p ON p.author = co.parent_author AND p.permlink = co.parent_permlink
-      JOIN active_accreditations aa_r ON aa_r.account = co.author
-      WHERE co.block_num > $2
-        AND ${validReviewWhere({ commentAlias: 'co', appTagParam: at })}
-        AND co.author != $1
+      -- Same earliest-wins dedup as arm 1a so bridge-paper review edits stay silent.
+      SELECT * FROM (
+        SELECT DISTINCT ON (co.author, co.permlink)
+          'new_review'::text AS event_type,
+          co.block_num,
+          co.timestamp AS event_timestamp,
+          co.author AS actor,
+          co.parent_author AS paper_author,
+          co.parent_permlink AS paper_permlink,
+          COALESCE(p.title, '') AS paper_title,
+          co.permlink AS event_permlink,
+          NULL::text AS target_type,
+          NULL::int AS vote_weight,
+          NULL::text AS accredit_action,
+          NULL::text AS accredit_method,
+          NULL::text AS vouch_relationship,
+          NULL::text AS parent_author,
+          NULL::text AS parent_permlink_ref
+        FROM ${T.commentOps} co
+        JOIN user_bridge_papers bp ON bp.author = co.parent_author AND bp.permlink = co.parent_permlink
+        -- LEFT JOIN (vs the INNER JOIN + validPevoPaperWhere in arm 1a) is
+        -- safe here because user_bridge_papers is the parent-paper
+        -- existence proof: the bp.author/bp.permlink pair is itself produced
+        -- from a validPevoPaperWhere source=bridge filter upstream, so
+        -- the comments-side row IS guaranteed to be a PEvO bridge paper.
+        -- LEFT JOIN preserves the row if hafsql.comments lags behind the
+        -- comment_operations insert (rare but observable on heavy ingest);
+        -- p.title falls back to empty string via COALESCE above. The arm 1a
+        -- promotion to INNER + validPevoPaperWhere is needed because the
+        -- native arm has no equivalent pre-filtered CTE -- see
+        -- BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #8.
+        LEFT JOIN ${T.comments} p ON p.author = co.parent_author AND p.permlink = co.parent_permlink
+        JOIN active_accreditations aa_r ON aa_r.account = co.author
+        WHERE co.block_num > $2
+          AND ${validReviewWhere({ commentAlias: 'co', appTagParam: at })}
+          AND co.author != $1
+        ORDER BY co.author, co.permlink, co.block_num ASC
+      ) AS arm_1b
 
       UNION ALL
 
@@ -231,49 +249,69 @@ export async function fetchNotificationsFromHaf(
       -- non-PEvO Hive content (blog post, non-paper comment) does NOT surface
       -- as "X endorsed your paper" (arm 1a was hardened against the same class
       -- earlier; arm 2 was missed). v.voter != v.author drops self-votes.
-      SELECT
-        'new_vote'::text,
-        v.block_num,
-        v.timestamp,
-        v.voter,
-        v.author,
-        v.permlink,
-        NULL,
-        NULL,
-        'paper',
-        v.weight::int,
-        NULL, NULL, NULL, NULL, NULL
-      FROM ${T.voteOps} v
-      JOIN active_accreditations aa ON aa.account = v.voter
-      JOIN ${T.comments} p
-        ON p.author = v.author AND p.permlink = v.permlink
-        AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
-      WHERE v.author = $1
-        AND v.block_num > $2
-        AND v.weight != 0
-        AND v.voter != v.author
+      -- DISTINCT ON (v.author, v.permlink, v.voter) ORDER BY v.block_num DESC keeps
+      -- only the latest vote per (post, voter), so a weight toggle fires once. The
+      -- weight != 0 filter is HOISTED to the outer select: if the latest op is a
+      -- retract (weight 0), the whole vote is suppressed rather than surfacing the
+      -- prior non-zero weight.
+      SELECT * FROM (
+        SELECT DISTINCT ON (v.author, v.permlink, v.voter)
+          'new_vote'::text AS event_type,
+          v.block_num,
+          v.timestamp AS event_timestamp,
+          v.voter AS actor,
+          v.author AS paper_author,
+          v.permlink AS paper_permlink,
+          NULL::text AS paper_title,
+          NULL::text AS event_permlink,
+          'paper'::text AS target_type,
+          v.weight::int AS vote_weight,
+          NULL::text AS accredit_action,
+          NULL::text AS accredit_method,
+          NULL::text AS vouch_relationship,
+          NULL::text AS parent_author,
+          NULL::text AS parent_permlink_ref
+        FROM ${T.voteOps} v
+        JOIN active_accreditations aa ON aa.account = v.voter
+        JOIN ${T.comments} p
+          ON p.author = v.author AND p.permlink = v.permlink
+          AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
+        WHERE v.author = $1
+          AND v.block_num > $2
+          AND v.voter != v.author
+        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC
+      ) AS arm_2a
+      WHERE vote_weight != 0
 
       UNION ALL
 
       -- 2b. New accredited votes on your bridge papers
-      SELECT
-        'new_vote'::text,
-        v.block_num,
-        v.timestamp,
-        v.voter,
-        v.author,
-        v.permlink,
-        NULL,
-        NULL,
-        'paper',
-        v.weight::int,
-        NULL, NULL, NULL, NULL, NULL
-      FROM ${T.voteOps} v
-      JOIN active_accreditations aa ON aa.account = v.voter
-      JOIN user_bridge_papers bp ON bp.author = v.author AND bp.permlink = v.permlink
-      WHERE v.block_num > $2
-        AND v.weight != 0
-        AND v.voter != v.author
+      -- Same latest-wins dedup + outer weight-hoist as arm 2a, for bridge papers.
+      SELECT * FROM (
+        SELECT DISTINCT ON (v.author, v.permlink, v.voter)
+          'new_vote'::text AS event_type,
+          v.block_num,
+          v.timestamp AS event_timestamp,
+          v.voter AS actor,
+          v.author AS paper_author,
+          v.permlink AS paper_permlink,
+          NULL::text AS paper_title,
+          NULL::text AS event_permlink,
+          'paper'::text AS target_type,
+          v.weight::int AS vote_weight,
+          NULL::text AS accredit_action,
+          NULL::text AS accredit_method,
+          NULL::text AS vouch_relationship,
+          NULL::text AS parent_author,
+          NULL::text AS parent_permlink_ref
+        FROM ${T.voteOps} v
+        JOIN active_accreditations aa ON aa.account = v.voter
+        JOIN user_bridge_papers bp ON bp.author = v.author AND bp.permlink = v.permlink
+        WHERE v.block_num > $2
+          AND v.voter != v.author
+        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC
+      ) AS arm_2b
+      WHERE vote_weight != 0
 
       UNION ALL
 
@@ -281,27 +319,36 @@ export async function fetchNotificationsFromHaf(
       -- A vote on a recipient's review comment must surface as target_type
       -- 'review', not the hardcoded 'paper' the merged arm 2 emitted.
       -- validReviewWhere pins the voted post as a structurally-valid review.
-      SELECT
-        'new_vote'::text,
-        v.block_num,
-        v.timestamp,
-        v.voter,
-        v.author,
-        v.permlink,
-        NULL,
-        NULL,
-        'review',
-        v.weight::int,
-        NULL, NULL, NULL, NULL, NULL
-      FROM ${T.voteOps} v
-      JOIN active_accreditations aa ON aa.account = v.voter
-      JOIN ${T.comments} c
-        ON c.author = v.author AND c.permlink = v.permlink
-        AND ${validReviewWhere({ commentAlias: 'c', appTagParam: at })}
-      WHERE v.author = $1
-        AND v.block_num > $2
-        AND v.weight != 0
-        AND v.voter != v.author
+      -- Same latest-wins dedup + outer weight-hoist as arm 2a, for votes on the
+      -- recipient's reviews (target_type 'review').
+      SELECT * FROM (
+        SELECT DISTINCT ON (v.author, v.permlink, v.voter)
+          'new_vote'::text AS event_type,
+          v.block_num,
+          v.timestamp AS event_timestamp,
+          v.voter AS actor,
+          v.author AS paper_author,
+          v.permlink AS paper_permlink,
+          NULL::text AS paper_title,
+          NULL::text AS event_permlink,
+          'review'::text AS target_type,
+          v.weight::int AS vote_weight,
+          NULL::text AS accredit_action,
+          NULL::text AS accredit_method,
+          NULL::text AS vouch_relationship,
+          NULL::text AS parent_author,
+          NULL::text AS parent_permlink_ref
+        FROM ${T.voteOps} v
+        JOIN active_accreditations aa ON aa.account = v.voter
+        JOIN ${T.comments} c
+          ON c.author = v.author AND c.permlink = v.permlink
+          AND ${validReviewWhere({ commentAlias: 'c', appTagParam: at })}
+        WHERE v.author = $1
+          AND v.block_num > $2
+          AND v.voter != v.author
+        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC
+      ) AS arm_2c
+      WHERE vote_weight != 0
 
       UNION ALL
 
@@ -358,114 +405,147 @@ export async function fetchNotificationsFromHaf(
       -- intentionally NULL here: a reply can sit N levels deep, so the root
       -- paper coords are not resolvable without unbounded recursive SQL. The
       -- emitted NewReplyEvent omits them rather than carry null-valued coords.
-      SELECT
-        'new_reply'::text,
-        co.block_num,
-        co.timestamp,
-        co.author,
-        NULL, NULL, NULL,
-        co.permlink,
-        NULL, NULL, NULL, NULL, NULL,
-        co.parent_author,
-        co.parent_permlink
-      FROM ${T.commentOps} co
-      JOIN active_accreditations aa_c ON aa_c.account = co.author
-      WHERE co.parent_author = $1
-        AND co.block_num > $2
-        -- Self-exclusion: a user replying to their own comment must not
-        -- notify themselves. Mirrors the self-exclusion guard the sibling
-        -- comment-derived arms (1a, 1b) carry.
-        AND co.author != $1
-        AND (co.json_metadata -> ${at} ->> 'type') = 'comment'
-        AND co.json_metadata ->> 'app' LIKE ${al}
+      -- Earliest-wins dedup on (co.author, co.permlink) so editing a reply does
+      -- not re-fire new_reply on the parent-comment author.
+      SELECT * FROM (
+        SELECT DISTINCT ON (co.author, co.permlink)
+          'new_reply'::text AS event_type,
+          co.block_num,
+          co.timestamp AS event_timestamp,
+          co.author AS actor,
+          NULL::text AS paper_author,
+          NULL::text AS paper_permlink,
+          NULL::text AS paper_title,
+          co.permlink AS event_permlink,
+          NULL::text AS target_type,
+          NULL::int AS vote_weight,
+          NULL::text AS accredit_action,
+          NULL::text AS accredit_method,
+          NULL::text AS vouch_relationship,
+          co.parent_author AS parent_author,
+          co.parent_permlink AS parent_permlink_ref
+        FROM ${T.commentOps} co
+        JOIN active_accreditations aa_c ON aa_c.account = co.author
+        WHERE co.parent_author = $1
+          AND co.block_num > $2
+          -- Self-exclusion: a user replying to their own comment must not
+          -- notify themselves. Mirrors the self-exclusion guard the sibling
+          -- comment-derived arms (1a, 1b) carry.
+          AND co.author != $1
+          AND (co.json_metadata -> ${at} ->> 'type') = 'comment'
+          AND co.json_metadata ->> 'app' LIKE ${al}
+        ORDER BY co.author, co.permlink, co.block_num ASC
+      ) AS arm_5
 
       UNION ALL
 
       -- 6a. New citations of your own papers (accredited citing authors only)
-      SELECT
-        'new_citation'::text,
-        citing.block_num,
-        citing.timestamp,
-        citing.author,
-        cited_ref.author AS paper_author,
-        cited_ref.permlink AS paper_permlink,
-        cited_paper.title AS paper_title,
-        citing.permlink,
-        NULL, NULL, NULL, NULL, NULL, NULL, NULL
-      FROM ${T.commentOps} citing
-      JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
-      -- CASE-WHEN array-guard at SRF argument position. Without it, a chain
-      -- post broadcasting non-array pevo.citations (null, string, integer,
-      -- object) would crash the entire /api/notifications GET for the
-      -- recipient with "cannot extract elements from a scalar". The
-      -- CASE-WHEN absorbs the non-array case to '[]'::jsonb at the
-      -- argument site so jsonb_array_elements never sees a scalar. See
-      -- agents/docs/solutions/conventions/
-      -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
-      CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
-          THEN citing.json_metadata -> ${at} -> 'citations'
-          ELSE '[]'::jsonb
-        END
-      ) AS cite_elem
-      CROSS JOIN LATERAL (
-        SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
-      ) AS cited_ref
-      -- INNER JOIN + paper-existence gate: the cited (author, permlink) must
-      -- actually exist as a PEvO paper. Without it, a broadcaster can stuff
-      -- thousands of fake {author: $1, permlink: 'fake-N'} citation refs into
-      -- a "paper" and spam unlimited citation notifications + digest emails to
-      -- the victim. cited_ref.author = $1 below pins the recipient as the
-      -- cited native author.
-      JOIN ${T.comments} cited_paper
-        ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
-        AND ${validPevoPaperWhere({ commentAlias: 'cited_paper', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
-      WHERE citing.block_num > $2
-        AND citing.author <> $1
-        AND cited_ref.author = $1
-        AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
-        AND citing.json_metadata ->> 'app' LIKE ${al}
+      -- DISTINCT ON the (citing post, cited paper) 4-tuple ORDER BY citing.block_num
+      -- ASC: a citation newly introduced in an edit fires once (its first block),
+      -- but a citation surviving across edits does not re-fire on every edit.
+      SELECT * FROM (
+        SELECT DISTINCT ON (citing.author, citing.permlink, cited_ref.author, cited_ref.permlink)
+          'new_citation'::text AS event_type,
+          citing.block_num,
+          citing.timestamp AS event_timestamp,
+          citing.author AS actor,
+          cited_ref.author AS paper_author,
+          cited_ref.permlink AS paper_permlink,
+          cited_paper.title AS paper_title,
+          citing.permlink AS event_permlink,
+          NULL::text AS target_type,
+          NULL::int AS vote_weight,
+          NULL::text AS accredit_action,
+          NULL::text AS accredit_method,
+          NULL::text AS vouch_relationship,
+          NULL::text AS parent_author,
+          NULL::text AS parent_permlink_ref
+        FROM ${T.commentOps} citing
+        JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
+        -- CASE-WHEN array-guard at SRF argument position. Without it, a chain
+        -- post broadcasting non-array pevo.citations (null, string, integer,
+        -- object) would crash the entire /api/notifications GET for the
+        -- recipient with "cannot extract elements from a scalar". The
+        -- CASE-WHEN absorbs the non-array case to '[]'::jsonb at the
+        -- argument site so jsonb_array_elements never sees a scalar. See
+        -- agents/docs/solutions/conventions/
+        -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
+            THEN citing.json_metadata -> ${at} -> 'citations'
+            ELSE '[]'::jsonb
+          END
+        ) AS cite_elem
+        CROSS JOIN LATERAL (
+          SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
+        ) AS cited_ref
+        -- INNER JOIN + paper-existence gate: the cited (author, permlink) must
+        -- actually exist as a PEvO paper. Without it, a broadcaster can stuff
+        -- thousands of fake {author: $1, permlink: 'fake-N'} citation refs into
+        -- a "paper" and spam unlimited citation notifications + digest emails to
+        -- the victim. cited_ref.author = $1 below pins the recipient as the
+        -- cited native author.
+        JOIN ${T.comments} cited_paper
+          ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
+          AND ${validPevoPaperWhere({ commentAlias: 'cited_paper', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
+        WHERE citing.block_num > $2
+          AND citing.author <> $1
+          AND cited_ref.author = $1
+          AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
+          AND citing.json_metadata ->> 'app' LIKE ${al}
+        ORDER BY citing.author, citing.permlink, cited_ref.author, cited_ref.permlink, citing.block_num ASC
+      ) AS arm_6a
 
       UNION ALL
 
       -- 6b. New citations of your bridge papers
-      SELECT
-        'new_citation'::text,
-        citing.block_num,
-        citing.timestamp,
-        citing.author,
-        cited_ref.author AS paper_author,
-        cited_ref.permlink AS paper_permlink,
-        cited_paper.title AS paper_title,
-        citing.permlink,
-        NULL, NULL, NULL, NULL, NULL, NULL, NULL
-      FROM ${T.commentOps} citing
-      JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
-      -- CASE-WHEN array-guard at SRF argument position. Same defensive
-      -- shape as arm 6a above. See
-      -- agents/docs/solutions/conventions/
-      -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
-      CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
-          THEN citing.json_metadata -> ${at} -> 'citations'
-          ELSE '[]'::jsonb
-        END
-      ) AS cite_elem
-      CROSS JOIN LATERAL (
-        SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
-      ) AS cited_ref
-      JOIN user_bridge_papers bp ON bp.author = cited_ref.author AND bp.permlink = cited_ref.permlink
-      -- user_bridge_papers already proves the cited paper exists as a bridge
-      -- paper registered by the recipient; the INNER JOIN + paper-existence
-      -- gate here is belt-and-suspenders against the same fake-citation spam
-      -- vector closed in arm 6a.
-      JOIN ${T.comments} cited_paper
-        ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
-        AND ${validPevoPaperWhere({ commentAlias: 'cited_paper', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
-      WHERE citing.block_num > $2
-        AND citing.author <> $1
-        AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
-        AND citing.json_metadata ->> 'app' LIKE ${al}
+      -- Same (citing post, cited paper) earliest-wins dedup as arm 6a, for bridge papers.
+      SELECT * FROM (
+        SELECT DISTINCT ON (citing.author, citing.permlink, cited_ref.author, cited_ref.permlink)
+          'new_citation'::text AS event_type,
+          citing.block_num,
+          citing.timestamp AS event_timestamp,
+          citing.author AS actor,
+          cited_ref.author AS paper_author,
+          cited_ref.permlink AS paper_permlink,
+          cited_paper.title AS paper_title,
+          citing.permlink AS event_permlink,
+          NULL::text AS target_type,
+          NULL::int AS vote_weight,
+          NULL::text AS accredit_action,
+          NULL::text AS accredit_method,
+          NULL::text AS vouch_relationship,
+          NULL::text AS parent_author,
+          NULL::text AS parent_permlink_ref
+        FROM ${T.commentOps} citing
+        JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
+        -- CASE-WHEN array-guard at SRF argument position. Same defensive
+        -- shape as arm 6a above. See
+        -- agents/docs/solutions/conventions/
+        -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
+            THEN citing.json_metadata -> ${at} -> 'citations'
+            ELSE '[]'::jsonb
+          END
+        ) AS cite_elem
+        CROSS JOIN LATERAL (
+          SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
+        ) AS cited_ref
+        JOIN user_bridge_papers bp ON bp.author = cited_ref.author AND bp.permlink = cited_ref.permlink
+        -- user_bridge_papers already proves the cited paper exists as a bridge
+        -- paper registered by the recipient; the INNER JOIN + paper-existence
+        -- gate here is belt-and-suspenders against the same fake-citation spam
+        -- vector closed in arm 6a.
+        JOIN ${T.comments} cited_paper
+          ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
+          AND ${validPevoPaperWhere({ commentAlias: 'cited_paper', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
+        WHERE citing.block_num > $2
+          AND citing.author <> $1
+          AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
+          AND citing.json_metadata ->> 'app' LIKE ${al}
+        ORDER BY citing.author, citing.permlink, cited_ref.author, cited_ref.permlink, citing.block_num ASC
+      ) AS arm_6b
 
       UNION ALL
 
