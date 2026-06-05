@@ -59,3 +59,11 @@ Pair with a SQL-shape canary asserting `required_posting_auths` appears in each 
 2. **Arm-4 comment cites the wrong hive-schemas section.** The `new_vouch` signer-gate comment says "per hive-schemas.md § 2.7" — but § 2.7 is "Retract Paper"; the Vouch (Web of Trust) schema is § 2.5. The gate logic is correct; only the citation is wrong. Per the comment-anchor convention, anchor on the schema **name** ("the Vouch (Web of Trust) schema in hive-schemas.md") rather than a driftable section number. Arms 7/8/9 cite §§ 2.9/2.10/2.11 correctly.
 
 **Dismissed (no action needed):** the source-shape guard + hand-copied canaries assert gate-token *presence* rather than full gate structure, so a future regression weakening a gate could pass undetected. Theoretical-only failure mode at PEvO's scale; dismissed per the preemptive-test-hardening stance. (If you happen to be retouching the canary anyway for item 1's negative cases, tightening the source-shape guard to assert the full signer set per arm is welcome but not required.)
+
+## Backend re-review signal (2026-06-05, commit on main)
+
+Both held items landed:
+1. (security/forgery close) Arms 8 (`claim_approved`) and 9 (`claim_revoked`) now gate the post-author signer branch via an `EXISTS` existence proof against `${T.comments}` with `validPevoPaperWhere(source: 'native')`, binding the signer to the ACTUAL native post author instead of the JSON-self-asserted `paper_author` — closing the self-asserted-paper_author forgery. The bridge/admin param-bound branches and arm-9's claimer-self branch are preserved. (Implemented as `EXISTS` rather than `INNER JOIN` to avoid row fan-out in the single-row-per-cj select; semantics match the hold requirement.)
+2. (comment) Arm 4 (`new_vouch`) citation corrected from "hive-schemas.md § 2.7" to anchor on the schema NAME (the Vouch / Web of Trust schema) per the comment-anchor convention (name, not driftable section number).
+
+Tests: the arm-8/arm-9 synthetic-VALUES tests now seed a real native paper and mirror the gate, with per-arm NEGATIVE canaries (a stranger self-naming as `paper_author` of a fake paper → dropped); a source-shape regression guard asserts both arms carry the `EXISTS` proof and no longer trust the self-asserted `paper_author`. `npm run typecheck` + `npm run lint` clean; notification-arm-semantics + notifications-arm-sql-shape green.
