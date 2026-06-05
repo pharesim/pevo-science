@@ -428,3 +428,104 @@ export async function cascadeRevocation(
     return [];
   }
 }
+
+/**
+ * Outcome of re-evaluating a single vouchee after one of its vouches is
+ * withdrawn (the `/api/wot/retract` path).
+ */
+export type VoucheeRevocationOutcome =
+  | { outcome: 'revoked'; txId: string }
+  | { outcome: 'skipped' }
+  | { outcome: 'timeout' }
+  | { outcome: 'chain_error' };
+
+/**
+ * Re-evaluate the VOUCHEE that just lost a vouch and revoke its accreditation if
+ * it has fallen below the WoT threshold.
+ *
+ * This is the retract-path counterpart to cascadeRevocation. cascadeRevocation
+ * handles the case where an account's own accreditation was revoked, walking
+ * that account's vouchees; a retract instead removes a single voucher→vouchee
+ * edge, so the account to re-evaluate is the vouchee, not the voucher. Calling
+ * cascadeRevocation(voucher) on retract re-evaluated the wrong accounts (the
+ * voucher's still-active vouchees) and never the one that actually lost a vouch.
+ *
+ * A single discovery query returns the vouchee iff it is currently WoT-accredited
+ * (method = 'wot') AND, excluding the retracting voucher from its accredited-
+ * voucher count, it now sits below the threshold. Excluding the voucher in SQL
+ * makes the decision independent of whether HAF has ingested the retract_vouch
+ * custom_json yet. No recursion: a single withdrawn edge can drop at most this
+ * one vouchee, and revoking a WoT accreditation does not retroactively unwind
+ * that account's own outbound vouches (those stand until separately retracted).
+ *
+ * On a positive result the reputation batch entry is invalidated BEFORE the
+ * broadcast — mirroring cascadeRevocation's ambiguous-timeout leak guard so a
+ * timed-out-but-landed revocation cannot leave a stale positive score.
+ */
+export async function revokeVoucheeIfBelowThreshold(
+  vouchee: string,
+  retractingVoucher: string,
+): Promise<VoucheeRevocationOutcome> {
+  if (!config.pevoAdminPostingKey) {
+    logger.warn('PEVO_ADMIN_POSTING_KEY not configured — cannot revoke vouchee on retract');
+    return { outcome: 'skipped' };
+  }
+
+  const pool = getPool();
+  if (!pool) return { outcome: 'skipped' };
+
+  let shouldRevoke = false;
+  try {
+    const threshold = await getWotThreshold();
+
+    const findCte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
+    const voucheeParam = `$${findCte.nextIdx}`;
+    const voucherParam = `$${findCte.nextIdx + 1}`;
+    const thresholdParam = `$${findCte.nextIdx + 2}`;
+    const result = await pool.query(
+      `${findCte.sql}
+       SELECT aa_target.account
+       FROM active_accreditations aa_target
+       LEFT JOIN active_vouches av_all ON av_all.vouchee = aa_target.account
+       LEFT JOIN active_accreditations aa_voucher ON aa_voucher.account = av_all.voucher
+       WHERE aa_target.account = ${voucheeParam}
+         AND aa_target.method = 'wot'
+       GROUP BY aa_target.account
+       HAVING COUNT(DISTINCT av_all.voucher) FILTER (
+         WHERE aa_voucher.account IS NOT NULL AND av_all.voucher != ${voucherParam}
+       ) < ${thresholdParam}`,
+      [...findCte.params, vouchee, retractingVoucher, threshold],
+    );
+    shouldRevoke = result.rows.length > 0;
+  } catch (err) {
+    logger.error({ err, vouchee, retractingVoucher }, 'Vouchee retract re-evaluation query failed');
+    return { outcome: 'skipped' };
+  }
+
+  if (!shouldRevoke) return { outcome: 'skipped' };
+
+  const payload = {
+    action: 'revoke',
+    account: vouchee,
+    reason: 'WoT threshold no longer met',
+    timestamp: new Date().toISOString(),
+  };
+
+  try {
+    await invalidateOnRevocation(vouchee);
+
+    const txResult = await broadcastAdminCustomJson(payload);
+    logger.info({ vouchee, retractingVoucher, txId: txResult.id }, 'WoT vouchee revocation on retract broadcast');
+    return { outcome: 'revoked', txId: txResult.id };
+  } catch (err) {
+    if (err instanceof BroadcastTimeoutError) {
+      logger.error(
+        { err, vouchee, retractingVoucher },
+        'WoT vouchee revocation on retract timed out — outcome ambiguous, manual follow-up required',
+      );
+      return { outcome: 'timeout' };
+    }
+    logger.error({ err, vouchee, retractingVoucher }, 'Failed to broadcast WoT vouchee revocation on retract');
+    return { outcome: 'chain_error' };
+  }
+}

@@ -9,7 +9,7 @@ import { Router, type Request, type Response } from 'express';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { getAccreditedSet } from '../accreditation.js';
-import { getVouchStatus, broadcastWotAccreditation, cascadeRevocation, PartialCascadeError, type VouchStatus } from '../wot.js';
+import { getVouchStatus, broadcastWotAccreditation, revokeVoucheeIfBelowThreshold, type VouchStatus } from '../wot.js';
 import { logger } from '../logger.js';
 import { isHafConfigured } from '../db.js';
 import { hafCache } from '../cache.js';
@@ -177,45 +177,40 @@ router.post('/retract', verifyHiveSignature, async (req: Request, res: Response)
     return sendError(res, 400, 'BAD_REQUEST', 'vouchee is required and must be a valid Hive username');
   }
 
-  // Check for cascading revocations
   // The retract_vouch custom_json has already been broadcast by the frontend.
-  // We check if the vouchee (and their downstream vouchees) should be revoked.
-  let revokedTxIds: string[] = [];
-  let partial: PartialCascadeError | null = null;
-  try {
-    revokedTxIds = await cascadeRevocation(voucher);
-  } catch (err) {
-    if (err instanceof PartialCascadeError) {
-      partial = err;
-      revokedTxIds = err.completed;
-      logger.error(
-        {
-          voucher,
-          completed: err.completed,
-          pending: err.pending,
-          rootRevocation: err.rootRevocation,
-        },
-        'WoT cascade revocation aborted on budget exhaustion — operator follow-up required',
-      );
-    } else {
-      throw err;
-    }
-  }
+  // Re-evaluate the VOUCHEE that lost a vouch (NOT the voucher): if it was
+  // WoT-accredited and now sits below the threshold, revoke its accreditation.
+  // cascadeRevocation is reserved for the case where an account's own
+  // accreditation was revoked; calling it with the voucher here re-evaluated
+  // the voucher's still-active vouchees and never the one that lost a vouch.
+  //
+  // Bust the cached vouch status first so a subsequent read reflects the
+  // dropped vouch; the revocation decision itself excludes the retracting
+  // voucher in SQL and so does not depend on HAF having ingested the retract.
+  await hafCache.invalidate(`vouch_status:${vouchee}`);
 
+  const revocation = await revokeVoucheeIfBelowThreshold(vouchee, voucher);
   const status = await getVouchStatus(vouchee);
 
-  const baseMessage = revokedTxIds.length > 0
-    ? `Retraction processed. ${revokedTxIds.length} cascading revocation(s) broadcast.`
-    : 'Retraction processed. No cascading revocations needed.';
+  let message: string;
+  switch (revocation.outcome) {
+    case 'revoked':
+      message = `Retraction processed. ${vouchee}'s Web of Trust accreditation was revoked (threshold no longer met).`;
+      break;
+    case 'timeout':
+      message = `Retraction processed. The revocation broadcast for ${vouchee} is in a degraded state (timeout). Please check on-chain status before re-attempting.`;
+      break;
+    case 'chain_error':
+      message = `Retraction processed. The revocation broadcast for ${vouchee} failed.`;
+      break;
+    default:
+      message = 'Retraction processed. No revocation needed.';
+  }
 
   sendOk(res, {
-    message: partial
-      ? `${baseMessage} Aggregate budget exceeded — ${partial.pending.length} pending revocation(s) require manual follow-up.`
-      : baseMessage,
-    revocations: revokedTxIds,
-    partial_cascade: partial
-      ? { completed: partial.completed, pending: partial.pending, root_revocation: partial.rootRevocation }
-      : null,
+    message,
+    revocation_outcome: revocation.outcome,
+    revocations: revocation.outcome === 'revoked' ? [revocation.txId] : [],
     vouch_status: status,
   });
 });
