@@ -9,7 +9,7 @@ import { Router, type Request, type Response } from 'express';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { getAccreditedSet } from '../accreditation.js';
-import { getVouchStatus, broadcastWotAccreditation, revokeVoucheeIfBelowThreshold, type VouchStatus } from '../wot.js';
+import { getVouchStatus, broadcastWotAccreditation, revokeVoucheeIfBelowThreshold, vouchStatusCacheKey, type VouchStatus } from '../wot.js';
 import { logger } from '../logger.js';
 import { isHafConfigured } from '../db.js';
 import { hafCache } from '../cache.js';
@@ -35,6 +35,14 @@ const VOUCH_POLL_INTERVAL_MS = 1_500;
  * busting would re-read the just-populated cache. Both are required. The cap /
  * interval are injectable so the timing-sensitive paths can be exercised
  * deterministically without real-time sleeps.
+ *
+ * Timeout path: when the vouch never surfaces within the cap, the final
+ * iteration re-caches the pre-vouch status with a fresh 60s TTL. The operative
+ * mitigation for that re-cached staleness is the block-watcher's clearVolatile
+ * flushing volatile keys on each ~3s block tick (so the stale window only
+ * persists if the block-watcher stalls). `capMs` bounds the sleeps BETWEEN
+ * reads, not the total wall-clock — worst case is roughly `capMs` plus one
+ * statement_timeout-bounded HAF read.
  */
 export async function pollForVouch(
   vouchee: string,
@@ -47,7 +55,7 @@ export async function pollForVouch(
 
   let status: VouchStatus | null = null;
   for (;;) {
-    await hafCache.invalidate(`vouch_status:${vouchee}`);
+    await hafCache.invalidate(vouchStatusCacheKey(vouchee));
     status = await getVouchStatus(vouchee);
     if (status?.vouches.some((v) => v.voucher === voucher)) return status;
     if (Date.now() + intervalMs >= deadline) return status;
@@ -187,7 +195,7 @@ router.post('/retract', verifyHiveSignature, async (req: Request, res: Response)
   // Bust the cached vouch status first so a subsequent read reflects the
   // dropped vouch; the revocation decision itself excludes the retracting
   // voucher in SQL and so does not depend on HAF having ingested the retract.
-  await hafCache.invalidate(`vouch_status:${vouchee}`);
+  await hafCache.invalidate(vouchStatusCacheKey(vouchee));
 
   const revocation = await revokeVoucheeIfBelowThreshold(vouchee, voucher);
   const status = await getVouchStatus(vouchee);

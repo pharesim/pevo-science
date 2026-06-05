@@ -143,10 +143,20 @@ export interface VouchStatus {
 }
 
 /**
+ * Cache key for a vouchee's `getVouchStatus` entry. Spelled in one place so the
+ * read site (`getVouchStatus`'s getOrSet) and the bust sites (the vouch-poll
+ * loop and the retract handler) cannot drift apart — a divergent literal would
+ * silently no-op the invalidation and re-introduce the stale-status bug.
+ */
+export function vouchStatusCacheKey(vouchee: string): string {
+  return `vouch_status:${vouchee}`;
+}
+
+/**
  * Get the vouch status for a user from HAF.
  */
 export async function getVouchStatus(username: string): Promise<VouchStatus | null> {
-  return hafCache.getOrSet<VouchStatus | null>(`vouch_status:${username}`, async () => {
+  return hafCache.getOrSet<VouchStatus | null>(vouchStatusCacheKey(username), async () => {
     const pool = getPool();
     if (!pool) return null;
 

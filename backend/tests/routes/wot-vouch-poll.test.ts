@@ -69,6 +69,19 @@ function statusWith(vouchers: string[]): VouchStatus {
 
 let invalidateSpy: ReturnType<typeof vi.spyOn>;
 
+// Assert the bust-strictly-before-read invariant per iteration via the global
+// invocationCallOrder counters: the i-th invalidate must have fired before the
+// i-th getVouchStatus read. Call-count parity alone is satisfied by a read-
+// then-bust swap; this ordering check is what fails that mutation red.
+function expectBustBeforeEachRead(): void {
+  const bustOrder = invalidateSpy.mock.invocationCallOrder;
+  const readOrder = getVouchStatusMock.mock.invocationCallOrder;
+  expect(bustOrder.length).toBe(readOrder.length);
+  for (let i = 0; i < bustOrder.length; i++) {
+    expect(bustOrder[i]).toBeLessThan(readOrder[i]);
+  }
+}
+
 beforeEach(() => {
   getVouchStatusMock.mockReset();
   // No-op the bust so it has no real Redis/memory side effect; we only need
@@ -95,6 +108,11 @@ describe('pollForVouch — bust-and-poll for a freshly-broadcast vouch', () => {
     // Busted once per read (both iterations) with the vouchee-scoped key.
     expect(invalidateSpy).toHaveBeenCalledTimes(2);
     expect(invalidateSpy).toHaveBeenCalledWith(`vouch_status:${VOUCHEE}`);
+    // Bust-strictly-before-each-read is the load-bearing property: a read-then-
+    // bust swap re-caches the stale answer. Pin per-iteration ordering via
+    // invocationCallOrder so the swap fails red (call-count parity alone passes
+    // it). Each invalidate must precede its paired read.
+    expectBustBeforeEachRead();
   });
 
   it('busts the cache before every read across multiple poll iterations', async () => {
@@ -110,6 +128,9 @@ describe('pollForVouch — bust-and-poll for a freshly-broadcast vouch', () => {
     for (const call of invalidateSpy.mock.calls) {
       expect(call[0]).toBe(`vouch_status:${VOUCHEE}`);
     }
+    // Order, not just parity: each iteration's bust must precede its read. A
+    // mutation swapping the two lines keeps the counts equal but fails here.
+    expectBustBeforeEachRead();
   });
 
   it('falls through with the latest status (no throw) when the cap elapses before the vouch appears', async () => {

@@ -71,12 +71,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
-import type { VouchStatus } from '../../src/wot.js';
+import type { VouchStatus, WotAccreditationResult } from '../../src/wot.js';
 
 const { appQueryMock, broadcastWotAccreditationMock, getVouchStatusMock, getAccreditedSetMock, loggerErrorMock, loggerInfoMock } =
   vi.hoisted(() => ({
     appQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
-    broadcastWotAccreditationMock: vi.fn(),
+    broadcastWotAccreditationMock: vi.fn<() => Promise<WotAccreditationResult>>(),
     getVouchStatusMock: vi.fn<(username: string) => Promise<VouchStatus | null>>(),
     getAccreditedSetMock: vi.fn<(usernames: string[]) => Promise<Set<string>>>(),
     loggerErrorMock: vi.fn(),
@@ -145,7 +145,7 @@ const VOUCHEE = 'bob';
 // covered directly in `wot-vouch-poll.test.ts`.
 const VOUCH_STATUS_FIXTURE = {
   username: VOUCHEE,
-  vouch_count: 3,
+  vouch_count: 1,
   threshold: 3,
   eligible: false,
   vouches: [{ voucher: VOUCHER, relationship: 'colleague', timestamp: '2026-01-01T00:00:00Z' }],
