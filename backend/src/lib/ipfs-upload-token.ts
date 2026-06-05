@@ -49,9 +49,9 @@ const memStore = new Map<string, StoredToken>();
  *  twice. The synchronous `has` → `add` pair is an uninterruptible critical
  *  section under the single-threaded JS event loop, so exactly one caller
  *  reaches the body; the loser returns null (the same outcome a stale replay
- *  observes). Single-instance scope per memory `project_single_instance_only`; a
- *  multi-instance topology would re-open the race and require a Redis-side
- *  sentinel, which the in-process lock is not a substitute for. */
+ *  observes). This deployment is single-process, so the in-process lock is a
+ *  complete guard; a multi-instance topology would re-open the race and require
+ *  a Redis-side sentinel, which the in-process lock is not a substitute for. */
 const inFlightConsumes = new Set<string>();
 
 const cleanupInterval = setInterval(() => {
