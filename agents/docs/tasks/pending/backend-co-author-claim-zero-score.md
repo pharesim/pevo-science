@@ -96,7 +96,7 @@ found it; user ratified the authorship model.
 **Design decision (user, 2026-06-05): the authorship list is FINAL at posting.**
 Authorship credit binds only to an author slot that was named at posting time.
 There is no "unlisted claim → approve → append a never-named co-author" path. New
-co-authors are added only through a continuation revision (ARCHITECTURE.md § 6
+co-authors are added only through a continuation revision (ARCHITECTURE.md § 2
 "Authors mutation"), never through claim/approval. `hive-schemas.md` § 2.9/2.10 and
 `reputation-algorithm.md` "Co-author Credit" are being updated by the architect to
 this model; implement against the updated docs.
@@ -146,3 +146,20 @@ Land Items 1+2 together (Item 2 is the live exploit; Item 1 is the structural
 constraint that also shrinks Item 2's surface). `npm run typecheck` + `npm run
 lint` clean; comment anchors on stable symbols. When done, `git mv` back to
 `tasks/review/`.
+
+## Architect note (2026-06-05) — relationship to the consented-authorship model
+
+The 2026-06-05 brainstorm (captured in `architect-reconcile-authorship-claim-vs-vouched-tracks`)
+decided a unified two-route consent model that will eventually **replace the
+ORCID/hive auto-accept arms** with explicit consent: anchored slots (hive or ORCID)
+→ `author_accept`; name-only slots → `claim` + `approve`. That migration is a
+separate, larger task (`backend-implement-consented-authorship-model`).
+
+**Do NOT block this P0 on that migration.** Land Items 1+2 as scoped against the
+CURRENT auto-accept query:
+- Item 1 (named-slot resolution on the approval arm) stays as written; under the
+  future model it maps to the name-only route's `claim` + `approve`.
+- Item 2 (reject any credited claimer's self-vote/self-review) is required under
+  BOTH the current and the future model and carries forward unchanged.
+- The hold block's "keep the ORCID/hive auto-accept arms as-is" instruction holds
+  for THIS task; the consented-model migration removes those arms later.

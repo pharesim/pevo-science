@@ -570,9 +570,11 @@ Updates configurable platform parameters.
 
 ### 2.9 Claim Authorship
 
-Broadcast by an accredited user to claim an author slot **that was named at posting** on a paper (`author_index` references an existing entry in the paper's `authors[]`). The claim is auto-accepted when: (a) the claimer's on-chain verified ORCID matches `authors[i].orcid` in the paper metadata, or (b) `authors[i].hive === claimer` for native papers. Otherwise (a slot named without a matching ORCID or `hive` — e.g. a name-only or hive-less co-author), the claim is pending until approved by the original post author (native papers) or bridge account (bridged papers). Approval **connects the claimer's Hive account to that named slot**; it does not add a co-author who was not named at posting.
+Broadcast by an accredited user to claim a **name-only** author slot on a paper — a slot named at posting (`author_index` references an existing entry in the paper's `authors[]`) that carries **neither a `hive` handle nor an `orcid`**. This is the name-only route (route 3 of the consent model in `ARCHITECTURE.md` § 2 "Consented vs claimed authorship"). The claim is **never** auto-accepted; it confers no credit until the original post author (native papers) or bridge account (bridged papers) confirms it with an `approve_authorship` op (§ 2.10), binding the claimer's Hive account to the name-only slot.
 
-**The author list is fixed at posting time.** Claim/approval only binds a Hive account to a slot named in the paper's `authors[]` at publication; it never adds a new name. New co-authors are added only through a continuation revision that names them (see `ARCHITECTURE.md` § 6 "Authors mutation"), not through claim/approval. A claim whose `author_index` does not resolve to an existing `authors[]` slot grants no authorship credit.
+A slot that already carries an identity anchor — a `hive` handle equal to the claimer, or an `orcid` matching the claimer's authority-attested ORCID — does **not** use this route: its owner registers consent directly with an `author_accept` op (the anchored route; see `ARCHITECTURE.md` § 2 and "Author Accept (custom_json)"). There is no metadata auto-accept; an anchor only establishes who may consent, never credit on its own.
+
+**The author list is fixed at posting time.** Claim/approval only binds a Hive account to a slot named in the paper's `authors[]` at publication; it never adds a new name. New co-authors are added only through a continuation revision that names them (see `ARCHITECTURE.md` § 2 "Authors mutation"), not through claim/approval. A claim whose `author_index` does not resolve to an existing `authors[]` slot grants no authorship credit.
 
 ```json
 {
@@ -595,13 +597,13 @@ Broadcast by an accredited user to claim an author slot **that was named at post
 
 **Field Notes:**
 - `paper_author` / `paper_permlink` — identify the canonical (root) paper post. For bridged papers, `paper_author` is the bridge account.
-- `author_index` — zero-based index into the paper's `authors` array identifying the slot the claimer is claiming. **Required**: the claim must reference a slot that was named at posting. A claim that does not resolve to an existing `authors[]` slot grants no authorship credit (the author list is fixed at posting; see § 2.10). Auto-accept compares the claimer against `authors[author_index]` by ORCID or `hive`; a name-only or hive-less slot is connected via approval (§ 2.10).
+- `author_index` — zero-based index into the paper's `authors` array identifying the name-only slot the claimer is claiming. **Required**: the claim must reference a slot that was named at posting and carries no `hive`/`orcid` anchor. A claim that does not resolve to an existing `authors[]` slot grants no authorship credit (the author list is fixed at posting; see § 2.10). Slots carrying a `hive` or `orcid` anchor are consented via `author_accept`, not this route — there is no metadata auto-accept.
 - The claimer's identity is proven by the posting key signature (`required_posting_auths`).
 - Only accredited users may claim. The backend validates this before processing.
 
 ### 2.10 Approve Authorship
 
-Broadcast to approve a pending authorship claim. The approver depends on context: the original post author for native papers, the bridge account for bridged papers.
+Broadcast to confirm a pending name-only `claim_authorship` (§ 2.9), completing route 3 of the consent model. The approver depends on context: the original post author for native papers, the bridge account for bridged papers.
 
 ```json
 {
@@ -624,12 +626,12 @@ Broadcast to approve a pending authorship claim. The approver depends on context
 | `json` | Stringified JSON above |
 
 **Field Notes:**
-- `author_index` — identifies the existing `authors[]` slot (named at posting) that the approval connects the claimer's Hive account to. Approval **binds a Hive account to a slot named at posting**; it does not insert or append a new author. The displayed author list is the cumulative union of names present across the paper's chain posts (`ARCHITECTURE.md` § 6 "Display construction"); approval adds a Hive-account binding to an existing entry, not a new name. To credit a co-author who was not named at posting, broadcast a continuation revision that names them, not an approval.
+- `author_index` — identifies the existing name-only `authors[]` slot (named at posting) that the approval connects the claimer's Hive account to. Approval **binds a Hive account to a slot named at posting**; it does not insert or append a new author. The displayed author list is the cumulative union of names present across the paper's chain posts (`ARCHITECTURE.md` § 2 "Display construction"); approval adds a Hive-account binding to an existing entry, not a new name. To credit a co-author who was not named at the root posting, broadcast a continuation revision that names them — which makes them a *claimed* author; they then complete a consent route (anchored `author_accept`, or name-only `claim` + this approval) to be credited.
 - For bridged papers, the bridge account admin triggers this via a backend admin endpoint.
 
 ### 2.11 Revoke Authorship
 
-Revokes a previously accepted authorship claim. Can revoke any claim, including ORCID auto-accepted ones (e.g., if someone gained unauthorized access to an ORCID account).
+Demotes a consented co-author back to claimed-but-unconsented, stripping their credit going forward. Two uses: (a) a claimer revoking their own name-only claim, and (b) the **author/admin/bridge backstop** — the original post author, bridge account, or admin revoking a consented co-author as the remedy for a bad self-accept (a compromised or malicious co-author who injected a name via a continuation and then self-accepted). The backstop applies to a co-author consented via either route. Revoke is a remedy, never a consent gate; a later valid consent op can re-confer credit.
 
 ```json
 {
@@ -652,8 +654,8 @@ Revokes a previously accepted authorship claim. Can revoke any claim, including 
 | `json` | Stringified JSON above |
 
 **Field Notes:**
-- The original post author, bridge account, or admin account may revoke.
-- The claimer themselves may also revoke their own claim (in that case, `required_posting_auths` is `["<claimer>"]`).
+- The original post author, bridge account, or admin account may revoke (the backstop).
+- The claimer themselves may also revoke their own name-only claim (in that case, `required_posting_auths` is `["<claimer>"]`). A co-author consented via the anchored route withdraws with `author_resign` instead (see `ARCHITECTURE.md` § 2).
 
 ---
 
