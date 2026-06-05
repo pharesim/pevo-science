@@ -228,4 +228,29 @@ for both new gates on both surfaces.
   `pevo.admin` papers-list 30s statement timeout) reproduces on clean HEAD with my
   changes stashed — not introduced here.
 
+## Architect re-review (2026-06-06) — round-2 items FIXED; round-3 HELD PENDING FIXES (hygiene)
+
+Round-2 Items 1+2 (list-final approval slot gate + claimer self-vote/self-review exclusion) are **VERIFIED CORRECT** and mirrored identically across `reputation.ts` `accepted_claims` and `hafsql.ts` `authorshipClaimsCteBody`. `/ce-code-review` multi-lens fan-out (correctness + security + adversarial on Opus; testing/maintainability/project-standards/performance/kieran-typescript on Sonnet; ce-learnings; ce-agent-native skipped per PEvO). The score-path holes are closed: out-of-range/null `author_index` rejected via the `^[0-9]{1,9}$` regex + `jsonb_typeof(...)='object'`; ORCID/name-only claimers (absent from `authors[].hive`) now caught by the self-vote/self-review `NOT EXISTS`. No bypass found; cycle and read surface in lockstep. The `base[3]=0` removal correctly restored the appTag metadata-key param the new gate reads.
+
+HELD on hygiene **introduced by this commit** (none is score-correctness). Land these, then `git mv` back to `tasks/review/`:
+
+### H1 — comment-anchor violations in test source (CLAUDE.md "Comment anchors")
+`reputation-coauthor-claim-credit.test.ts` embeds hold-item coordination-state the convention forbids in test source: the `(Item 2)` inline comment and the `(... list-final, Item 1)` describe-block label. Reword to behavioral labels (anchor on the SQL/behavior — e.g. "claimer self-dealing close (accepted_claims NOT EXISTS gate)"; "co-author claim credit — accepted_claims named-slot gate (list-final)"), not the round-N hold item.
+
+### H2 — stale docblock on `excludeSelfReviewWhere` (hafsql.ts)
+The helper's "What this does NOT exclude" paragraph still says the claimer self-vote gap exists in `paper_resolved_votes` ("when the vote path picks up claims, this helper should too"). This commit CLOSED that gap in the cycle. Update it: the cycle now closes the gap via `accepted_claims NOT EXISTS` in both `paper_resolved_votes` and `paper_reviews`; the residual gap is the DISPLAY callsites (paper-detail/profile/search/stats review lists) that compose this helper but don't carry the claims CTE (tracked by `backend-claimer-self-review-display-callsite-exclusion`).
+
+### H3 — incorrect mutation-kill comment (`...credit.test.ts`, the null-index case)
+The comment claims dropping the `jsonb_typeof` slot gate makes the null-`author_index` case (`frank`) accepted; `frank` is actually rejected by the separate `ce.author_index IS NOT NULL` guard regardless of the slot gate. Fix the narrative: dropping the slot gate flips the out-of-range approval (`grace`) and out-of-range ORCID (`ivan`) cases to accepted; the null-index case stays rejected by the IS NOT NULL guard. The assertion is correct; only the comment is wrong.
+
+### H4 — stale "genesis floor" docstring in the signer-gate harnesses
+`authorship-approve-signer-gate.test.ts` + `authorship-revoke-signer-gate.test.ts` retain a `resolveClaimStatus` docstring referencing a forced "claim_events block_num floor … 0" after `base[3]=0` was removed this commit (that param is the appTag metadata key, not a block floor). Update the docstring to match.
+
+### H5 (optional fold-in) — non-discriminating source pin
+The self-vote source pin is satisfied by either of two occurrences; the behavioral canary already mutation-kills the regression, so it's low-value. If touching the file anyway, tighten to the full correlated predicate or an occurrence count.
+
+**Optional, NOT a hold item (awareness):** the self-dealing exclusions are pinned by the synthetic-VALUES canary + source substrings, not by executing the real `computeReputationBatch` / `authorshipClaimsCteBody`. A real-HAF lifecycle fixture (claimer self-vote + self-review → score unchanged) would harden against a real-query refactor that mis-keys the `NOT EXISTS`. Recorded for a future test-hardening pass, not required for archive.
+
+`npm run typecheck` + `npm run lint` clean; comment anchors on stable symbols. When done, `git mv` back to `tasks/review/`.
+
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
