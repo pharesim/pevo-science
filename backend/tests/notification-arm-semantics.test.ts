@@ -93,7 +93,7 @@ describe('notification-queries.ts arm semantics', () => {
             VALUES ('alice'::text, 'real'::text, 'Real Paper'::text,
                     '{"pevotest":{"type":"paper"}}'::jsonb)
           )
-        SELECT COUNT(*)::int AS hit_count, MIN(cited_paper.title) AS title
+        SELECT COUNT(*)::int AS hit_count, MIN(COALESCE(cited_paper.title, '')) AS title
         FROM citing
         CROSS JOIN LATERAL jsonb_array_elements(
           CASE WHEN jsonb_typeof(citing.json_metadata -> 'pevotest' -> 'citations') = 'array'
@@ -119,8 +119,9 @@ describe('notification-queries.ts arm semantics', () => {
       const spamResult = await pool.query<{ hit_count: number }>(sql, ['alice', spam]);
       expect(spamResult.rows[0]?.hit_count).toBe(0);
 
-      // Legitimate citation: alice/real exists -> one notification, title set
-      // (no COALESCE needed — INNER JOIN guarantees the row).
+      // Legitimate citation: alice/real exists -> one notification, title set.
+      // The INNER JOIN guarantees the row; COALESCE(title,'') matches the source
+      // projection so a null comments.title would surface as '' rather than null.
       const legit = JSON.stringify({ pevotest: { type: 'paper', citations: [{ author: 'alice', permlink: 'real' }] } });
       const legitResult = await pool.query<{ hit_count: number; title: string }>(sql, ['alice', legit]);
       expect(legitResult.rows[0]?.hit_count).toBe(1);
@@ -128,7 +129,136 @@ describe('notification-queries.ts arm semantics', () => {
     },
   );
 
-  it('arms 6a/6b new_citation: source gates cited_paper with validPevoPaperWhere (INNER JOIN, no title COALESCE)', async () => {
+  // Arm 6a/6b DISTINCT ON dedup: one citing post listing the same real cited
+  // paper N times in its citations array fans out via jsonb_array_elements to N
+  // candidate rows, but DISTINCT ON (citing.author, citing.permlink,
+  // cited_ref.author, cited_ref.permlink) collapses them to a single
+  // notification, so array-repetition cannot amplify citation spam.
+  it.skipIf(!isHafConfigured())(
+    'arms 6a/6b new_citation: a citations array repeating the same paper yields one notification (DISTINCT ON dedup)',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      // Mirror arm 6a's DISTINCT ON 4-tuple over a single citing post whose
+      // citations array names alice/real three times. After the join + dedup the
+      // outer COUNT must be 1.
+      const sql = `
+        WITH
+          citing(author, permlink, json_metadata, block_num) AS (VALUES ('bob'::text, 'cite1'::text, $2::jsonb, 100)),
+          cited_paper(author, permlink, title, json_metadata) AS (
+            VALUES ('alice'::text, 'real'::text, 'Real Paper'::text,
+                    '{"pevotest":{"type":"paper"}}'::jsonb)
+          )
+        SELECT COUNT(*)::int AS hit_count
+        FROM (
+          SELECT DISTINCT ON (citing.author, citing.permlink, cited_ref.author, cited_ref.permlink)
+            citing.author AS citing_author, cited_ref.author AS cited_author, cited_ref.permlink AS cited_permlink
+          FROM citing
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE WHEN jsonb_typeof(citing.json_metadata -> 'pevotest' -> 'citations') = 'array'
+              THEN citing.json_metadata -> 'pevotest' -> 'citations'
+              ELSE '[]'::jsonb
+            END
+          ) AS cite_elem
+          CROSS JOIN LATERAL (
+            SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
+          ) AS cited_ref
+          JOIN cited_paper
+            ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
+            AND ((cited_paper.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+                 OR (cited_paper.author = 'pevo.bridge'
+                     AND (cited_paper.json_metadata -> 'pevotest' ->> 'type') = 'bridge_paper'))
+          WHERE citing.author <> $1
+            AND cited_ref.author = $1
+            AND (citing.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+          ORDER BY citing.author, citing.permlink, cited_ref.author, cited_ref.permlink, citing.block_num ASC
+        ) AS arm_6a
+      `;
+
+      const dupes = JSON.stringify({
+        pevotest: {
+          type: 'paper',
+          citations: [
+            { author: 'alice', permlink: 'real' },
+            { author: 'alice', permlink: 'real' },
+            { author: 'alice', permlink: 'real' },
+          ],
+        },
+      });
+      const result = await pool.query<{ hit_count: number }>(sql, ['alice', dupes]);
+      expect(result.rows[0]?.hit_count).toBe(1);
+    },
+  );
+
+  // Arm 6b (bridge): a citation of a paper the recipient registered via the
+  // bridge fires only when the cited ref matches a user_bridge_papers row AND the
+  // belt-and-suspenders cited_paper INNER JOIN proves a valid bridge paper. A
+  // fake permlink that user_bridge_papers does not carry produces no notification.
+  it.skipIf(!isHafConfigured())(
+    'arm-6b new_citation: fake citation of an unregistered bridge paper produces no notification; a registered one does',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      // Mirror arm 6b: the user_bridge_papers CTE pins the bridge paper to the
+      // recipient ($1 = the registering user); the cited paper's chain author is
+      // the bridge account (pevo.bridge), not the recipient. bp stands in for the
+      // user_bridge_papers CTE (one registered bridge paper: pevo.bridge/real),
+      // cited_paper stands in for the comments table (the belt-and-suspenders
+      // validPevoPaperWhere(all) gate, satisfied by a bridge_paper row).
+      const sql = `
+        WITH
+          citing(author, json_metadata, block_num) AS (VALUES ('bob'::text, $2::jsonb, 100)),
+          bp(author, permlink) AS (VALUES ('pevo.bridge'::text, 'real'::text)),
+          cited_paper(author, permlink, title, json_metadata) AS (
+            VALUES ('pevo.bridge'::text, 'real'::text, 'Bridge Paper'::text,
+                    '{"pevotest":{"type":"bridge_paper"}}'::jsonb)
+          )
+        SELECT COUNT(*)::int AS hit_count, MIN(COALESCE(cited_paper.title, '')) AS title
+        FROM citing
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(citing.json_metadata -> 'pevotest' -> 'citations') = 'array'
+            THEN citing.json_metadata -> 'pevotest' -> 'citations'
+            ELSE '[]'::jsonb
+          END
+        ) AS cite_elem
+        CROSS JOIN LATERAL (
+          SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
+        ) AS cited_ref
+        JOIN bp ON bp.author = cited_ref.author AND bp.permlink = cited_ref.permlink
+        JOIN cited_paper
+          ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
+          AND ((cited_paper.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+               OR (cited_paper.author = 'pevo.bridge'
+                   AND (cited_paper.json_metadata -> 'pevotest' ->> 'type') = 'bridge_paper'))
+        WHERE citing.author <> $1
+          AND (citing.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+      `;
+
+      // Fake-citation spam: pevo.bridge/fake is not in user_bridge_papers -> dropped.
+      const spam = JSON.stringify({ pevotest: { type: 'paper', citations: [{ author: 'pevo.bridge', permlink: 'fake' }] } });
+      const spamResult = await pool.query<{ hit_count: number }>(sql, ['alice', spam]);
+      expect(spamResult.rows[0]?.hit_count).toBe(0);
+
+      // Legitimate citation: pevo.bridge/real is registered by the recipient and
+      // is a valid bridge paper -> one notification, title set via COALESCE.
+      const legit = JSON.stringify({ pevotest: { type: 'paper', citations: [{ author: 'pevo.bridge', permlink: 'real' }] } });
+      const legitResult = await pool.query<{ hit_count: number; title: string }>(sql, ['alice', legit]);
+      expect(legitResult.rows[0]?.hit_count).toBe(1);
+      expect(legitResult.rows[0]?.title).toBe('Bridge Paper');
+    },
+  );
+
+  it('arms 6a/6b new_citation: source gates cited_paper with validPevoPaperWhere (INNER JOIN, title COALESCE parity)', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const src = readFileSync(
@@ -140,8 +270,11 @@ describe('notification-queries.ts arm semantics', () => {
     expect(citationArms).not.toContain('LEFT JOIN ${T.comments} cited_paper');
     expect(citationArms.match(/JOIN \$\{T\.comments\} cited_paper/g)?.length).toBe(2);
     expect(citationArms.match(/validPevoPaperWhere\(\{ commentAlias: 'cited_paper'/g)?.length).toBe(2);
-    // INNER JOIN guarantees the row, so the title COALESCE is gone.
-    expect(citationArms).not.toContain("COALESCE(cited_paper.title");
+    // Title projection wraps cited_paper.title in COALESCE(..., '') in BOTH arms,
+    // matching the sibling new_review arms (1a/1b). The INNER JOIN guarantees the
+    // row exists but not that comments.title is non-null, so the COALESCE prevents
+    // a null paper_title from reaching the NewCitationEvent string field.
+    expect(citationArms.match(/COALESCE\(cited_paper\.title, ''\)/g)?.length).toBe(2);
   });
 
   // ── Arms 4/7/8/9 (vouch/claim) signer gates ─────────────────────
