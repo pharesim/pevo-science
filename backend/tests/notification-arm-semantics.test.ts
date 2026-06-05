@@ -492,14 +492,14 @@ describe('notification-queries.ts arm semantics', () => {
       const sql = `
         WITH
           active_accreditations(account) AS (VALUES ('bob'::text)),
-          bp_src(author, permlink, json_metadata) AS (VALUES
+          bp_src(author, permlink, json_metadata, target_type) AS (VALUES
             ('pevo.bridge'::text, 'reg'::text,
-             '{"pevotest":{"type":"bridge_paper","source":{"registered_by":"alice"}}}'::jsonb),
+             '{"pevotest":{"type":"bridge_paper","source":{"registered_by":"alice"}}}'::jsonb, 'paper'::text),
             ('pevo.bridge'::text, 'unreg'::text,
-             '{"pevotest":{"type":"bridge_paper","source":{"registered_by":"mallory"}}}'::jsonb)
+             '{"pevotest":{"type":"bridge_paper","source":{"registered_by":"mallory"}}}'::jsonb, 'paper'::text)
           ),
           user_bridge_papers AS (
-            SELECT bp_src.author, bp_src.permlink
+            SELECT bp_src.author, bp_src.permlink, bp_src.target_type
             FROM bp_src
             WHERE bp_src.author = 'pevo.bridge'
               AND (bp_src.json_metadata -> 'pevotest' ->> 'type') = 'bridge_paper'
@@ -509,7 +509,12 @@ describe('notification-queries.ts arm semantics', () => {
             ('bob'::text, 'pevo.bridge'::text, 'reg'::text,   100, 100),  -- vote on registered bridge paper -> fires
             ('bob'::text, 'pevo.bridge'::text, 'unreg'::text, 100, 101)   -- vote on unregistered bridge_paper -> drops
           )
-        SELECT COUNT(*)::int AS hit_count, MIN('paper'::text) AS target_type
+        -- target_type derived from the joined bridge-paper row (carried through
+        -- user_bridge_papers), NOT a MIN('<literal>') constant in this test's own
+        -- SELECT — mirrors the 2a/2c fixture-derived form so this canary cannot
+        -- silently pass on a production projection-literal swap. The production
+        -- literal itself is pinned in the source-shape test below.
+        SELECT COUNT(*)::int AS hit_count, MIN(bp.target_type) AS target_type
         FROM v
         JOIN active_accreditations aa ON aa.account = v.voter
         JOIN user_bridge_papers bp ON bp.author = v.author AND bp.permlink = v.permlink
@@ -572,23 +577,48 @@ describe('notification-queries.ts arm semantics', () => {
     },
   );
 
-  it('vote arms: split into native (2a), bridge (2b), review (2c) with content gates and target_type', async () => {
+  it('vote arms: split into native (2a), bridge (2b), review (2c) with content gates and per-arm target_type literal', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const src = readFileSync(
       fileURLToPath(new URL('../src/notification-queries.ts', import.meta.url)),
       'utf8',
     );
-    const voteArms = src.slice(src.indexOf('-- 2a.'), src.indexOf('-- 3.'));
+    const region = (from: string, to: string) => src.slice(src.indexOf(from), src.indexOf(to));
+    const voteArms = region('-- 2a.', '-- 3.');
     expect(voteArms).toContain('-- 2a.');
     expect(voteArms).toContain('-- 2b.');
     expect(voteArms).toContain('-- 2c.');
     // 2a gates the native paper with validPevoPaperWhere; 2c gates the review.
     expect(voteArms).toContain('validPevoPaperWhere');
     expect(voteArms).toContain('validReviewWhere');
-    expect(voteArms).toContain("'review'");
     // self-vote exclusion present in every vote sub-arm.
     expect(voteArms.match(/AND v\.voter != v\.author/g)?.length).toBe(3);
+
+    // Per-arm target_type projection literal, pinned inside each arm's
+    // tag-bounded slice. The SOURCE layer is the only one that consults
+    // production's FIXED projection: the synthetic-VALUES canaries derive
+    // target_type from their own fixture rows, so a production literal swap
+    // (e.g. arm 2a/2b emitting 'review', or 2c emitting 'paper') is invisible to
+    // them and only fails here.
+    const arm2a = region('-- 2a.', '-- 2b.');
+    const arm2b = region('-- 2b.', '-- 2c.');
+    const arm2c = region('-- 2c.', '-- 3.');
+    expect(arm2a).toContain("'paper'::text AS target_type");
+    expect(arm2b).toContain("'paper'::text AS target_type");
+    expect(arm2c).toContain("'review'::text AS target_type");
+
+    // Arm 2b proves the bridge paper via an INNER JOIN to the user_bridge_papers
+    // CTE; a LEFT variant would admit votes on unregistered bridge_papers.
+    expect(arm2b).toContain('JOIN user_bridge_papers bp');
+    expect(arm2b).not.toContain('LEFT JOIN user_bridge_papers');
+
+    // The user_bridge_papers CTE's registered_by predicate is the bridge-paper
+    // ownership gate: it admits a comments row only when source.registered_by
+    // equals the recipient ($1). Dropping it would surface votes on any
+    // bridge_paper, not just the recipient's registered ones.
+    const cte = region('user_bridge_papers AS (', '-- 1a.');
+    expect(cte).toContain("-> 'source' ->> 'registered_by' = $1");
   });
 
   // ── Arm 5 (new_reply) emits no paper coords ─────────────────────

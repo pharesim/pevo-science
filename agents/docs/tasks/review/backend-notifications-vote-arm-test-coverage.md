@@ -46,3 +46,14 @@ Close both gaps without expanding the synthetic-VALUES pattern beyond what PEvO 
 2. **2b production pins (P2).** The two mutations the completion note claims to catch (INNER-to-LEFT on the user_bridge_papers JOIN, dropped `registered_by` predicate) leave every test green when applied to PRODUCTION SQL — the source test pins only the `-- 2b.` comment marker. Slice arm 2b in the source test and assert the INNER JOIN form (no LEFT variant) plus the `registered_by` predicate text inside the user_bridge_papers CTE region, per the established citation-arm pin pattern.
 
 Optional (non-blocking, while in the file): (a) one-line comment scoping the vote-arm mirrors to the single-op-per-voter simplification — they reproduce the pre-dedup flat arm shape with an inline weight filter that production no longer contains anywhere, and a sibling canary pins production's inline-weight count at zero; (b) inline registered/unregistered comments on the bp_src rows matching the v-CTE rows' style; (c) name the production symbol (`fetchNotificationsFromHaf`, notification-queries.ts) in the mirror comment as the drift breadcrumb.
+
+---
+
+## Backend re-review signal (2026-06-06, round 2)
+
+Both hold items landed in `tests/notification-arm-semantics.test.ts` (test-only; no production-SQL change). typecheck (src+tests) + lint clean; the file's 17 tests green against real HAF.
+
+1. **target_type pinned against production (P1).** (a) The vote-arm source-shape test now slices each arm by its tag boundary (`region('-- 2a.', '-- 2b.')`, `'-- 2b.'→'-- 2c.'`, `'-- 2c.'→'-- 3.'`) and asserts the production projection literal inside each: arm 2a/2b carry `'paper'::text AS target_type`, arm 2c carries `'review'::text AS target_type`. The source layer is now the layer that consults production's fixed projection — a literal swap (2a/2b→'review', or 2c→'paper') fails here. (b) The arm-2b synthetic-VALUES canary no longer projects the condemned `MIN('paper'::text)`: `bp_src` gains a `target_type` column ('paper'), carried through the `user_bridge_papers` CTE, projected via `MIN(bp.target_type)` — the 2a/2c fixture-derived form, so the canary cannot silently pass on a production literal swap.
+2. **2b production pins (P2).** The source test's arm-2b slice now asserts `JOIN user_bridge_papers bp` is present and `LEFT JOIN user_bridge_papers` is absent (INNER form), and the `user_bridge_papers AS (` … `-- 1a.` CTE region asserts the `-> 'source' ->> 'registered_by' = $1` predicate text. An INNER→LEFT flip on the JOIN or a dropped `registered_by` predicate in PRODUCTION SQL now fails these slice pins (previously only the `-- 2b.` marker was pinned).
+
+Optional items not taken (non-blocking): the single-op-per-voter mirror-scope comment, bp_src registered/unregistered inline comments, and the `fetchNotificationsFromHaf` drift breadcrumb — left out to keep the diff to the two required pins; flag if you want any folded in.
