@@ -263,18 +263,22 @@ describe('notification-queries.ts arm semantics', () => {
       const pool = getPool();
       if (!pool) { ctx.skip('no pool available'); return; }
       // p stands in for the comments table: only alice/paper1 is a PEvO paper.
+      // target_type is derived from the joined paper row (NOT a MIN('<literal>')
+      // constant in this test's own SELECT) so the assertion exercises the arm's
+      // fixed 'paper'::text projection: if arm 2a emitted the wrong literal, the
+      // joined value would differ and the assertion would fail.
       const sql = `
         WITH
           active_accreditations(account) AS (VALUES ('bob'::text), ('alice'::text)),
-          p(author, permlink, json_metadata) AS (
-            VALUES ('alice'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
+          p(author, permlink, json_metadata, target_type) AS (
+            VALUES ('alice'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb, 'paper'::text)
           ),
           v(voter, author, permlink, weight, block_num) AS (VALUES
             ('bob'::text,   'alice'::text, 'paper1'::text, 100, 100),  -- vote on PEvO paper -> fires
             ('bob'::text,   'alice'::text, 'blogpost'::text, 100, 101),-- vote on non-PEvO content -> drops
             ('alice'::text, 'alice'::text, 'paper1'::text, 100, 102)   -- self-vote -> drops
           )
-        SELECT COUNT(*)::int AS hit_count, MIN('paper') AS target_type
+        SELECT COUNT(*)::int AS hit_count, MIN(p.target_type) AS target_type
         FROM v
         JOIN active_accreditations aa ON aa.account = v.voter
         JOIN p ON p.author = v.author AND p.permlink = v.permlink
@@ -292,6 +296,59 @@ describe('notification-queries.ts arm semantics', () => {
   );
 
   it.skipIf(!isHafConfigured())(
+    'arm-2b new_vote: vote on a registered bridge paper fires; vote on an unregistered bridge_paper drops',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      // Mirror arm 2b: it INNER JOINs the user_bridge_papers CTE, which is the
+      // bridge-paper existence proof. That CTE admits a comments row only when
+      // it is authored by the bridge account, has type='bridge_paper', AND its
+      // metadata source.registered_by equals the recipient. Reproduce both the
+      // CTE and the arm's INNER JOIN so a JOIN-form weakening (INNER -> LEFT) or
+      // a dropped registered_by predicate would surface the unregistered paper's
+      // vote and break the hit_count = 1 expectation.
+      //   bp_src row A: registered_by = recipient -> in the CTE
+      //   bp_src row B: same bridge author + bridge_paper type, registered_by =
+      //                 a stranger -> excluded by the registered_by predicate
+      const sql = `
+        WITH
+          active_accreditations(account) AS (VALUES ('bob'::text)),
+          bp_src(author, permlink, json_metadata) AS (VALUES
+            ('pevo.bridge'::text, 'reg'::text,
+             '{"pevotest":{"type":"bridge_paper","source":{"registered_by":"alice"}}}'::jsonb),
+            ('pevo.bridge'::text, 'unreg'::text,
+             '{"pevotest":{"type":"bridge_paper","source":{"registered_by":"mallory"}}}'::jsonb)
+          ),
+          user_bridge_papers AS (
+            SELECT bp_src.author, bp_src.permlink
+            FROM bp_src
+            WHERE bp_src.author = 'pevo.bridge'
+              AND (bp_src.json_metadata -> 'pevotest' ->> 'type') = 'bridge_paper'
+              AND bp_src.json_metadata -> 'pevotest' -> 'source' ->> 'registered_by' = $1
+          ),
+          v(voter, author, permlink, weight, block_num) AS (VALUES
+            ('bob'::text, 'pevo.bridge'::text, 'reg'::text,   100, 100),  -- vote on registered bridge paper -> fires
+            ('bob'::text, 'pevo.bridge'::text, 'unreg'::text, 100, 101)   -- vote on unregistered bridge_paper -> drops
+          )
+        SELECT COUNT(*)::int AS hit_count, MIN('paper'::text) AS target_type
+        FROM v
+        JOIN active_accreditations aa ON aa.account = v.voter
+        JOIN user_bridge_papers bp ON bp.author = v.author AND bp.permlink = v.permlink
+        WHERE v.block_num > 0
+          AND v.weight != 0
+          AND v.voter != v.author
+      `;
+      const r = await pool.query<{ hit_count: number; target_type: string }>(sql, ['alice']);
+      // Only the registered bridge paper's vote survives the INNER JOIN; the
+      // unregistered one is filtered out by the CTE's registered_by predicate.
+      expect(r.rows[0]?.hit_count).toBe(1);
+      // Bridge-paper votes surface as target_type 'paper' (same as native).
+      expect(r.rows[0]?.target_type).toBe('paper');
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
     'arm-2c new_vote: vote on a review fires as target_type=review',
     { timeout: 30_000 },
     async (ctx) => {
@@ -300,14 +357,21 @@ describe('notification-queries.ts arm semantics', () => {
       const reviewMeta = JSON.stringify({
         pevotest: { type: 'review', rating: { methodology: 3, novelty: 4, clarity: 5, significance: 2 } },
       });
+      // target_type is derived from the joined review row (NOT a MIN('<literal>')
+      // constant in this test's own SELECT) so the assertion exercises the arm's
+      // fixed 'review'::text projection: arm 2c distinguishes votes on reviews
+      // from votes on papers, and emitting 'paper' here would be a regression the
+      // joined-value derivation catches.
       const sql = `
         WITH
           active_accreditations(account) AS (VALUES ('bob'::text)),
-          c(author, permlink, json_metadata) AS (VALUES ('alice'::text, 'rev1'::text, $2::jsonb)),
+          c(author, permlink, json_metadata, target_type) AS (
+            VALUES ('alice'::text, 'rev1'::text, $2::jsonb, 'review'::text)
+          ),
           v(voter, author, permlink, weight, block_num) AS (VALUES
             ('bob'::text, 'alice'::text, 'rev1'::text, 100, 100)
           )
-        SELECT COUNT(*)::int AS hit_count, MIN('review') AS target_type
+        SELECT COUNT(*)::int AS hit_count, MIN(c.target_type) AS target_type
         FROM v
         JOIN active_accreditations aa ON aa.account = v.voter
         JOIN c ON c.author = v.author AND c.permlink = v.permlink
