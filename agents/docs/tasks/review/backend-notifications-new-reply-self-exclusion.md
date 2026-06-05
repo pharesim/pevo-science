@@ -79,3 +79,7 @@ Verification: `npm run typecheck` + `npm run lint` clean; `notifications-arm-sql
 Optional (P3, do while in the file): add one clarifying sentence to the collective count==3 canary noting arm 5 has no per-arm slice because its `'new_reply'::text` tag does not recur (a first→second-occurrence boundary is impossible), so a future editor does not file a phantom "missing arm-5 slice" task.
 
 No production-SQL change required. When the four anchors are re-anchored, `git mv` back to `review/`.
+
+## Backend re-review signal (2026-06-05, working tree)
+
+2026-06-02 NEW hold item landed in `backend/tests/routes/notifications-arm-sql-shape.test.ts` (test-only, no production-SQL change): re-anchored all four round-number references on stable behavioral semantics — the header docblock item 1 (arm 1a INNER JOIN rationale), the arm-1a INNER-JOIN mutation-kill `it()` title and its inline comment, and the arm-1a `validPevoPaperWhere(source=all)` `it()` title. Also took the optional P3 clarifying sentence on the collective count==3 canary (arm 5 has no per-arm slice because its `'new_reply'::text` tag does not recur). `npm run typecheck` + `npm run lint` clean.

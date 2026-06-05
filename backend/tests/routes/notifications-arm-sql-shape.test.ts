@@ -32,9 +32,9 @@
  *       (a revert of any predicate below would pass every existing test).
  *
  * Canaries pinned in this file:
- *   1. Arm 1a uses INNER JOIN to ${T.comments} p (round-1 hold #3 fix —
- *      LEFT JOIN admitted review-typed replies to non-paper posts and
- *      surfaced new_review notifications with empty titles).
+ *   1. Arm 1a uses INNER JOIN to ${T.comments} p: a LEFT JOIN admitted
+ *      review-typed replies to non-paper posts and surfaced new_review
+ *      notifications with empty titles, so the join must stay INNER.
  *   2. Arm 1a's JOIN carries validPevoPaperWhere(source='all') against
  *      the parent comment p, enforcing paper-class identity (the LEFT
  *      JOIN-to-non-paper griefing vector).
@@ -141,10 +141,10 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     return { sql: capturedSql, params: capturedParams };
   }
 
-  it('arm 1a promotes the parent-paper join to INNER JOIN (round-1 hold #3 mutation-kill)', async () => {
+  it('arm 1a uses INNER (not LEFT) JOIN on the parent-paper comment, enforcing paper-class existence at the join', async () => {
     const { sql } = await captureNotificationsSql();
-    // The round-1 hold flipped the parent-paper join from LEFT JOIN to
-    // INNER JOIN to enforce paper-class existence at the JOIN level.
+    // Arm 1a uses an INNER (not LEFT) JOIN on the parent-paper comment to
+    // enforce paper-class existence at the JOIN level.
     // Reverting to LEFT JOIN re-opens the empty-title griefing vector.
     // Detection: arm 1a's parent JOIN is the only `JOIN hafsql.comments p`
     // occurrence in the SQL — arm 1b's `p` is LEFT JOINed (the
@@ -155,7 +155,7 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     expect(sql).toMatch(/(?<!LEFT )JOIN hafsql\.comments p\b/);
   });
 
-  it('arm 1a JOIN carries validPevoPaperWhere(source=all) paper-class gate (round-1 hold #3)', async () => {
+  it('arm 1a JOIN carries validPevoPaperWhere(source=all) paper-class gate', async () => {
     const { sql } = await captureNotificationsSql();
     // validPevoPaperWhere(source='all') expands to
     //   ((p.json_metadata -> $X ->> 'type') = 'paper'
@@ -187,6 +187,12 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     // leading `AND`) so an explanatory SQL comment mentioning the predicate
     // does not inflate the count, and pin at 3 so a single-arm regression
     // fails red.
+    //
+    // Arm 5 (new_reply) is pinned ONLY by this collective count, not a
+    // per-arm slice: its `'new_reply'::text` tag does not recur, so the
+    // first→second-occurrence slice boundary the 1a/1b slices rely on is
+    // impossible to form for arm 5. A future editor should not file a
+    // phantom "missing arm-5 slice" task.
     const occurrences = (sql.match(/AND co\.author != \$1/g) ?? []).length;
     expect(occurrences).toBe(3);
   });
