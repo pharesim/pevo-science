@@ -40,16 +40,17 @@ interface EnrichedComment {
 // number (int4, not bigint-as-string), so no per-field runtime coercion is
 // needed. Naming the shape lets `pool.query<RawCommentRow>` type `result.rows`
 // and drops the unsound `as string` / `as number` casts in the enrichment map.
-// `created` is a `timestamptz` column: node-pg's default type parser returns a
-// JS `Date` (no `setTypeParser` override is registered), so the field is typed
-// `Date` here and normalized to the wire string via `.toISOString()` in the
-// enrichment map below — NOT cast `::text` in the SELECT, which would yield a
+// `created` is HafSQL's `comments.created`: empirically it arrives as an
+// ISO-8601 text string, NOT a node-pg `Date` (an `.toISOString()` assumption
+// threw at runtime against the live HAF node). Type it `string | Date` and
+// normalize defensively in the enrichment map below so either shape yields the
+// ISO wire string — NOT cast `::text` in the SELECT, which would yield a
 // different (space-separated, micro-second) format and change the response shape.
 interface RawCommentRow {
   author: string;
   permlink: string;
   body: string;
-  created: Date;
+  created: string | Date;
   parent_author: string;
   parent_permlink: string;
   accredited_votes: number;
@@ -199,11 +200,10 @@ async function fetchCommentsTreeFromHaf(
         author,
         permlink: r.permlink,
         body: r.body,
-        // `r.created` is a JS Date (timestamptz, default node-pg parser).
-        // `.toISOString()` is byte-identical to what `JSON.stringify` would emit
-        // for a Date (`Date.toJSON` IS `toISOString`), so the wire shape is
-        // unchanged while `EnrichedComment.created: string` stays sound.
-        created: r.created.toISOString(),
+        // HafSQL surfaces `created` as an ISO-8601 string; normalize defensively
+        // so a future node-pg `Date` (or any non-string) is still emitted as the
+        // ISO wire string, and `EnrichedComment.created: string` stays sound.
+        created: r.created instanceof Date ? r.created.toISOString() : r.created,
         net_votes: r.accredited_votes,
         is_accredited: authorAccredited,
         // Symmetric chain pre-check: a non-accredited commenter shows score 0
