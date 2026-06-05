@@ -1060,41 +1060,44 @@ async function fetchPapersFromHaf(
     ? `${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes`
     : '0 AS net_votes';
 
-  // Review count: accredited reviewers + anonymous posting account.
+  // Review count + average review rating from ONE correlated scan of the
+  // accredited-review row set. The two aggregates previously lived in two
+  // independent correlated subqueries (`review_count` and `avg_rating`) that
+  // each re-scanned the SAME `hafsql.comments` rows under the SAME predicate
+  // (parent-pair match + validReviewWhere + excludeSelfReviewWhere +
+  // accreditation/anon gate) — doubling the per-page-row review-table scans.
+  // A single LATERAL subquery returns both, so a 20-row page issues one
+  // accredited-review scan per row instead of two.
+  //
   // validReviewWhere supplies the type+rating-shape gate (display↔reputation
   // parity); accreditation stays inline as it does at every review-aggregating
   // site (see validReviewWhere docstring). excludeSelfReviewWhere drops
   // self-reviews — the outer paper row `c` IS the paper, so the helper
-  // composes against it directly without a JOIN.
-  const reviewCountSelect = `COALESCE((
-    SELECT count(*)::int FROM ${T.comments} r
+  // composes against it directly without a JOIN. The rating-shape regex inside
+  // validReviewWhere guarantees each dimension is `[1-5]` text, so the
+  // `::float` casts cannot crash on attacker-controlled JSON. count(*) over the
+  // gated rows yields the review count; round(avg(...),1) over the per-row
+  // four-dimension mean yields the average; COALESCE degrades each to 0 when
+  // no review row matches (count(*)=0, avg over zero rows = NULL).
+  const reviewAggSelect = `COALESCE(rev_agg.review_count, 0) AS review_count,
+    COALESCE(rev_agg.avg_rating, 0) AS avg_rating`;
+  const reviewAggLateral = `LEFT JOIN LATERAL (
+    SELECT
+      count(*)::int AS review_count,
+      round(avg(
+        (
+          (r.json_metadata -> ${appTagParam} -> 'rating' ->> 'methodology')::float +
+          (r.json_metadata -> ${appTagParam} -> 'rating' ->> 'novelty')::float +
+          (r.json_metadata -> ${appTagParam} -> 'rating' ->> 'clarity')::float +
+          (r.json_metadata -> ${appTagParam} -> 'rating' ->> 'significance')::float
+        ) / 4.0
+      )::numeric, 1)::float AS avg_rating
+    FROM ${T.comments} r
     WHERE r.parent_author = c.author AND r.parent_permlink = c.permlink
       AND ${validReviewWhere({ commentAlias: 'r', appTagParam })}
       AND ${excludeSelfReviewWhere({ commentAlias: 'r', paperRowAlias: 'c', appTagParam })}
       AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author) OR r.author = ${anonParam})
-  ), 0) AS review_count`;
-
-  // Average review rating: mean of all four rating dimensions across accredited
-  // reviews. The rating-shape regex inside validReviewWhere guarantees each
-  // dimension is `[1-5]` text, so the `::float` casts below cannot crash on
-  // attacker-controlled JSON; the prior `rating IS NOT NULL` safety net is
-  // strictly subsumed by the helper's gate. Self-reviews are also excluded
-  // so a 5/5/5/5 by the paper author doesn't inflate the displayed average.
-  const avgRatingSelect = `COALESCE((
-    SELECT round(avg(val)::numeric, 1)::float FROM (
-      SELECT (
-        (rv.json_metadata -> ${appTagParam} -> 'rating' ->> 'methodology')::float +
-        (rv.json_metadata -> ${appTagParam} -> 'rating' ->> 'novelty')::float +
-        (rv.json_metadata -> ${appTagParam} -> 'rating' ->> 'clarity')::float +
-        (rv.json_metadata -> ${appTagParam} -> 'rating' ->> 'significance')::float
-      ) / 4.0 AS val
-      FROM ${T.comments} rv
-      WHERE rv.parent_author = c.author AND rv.parent_permlink = c.permlink
-        AND ${validReviewWhere({ commentAlias: 'rv', appTagParam })}
-        AND ${excludeSelfReviewWhere({ commentAlias: 'rv', paperRowAlias: 'c', appTagParam })}
-        AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = rv.author) OR rv.author = ${anonParam})
-    ) sub
-  ), 0) AS avg_rating`;
+  ) rev_agg ON true`;
 
   // Citation count: accredited papers that cite this one (native papers only;
   // bridge papers use Semantic Scholar). Sourced from the
@@ -1166,14 +1169,14 @@ async function fetchPapersFromHaf(
         c.json_metadata,
         c.created,
         ${voteSelect},
-        ${reviewCountSelect},
+        ${reviewAggSelect},
         ${citationCountSelect},
-        ${avgRatingSelect},
         ${authorsWithSupersessionSelect('c', appTagParam, { includeAffiliation: false })} AS authors_with_supersession,
         0 AS author_reputation,
         count(*) OVER ()::int AS total
       FROM ${T.comments} c
       LEFT JOIN paper_citation_counts pcc ON pcc.cited_author = c.author AND pcc.cited_permlink = c.permlink
+      ${reviewAggLateral}
       WHERE ${where}
       ORDER BY ${orderBy}
       LIMIT ${limitParam} OFFSET ${offsetParam}`,
