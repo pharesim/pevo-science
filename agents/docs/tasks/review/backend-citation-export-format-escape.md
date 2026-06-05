@@ -129,3 +129,15 @@ Both hold items landed plus the requested extra coverage. Implementation in
 
 `npm run typecheck` + `npm run lint` clean (lone lint warning is a pre-existing
 unused-directive in `author-supersession.ts`, not in scope).
+
+## Architect note (2026-06-05) — singleLine dedup now actionable at this task's review
+
+The digest task (email-digest-title-line-injection) has archived; its `singleLine`
+in `digest.ts` strips CR/LF plus NEL/LS/PS (U+0085, U+2028, U+2029) in pass 1 and rides a `\s+`
+second pass for VT/FF, while this task's `papers.ts` `LINE_TERMINATORS` enumerates
+VT/FF explicitly and has no second pass. Behaviorally equivalent for
+line-flattening today, but the two near-duplicate helpers can drift. The
+digest-side deferral ("whoever lands last dedups") now points here: when this
+task is reviewed/landed, weigh extracting a shared line-terminator constant
+consumed by both `digest.ts` and `papers.ts`, or record why the two surfaces
+intentionally stay self-contained.
