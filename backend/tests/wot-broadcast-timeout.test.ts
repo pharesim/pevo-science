@@ -470,10 +470,63 @@ describe('BE-WOT-BROADCAST-TIMEOUT-HANDLING — cascadeRevocation aggregate budg
         expect(err.completed).toEqual(['tx-v1']);
         // g1 (nested, never attempted) + v2, v3 (same-level slice(i + 1), never
         // attempted). Pre-fix, pending would be just ['g1'] — v2/v3 silently lost.
-        expect(new Set(err.pending)).toEqual(new Set(['g1', 'v2', 'v3']));
+        // Multiplicity-sensitive: sort the raw array (not a Set) so a duplicate
+        // would surface as an extra element rather than collapsing silently.
+        expect([...err.pending].sort()).toEqual(['g1', 'v2', 'v3']);
+        // No duplicates: the operator follow-up list serializes `pending`
+        // verbatim, so a repeated account name is observable noise.
+        expect(err.pending.length).toBe(new Set(err.pending).size);
         // completed ∪ pending covers every originally-identified account.
         const union = new Set([...err.completed.map((id) => id.replace('tx-', '')), ...err.pending]);
         expect(union).toEqual(new Set(['v1', 'g1', 'v2', 'v3']));
+        return true;
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('emits a shared diamond-graph vouchee exactly once in pending (dedup at throw)', async () => {
+    vi.useFakeTimers();
+    try {
+      // Diamond: boss → [a, d]; a → [d]. `d` is reachable via two voucher edges
+      // (boss→d directly AND boss→a→d). a's revocation lands, then the cascade
+      // recurses into a where the budget blows on d's deadline check, surfacing
+      // d via `nestedErr.pending`. Back at the boss level, d also sits in the
+      // same-level slice(i + 1) after a, so without the at-throw dedup it would
+      // be pushed to `pending` twice. The operator follow-up list serializes
+      // `pending` verbatim, so the duplicate would be observable noise.
+      hafQueryMock.mockImplementation(
+        makeCascadeHafMock({
+          childrenByRevoker: { boss: ['a', 'd'], a: ['d'] },
+          wotVouchees: new Set(['a', 'd']),
+        }),
+      );
+
+      broadcastJsonMock.mockImplementation(async (payload: { json: string }) => {
+        const parsed = JSON.parse(payload.json) as { account: string };
+        // After a's revocation lands, jump wall-clock past the 60s budget so the
+        // nested cascade for a's children (which is just d) aborts on its first
+        // deadline check rather than broadcasting d.
+        if (parsed.account === 'a') {
+          vi.setSystemTime(Date.now() + 61_000);
+        }
+        return { id: `tx-${parsed.account}` };
+      });
+
+      await expect(cascadeRevocation('boss')).rejects.toSatisfy((err: unknown) => {
+        if (!(err instanceof PartialCascadeError)) return false;
+        expect(err.rootRevocation).toBe('boss');
+        // Only a's revocation broadcast landed before the nested budget blow.
+        expect(err.completed).toEqual(['tx-a']);
+        // d arrives via BOTH the nested fold and the same-level slice(i + 1).
+        // Pre-fix, pending would be ['d', 'd']; the at-throw dedup collapses it.
+        expect([...err.pending].sort()).toEqual(['d']);
+        expect(err.pending.filter((p) => p === 'd')).toHaveLength(1);
+        expect(err.pending.length).toBe(new Set(err.pending).size);
+        // completed ∪ pending still covers every originally-identified account.
+        const union = new Set([...err.completed.map((id) => id.replace('tx-', '')), ...err.pending]);
+        expect(union).toEqual(new Set(['a', 'd']));
         return true;
       });
     } finally {

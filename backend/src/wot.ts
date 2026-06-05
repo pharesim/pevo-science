@@ -304,7 +304,7 @@ export async function cascadeRevocation(
     const findCte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
     const revokedParam = `$${findCte.nextIdx}`;
     const thresholdParam = `$${findCte.nextIdx + 1}`;
-    const result = await pool.query(
+    const result = await pool.query<{ vouchee: string }>(
       `${findCte.sql}
        SELECT av_target.vouchee
        FROM active_vouches av_target
@@ -319,7 +319,7 @@ export async function cascadeRevocation(
     );
 
     for (const [i, row] of result.rows.entries()) {
-      const vouchee = row.vouchee as string;
+      const vouchee = row.vouchee;
 
       // Aggregate budget check — abort cascade if we've blown through the
       // wall-clock cap. Everything not yet attempted lands in `pending`.
@@ -327,8 +327,16 @@ export async function cascadeRevocation(
         // Remaining vouchees in this level's result set (including `vouchee`)
         // are pending.
         const remainingRows = result.rows.slice(i);
-        for (const r of remainingRows) pending.push(r.vouchee as string);
-        throw new PartialCascadeError({ completed, pending, rootRevocation: revokedAccount });
+        for (const r of remainingRows) pending.push(r.vouchee);
+        // Dedupe before surfacing: a vouchee reachable via two voucher edges
+        // (diamond graph) can already sit in `pending` from a nested fold, and
+        // the operator follow-up list serializes `pending` verbatim. Order-
+        // preserving Set dedup keeps each account once.
+        throw new PartialCascadeError({
+          completed,
+          pending: [...new Set(pending)],
+          rootRevocation: revokedAccount,
+        });
       }
 
       // Revoke the vouchee's WoT accreditation
@@ -373,11 +381,16 @@ export async function cascadeRevocation(
             // slice(i). Use slice(i + 1) (not slice(i)) because the vouchee at
             // i was already broadcast above and is recorded in `completed`.
             for (const r of result.rows.slice(i + 1)) {
-              pending.push(r.vouchee as string);
+              pending.push(r.vouchee);
             }
+            // Dedupe before surfacing: the nested fold (`nestedErr.pending`)
+            // and this same-level slice can both name a vouchee reachable via
+            // two voucher edges (diamond graph), and a broadcast-timeout earlier
+            // in the loop can re-add a row covered by the slice. Order-preserving
+            // Set dedup keeps each account once in the operator follow-up list.
             throw new PartialCascadeError({
               completed,
-              pending,
+              pending: [...new Set(pending)],
               rootRevocation: depth === 0 ? revokedAccount : nestedErr.rootRevocation,
             });
           }
