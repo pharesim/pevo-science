@@ -47,3 +47,11 @@ Wrap each affected arm in a `DISTINCT ON` subquery so edits/revotes do not produ
 - [backend/src/routes/papers.ts](backend/src/routes/papers.ts) line 3249 (`DISTINCT ON` precedent).
 - [agents/docs/hive-schemas.md](agents/docs/hive-schemas.md) line 106 (edit semantics).
 - HAF-query review run `w274tijk0` rank #7.
+
+## Backend completion note (2026-06-05)
+
+Implemented inline against HEAD (the worktree fan-out forked from a 112-commit-stale base; the stale worker's diff would have reverted arm 2c, the signer gates, and the citation paper-existence INNER JOINs). Landed in commit `3007f498`. All eight UNION-ALL arms that read raw operation views are dedup-wrapped (1a/1b/5 comment earliest-wins, 2a/2b/2c vote latest-wins, 6a/6b citation earliest-wins), preserving every existing gate. Arm 2c (votes on reviews, target_type 'review') is included in addition to the arms the task named.
+
+Design note: follows the established `DISTINCT ON ... ORDER BY ..., block_num [ASC|DESC]` precedent (papers.ts, reputation.ts) with NO secondary tiebreaker. Adding same-block tiebreakers is the separate `backend-window-cte-deterministic-tiebreaker` task's scope; for notification dedup the dedup key is itself the notification identity, so same-block ambiguity is benign.
+
+Coverage note: the edit/revote behavioral cases (3 edits to 1, toggle to latest, retract to 0, citation-in-edit fires once) are pinned as SQL-shape canaries in `notifications-arm-sql-shape.test.ts` (DISTINCT ON key + ORDER BY direction per arm class, plus the outer weight-hoist), consistent with that file's documented carve-out: real chain-seeding of edit/revote sequences is impractical for these arms, and the deterministic substitute is the clause-form canary. The DISTINCT ON shape is the structural guarantee of the no-duplicate-`block_num`-key invariant the acceptance lists. If you want an additional real-HAF no-dup smoke against a known-active account, flag it and I will add it; I judged the canary plus structural guarantee sufficient and did not want to couple a B assertion into A's `notifications.test.ts`. typecheck + lint clean; `notification-arm-semantics.test.ts` and the lateral-guard canaries stay green against real HAF.

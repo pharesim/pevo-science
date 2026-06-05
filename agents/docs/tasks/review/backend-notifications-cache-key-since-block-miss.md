@@ -49,3 +49,9 @@ All tabs and the next 60s of polls then share one HAF computation.
 - [backend/src/cache.ts](backend/src/cache.ts) — `hafCache`, `stable` flag semantics.
 - [backend/src/block-watcher.ts](backend/src/block-watcher.ts) — `clearVolatile()` behavior.
 - HAF-query review run `w274tijk0` rank #8.
+
+## Backend completion note (2026-06-05)
+
+Implemented inline against HEAD (the worktree fan-out forked from a 112-commit-stale base; see session report). Landed in commit `bbd5e480`. Matches the suggested approach: the cache key dropped `since_block` (now `notifications:${account}:${limit}`), the batch is computed against a fixed window floor (`chain head - 100_000`, clamped to genesis, falling back to the genesis floor when the block-watcher has not ticked yet, e.g. fresh boot or tests), cached `stable: true` with a 60s TTL, and the poll's `since_block` is re-applied in-app via `applySinceBlockFilter`, which also recomputes `latest_block`/`has_more` over the filtered subset so forward pagination stays consistent. Tests in `notifications.test.ts` pin the in-app `> since_block` filter, the above-head empty-batch cursor floor, and window-sharing across two polls with different cursors. typecheck + lint clean; `notifications.test.ts` green against real HAF.
+
+[TODO Architect] Optional contract clarification (`notifications.md`): with the fixed window, a fresh client polling `since_block=0` now sees events only within the last ~100k blocks (about 3.5 days), not from genesis. The existing "use 0 to get the most recent events" note roughly covers this; flagging in case the contract should state the window bound explicitly. Not a breaking change for the forward-poll case.

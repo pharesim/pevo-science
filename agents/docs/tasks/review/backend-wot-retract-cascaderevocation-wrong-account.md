@@ -46,3 +46,12 @@ Keep `cascadeRevocation(account)` reserved for actual accreditation revocations 
 - [backend/src/wot.ts](backend/src/wot.ts) lines 270-419 (`cascadeRevocation`, `getVouchStatus`, `invalidateOnRevocation`).
 - Existing `cascadeRevocation` consumers from real accreditation-revocation paths (those callers stay).
 - HAF-query review run `w274tijk0` rank #6.
+
+## Backend completion note (2026-06-05)
+
+Implemented inline against HEAD (the worktree fan-out forked from a 112-commit-stale base; see session report). Landed in commit `6e1b61b3`.
+
+- `/api/wot/retract` now routes through `revokeVoucheeIfBelowThreshold(vouchee, retractingVoucher)` in `wot.ts`: a single discovery query (no cascade loop) returns the vouchee iff it is currently WoT-accredited (`method = 'wot'`) and, excluding the retracting voucher from its accredited-voucher count, now sits below the threshold. Excluding the voucher in SQL makes the decision independent of whether HAF has ingested the retract_vouch yet (a robustness improvement over a plain post-retract recount, mirroring the exclusion `cascadeRevocation` already does). On a positive result it invalidates the reputation batch entry before broadcasting exactly one revoke. `cascadeRevocation` is untouched and stays reserved for accreditation-revocation paths.
+- Tests: `tests/routes/wot-retract-cascaderevocation.test.ts` (8 cases, lib + route layers, 3.3s) pins below/at-threshold, the wrong-account regression (the discovery target resolved from `aa_target.account = $N` is the vouchee, never the voucher), single-discovery-query-not-cascade-loop, DEL-before-broadcast on the timeout path, and the timeout/chain_error outcomes. `wot.test.ts` and `wot-broadcast-timeout.test.ts` stay green. typecheck + lint clean.
+
+[TODO Architect] API contract update required (`agents/docs/api-contracts/accreditation.md`, `POST /api/wot/retract`): the response shape changed. Dropped `partial_cascade` (it was tied to the cascade-budget mechanic, which no longer applies to a single-broadcast path). Added `revocation_outcome` with values `revoked`, `skipped`, `timeout`, `chain_error`. `revocations` is now an array of 0 or 1 tx id (was the cascade's N). Frontend impact verified none: `frontend/src/api.js`'s `notifyRetractVouch` returns the raw response and reads no specific field.
