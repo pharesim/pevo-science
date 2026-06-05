@@ -345,7 +345,20 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
         pipeline.set(stagingPath, JSON.stringify(result));
         stagingKeys.push(stagingPath);
       }
-      await pipeline.exec();
+      // ioredis pipeline.exec() resolves with a [err, result] tuple per queued
+      // command and does NOT throw on a per-command failure — the outer promise
+      // rejects only on a connection-level fault. A failed staging SET that went
+      // unchecked here would let the sentinel SET and the atomic Lua swap run on
+      // a partially-staged set: the Lua RENAMEs the keys that DID stage, advances
+      // cycle:last, and leaves the rest at the prior cycle — readers would then
+      // see a mix of the new cycle and the old one. Inspect every tuple and bail
+      // before the sentinel SET so a partial-staging failure does NOT advance the
+      // cycle; the next run's clearStagingKeys drops the partial set cleanly.
+      const results = await pipeline.exec();
+      if (!results || results.some(([err]) => err !== null)) {
+        logger.error({ cycle, userCount: users.length }, 'Reputation staging pipeline returned a per-command error; bailing without advancing cycle:last');
+        break;
+      }
 
       // Crash-mid-Lua sentinel: written BEFORE the atomic swap, DEL'd inside
       // the Lua. A surviving sentinel on the next startup means the swap
