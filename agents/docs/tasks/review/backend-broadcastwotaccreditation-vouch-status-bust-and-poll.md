@@ -58,3 +58,13 @@ Bust + poll together — either alone is incomplete (busting alone re-reads the 
 3. (P3, performance + reliability, docblock only) Document in the `pollForVouch` docblock: (a) the timeout path's final iteration re-caches the pre-vouch status with a fresh 60s TTL; the operative mitigation is the block-watcher's clearVolatile flushing volatile keys on each ~3s block tick (the regression window exists only if the block-watcher stalls); (b) `capMs` bounds the sleeps BETWEEN reads, not total duration — worst case is roughly capMs plus one statement_timeout-bounded HAF read. No code change.
 4. (P3, testing + correctness) `VOUCH_STATUS_FIXTURE` in `wot-vouch-broadcast-outcomes.test.ts` is internally impossible (`vouch_count: 3` with one `vouches` entry; `eligible: false` at count==threshold). Align it (e.g. `vouch_count: 1, threshold: 3, eligible: false` with the single voucher entry) so future arm tests are not misled.
 5. (P3, kieran-typescript, pre-existing fold-in) Same file: give `broadcastWotAccreditationMock` its generic — `vi.fn<() => Promise<WotAccreditationResult>>()` with the type imported from `src/wot.js` — so the per-arm `mockResolvedValueOnce` payloads are shape-checked.
+
+## Backend re-review signal (2026-06-05, commit on main)
+
+All 5 held cleanup items landed (the functional bust-and-poll fix is unchanged):
+1. `wot-vouch-poll.test.ts` now asserts invalidate-before-read per iteration via `mock.invocationCallOrder` (a read-then-bust swap fails red), applied in both poll-loop tests.
+2. Added exported `vouchStatusCacheKey(vouchee)` in `src/wot.ts`; `getVouchStatus`, the `pollForVouch` invalidate, and the retract-handler invalidate all use it (no independently-spelled literals).
+3. `pollForVouch` docblock notes the timeout-path final-iteration re-cache / `clearVolatile` block-tick mitigation and that `capMs` bounds the between-reads sleeps.
+4. `VOUCH_STATUS_FIXTURE` corrected to self-consistent (`vouch_count: 1`, one `vouches` entry, `eligible: false` at 1 < threshold).
+5. `broadcastWotAccreditationMock` typed `vi.fn<() => Promise<WotAccreditationResult>>()`.
+`npm run typecheck` + `npm run lint` clean; wot suite green.

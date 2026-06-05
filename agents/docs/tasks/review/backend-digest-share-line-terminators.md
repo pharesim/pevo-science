@@ -29,3 +29,7 @@ Extract `LINE_TERMINATORS` (and possibly the `singleLine` helper) to a shared es
 - `backend/src/routes/papers.ts` — `LINE_TERMINATORS` constant (single source of truth).
 - `backend/src/digest.ts` — `singleLine` helper with the narrower alphabet.
 - Surfaced by the architect re-review of `backend-citation-export-format-escape` (maintainability lens).
+
+## Backend signal (2026-06-05, commit on main)
+
+Extracted `LINE_TERMINATORS` (the 7-char CR/LF/VT/FF/NEL/LS/PS class) to a new shared module `backend/src/lib/line-terminators.ts`, imported by BOTH `routes/papers.ts` (replacing the local const) and `digest.ts` (`singleLine` now uses it, fixing the prior VT/FF omission). Added an extended-line-terminator-alphabet test block in `digest-title-strip.test.ts` (FF/VT-forged titles collapse to one line). Note: the implementer corrected the docblock claim about `\s` — in V8 `\s` already matches VT/FF/LS/PS, so only NEL (U+0085) is the genuine `\s`-collapse survivor. `npm run typecheck` + `npm run lint` clean; digest + papers cite tests green.

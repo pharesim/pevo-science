@@ -78,3 +78,10 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 2. **Two pre-existing emdashes in user-facing HTTP response strings in the same file** (`verifyHiveSignature.ts`): "Signature already used — replay rejected" and "Invalid signature — does not match account posting key". Replace the emdash with a period or restructure (no-emdash rule covers HTTP response strings). You are already editing this file for item 1.
 
 Not blocking (handled elsewhere): the concurrent-replay TOCTOU, same-second revocation off-by-one, and iat-absent skip are pre-existing and tracked in `backend-verifyhivesignature-preexisting-replay-revocation-hardening`. The `logger.error`-per-request-during-outage is accepted (the 503 rate is the operator signal; keep the level).
+
+## Backend re-review signal (2026-06-05, commit on main)
+
+Both held items landed (the core fail-closed catch->503 conversion is unchanged):
+1. Added `details: { retriable: true }` to the session-invalidation 503 `sendError` in `verifyHiveSignature.ts` so the SPA's `isRetriable503()` auto-retries; the failclosed test now asserts `details.retriable === true` (still runs the real `verifyHiveSignature` middleware).
+2. De-emdashed both user-facing response strings: "Signature already used. Replay rejected." and "Invalid signature. Does not match account posting key."
+The concurrent-replay TOCTOU / same-second / iat-absent items are out of scope (tracked in the blocked `backend-verifyhivesignature-preexisting-replay-revocation-hardening`). `npm run typecheck` + `npm run lint` clean.
