@@ -567,7 +567,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md`,
     // the SQL-shape canary in profile-reviews-accred-gate.test.ts pins
     // the resolved param positions so a positional mis-bind fails red.
-    const accredCte = activeAccreditationsCteBody(1);
+    const accredCte = buildWith(1, activeAccreditationsCteBody);
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;
     const appTagIdx = paramIdx++;
@@ -593,7 +593,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     ];
 
     const countResult = await pool.query(
-      `WITH ${accredCte.sql}
+      `${accredCte.sql}
        SELECT count(*)::int AS total FROM ${T.comments} c
        JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
        WHERE c.author = $${usernameIdx} AND c.parent_author != ''
@@ -622,7 +622,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     if (sort === 'votes') dataParams.push(accreditedAccounts);
 
     const dataResult = await pool.query(
-      `WITH ${accredCte.sql}
+      `${accredCte.sql}
        SELECT c.author, c.permlink, LEFT(c.body, 300) AS body,
               c.json_metadata, c.created,
               c.parent_author, c.parent_permlink,

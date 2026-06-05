@@ -2,7 +2,7 @@ import { getPool } from './db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
-import { T, activeAccreditationsCteBody, accreditationStatusCteBody } from './hafsql.js';
+import { T, buildWith, activeAccreditationsCteBody, accreditationStatusCteBody } from './hafsql.js';
 
 export type AccreditationStatus = 'active' | 'revoked';
 
@@ -120,9 +120,9 @@ export async function getAccreditedOrcidsByAccount(): Promise<Map<string, string
       if (!pool) return [];
 
       try {
-        const cte = activeAccreditationsCteBody();
+        const cte = buildWith(1, activeAccreditationsCteBody);
         const result = await pool.query(
-          `WITH ${cte.sql}
+          `${cte.sql}
            SELECT account, orcid FROM active_accreditations`,
           cte.params,
         );
@@ -187,9 +187,9 @@ export async function getAccreditedNamesByAccount(): Promise<Map<string, string>
       if (!pool) return [];
 
       try {
-        const cte = activeAccreditationsCteBody();
+        const cte = buildWith(1, activeAccreditationsCteBody);
         const result = await pool.query(
-          `WITH ${cte.sql}
+          `${cte.sql}
            SELECT account, researcher_name FROM active_accreditations
            WHERE NULLIF(researcher_name, '') IS NOT NULL`,
           cte.params,
@@ -241,9 +241,9 @@ export async function getAllAccreditedAccounts(): Promise<Set<string>> {
     if (!pool) return [];
 
     try {
-      const cte = activeAccreditationsCteBody();
+      const cte = buildWith(1, activeAccreditationsCteBody);
       const result = await pool.query(
-        `WITH ${cte.sql}
+        `${cte.sql}
          SELECT account FROM active_accreditations`,
         cte.params,
       );
@@ -318,13 +318,13 @@ export async function getAllEverAccreditedOrcidsWithStatus(): Promise<
         // `accreditation_status` depends on `accred_ranked` (materialized
         // by `activeAccreditationsCteBody`), so the WITH block must
         // include both. Params come from the active-accreditations CTE
-        // alone (the status CTE adds no params).
-        const accredCte = activeAccreditationsCteBody();
-        const statusCte = accreditationStatusCteBody(accredCte.nextIdx);
+        // alone (the status CTE adds no params); `buildWith` threads the
+        // running param index from the first builder into the second.
+        const cte = buildWith(1, activeAccreditationsCteBody, accreditationStatusCteBody);
         const result = await pool.query(
-          `WITH ${accredCte.sql}, ${statusCte.sql}
+          `${cte.sql}
            SELECT account, orcid, status FROM accreditation_status`,
-          [...accredCte.params, ...statusCte.params],
+          cte.params,
         );
         return result.rows.map(
           (r: { account: string; orcid: string | null; status: AccreditationStatus }) => ({
