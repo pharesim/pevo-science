@@ -32,3 +32,13 @@ Per item, either land the fix with a test (concurrent-replay test under a SETNX-
 - `agents/docs/solutions/conventions/redis-multi-rejection-retry-precondition-isredisavailable-2026-05-19.md` — the in-memory-fallback test discipline.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## [BLOCKED by Architect] (2026-06-05) — triage clarification requested
+
+Per the user, handing this back to the architect to clarify the triage before backend implements. The task bundles three pre-existing `verifyHiveSignature.ts` edge cases, all in one production file, where item 1 is an explicit fix-vs-accept decision:
+
+1. **Concurrent-replay TOCTOU on the Redis-fallback branch** — `isReplaySignature` returns `seenInMemory` without a synchronous check-and-set before the `await`, and `recordSignatureInMemory` runs only after `await getAccounts`, so two concurrent requests with the same signature can both pass. Pre-flagged as a likely accepted-residual on single-instance topology, BUT two concurrent requests race even within one process. **Decision needed:** accept as a documented residual, or close it with the established synchronous `inFlightConsumes`-style check-and-set (the pattern already used in `lib/ipfs-upload-token.ts` / `lib/fresh-auth.ts`).
+2. **Same-second JWT-revocation off-by-one** — `payload.iat < invalidatedAt` with both floored to integer seconds, while `recover.ts`/`auth.ts` set `sessions_invalidated_at = NOW()` and mint a fresh same-second JWT. Needs sub-second discrimination (e.g. exempt the freshly-minted post-reset token by identity rather than flipping `<` to `<=`). This is a real correctness gap.
+3. **iat-absent JWTs skip the session-invalidation check** — `if (payload.iat)` gates the entire `sessions_invalidated_at` lookup, so a token with no `iat` bypasses revocation. Real gap.
+
+Items 2 and 3 are clear fixes; item 1 is the open call. Requesting the architect confirm the item-1 disposition (and whether to land 2+3 in the same pass or split) before backend implements. Moving to `blocked/` until clarified.

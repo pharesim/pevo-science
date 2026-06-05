@@ -41,3 +41,17 @@ Stop silently dropping boundary-block events. Use `has_more` to either re-fetch 
 - [backend/src/digest.ts](backend/src/digest.ts) line 170 (digest consumer).
 - Frontend notifications poll path (touches `latest_block` consumption — likely `frontend/src/lib/notifications.js` or similar; verify path during implementation).
 - HAF-query review run `w274tijk0` rank #9.
+
+## [BLOCKED by Architect] (2026-06-05)
+
+This task is cross-zone and cannot proceed as a single backend task. Its fix spans both zones:
+- **Frontend (UI zone):** `frontend/src/notifications.js` `poll()` must consult `has_more` and rewind the cursor (re-fetch the boundary block) instead of advancing past a block the SQL `LIMIT` cut. Test: `frontend/tests/unit/notifications.test.js`.
+- **Backend (this zone):** `backend/src/digest.ts` `runDigest` must consult `batch.has_more` before advancing `last_digest_block`. Test: `backend/tests/digest-cursor-advance.test.ts`.
+
+The backend agent cannot stage `frontend/` files nor create a `ui-*` task file (the `commit-msg` zone-audit hook rejects both). Per the user's call:
+
+**Requested of the Architect:**
+1. Create a `ui-*` task (e.g. `ui-notifications-block-cursor-boundary-rewind`) for the frontend consumer to consult `has_more` and rewind the poll cursor by one block when an over-budget boundary block was cut by the SQL `LIMIT`. Note: `applySinceBlockFilter` in `routes/notifications.ts` already recomputes a filtered `has_more`, so the frontend should respect THAT value; the route layer likely needs no change.
+2. Decide whether the backend `digest.ts` half stays in this task (which then becomes backend-only once the UI half is split out) or splits into its own backend task. The backend digest fix is small and ready to implement once the split is confirmed.
+
+Moving to `blocked/` until the architect creates the UI task / confirms the split.
