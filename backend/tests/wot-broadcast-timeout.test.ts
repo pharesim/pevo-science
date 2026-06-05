@@ -41,9 +41,39 @@
  *     this file's "call-ordering on timeout" risk class. Both must hold;
  *     each pinned by a different test that exercises a different part of
  *     the integrated path.
+ *
+ * Real-Postgres discovery-query regression (the
+ * `cascadeRevocation discovery query — real Postgres JOIN/HAVING` describe
+ * block) does NOT use the mocked `getPool()`. Per the CLAUDE.md carve-out:
+ *   (a) The mocked-pool specs above return the to-be-revoked set DIRECTLY,
+ *       bypassing the real JOIN/HAVING SQL, so they cannot detect a
+ *       selection-parity regression in the discovery query itself (e.g. an
+ *       INNER vs LEFT join that silently drops a cascade-terminal vouchee
+ *       whose only voucher is the now-unaccredited revoked account). A
+ *       real-HAF variant is impractical: the discriminating graph
+ *       (accredited vouchee, single voucher = the revoked account, that
+ *       voucher's accreditation already gone) cannot be seeded into HAF's
+ *       chain mirror without broadcasting and waiting out indexing lag. The
+ *       block instead runs the production `cascadeDiscoverySelect()` body
+ *       verbatim against a live Postgres, with the `active_accreditations` /
+ *       `active_vouches` CTEs redirected at a synthetic `operation_custom_
+ *       json_view` VALUES set — the same FROM-redirect technique as
+ *       `active-vouches-signer-gate.test.ts`. The JOIN/HAVING logic under
+ *       test is the production SQL, executed by a real query planner.
+ *   (b) No auth middleware: the discovery query sits below the route layer
+ *       and is exercised through a raw `pg.Pool`, so there is no
+ *       cryptographic verification to run real.
+ *   (c) The real-path companion for the assembled cascade behavior is the
+ *       mocked-pool cascade specs above (call-count, budget, accounting) and
+ *       the live-HAF `revokeVoucheeIfBelowThreshold` coverage; this block is
+ *       itself the real-path companion for the discovery query's SQL-shape
+ *       risk class (selection parity), which no mocked-pool test can cover.
+ *       Skips when no Postgres is configured, mirroring sibling real-DB
+ *       tests so CI without a DB stays green.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
+import pg from 'pg';
 
 const {
   hafQueryMock,
@@ -108,7 +138,7 @@ vi.mock('../src/reputation.js', async () => {
   };
 });
 
-const { broadcastWotAccreditation, cascadeRevocation, PartialCascadeError, getWotThreshold } =
+const { broadcastWotAccreditation, cascadeRevocation, PartialCascadeError, getWotThreshold, cascadeDiscoverySelect } =
   await import('../src/wot.js');
 const { BroadcastTimeoutError } = await import('../src/hive.js');
 const { hafCache } = await import('../src/cache.js');
@@ -280,38 +310,25 @@ describe('cascadeRevocation — single discovery query per level', () => {
     expect(hafQueryMock).toHaveBeenCalledTimes(4);
   });
 
-  it('selects only wot-accredited vouchees that fall below threshold (parity with prior loop)', async () => {
-    // The fixture's `wotVouchees` set emulates the SQL gates
-    // (aa_target.method = 'wot' AND HAVING count < threshold). Vouchees
-    // outside the set are dropped — mirroring the previous loop's
-    // per-vouchee accreditation + recount filters.
-    hafQueryMock.mockImplementation(
-      makeCascadeHafMock({
-        childrenByRevoker: { boss: ['wot-low', 'wot-high', 'non-wot'] },
-        // Only wot-low survives both gates; wot-high has >= threshold
-        // remaining vouchers (not in wotVouchees), non-wot fails the method
-        // gate (not in wotVouchees).
-        wotVouchees: new Set(['wot-low']),
-      }),
-    );
-    broadcastJsonMock.mockImplementation(async (payload: { json: string }) => {
-      const parsed = JSON.parse(payload.json) as { account: string };
-      return { id: `tx-${parsed.account}` };
-    });
-
-    const completed = await cascadeRevocation('boss');
-    expect(completed).toEqual(['tx-wot-low']);
-    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-  });
+  // Selection-parity (which vouchees the discovery query returns) is NOT
+  // covered here: the mocked pool returns the to-be-revoked set directly,
+  // bypassing the real JOIN/HAVING. The real-Postgres block below executes the
+  // production `cascadeDiscoverySelect()` SQL against a live query planner so
+  // the INNER-vs-LEFT-join selection parity is actually exercised.
 
   it('binds revokedAccount and threshold to the discovery query', async () => {
     // Pin the parameter slot contract: cteParams come first, then
     // revokedAccount, then threshold. Off-by-one in the bind order would
     // silently flip filter semantics.
     hafQueryMock.mockImplementation(async (_sql: string, params: unknown[]) => {
-      // Capture: last two params should be revokedAccount + threshold.
+      // Capture: last two params should be revokedAccount + threshold. Pin the
+      // threshold to its actual value (the configured default), not just its
+      // type — a bind that passed a number-shaped but wrong value (e.g. the
+      // CTE's appTag length, or a hardcoded 0) would silently flip the
+      // below-threshold filter and is exactly what `typeof === 'number'` alone
+      // cannot catch.
       expect(params[params.length - 2]).toBe('boss');
-      expect(typeof params[params.length - 1]).toBe('number');
+      expect(params[params.length - 1]).toBe(await getWotThreshold());
       return { rows: [] };
     });
 
@@ -533,6 +550,254 @@ describe('BE-WOT-BROADCAST-TIMEOUT-HANDLING — cascadeRevocation aggregate budg
       vi.useRealTimers();
     }
   });
+});
+
+// cascadeRevocation non-budget nested-error accounting: a HAF (or other
+// non-PartialCascadeError) failure inside the recursive call, AFTER the
+// parent-level vouchee's revocation broadcast already landed, must not
+// double-count that vouchee. Pre-fix, the re-thrown nested error fell to the
+// iteration's outer catch whose `pending.push(vouchee)` re-added the
+// already-completed vouchee, so it appeared in BOTH completed and pending.
+// completed ∪ pending must cover each identified vouchee exactly once.
+describe('cascadeRevocation — non-budget nested error does not double-count the parent vouchee', () => {
+  it('keeps the already-revoked parent vouchee in completed only (not also pending) and continues siblings', async () => {
+    // boss → [v1, v2, v3]; v1 → [g1]. v1's revocation lands, then the cascade
+    // recurses into v1. The nested discovery query for v1 throws a non-budget
+    // HAF error. v1 stays completed; v2 and v3 (independent same-level siblings)
+    // still get processed. The nested subtree (g1) is skipped — it was never
+    // returned by the failed nested call.
+    let v1Recursed = false;
+    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('SELECT av_target.vouchee')) {
+        const revoker = params[params.length - 2] as string;
+        // The nested discovery for v1 throws a non-budget error the FIRST time
+        // v1 is the revoker (i.e. the recursive call), simulating a transient
+        // HAF failure inside the subtree.
+        if (revoker === 'v1') {
+          v1Recursed = true;
+          throw new Error('HAF discovery query failed inside nested cascade');
+        }
+        const kids: Record<string, string[]> = { boss: ['v1', 'v2', 'v3'] };
+        return { rows: (kids[revoker] ?? []).map((v) => ({ vouchee: v })) };
+      }
+      return { rows: [] };
+    });
+    broadcastJsonMock.mockImplementation(async (payload: { json: string }) => {
+      const parsed = JSON.parse(payload.json) as { account: string };
+      return { id: `tx-${parsed.account}` };
+    });
+
+    const completed = await cascadeRevocation('boss');
+
+    // v1's broadcast landed (it is completed) and the nested failure did not
+    // abort the same-level siblings: v2 and v3 also completed.
+    expect(completed).toEqual(['tx-v1', 'tx-v2', 'tx-v3']);
+    // The recursion into v1 actually fired (otherwise this asserts nothing).
+    expect(v1Recursed).toBe(true);
+    // Exactly the three same-level vouchees were broadcast — g1 was never
+    // attempted because the nested discovery threw before returning it.
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(3);
+    // No duplicates: each completed tx id is distinct (the double-count this
+    // test guards against would have surfaced as v1 in both completed and a
+    // PartialCascadeError pending list — here there is no PartialCascadeError
+    // at all, the cascade completes normally).
+    expect(new Set(completed).size).toBe(completed.length);
+  });
+});
+
+// Real-Postgres regression for the discovery query's INNER-vs-LEFT-join
+// selection parity. Executes the production `cascadeDiscoverySelect()` SQL
+// verbatim against a live Postgres, with the `active_accreditations` /
+// `active_vouches` CTEs redirected at a synthetic operation_custom_json_view
+// VALUES set (same FROM-redirect technique as active-vouches-signer-gate.test).
+// This is the ONE coverage that catches the cascade-terminal drop the
+// mocked-pool specs structurally cannot: a WoT-accredited vouchee whose only
+// voucher is the now-unaccredited revoked account. See the file header's
+// real-Postgres carve-out clauses (a)/(b)/(c).
+const DISCOVERY_DB_URL = process.env.APP_DATABASE_URL || process.env.HAF_DATABASE_URL?.split(',')[0];
+const discoveryPool = DISCOVERY_DB_URL
+  ? new pg.Pool({ connectionString: DISCOVERY_DB_URL, max: 1 })
+  : null;
+
+afterAll(async () => {
+  if (discoveryPool) await discoveryPool.end();
+});
+
+/**
+ * Run the production `cascadeDiscoverySelect()` SQL against the synthetic graph
+ * and return the selected vouchees, sorted. `accreditations` is a list of
+ * [account, method] pairs (each becomes an `accredit` custom_json signed by an
+ * accreditation authority); `vouches` is a list of [voucher, vouchee] pairs
+ * (each a `vouch` custom_json signed by the voucher). The CTE bodies are the
+ * real ones from hafsql.ts, only their FROM redirected at `synthetic_cj`.
+ */
+async function runDiscovery(opts: {
+  accreditations: Array<[string, string]>;
+  vouches: Array<[string, string]>;
+  revoked: string;
+  threshold: number;
+}): Promise<string[]> {
+  const { activeAccreditationsCteBody, activeVouchesCteBody, buildWith, T } = await import('../src/hafsql.js');
+
+  // Build the real CTE block, then redirect its FROM at the synthetic set. The
+  // accred/vouch CTE bodies each reference `${T.customJson} cj`; both collapse
+  // to the same synthetic relation. `buildWith()` prefixes `WITH `; strip it so
+  // our own `synthetic_cj` CTE can lead the combined WITH block.
+  const cte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
+  const cteBodies = cte.sql.replace(/^\s*WITH\s+/, '');
+  const redirectedCte = cteBodies.split(`${T.customJson} cj`).join('synthetic_cj cj');
+
+  const valueLines: string[] = [];
+  // cte.params already carries [appTag, authorities, appTag] for the two
+  // bodies; $1 is the appTag bind reused as every synthetic row's custom_id.
+  const params: unknown[] = [...cte.params];
+  const appTagParam = '$1';
+  // block_num orders rows for the per-account/per-pair ROW_NUMBER ranking; the
+  // synthetic `id` column stands in for the real view's `cj.id` (selected as
+  // `event_id` by activeAccreditationsCteBody). Neither value is asserted on —
+  // only their column presence matters so the real CTE bodies compile.
+  let block = 100;
+  for (const [account, method] of opts.accreditations) {
+    const jsonIdx = params.push(JSON.stringify({ action: 'accredit', account, method, name: account }));
+    // Accreditation rows must be signed by an accreditation authority for the
+    // `?| accreditationAuthorities` gate to admit them. config.hiveAdminAccount
+    // is always in that set.
+    const authsIdx = params.push(JSON.stringify([config.hiveAdminAccount]));
+    valueLines.push(`('id-'||${block}, ${appTagParam}::text, $${jsonIdx}::text, $${authsIdx}::jsonb, ${block++}::bigint)`);
+  }
+  for (const [voucher, vouchee] of opts.vouches) {
+    const jsonIdx = params.push(JSON.stringify({ action: 'vouch', voucher, vouchee }));
+    // Vouch rows must be signed by the voucher (`required_posting_auths ? voucher`).
+    const authsIdx = params.push(JSON.stringify([voucher]));
+    valueLines.push(`('id-'||${block}, ${appTagParam}::text, $${jsonIdx}::text, $${authsIdx}::jsonb, ${block++}::bigint)`);
+  }
+
+  const revokedParam = `$${params.push(opts.revoked)}`;
+  const thresholdParam = `$${params.push(opts.threshold)}`;
+
+  const sql = `
+    WITH synthetic_cj(id, custom_id, json, required_posting_auths, block_num) AS (
+      VALUES
+        ${valueLines.join(',\n        ')}
+    ),${redirectedCte}
+    ${cascadeDiscoverySelect(revokedParam, thresholdParam)}`;
+
+  const result = await discoveryPool!.query<{ vouchee: string }>(sql, params);
+  return result.rows.map((r) => r.vouchee).sort();
+}
+
+describe('cascadeRevocation discovery query — real Postgres JOIN/HAVING', () => {
+  it.skipIf(!discoveryPool)(
+    'selects the cascade-terminal vouchee whose only voucher is the now-unaccredited revoked account',
+    { timeout: 30_000 },
+    async () => {
+      // The revoked account `boss` is NOT in the accreditation set (its own
+      // accreditation was already revoked — the trigger for the cascade). So
+      // boss's vouch edges find no `aa_voucher` match. `zero-rem` is vouched
+      // ONLY by boss; under the OLD INNER joins its group never formed (no
+      // surviving voucher row) and it was silently dropped — left
+      // WoT-accredited with zero accredited vouchers, the exact account the
+      // cascade exists to catch. The LEFT-join NULL-skipping HAVING keeps the
+      // group (count 0 < 3) and selects it.
+      const selected = await runDiscovery({
+        accreditations: [
+          ['zero-rem', 'wot'],
+          ['below-thresh', 'wot'],
+          ['at-thresh', 'wot'],
+          ['non-wot', 'email'], // accredited, but not via wot -> excluded by aa_target gate
+          // surviving accredited vouchers (NOT boss):
+          ['va', 'email'],
+          ['vb', 'email'],
+          ['vc', 'email'],
+        ],
+        vouches: [
+          // boss vouched all four targets; boss is itself unaccredited.
+          ['boss', 'zero-rem'],
+          ['boss', 'below-thresh'],
+          ['boss', 'at-thresh'],
+          ['boss', 'non-wot'],
+          // below-thresh: boss + va, vb -> 2 remaining accredited (< 3) -> selected.
+          ['va', 'below-thresh'],
+          ['vb', 'below-thresh'],
+          // at-thresh: boss + va, vb, vc -> 3 remaining accredited (= 3) -> NOT selected.
+          ['va', 'at-thresh'],
+          ['vb', 'at-thresh'],
+          ['vc', 'at-thresh'],
+          // non-wot: boss + va, vb -> would be < 3, but the method gate excludes it.
+          ['va', 'non-wot'],
+          ['vb', 'non-wot'],
+        ],
+        revoked: 'boss',
+        threshold: 3,
+      });
+
+      // zero-rem (cascade-terminal, the INNER-join regression) and below-thresh
+      // are selected; at-thresh (exactly at threshold) and non-wot (method gate)
+      // are not.
+      expect(selected).toEqual(['below-thresh', 'zero-rem']);
+    },
+  );
+
+  it.skipIf(!discoveryPool)(
+    'distinguishes threshold-1 (selected) from exactly-threshold (not selected)',
+    { timeout: 30_000 },
+    async () => {
+      // Boundary pin independent of the zero case: `edge-low` keeps 2 remaining
+      // accredited vouchers after excluding the revoked one (2 < 3 -> selected);
+      // `edge-at` keeps exactly 3 (3 == 3 -> NOT selected).
+      const selected = await runDiscovery({
+        accreditations: [
+          ['edge-low', 'wot'],
+          ['edge-at', 'wot'],
+          ['boss', 'email'], // boss IS accredited here (a normal revocation, not terminal)
+          ['s1', 'email'],
+          ['s2', 'email'],
+          ['s3', 'email'],
+        ],
+        vouches: [
+          ['boss', 'edge-low'],
+          ['boss', 'edge-at'],
+          // edge-low: boss + s1, s2 -> 2 remaining accredited.
+          ['s1', 'edge-low'],
+          ['s2', 'edge-low'],
+          // edge-at: boss + s1, s2, s3 -> 3 remaining accredited.
+          ['s1', 'edge-at'],
+          ['s2', 'edge-at'],
+          ['s3', 'edge-at'],
+        ],
+        revoked: 'boss',
+        threshold: 3,
+      });
+
+      expect(selected).toEqual(['edge-low']);
+    },
+  );
+
+  it.skipIf(!discoveryPool)(
+    'excludes a non-wot-accredited vouchee even when it would fall below threshold',
+    { timeout: 30_000 },
+    async () => {
+      // `email-vouchee` is accredited via the email method (not wot) and would
+      // be below threshold; the `aa_target.method = 'wot'` gate must exclude it.
+      const selected = await runDiscovery({
+        accreditations: [
+          ['email-vouchee', 'email'],
+          ['wot-vouchee', 'wot'],
+          ['boss', 'email'],
+        ],
+        vouches: [
+          ['boss', 'email-vouchee'],
+          ['boss', 'wot-vouchee'],
+        ],
+        revoked: 'boss',
+        threshold: 3,
+      });
+
+      // Only the wot-accredited vouchee surfaces; the email-accredited one is
+      // gated out regardless of its voucher count.
+      expect(selected).toEqual(['wot-vouchee']);
+    },
+  );
 });
 
 // Suppress linter on unused import (kept to document the export surface).

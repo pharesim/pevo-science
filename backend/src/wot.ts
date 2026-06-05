@@ -245,6 +245,56 @@ export async function broadcastWotAccreditation(vouchee: string): Promise<WotAcc
 }
 
 /**
+ * SQL body for the single discovery query `cascadeRevocation` fires per cascade
+ * level. Returns the set of vouchees that (a) were vouched by the revoked
+ * account, (b) are currently WoT-accredited, and (c) would fall below the
+ * threshold once the revoked account is excluded from their accredited-voucher
+ * set. Collapses the previous 1+2K round-trips per level (one find +
+ * per-vouchee accreditation check + per-vouchee recount) into a single query
+ * whose cost is amortized across all K vouchees.
+ *
+ * Expects `active_accreditations` and `active_vouches` CTEs in scope (combine
+ * with `buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody)` in
+ * production; the real-Postgres regression substitutes fixture CTEs of the same
+ * shape).
+ *
+ * The `JOIN active_accreditations aa_target ... aa_target.method = 'wot'` clause
+ * folds the per-vouchee accreditation check into the discovery; the
+ * COUNT/FILTER aggregate folds the per-vouchee recount. Only accredited voucher
+ * rows contribute to the count, mirroring the recount query's accredited-only
+ * join semantics.
+ *
+ * The `av_all`/`aa_voucher` joins are LEFT (not INNER) with a NULL-skipping
+ * HAVING, mirroring `revokeVoucheeIfBelowThreshold`. A vouchee whose only
+ * accredited, non-revoked voucher is the revoked account, so that removing it
+ * drops the remaining accredited-voucher count to zero, still forms a GROUP
+ * (the LEFT JOIN keeps the av_target row even when no surviving voucher
+ * matches) and is selected, since 0 < threshold. INNER joins would silently
+ * drop that cascade-terminal vouchee (zero remaining accredited vouchers ->
+ * no joined rows -> no group), the exact account the cascade mechanism exists
+ * to catch. The FILTER's `aa_voucher.account IS NOT NULL` guard skips the
+ * LEFT-JOIN NULL row so it does not count toward the survivor total;
+ * COUNT(DISTINCT ...) collapses duplicate voucher rows.
+ *
+ * @param revokedParam - `$N` placeholder bound to the revoked account (used in
+ *   both the WHERE filter and the recount FILTER's exclusion).
+ * @param thresholdParam - `$N` placeholder bound to the WoT threshold.
+ */
+export function cascadeDiscoverySelect(revokedParam: string, thresholdParam: string): string {
+  return `SELECT av_target.vouchee
+       FROM active_vouches av_target
+       JOIN active_accreditations aa_target
+         ON aa_target.account = av_target.vouchee AND aa_target.method = 'wot'
+       LEFT JOIN active_vouches av_all ON av_all.vouchee = av_target.vouchee
+       LEFT JOIN active_accreditations aa_voucher ON aa_voucher.account = av_all.voucher
+       WHERE av_target.voucher = ${revokedParam}
+       GROUP BY av_target.vouchee
+       HAVING COUNT(DISTINCT av_all.voucher) FILTER (
+         WHERE aa_voucher.account IS NOT NULL AND av_all.voucher != ${revokedParam}
+       ) < ${thresholdParam}`;
+}
+
+/**
  * Check if revoking a voucher's accreditation should cascade to their vouchees.
  * For each vouchee that drops below the WoT threshold and was WoT-accredited,
  * broadcast a revocation.
@@ -288,33 +338,13 @@ export async function cascadeRevocation(
   try {
     const threshold = await getWotThreshold();
 
-    // Single discovery query per cascade level: returns the set of vouchees
-    // that (a) were vouched by `revokedAccount`, (b) are currently WoT-
-    // accredited, and (c) would fall below the threshold once `revokedAccount`
-    // is excluded from their voucher set. Collapses the previous 1+2K
-    // round-trips per level (one find + per-vouchee accreditation check +
-    // per-vouchee recount) into a single HAF query whose cost is amortized
-    // across all K vouchees.
-    //
-    // The `JOIN active_accreditations aa ... aa.method = 'wot'` clause folds
-    // the per-vouchee accreditation check into the discovery; the COUNT/FILTER
-    // aggregate folds the per-vouchee recount. Only accredited voucher rows
-    // contribute to the count, mirroring the recount query's accredited-only
-    // join semantics.
+    // Single discovery query per cascade level (see `cascadeDiscoverySelect`).
     const findCte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
     const revokedParam = `$${findCte.nextIdx}`;
     const thresholdParam = `$${findCte.nextIdx + 1}`;
     const result = await pool.query<{ vouchee: string }>(
       `${findCte.sql}
-       SELECT av_target.vouchee
-       FROM active_vouches av_target
-       JOIN active_accreditations aa_target
-         ON aa_target.account = av_target.vouchee AND aa_target.method = 'wot'
-       JOIN active_vouches av_all ON av_all.vouchee = av_target.vouchee
-       JOIN active_accreditations aa_voucher ON aa_voucher.account = av_all.voucher
-       WHERE av_target.voucher = ${revokedParam}
-       GROUP BY av_target.vouchee
-       HAVING COUNT(*) FILTER (WHERE av_all.voucher != ${revokedParam}) < ${thresholdParam}`,
+       ${cascadeDiscoverySelect(revokedParam, thresholdParam)}`,
       [...findCte.params, revokedAccount, threshold],
     );
 
@@ -364,15 +394,17 @@ export async function cascadeRevocation(
         completed.push(txResult.id);
 
         // Recursively cascade — the revoked vouchee may have vouched for others.
-        // Propagate PartialCascadeError upward so the top-level call has the
-        // full completed/pending picture. Non-budget errors from the nested
-        // call fall through to the outer catch of this iteration.
+        // The current vouchee's revocation already landed (it is in `completed`);
+        // a nested failure must not re-count it. Handle both nested-error classes
+        // here so the re-throw never reaches this iteration's outer catch, whose
+        // `pending.push(vouchee)` would double-count the already-completed vouchee.
         try {
           const nested = await cascadeRevocation(vouchee, depth + 1, effectiveDeadline);
           completed.push(...nested);
         } catch (nestedErr) {
           if (nestedErr instanceof PartialCascadeError) {
-            // Fold nested progress into our aggregate and re-throw.
+            // Budget blown in the nested cascade. Fold nested progress into our
+            // aggregate and re-throw.
             completed.push(...nestedErr.completed);
             pending.push(...nestedErr.pending);
             // Same-level vouchees after the current index were identified but
@@ -394,7 +426,19 @@ export async function cascadeRevocation(
               rootRevocation: depth === 0 ? revokedAccount : nestedErr.rootRevocation,
             });
           }
-          throw nestedErr;
+          // Non-budget nested failure (e.g. a HAF query error inside the
+          // recursive call). The current vouchee's broadcast already succeeded
+          // and stays in `completed` — do NOT add it to `pending` (that is the
+          // double-count this branch exists to prevent). The nested subtree's
+          // vouchees were never returned, so they cannot be credited here; the
+          // operator's error log carries the failed account for manual
+          // follow-up. Continue to the next same-level sibling: a nested failure
+          // for one vouchee does not invalidate its independent siblings.
+          logger.error(
+            { err: nestedErr, vouchee, rootRevocation: revokedAccount },
+            'Nested cascade revocation failed — current vouchee revoked, nested subtree skipped',
+          );
+          continue;
         }
       } catch (err) {
         if (err instanceof PartialCascadeError) {
