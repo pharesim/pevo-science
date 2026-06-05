@@ -113,3 +113,61 @@ Learnings researcher surfaced three PEvO conventions worth a parallel audit but 
 When items 1-7 land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; round-2 review scopes to the fix commit(s) only. Do not edit this hold block; the commit diff is the evidence.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## [BLOCKED by Architect] (2026-06-05) — implementation complete, two hold-spec decisions needed before finalize
+
+All 7 round-1 hold items are implemented and tested (50/50 signup-verify-* against real
+Postgres/Redis; `npm run typecheck` + `npm run lint` clean). The work is **NOT in `main`**
+— it is committed at `225d3ebe` and preserved on branch `backend-signup-activation-holds-wip`
+(also in worktree `agent-a64333b45c3aac14f`). It was deliberately not merged: item 1 adds a
+migration (`016_accounts_updated_at.sql`) and an unrun migration file in `main` would fail the
+next backend boot's `verifyAppDbMigrations` probe. Two hold-spec issues need an architect
+decision before this is merged + moved to `review/`:
+
+**Decision A — item 1 requires a schema change the hint said it wouldn't.** Item 1's hint:
+"`updated_at > NOW() - INTERVAL '1 hour'` (no schema change; updated_at is bumped at every
+activation)." There is **no `updated_at` column on `accounts`** (only `created_at`,
+`upgraded_at`, `expires_at`; none is bumped at `/confirm` finalize). The implementer took the
+hold block's own named fallback ("a dedicated column ... requires migration. Implementer's
+call on mechanism") and added migration `016` + sets `updated_at = NOW()` in both finalize
+UPDATEs. Confirm the migration mechanism is acceptable, OR specify an alternative (e.g. a Redis
+finalize-recency marker keyed per username, no DB column). Note: accepting the migration means
+`./deploy.sh migrate` must run before the next backend start.
+
+**Decision B — item 4's "no second JWT" is unsatisfiable as written.** The hold claims item 1's
+recency marker "closes item 4 automatically — a recently-finalized row is in steady state, not
+stuck." This is contradictory: a same-token retry *during* the accreditation window is the
+*most* recently-finalized row, so item 1's `> NOW() - 1h` guard *admits* it to the resume path
+— and the existing `signup-verify-stuck-recovery.test.ts` *requires* fast retry to enter
+recovery (200 + JWT). A single recency marker cannot both admit fast retry (stuck tests) and
+exclude it (item 4); there is no DB trace of accreditation completion to distinguish them. The
+implementer implemented item 1 faithfully, kept all stuck-recovery tests green, and wrote the
+item-4 test asserting the genuinely-guaranteed invariants — **no second `createClaimedAccount`**
+(chain-exists check) and **no second accredit broadcast** (HAF-probe-observed) and a single
+activated row — but did NOT assert "no second JWT mint" (the resume path mints one by design,
+matching `/link`'s documented best-effort contract). Confirm the best-effort-JWT contract for
+`/confirm` (matching `/link`), OR require strict single-JWT by holding the lock across
+accreditation for the fresh path (which contradicts the documented lock-release-before-
+accreditation design choice).
+
+**Back-fill bug found in review (fix once Decision A confirms the migration).** Migration `016`
+uses `ADD COLUMN ... NOT NULL DEFAULT now()`, which back-fills existing rows to migration time —
+so for the first ~1 hour post-deploy every pre-existing finalized account satisfies
+`updated_at > NOW() - INTERVAL '1 hour'`, leaving the stuck-recovery bypass item 1 closes **open
+for ~1h after deploy**. The migration's own comment claims existing rows "fall outside the
+recovery window," but `DEFAULT now()` does not achieve that. Fix: back-fill existing rows to a
+definitively-past value (e.g. `UPDATE accounts SET updated_at = created_at` before `SET NOT NULL`
++ `SET DEFAULT now()`), so old finalized accounts are outside the window immediately. To be
+applied when the migration mechanism is confirmed.
+
+**What landed (`225d3ebe`, 7 items):** (1) both stuck-recovery lookups gated on
+`updated_at > NOW() - INTERVAL '1 hour'` + finalize UPDATEs set `updated_at = NOW()` (migration
+016); (2) lock fail-closed — in-memory fallback removed, Redis-down/throw → `reason:'unavailable'`
+→ 503, docstring caveat removed; (3) `createResult` typed `| null`, `block_num` omitted on resume
+paths; (4) double-accredit/double-JWT-window test (best-effort contract, see Decision B);
+(5) 409 LOCK_HELD refunds the per-token rate-limit slot (`refundStatusCodes`) + `Retry-After: 5`;
+(6) lock-TTL-self-expiry-mid-holder resume test; (7) TTL docstring holder-budget corrected to ~45s.
+
+Architect: resolve A + B (and confirm the back-fill fix), then move this back to `pending/` for
+the implementer to merge `backend-signup-activation-holds-wip` (with the back-fill fix), or
+re-scope the changed items.
