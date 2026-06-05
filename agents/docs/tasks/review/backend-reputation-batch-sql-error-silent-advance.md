@@ -85,3 +85,7 @@ Invoke `/ce-compound` to capture the invariant — a failed or empty reputation 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next architect review scopes `/ce-code-review` to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-05, working tree)
+
+Round-1 hold item 1 (P2, maintainability) landed: reflowed the belt-and-suspenders comment in `runBatchComputation` (`reputation-batch.ts`) so `computeReputationBatch` appears intact on a single line, restoring the stable-symbol grep anchor the comment relies on. Comment-only, no logic change. `npm run typecheck` + `npm run lint` clean.

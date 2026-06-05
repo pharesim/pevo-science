@@ -324,11 +324,11 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
 
       // Belt-and-suspenders: a non-empty user list always yields one scored
       // row per user (the totals CTE CROSS JOINs every target_user), so an
-      // empty result for a non-empty list is never a real cycle. computeRepu-
-      // tationBatch now throws on SQL failure (handled by the outer catch),
-      // but guard the empty path too so a future regression that resurrects
-      // empty-on-error cannot silently advance cycle:last and wipe the next
-      // cycle's voter weights. Break rather than advance.
+      // empty result for a non-empty list is never a real cycle.
+      // computeReputationBatch now throws on SQL failure (handled by the outer
+      // catch), but guard the empty path too so a future regression that
+      // resurrects empty-on-error cannot silently advance cycle:last and wipe
+      // the next cycle's voter weights. Break rather than advance.
       if (batchResults.size === 0 && users.length > 0) {
         logger.error({ cycle, userCount: users.length }, 'Batch returned no scores for a non-empty user list; bailing without advancing cycle:last');
         break;
