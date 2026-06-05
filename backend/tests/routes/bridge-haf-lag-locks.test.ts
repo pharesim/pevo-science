@@ -1,5 +1,6 @@
 /**
- * BE-BRIDGE-WRITE-HAF-LAG — concurrent /register lock specs.
+ * Concurrent /register lock and HAF-outage fail-open/fail-closed specs for the
+ * bridge routes.
  *
  * Justification for the Redis mock (per root CLAUDE.md carve-out clause c):
  * we need deterministic ordering between two concurrent in-flight requests
@@ -351,7 +352,7 @@ beforeEach(async () => {
   await cleanupQueueRowsFor('hafoutageauthor');
 });
 
-describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock', () => {
+describe('/register concurrent same-identifier lock', () => {
   const ACCREDITED = 'racingauthor';
 
   beforeEach(() => {
@@ -428,7 +429,7 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
   });
 });
 
-describe('BE-BRIDGE-WRITE-HAF-LAG — /register fails closed on HAF outage', () => {
+describe('/register fails closed on HAF outage', () => {
   const ACCREDITED = 'hafoutageauthor';
 
   beforeEach(() => {
@@ -472,7 +473,7 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register fails closed on HAF outage', () 
   });
 });
 
-describe('BE-BRIDGE-WRITE-HAF-LAG — /check fail-open on HAF outage (round-2 hold item #8)', () => {
+describe('/check fail-open on HAF outage', () => {
   it('GET /api/bridge/check: HAF query throws → 200 with {exists:false} fail-open shape, no status field leaks on wire, warn route=bridge.check', async () => {
     pgQueryImpl = async () => {
       throw new Error('simulated HAF connection refused');
@@ -492,7 +493,7 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /check fail-open on HAF outage (round-2 ho
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('ok');
 
-      // Round-2 hold item #8: the response body MUST NOT leak the
+      // The /check response body MUST NOT leak the
       // internal-only `status` discriminator from BridgeCheckResult on the
       // wire. The handler maps haf_unavailable → exists:false WITHOUT
       // forwarding the status field.
@@ -505,7 +506,7 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /check fail-open on HAF outage (round-2 ho
       });
       expect(res.body.data).not.toHaveProperty('status');
 
-      // Round-2 hold item #4: the HAF-failure warn log emits route:
+      // The HAF-failure warn log emits route:
       // 'bridge.check' (NOT bridge.register) so operator dashboards
       // filtering on `route: 'bridge.register'` don't false-alert on
       // /check HAF blips. The event field is parameterized on callerLabel.
@@ -518,8 +519,8 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /check fail-open on HAF outage (round-2 ho
       const ctx = matchingCall![0] as Record<string, unknown>;
       expect(ctx.route).toBe('bridge.check');
 
-      // Round-3 hold item #1: mutation-kills round-2 item 2's invariant
-      // that the `haf_unavailable` sentinel never lands in the 30s cache.
+      // Mutation-kill for the invariant that the `haf_unavailable` sentinel
+      // never lands in the 30s cache.
       // A regression re-introducing `hafCache.getOrSet(...)` wrapping or
       // calling `hafCache.set` on the haf_unavailable branch would write
       // the QueryCache-prefixed key into fakeRedis.store. The expected

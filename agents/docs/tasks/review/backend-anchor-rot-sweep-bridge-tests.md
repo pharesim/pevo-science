@@ -19,3 +19,7 @@
 
 - Comment-only / label-only change; test behavior at parity (file green before and after the sweep).
 - `npm run typecheck` + `npm run lint` clean.
+
+## Backend signal (2026-06-05, commit on main)
+
+Swept the pre-existing slug/round-N rot from `tests/routes/bridge-haf-lag-locks.test.ts`: the file header and the three `BE-BRIDGE-WRITE-HAF-LAG — ...` describe labels (one also carrying a `round-2 hold item #8` qualifier) re-anchored on behavioral descriptions; the three inline `Round-2/Round-3 hold item N` comments reworded to state the invariant they annotate (the no-status-leak shape, the `route: 'bridge.check'` warn-log field, and the `haf_unavailable`-never-cached mutation-kill). Replacements introduce no new slug/round/line/SHA anchors. Post-sweep grep for slug-shaped labels and round-N markers returns zero hits; comment-only/label-only change, test behavior at parity (5 tests green before and after). `npm run typecheck` + `npm run lint` clean.
