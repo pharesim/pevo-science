@@ -232,8 +232,8 @@ export async function fetchNotificationsFromHaf(
         -- comment_operations insert (rare but observable on heavy ingest);
         -- p.title falls back to empty string via COALESCE above. The arm 1a
         -- promotion to INNER + validPevoPaperWhere is needed because the
-        -- native arm has no equivalent pre-filtered CTE -- see
-        -- BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #8.
+        -- native arm has no equivalent pre-filtered CTE; arm 1a's INNER JOIN
+        -- + validPevoPaperWhere comment above carries that rationale.
         LEFT JOIN ${T.comments} p ON p.author = co.parent_author AND p.permlink = co.parent_permlink
         JOIN active_accreditations aa_r ON aa_r.account = co.author
         WHERE co.block_num > $2
@@ -406,8 +406,12 @@ export async function fetchNotificationsFromHaf(
       -- intentionally NULL here: a reply can sit N levels deep, so the root
       -- paper coords are not resolvable without unbounded recursive SQL. The
       -- emitted NewReplyEvent omits them rather than carry null-valued coords.
-      -- Earliest-wins dedup on (co.author, co.permlink) so editing a reply does
-      -- not re-fire new_reply on the parent-comment author.
+      -- DISTINCT ON (co.author, co.permlink) ORDER BY co.block_num ASC collapses
+      -- a reply and all its later edits to the single publication row, so
+      -- editing a reply does not re-fire new_reply on the parent-comment author.
+      -- The raw operation_comment_view carries one row per edit (see hive-schemas
+      -- edit semantics); earliest-wins makes edits silent. Same dedup shape as
+      -- the sibling comment-derived arms (1a, 1b).
       SELECT * FROM (
         SELECT DISTINCT ON (co.author, co.permlink)
           'new_reply'::text AS event_type,

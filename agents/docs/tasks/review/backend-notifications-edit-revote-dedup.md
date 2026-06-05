@@ -71,3 +71,15 @@ Coverage note: the edit/revote behavioral cases (3 edits to 1, toggle to latest,
 4. **Citation ORDER BY direction pin (P3).** The citation canary pins the DISTINCT ON 4-tuple but not `citing.block_num ASC`. A DESC flip makes the latest edit's row win dedup, changing the surviving block_num per edit and resurrecting the per-edit re-fire for citations specifically, invisible to all canaries. Add the direction assertion parallel to the comment/vote pins (count = 2).
 
 5. **Arm 5 dedup comment (P3).** Expand to the arm-1a docblock pattern (key, direction, rationale) or add the forward-reference arm 1b uses, so the simplest-looking arm is not the least-explained copy template.
+
+---
+
+## Backend re-review signal (2026-06-06, round 2)
+
+All five hold items landed; no behavioral SQL change (text/canary only). typecheck (src+tests) + lint clean; `notifications-arm-sql-shape.test.ts` green (13/13) against the mocked-pool capture.
+
+1. **Arm 1b comment anchor.** Dropped the `BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #8` slug/round citation from arm 1b's LEFT-JOIN rationale in `notification-queries.ts`; the tail now anchors on behavior ("the native arm has no equivalent pre-filtered CTE") and forward-references arm 1a's INNER JOIN + validPevoPaperWhere comment directly above.
+2. **Header inventory.** Extended `notifications-arm-sql-shape.test.ts` header with numbered entries 6-9 (comment-arm DISTINCT ON + ASC ×3, vote-arm DISTINCT ON + DESC ×3, outer `vote_weight != 0` hoist + inner-filter-absent, citation 4-tuple + ASC ×2) and a dedup paragraph in the mutation-kill summary.
+3. **Arm-1a INNER-JOIN canary title.** Trimmed to "arm 1a uses INNER (not LEFT) JOIN on the parent-paper comment"; the inline comment now states the canary pins join FORM only and defers paper-class identity to the adjacent validPevoPaperWhere canary.
+4. **Citation ORDER BY direction pin.** Added `ORDER BY citing.author, citing.permlink, cited_ref.author, cited_ref.permlink, citing.block_num ASC` count == 2 to the citation dedup canary, parallel to the comment (ASC ×3) and vote (DESC ×3) direction pins.
+5. **Arm 5 dedup comment.** Expanded to the arm-1a docblock pattern (DISTINCT ON key, `block_num ASC` direction, raw-view/earliest-wins rationale) plus a "same dedup shape as sibling arms (1a, 1b)" note.

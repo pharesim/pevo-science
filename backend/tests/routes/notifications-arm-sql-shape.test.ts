@@ -54,12 +54,33 @@
  *      authority gate, so only an accredit/revoke op signed by an
  *      accreditation authority produces a notification — a self-broadcast
  *      op naming the recipient cannot push a spurious accreditation_update.
+ *   6. Comment-derived arms (1a, 1b, 5) each dedup via
+ *      `DISTINCT ON (co.author, co.permlink) ... ORDER BY co.block_num ASC`
+ *      (earliest-wins), so a review/reply and its later edits collapse to the
+ *      publication row instead of re-firing per edit. Pinned by key count == 3
+ *      and ASC-direction count == 3.
+ *   7. Vote arms (2a, 2b, 2c) each dedup via
+ *      `DISTINCT ON (v.author, v.permlink, v.voter) ... ORDER BY v.block_num DESC`
+ *      (latest-wins), so a weight toggle fires once. Pinned by key count == 3
+ *      and DESC-direction count == 3.
+ *   8. Vote arms hoist `vote_weight != 0` to the OUTER select (count == 3) and
+ *      carry no inner `v.weight != 0` (count == 0), so a vote-then-retract
+ *      drops the whole (post, voter) instead of surfacing the prior vote.
+ *   9. Citation arms (6a, 6b) each dedup via
+ *      `DISTINCT ON (citing.author, citing.permlink, cited_ref.author,
+ *      cited_ref.permlink) ... ORDER BY citing.block_num ASC` (key count == 2,
+ *      ASC-direction count == 2), so a citation surviving across edits does
+ *      not re-fire while distinct citations in the same post each notify.
  *
  * Mutation kill: removing INNER from arm 1a's JOIN, dropping the
  * validPevoPaperWhere predicate from arm 1a, removing `co.author != $1`
  * from any comment-derived arm, removing `citing.author <> $1` from either
  * citation arm, or dropping the required_posting_auths gate from the
- * accreditation_update arm fails the corresponding canary below.
+ * accreditation_update arm fails the corresponding canary below. On the dedup
+ * side: reverting a comment/vote/citation arm to a raw SELECT (dropping the
+ * DISTINCT ON wrapper), flipping a dedup ORDER BY direction (comment/citation
+ * ASC→DESC or vote DESC→ASC), or moving `weight != 0` back into the inner vote
+ * WHERE each fails the corresponding dedup canary.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -141,11 +162,12 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     return { sql: capturedSql, params: capturedParams };
   }
 
-  it('arm 1a uses INNER (not LEFT) JOIN on the parent-paper comment, enforcing paper-class existence at the join', async () => {
+  it('arm 1a uses INNER (not LEFT) JOIN on the parent-paper comment', async () => {
     const { sql } = await captureNotificationsSql();
-    // Arm 1a uses an INNER (not LEFT) JOIN on the parent-paper comment to
-    // enforce paper-class existence at the JOIN level.
-    // Reverting to LEFT JOIN re-opens the empty-title griefing vector.
+    // This canary pins the JOIN FORM only — INNER, not LEFT. The paper-class
+    // identity predicate is the adjacent validPevoPaperWhere canary's
+    // responsibility; here we assert solely that the parent-paper join stays
+    // INNER. Reverting to LEFT JOIN re-opens the empty-title griefing vector.
     // Detection: arm 1a's parent JOIN is the only `JOIN hafsql.comments p`
     // occurrence in the SQL — arm 1b's `p` is LEFT JOINed (the
     // user_bridge_papers CTE already guarantees paper-class identity), so
@@ -331,5 +353,12 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     // tuple so distinct citations in the same post still each notify.
     const distinctOn = (sql.match(/SELECT DISTINCT ON \(citing\.author, citing\.permlink, cited_ref\.author, cited_ref\.permlink\)/g) ?? []).length;
     expect(distinctOn).toBe(2);
+    // Pin the ORDER BY direction (citing.block_num ASC) parallel to the
+    // comment/vote direction pins. A DESC flip would make the latest edit's
+    // row win dedup, changing the surviving block_num per edit and
+    // resurrecting the per-edit re-fire for citations — invisible to the
+    // 4-tuple key check alone.
+    const earliest = (sql.match(/ORDER BY citing\.author, citing\.permlink, cited_ref\.author, cited_ref\.permlink, citing\.block_num ASC/g) ?? []).length;
+    expect(earliest).toBe(2);
   });
 });
