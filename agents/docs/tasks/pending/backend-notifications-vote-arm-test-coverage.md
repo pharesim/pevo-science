@@ -34,3 +34,15 @@ Close both gaps without expanding the synthetic-VALUES pattern beyond what PEvO 
 - `backend/tests/notification-arm-semantics.test.ts` — arm-2a/2b/2c canaries.
 - `backend/src/notification-queries.ts` — vote arms 2a/2b/2c and the `user_bridge_papers` CTE.
 - Surfaced by architect `/ce-code-review` run `20260530-141618`.
+
+---
+
+## Architect re-review (2026-06-05) — HELD PENDING FIXES
+
+`/ce-code-review` fan-out (correctness, testing, maintainability, project-standards, kieran-typescript) on commit `93efaf30`. The new 2b canary's internal discrimination verified (an INNER-to-LEFT flip or a registered_by drop inside the mirrored SQL flips hit_count from 1 to 2); standards clean; no DRY helper introduced. But the task's core acceptance is not met. Two items block archive:
+
+1. **target_type is still never pinned against production (P1).** The de-tautologization moved the constant from the test's SELECT into the test's own VALUES fixture; production's projection literals remain unconsulted. Repo-wide, nothing asserts `'paper'::text AS target_type` for arms 2a/2b or `'review'::text` for arm 2c, so swapping a literal in production fails zero tests (with a single fixture row, `MIN(p.target_type)` is fully implied by hit_count). The new 2b canary also reintroduces the condemned `MIN('paper'::text)` shape. Fix: (a) add slice-localized SOURCE pins in the vote-arms source-shape test asserting each arm's projection literal inside its tag-bounded slice — the source layer is the only one that consults production; (b) bring 2b to the fixture-derived form 2a/2c use (a target_type column on bp_src, carried through user_bridge_papers, projected via `MIN(bp.target_type)`) for pattern consistency.
+
+2. **2b production pins (P2).** The two mutations the completion note claims to catch (INNER-to-LEFT on the user_bridge_papers JOIN, dropped `registered_by` predicate) leave every test green when applied to PRODUCTION SQL — the source test pins only the `-- 2b.` comment marker. Slice arm 2b in the source test and assert the INNER JOIN form (no LEFT variant) plus the `registered_by` predicate text inside the user_bridge_papers CTE region, per the established citation-arm pin pattern.
+
+Optional (non-blocking, while in the file): (a) one-line comment scoping the vote-arm mirrors to the single-op-per-voter simplification — they reproduce the pre-dedup flat arm shape with an inline weight filter that production no longer contains anywhere, and a sibling canary pins production's inline-weight count at zero; (b) inline registered/unregistered comments on the bp_src rows matching the v-CTE rows' style; (c) name the production symbol (`fetchNotificationsFromHaf`, notification-queries.ts) in the mirror comment as the drift breadcrumb.
