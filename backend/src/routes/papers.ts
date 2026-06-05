@@ -36,6 +36,7 @@ import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { HIVE_ACCOUNT_NAME_REGEX } from '../lib/hive-account-name.js';
 import { HIVE_PERMLINK_FORMAT_REGEX, HIVE_PERMLINK_MAX_LEN } from '../lib/hive-permlink.js';
+import { LINE_TERMINATORS } from '../lib/line-terminators.js';
 import { paperDisciplineField } from '../types/disciplines.js';
 import type { PaperAuthor } from '../types/domain.js';
 import {
@@ -3769,17 +3770,11 @@ router.post('/:author/:permlink/retract', validateRetractParams, verifyHiveSigna
 
 const VALID_CITE_FORMATS = new Set(['bibtex', 'ris', 'apa']);
 
-/**
- * Line/paragraph separators that can split a line-oriented citation record,
- * break out of a one-line citation, or smuggle a forged record into a lenient
- * importer. Broader than `[\r\n]`: a crafted title can use form-feed (U+000C),
- * vertical-tab (U+000B), NEL (U+0085), LINE SEPARATOR (U+2028), or PARAGRAPH
- * SEPARATOR (U+2029) to reach the same file-format-injection class through a
- * wider separator alphabet — many RIS importers and any text renderer treat
- * these as line breaks. Single shared constant so `bibtexEscape`, `risEscape`,
- * and `singleLine` cannot drift to different separator alphabets.
- */
-const LINE_TERMINATORS = /[\r\n\u000b\u000c\u0085\u2028\u2029]+/g;
+// `LINE_TERMINATORS` is the shared 7-character separator alphabet (CR, LF, VT,
+// FF, NEL, LS, PS) imported from `../lib/line-terminators.js`. `bibtexEscape`,
+// `risEscape`, and `singleLine` below all flatten it so the citation-export and
+// email-digest paths cannot drift to different separator alphabets; see that
+// module's docblock for the file-format-injection rationale.
 
 /**
  * Escape a free-form chain-sourced string for safe interpolation into a BibTeX

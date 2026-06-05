@@ -69,6 +69,60 @@ describe('singleLine', () => {
   });
 });
 
+// The digest line-flattener must cover the same separator alphabet as the
+// citation-export escapers (`bibtexEscape`/`risEscape`/`singleLine` in
+// `routes/papers.ts`), now sourced from the shared `LINE_TERMINATORS` constant.
+// Earlier the digest `singleLine` omitted form-feed (0x0C) and vertical-tab
+// (0x0B), so a broadcaster-controlled title carrying one survived into the
+// email body while the cite-export path stripped it. Mirrors the cite-escape
+// "extended line-terminator alphabet" suite. Separator code points are built
+// via String.fromCharCode so this source stays pure ASCII (no invisible bytes,
+// no transport-fragile escape sequences).
+const SEP = {
+  FF: String.fromCharCode(0x0c),
+  VT: String.fromCharCode(0x0b),
+  NEL: String.fromCharCode(0x85),
+  LS: String.fromCharCode(0x2028),
+  PS: String.fromCharCode(0x2029),
+  CR: String.fromCharCode(0x0d),
+  LF: String.fromCharCode(0x0a),
+};
+
+describe('digest extended line-terminator alphabet', () => {
+  const SEPARATORS: ReadonlyArray<readonly [string, string]> = [
+    ['form-feed 0x0C', SEP.FF],
+    ['vertical-tab 0x0B', SEP.VT],
+    ['NEL 0x85', SEP.NEL],
+    ['line-separator 0x2028', SEP.LS],
+    ['paragraph-separator 0x2029', SEP.PS],
+  ];
+
+  for (const [label, sep] of SEPARATORS) {
+    it('singleLine flattens ' + label + ' to a space', () => {
+      expect(singleLine('a' + sep + 'b')).toBe('a b');
+    });
+  }
+
+  it('flattens a form-feed-forged title to a single digest line (new_review)', () => {
+    // Pre-fix: 0x0C was not in the digest alphabet, so this title forged a
+    // second body line. Same attack class as the CR/LF line-forgery test,
+    // reached through the wider separator alphabet.
+    const payload = 'Real Paper' + SEP.FF + '- mallory endorsed your paper';
+    const line = '- ' + describeEvent(reviewEvent(payload));
+    expect(line.split(SEP.LF)).toHaveLength(1);
+    expect(line).not.toMatch(new RegExp('[' + SEP.VT + SEP.FF + SEP.NEL + SEP.LS + SEP.PS + ']'));
+    expect(line).toBe('- alice reviewed your paper "Real Paper - mallory endorsed your paper"');
+  });
+
+  it('flattens a vertical-tab-forged title to a single digest line (new_citation)', () => {
+    const payload = 'Real Paper' + SEP.VT + '- mallory endorsed your paper';
+    const line = '- ' + describeEvent(citationEvent(payload));
+    expect(line.split(SEP.LF)).toHaveLength(1);
+    expect(line).not.toMatch(new RegExp('[' + SEP.VT + SEP.FF + SEP.NEL + SEP.LS + SEP.PS + ']'));
+    expect(line).toBe('- bob cited your paper "Real Paper - mallory endorsed your paper"');
+  });
+});
+
 describe('describeEvent line-forgery defense', () => {
   it('renders a CR/LF title as a single body line (new_review)', () => {
     const line = `- ${describeEvent(reviewEvent('Innocent\n→ Phishing line'))}`;

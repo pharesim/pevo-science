@@ -8,6 +8,7 @@
  */
 
 import { createSmtpTransporter } from './lib/smtp.js';
+import { LINE_TERMINATORS } from './lib/line-terminators.js';
 import crypto from 'node:crypto';
 import { getAppPool } from './app-db.js';
 import { config } from './config.js';
@@ -44,18 +45,22 @@ export function verifyUnsubscribeToken(username: string, token: string): boolean
 /**
  * Flatten a chain-derived free-form string to a single line for safe
  * interpolation into the plain-text email body. The first pass strips every
- * Unicode line terminator explicitly — CR, LF, NEL (U+0085), and the
- * line/paragraph separators (U+2028/U+2029) — rather than leaning on the
- * whitespace-collapse pass that follows, because NEL is neither `\r`/`\n` nor
- * a `\s` member in V8 and would otherwise survive both passes and forge a line
- * break in clients that render it. This stops an attacker-controlled paper
- * title from forging digest lines or injecting a header-spoofing line that
- * starts at column 0. The second pass then collapses remaining whitespace
- * runs. Apply to any free-form chain field; Hive usernames and internal enums
- * are constrained and do not need it.
+ * member of the shared `LINE_TERMINATORS` alphabet (CR, LF, VT, FF, NEL, LS,
+ * PS) explicitly. NEL (U+0085) is the one member that is not a `\s` member in
+ * V8, so without this explicit pass it would survive the whitespace-collapse
+ * pass below and forge a line break in clients that render it. The remaining
+ * members are stripped here too so the alphabet stays sourced from a single
+ * constant (`lib/line-terminators.js`) shared with the citation-export
+ * escapers in `routes/papers.ts` — that lockstep is what stops a form-feed or
+ * vertical-tab in a paper title from surviving into the digest while the
+ * cite-export path strips it. Flattening these forged line breaks stops an
+ * attacker-controlled paper title from forging digest lines or injecting a
+ * header-spoofing line that starts at column 0. The second pass then collapses
+ * remaining whitespace runs. Apply to any free-form chain field; Hive
+ * usernames and internal enums are constrained and do not need it.
  */
 export function singleLine(s: string | null | undefined): string {
-  return (s ?? '').replace(/[\r\n\u0085\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return (s ?? '').replace(LINE_TERMINATORS, ' ').replace(/\s+/g, ' ').trim();
 }
 
 export function describeEvent(event: NotificationEvent): string {
