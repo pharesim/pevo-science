@@ -435,6 +435,16 @@ export async function computeReputationBatch(
           WHERE c.parent_author = '' AND c.parent_permlink = $3
             AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$17', source: 'all' })}
             AND c.json_metadata ->> 'app' LIKE $4
+            -- Bound the paper arm to accredited authors. The only consumer,
+            -- voter_weights, joins active_authors aa ON aa.author = a.voter
+            -- where a.voter = unnest($2::text[]) (accreditedArr), so any
+            -- non-accredited paper author materialized here is discarded by
+            -- that join. Filtering on c.author = ANY($2) up front avoids
+            -- scanning the full site-wide PEvO corpus for rows the consumer
+            -- can never use. Bridge accounts ($17/$18) are intentionally NOT
+            -- OR'd in: a bridge account is never a voter, so a bridge term
+            -- would re-widen the scan with zero consumer benefit.
+            AND c.author = ANY($2::text[])
           UNION ALL
           -- Review arm: gate on accreditation (or the anon proxy), AND
           -- exclude self-reviews. The shared validReviewWhere helper
