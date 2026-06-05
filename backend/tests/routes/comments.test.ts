@@ -256,11 +256,26 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
     const fetchVariant = (sort: string, order: string) =>
       request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments?limit=200&sort=${sort}&order=${order}`);
 
+    // The `desc === asc reversed` check below only has regression-detecting
+    // power against the tiebreaker comparator if at least one primary-key tie
+    // group actually occurs in the fetched data — without a tie, the primary
+    // key alone fully orders the rows and a missing/wrong (permlink, author)
+    // tiebreaker would never be exercised. Track whether any variant produced a
+    // tie group and assert at least one did at the end. The votes variant's
+    // 0-vote ties make this hold today.
+    let sawPrimaryKeyTieGroup = false;
+
     for (const sort of ['date', 'votes']) {
       const [asc, desc] = await Promise.all([fetchVariant(sort, 'asc'), fetchVariant(sort, 'desc')]);
       expect(asc.status).toBe(200);
       expect(desc.status).toBe(200);
-      if (asc.body.data.length < 2) continue; // need >=2 rows to assert ordering
+      // Assert (not silently skip) that the fixture supplies enough rows to
+      // exercise ordering. A shrunken/retracted fixture must fail loudly here
+      // rather than exit green with zero ordering assertions fired.
+      expect(
+        asc.body.data.length,
+        `${sort}: ordering fixture must return >=2 rows (paper ${PAPER_AUTHOR}/${PAPER_PERMLINK} shrank or was retracted)`,
+      ).toBeGreaterThanOrEqual(2);
 
       // Primary key monotonic in the declared direction. `created` compares
       // lexicographically (chain timestamp string), `votes` numerically —
@@ -268,10 +283,12 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
       const primary = (c: { net_votes: number; created: string }) =>
         sort === 'votes' ? c.net_votes : c.created;
       for (let i = 1; i < asc.body.data.length; i++) {
-        expect(
-          primary(asc.body.data[i - 1]) <= primary(asc.body.data[i]),
-          `${sort} asc not monotonic at index ${i}`,
-        ).toBe(true);
+        const prev = primary(asc.body.data[i - 1]);
+        const cur = primary(asc.body.data[i]);
+        expect(prev <= cur, `${sort} asc not monotonic at index ${i}`).toBe(true);
+        // Adjacent equal primary keys in the sorted slice mean a tie group was
+        // resolved by the (permlink, author) tiebreaker.
+        if (prev === cur) sawPrimaryKeyTieGroup = true;
       }
       for (let i = 1; i < desc.body.data.length; i++) {
         expect(
@@ -285,6 +302,14 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
       const descKeys = desc.body.data.map(key);
       expect(descKeys).toEqual([...ascKeys].reverse());
     }
+
+    // At least one tie group must have occurred, otherwise the
+    // `desc === asc reversed` check above degenerates to a primary-key-only
+    // assertion and silently loses its tiebreaker regression-detection power.
+    expect(
+      sawPrimaryKeyTieGroup,
+      'no primary-key tie group observed across any sort variant; the desc===asc-reversed tiebreaker check is vacuous (expected the votes variant 0-vote ties to provide one)',
+    ).toBe(true);
   });
 
   // Pagination edge: a page whose offset exceeds total must return an empty
