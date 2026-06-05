@@ -24,10 +24,12 @@ import { config } from '../src/config.js';
  * request-signature verification, so there is no cryptographic middleware to
  * run real in this path.
  *
- * Clause-(c): the assembled WoT read paths (`getVouchStatus`,
- * `broadcastWotAccreditation`) run against the live HAF corpus in their own
- * integration coverage; these synthetic cases pin the gate's filter semantics
- * the live corpus cannot seed.
+ * Clause-(c): `getVouchStatus` (the assembled WoT read path that consumes this
+ * CTE) runs against the live HAF corpus in its own integration coverage via the
+ * `GET /api/wot/:username` route in `tests/routes/wot.test.ts`;
+ * `broadcastWotAccreditation` is exercised only in mocked form
+ * (`wot-broadcast-timeout.test.ts`), not live. These synthetic cases pin the
+ * gate's filter semantics the live corpus cannot seed.
  */
 
 // One synthetic custom_json row. `requiredPostingAuths` is the on-chain signer
@@ -82,7 +84,11 @@ describe('activeVouchesCteBody — required_posting_auths signer gate', () => {
       // Redirect the CTE's FROM at the real HAF view to the synthetic row set;
       // everything else (the `?` gate, the per-pair ROW_NUMBER ranking, the
       // rn=1 AND action='vouch' active filter) is the production SQL verbatim.
-      const redirected = body.sql.replace(`${T.customJson} cj`, 'synthetic_cj cj');
+      const redirected = body.sql.replace(T.customJson, 'synthetic_cj');
+      // Guard: if the table-reference string drifts, the redirect silently
+      // no-ops and the gate would run against nothing, failing the behavioral
+      // assertions only indirectly. Fail fast here instead.
+      expect(redirected).not.toContain(T.customJson);
 
       // $1 is the body's custom_id bind (also reused as every synthetic row's
       // custom_id so the WHERE custom_id = $1 matches). $2.. carry the per-row

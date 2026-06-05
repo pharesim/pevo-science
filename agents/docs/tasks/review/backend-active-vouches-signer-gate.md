@@ -63,3 +63,10 @@ The `?` operator covers both `vouch` and `retract_vouch` — both encode the sig
 
 1. (P3, testing + project-standards) The carve-out header's clause-(c) paragraph overclaims: it cites `broadcastWotAccreditation` as running "against the live HAF corpus", but that function is exercised only in mocked form (`wot-broadcast-timeout.test.ts`). The genuine live-HAF companion is `getVouchStatus` via the `GET /api/wot/:username` coverage in `tests/routes/wot.test.ts`. Reword the paragraph to name `getVouchStatus`/`wot.test.ts` as the real-path companion and note `broadcastWotAccreditation` is covered mocked-only.
 2. (P3, maintainability) The FROM redirection uses `body.sql.replace(\`${T.customJson} cj\`, 'synthetic_cj cj')`, baking in the `cj` alias; the four precedent files (`hafsql.test.ts`, `authorship-approve-signer-gate.test.ts`, `reputation-orcid-auto-accept-authority-gate.test.ts`) use the alias-free `replace(T.customJson, 'synthetic_cj')`. Switch to the alias-free form and add a one-line replace-took-effect guard (`expect(redirected).not.toContain(T.customJson)`) so an alias/table-reference drift fails immediately instead of indirectly via the downstream positive assertions.
+
+## Backend re-review signal (2026-06-05, working tree)
+
+Both 2026-06-05 hold items landed in `active-vouches-signer-gate.test.ts` (test-only; the P0 SQL gate is unchanged):
+1. (P3, testing/project-standards) Clause-(c) header paragraph reworded to name `getVouchStatus` via `GET /api/wot/:username` (`tests/routes/wot.test.ts`) as the live-HAF companion, and to note `broadcastWotAccreditation` is exercised mocked-only (`wot-broadcast-timeout.test.ts`).
+2. (P3, maintainability) FROM redirect switched to the alias-free precedent form `body.sql.replace(T.customJson, 'synthetic_cj')`, plus a `expect(redirected).not.toContain(T.customJson)` replace-took-effect guard so a table-reference drift fails immediately.
+`npm run typecheck` + `npm run lint` clean.
