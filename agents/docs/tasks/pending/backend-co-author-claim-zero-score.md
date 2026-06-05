@@ -75,3 +75,74 @@ renumbered scheme). The co-author canary test lands in the accompanying
 backend(reputation) commit (this task-state move). To review the code:
 `git show 1ab97151 -- backend/src/reputation.ts` (the chain_papers / chain_author
 / rekeyed-join hunks) plus the canary test.
+
+## Architect re-review (2026-06-05) — HELD PENDING FIXES (2 items + canary)
+
+`/ce-code-review` multi-lens fan-out (correctness + adversarial + security on Opus;
+testing/perf/maintainability/project-standards/kieran-ts/learnings on Sonnet;
+ce-agent-native skipped per PEvO). The **P0 zero-score fix itself is verified
+correct and stays**: the chain-identity rekey is sound (counts/credit flow to the
+claimer via `up.author` while votes/reviews key on `chain_papers`; `chain_papers`
+DISTINCT prevents fan-out for multi-recipient posts; native arm unregressed), the
+`accepted_claims` approval arm IS signer-gated (`ap.approver IN (ap.paper_author,
+bridge)`, no forge-your-own-approval path), and the floor-sweep param-renumber
+entanglement was confirmed non-corrupting (every `$N` ref aligns with the bind
+array; `git diff` against the reviewed state is empty).
+
+HELD on a **P1 self-dealing regression the rekey introduced**, plus the design
+decision that resolves it. Two reviewers (adversarial + security) independently
+found it; user ratified the authorship model.
+
+**Design decision (user, 2026-06-05): the authorship list is FINAL at posting.**
+Authorship credit binds only to an author slot that was named at posting time.
+There is no "unlisted claim → approve → append a never-named co-author" path. New
+co-authors are added only through a continuation revision (ARCHITECTURE.md § 6
+"Authors mutation"), never through claim/approval. `hive-schemas.md` § 2.9/2.10 and
+`reputation-algorithm.md` "Co-author Credit" are being updated by the architect to
+this model; implement against the updated docs.
+
+### Item 1 — enforce list-final on the explicit-approval credit arm
+The explicit-approval arm of `accepted_claims` (cycle, `reputation.ts`) and of
+`authorshipClaimsCteBody` (read surface, `hafsql.ts`) currently accepts a claim
+with `author_index = null` (unlisted claimer), so the post author / bridge can
+credit an account that was never in the paper's `authors[]`. That is both a
+credit-stuffing vector (one author can mint full co-author credit for arbitrarily
+many never-named accounts) and the root of Item 2. Require the approval arm to
+resolve a non-null `author_index` to an existing `authors[author_index]` slot;
+drop the unlisted-claim acceptance. Keep the auto-accept arms (ORCID, hive) as-is —
+they already bind to a named slot. Mirror the change across both surfaces so the
+cycle and the read surface resolve claims identically.
+
+### Item 2 — close the claimer self-vote / self-review self-dealing
+The self-vote exclusion in `paper_resolved_votes` (`plv.voter != cp.author`) and
+the self-review exclusion via `excludeSelfReviewWhere({ paperRowAlias: 'cp' })` in
+`paper_reviews` exclude only the chain poster and `authors[].hive` members. A
+credited claimer matched by ORCID, or connected to a name-only slot (slot `hive`
+is null/absent), is NOT in `authors[].hive` — so after the rekey makes claimed
+papers score for the first time, such a claimer can upvote and 5/5/5/5-self-review
+the very paper they are credited for. Item 1 alone does NOT close this (the
+connected hive is not written back into the raw post `authors[]` the exclusion
+reads). Extend BOTH exclusions to also reject any `accepted_claims` claimer for the
+chain post `(plv.author, plv.permlink)`, in addition to the existing chain-poster
+and `authors[].hive` checks. Mirror across `reputation.ts` and the `hafsql.ts` read
+surface. Also correct the `paper_resolved_votes` comment that asserts `plv.voter !=
+cp.author` is "correct even for claimed papers" — it is not, for the claimer.
+
+### Canary
+- Replace the tautological `not.toBeCloseTo(2.0)` assertion (it passes whenever the
+  primary `toBeCloseTo(1.0)` does) with a scenario that actually seeds a claimer
+  self-vote and asserts it does NOT credit the claimer.
+- Add a claimer self-review case (claimer reviews the claimed paper → quality
+  multiplier must not flow to the claimer).
+- Cover the approval and ORCID accept arms, not only the hive-match arm (the
+  hive-match arm is incidentally safe because the claimer is in `authors[].hive`;
+  the gap lives in the other two arms).
+- Pin Item 1: an `author_index = null` (unlisted) approval grants zero credit.
+- Lower priority (fold in while here): a revote (`custom_json`) on a claimed paper,
+  and the co-author-voter `authors[].hive` exclusion on a claimed paper — both are
+  source-shape-pinned only today.
+
+Land Items 1+2 together (Item 2 is the live exploit; Item 1 is the structural
+constraint that also shrinks Item 2's surface). `npm run typecheck` + `npm run
+lint` clean; comment anchors on stable symbols. When done, `git mv` back to
+`tasks/review/`.
