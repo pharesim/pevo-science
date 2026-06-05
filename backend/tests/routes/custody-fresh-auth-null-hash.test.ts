@@ -21,10 +21,10 @@
  *   - "leak the null-hash discriminator via a different error code or
  *     message": the byte-equivalent envelope assertion below fails.
  *
- * Also pins the `ipfs_upload` issuance action (option b of
- * backend-ipfs-upload-token-proof-binding): the route mints an
- * `ipfs_upload`-targeted proof for a valid password, and the minted proof is
- * genuinely bound to that target. Reuses the seeded real-password account.
+ * Also pins the password-mechanism `ipfs_upload` issuance branch: the route
+ * mints an `ipfs_upload`-targeted proof for a valid password, and the minted
+ * proof is genuinely bound to that target (the kind the /api/ipfs/upload-token
+ * JWT path requires). Reuses the seeded real-password account.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
@@ -174,7 +174,7 @@ describe.skipIf(!dbReachable)(
       verifySpy.mockRestore();
     });
 
-    it('issues an ipfs_upload-targeted proof for a valid password (option b issuance side)', async () => {
+    it('issues an ipfs_upload-targeted proof for a valid password (password-mechanism issuance side)', async () => {
       // The /api/ipfs/upload-token JWT path now requires an ipfs_upload-targeted
       // proof. Confirm this route mints one for a password account, and that the
       // minted proof is genuinely bound to the ipfs_upload target (consuming it

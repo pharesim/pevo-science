@@ -199,6 +199,11 @@ import {
   __test_releaseBindingLock as releaseBindingLock,
   __test_seams,
 } from '../../src/routes/orcid.js';
+import {
+  computeFreshAuthTargetHash,
+  consumeFreshAuthToken,
+  ipfsUploadFreshAuthTarget,
+} from '../../src/lib/fresh-auth.js';
 
 // The dev .env leaves ORCID and admin-key fields empty, and config is built at
 // import time (cached by the setupFile before this file runs), so we patch the
@@ -3145,6 +3150,50 @@ describe('POST /api/orcid/callback — fresh_auth mode (round-4 hold #6)', () =>
       .send({ code: 'fake', state });
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('issues an ipfs_upload-targeted proof bound to the authenticated user (ORCID-mechanism issuance side)', async () => {
+    // The /api/ipfs/upload-token JWT path requires an ipfs_upload-targeted
+    // proof; this is the ORCID-mechanism issuance branch (the password
+    // mechanism is pinned in custody-fresh-auth-null-hash.test.ts). The
+    // ipfs_upload action carries no root_* fields — its target binds to
+    // (ipfs_upload, <username>, ''). Start directly (the startAuthed helper
+    // hardcodes the author_accept target), complete the round-trip, and assert
+    // the minted proof consumes valid against ipfsUploadFreshAuthTarget. A
+    // mutation routing ipfs_upload into the change_email else-arm at /start
+    // would bind the wrong target, and the consume below would fail.
+    const orcidId = '0000-0001-1234-5678';
+    installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('SELECT orcid FROM accounts') && params[0] === 'alice') {
+        return { rows: [{ orcid: orcidId }] };
+      }
+      return { rows: [] };
+    });
+
+    const startRes = await request(app)
+      .post('/api/orcid/start')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ mode: 'fresh_auth', action: 'ipfs_upload' });
+    expect(startRes.status).toBe(200);
+    const state = new URL(startRes.body.data.redirect_url).searchParams.get('state')!;
+
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(200);
+    expect(res.body.data.mode).toBe('fresh_auth');
+    expect(res.body.data.mechanism).toBe('orcid');
+    expect(res.body.data.action).toBe('ipfs_upload');
+    // ipfs_upload binds to an empty root_permlink and no root_author.
+    expect(res.body.data.root_permlink).toBe('');
+
+    const proof = res.body.data.fresh_auth_proof as string;
+    expect(proof).toMatch(/^[0-9a-f]{64}$/);
+    const targetHash = computeFreshAuthTargetHash(ipfsUploadFreshAuthTarget('alice'));
+    const consumed = await consumeFreshAuthToken(proof, 'alice', targetHash);
+    expect(consumed.valid).toBe(true);
   });
 
 });

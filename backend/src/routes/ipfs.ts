@@ -236,7 +236,18 @@ router.post('/upload-token', verifyHiveSignature, ipfsUploadTokenLimiter, async 
     const expectedTargetHash = computeFreshAuthTargetHash(ipfsUploadFreshAuthTarget(username));
     const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
     if (!result.valid) {
-      const status = result.reason === 'username_mismatch' ? 403 : 401;
+      // Mirror the consent-op consume on the custody broadcast path:
+      // `username_mismatch` / `target_mismatch` / `kind_mismatch` are binding
+      // violations (proof issued for a different user, action, or as a
+      // target-less session proof) and are "forbidden" → 403; the remaining
+      // outcomes (`missing`, `expired`, `malformed`) are "no valid proof
+      // present" → 401.
+      const status =
+        result.reason === 'username_mismatch' ||
+        result.reason === 'target_mismatch' ||
+        result.reason === 'kind_mismatch'
+          ? 403
+          : 401;
       return sendError(
         res,
         status,

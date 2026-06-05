@@ -237,16 +237,19 @@ describe('POST /api/ipfs/upload-token', () => {
     expect(typeof res.body.data.upload_token).toBe('string');
   });
 
-  it('REJECTS a target-less session proof on the JWT path (per-action binding, option b)', async () => {
+  it('rejects a target-less session proof redirected to the JWT upload-token path', async () => {
     // A session proof the victim minted for a vote/comment must NOT be
     // redirectable to /upload-token: consumeFreshAuthToken rejects a
-    // session-kind entry on the consent-op consume path (kind_mismatch).
+    // session-kind entry on the consent-op consume path (kind_mismatch). The
+    // kind mismatch is a binding violation, so it is forbidden (403) — the same
+    // discrimination the custody consent-op consume applies, not a "no proof
+    // present" 401.
     const { token: sessionProof } = await issueSessionFreshAuthToken(user, 'password');
     const res = await preflight(
       { file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length, fresh_auth_proof: sessionProof },
       { Authorization: 'Bearer header.eyJzdWIiOiJ0ZXN0dXNlciJ9.sig' },
     );
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
     expect(res.body.error.details.reason).toBe('kind_mismatch');
   });
