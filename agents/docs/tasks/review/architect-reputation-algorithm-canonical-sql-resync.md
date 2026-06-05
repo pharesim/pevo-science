@@ -37,3 +37,9 @@ Recommendation: option 2 — the verbatim copy has rotted twice now; a structura
 - `agents/docs/reputation-algorithm.md` § "Co-author Credit", § "Canonical SQL Query".
 - `backend/src/reputation.ts` (`computeReputationBatch`, `user_papers`, `chain_papers`), `backend/src/hafsql.ts` (`authorshipClaimsCteBody`, `activeAccreditationsCteBody`).
 - Sequence after `backend-co-author-claim-zero-score` so the list-final arms are final before documenting them.
+
+## Completed (architect, 2026-06-05)
+
+Done via the structural-description approach (option 2). The verbatim ~400-line SQL block was replaced with a CTE roster + per-CTE semantics + the load-bearing chain-identity invariant; the parameter table was corrected to the verified 21-row bind array (no `$7` genesis — weights `$7`–`$16`, then `$17` bridge / `$18` anon / `$19` appTag / `$20` authorities / `$21` admin); the section intro now points to `computeReputationBatch` as authoritative; the drift notice is removed. The bind array was cross-confirmed by two independent adversarial re-derivations from `computeReputationBatch`.
+
+The "sequence after `backend-co-author-claim-zero-score`" constraint is satisfied without waiting: the roster documents the CURRENT live `accepted_claims` resolution (auto-accept arms, accepts unlisted claims), and the list-final enforcement stays pending-framed in "Co-author Credit" — nothing unlanded is documented as enforced. When `backend-implement-consented-authorship-model` lands, update the roster's authorship-claims section to match.

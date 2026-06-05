@@ -297,31 +297,37 @@ decay(age_months) =
 
 ## Canonical SQL Query
 
-This SQL query **is** the algorithm definition. It computes reputation scores for all target users in a single pass. Shared CTEs (cycle_ref, prev_scores, active_authors, voter_weights) run once regardless of user count. Anyone with HAF access can run it and get identical scores given the same inputs.
+The production query in `backend/src/reputation.ts` (`computeReputationBatch`, with CTE bodies composed from `backend/src/hafsql.ts`) **is** the algorithm definition. It computes reputation scores for all target users in a single pass; shared CTEs (`cycle_ref`, `prev_scores`, `active_authors`, `voter_weights`) run once regardless of user count, and anyone with HAF access can run it and get identical scores given the same inputs.
 
-> **Drift notice (2026-06-05):** the verbatim query and parameter table below have drifted from the production implementation in `backend/src/reputation.ts` and `backend/src/hafsql.ts`. Production now adds the `chain_papers` CTE and rekeys the vote/review CTEs to the on-chain post identity (see "Co-author Credit" above), and a concurrent floor-sweep removed the `$7` genesis lower-bound and renumbered the parameters after it. Until a full re-sync lands (tracked by `architect-reputation-algorithm-canonical-sql-resync`), **the code is authoritative for the exact CTE shapes and parameter positions**; treat the block below as structurally indicative, not parameter-accurate.
+Per the CLAUDE.md SSoT principle ("the code is the source of truth for ... data models, and schemas"), this section documents the query **structurally** — the parameter contract, the CTE roster and what each computes, and the load-bearing invariants — rather than pinning a verbatim copy (which had drifted from the code twice). `computeReputationBatch` is authoritative for the exact SQL and bind-parameter positions.
 
 ### Parameters
 
 | Param | Type | Description |
 |-------|------|-------------|
 | `$1` | `text[]` | Target usernames (users whose reputation is being computed) |
-| `$2` | `text[]` | Array of all accredited account names |
-| `$3` | `text` | `APP_TAG` (e.g., `pevotest`) |
-| `$4` | `text` | `APP_TAG/%` (app LIKE pattern, e.g., `pevotest/%`) |
-| `$5` | `jsonb` | Previous cycle scores: `{"user1": 42.5, "user2": 10.0, ...}` or `'{}'::jsonb` for cycle 0 |
-| `$6` | `int` | `cycle_end_block`: only data with `block_num < $6` is included |
-| `$7` | `int` | Genesis block number |
-| `$8` | `numeric` | `W_paper` (default 20) |
-| `$9` | `numeric` | `W_review` (default 10) |
-| `$10` | `numeric` | `W_downvote` (default 2) |
-| `$11` | `numeric` | `W_citation` (default 3) |
-| `$12` | `numeric` | `W_citation_max` (default 15) |
-| `$13` | `numeric` | `W_accreditation_bonus` (default 5) |
-| `$14` | `numeric` | `W_self_citation_discount` (default 0.05) |
-| `$15` | `numeric` | `W_decay_rate` (default 0.02) |
-| `$16` | `numeric` | `W_decay_floor` (default 0.3) |
-| `$17` | `numeric` | `W_decay_grace_months` (default 6) |
+| `$2` | `text[]` | All accredited account names — the voter/reviewer accreditation gate (`= ANY($2)`) |
+| `$3` | `text` | `APP_TAG` (e.g., `pevotest`) — `custom_json` `id`, top-level `parent_permlink`, and the `json_metadata` key |
+| `$4` | `text` | `APP_TAG/%` (the `json_metadata ->> 'app'` LIKE pattern) |
+| `$5` | `jsonb` | Previous-cycle scores `{"user1": 42.5, ...}` (or `'{}'::jsonb` for cycle 0); drives voter weighting |
+| `$6` | `int` | `cycle_end_block`: vote arms gate `block_num < $6`; `cycle_ref` resolves `ref_ts` at `$6 - 1` |
+| `$7` | `numeric` | `W_paper` (default 20) |
+| `$8` | `numeric` | `W_review` (default 10) |
+| `$9` | `numeric` | `W_downvote` (default 2) |
+| `$10` | `numeric` | `W_citation` (default 3) |
+| `$11` | `numeric` | `W_citation_max` (default 15) |
+| `$12` | `numeric` | `W_accreditation_bonus` (default 5) |
+| `$13` | `numeric` | `W_self_citation_discount` (default 0.05) |
+| `$14` | `numeric` | `W_decay_rate` (default 0.02) |
+| `$15` | `numeric` | `W_decay_floor` (default 0.3) |
+| `$16` | `numeric` | `W_decay_grace_months` (default 6) |
+| `$17` | `text` | `config.hiveBridgeAccount` — bridge-author pin (`validPevoPaperWhere`) and the `approve`/`revoke_authorship` signer gate |
+| `$18` | `text` | `config.hiveAnonAccount` (or `''`) — the anon-proxy OR-arm (`c.author = $18`) in the review-class composition sites |
+| `$19` | `text` | `APP_TAG` again — `active_accreditations` `custom_id` (via `activeAccreditationsCteBody(19)`) |
+| `$20` | `text[]` | `config.accreditationAuthorities` — the `required_posting_auths ?\| $20` authority gate in `accred_ranked` |
+| `$21` | `text` | `config.hiveAdminAccount` — the admin signer in the `revoke_authorship` signer gate |
+
+> There is **no genesis-block parameter**: a concurrent floor-sweep removed the former `$7` genesis lower-bound, so the weights begin at `$7` and the only block boundary is `block_num < $6` (`cycle_ref` degrades `$6` to head when the cycle is in progress).
 
 ### Return
 
@@ -330,408 +336,63 @@ One row per target user:
 {"username": "alice", "score": 29.0, "papers": 12.0, "reviews": 8.0, "citations": 4.0, "accreditation": 5}
 ```
 
-### Query
+### Query structure
 
-```sql
--- ═══════════════════════════════════════════════════════════════════
--- PEvO Reputation — Canonical SQL Query (v0.5)
---
--- Computes reputation scores for all target users in one pass.
--- Deterministic: same inputs → same output, no time-based functions.
--- ═══════════════════════════════════════════════════════════════════
+The query is a single `WITH` chain of CTEs, evaluated in this order. Source: `computeReputationBatch` in `backend/src/reputation.ts`; the authorship-claim and accreditation CTE bodies are composed from `backend/src/hafsql.ts` (`authorshipClaimsCteBody`, `activeAccreditationsCteBody`).
 
-WITH
+**Shared / setup**
 
--- ── Cast weight parameters once ─────────────────────────────────
-w AS (SELECT
-  $8::numeric  AS paper,
-  $9::numeric  AS review,
-  $10::numeric AS downvote,
-  $11::numeric AS citation,
-  $12::numeric AS citation_max,
-  $13::numeric AS accreditation_bonus,
-  $14::numeric AS self_citation_discount,
-  $15::numeric AS decay_rate,
-  $16::numeric AS decay_floor,
-  $17::numeric AS decay_grace_months
-),
+| CTE | Computes |
+|-----|----------|
+| `w` | Casts the 10 weight params `$7..$16` once to numeric (paper, review, downvote, citation, citation_max, accreditation_bonus, self_citation_discount, decay_rate, decay_floor, decay_grace_months). |
+| `target_users` | `unnest($1)` — the users being scored this batch. |
+| `cycle_ref` | Reference timestamp `ref_ts` for decay: the most recent block at or before `$6 - 1`, so an in-progress `cycle_end_block` degrades to head rather than zeroing all arms. |
+| `prev_scores` | `jsonb_each_text($5)` → `(username, rep)`; previous-cycle scores driving voter weighting. |
+| `active_authors` | Accredited paper authors (`$2`) ∪ accredited-or-anon (`$18`) non-self reviewers of valid papers; feeds the voter accredited-bonus curve. |
+| `voter_weights` | Per accredited voter (`$2`): weight 1.0 when no prior score; the `0.4 + 0.6*sqrt(rep/100)` floored curve for `active_authors`; else `sqrt(rep/100)`. |
 
--- ── Target users ────────────────────────────────────────────────
-target_users AS (
-  SELECT unnest AS username FROM unnest($1::text[])
-),
+**Authorship claims (co-author credit — current legacy resolution; see "Co-author Credit" above for the target consented model)**
 
--- ── Reference timestamp from cycle_end_block ────────────────────
--- Used for age-based decay. No NOW() or time functions. Resolve the most
--- recent block at or before the cycle's last block rather than an exact
--- equality: an exact match returns zero rows whenever the cycle's end block
--- has not been produced yet, which would collapse every CROSS JOIN cycle_ref
--- arm (papers / reviews / citations) to NULL. The bounded descending
--- single-row form always yields the latest existing block, so a stray
--- in-progress end block degrades to scoring against the latest block instead
--- of zeroing out.
-cycle_ref AS (
-  SELECT b.timestamp AS ref_ts
-  FROM hafsql.haf_blocks b
-  WHERE b.block_num <= $6 - 1
-  ORDER BY b.block_num DESC
-  LIMIT 1
-),
+| CTE | Computes |
+|-----|----------|
+| `claim_events` | All `claim_authorship` / `approve_authorship` / `revoke_authorship` `custom_json` (`custom_id = $3`): action, claimer, paper_author, paper_permlink, author_index, approver (`required_posting_auths[0]`), block_num. |
+| `accred_ranked`, `active_accreditations` | From `activeAccreditationsCteBody(19)`: authority-gated (`required_posting_auths ?\| $20`) accreditations, ranked per account, latest `accredit` wins — the gated ORCID source for the auto-accept arm. |
+| `accepted_claims` | `DISTINCT (claimer, paper_author, paper_permlink)` for `target_users`' claims not voided by a qualifying revoke (signer ∈ `paper_author`/`$17`/`$21`/claimer), AND either explicitly approved (signer ∈ `paper_author`/`$17`) OR auto-accepted by trimmed-ORCID match vs `active_accreditations` OR by normalized hive-username match. |
 
--- ── Previous cycle scores (jsonb → table) ───────────────────────
-prev_scores AS (
-  SELECT key AS username, value::numeric AS rep
-  FROM jsonb_each_text($5)
-),
+**Papers arm**
 
--- ── Active authors: users who have published or reviewed ───────
--- Used for the activity-gated voter weight floor (R9). Distinct from the
--- "users to score" set (which is `getAllAccreditedAccounts()`); a newly-
--- accredited but non-publishing user is scored but does not get the
--- accredited-active voter bonus until they author a paper or review.
-active_authors AS (
-  SELECT DISTINCT author FROM (
-    SELECT c.author FROM hafsql.comments c
-    WHERE c.parent_author = '' AND c.parent_permlink = $3
-      AND (c.json_metadata -> $3 ->> 'type') IN ('paper', 'bridge_paper')
-      AND c.json_metadata ->> 'app' LIKE $4
-    UNION ALL
-    SELECT c.author FROM hafsql.comments c
-    JOIN hafsql.comments p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
-    WHERE p.parent_author = '' AND p.parent_permlink = $3
-      AND p.json_metadata ->> 'app' LIKE $4
-      AND (c.json_metadata -> $3 ->> 'type') = 'review'
-      AND c.json_metadata ->> 'app' LIKE $4
-  ) t
-),
+| CTE | Computes |
+|-----|----------|
+| `user_papers` | Native papers by target users (`continues IS NULL`) ∪ accepted-claim papers crediting the claimer. Each row carries the credit-recipient `author` plus `chain_author`/`chain_permlink` (the on-chain post identity). |
+| `chain_papers` | `SELECT DISTINCT chain_author AS author, chain_permlink AS permlink FROM user_papers` — deduped on-chain posts, so a post credited to N recipients matches the vote/review CTEs once. |
+| `paper_vote_signals` → `paper_latest_votes` → `paper_resolved_votes` | Native votes + revote `custom_json` by accredited voters (`block_num < $6`) on `chain_papers` posts; latest-per-(voter, post) wins; self-votes and co-author votes excluded. |
+| `paper_reviews` | Per `chain_papers` post, the averaged 4-dimension rating → quality multiplier, over valid non-self accredited-or-anon (`$2`/`$18`) reviews. |
+| `paper_vote_agg`, `paper_scores` | Voter-weighted up/down sums; per `user_papers` row `clamp(quality*upvotes − downvotes*W_downvote) * decay`, joined to reviews/votes on the chain identity, credited to `up.author`. |
 
--- ── Voter weight lookup ─────────────────────────────────────────
--- For each accredited voter, compute their weight from prior cycle.
--- Active (has paper/review): LEAST(1.0, GREATEST(0.4, 0.4 + 0.6 * sqrt(rep/100)))
--- Inactive:                  LEAST(1.0, sqrt(rep/100))
--- Not in prev_scores:        1.0 (bootstrap/new account)
-voter_weights AS (
-  SELECT
-    a.voter,
-    CASE
-      WHEN ps.rep IS NULL THEN 1.0  -- not in prev scores → bootstrap
-      WHEN aa.author IS NOT NULL THEN  -- active voter
-        LEAST(1.0, GREATEST(0.4, 0.4 + 0.6 * sqrt(ps.rep / 100.0)))
-      ELSE  -- inactive voter
-        LEAST(1.0, sqrt(ps.rep / 100.0))
-    END AS vw
-  FROM unnest($2::text[]) AS a(voter)
-  LEFT JOIN prev_scores ps ON ps.username = a.voter
-  LEFT JOIN active_authors aa ON aa.author = a.voter
-),
+**Reviews arm**
 
--- ═══ PAPERS ═══
-user_papers AS (
-  SELECT c.author, c.permlink, c.created, c.json_metadata
-  FROM hafsql.comments c
-  WHERE c.author IN (SELECT username FROM target_users)
-    AND c.parent_author = '' AND c.parent_permlink = $3
-    AND (c.json_metadata -> $3 ->> 'type') = 'paper'
-    AND c.json_metadata ->> 'app' LIKE $4
-    AND (c.json_metadata -> $3 -> 'continues') IS NULL
-),
+| CTE | Computes |
+|-----|----------|
+| `user_reviews` | Each target user's valid non-self accredited-or-anon, non-anonymous reviews on real PEvO parent papers. |
+| `review_vote_signals` → `review_latest_votes` → `review_resolved_votes` → `review_vote_agg` → `review_scores` | Votes/revotes on those reviews, resolved latest-per-(voter, review), voter-weighted, `clamp(up − down*W_downvote) * decay`, credited to the reviewer (`ur.author`). |
 
-paper_vote_signals AS (
-  SELECT voter, author, permlink, weight, block_num FROM (
-    SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
-    FROM hafsql.operation_vote_view vo
-    WHERE vo.voter = ANY($2::text[])
-      AND vo.author IN (SELECT username FROM target_users)
-      AND EXISTS (SELECT 1 FROM user_papers up WHERE up.author = vo.author AND up.permlink = vo.permlink)
-      AND vo.block_num >= $7 AND vo.block_num < $6
-    UNION ALL
-    SELECT
-      cj.required_posting_auths ->> 0 AS voter,
-      cj.json::jsonb ->> 'author' AS author,
-      cj.json::jsonb ->> 'permlink' AS permlink,
-      (cj.json::jsonb ->> 'weight')::int AS weight,
-      cj.block_num
-    FROM hafsql.operation_custom_json_view cj
-    WHERE cj.custom_id = $3
-      AND cj.json::jsonb ->> 'action' = 'revote'
-      AND cj.json::jsonb ->> 'author' IN (SELECT username FROM target_users)
-      AND cj.block_num >= $7 AND cj.block_num < $6
-      AND cj.required_posting_auths ->> 0 = ANY($2::text[])
-  ) all_signals
-),
+**Citations arm**
 
-paper_latest_votes AS (
-  SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight, block_num
-  FROM paper_vote_signals
-  ORDER BY voter, author, permlink, block_num DESC
-),
+| CTE | Computes |
+|-----|----------|
+| `citing_papers` | For each target-user paper, `CROSS JOIN LATERAL` over `citations[]`, keeping cited authors ∈ target_users with `reputation_relevant != false`. |
+| `citing_vote_signals` → `citing_latest_votes` → `citing_paper_quality` | Votes on the citing posts; per (cited_author, citing post) a self-flag, citing-paper quality, and voter-weighted upvotes excluding the citing author + co-authors. |
+| `citation_scores` | Per cited_author: `LEAST(W_citation_max, SUM(clamp(quality * LEAST(weighted_upvotes, 1)) * (self_citation_discount if self else W_citation) * decay))`. |
 
-paper_resolved_votes AS (
-  SELECT plv.voter, plv.author, plv.permlink, plv.weight, plv.block_num
-  FROM paper_latest_votes plv
-  JOIN user_papers up ON up.author = plv.author AND up.permlink = plv.permlink
-  WHERE plv.voter != up.author
-    AND plv.weight != 0
-    AND NOT EXISTS (
-      SELECT 1 FROM jsonb_array_elements(up.json_metadata -> $3 -> 'authors') a
-      WHERE a ->> 'hive' = plv.voter
-    )
-),
+**Final**
 
-paper_reviews AS (
-  SELECT up.author, up.permlink,
-    AVG(
-      ((c.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
-       (c.json_metadata -> $3 -> 'rating' ->> 'novelty')::numeric +
-       (c.json_metadata -> $3 -> 'rating' ->> 'clarity')::numeric +
-       (c.json_metadata -> $3 -> 'rating' ->> 'significance')::numeric) / 4.0
-    ) / 5.0 AS quality
-  FROM user_papers up
-  JOIN hafsql.comments c
-    ON c.parent_author = up.author AND c.parent_permlink = up.permlink
-    AND (c.json_metadata -> $3 ->> 'type') = 'review'
-    AND c.json_metadata ->> 'app' LIKE $4
-  GROUP BY up.author, up.permlink
-),
+| CTE | Computes |
+|-----|----------|
+| `totals` | Per target user: `SUM(paper_scores)` as `papers`, `SUM(review_scores)` as `reviews`, `citation_scores` as `citations`, plus `W_accreditation_bonus` if accredited. |
 
-paper_vote_agg AS (
-  SELECT prv.author, prv.permlink,
-    COALESCE(SUM(vw.vw * ABS(prv.weight) / 10000.0) FILTER (WHERE prv.weight > 0), 0) AS weighted_up,
-    COALESCE(SUM(vw.vw * ABS(prv.weight) / 10000.0) FILTER (WHERE prv.weight < 0), 0) AS weighted_down
-  FROM paper_resolved_votes prv
-  JOIN voter_weights vw ON vw.voter = prv.voter
-  GROUP BY prv.author, prv.permlink
-),
+The final `SELECT` clamps `papers + reviews + citations + accreditation` to `[0, 100]`, rounded to 1 decimal, returning the components alongside the total.
 
-paper_scores AS (
-  SELECT up.author, up.permlink,
-    GREATEST(-w.paper, LEAST(w.paper,
-      COALESCE(pr.quality, 1.0) * LEAST(COALESCE(pva.weighted_up, 0), w.paper)
-      - COALESCE(pva.weighted_down, 0) * w.downvote
-    )) * GREATEST(w.decay_floor,
-      CASE
-        WHEN EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
-        ELSE GREATEST(w.decay_floor,
-          1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
-        )
-      END
-    ) AS score
-  FROM user_papers up
-  CROSS JOIN cycle_ref cr
-  CROSS JOIN w
-  LEFT JOIN paper_reviews pr ON pr.author = up.author AND pr.permlink = up.permlink
-  LEFT JOIN paper_vote_agg pva ON pva.author = up.author AND pva.permlink = up.permlink
-),
-
--- ═══ REVIEWS ═══
-user_reviews AS (
-  SELECT c.author, c.permlink, c.created
-  FROM hafsql.comments c
-  WHERE c.author IN (SELECT username FROM target_users)
-    AND (c.json_metadata -> $3 ->> 'type') = 'review'
-    AND c.json_metadata ->> 'app' LIKE $4
-    AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
-),
-
-review_vote_signals AS (
-  SELECT voter, author, permlink, weight, block_num FROM (
-    SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
-    FROM hafsql.operation_vote_view vo
-    WHERE vo.voter = ANY($2::text[])
-      AND vo.author IN (SELECT username FROM target_users)
-      AND EXISTS (SELECT 1 FROM user_reviews ur WHERE ur.author = vo.author AND ur.permlink = vo.permlink)
-      AND vo.block_num >= $7 AND vo.block_num < $6
-    UNION ALL
-    SELECT
-      cj.required_posting_auths ->> 0 AS voter,
-      cj.json::jsonb ->> 'author' AS author,
-      cj.json::jsonb ->> 'permlink' AS permlink,
-      (cj.json::jsonb ->> 'weight')::int AS weight,
-      cj.block_num
-    FROM hafsql.operation_custom_json_view cj
-    WHERE cj.custom_id = $3
-      AND cj.json::jsonb ->> 'action' = 'revote'
-      AND cj.json::jsonb ->> 'author' IN (SELECT username FROM target_users)
-      AND cj.block_num >= $7 AND cj.block_num < $6
-      AND cj.required_posting_auths ->> 0 = ANY($2::text[])
-  ) all_signals
-),
-
-review_latest_votes AS (
-  SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight
-  FROM review_vote_signals
-  ORDER BY voter, author, permlink, block_num DESC
-),
-
-review_resolved_votes AS (
-  SELECT rlv.voter, rlv.author, rlv.permlink, rlv.weight
-  FROM review_latest_votes rlv
-  JOIN user_reviews ur ON ur.author = rlv.author AND ur.permlink = rlv.permlink
-  WHERE rlv.voter != rlv.author
-    AND rlv.weight != 0
-),
-
-review_vote_agg AS (
-  SELECT rrv.author, rrv.permlink,
-    COALESCE(SUM(vw.vw * ABS(rrv.weight) / 10000.0) FILTER (WHERE rrv.weight > 0), 0) AS weighted_up,
-    COALESCE(SUM(vw.vw * ABS(rrv.weight) / 10000.0) FILTER (WHERE rrv.weight < 0), 0) AS weighted_down
-  FROM review_resolved_votes rrv
-  JOIN voter_weights vw ON vw.voter = rrv.voter
-  GROUP BY rrv.author, rrv.permlink
-),
-
-review_scores AS (
-  SELECT ur.author, ur.permlink,
-    GREATEST(-w.review, LEAST(w.review,
-      LEAST(COALESCE(rva.weighted_up, 0), w.review)
-      - COALESCE(rva.weighted_down, 0) * w.downvote
-    )) * GREATEST(w.decay_floor,
-      CASE
-        WHEN EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
-        ELSE GREATEST(w.decay_floor,
-          1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
-        )
-      END
-    ) AS score
-  FROM user_reviews ur
-  CROSS JOIN cycle_ref cr
-  CROSS JOIN w
-  LEFT JOIN review_vote_agg rva ON rva.author = ur.author AND rva.permlink = ur.permlink
-),
-
--- ═══ CITATIONS ═══
-citing_papers AS (
-  SELECT
-    citing.author AS citing_author,
-    citing.permlink AS citing_permlink,
-    citing.created AS citing_created,
-    citing.json_metadata AS citing_meta,
-    cit ->> 'author' AS cited_author,
-    COALESCE((cit ->> 'reputation_relevant')::boolean, true) AS reputation_relevant
-  FROM hafsql.comments citing
-  CROSS JOIN LATERAL jsonb_array_elements(
-    citing.json_metadata -> $3 -> 'citations'
-  ) AS cit
-  WHERE citing.parent_author = '' AND citing.parent_permlink = $3
-    AND (citing.json_metadata -> $3 ->> 'type') = 'paper'
-    AND citing.json_metadata ->> 'app' LIKE $4
-    AND jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'
-    AND citing.author = ANY($2::text[])
-    AND (cit ->> 'author') IN (SELECT username FROM target_users)
-    AND COALESCE((cit ->> 'reputation_relevant')::boolean, true) = true
-),
-
-citing_vote_signals AS (
-  SELECT voter, permlink, author, weight, block_num FROM (
-    SELECT vo.voter, vo.permlink, vo.author, vo.weight, vo.block_num
-    FROM hafsql.operation_vote_view vo
-    WHERE vo.voter = ANY($2::text[])
-      AND (vo.author, vo.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
-      AND vo.block_num >= $7 AND vo.block_num < $6
-    UNION ALL
-    SELECT
-      cj.required_posting_auths ->> 0 AS voter,
-      cj.json::jsonb ->> 'permlink' AS permlink,
-      cj.json::jsonb ->> 'author' AS author,
-      (cj.json::jsonb ->> 'weight')::int AS weight,
-      cj.block_num
-    FROM hafsql.operation_custom_json_view cj
-    WHERE cj.custom_id = $3
-      AND cj.json::jsonb ->> 'action' = 'revote'
-      AND cj.block_num >= $7 AND cj.block_num < $6
-      AND cj.required_posting_auths ->> 0 = ANY($2::text[])
-      AND (cj.json::jsonb ->> 'author', cj.json::jsonb ->> 'permlink')
-        IN (SELECT citing_author, citing_permlink FROM citing_papers)
-  ) all_signals
-),
-
-citing_latest_votes AS (
-  SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight
-  FROM citing_vote_signals
-  ORDER BY voter, author, permlink, block_num DESC
-),
-
-citing_paper_quality AS (
-  SELECT
-    cp.cited_author,
-    cp.citing_author,
-    cp.citing_permlink,
-    cp.citing_created,
-    cp.citing_author = cp.cited_author AS is_self,
-    COALESCE(cpr.quality, 1.0) AS review_quality,
-    COALESCE(SUM(vw.vw * ABS(clv.weight) / 10000.0)
-      FILTER (WHERE clv.weight > 0 AND clv.voter != cp.citing_author AND clv.weight != 0), 0
-    ) AS weighted_upvotes
-  FROM citing_papers cp
-  LEFT JOIN (
-    SELECT up2.permlink, up2.author,
-      AVG(
-        ((c2.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
-         (c2.json_metadata -> $3 -> 'rating' ->> 'novelty')::numeric +
-         (c2.json_metadata -> $3 -> 'rating' ->> 'clarity')::numeric +
-         (c2.json_metadata -> $3 -> 'rating' ->> 'significance')::numeric) / 4.0
-      ) / 5.0 AS quality
-    FROM hafsql.comments up2
-    JOIN hafsql.comments c2
-      ON c2.parent_author = up2.author AND c2.parent_permlink = up2.permlink
-      AND (c2.json_metadata -> $3 ->> 'type') = 'review'
-      AND c2.json_metadata ->> 'app' LIKE $4
-    WHERE (up2.author, up2.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
-    GROUP BY up2.permlink, up2.author
-  ) cpr ON cpr.author = cp.citing_author AND cpr.permlink = cp.citing_permlink
-  LEFT JOIN citing_latest_votes clv
-    ON clv.author = cp.citing_author AND clv.permlink = cp.citing_permlink
-  LEFT JOIN voter_weights vw ON vw.voter = clv.voter
-  GROUP BY cp.cited_author, cp.citing_author, cp.citing_permlink, cp.citing_created, cpr.quality
-),
-
-citation_scores AS (
-  SELECT cpq.cited_author AS author,
-    LEAST(w.citation_max, COALESCE(SUM(
-      GREATEST(0, LEAST(1.0, cpq.review_quality * LEAST(cpq.weighted_upvotes, 1.0)))
-      * CASE WHEN cpq.is_self THEN w.self_citation_discount ELSE w.citation END
-      * GREATEST(w.decay_floor,
-          CASE
-            WHEN EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
-            ELSE GREATEST(w.decay_floor,
-              1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
-            )
-          END
-        )
-    ), 0)) AS score
-  FROM citing_paper_quality cpq
-  CROSS JOIN cycle_ref cr
-  CROSS JOIN w
-  GROUP BY cpq.cited_author, w.citation_max, w.self_citation_discount, w.citation,
-           w.decay_floor, w.decay_grace_months, w.decay_rate
-),
-
--- ═══ FINAL AGGREGATION ═══
-totals AS (
-  SELECT
-    tu.username,
-    COALESCE(ps_agg.papers, 0) AS papers,
-    COALESCE(rs_agg.reviews, 0) AS reviews,
-    COALESCE(cs.score, 0) AS citations,
-    CASE WHEN tu.username = ANY($2::text[]) THEN w.accreditation_bonus ELSE 0 END AS accreditation
-  FROM target_users tu
-  CROSS JOIN w
-  LEFT JOIN (SELECT author, SUM(score) AS papers FROM paper_scores GROUP BY author) ps_agg
-    ON ps_agg.author = tu.username
-  LEFT JOIN (SELECT author, SUM(score) AS reviews FROM review_scores GROUP BY author) rs_agg
-    ON rs_agg.author = tu.username
-  LEFT JOIN citation_scores cs ON cs.author = tu.username
-)
-
-SELECT
-  username,
-  LEAST(100, GREATEST(0, ROUND((papers + reviews + citations + accreditation)::numeric, 1))) AS score,
-  ROUND(papers::numeric, 1) AS papers,
-  ROUND(reviews::numeric, 1) AS reviews,
-  ROUND(citations::numeric, 1) AS citations,
-  accreditation::numeric AS accreditation
-FROM totals;
-```
+**Chain-identity invariant (load-bearing).** Votes and reviews are always signed against the *original poster*, never a claimer, so the paper vote/review CTEs key on the on-chain post identity (`chain_author`/`chain_permlink`) via `chain_papers`, while credit accrues to `up.author` (the claimer on the claim arm, the post author on the native arm) and `totals` does `SUM(...) GROUP BY author`. The `chain_papers` `DISTINCT` is what stops a post credited to several recipients from fan-out-multiplying its votes. (The review-of-a-user arm keys on `ur.author` directly — there the target user *is* the reviewer, so no claimer divergence exists.)
 
 ### Notes on the SQL Query
 
