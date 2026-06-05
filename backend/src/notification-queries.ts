@@ -390,8 +390,9 @@ export async function fetchNotificationsFromHaf(
       WHERE cj.custom_id = ${at}
         AND cj.json::jsonb ->> 'vouchee' = $1
         AND cj.json::jsonb ->> 'action' = 'vouch'
-        -- Signer gate (per hive-schemas.md § 2.7): a vouch is only valid when
-        -- signed by the named voucher, and the voucher must be accredited.
+        -- Signer gate (per the Vouch / Web of Trust schema in hive-schemas.md):
+        -- a vouch is only valid when signed by the named voucher, and the
+        -- voucher must be accredited.
         -- Without it anyone can forge a vouch naming a random voucher and the
         -- vouchee gets a spurious new_vouch notification + digest email.
         AND cj.required_posting_auths ->> 0 = cj.json::jsonb ->> 'voucher'
@@ -585,10 +586,28 @@ export async function fetchNotificationsFromHaf(
         AND cj.json::jsonb ->> 'action' = 'approve_authorship'
         AND cj.json::jsonb ->> 'claimer' = $1
         -- Signer gate (per hive-schemas.md § 2.10): an approve is only valid
-        -- when signed by the original post author or the bridge account.
-        -- Without it a stranger can forge an approve and the claimer gets a
-        -- spurious "your claim was approved" notification + digest email.
-        AND cj.required_posting_auths ->> 0 IN (cj.json::jsonb ->> 'paper_author', ${bridgeParam})
+        -- when signed by the ACTUAL native post author or the bridge account.
+        -- The signer set must NOT be derived from the JSON-self-asserted
+        -- paper_author: an attacker controls both their own posting key and the
+        -- paper_author field, so {paper_author:<self>, claimer:<victim>} would
+        -- pass a self-referential check (signer == self-named paper_author) and
+        -- the victim gets a spurious "your claim was approved" notification +
+        -- digest email. The native arm proves the named (paper_author,
+        -- paper_permlink) is a real PEvO native paper via ${T.comments} +
+        -- validPevoPaperWhere and binds the signer to that post's ACTUAL author
+        -- (mirrors the existence proof in arms 1b/2/6). The bridge arm is the
+        -- param-bound bridgeParam branch (config.hiveBridgeAccount), already
+        -- safe because it does not read any attacker-controlled field.
+        AND (
+          EXISTS (
+            SELECT 1 FROM ${T.comments} ap_paper
+            WHERE ap_paper.author = cj.json::jsonb ->> 'paper_author'
+              AND ap_paper.permlink = cj.json::jsonb ->> 'paper_permlink'
+              AND ${validPevoPaperWhere({ commentAlias: 'ap_paper', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'native' })}
+              AND cj.required_posting_auths ->> 0 = ap_paper.author
+          )
+          OR cj.required_posting_auths ->> 0 = ${bridgeParam}
+        )
         AND cj.block_num > $2
 
       UNION ALL
@@ -607,15 +626,33 @@ export async function fetchNotificationsFromHaf(
         AND cj.json::jsonb ->> 'action' = 'revoke_authorship'
         AND cj.json::jsonb ->> 'claimer' = $1
         -- Signer gate (per hive-schemas.md § 2.11): a revoke is valid when
-        -- signed by the post author, the claimer themselves, the bridge
-        -- account, or the admin account. Without it a stranger can forge a
-        -- revoke and the claimer gets a spurious "your claim was revoked"
-        -- notification + digest email.
-        AND cj.required_posting_auths ->> 0 IN (
-          cj.json::jsonb ->> 'paper_author',
-          cj.json::jsonb ->> 'claimer',
-          ${bridgeParam},
-          ${adminParam}
+        -- signed by the ACTUAL native post author, the claimer themselves, the
+        -- bridge account, or the admin account. As in arm 8, the post-author
+        -- branch must NOT trust the JSON-self-asserted paper_author: an attacker
+        -- controlling both their posting key and the paper_author field could
+        -- otherwise self-sign {paper_author:<self>, claimer:<victim>} and the
+        -- victim gets a spurious "your claim was revoked" notification + digest
+        -- email. The native arm proves the named (paper_author, paper_permlink)
+        -- is a real PEvO native paper via ${T.comments} + validPevoPaperWhere
+        -- and binds the signer to that post's ACTUAL author. The bridge and
+        -- admin branches are param-bound (config.hiveBridgeAccount /
+        -- config.hiveAdminAccount), already safe. The claimer-self branch is
+        -- safe because cj.json ->> 'claimer' is pinned to $1 (the recipient)
+        -- above, so it admits only an op the recipient signed with their own
+        -- key.
+        AND (
+          EXISTS (
+            SELECT 1 FROM ${T.comments} rv_paper
+            WHERE rv_paper.author = cj.json::jsonb ->> 'paper_author'
+              AND rv_paper.permlink = cj.json::jsonb ->> 'paper_permlink'
+              AND ${validPevoPaperWhere({ commentAlias: 'rv_paper', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'native' })}
+              AND cj.required_posting_auths ->> 0 = rv_paper.author
+          )
+          OR cj.required_posting_auths ->> 0 IN (
+            cj.json::jsonb ->> 'claimer',
+            ${bridgeParam},
+            ${adminParam}
+          )
         )
         AND cj.block_num > $2
 

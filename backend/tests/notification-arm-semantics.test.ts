@@ -199,56 +199,101 @@ describe('notification-queries.ts arm semantics', () => {
     },
   );
 
+  // Arms 8/9 require a real-paper existence proof: the signer must equal the
+  // ACTUAL native post author (proven via the comments stand-in `p`), NOT the
+  // JSON-self-asserted paper_author. The `p` CTE stands in for hafsql.comments
+  // and holds ONE real native PEvO paper authored by bob (bob/paper1). Forged
+  // rows self-naming a non-author as paper_author find no matching real paper
+  // and are dropped.
   it.skipIf(!isHafConfigured())(
-    'arm-8 claim_approved: only post-author or bridge-account signers fire',
+    'arm-8 claim_approved: real-author or bridge signers fire; a stranger self-asserting paper_author is dropped',
     { timeout: 30_000 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) { ctx.skip('no pool available'); return; }
       const sql = `
-        WITH cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
-          ('["mallory"]'::jsonb,    '{"action":"approve_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 100),
-          ('["bob"]'::jsonb,        '{"action":"approve_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 101),
-          ('["pevo.bridge"]'::jsonb,'{"action":"approve_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 102)
-        )
+        WITH
+          p(author, permlink, json_metadata) AS (
+            VALUES ('bob'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
+          ),
+          cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+            -- mallory self-signs and self-names as paper_author of a fake paper -> no real paper -> dropped
+            ('["mallory"]'::jsonb,    '{"action":"approve_authorship","claimer":"alice","paper_author":"mallory","paper_permlink":"fake"}'::jsonb, 'pevotest'::text, 100),
+            -- bob is the ACTUAL author of the real paper bob/paper1 -> fires
+            ('["bob"]'::jsonb,        '{"action":"approve_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 101),
+            -- bridge account on the real paper -> fires (param-bound branch, no JSON trust)
+            ('["pevo.bridge"]'::jsonb,'{"action":"approve_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 102),
+            -- carol self-signs naming bob's real paper but is NOT its author -> dropped
+            ('["carol"]'::jsonb,      '{"action":"approve_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 103)
+          )
         SELECT COUNT(*)::int AS hit_count FROM cj
         WHERE cj.custom_id = 'pevotest'
           AND cj.json ->> 'action' = 'approve_authorship'
           AND cj.json ->> 'claimer' = $1
-          AND cj.required_posting_auths ->> 0 IN (cj.json ->> 'paper_author', $2)
+          AND (
+            EXISTS (
+              SELECT 1 FROM p ap_paper
+              WHERE ap_paper.author = cj.json ->> 'paper_author'
+                AND ap_paper.permlink = cj.json ->> 'paper_permlink'
+                AND (ap_paper.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+                AND cj.required_posting_auths ->> 0 = ap_paper.author
+            )
+            OR cj.required_posting_auths ->> 0 = $2
+          )
           AND cj.block_num > 0
       `;
       const r = await pool.query<{ hit_count: number }>(sql, ['alice', 'pevo.bridge']);
-      // mallory dropped; bob (post author) + pevo.bridge fire.
+      // mallory (fake paper) + carol (real paper, not its author) dropped;
+      // bob (actual author) + pevo.bridge (param) fire.
       expect(r.rows[0]?.hit_count).toBe(2);
     },
   );
 
   it.skipIf(!isHafConfigured())(
-    'arm-9 claim_revoked: post-author, claimer-self, bridge, and admin signers fire; strangers do not',
+    'arm-9 claim_revoked: real-author, claimer-self, bridge, admin fire; a stranger self-asserting paper_author is dropped',
     { timeout: 30_000 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) { ctx.skip('no pool available'); return; }
       const sql = `
-        WITH cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
-          ('["mallory"]'::jsonb,    '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 100),
-          ('["bob"]'::jsonb,        '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 101),
-          ('["alice"]'::jsonb,      '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 102),
-          ('["pevo.bridge"]'::jsonb,'{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 103),
-          ('["pevo.admin"]'::jsonb, '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob"}'::jsonb, 'pevotest'::text, 104)
-        )
+        WITH
+          p(author, permlink, json_metadata) AS (
+            VALUES ('bob'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
+          ),
+          cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+            -- mallory self-signs and self-names as paper_author of a fake paper -> dropped
+            ('["mallory"]'::jsonb,    '{"action":"revoke_authorship","claimer":"alice","paper_author":"mallory","paper_permlink":"fake"}'::jsonb, 'pevotest'::text, 100),
+            -- bob is the ACTUAL author of the real paper bob/paper1 -> fires
+            ('["bob"]'::jsonb,        '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 101),
+            -- alice is the claimer (= recipient $1), revoking her own claim -> fires
+            ('["alice"]'::jsonb,      '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 102),
+            -- bridge / admin param-bound branches on the real paper -> fire
+            ('["pevo.bridge"]'::jsonb,'{"action":"revoke_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 103),
+            ('["pevo.admin"]'::jsonb, '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 104),
+            -- carol self-signs naming bob's real paper but is NOT its author, claimer, bridge, or admin -> dropped
+            ('["carol"]'::jsonb,      '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 105)
+          )
         SELECT COUNT(*)::int AS hit_count FROM cj
         WHERE cj.custom_id = 'pevotest'
           AND cj.json ->> 'action' = 'revoke_authorship'
           AND cj.json ->> 'claimer' = $1
-          AND cj.required_posting_auths ->> 0 IN (
-            cj.json ->> 'paper_author', cj.json ->> 'claimer', $2, $3
+          AND (
+            EXISTS (
+              SELECT 1 FROM p rv_paper
+              WHERE rv_paper.author = cj.json ->> 'paper_author'
+                AND rv_paper.permlink = cj.json ->> 'paper_permlink'
+                AND (rv_paper.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+                AND cj.required_posting_auths ->> 0 = rv_paper.author
+            )
+            OR cj.required_posting_auths ->> 0 IN (
+              cj.json ->> 'claimer', $2, $3
+            )
           )
           AND cj.block_num > 0
       `;
       const r = await pool.query<{ hit_count: number }>(sql, ['alice', 'pevo.bridge', 'pevo.admin']);
-      // mallory dropped; bob + alice(self) + bridge + admin fire.
+      // mallory (fake paper) + carol (real paper, not author/claimer/bridge/admin) dropped;
+      // bob (actual author) + alice(self) + bridge + admin fire.
       expect(r.rows[0]?.hit_count).toBe(4);
     },
   );
@@ -446,5 +491,43 @@ describe('notification-queries.ts arm semantics', () => {
     expect(region('-- 7.', '-- 8.')).toContain('required_posting_auths ->> 0');
     expect(region('-- 8.', '-- 9.')).toContain('required_posting_auths ->> 0');
     expect(region('-- 9.', 'ORDER BY block_num')).toContain('required_posting_auths ->> 0');
+  });
+
+  // Arms 8/9 must bind the signer to the REAL native post author, not the
+  // JSON-self-asserted paper_author. The regression we guard against is a
+  // refactor that reverts to the self-referential form
+  // `required_posting_auths ->> 0 IN (cj.json ... 'paper_author', ...)`, which
+  // an attacker passes by self-signing {paper_author:<self>, claimer:<victim>}.
+  // The fix proves the named paper exists as a real PEvO native paper via
+  // ${T.comments} + validPevoPaperWhere and equates the signer to that post's
+  // actual author column.
+  it('arms 8/9 claim approve/revoke: signer gate binds to the real native post author, not the self-asserted paper_author', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(
+      fileURLToPath(new URL('../src/notification-queries.ts', import.meta.url)),
+      'utf8',
+    );
+    const arm8 = src.slice(src.indexOf('-- 8.'), src.indexOf('-- 9.'));
+    const arm9 = src.slice(src.indexOf('-- 9.'), src.indexOf('ORDER BY block_num'));
+    for (const [label, arm] of [['arm-8', arm8], ['arm-9', arm9]] as const) {
+      // Existence proof present: EXISTS subquery against comments gated by
+      // validPevoPaperWhere(source: 'native').
+      expect(arm, `${label} carries an EXISTS existence proof`).toContain('EXISTS (');
+      expect(arm, `${label} joins the comments table for the existence proof`).toContain('FROM ${T.comments}');
+      expect(arm, `${label} gates the existence proof with validPevoPaperWhere`).toContain('validPevoPaperWhere');
+      expect(arm, `${label} pins the existence proof to native papers`).toContain("source: 'native'");
+      // Signer bound to the ACTUAL paper-row author column, not the JSON field.
+      expect(arm, `${label} binds the signer to the real post author column`).toMatch(
+        /cj\.required_posting_auths ->> 0 = \w+\.author/,
+      );
+      // The self-referential JSON-paper_author signer comparison must be gone:
+      // the signer is NEVER compared directly to cj.json ... 'paper_author'.
+      expect(
+        arm.includes("required_posting_auths ->> 0 = cj.json::jsonb ->> 'paper_author'") ||
+          arm.includes("required_posting_auths ->> 0 IN (cj.json::jsonb ->> 'paper_author'"),
+        `${label} no longer trusts the self-asserted paper_author for the signer gate`,
+      ).toBe(false);
+    }
   });
 });
