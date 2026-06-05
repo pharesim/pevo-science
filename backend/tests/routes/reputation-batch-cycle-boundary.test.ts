@@ -179,6 +179,11 @@ describe('reputation cycle cycle_ref — resolves latest block at or before the 
     // form degrades to "score against the latest block" instead.
     expect(cycleSql!).toMatch(/b\.block_num <= \$6 - 1/);
     expect(cycleSql!).toMatch(/ORDER BY b\.block_num DESC/);
+    // Pin LIMIT 1 to the cycle_ref ORDER BY: dropping only LIMIT 1 (keeping
+    // <= and ORDER BY ... DESC) would return every block at or before the
+    // cycle end, turning each CROSS JOIN cycle_ref arm into a Cartesian
+    // product that silently corrupts every score.
+    expect(cycleSql!).toMatch(/ORDER BY b\.block_num DESC\s+LIMIT 1/);
     expect(cycleSql!).not.toMatch(/b\.block_num = \$6 - 1/);
   });
 });

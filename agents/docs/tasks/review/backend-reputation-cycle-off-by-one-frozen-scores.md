@@ -81,3 +81,7 @@ Note: findings #2 (co-author claim zero-score) and #10 (SQL error silent advance
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next architect review scopes `/ce-code-review` to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-05, working tree)
+
+Round-1 hold item 1 (P3, testing) landed: added a `LIMIT 1` assertion to Arm 2's `cycle_ref` SQL-shape canary in `reputation-batch-cycle-boundary.test.ts`, anchored to the cycle_ref `ORDER BY b.block_num DESC` ordering so a regression dropping only `LIMIT 1` (which would turn each `CROSS JOIN cycle_ref` arm into a Cartesian product) fails red. Test-only, assertion anchored on the SQL token. `npm run typecheck` + `npm run lint` clean.
