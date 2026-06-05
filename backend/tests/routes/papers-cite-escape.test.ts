@@ -6,9 +6,15 @@
  * These exercise file-format-injection defenses: a chain-sourced paper title or
  * author name must not be able to break out of a BibTeX `@article{...}` entry,
  * inject extra RIS records/tag lines, or split a one-line APA citation. The
- * builders are pure (they take a synthetic `detail` object and return a string),
- * so no DB, Redis, HAF, or auth middleware is involved — these are direct unit
- * tests against the exported functions, not route-level integration tests.
+ * builders are pure (they take a `detail` object and return a string), so no DB,
+ * Redis, HAF, or auth middleware is involved — these are direct unit tests
+ * against the exported functions, not route-level integration tests.
+ *
+ * The `detail` shape mirrors the live `/cite` path: co-author names live in
+ * `detail.authors` (the supersession/cumulative projection that always carries a
+ * `name`), and the DOI lives under `meta[config.appTag].source.doi` (read via
+ * `safePevoMeta`). The generators do NOT read a `detail.json_metadata.pevo`
+ * sub-key — that key is never populated on the live path.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -19,6 +25,19 @@ import {
   generateRis,
   generateApa,
 } from '../../src/routes/papers.js';
+import { config } from '../../src/config.js';
+
+// The generators read co-author names from `detail.authors` and the DOI from
+// `safePevoMeta(detail.json_metadata).source.doi` — i.e. the PEvO object keyed
+// under `meta[config.appTag]`, the live chain-metadata shape — NOT from a
+// `detail.json_metadata.pevo` sub-key, which is never populated. The default
+// `json_metadata` here is keyed under `config.appTag` (so `safePevoMeta` finds
+// it) and the default author list lives in `detail.authors`; tests that vary
+// the author list pass `authors: [...]` directly, and tests that exercise the
+// DOI branch pass `json_metadata: pevoMeta({ source: { doi } })`.
+function pevoMeta(pevo: Record<string, unknown>): Record<string, unknown> {
+  return { [config.appTag]: pevo };
+}
 
 function detailWith(overrides: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -26,7 +45,8 @@ function detailWith(overrides: Record<string, unknown>): Record<string, unknown>
     permlink: 'my-paper',
     title: 'Some Paper Title',
     created: '2023-06-01T00:00:00Z',
-    json_metadata: { pevo: { authors: [{ name: 'Alice Smith' }] } },
+    authors: [{ name: 'Alice Smith' }],
+    json_metadata: pevoMeta({}),
     ...overrides,
   };
 }
@@ -70,7 +90,7 @@ describe('generateBibtex', () => {
   it('defeats entry-injection via a crafted title', () => {
     const detail = detailWith({
       title: 'Hello } extra-entry @article{evil, author={attacker}',
-      json_metadata: { pevo: { authors: [{ name: 'Alice Smith' }] } },
+      authors: [{ name: 'Alice Smith' }],
     });
     const out = generateBibtex(detail);
     // The smuggled `@article{` must be escaped into the title value, leaving
@@ -90,7 +110,7 @@ describe('generateBibtex', () => {
 
   it('escapes brace/CRLF in an author name without corrupting the author field', () => {
     const detail = detailWith({
-      json_metadata: { pevo: { authors: [{ name: 'Eve}{' }, { name: 'Mallory\r\nFake' }] } },
+      authors: [{ name: 'Eve}{' }, { name: 'Mallory\r\nFake' }],
     });
     const out = generateBibtex(detail);
     // Still exactly one entry; both names live in the single author = {...} field.
@@ -105,7 +125,7 @@ describe('generateBibtex', () => {
   });
 
   it('escapes a free-form doi field', () => {
-    const detail = detailWith({ title: 'X', doi: '10.1000/abc}evil' });
+    const detail = detailWith({ title: 'X', json_metadata: pevoMeta({ source: { doi: '10.1000/abc}evil' } }) });
     const out = generateBibtex(detail);
     expect(out).toContain('doi = {10.1000/abc\\}evil}');
     expect((out.match(/@article\{/g) || [])).toHaveLength(1);
@@ -116,7 +136,7 @@ describe('generateRis', () => {
   it('defeats line injection via a crafted title', () => {
     const detail = detailWith({
       title: 'Innocent\r\nAU  - Fake Author\r\nER  -',
-      json_metadata: { pevo: { authors: [{ name: 'Alice Smith' }] } },
+      authors: [{ name: 'Alice Smith' }],
     });
     const out = generateRis(detail);
     const lines = out.split('\n');
@@ -129,7 +149,7 @@ describe('generateRis', () => {
 
   it('strips CR/LF from an author name', () => {
     const detail = detailWith({
-      json_metadata: { pevo: { authors: [{ name: 'Real\r\nER  -' }] } },
+      authors: [{ name: 'Real\r\nER  -' }],
     });
     const out = generateRis(detail);
     const lines = out.split('\n');
@@ -148,7 +168,7 @@ describe('generateApa', () => {
   it('flattens CR/LF in title and authors into one line', () => {
     const detail = detailWith({
       title: 'Title\r\nInjected',
-      json_metadata: { pevo: { authors: [{ name: 'Alice\nSmith' }] } },
+      authors: [{ name: 'Alice\nSmith' }],
     });
     const out = generateApa(detail);
     expect(out.split('\n')).toHaveLength(1);
@@ -201,7 +221,7 @@ describe('extended line-terminator alphabet', () => {
     const detail = detailWith({
       // Same attack as the CR/LF line-injection test, reached via 0x0C + 0x2028.
       title: 'Innocent' + SEP.FF + 'ER  - ' + SEP.LS + 'TY  - JOUR' + SEP.LS + 'AU  - Forged',
-      json_metadata: { pevo: { authors: [{ name: 'Alice Smith' }] } },
+      authors: [{ name: 'Alice Smith' }],
     });
     const lines = generateRis(detail).split(SEP.LF);
     expect(lines.filter((l) => l.startsWith('TY  - '))).toHaveLength(1);
@@ -225,38 +245,94 @@ describe('extended line-terminator alphabet', () => {
   });
 });
 
-// Cover the empty-`pevo.authors` fallback branch (author fields fall back to the
-// post account) — previously untested in all three formats.
+// The generators read co-author names from `detail.authors` and the DOI from
+// `meta[config.appTag].source.doi`. These pin the SOURCE of the data (not just
+// the escaping): each test goes RED if the generators revert to reading
+// `detail.json_metadata.pevo.authors` / `detail.doi`, which are never populated
+// on the live path. Two author shapes are covered: the single-link projection
+// (`{name, hive, orcid}`) and the continuation/supersession projection (which
+// also carries `orcid_verified`/`orcid_discrepancy` but the same `name`).
+describe('author/DOI source (detail.authors, meta[config.appTag].source.doi)', () => {
+  it('BibTeX lists every co-author name (single-link shape) and the DOI', () => {
+    const detail = detailWith({
+      authors: [
+        { name: 'Alice Smith', hive: 'alice', orcid: '0000-0001-0000-0001' },
+        { name: 'Bob Jones', hive: 'bob', orcid: '0000-0002-0000-0002' },
+      ],
+      json_metadata: pevoMeta({ source: { doi: '10.1000/xyz123' } }),
+    });
+    const out = generateBibtex(detail);
+    expect(out).toContain('author = {Alice Smith and Bob Jones}');
+    expect(out).toContain('doi = {10.1000/xyz123}');
+  });
+
+  it('RIS emits one AU line per co-author (continuation/supersession shape) and a DO line', () => {
+    const detail = detailWith({
+      authors: [
+        { name: 'Alice Smith', hive: 'alice', orcid: '0000-0001-0000-0001', orcid_verified: '0000-0001-0000-0001', orcid_discrepancy: false },
+        { name: 'Carol White', hive: 'carol', orcid: '0000-0003-0000-0003', orcid_verified: null, orcid_discrepancy: false },
+      ],
+      json_metadata: pevoMeta({ source: { doi: '10.1000/xyz123' } }),
+    });
+    const lines = generateRis(detail).split(SEP.LF);
+    expect(lines.filter((l) => l.startsWith('AU  - '))).toEqual(['AU  - Alice Smith', 'AU  - Carol White']);
+    expect(lines.filter((l) => l.startsWith('DO  - '))).toEqual(['DO  - 10.1000/xyz123']);
+  });
+
+  it('APA joins every co-author name', () => {
+    const detail = detailWith({
+      authors: [{ name: 'Alice Smith' }, { name: 'Bob Jones' }],
+    });
+    const out = generateApa(detail);
+    expect(out).toContain('Alice Smith, Bob Jones (');
+  });
+
+  it('mutation-kill: reading detail.json_metadata.pevo instead of detail.authors yields the post account', () => {
+    // The OLD buggy read sourced authors from `detail.json_metadata.pevo.authors`.
+    // With the live shape, that key is empty, so the buggy code would fall back
+    // to the post account. detail.authors carries the real names; assert they win.
+    const detail = detailWith({
+      author: 'alice',
+      authors: [{ name: 'Alice Smith' }, { name: 'Bob Jones' }],
+      // A populated legacy `.pevo` sub-key that the generators must IGNORE.
+      json_metadata: { pevo: { authors: [{ name: 'Ghost Author' }] } },
+    });
+    const out = generateBibtex(detail);
+    expect(out).toContain('author = {Alice Smith and Bob Jones}');
+    expect(out).not.toContain('Ghost Author');
+    expect(out).not.toContain('author = {alice}');
+  });
+});
+
+// Cover the empty-`detail.authors` fallback branch (author fields fall back to
+// the post account) — previously untested in all three formats.
 describe('empty-authors fallback', () => {
-  it('BibTeX author falls back to the post account when pevo.authors is empty', () => {
-    const detail = detailWith({ author: 'alice', json_metadata: { pevo: { authors: [] } } });
+  it('BibTeX author falls back to the post account when detail.authors is empty', () => {
+    const detail = detailWith({ author: 'alice', authors: [] });
     expect(generateBibtex(detail)).toContain('author = {alice}');
   });
 
-  it('RIS author falls back to the post account when pevo.authors is empty', () => {
-    const detail = detailWith({ author: 'alice', json_metadata: { pevo: { authors: [] } } });
+  it('RIS author falls back to the post account when detail.authors is empty', () => {
+    const detail = detailWith({ author: 'alice', authors: [] });
     const lines = generateRis(detail).split(SEP.LF);
     expect(lines.filter((l) => l.startsWith('AU  - '))).toHaveLength(1);
     expect(lines).toContain('AU  - alice');
   });
 
-  it('APA author falls back to the post account when pevo.authors is empty', () => {
-    const detail = detailWith({ author: 'alice', json_metadata: { pevo: { authors: [] } } });
+  it('APA author falls back to the post account when detail.authors is empty', () => {
+    const detail = detailWith({ author: 'alice', authors: [] });
     expect(generateApa(detail)).toContain('alice (');
   });
 });
 
-// The DOI branch reads top-level detail.doi. NOTE: detail.doi is not populated
-// on the live /cite path today (a pre-existing keying issue surfaced during
-// review keeps the live DOI/author data under meta[APP_TAG], unread by the
-// generators) — see the re-review signal. This pins the branch's escape via the
-// field the generators actually read, so a caller that does set detail.doi
-// cannot forge a record.
-describe('DOI branch (detail.doi)', () => {
+// The DOI branch reads `safePevoMeta(detail.json_metadata).source.doi` — i.e.
+// `meta[config.appTag].source.doi`, the live chain-metadata shape. This pins
+// the branch's escape via the field the generators actually read, so a crafted
+// DOI cannot forge a record.
+describe('DOI branch (meta[config.appTag].source.doi)', () => {
   it('RIS emits an escaped DO line; CR/LF in the DOI cannot forge a record', () => {
     const detail = detailWith({
-      doi: '10.1000/abc' + SEP.CR + SEP.LF + 'ER  - ',
-      json_metadata: { pevo: { authors: [{ name: 'Alice Smith' }] } },
+      json_metadata: pevoMeta({ source: { doi: '10.1000/abc' + SEP.CR + SEP.LF + 'ER  - ' } }),
     });
     const lines = generateRis(detail).split(SEP.LF);
     const doLines = lines.filter((l) => l.startsWith('DO  - '));
@@ -265,8 +341,8 @@ describe('DOI branch (detail.doi)', () => {
     expect(lines.filter((l) => l.startsWith('ER  -'))).toHaveLength(1);
   });
 
-  it('no DO line when detail.doi is absent', () => {
-    const detail = detailWith({ json_metadata: { pevo: { authors: [{ name: 'Alice Smith' }] } } });
+  it('no DO line when the DOI is absent', () => {
+    const detail = detailWith({ json_metadata: pevoMeta({}) });
     expect(generateRis(detail).split(SEP.LF).filter((l) => l.startsWith('DO  - '))).toHaveLength(0);
   });
 });
@@ -287,16 +363,16 @@ describe('defensive coercion of absent or wrong-typed chain fields', () => {
   });
 
   it('generators do not throw when title and author are absent', () => {
-    const detail = { permlink: 'p', created: '2023-01-01T00:00:00Z', json_metadata: { pevo: {} } };
+    const detail = { permlink: 'p', created: '2023-01-01T00:00:00Z', authors: [], json_metadata: pevoMeta({}) };
     expect(() => generateBibtex(detail)).not.toThrow();
     expect(() => generateRis(detail)).not.toThrow();
     expect(() => generateApa(detail)).not.toThrow();
   });
 
   it('generators do not throw on a wrong-typed author name (chain-controlled)', () => {
-    // pevo.authors[].name is broadcaster-controlled with no per-element type
-    // check; a numeric name must not crash the RIS/APA per-author escape.
-    const detail = detailWith({ json_metadata: { pevo: { authors: [{ name: 42 as unknown as string }] } } });
+    // detail.authors[].name is broadcaster-derived; a wrong-typed (numeric)
+    // name must coerce to '' and not crash the RIS/APA per-author escape.
+    const detail = detailWith({ authors: [{ name: 42 as unknown as string }] });
     expect(() => generateRis(detail)).not.toThrow();
     expect(() => generateApa(detail)).not.toThrow();
     expect(() => generateBibtex(detail)).not.toThrow();

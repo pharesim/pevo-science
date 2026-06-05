@@ -3827,6 +3827,37 @@ export function singleLine(s: string): string {
   return v.replace(LINE_TERMINATORS, ' ').trim();
 }
 
+/**
+ * Co-author display names for a citation export. The reliable name source is
+ * `detail.authors`, NOT `detail.json_metadata.pevo` — `detail.json_metadata`
+ * IS the raw chain metadata (PEvO data lives under `meta[config.appTag]`, read
+ * via `safePevoMeta`), so a `.pevo` sub-key is never populated. `detail.authors`
+ * carries a total `name` on every build path: the single-link projection
+ * (`{name, hive, orcid}` from `safePevoMeta(meta).authors`), the SQL
+ * `authorsWithSupersessionSelect` projection (COALESCE researcher_name → name →
+ * hive → orcid), and the continuation/cumulative projection
+ * (`buildCumulativeAuthorsForChain`, name resolved via `resolveAuthorName` and
+ * filtered to entries that have a name). Non-string names are coerced to '' by
+ * the escape helpers downstream.
+ */
+function citeAuthorNames(detail: Record<string, unknown>): string[] {
+  const authors = Array.isArray(detail.authors)
+    ? (detail.authors as Array<Record<string, unknown>>)
+    : [];
+  return authors.map((a) => (typeof a.name === 'string' ? a.name : ''));
+}
+
+/**
+ * DOI for a citation export. Read from `safePevoMeta(detail.json_metadata).source.doi`
+ * — the same `meta[config.appTag].source.doi` accessor the listing/detail
+ * citation-count path uses. `detail.doi` is never assigned on the live path.
+ */
+function citeDoi(detail: Record<string, unknown>): string | undefined {
+  const pevo = safePevoMeta((detail.json_metadata as Record<string, unknown>) ?? {});
+  const doi = (pevo.source as Record<string, unknown>)?.doi;
+  return typeof doi === 'string' && doi.length > 0 ? doi : undefined;
+}
+
 export function generateBibtex(detail: Record<string, unknown>): string {
   // Chain fields are coerced from their `as string` casts defensively: a
   // wrong-typed or absent title is unreachable today via Hive's chain-string
@@ -3835,14 +3866,13 @@ export function generateBibtex(detail: Record<string, unknown>): string {
   const title = typeof detail.title === 'string' ? detail.title : '';
   const created = detail.created as string;
   const year = new Date(created).getFullYear();
-  const pevo = ((detail.json_metadata as Record<string, unknown>)?.pevo || {}) as Record<string, unknown>;
-  const authors = (pevo.authors || []) as Array<{ name: string; orcid?: string }>;
+  const names = citeAuthorNames(detail);
   const firstWord = title.split(/\s+/)[0]?.toLowerCase().replace(/[^a-z]/g, '') || 'paper';
   const key = `${author}_${firstWord}_${year}`;
-  const authorStr = authors.length > 0
-    ? authors.map((a) => a.name).join(' and ')
+  const authorStr = names.length > 0
+    ? names.join(' and ')
     : author;
-  const doi = detail.doi as string | undefined;
+  const doi = citeDoi(detail);
 
   // The cite key is composed from a Hive username, a [a-z]-sanitized title word,
   // and a numeric year, so it cannot already contain BibTeX-breaking chars; the
@@ -3863,16 +3893,15 @@ export function generateRis(detail: Record<string, unknown>): string {
   const title = typeof detail.title === 'string' ? detail.title : '';
   const created = detail.created as string;
   const year = new Date(created).getFullYear();
-  const pevo = ((detail.json_metadata as Record<string, unknown>)?.pevo || {}) as Record<string, unknown>;
-  const authors = (pevo.authors || []) as Array<{ name: string }>;
-  const doi = detail.doi as string | undefined;
+  const names = citeAuthorNames(detail);
+  const doi = citeDoi(detail);
 
   const lines: string[] = [
     'TY  - JOUR',
     `TI  - ${risEscape(title)}`,
   ];
-  if (authors.length > 0) {
-    for (const a of authors) lines.push(`AU  - ${risEscape(a.name)}`);
+  if (names.length > 0) {
+    for (const name of names) lines.push(`AU  - ${risEscape(name)}`);
   } else {
     lines.push(`AU  - ${risEscape(author)}`);
   }
@@ -3889,11 +3918,10 @@ export function generateApa(detail: Record<string, unknown>): string {
   const title = typeof detail.title === 'string' ? detail.title : '';
   const created = detail.created as string;
   const year = new Date(created).getFullYear();
-  const pevo = ((detail.json_metadata as Record<string, unknown>)?.pevo || {}) as Record<string, unknown>;
-  const authors = (pevo.authors || []) as Array<{ name: string }>;
+  const names = citeAuthorNames(detail);
 
-  const authorStr = authors.length > 0
-    ? authors.map((a) => singleLine(a.name)).join(', ')
+  const authorStr = names.length > 0
+    ? names.map((name) => singleLine(name)).join(', ')
     : author;
 
   return `${singleLine(authorStr)} (${year}). ${singleLine(title)}. PEvO (Publish and Evaluate Onchain). https://pevo.science/papers/${author}/${detail.permlink}`;
