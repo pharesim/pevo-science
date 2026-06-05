@@ -139,7 +139,10 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
               // Postgres blip is whole-product downtime, not a load-balanced edge —
               // 503 (retry) is the correct posture, not allow-through.
               logger.error({ err: dbErr }, 'Session invalidation check failed');
-              return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Session check temporarily unavailable. Please retry.');
+              // `details.retriable` is the contract the SPA's isRetriable503()
+              // gates on; without it the 503 is treated as terminal and the
+              // client wedges (manual reload) instead of auto-retrying the blip.
+              return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Session check temporarily unavailable. Please retry.', { retriable: true });
             }
           }
         }
@@ -167,7 +170,7 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
 
   // Replay prevention: reject if we've seen this exact signature recently
   if (await isReplaySignature(signature)) {
-    return sendError(res, 401, 'UNAUTHORIZED', 'Signature already used — replay rejected');
+    return sendError(res, 401, 'UNAUTHORIZED', 'Signature already used. Replay rejected.');
   }
 
   // Timestamp validation: past-biased 60s window with a small forward-skew
@@ -217,7 +220,7 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
     }
 
     if (!keyMatch) {
-      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid signature — does not match account posting key');
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid signature. Does not match account posting key.');
     }
 
     // Always record in the in-memory store after a successful verification, even

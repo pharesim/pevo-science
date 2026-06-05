@@ -71,6 +71,9 @@ describe('verifyHiveSignature — session-invalidation lookup fails closed', () 
     const res = await probe(bearerJwt());
     expect(res.status).toBe(503);
     expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    // The SPA's isRetriable503() gates on details.retriable === true; without
+    // this flag the client treats the 503 as terminal instead of auto-retrying.
+    expect(res.body.error.details.retriable).toBe(true);
   });
 
   it('honors the JWT when the lookup returns no invalidation row', async () => {
