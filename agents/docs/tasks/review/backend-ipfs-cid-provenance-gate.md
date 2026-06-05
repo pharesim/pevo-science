@@ -57,3 +57,7 @@ User chose **Option 3 + the CSP pin** (the question batched the three options; o
 1. **Anchor-rot: task-slug citation in a test comment.** The CSP-no-allow-tokens spec this commit added to `backend/tests/routes/ipfs-gateway-hardening.test.ts` opens with a comment that names this task's slug. Per root `CLAUDE.md` "Comment anchors", task slugs must not appear in production/test code — the task archives and the citation becomes a dead pointer. Replace it with a behavioral anchor explaining WHY the CSP sandbox must carry no allow-tokens (it is the load-bearing opaque-origin barrier for the accepted structured-self-reference residual), with no slug. Confirm the replacement introduces no other rot class (no line number / SHA / round number).
 
 Architect-owned, not your work: `api-contracts/ipfs.md` already documents the served-type allow-list, isolation headers, and the structured-reference known-CID gate — no doc update is outstanding for this task.
+
+## Backend re-review signal (2026-06-05, working tree)
+
+2026-06-05 hold item 1 (anchor-rot) landed: removed the task-slug citation from the CSP-no-allow-tokens test comment in `ipfs-gateway-hardening.test.ts`. The behavioral rationale (the CSP sandbox is the load-bearing opaque-origin barrier for the accepted structured-self-reference residual and must carry no allow-tokens) is preserved; no new rot class (line/SHA/round) introduced. `npm run typecheck` + `npm run lint` clean.

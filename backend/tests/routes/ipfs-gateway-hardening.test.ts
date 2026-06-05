@@ -67,7 +67,7 @@ describe('GET /api/ipfs/:cid — per-route isolation headers', () => {
     expect(res.headers['cross-origin-resource-policy']).toBe('same-site');
   });
 
-  // The provenance gate (backend-ipfs-cid-provenance-gate) accepts a residual:
+  // The provenance gate accepts a residual:
   // an accredited author can still host content under the app origin via a
   // structured reference. The CSP sandbox is then the load-bearing barrier that
   // keeps that content in an opaque origin — so it MUST carry no allow-tokens. A
