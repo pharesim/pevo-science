@@ -23,6 +23,17 @@ const NOTIFICATION_WINDOW_BLOCKS = 100_000;
 // of that sweep so one HAF computation serves the next minute of polls.
 const NOTIFICATION_CACHE_TTL_MS = 60_000;
 
+// Internal fetch cap for the cached window batch, deliberately decoupled from
+// the response `limit`. fetchNotificationsFromHaf orders ascending and LIMITs,
+// so keying the fetch to the small response `limit` would cache only the OLDEST
+// `limit` events above the window floor; applySinceBlockFilter can only subtract
+// from that, so a caught-up cursor strips the whole batch while newer in-window
+// events sit beyond the LIMIT cut — a silently frozen feed for any account
+// accruing more than `limit` events per window. Fetching up to this larger cap
+// gives the in-app cursor filter newer events to surface; the response is sliced
+// back to `limit` afterward. Still one HAF query per refill; the cache win holds.
+const NOTIFICATION_WINDOW_FETCH_CAP = 1000;
+
 // ──────────────────────────────────────────────
 // GET /api/notifications
 // ──────────────────────────────────────────────
@@ -61,13 +72,13 @@ router.get('/', verifyHiveSignature, async (req: Request, res: Response) => {
   const cacheKey = `notifications:${account}:${limit}`;
   const windowResult = await hafCache.getOrSet(
     cacheKey,
-    () => fetchNotificationsFromHaf(account, windowFloor, limit),
+    () => fetchNotificationsFromHaf(account, windowFloor, NOTIFICATION_WINDOW_FETCH_CAP),
     NOTIFICATION_CACHE_TTL_MS,
     true,
   );
 
   if (windowResult) {
-    return sendOk(res, applySinceBlockFilter(windowResult, sinceBlock));
+    return sendOk(res, applySinceBlockFilter(windowResult, sinceBlock, limit));
   }
 
   sendOk(res, { events: [], latest_block: sinceBlock, has_more: false });
@@ -75,24 +86,32 @@ router.get('/', verifyHiveSignature, async (req: Request, res: Response) => {
 
 /**
  * Re-apply the poll-specific `since_block` cursor to a window-relative batch
- * computed against `windowFloor`. The cached batch holds events in
- * `(windowFloor, head]`; the SPA's cursor advances past `windowFloor`, so the
- * in-app filter restores the contract's `(since_block, head]` range. Ordering
- * and payload shape are preserved from the cached batch; `latest_block` and
- * `has_more` are recomputed over the filtered subset so the SPA's forward
- * pagination stays internally consistent (it re-polls with `since_block =
- * latest_block`). When the filter empties the batch, `latest_block` falls back
- * to the caller's `since_block` so the cursor does not regress.
+ * computed against `windowFloor` and capped at NOTIFICATION_WINDOW_FETCH_CAP.
+ * The cached batch holds ascending events in `(windowFloor, head]`; the SPA's
+ * cursor advances past `windowFloor`, so the in-app filter restores the
+ * contract's `(since_block, head]` range. After the cursor filter the result is
+ * sliced to the response `limit` (oldest-first forward pagination: the SPA
+ * re-polls with `since_block = latest_block`, which is the highest block among
+ * the delivered events). When the filter empties the batch, `latest_block`
+ * falls back to the caller's `since_block` so the cursor does not regress.
+ *
+ * `has_more` is true when in-window events beyond the delivered slice remain —
+ * either the cursor filter left more than `limit` events (undelivered, in this
+ * batch) or the internal fetch hit its cap (newer events exist beyond the
+ * batch). The prior form (`events.length >= batch.events.length && batch.has_more`)
+ * forced `has_more` to false whenever the cursor removed any event, starving a
+ * follow-up poll while undelivered in-window events still existed.
  */
-function applySinceBlockFilter(batch: NotificationBatch, sinceBlock: number): NotificationBatch {
-  const events = batch.events.filter((e) => e.block_num > sinceBlock);
+function applySinceBlockFilter(batch: NotificationBatch, sinceBlock: number, limit: number): NotificationBatch {
+  const filtered = batch.events.filter((e) => e.block_num > sinceBlock);
+  const events = filtered.slice(0, limit);
   const latestBlock = events.length > 0
     ? Math.max(...events.map((e) => e.block_num))
     : sinceBlock;
   return {
     events,
     latest_block: latestBlock,
-    has_more: events.length >= batch.events.length && batch.has_more,
+    has_more: filtered.length > events.length || batch.has_more,
   };
 }
 
