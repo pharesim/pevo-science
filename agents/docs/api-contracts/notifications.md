@@ -106,8 +106,8 @@ Fetch notification events for the authenticated user since a given Hive block nu
 **Field details:**
 
 - `events`: Array of `NotificationEvent` objects, ordered by `block_num` ascending.
-- `latest_block`: The highest `block_num` included in this response. The client should pass this as `since_block` on the next poll to avoid gaps or duplicates.
-- `has_more`: If `true`, there are more events beyond the `limit`. The client should immediately re-poll with `since_block` = `latest_block` to fetch the remainder.
+- `latest_block`: The highest `block_num` included in this response. The client should pass this as `since_block` on the next poll to avoid gaps or duplicates. When the response contains no events, `latest_block` echoes the caller's `since_block` so the cursor holds its position.
+- `has_more`: If `true`, undelivered events newer than this response's `latest_block` exist inside the server's look-back window. The client should re-poll with `since_block` = `latest_block` to fetch the remainder rather than waiting for the next interval.
 
 **Event types:**
 
@@ -133,6 +133,9 @@ Fetch notification events for the authenticated user since a given Hive block nu
 - Only accredited-voter votes trigger `new_vote` events, consistent with the platform-wide accredited-only policy.
 - `new_reply` carries no `paper_author` / `paper_permlink`. A reply can sit any number of levels deep in a comment chain, so the root paper coordinates are not resolvable without unbounded recursive queries. Clients that want the paper context should resolve it from the `parent_author` / `parent_permlink` chain.
 - The `claim_*` events carry the paper coordinates (`paper_author`, `paper_permlink`) but no `paper_title`. `claim_pending` notifies the post author and carries `actor` (the claimer); `claim_approved` and `claim_revoked` notify the claimer and carry no `actor`. All three are signer-gated (per `hive-schemas.md` § 2.9, § 2.10, § 2.11) so a forged `claim_authorship` / `approve_authorship` / `revoke_authorship` cannot spam notifications.
-- The backend queries HAF for events in the block range `(since_block, latest_head_block]`.
-- The first poll: if the client has no stored `since_block`, it should call `GET /api/health` to get the current timestamp, then use the corresponding block number (or simply use `0` to get the most recent events up to `limit`).
+- The backend computes events against a fixed look-back window of approximately the last 100,000 blocks (about 3.5 days) from the current chain head, not from `since_block`. The window batch is cached server-side per `(account, limit)` for up to 60 seconds; the `since_block` cursor is then applied to the cached batch, so the response contains events in `(since_block, window_head]`. Consequences for clients:
+  - Responses can be up to 60 seconds behind the chain head. The polling interval already exceeds this; do not treat the feed as real-time.
+  - `since_block = 0` returns events from the look-back window only, not from genesis. "All history" is not a supported query shape.
+  - A cursor older than the window floor (a client offline longer than the window span) skips the gap: events between the cursor and the window floor are not returned and will not be returned later. The email digest covers long offline gaps through its own cursor.
+- The first poll: if the client has no stored `since_block`, use `0` to receive the most recent window of events up to `limit`.
 - This design is suitable for both web (localStorage cursor) and mobile (SharedPreferences cursor) clients. No persistent connections or server-side state.
