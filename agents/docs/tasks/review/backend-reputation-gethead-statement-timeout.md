@@ -31,3 +31,11 @@ Bound the batch's head read and the main batch SQL with a per-query `statement_t
 - `backend/src/reputation-batch.ts` — `getHeadBlock`, `loadReputationWeights` (the existing `SET LOCAL statement_timeout` pattern to mirror), `runBatchComputation` (outer catch that a timeout error composes with).
 - `backend/src/reputation.ts` — `computeReputationBatch` main query.
 - `backend/src/db.ts` — pool-level `statement_timeout` (the current coarse backstop).
+
+## Backend signal (2026-06-05, commit on main)
+
+Wrapped the three previously-unbounded HAF reads in a per-query `statement_timeout` so a hung HAF replica fails the cycle fast instead of stranding it on the coarse pool-level 30s default:
+- Added an exported `queryWithStatementTimeout(pool, timeoutMs, sql, params)` in `reputation.ts` that mirrors `loadReputationWeights`' `connect() + BEGIN + SET LOCAL statement_timeout + COMMIT` pattern (SET LOCAL needs a transaction to scope the GUC without leaking it to the pooled connection), always releasing the client.
+- `computeReputationBatch`'s inner head read (5s) and main WITH-CTE batch query (25s) now use it; `getHeadBlock` in `reputation-batch.ts` uses it (5s).
+- Test mocks: `reputation-batch-sql-failure.test.ts` and `reputation-batch-cycle-boundary.test.ts` Arm 1 had query-only pool stubs that broke once `getHeadBlock` switched to `connect()`; added a `connect()` returning a client with `query` + `release`. Arm 2's `capturingPool` already had the dual shape and passes `cycleEndBlock` (head read skipped), so it captured the main query through the new path unchanged.
+`npm run typecheck` + `npm run lint` clean; reputation-batch-sql-failure / cycle-boundary / internals green, and a real-HAF cycle (reputation-lifecycle, 17 tests) confirms the connect+SET LOCAL path executes correctly against real Postgres.

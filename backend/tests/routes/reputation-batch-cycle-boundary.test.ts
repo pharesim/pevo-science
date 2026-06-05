@@ -111,7 +111,12 @@ describe('reputation batch: only fully-elapsed cycles are scored', () => {
 
     // getHeadBlock() is the only live pool consumer once the helpers below
     // are stubbed; return the controlled head for its MAX(block_num) read.
-    getPoolMock.mockReturnValue({ query: async () => ({ rows: [{ head: HEAD }] }) });
+    getPoolMock.mockReturnValue({
+      query: async () => ({ rows: [{ head: HEAD }] }),
+      // getHeadBlock reads under a per-query statement_timeout (connect() + SET
+      // LOCAL), so the stub exposes a client returning the same head row.
+      connect: async () => ({ query: async () => ({ rows: [{ head: HEAD }] }), release: () => undefined }),
+    });
 
     vi.spyOn(reputationModule, 'getReputationWeights').mockResolvedValue({
       ...DEFAULT_REPUTATION_WEIGHTS,

@@ -358,6 +358,37 @@ export async function startReputationWeightsCache(): Promise<void> {
  * (reviewer's own breakdown), and citing_paper_quality (citation
  * discount). Per-site rationale lives at the CTEs.
  */
+const HEAD_QUERY_TIMEOUT_MS = 5000;
+const BATCH_QUERY_TIMEOUT_MS = 25000;
+
+/**
+ * Run a single read under a per-query `statement_timeout`, scoped via a short
+ * transaction + `SET LOCAL` (the only way to bound one query without leaking the
+ * GUC to the pooled connection). Mirrors loadReputationWeights' connect+BEGIN
+ * pattern. A hung HAF replica then fails this query at `timeoutMs` instead of
+ * stranding the cycle on the coarse pool-level 30s default. Always releases.
+ */
+export async function queryWithStatementTimeout(
+  pool: pg.Pool,
+  timeoutMs: number,
+  sql: string,
+  params: unknown[] = [],
+): Promise<pg.QueryResult> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
+    const result = await client.query(sql, params);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export async function computeReputationBatch(
   usernames: string[],
   prevScores?: Record<string, number>,
@@ -379,14 +410,16 @@ export async function computeReputationBatch(
 
     let endBlock = cycleEndBlock;
     if (!endBlock) {
-      const headResult = await pool.query(`SELECT MAX(block_num) AS head FROM ${T.blocks}`, []);
+      const headResult = await queryWithStatementTimeout(pool, HEAD_QUERY_TIMEOUT_MS, `SELECT MAX(block_num) AS head FROM ${T.blocks}`, []);
       endBlock = Number(headResult.rows[0]?.head ?? 0);
       if (endBlock === 0) return results;
     }
 
     const prevJson = prevScores ?? batchMapToScoreRecord(await getBatchReputationMap());
 
-    const result = await pool.query(
+    const result = await queryWithStatementTimeout(
+      pool,
+      BATCH_QUERY_TIMEOUT_MS,
       `WITH
 
       -- Cast weight parameters once

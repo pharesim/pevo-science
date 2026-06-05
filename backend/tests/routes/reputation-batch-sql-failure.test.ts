@@ -74,8 +74,14 @@ const CYCLE_BLOCKS = 100;
 
 function stubCycleConfig(headBlock: number): void {
   // getHeadBlock() is the only live pool consumer once the helpers below are
-  // stubbed; return the controlled head for its MAX(block_num) read.
-  getPoolMock.mockReturnValue({ query: async () => ({ rows: [{ head: headBlock }] }) });
+  // stubbed; return the controlled head for its MAX(block_num) read. It now
+  // reads under a per-query statement_timeout (connect() + SET LOCAL), so the
+  // stub also exposes a client (BEGIN/SET LOCAL/SELECT/COMMIT resolve the same
+  // head row; only the SELECT result is used).
+  getPoolMock.mockReturnValue({
+    query: async () => ({ rows: [{ head: headBlock }] }),
+    connect: async () => ({ query: async () => ({ rows: [{ head: headBlock }] }), release: () => undefined }),
+  });
   vi.spyOn(reputationModule, 'getReputationWeights').mockResolvedValue({
     ...DEFAULT_REPUTATION_WEIGHTS,
     cycle_blocks: CYCLE_BLOCKS,
