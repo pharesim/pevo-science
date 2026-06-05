@@ -47,3 +47,7 @@ Pin with a snapshot test.
 - [backend/src/reputation.ts](backend/src/reputation.ts) lines 733-739 (`paper_scores`), 837-843 (`review_scores`), 967-974 (`citation_scores`).
 - [backend/src/hafsql.ts](backend/src/hafsql.ts) — destination for the helper.
 - HAF-query review run `w274tijk0` rank #29.
+
+## Backend signal (2026-06-05, commit on main)
+
+Extracted `decayMultiplierSql(createdExpr, opts?)` into `hafsql.ts` (mirrors the `accreditedVoteCount` helper shape) and replaced the three inlined copies in `reputation.ts` (`paper_scores` / `review_scores` / `citation_scores`, keyed on `up.created` / `ur.created` / `cpq.citing_created`). The redundant outer `GREATEST(w.decay_floor, ...)` is removed at all three sites — numeric output is identical (the grace arm returns 1.0 >= decay_floor, the decay arm already floors via GREATEST), so this is pure simplification. Snapshot test in `hafsql.test.ts` pins the exact emitted SQL for the default and alias-override variants plus a single-GREATEST assertion (kills the redundant-outer-floor regression). `npm run typecheck` + `npm run lint` clean; hafsql snapshot + a real cycle run (reputation-batch-cycle-boundary, reputation-batch-internals) green.

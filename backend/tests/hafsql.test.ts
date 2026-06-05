@@ -9,10 +9,35 @@ import {
   validPevoPaperWhere,
   validReviewWhere,
   excludeSelfReviewWhere,
+  decayMultiplierSql,
   T,
 } from '../src/hafsql.js';
 import { config } from '../src/config.js';
 import { queryWithRetry } from './support/haf-query.js';
+
+describe('decayMultiplierSql', () => {
+  // Snapshot pins the exact SQL the three *_scores CTEs (paper / review /
+  // citation) share, so a one-site formatting tweak can no longer silently
+  // desync paper/review/citation aging.
+  it('emits the self-flooring CASE for the default cr/w aliases', () => {
+    expect(decayMultiplierSql('up.created')).toBe(
+      '(CASE WHEN EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0 ELSE GREATEST(w.decay_floor, 1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)) END)',
+    );
+  });
+
+  it('threads the created column and the optional alias overrides', () => {
+    expect(decayMultiplierSql('cpq.citing_created', { weightsAlias: 'ww', cycleRefAlias: 'crr' })).toBe(
+      '(CASE WHEN EXTRACT(EPOCH FROM (crr.ref_ts - cpq.citing_created)) / (86400.0 * 30) <= ww.decay_grace_months THEN 1.0 ELSE GREATEST(ww.decay_floor, 1.0 - ((EXTRACT(EPOCH FROM (crr.ref_ts - cpq.citing_created)) / (86400.0 * 30) - ww.decay_grace_months) * ww.decay_rate)) END)',
+    );
+  });
+
+  // The inner GREATEST is the only floor; the outer GREATEST(decay_floor, ...)
+  // the call sites previously wrapped this in was redundant and is gone.
+  it('contains exactly one GREATEST (no redundant outer floor)', () => {
+    const sql = decayMultiplierSql('ur.created');
+    expect((sql.match(/GREATEST\(/g) ?? []).length).toBe(1);
+  });
+});
 
 /**
  * Scope-narrowing invariant: a scoped authorshipClaimsCteBody must return the

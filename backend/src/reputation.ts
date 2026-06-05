@@ -12,7 +12,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, activeAccreditationsCteBody, chainOrcidAutoAcceptMatchSql } from './hafsql.js';
+import { T, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, activeAccreditationsCteBody, chainOrcidAutoAcceptMatchSql, decayMultiplierSql } from './hafsql.js';
 
 // ─── Batch key helpers ──────────────────────────────────────────
 
@@ -812,14 +812,7 @@ export async function computeReputationBatch(
           GREATEST(-w.paper, LEAST(w.paper,
             COALESCE(pr.quality, 1.0) * LEAST(COALESCE(pva.weighted_up, 0), w.paper)
             - COALESCE(pva.weighted_down, 0) * w.downvote
-          )) * GREATEST(w.decay_floor,
-            CASE
-              WHEN EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
-              ELSE GREATEST(w.decay_floor,
-                1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
-              )
-            END
-          ) AS score
+          )) * ${decayMultiplierSql('up.created')} AS score
         FROM user_papers up
         CROSS JOIN cycle_ref cr
         CROSS JOIN w
@@ -924,14 +917,7 @@ export async function computeReputationBatch(
           GREATEST(-w.review, LEAST(w.review,
             LEAST(COALESCE(rva.weighted_up, 0), w.review)
             - COALESCE(rva.weighted_down, 0) * w.downvote
-          )) * GREATEST(w.decay_floor,
-            CASE
-              WHEN EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
-              ELSE GREATEST(w.decay_floor,
-                1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
-              )
-            END
-          ) AS score
+          )) * ${decayMultiplierSql('ur.created')} AS score
         FROM user_reviews ur
         CROSS JOIN cycle_ref cr
         CROSS JOIN w
@@ -1085,14 +1071,7 @@ export async function computeReputationBatch(
           LEAST(w.citation_max, COALESCE(SUM(
             GREATEST(0, LEAST(1.0, cpq.review_quality * LEAST(cpq.weighted_upvotes, 1.0)))
             * CASE WHEN cpq.is_self THEN w.self_citation_discount ELSE w.citation END
-            * GREATEST(w.decay_floor,
-                CASE
-                  WHEN EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
-                  ELSE GREATEST(w.decay_floor,
-                    1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
-                  )
-                END
-              )
+            * ${decayMultiplierSql('cpq.citing_created')}
           ), 0)) AS score
         FROM citing_paper_quality cpq
         CROSS JOIN cycle_ref cr

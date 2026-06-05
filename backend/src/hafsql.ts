@@ -916,6 +916,35 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
 }
 
 /**
+ * Time-decay multiplier for an aged contribution (paper / review / citation),
+ * emitted as a CASE expression valued in [decay_floor, 1.0]: full weight (1.0)
+ * inside the grace window, then linear decay toward `decay_floor` past it.
+ *
+ * The created column differs per call site (`up.created` / `ur.created` /
+ * `cpq.citing_created`); the cycle-reference and weights aliases default to the
+ * `cr` / `w` CROSS JOINs the *_scores CTEs share. Requires `cycle_ref` (ref_ts)
+ * and the weights row (decay_grace_months, decay_floor, decay_rate) in scope.
+ *
+ * Self-flooring by construction, so call sites must NOT wrap this in an outer
+ * GREATEST(decay_floor, ...): the grace arm returns 1.0 (>= decay_floor, which
+ * is <= 1.0) and the decay arm already floors via GREATEST. Sharing one helper
+ * keeps paper/review/citation aging from silently desyncing on a one-site edit.
+ *
+ * @param createdExpr - SQL expression for the contribution's created timestamp
+ * @param opts.weightsAlias - alias of the weights row (default 'w')
+ * @param opts.cycleRefAlias - alias of the cycle_ref row (default 'cr')
+ */
+export function decayMultiplierSql(
+  createdExpr: string,
+  opts: { weightsAlias?: string; cycleRefAlias?: string } = {},
+): string {
+  const w = opts.weightsAlias ?? 'w';
+  const cr = opts.cycleRefAlias ?? 'cr';
+  const months = `EXTRACT(EPOCH FROM (${cr}.ref_ts - ${createdExpr})) / (86400.0 * 30)`;
+  return `(CASE WHEN ${months} <= ${w}.decay_grace_months THEN 1.0 ELSE GREATEST(${w}.decay_floor, 1.0 - ((${months} - ${w}.decay_grace_months) * ${w}.decay_rate)) END)`;
+}
+
+/**
  * SQL fragment that projects the `authors[]` array with supersession
  * fields (`orcid_verified`, `orcid_discrepancy`) joined per-author against
  * the `active_accreditations` CTE. Used by the paper-listing and
