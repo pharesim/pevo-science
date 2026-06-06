@@ -51,9 +51,12 @@ type SyntheticOp = { id: number; json: Record<string, unknown>; signer: string; 
 /**
  * Resolve the status of the (claimant, victim, p1) claim against a synthetic
  * set of on-chain ops, running the production `authorshipClaimsCteBody`
- * fragment with its custom_json view redirected to a VALUES CTE. The
- * claim_events block_num floor is forced to 0 so synthetic block numbers are
- * admitted regardless of the cached genesis block.
+ * fragment with its custom_json view redirected to a VALUES CTE and its
+ * comments view redirected to a synthetic paper post (the approval arm's
+ * list-final gate resolves author_index against an existing authors[] slot).
+ * The CTE binds exactly the accreditation + claims fragment params; there is
+ * no forced block_num floor, and the synthetic ops are ordered by their own
+ * block numbers.
  */
 async function resolveClaimStatus(
   pool: { query: (sql: string, params: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },

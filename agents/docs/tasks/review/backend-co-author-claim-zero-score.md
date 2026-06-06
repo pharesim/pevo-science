@@ -254,3 +254,42 @@ The self-vote source pin is satisfied by either of two occurrences; the behavior
 `npm run typecheck` + `npm run lint` clean; comment anchors on stable symbols. When done, `git mv` back to `tasks/review/`.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-06) — round-3 hygiene H1–H5 landed
+
+All five round-3 hold items are comment/docstring/test-pin only; no production
+score-path logic changed (the round-2 logic the architect verified is untouched).
+
+- **H1 (comment-anchor violations, canary):** the inline `(Item 2)` self-dealing
+  comment is reworded to "Claimer self-dealing close (accepted_claims NOT EXISTS
+  gate)"; the `(list-final, Item 1)` describe label is now "(list-final)". No
+  round-N / hold-item references remain in the test source.
+- **H2 (stale `excludeSelfReviewWhere` docblock, hafsql.ts):** the "What this does
+  NOT exclude" paragraph now states the cycle closes the claimer self-vote/
+  self-review hole in both `paper_resolved_votes` and `paper_reviews` via the
+  `accepted_claims NOT EXISTS` gate, and that the residual gap is display-only
+  (the DISPLAY callsites compose this helper without the `authorship_claims` CTE
+  in scope). Anchored behaviorally; no task slug embedded (the display follow-up
+  is tracked separately).
+- **H3 (incorrect mutation-kill comment, null-index case):** the comment no longer
+  claims `frank` (author_index NULL) flips to accepted when the slot gate is
+  dropped. It now states `frank` stays rejected by the `author_index IS NOT NULL`
+  guard, and that dropping each arm's slot anchoring flips `grace` (out-of-range
+  approval) and `ivan` (out-of-range ORCID) respectively.
+- **H4 (stale "genesis floor" docstring, approve + revoke signer-gate harnesses):**
+  the `resolveClaimStatus` docstring no longer references a forced
+  `claim_events block_num floor … 0`. It now states the CTE binds exactly the
+  accreditation + claims fragment params (no forced floor) and describes the
+  comments-view redirect the list-final gate requires.
+- **H5 (non-discriminating source pin, folded in):** the self-vote and self-review
+  source pins now `toMatch` the full correlated predicate (keyed on `plv.voter`
+  and `c.author` respectively) instead of the shared `SELECT 1 FROM
+  accepted_claims ac` substring.
+
+**Verification.** `npm run typecheck` (src + tests) clean; `npm run lint` clean
+(0 errors; the single pre-existing unused-disable warning in `author-supersession.ts`
+is unrelated and outside this task). Affected tests green against real Postgres +
+HAF: `reputation-coauthor-claim-credit` + `authorship-approve-signer-gate` +
+`authorship-revoke-signer-gate` = 16/16.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

@@ -120,16 +120,25 @@ describe('co-author claim credit — source-level shape pin', () => {
     ).toContain(`jsonb_typeof(c.json_metadata -> $3 -> 'authors' -> ce.author_index) = 'object'`);
   });
 
-  // ── Claimer self-dealing close (Item 2): a credited claimer of a chain post
-  //    must not vote/review it. The authors[].hive exclusion misses ORCID- and
-  //    name-only-slot claimers, so an accepted_claims gate is required.
+  // ── Claimer self-dealing close (accepted_claims NOT EXISTS gate): a credited
+  //    claimer of a chain post must not vote/review it. The authors[].hive
+  //    exclusion misses ORCID- and name-only-slot claimers, so an
+  //    accepted_claims gate is required.
   it('paper_resolved_votes excludes accepted_claims claimers (self-vote close)', () => {
-    expect(source).toContain('SELECT 1 FROM accepted_claims ac');
-    expect(source).toContain('AND ac.claimer = plv.voter');
+    // Pin the full correlated predicate, not just the `SELECT 1 FROM
+    // accepted_claims ac` line (which also opens the paper_reviews self-review
+    // gate) — this arm keys on plv.voter against the chain post coords.
+    expect(source).toMatch(
+      /SELECT 1 FROM accepted_claims ac\s+WHERE ac\.paper_author = plv\.author\s+AND ac\.paper_permlink = plv\.permlink\s+AND ac\.claimer = plv\.voter/,
+    );
   });
 
   it('paper_reviews excludes accepted_claims claimers (self-review close)', () => {
-    expect(source).toContain('AND ac.claimer = c.author');
+    // Full correlated predicate keyed on the reviewer (c.author) against the
+    // chain post coords (cp.author / cp.permlink).
+    expect(source).toMatch(
+      /SELECT 1 FROM accepted_claims ac\s+WHERE ac\.paper_author = cp\.author\s+AND ac\.paper_permlink = cp\.permlink\s+AND ac\.claimer = c\.author/,
+    );
   });
 });
 
@@ -366,7 +375,7 @@ describe('co-author claim credit — claimer self-review exclusion (quality path
   );
 });
 
-describe('co-author claim credit — accepted_claims named-slot gate (list-final, Item 1)', () => {
+describe('co-author claim credit — accepted_claims named-slot gate (list-final)', () => {
   it.skipIf(!isHafConfigured())(
     'an approved claim is credited only when author_index resolves to an existing authors[] slot; ORCID arm is slot-gated too',
     { timeout: 30_000 },
@@ -388,8 +397,15 @@ describe('co-author claim credit — accepted_claims named-slot gate (list-final
       //   grace  → author_index 5, approved by bob   → REJECTED (slot 5 absent)
       //   hank   → author_index 1, ORCID match        → ACCEPTED (slot 1 exists)
       //   ivan   → author_index 9, ORCID match        → REJECTED (slot 9 absent)
-      // Mutation-kill: drop the `jsonb_typeof(... -> author_index) = 'object'`
-      // gate → frank, grace, ivan all become accepted → assertions red.
+      // Mutation-kill: list-final is slot-gated per arm. Drop the explicit-
+      // approval arm's `jsonb_typeof(... -> author_index) = 'object'` gate and
+      // grace (out-of-range approval, slot 5 absent) flips to accepted. Drop the
+      // ORCID arm's author_index anchoring (match the accredited orcid against
+      // any slot instead of `authors -> author_index ->> 'orcid'`) and ivan
+      // (out-of-range ORCID, slot 9 absent) flips to accepted. Either flip turns
+      // the assertions red. frank (author_index NULL) stays rejected regardless:
+      // the `author_index IS NOT NULL` guard, not the slot gate, rejects the
+      // unlisted claim.
       const sql = `
         WITH
         posts(author, permlink, parent_author, json_metadata) AS (

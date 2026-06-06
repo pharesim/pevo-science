@@ -436,12 +436,18 @@ export function validReviewWhere(opts: {
  *     publishing UI records).
  *
  * **What this does NOT exclude.** Accepted authorship-claim claimants.
- * The task acceptance criteria's compromise clause permits this gap:
- * resolving claims requires the `authorship_claims` CTE, which isn't
- * trivially join-able at every callsite (especially the deep CTE
- * chain in `reputation.ts`). The same gap exists in the precedent
- * `paper_resolved_votes` (it pre-dates claims integration). When the
- * vote path picks up claims, this helper should too.
+ * A claimer matched by ORCID, or connected to a name-only slot, is
+ * absent from `authors[].hive`, so this helper does not drop their
+ * self-review. The reputation *cycle* now closes this hole on the score
+ * path: both `paper_resolved_votes` and `paper_reviews` in
+ * `reputation.ts` reject any `accepted_claims` claimant for the chain
+ * post via an `accepted_claims NOT EXISTS` gate. This helper cannot do
+ * the same because its DISPLAY callsites (paper-detail reviews, profile,
+ * search, stats) do not carry the `authorship_claims` CTE in scope. The
+ * residual gap is therefore display-only and moves no computed score: a
+ * credited claimer's self-review can still appear in those displayed
+ * review lists. Closing it requires threading the claims CTE through
+ * each display callsite.
  *
  * **Composition with the paper row.** The helper requires the paper
  * row to be in SQL scope under `paperRowAlias` (with `.author` and
