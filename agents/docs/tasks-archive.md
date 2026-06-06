@@ -1,3 +1,21 @@
+## BACKEND-IPFS-UPLOAD-TOKEN-PROOF-BINDING (archived 2026-06-06) — per-action proof binding ✓
+
+`POST /api/ipfs/upload-token` JWT path now consumes a per-action `ipfs_upload`-targeted fresh-auth proof (posture (b)) instead of a target-less session proof, so a vote/comment session proof cannot be redirected to mint an upload token. `ipfsUploadFreshAuthTarget(username)` binds `(ipfs_upload, <username>, '')` (distinct `action` + empty `root_permlink` make it collision-free vs session, consent-op, and other per-user proofs); issuance wired through custody `/fresh-auth` (password) and orcid `/start` (ORCID). Final round (commit 5cfc4e73) aligned the consume-failure status to the sibling custody consent-op consume — 403 on username/target/kind mismatch, 401 on missing/expired/malformed — added ORCID-mechanism issuance coverage, and stripped anchor-rot from test scaffolding. Architect re-review (10-persona `/ce-code-review`, 6/9 clean; correctness+security+adversarial independently verified the 3-way mapping is byte-identical to `custody.ts` and that all six reachable `consumeFreshAuthToken` reasons bucket correctly, `wrong_mechanism` being route-synthesized and unreachable here) archived clean. Doc work landed at archive: ARCHITECTURE.md §6.4 row records posture (b) and drops the "under review" note; `api-contracts/ipfs.md` documents the per-action proof and the 401/403 split. DRY helper extraction (`freshAuthStatusCode`, 2 consumers) dismissed as optional per the shared-verifier-status-mapping convention.
+
+---
+
+## BACKEND-IPFS-UPLOAD-BIND-FILE-TO-SIGNATURE (archived 2026-06-06) — file bound to single-use token ✓
+
+`POST /api/ipfs/upload` is bound to a single-use, fresh-auth-gated upload token (mint via the `/upload-token` pre-flight; the handler rejects unless `sha256(file.buffer)` matches the token's declared hash), closing stolen-JWT-pins-arbitrary-content and capture-replay-with-a-different-file. `lib/ipfs-upload-token.ts` mirrors `fresh-auth.ts`'s single-use defenses (the in-process `inFlightConsumes` lock plus the compensating `redis.del` on the memStore-fallback leg). Final round (commit 3d11b212) dropped the memory-slug citation from the `inFlightConsumes` docblock, stating the single-process invariant inline. Architect re-review archived clean (the anchor-rot fix introduced no new rot class). The parallel pre-existing slug in `fresh-auth.ts` was deliberately left out of scope and is folded into the new `backend-anchor-rot-sweep-fresh-auth-custody` task.
+
+---
+
+## BACKEND-IPFS-CID-PROVENANCE-GATE (archived 2026-06-06) — gateway gates on structured references ✓
+
+Gateway `GET /api/ipfs/:cid` known-CID gate hardened (Option 3 + CSP pin): `cidReferencedByAppTag` (`lib/ipfs-shared.ts`) gained a gateway-only `excludeImageReference` flag that drops the broadcaster-controlled `image[]`-substring OR-branch, so only a structured `ipfs_cid` / `supplementary_files[].cid` reference whitelists a CID into the gateway. The cleanup path is untouched (passes neither flag, keeps the over-inclusive byte-identical query, since under-inclusiveness there would irreversibly unpin a live file). A CSP-no-allow-tokens canary pins the load-bearing opaque-origin sandbox as the only barrier for the accepted residual: an accredited author can still self-whitelist an external CID via a structured reference (publishing it as their own paper file). Final round (commit 10d623fb) dropped the task-slug citation from the CSP canary comment. Architect re-review archived clean.
+
+---
+
 ## BACKEND-CITE-EXPORT-COAUTHOR-DOI-KEYING (archived 2026-06-06) — duplicate, resolved by sibling ✓
 
 Duplicate of `backend-cite-export-pevo-metadata-key-mismatch`: both described the same keying bug (cite generators reading `detail.json_metadata.pevo`, which is `undefined` on the live path because chain metadata keys the PEvO object under `meta[config.appTag]` via `safePevoMeta`, so exports never listed co-authors or DOIs). The fix landed on main via the sibling task (commit e15d65e4: `citeAuthorNames(detail)` off `detail.authors` + `citeDoi(detail)` off `safePevoMeta(detail.json_metadata).source.doi`, escaping preserved, `.pevo` mutation-kill test added). Architect review verified the fix sound (name totality across all three detail.authors build paths; citeDoi crash-resistant) and archived this file as the duplicate; the sibling task carries the one remaining hold item (route-level co-author name assertion). The co-author-claim list-final coordination noted in this task's Suggested approach is tracked by the held `backend-co-author-claim-zero-score`, not here.
@@ -177,69 +195,3 @@ Co-location decision (utils module vs inline): implementer's call; a shared util
 - MDN: `URL` constructor and `protocol` property semantics.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-
-
-## UI Esc Helpers Quote Escape (archived 2026-05-30)
-
-# UI-ESC-HELPERS-QUOTE-ESCAPE — add `"`/`'` escape to `_esc`/`escapeHtml` helpers (latent landmine)
-
-**Owner:** UI Agent
-**Created:** 2026-05-30 (security audit follow-up workflow)
-**Priority:** P3 (latent — safe today via Hive author/permlink format; future-caller landmine)
-
-## Problem
-
-The `_esc` / `escapeHtml` helper(s) in `frontend/src/editor.js` (and any sibling co-located helpers) escape `<`, `>`, and `&` but omit `"` and `'`. This is safe today because every current caller passes either a Hive author name (`[a-z0-9.-]{3,16}`, chain-constrained) or a permlink (`[a-z0-9-]+`, no quote chars), both of which cannot contain quote characters. But:
-
-- A future caller that passes a free-form string (a paper title, display name, search query) into the same helper and then interpolates into HTML **attribute context** (`<a href="..." title="${escapeHtml(freeFormTitle)}">`) gets attribute-quote breakout via `"`.
-- The helper's name (`escapeHtml`) reads as a general-purpose HTML escape; an unsuspecting future caller has no signal that the helper is unsafe in attribute context.
-
-This is a latent landmine, not an exploitable bug today. The fix is a 2-line addition to the helper with zero caller changes required and zero behavior change for current callers. Worth landing in the same pass as the rest of the security cleanup so the landmine doesn't survive.
-
-## Goal
-
-Extend the helper(s) to also escape `"` and `'`, making them safe for both element-content and attribute contexts. No caller changes; behavior identical for any string lacking quote characters.
-
-## Fix sketch
-
-```js
-function escapeHtml(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-```
-
-Apply to every `_esc` / `escapeHtml` declaration in the frontend (grep to find them; co-located copies in different files should each be updated, or factored to a single shared util module — implementer's call on consolidation).
-
-## Acceptance
-
-1. **Quote chars escaped.** Test: `escapeHtml('foo"bar\'baz')` returns `foo&quot;bar&#39;baz`.
-2. **Existing escapes unchanged.** Test: `escapeHtml('<a>&b</a>')` returns `&lt;a&gt;&amp;b&lt;/a&gt;` (no double-escape regression on `&amp;`).
-3. **Null/undefined safe.** Test: `escapeHtml(null)` returns `''`; `escapeHtml(undefined)` returns `''`.
-4. **Every copy updated.** Grep confirms no `_esc` / `escapeHtml` function in the frontend retains the old 3-char-only form.
-5. **No behavioral regression for current callers.** Existing tests for editor-render, profile-render, etc. continue to pass (the current inputs lack quote chars, so the output is byte-identical).
-6. **Mutation-kill:** revert the `"` replacement → test (1) goes RED.
-
-## Out of scope
-
-- Refactoring or renaming callers; the helper change is transparent.
-- A frontend-wide audit of attribute-context interpolation (the focused audit confirmed the rest of the surface is clean today via Alpine's `:attr` binding which handles attribute-quote escaping internally).
-- Consolidating multiple `_esc` copies into a single shared util (nice-to-have; not required).
-
-## References
-
-- `frontend/src/editor.js` — current `_esc` / `escapeHtml` helper.
-- OWASP XSS Prevention Cheat Sheet, "HTML attribute context" rule.
-- The focused security audit (May 2026) flagged this as latent-only; current callers are all chain-constrained handles.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-
-
-## BACKEND-SEARCH-COUNT-DATA-WINDOW-FUNCTION (archived 2026-05-30) — round-1 clean ✓
-
-Consolidated the parallel count+data query pair into a single data query carrying `count(*) OVER ()::int AS total` across all three listing sites (`fetchPapersFromHaf` in `routes/papers.ts`, `searchPapersFromHaf` + `searchReviewsFromHaf` in `routes/search.ts`), eliminating the duplicate `active_accreditations + retracted_papers` CTE materialization and redundant WHERE evaluation per cache miss. Each site keeps the `dataResult.rows[0]?.total ?? 0` zero-row degrade (precedent: `fetchAccreditationsFromHaf`). New `listing-count-window-function-shape.test.ts` pins the window-function shape + single-query + no-`total`-leak + empty-degrade per site, with a documented mock carve-out (clause a/b/c). Round-1 `/ce-code-review` (correctness on Opus; performance, testing, project-standards on Sonnet; `ce-agent-native-reviewer` skipped per PEvO): clean. Correctness verified count parity at all three sites — the only real JOIN (`searchReviewsFromHaf`, `c JOIN comments p` on the `(author,permlink)` natural PK) cannot fan out, the other two have no top-level JOIN (aggregates are scalar correlated subqueries), and no DISTINCT/GROUP/HAVING mismatch anywhere. Soft notes NOT held: perf conf-50 (`count(*) OVER ()` forecloses index early-termination on the default date sort — a net win at PEvO single-instance scale; verify with EXPLAIN if listing latency regresses); `type=all` summed-total (`paperTotal + reviewTotal`) untested (P3) — spun off as follow-up task `backend-search-type-all-total-test`.
-
