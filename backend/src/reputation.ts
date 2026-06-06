@@ -30,8 +30,47 @@ export const BATCH_KEY_PREFIX = `${config.appTag}:reputation:batch:`;
 export const STAGING_SEGMENT = 'staging:';
 export const REDIS_KEY_STAGING_PREFIX = `${BATCH_KEY_PREFIX}${STAGING_SEGMENT}`;
 
+/**
+ * Membership index for the cycle-computed prod batch keys. A Redis Set whose
+ * members are the full prod key paths currently in production, maintained by
+ * the `CYCLE_SWAP` Lua (SADD per renamed prod key, atomically inside the swap).
+ * `getBatchReputationMap` enumerates via `SMEMBERS` + `MGET` instead of the
+ * blocking `KEYS ${BATCH_KEY_PREFIX}*` keyspace scan — bounding enumeration by
+ * the accredited-user count rather than the whole keyspace.
+ *
+ * Lives OUTSIDE `BATCH_KEY_PREFIX` (note the `_members` suffix, NOT
+ * `:batch:members`) for two reasons: (1) a Hive account literally named
+ * `members` would otherwise own the prod key `${BATCH_KEY_PREFIX}members`,
+ * colliding String-vs-Set on the same key (WRONGTYPE); (2) it keeps the set out
+ * of any residual `${BATCH_KEY_PREFIX}*` glob. Same sibling-key discipline as
+ * `reputation:cycle:last` / `reputation:lock` / `reputation:in_progress:`.
+ */
+export const REDIS_KEY_BATCH_MEMBERS = `${config.appTag}:reputation:batch_members`;
+
 export function batchKey(username: string): string {
   return `${BATCH_KEY_PREFIX}${username}`;
+}
+
+/**
+ * Non-blocking keyspace enumeration via an iterative `SCAN` cursor loop
+ * (COUNT 500), replacing the O(N) blocking `KEYS` command that stalls the
+ * single-threaded Redis server for the scan's duration. Returns every key
+ * matching `pattern`. Used by the batch staging/sentinel cleanup helpers and
+ * by `getBatchReputationMap`'s one-time members-set backfill.
+ */
+export async function scanAllKeys(
+  redis: NonNullable<ReturnType<typeof getRedis>>,
+  pattern: string,
+  count = 500,
+): Promise<string[]> {
+  const found: string[] = [];
+  let cursor = '0';
+  do {
+    const [next, batch] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', count);
+    cursor = next;
+    found.push(...batch);
+  } while (cursor !== '0');
+  return found;
 }
 
 /**
@@ -228,12 +267,30 @@ export async function getBatchReputationMap(): Promise<Map<string, ReputationSco
   if (!redis) return map;
 
   try {
-    const allKeys = await redis.keys(`${BATCH_KEY_PREFIX}*`);
-    const prodKeys = allKeys.filter((k) => !k.startsWith(REDIS_KEY_STAGING_PREFIX));
+    // Fast path: the membership index (maintained by the CYCLE_SWAP Lua) bounds
+    // enumeration by accredited-user count instead of the whole keyspace.
+    let prodKeys = await redis.smembers(REDIS_KEY_BATCH_MEMBERS);
+    if (prodKeys.length === 0) {
+      // Members-set miss. Either a genuinely empty batch (no cycle has run) or a
+      // pre-members-set deployment whose prod keys predate the index. Enumerate
+      // once via the non-blocking SCAN (not the blocking KEYS) and backfill the
+      // set so subsequent reads take the SMEMBERS fast path. SADD is a no-op for
+      // members a concurrent cycle already wrote.
+      const scanned = (await scanAllKeys(redis, `${BATCH_KEY_PREFIX}*`))
+        .filter((k) => !k.startsWith(REDIS_KEY_STAGING_PREFIX));
+      if (scanned.length > 0) {
+        await redis.sadd(REDIS_KEY_BATCH_MEMBERS, ...scanned);
+        prodKeys = scanned;
+      }
+    }
     if (prodKeys.length === 0) return map;
 
     const values = await redis.mget(prodKeys);
     for (let i = 0; i < prodKeys.length; i++) {
+      // Defensive: the set is populated with prod keys only (the Lua SADDs the
+      // post-RENAME path), but skip any staging key that somehow landed in it
+      // rather than surfacing it as a user named `staging:<name>`.
+      if (prodKeys[i].startsWith(REDIS_KEY_STAGING_PREFIX)) continue;
       const username = prodKeys[i].replace(BATCH_KEY_PREFIX, '');
       const parsed = parseBatchValue(values[i]);
       if (parsed) map.set(username, parsed);

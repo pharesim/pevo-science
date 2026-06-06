@@ -216,6 +216,7 @@ describe.skipIf(skipIfNoRedis)('evalScript / loadAllScripts', () => {
     const prodKey = `${config.appTag}:csbatch:cs${tag}`;
     const lastCycleKey = `${config.appTag}:cscyclelast${tag}`;
     const sentinelKey = `${config.appTag}:csinprogress${tag}`;
+    const membersKey = `${config.appTag}:csmembers${tag}`;
     const cycle = '7';
 
     const evalshaSpy = vi.spyOn(redis, 'evalsha');
@@ -223,27 +224,32 @@ describe.skipIf(skipIfNoRedis)('evalScript / loadAllScripts', () => {
       await redis.set(stagingKey, 'staged-payload');
       await redis.set(sentinelKey, cycle);
 
+      // KEYS layout: [...staging, sentinel, members-set].
       const stagingCount = await evalScript(
         redis,
         'CYCLE_SWAP',
-        [stagingKey, sentinelKey],
+        [stagingKey, sentinelKey, membersKey],
         [cycle, lastCycleKey, stagingSub, prodSub],
       );
 
       // Registry path used EVALSHA (warm cache), not a direct redis.eval.
       expect(evalshaSpy).toHaveBeenCalledTimes(1);
-      // Return value is the staging-key count (KEYS minus the trailing sentinel).
+      // Return value is the staging-key count (KEYS minus the trailing sentinel
+      // and members-set keys).
       expect(Number(stagingCount)).toBe(1);
       // Staging key renamed into its prod counterpart, payload preserved.
       expect(await redis.get(prodKey)).toBe('staged-payload');
       expect(await redis.get(stagingKey)).toBeNull();
+      // The renamed prod key is SADD'd into the members set inside the same
+      // atomic swap (the membership index getBatchReputationMap enumerates).
+      expect(await redis.sismember(membersKey, prodKey)).toBe(1);
       // cycle:last advanced and the in-progress sentinel cleared in the same
       // atomic script.
       expect(await redis.get(lastCycleKey)).toBe(cycle);
       expect(await redis.get(sentinelKey)).toBeNull();
     } finally {
       evalshaSpy.mockRestore();
-      await redis.del(stagingKey, prodKey, lastCycleKey, sentinelKey);
+      await redis.del(stagingKey, prodKey, lastCycleKey, sentinelKey, membersKey);
     }
   });
 });

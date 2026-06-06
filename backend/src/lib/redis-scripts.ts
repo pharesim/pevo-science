@@ -76,10 +76,16 @@ end
  * sentinel inside a single server-side execution so readers see either the
  * full new cycle or none of it.
  *
- * KEYS[1..N-1] = staging key paths
- * KEYS[N]      = in-progress sentinel key (DEL'd inside the script after the
+ * KEYS[1..N-2] = staging key paths
+ * KEYS[N-1]    = in-progress sentinel key (DEL'd inside the script after the
  *                cycle:last advance, so a surviving sentinel on the next
  *                startup proves the crash happened BEFORE the script executed)
+ * KEYS[N]      = batch-members set key. Each renamed prod key is SADD'd into
+ *                this set inside the same atomic execution so the membership
+ *                index `getBatchReputationMap` reads (SMEMBERS + MGET) can never
+ *                drift from the prod keys that actually landed. SADD-only: there
+ *                is no prod-key removal path, and a stale member whose prod key
+ *                was dropped is MGET-null-skipped on read.
  * ARGV[1]      = new cycle number (string)
  * ARGV[2]      = cycle:last key path
  * ARGV[3]      = staging substring to strip (e.g. ':batch:staging:')
@@ -90,15 +96,22 @@ end
  * (`reputation-batch.ts`); the staging-vs-prod naming is a reputation-batch
  * concern, not a redis-scripts concern, which is why the substring constants
  * stay at the caller.
+ *
+ * Single-instance assumption: the script RENAMEs across distinct keys under one
+ * appTag prefix, which is a CROSSSLOT error under Redis Cluster — the batch is
+ * inherently single-instance (memory `project_single_instance_only`), so the
+ * members-set key being a separate KEY raises no cross-slot concern here.
  */
 export const CYCLE_SWAP_LUA = `
 local nKeys = #KEYS
-local stagingCount = nKeys - 1
-local sentinel = KEYS[nKeys]
+local membersSet = KEYS[nKeys]
+local sentinel = KEYS[nKeys - 1]
+local stagingCount = nKeys - 2
 for i = 1, stagingCount do
   local staging = KEYS[i]
   local prod = string.gsub(staging, ARGV[3], ARGV[4])
   redis.call('RENAME', staging, prod)
+  redis.call('SADD', membersSet, prod)
 end
 redis.call('SET', ARGV[2], ARGV[1])
 redis.call('DEL', sentinel)

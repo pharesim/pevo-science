@@ -24,7 +24,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getRedis } from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
-import { batchKey, BATCH_KEY_PREFIX, REDIS_KEY_STAGING_PREFIX } from '../../src/reputation.js';
+import { batchKey, BATCH_KEY_PREFIX, REDIS_KEY_STAGING_PREFIX, getBatchReputationMap } from '../../src/reputation.js';
 import { __test_seams } from '../../src/reputation-batch.js';
 
 const TEST_USERS = ['pevo-batch-internals-alice', 'pevo-batch-internals-bob'];
@@ -35,6 +35,9 @@ async function cleanup() {
   for (const u of TEST_USERS) {
     await redis.del(batchKey(u));
     await redis.del(`${__test_seams.REDIS_KEY_STAGING_PREFIX}${u}`);
+    // The CYCLE_SWAP Lua SADDs each renamed prod key into the members set;
+    // SREM the test users so the index doesn't leak into other suites' reads.
+    await redis.srem(__test_seams.REDIS_KEY_BATCH_MEMBERS, batchKey(u));
   }
   // Sweep any in_progress sentinel left behind by this test file alone.
   const sentinels = await redis.keys(`${__test_seams.REDIS_KEY_IN_PROGRESS_PREFIX}*`);
@@ -120,12 +123,14 @@ describe('reputation-batch internals: atomic Lua RENAME swap', () => {
     await redis.set(sentinelKey, '9999');
 
     try {
+      // KEYS layout: [...staging, sentinel, members-set] (stagingKeys.length + 2).
       const stagingKeys = [stagingA, stagingB];
       await redis.eval(
         __test_seams.CYCLE_SWAP_LUA,
-        stagingKeys.length + 1,
+        stagingKeys.length + 2,
         ...stagingKeys,
         sentinelKey,
+        __test_seams.REDIS_KEY_BATCH_MEMBERS,
         '9999',
         __test_seams.REDIS_KEY_LAST_CYCLE,
         __test_seams.CYCLE_SWAP_STAGING_SUBSTRING,
@@ -137,6 +142,9 @@ describe('reputation-batch internals: atomic Lua RENAME swap', () => {
       // Prod keys present with the same JSON values.
       expect(await redis.get(prodA)).toBe(valA);
       expect(await redis.get(prodB)).toBe(valB);
+      // Both renamed prod keys SADD'd into the members set inside the swap.
+      expect(await redis.sismember(__test_seams.REDIS_KEY_BATCH_MEMBERS, prodA)).toBe(1);
+      expect(await redis.sismember(__test_seams.REDIS_KEY_BATCH_MEMBERS, prodB)).toBe(1);
       // cycle:last advanced.
       expect(await redis.get(__test_seams.REDIS_KEY_LAST_CYCLE)).toBe('9999');
       // Sentinel is gone (atomic-swap proof — Lua's final DEL fired).
@@ -149,6 +157,34 @@ describe('reputation-batch internals: atomic Lua RENAME swap', () => {
         await redis.del(__test_seams.REDIS_KEY_LAST_CYCLE);
       }
     }
+  });
+});
+
+describe('reputation-batch internals: getBatchReputationMap members-set read', () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it('enumerates prod scores via the members set (SMEMBERS + MGET), not a keyspace KEYS glob', async (ctx) => {
+    const redis = getRedis();
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
+
+    // Seed one prod batch key and register it in the members index exactly as
+    // the CYCLE_SWAP Lua would. getBatchReputationMap must surface it via the
+    // SMEMBERS fast path. A second prod key that is NOT in the members set must
+    // NOT appear (proving the read is bounded by the index, not a keyspace glob)
+    // — unless the whole index is empty and the backfill scan engages, which the
+    // first key's membership prevents here.
+    const indexed = batchKey(TEST_USERS[0]);
+    const unindexed = batchKey(TEST_USERS[1]);
+    const indexedVal = JSON.stringify({ score: 42, breakdown: { papers: 30, reviews: 7, citations: 0, accreditation: 5 } });
+    await redis.set(indexed, indexedVal);
+    await redis.set(unindexed, JSON.stringify({ score: 99, breakdown: { papers: 0, reviews: 0, citations: 0, accreditation: 99 } }));
+    await redis.sadd(__test_seams.REDIS_KEY_BATCH_MEMBERS, indexed);
+
+    const map = await getBatchReputationMap();
+    expect(map.get(TEST_USERS[0])?.score).toBe(42);
+    // The un-indexed prod key is invisible to the SMEMBERS-bounded read.
+    expect(map.has(TEST_USERS[1])).toBe(false);
   });
 });
 

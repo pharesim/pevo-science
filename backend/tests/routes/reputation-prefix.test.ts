@@ -20,6 +20,7 @@ import { getRedis } from '../../src/redis.js';
 import { runBatchComputation } from '../../src/reputation-batch.js';
 import {
   BATCH_KEY_PREFIX,
+  REDIS_KEY_BATCH_MEMBERS,
   batchKey,
   getBatchReputationMap,
   getReputationScore,
@@ -68,6 +69,11 @@ describe('reputation Redis prefix invariant', () => {
       breakdown: { papers: 10, reviews: 20, citations: 7.5, accreditation: 5 },
     };
     await redis.set(batchKey(username), JSON.stringify(known));
+    // Register the prod key in the membership index exactly as the CYCLE_SWAP
+    // Lua does — getBatchReputationMap enumerates via SMEMBERS, so a prod key
+    // absent from the set is invisible to it (production never produces that
+    // state: the Lua writes the prod key and the SADD in one atomic swap).
+    await redis.sadd(REDIS_KEY_BATCH_MEMBERS, batchKey(username));
 
     try {
       const [map, single, batched] = await Promise.all([
@@ -83,6 +89,7 @@ describe('reputation Redis prefix invariant', () => {
       expect(batched.get(username)).toBe(42.5);
     } finally {
       await redis.del(batchKey(username));
+      await redis.srem(REDIS_KEY_BATCH_MEMBERS, batchKey(username));
     }
   });
 });

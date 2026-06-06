@@ -24,12 +24,14 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import {
   REDIS_KEY_STAGING_PREFIX,
+  REDIS_KEY_BATCH_MEMBERS,
   STAGING_SEGMENT,
   batchMapToScoreRecord,
   computeReputationBatch,
   getBatchReputationMap,
   getReputationWeights,
   queryWithStatementTimeout,
+  scanAllKeys,
 } from './reputation.js';
 // The staging prefix derives from `BATCH_KEY_PREFIX` (the canonical prod
 // prefix `${appTag}:reputation:batch:`) in reputation.ts and is re-imported
@@ -112,7 +114,9 @@ async function getHeadBlock(): Promise<number> {
  * production code paths.
  */
 async function clearStagingKeys(redis: Redis): Promise<void> {
-  const stale = await redis.keys(`${REDIS_KEY_STAGING_PREFIX}*`);
+  // Iterative SCAN (not the blocking KEYS) so the single-threaded Redis server
+  // is not stalled for the scan's duration; same observable cleanup.
+  const stale = await scanAllKeys(redis, `${REDIS_KEY_STAGING_PREFIX}*`);
   if (stale.length > 0) {
     await redis.del(...stale);
     logger.info({ count: stale.length }, 'Cleared abandoned reputation staging keys');
@@ -128,7 +132,8 @@ async function clearStagingKeys(redis: Redis): Promise<void> {
  * an error so operators see the crash; cleanup itself is safe.
  */
 async function clearInProgressSentinels(redis: Redis): Promise<void> {
-  const stale = await redis.keys(`${REDIS_KEY_IN_PROGRESS_PREFIX}*`);
+  // Iterative SCAN (not the blocking KEYS); same observable cleanup.
+  const stale = await scanAllKeys(redis, `${REDIS_KEY_IN_PROGRESS_PREFIX}*`);
   if (stale.length > 0) {
     await redis.del(...stale);
     logger.error(
@@ -372,10 +377,15 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       const sentinelKey = `${REDIS_KEY_IN_PROGRESS_PREFIX}${cycle}`;
       await redis.set(sentinelKey, String(cycle));
 
+      // KEYS layout: [...staging, sentinel, members-set]. The Lua SADDs each
+      // renamed prod key into the members set inside the same atomic swap so the
+      // membership index getBatchReputationMap reads cannot drift from the prod
+      // keys that landed (a crash between swap and a TS-side SADD would leave the
+      // index missing this cycle's users until the next backfill).
       await evalScript(
         redis,
         'CYCLE_SWAP',
-        [...stagingKeys, sentinelKey],
+        [...stagingKeys, sentinelKey, REDIS_KEY_BATCH_MEMBERS],
         [String(cycle), REDIS_KEY_LAST_CYCLE, CYCLE_SWAP_STAGING_SUBSTRING, CYCLE_SWAP_PROD_SUBSTRING],
       );
 
@@ -473,6 +483,7 @@ export const __test_seams = {
   REDIS_KEY_LAST_CYCLE,
   REDIS_KEY_IN_PROGRESS_PREFIX,
   REDIS_KEY_BATCH_LOCK,
+  REDIS_KEY_BATCH_MEMBERS,
   clearStagingKeys,
   clearInProgressSentinels,
 };
