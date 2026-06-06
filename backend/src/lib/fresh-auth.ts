@@ -3,13 +3,15 @@
  *
  * Purpose
  * -------
- * `author_accept` and `author_resign` consent ops are reputationally weighty
- * (the broadcast event is permanently attributed on chain even though
- * vouched state is reversible). ARCH.md "Light-account signing of consent
- * ops" requires the backend to demand a per-op fresh authentication
- * challenge appropriate to the user's auth mechanism: a password re-prompt
- * for password-based accounts, a fresh ORCID OAuth round-trip for
- * ORCID-authed accounts.
+ * `author_accept` and `author_resign` consent ops, and the name-only-route
+ * credit ops `claim_authorship` / `approve_authorship` / `revoke_authorship`,
+ * are reputationally weighty (the broadcast event is permanently attributed
+ * on chain, and the credit ops mint or revoke authorship credit). ARCH.md
+ * "Light-account signing of consent ops" and § 6.4's critical-action contract
+ * require the backend to demand a per-op fresh authentication challenge
+ * appropriate to the user's auth mechanism: a password re-prompt for
+ * password-based accounts, a fresh ORCID OAuth round-trip for ORCID-authed
+ * accounts.
  *
  * Wire shape
  * ----------
@@ -44,9 +46,11 @@
  * Consume path
  * ------------
  * `POST /api/custody/broadcast` for any operation whose payload action is
- * in `CONSENT_OP_ACTIONS` requires `fresh_auth_proof` in the request body.
- * The handler calls `consumeFreshAuthToken(token, jwtSubject)` and rejects
- * the broadcast on any non-`valid` outcome before signing.
+ * in `CONSENT_OP_ACTIONS` or `CREDIT_OP_ACTIONS` requires `fresh_auth_proof`
+ * in the request body. The handler computes the expected target hash from
+ * the op's fields, calls `consumeFreshAuthToken(token, jwtSubject,
+ * expectedTargetHash)`, and rejects the broadcast on any non-`valid` outcome
+ * before signing.
  *
  * Spec
  * ----
@@ -59,10 +63,33 @@ import { config } from '../config.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { logger } from '../logger.js';
 
-/** Set of `custom_json` payload actions that require a fresh-auth proof. */
+/** Set of `custom_json` payload actions that require a fresh-auth proof.
+ *  Holds ONLY the anchored-route consent ops. The name-only-route credit ops
+ *  (`claim_authorship` / `approve_authorship` / `revoke_authorship`) are NOT
+ *  members — they have a distinct payload shape (`paper_author` /
+ *  `paper_permlink` / `author_index`, not `root_author` / `root_permlink`)
+ *  and live in `CREDIT_OP_ACTIONS` below. Both sets feed the same broadcast
+ *  fresh-auth gate but via separate field-extraction paths. */
 export const CONSENT_OP_ACTIONS: ReadonlySet<string> = new Set([
   'author_accept',
   'author_resign',
+]);
+
+/** Set of `custom_json` payload actions for the name-only-route credit ops
+ *  that require a per-target fresh-auth proof on custody broadcast. These are
+ *  reputation-weighty, identity-binding ops (they mint or revoke authorship
+ *  credit), so a stolen JWT alone must not be able to broadcast them per
+ *  `agents/docs/ARCHITECTURE.md` § 6.5 invariant #1. Their target binds
+ *  `(action, paper_author, paper_permlink, author_index)` where the wire
+ *  carries those fields. `revoke_authorship` carries no `author_index` on the
+ *  wire (see `agents/docs/hive-schemas.md` § 2.11), so its target binds
+ *  `(action, paper_author, paper_permlink)` only. Kept separate from
+ *  `CONSENT_OP_ACTIONS` because the consent ops and credit ops use different
+ *  payload field names. */
+export const CREDIT_OP_ACTIONS: ReadonlySet<string> = new Set([
+  'claim_authorship',
+  'approve_authorship',
+  'revoke_authorship',
 ]);
 
 export type FreshAuthMechanism = 'password' | 'orcid';
@@ -80,6 +107,16 @@ export type FreshAuthMechanism = 'password' | 'orcid';
  *    bind to `(action, <paper root_author>, <paper root_permlink>)`. These
  *    actions issue a `custom_json` op on chain (see `CONSENT_OP_ACTIONS`
  *    above), and the `root_*` fields come from the paper being acted on.
+ *
+ *  - **Credit-op actions (broadcast):** `claim_authorship`,
+ *    `approve_authorship`, and `revoke_authorship` bind to
+ *    `(action, <paper_author>, <paper_permlink>, <author_index>)`. These
+ *    name-only-route ops issue a `custom_json` on chain (see
+ *    `CREDIT_OP_ACTIONS` above); the paper fields map onto `root_author` /
+ *    `root_permlink` and the slot index onto `author_index`.
+ *    `revoke_authorship` carries no `author_index` on the wire (see
+ *    `agents/docs/hive-schemas.md` § 2.11), so its target omits
+ *    `author_index` and binds the paper + action only.
  *
  *  - **Non-broadcast critical actions:** `set_password`, `change_email`,
  *    `delete_account`, and `ipfs_upload` bind to
@@ -110,6 +147,9 @@ export type FreshAuthMechanism = 'password' | 'orcid';
 export type FreshAuthTargetAction =
   | 'author_accept'
   | 'author_resign'
+  | 'claim_authorship'
+  | 'approve_authorship'
+  | 'revoke_authorship'
   | 'set_password'
   | 'change_email'
   | 'delete_account'
@@ -124,6 +164,16 @@ export interface FreshAuthTarget {
   action: FreshAuthTargetAction;
   root_author: string;
   root_permlink: string;
+  /** Slot index for the name-only-route credit ops (`claim_authorship` /
+   *  `approve_authorship`). Zero-based index into the paper's `authors[]`
+   *  identifying the slot the credit op acts on. Folded into the target hash
+   *  so a stolen JWT cannot substitute a different slot under one proof.
+   *  Omitted for every other action (consent ops, the non-broadcast
+   *  criticals, and `revoke_authorship`, whose wire payload carries no
+   *  `author_index` per `agents/docs/hive-schemas.md` § 2.11). When omitted,
+   *  the hash is identical to the pre-`author_index` encoding, so existing
+   *  consent-op and non-broadcast-critical proofs are unchanged. */
+  author_index?: number;
 }
 
 /** Helper that builds the canonical `FreshAuthTarget` for the `/set-password`
@@ -210,12 +260,27 @@ interface StoredEntry {
  * encoder defends against that constraint relaxing in the future and
  * makes the binding contract self-evidently correct under any string
  * input rather than relying on an external invariant.
+ *
+ * `author_index` (name-only-route credit ops) is appended ONLY when present.
+ * When absent the encoding is byte-identical to the original triple form, so
+ * consent-op and non-broadcast-critical proofs minted before this field
+ * existed (and those that never carry it) hash to the same value. When
+ * present it is appended in the same length-prefixed form as a string-ified
+ * integer, keeping the encoding unambiguous: an absent index and an index of
+ * any value produce distinct encodings (the absent form has no trailing
+ * segment at all), so a `revoke_authorship` proof cannot be replayed against
+ * a `claim_authorship` op on the same paper even if both share action-paper
+ * tails, because the actions differ in the leading segment.
  */
 export function computeFreshAuthTargetHash(target: FreshAuthTarget): string {
-  const concat =
+  let concat =
     `${target.action.length}|${target.action}|` +
     `${target.root_author.length}|${target.root_author}|` +
     `${target.root_permlink.length}|${target.root_permlink}`;
+  if (target.author_index !== undefined) {
+    const idx = String(target.author_index);
+    concat += `|${idx.length}|${idx}`;
+  }
   return crypto.createHash('sha256').update(concat).digest('hex');
 }
 
@@ -283,6 +348,36 @@ export function deleteAccountFreshAuthTarget(username: string): FreshAuthTarget 
  *  /api/orcid/start { mode: 'fresh_auth', action: 'ipfs_upload' }` (ORCID). */
 export function ipfsUploadFreshAuthTarget(username: string): FreshAuthTarget {
   return { action: 'ipfs_upload', root_author: username, root_permlink: '' };
+}
+
+/** Action subset for the name-only-route credit ops that bind a per-op
+ *  fresh-auth target on custody broadcast. Mirrors `CREDIT_OP_ACTIONS` at the
+ *  type level so the target-builder and the route layer agree on the closed
+ *  set. */
+export type CreditOpAction = 'claim_authorship' | 'approve_authorship' | 'revoke_authorship';
+
+/** Target-binding helper for the name-only-route credit ops. The proof binds
+ *  to `(action, paper_author, paper_permlink, author_index)`. The paper fields
+ *  map onto `root_author` / `root_permlink` (the same hash slots the consent
+ *  ops use), and the slot index onto `author_index`. `claim_authorship` and
+ *  `approve_authorship` carry `author_index` on the wire (`hive-schemas.md`
+ *  § 2.9 / § 2.10); `revoke_authorship` does not (§ 2.11), so callers pass
+ *  `authorIndex === undefined` for revoke and the resulting hash binds the
+ *  paper + action only. Both issuance routes and the broadcast consume side
+ *  build the target through this single helper so the two sides cannot diverge
+ *  on the encoding. */
+export function creditOpFreshAuthTarget(
+  action: CreditOpAction,
+  paperAuthor: string,
+  paperPermlink: string,
+  authorIndex: number | undefined,
+): FreshAuthTarget {
+  return {
+    action,
+    root_author: paperAuthor,
+    root_permlink: paperPermlink,
+    author_index: authorIndex,
+  };
 }
 
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are

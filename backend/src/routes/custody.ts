@@ -19,14 +19,17 @@ import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError, makeLogBroadcastAttempt } from '../lib/broadcast-error.js';
 import {
   CONSENT_OP_ACTIONS,
+  CREDIT_OP_ACTIONS,
   changeEmailFreshAuthTarget,
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
+  creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
   ipfsUploadFreshAuthTarget,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
+  type CreditOpAction,
   type FreshAuthMechanism,
   type FreshAuthTarget,
   type FreshAuthTargetAction,
@@ -166,11 +169,30 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     if (!rootPermlink.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootPermlink.error);
     return next();
   }
+  if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
+    // Name-only-route credit ops. paper_author / paper_permlink are Hive
+    // identifier slugs; trim=true. claim/approve additionally require a
+    // non-negative-integer author_index; revoke carries none on the wire
+    // (`agents/docs/hive-schemas.md` § 2.11). The handler-side re-read enforces
+    // the same caps; this pre-limiter shape check keeps malformed bodies off
+    // the argon2.verify path.
+    const paperAuthor = requireStringField(body, 'paper_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
+    if (!paperAuthor.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperAuthor.error);
+    const paperPermlink = requireStringField(body, 'paper_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
+    if (!paperPermlink.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperPermlink.error);
+    if (action !== 'revoke_authorship') {
+      const rawIndex = body.author_index;
+      if (typeof rawIndex !== 'number' || !Number.isInteger(rawIndex) || rawIndex < 0) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
+      }
+    }
+    return next();
+  }
   return sendError(
     res,
     400,
     'VALIDATION_ERROR',
-    'action must be one of: author_accept, author_resign, change_email, delete_account, ipfs_upload',
+    'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload',
   );
 }
 
@@ -212,24 +234,26 @@ export function hashUserAgentForAudit(value: unknown): string | undefined {
   return sha256HexDigest(value);
 }
 
-/** Result discriminator for `findConsentOpsInBundle`. The single-consent rule
- *  is structural: a bundle either contains zero consent ops (no fresh-auth
- *  required), exactly one consent op (fresh-auth required for that op), or
- *  more than one (rejected).
+/** Result discriminator for `findGatedOpsInBundle`. The single-gated-op rule
+ *  is structural: a bundle either contains zero fresh-auth-gated ops (no
+ *  fresh-auth required), exactly one (fresh-auth required for that op), or
+ *  more than one (rejected). "Gated op" spans both the anchored-route consent
+ *  ops (`CONSENT_OP_ACTIONS`) and the name-only-route credit ops
+ *  (`CREDIT_OP_ACTIONS`).
  *
- *  Round-5 hold #3: the `single` arm carries the full target triple
- *  (`action`, `root_author`, `root_permlink`) so the consume side can
- *  compute the expected target hash and reject substitution attacks where
- *  a compromised SPA swaps action/paper between the user's auth ceremony
- *  and the broadcast. The triple shape is `{action, root_author,
- *  root_permlink}` matching `FreshAuthTarget` in `lib/fresh-auth.ts`; a
- *  consent op whose payload omits or malforms these fields is treated as
- *  malformed and skipped (the broadcast then falls into the no-consent-op
- *  branch and proceeds without proof, but the consent op itself will be
- *  rejected by the chain since it lacks required fields). */
-type ConsentOpScan =
+ *  The `single` arm carries the full `FreshAuthTarget` so the consume side
+ *  can compute the expected target hash and reject substitution attacks where
+ *  a compromised SPA swaps action / paper / slot between the user's auth
+ *  ceremony and the broadcast. For consent ops the target binds
+ *  `(action, root_author, root_permlink)`; for credit ops it additionally
+ *  binds `author_index` (omitted for `revoke_authorship`, which carries no
+ *  `author_index` on the wire). A gated op whose payload omits or malforms
+ *  the required fields is treated as malformed and skipped (the broadcast then
+ *  falls into the no-gated-op branch and proceeds without proof, but the op
+ *  itself will be rejected by the chain since it lacks required fields). */
+type GatedOpScan =
   | { kind: 'none' }
-  | { kind: 'single'; action: string; rootAuthor: string; rootPermlink: string }
+  | { kind: 'single'; target: FreshAuthTarget }
   | { kind: 'multiple' };
 
 /** Type guard: a Hive operation is a [type, params] tuple where params is a
@@ -245,18 +269,83 @@ function isOpTuple(op: unknown): op is [string, Record<string, unknown>] {
   );
 }
 
-/** Scan the operations bundle for consent ops (`author_accept` /
- *  `author_resign`). Per round-4 hold #1, we explicitly reject bundles
- *  containing more than one consent op: a single fresh-auth proof gates
- *  the entire bundle, so allowing N consent ops in one call would let a
- *  compromised SPA convert one auth ceremony into N consent broadcasts
- *  (substitution-attack vector). The function returns a discriminator so
- *  the caller can distinguish "no consent op" (no proof needed) from
- *  "exactly one" (verify proof) from "multiple" (reject 400). */
-function findConsentOpsInBundle(operations: unknown[]): ConsentOpScan {
-  let firstAction: string | null = null;
-  let firstRootAuthor: string | null = null;
-  let firstRootPermlink: string | null = null;
+/** Extract the per-op fresh-auth target from a single consent op payload
+ *  (`author_accept` / `author_resign`). Returns `null` when the payload omits
+ *  or malforms the `(root_author, root_permlink)` pair — that op falls through
+ *  to the no-gated-op path and the chain rejects it for the missing fields.
+ *  The `action` is already known to be in `CONSENT_OP_ACTIONS` at the call
+ *  site, so the cast onto `FreshAuthTargetAction` is sound. */
+function consentOpTarget(action: string, payload: object): FreshAuthTarget | null {
+  const rawRootAuthor = (payload as { root_author?: unknown }).root_author;
+  const rawRootPermlink = (payload as { root_permlink?: unknown }).root_permlink;
+  if (
+    typeof rawRootAuthor !== 'string' || rawRootAuthor.length === 0 ||
+    typeof rawRootPermlink !== 'string' || rawRootPermlink.length === 0
+  ) {
+    return null;
+  }
+  return {
+    action: action as FreshAuthTargetAction,
+    root_author: rawRootAuthor,
+    root_permlink: rawRootPermlink,
+  };
+}
+
+/** Extract the per-op fresh-auth target from a single name-only-route credit
+ *  op payload (`claim_authorship` / `approve_authorship` / `revoke_authorship`).
+ *  The wire fields are `paper_author` / `paper_permlink` (mapped onto the
+ *  target's `root_author` / `root_permlink` hash slots) and, for claim/approve,
+ *  `author_index`. `revoke_authorship` carries no `author_index` on the wire
+ *  (`agents/docs/hive-schemas.md` § 2.11), so its target binds the paper +
+ *  action only. Returns `null` when the payload omits or malforms a required
+ *  field — that op falls through to the no-gated-op path and the chain rejects
+ *  it for the missing fields. The target is built through
+ *  `creditOpFreshAuthTarget` so the consume side and the issuance routes share
+ *  one encoding. */
+function creditOpTarget(action: CreditOpAction, payload: object): FreshAuthTarget | null {
+  const rawPaperAuthor = (payload as { paper_author?: unknown }).paper_author;
+  const rawPaperPermlink = (payload as { paper_permlink?: unknown }).paper_permlink;
+  if (
+    typeof rawPaperAuthor !== 'string' || rawPaperAuthor.length === 0 ||
+    typeof rawPaperPermlink !== 'string' || rawPaperPermlink.length === 0
+  ) {
+    return null;
+  }
+  let authorIndex: number | undefined;
+  if (action === 'revoke_authorship') {
+    // No author_index on the revoke wire; the target binds paper + action.
+    authorIndex = undefined;
+  } else {
+    const rawAuthorIndex = (payload as { author_index?: unknown }).author_index;
+    if (typeof rawAuthorIndex !== 'number' || !Number.isInteger(rawAuthorIndex) || rawAuthorIndex < 0) {
+      return null;
+    }
+    authorIndex = rawAuthorIndex;
+  }
+  return creditOpFreshAuthTarget(action, rawPaperAuthor, rawPaperPermlink, authorIndex);
+}
+
+/** Scan the operations bundle for fresh-auth-gated ops: the anchored-route
+ *  consent ops (`author_accept` / `author_resign`, `CONSENT_OP_ACTIONS`) and
+ *  the name-only-route credit ops (`claim_authorship` / `approve_authorship` /
+ *  `revoke_authorship`, `CREDIT_OP_ACTIONS`). A single fresh-auth proof gates
+ *  the entire bundle, so a bundle containing MORE THAN ONE gated op is
+ *  explicitly rejected: allowing N gated ops in one call would let a
+ *  compromised SPA convert one auth ceremony into N gated broadcasts
+ *  (substitution-attack vector). The function returns a discriminator so the
+ *  caller can distinguish "no gated op" (no proof needed) from "exactly one"
+ *  (verify proof) from "multiple" (reject 400).
+ *
+ *  Gated ops whose payload omits or malforms the required target fields fall
+ *  through to the no-gated-op path. Chain rejection is the backstop — a missing
+ *  or non-string `root_author`/`paper_author` (etc.) makes the custom_json op
+ *  invalid at the consensus layer, so the bundle's atomic-transaction semantic
+ *  rolls back any sibling ops along with it. Treating this as "no gated op
+ *  detected" keeps the substitution-attack surface flat: an attacker can't slip
+ *  a malformed gated op into a legitimate bundle to bypass the fresh-auth gate,
+ *  because the chain rejects the entire bundle along with the malformed op. */
+function findGatedOpsInBundle(operations: unknown[]): GatedOpScan {
+  let firstTarget: FreshAuthTarget | null = null;
   for (const op of operations) {
     if (!isOpTuple(op)) continue;
     const [opType, opParams] = op;
@@ -270,49 +359,28 @@ function findConsentOpsInBundle(operations: unknown[]): ConsentOpScan {
     }
     if (typeof payload !== 'object' || payload === null) continue;
     const action = (payload as { action?: unknown }).action;
-    if (typeof action !== 'string' || !CONSENT_OP_ACTIONS.has(action)) continue;
-    // Round-5 hold #3: consent ops with malformed targets fall through to
-    // the no-consent path. Chain rejection is the backstop — a missing or
-    // non-string `root_author`/`root_permlink` makes the custom_json op
-    // invalid at the consensus layer, so the bundle's atomic-transaction
-    // semantic rolls back any sibling ops along with it. We surface the
-    // op as no-consent here rather than as a 400 because (a) the per-op
-    // ALLOWED_OPS check upstream already rejected non-allowlisted custom
-    // ops, (b) chain rejection is correlated for operator visibility by
-    // `event:'broadcast_failed'` (chain-reject path via handleBroadcastError)
-    // and `event:'custody.broadcast.attempt'` with `outcome:'failure'` (the
-    // per-attempt audit-log helper), and (c) treating this as "no consent op
-    // detected" keeps the substitution-attack surface flat: an attacker
-    // can't slip a malformed consent op into a legitimate bundle to
-    // bypass the fresh-auth gate, because the chain rejects the entire
-    // bundle along with the malformed op.
-    const rawRootAuthor = (payload as { root_author?: unknown }).root_author;
-    const rawRootPermlink = (payload as { root_permlink?: unknown }).root_permlink;
-    if (
-      typeof rawRootAuthor !== 'string' || rawRootAuthor.length === 0 ||
-      typeof rawRootPermlink !== 'string' || rawRootPermlink.length === 0
-    ) {
+    if (typeof action !== 'string') continue;
+
+    let target: FreshAuthTarget | null;
+    if (CONSENT_OP_ACTIONS.has(action)) {
+      target = consentOpTarget(action, payload);
+    } else if (CREDIT_OP_ACTIONS.has(action)) {
+      target = creditOpTarget(action as CreditOpAction, payload);
+    } else {
       continue;
     }
-    if (firstAction === null) {
-      firstAction = action;
-      firstRootAuthor = rawRootAuthor;
-      firstRootPermlink = rawRootPermlink;
+    if (target === null) continue;
+
+    if (firstTarget === null) {
+      firstTarget = target;
     } else {
-      // Second consent op detected — short-circuit with the multi-consent
+      // Second gated op detected — short-circuit with the multi-gated-op
       // discriminator. The caller responds 400 MULTIPLE_CONSENT_OPS without
       // consuming the proof or reaching the broadcast path.
       return { kind: 'multiple' };
     }
   }
-  return firstAction === null
-    ? { kind: 'none' }
-    : {
-        kind: 'single',
-        action: firstAction,
-        rootAuthor: firstRootAuthor!,
-        rootPermlink: firstRootPermlink!,
-      };
+  return firstTarget === null ? { kind: 'none' } : { kind: 'single', target: firstTarget };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -424,16 +492,16 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     }
   }
 
-  // Round-3: consent-op operations require a per-op fresh-auth proof.
-  // Round-4 hold #1: bundles with MORE THAN ONE consent op are rejected
-  // with 400 MULTIPLE_CONSENT_OPS — one proof gates one consent op, never
-  // an N-op consent fan-out. Verified BEFORE decrypting the posting key so
-  // a missing/expired proof or multi-consent bundle never reaches the
+  // Fresh-auth-gated ops (anchored-route consent ops + name-only-route credit
+  // ops) require a per-op fresh-auth proof. Bundles with MORE THAN ONE gated
+  // op are rejected with 400 MULTIPLE_CONSENT_OPS — one proof gates one gated
+  // op, never an N-op fan-out. Verified BEFORE decrypting the posting key so
+  // a missing/expired proof or multi-gated-op bundle never reaches the
   // broadcast path. The proof is consumed (single-use) even if the
   // broadcast itself later fails — re-broadcasting requires a fresh re-auth,
   // matching the ARCH.md "per-op" rule.
-  const consentScan = findConsentOpsInBundle(operations);
-  if (consentScan.kind === 'multiple') {
+  const gatedScan = findGatedOpsInBundle(operations);
+  if (gatedScan.kind === 'multiple') {
     logger.warn(
       {
         event: 'custody.broadcast.multiple_consent_ops_rejected',
@@ -441,13 +509,13 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         username,
         op_count: operations.length,
       },
-      'custody.broadcast rejected — bundle contains multiple consent ops',
+      'custody.broadcast rejected — bundle contains multiple fresh-auth-gated ops',
     );
     return sendError(
       res,
       400,
       'MULTIPLE_CONSENT_OPS',
-      'A custody broadcast bundle may contain at most one consent operation (author_accept or author_resign). Submit each consent op in its own request with its own fresh-auth proof.',
+      'A custody broadcast bundle may contain at most one consent or credit operation (author_accept, author_resign, claim_authorship, approve_authorship, or revoke_authorship). Submit each in its own request with its own fresh-auth proof.',
     );
   }
 
@@ -461,7 +529,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // and the substitution-attack closure (target-hash binding from round-5)
   // is more important than retry ergonomics on consent ops specifically.
   //
-  // The non-consent branch requires `fresh_auth_proof` too (consumed via
+  // The non-gated branch requires `fresh_auth_proof` too (consumed via
   // the session-kind path, no per-op binding check). This closes ARCH.md
   // § 6.5 invariant #1 on the non-consent surface — without it, only the
   // JWT would be required, making a stolen JWT a one-step takeover vector
@@ -469,27 +537,20 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // `/api/custody/fresh-auth` (password, per-op proof — accepted via the
   // cross-kind-accept on session consume); State B/C users mint via
   // `/api/orcid/callback mode='session_auth'` (ORCID, session-kind proof).
-  const consentAction = consentScan.kind === 'single' ? consentScan.action : null;
+  const gatedAction = gatedScan.kind === 'single' ? gatedScan.target.action : null;
   let freshAuthMechanism: FreshAuthMechanism | null = null;
   const proofRaw = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
   const proofToken = typeof proofRaw === 'string' ? proofRaw : undefined;
-  if (consentScan.kind === 'single') {
-    // Round-5 hold #3: compute the expected target hash from the consent
-    // op's actual fields (action, root_author, root_permlink). The proof
-    // must have been minted for THIS exact target — otherwise a compromised
-    // SPA could swap the action or paper between the user's auth ceremony
-    // and the broadcast. `consentScan.action` is narrowed to the consent
-    // action set at this point; cast is safe because `consentScan.action`
-    // has already been filtered through `CONSENT_OP_ACTIONS.has()` at the
-    // scan site (see `findConsentOpsInBundle` around line 133), and those
-    // values are a strict subset of `FreshAuthTargetAction` (which now
-    // additionally includes `set_password`, `change_email`, and
-    // `delete_account` for the non-broadcast surfaces).
-    const expectedTarget: FreshAuthTarget = {
-      action: consentScan.action as FreshAuthTargetAction,
-      root_author: consentScan.rootAuthor,
-      root_permlink: consentScan.rootPermlink,
-    };
+  if (gatedScan.kind === 'single') {
+    // Compute the expected target hash from the gated op's actual fields.
+    // The proof must have been minted for THIS exact target — otherwise a
+    // compromised SPA could swap the action, paper, or (for credit ops) the
+    // slot index between the user's auth ceremony and the broadcast. The
+    // target is built at the scan site (`findGatedOpsInBundle` →
+    // `consentOpTarget` / `creditOpTarget`) from the op payload, so its
+    // `action` is already a member of the gated action set and its fields
+    // are the op's own.
+    const expectedTarget = gatedScan.target;
     const expectedTargetHash = computeFreshAuthTargetHash(expectedTarget);
     const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
     if (!result.valid) {
@@ -498,9 +559,10 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
           event: 'custody.broadcast.fresh_auth_rejected',
           route: 'custody.broadcast',
           username,
-          consent_action: consentAction,
-          consent_root_author: consentScan.rootAuthor,
-          consent_root_permlink: consentScan.rootPermlink,
+          consent_action: gatedAction,
+          consent_root_author: expectedTarget.root_author,
+          consent_root_permlink: expectedTarget.root_permlink,
+          consent_author_index: expectedTarget.author_index ?? null,
           reason: result.reason,
         },
         'custody.broadcast rejected — fresh-auth proof invalid',
@@ -786,7 +848,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       logBroadcastAttempt('success', {
         tx_id: result.id,
         block_num: result.block_num,
-        consent_action: consentAction,
+        consent_action: gatedAction,
         auth_mechanism: freshAuthMechanism,
       });
 
@@ -894,12 +956,32 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
       root_author: rootAuthorResult.value,
       root_permlink: rootPermlinkResult.value,
     };
+  } else if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
+    // Name-only-route credit ops. The proof binds to (action, paper_author,
+    // paper_permlink, author_index). paper_author / paper_permlink are
+    // identifier slugs (trim=true); author_index is a non-negative integer
+    // for claim/approve and absent for revoke (`hive-schemas.md` § 2.11).
+    // The target is built through `creditOpFreshAuthTarget` so this issuance
+    // path and the broadcast consume path share one encoding.
+    const paperAuthorResult = requireStringField(body, 'paper_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
+    if (!paperAuthorResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperAuthorResult.error);
+    const paperPermlinkResult = requireStringField(body, 'paper_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
+    if (!paperPermlinkResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperPermlinkResult.error);
+    let authorIndex: number | undefined;
+    if (action !== 'revoke_authorship') {
+      const rawIndex = body.author_index;
+      if (typeof rawIndex !== 'number' || !Number.isInteger(rawIndex) || rawIndex < 0) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
+      }
+      authorIndex = rawIndex;
+    }
+    target = creditOpFreshAuthTarget(action, paperAuthorResult.value, paperPermlinkResult.value, authorIndex);
   } else {
     return sendError(
       res,
       400,
       'VALIDATION_ERROR',
-      'action must be one of: author_accept, author_resign, change_email, delete_account, ipfs_upload',
+      'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload',
     );
   }
 

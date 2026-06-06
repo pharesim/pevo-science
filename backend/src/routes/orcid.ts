@@ -27,6 +27,7 @@ import { assertNever } from '../util/assertNever.js';
 import { seedAccreditationBonus } from '../reputation.js';
 import {
   changeEmailFreshAuthTarget,
+  creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
   ipfsUploadFreshAuthTarget,
   issueFreshAuthToken,
@@ -54,14 +55,20 @@ const CallbackBodySchema = z.object({
 // system.
 const StartBodySchema = z.object({
   mode: z.string().optional(),
-  // Round-5 hold #3: per-op fresh-auth target binding. When `mode` is
-  // 'fresh_auth', the request body MUST also carry the consent-op target
-  // (`action`, `root_author`, `root_permlink`); the OAuth round-trip stores
-  // the target in the state map alongside `mode`/`username`, and the
-  // callback reads it back to mint a target-bound proof.
+  // Per-op fresh-auth target binding. When `mode` is 'fresh_auth', the request
+  // body MUST also carry the target for the op being authorized; the OAuth
+  // round-trip stores the target in the state map alongside `mode`/`username`,
+  // and the callback reads it back to mint a target-bound proof. Anchored-route
+  // consent ops carry (`action`, `root_author`, `root_permlink`); name-only-
+  // route credit ops carry (`action`, `paper_author`, `paper_permlink`,
+  // `author_index`) where claim/approve include `author_index` and revoke does
+  // not (`agents/docs/hive-schemas.md` § 2.11).
   action: z.string().optional(),
   root_author: z.string().optional(),
   root_permlink: z.string().optional(),
+  paper_author: z.string().optional(),
+  paper_permlink: z.string().optional(),
+  author_index: z.number().int().nonnegative().optional(),
 });
 
 const router = Router();
@@ -349,9 +356,23 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   // (consent ops require non-empty `root_permlink` at this layer). The
   // `delete_account` action (right-to-erasure exit, A/B/C/D → [no row] per
   // § 6.3) is the ORCID-mechanism issuance side for state C / state B / D.
+  //
+  // The name-only-route credit ops (`claim_authorship` / `approve_authorship`
+  // / `revoke_authorship`) are the broadcast-side counterpart of the consent
+  // ops here: they carry the paper via `paper_author` / `paper_permlink` and
+  // (for claim/approve) a slot via `author_index`. The ORCID issuance side
+  // serves state C (ORCID-only) and state B accounts; state A mints via
+  // `POST /api/custody/fresh-auth`.
   let freshAuthTarget: FreshAuthTarget | undefined;
   if (mode === 'fresh_auth') {
-    const { action, root_author: rootAuthor, root_permlink: rootPermlink } = startParsed.data;
+    const {
+      action,
+      root_author: rootAuthor,
+      root_permlink: rootPermlink,
+      paper_author: paperAuthor,
+      paper_permlink: paperPermlink,
+      author_index: authorIndex,
+    } = startParsed.data;
     if (action === 'set_password' || action === 'change_email' || action === 'delete_account' || action === 'ipfs_upload') {
       // Non-broadcast actions bind the target to the authenticated
       // username. The invariant "`username` is set when `mode === 'fresh_auth'`"
@@ -403,12 +424,33 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         root_author: rootAuthor,
         root_permlink: rootPermlink,
       };
+    } else if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
+      // Name-only-route credit ops. The ORCID-mechanism issuance side serves
+      // state C (ORCID-only, no password) and state B accounts. The target
+      // binds (action, paper_author, paper_permlink, author_index); revoke
+      // carries no author_index on the wire (`hive-schemas.md` § 2.11) and the
+      // Zod schema admitted it as an optional number, so a present-but-invalid
+      // index is already rejected at the parse layer. claim/approve require it.
+      if (typeof paperAuthor !== 'string' || paperAuthor.length === 0) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'paper_author is required');
+      }
+      if (typeof paperPermlink !== 'string' || paperPermlink.length === 0) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'paper_permlink is required');
+      }
+      let idx: number | undefined;
+      if (action !== 'revoke_authorship') {
+        if (typeof authorIndex !== 'number') {
+          return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
+        }
+        idx = authorIndex;
+      }
+      freshAuthTarget = creditOpFreshAuthTarget(action, paperAuthor, paperPermlink, idx);
     } else {
       return sendError(
         res,
         400,
         'VALIDATION_ERROR',
-        'action must be one of: author_accept, author_resign, set_password, change_email, delete_account, ipfs_upload',
+        'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, set_password, change_email, delete_account, ipfs_upload',
       );
     }
   }

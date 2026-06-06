@@ -68,10 +68,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   CONSENT_OP_ACTIONS,
+  CREDIT_OP_ACTIONS,
   FRESH_AUTH_TTL_SECONDS,
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
+  creditOpFreshAuthTarget,
   isFreshAuthMechanism,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
@@ -200,6 +202,90 @@ describe('computeFreshAuthTargetHash — content hash', () => {
       root_permlink: 'b|c',
     });
     expect(h1).not.toBe(h2);
+  });
+
+  // Name-only-route credit ops fold author_index into the target hash.
+  it('author_index changes the hash for claim/approve', () => {
+    const base = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 2);
+    const other = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 3);
+    expect(computeFreshAuthTargetHash(base)).not.toBe(computeFreshAuthTargetHash(other));
+  });
+
+  it('omitting author_index is byte-identical to the pre-author_index triple (backward compat)', () => {
+    // A target with author_index === undefined must hash exactly as the
+    // original (action, root_author, root_permlink) triple did, so consent-op
+    // and non-broadcast-critical proofs minted before this field existed still
+    // verify. revoke_authorship carries no author_index, so its target lands
+    // in this no-index form.
+    const withoutIndex = creditOpFreshAuthTarget('revoke_authorship', 'bob', 'paper-1', undefined);
+    const tripleOnly = {
+      action: 'revoke_authorship' as const,
+      root_author: 'bob',
+      root_permlink: 'paper-1',
+    };
+    expect(computeFreshAuthTargetHash(withoutIndex)).toBe(computeFreshAuthTargetHash(tripleOnly));
+  });
+
+  it('a present author_index never collides with the absent form', () => {
+    const absent = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', undefined);
+    const presentZero = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 0);
+    expect(computeFreshAuthTargetHash(absent)).not.toBe(computeFreshAuthTargetHash(presentZero));
+  });
+
+  it('credit-op action changes the hash even with identical paper + index tails', () => {
+    const claim = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 1);
+    const approve = creditOpFreshAuthTarget('approve_authorship', 'bob', 'paper-1', 1);
+    expect(computeFreshAuthTargetHash(claim)).not.toBe(computeFreshAuthTargetHash(approve));
+  });
+});
+
+describe('CREDIT_OP_ACTIONS — wire predicate', () => {
+  it('contains the three name-only-route credit ops', () => {
+    expect(CREDIT_OP_ACTIONS.has('claim_authorship')).toBe(true);
+    expect(CREDIT_OP_ACTIONS.has('approve_authorship')).toBe(true);
+    expect(CREDIT_OP_ACTIONS.has('revoke_authorship')).toBe(true);
+  });
+  it('does NOT contain consent ops or unrelated actions (kept disjoint from CONSENT_OP_ACTIONS)', () => {
+    expect(CREDIT_OP_ACTIONS.has('author_accept')).toBe(false);
+    expect(CREDIT_OP_ACTIONS.has('author_resign')).toBe(false);
+    expect(CREDIT_OP_ACTIONS.has('vote')).toBe(false);
+  });
+});
+
+describe('creditOpFreshAuthTarget — credit-op target builder + consume round-trip', () => {
+  it('claim target validly consumes when issued and consumed at the same (action, paper, index)', async () => {
+    const target = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 4);
+    const issued = await issueFreshAuthToken('alice', 'password', target);
+    const result = await consumeFreshAuthToken(
+      issued.token,
+      'alice',
+      computeFreshAuthTargetHash(target),
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('approve proof minted for index 4 rejects a consume bound to index 5 → target_mismatch', async () => {
+    const minted = creditOpFreshAuthTarget('approve_authorship', 'bob', 'paper-1', 4);
+    const issued = await issueFreshAuthToken('alice', 'password', minted);
+    const wrongIndex = creditOpFreshAuthTarget('approve_authorship', 'bob', 'paper-1', 5);
+    const result = await consumeFreshAuthToken(
+      issued.token,
+      'alice',
+      computeFreshAuthTargetHash(wrongIndex),
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toBe('target_mismatch');
+  });
+
+  it('revoke target (no index) validly consumes at the matching paper + action', async () => {
+    const target = creditOpFreshAuthTarget('revoke_authorship', 'bob', 'paper-1', undefined);
+    const issued = await issueFreshAuthToken('alice', 'orcid', target);
+    const result = await consumeFreshAuthToken(
+      issued.token,
+      'alice',
+      computeFreshAuthTargetHash(target),
+    );
+    expect(result.valid).toBe(true);
   });
 });
 
