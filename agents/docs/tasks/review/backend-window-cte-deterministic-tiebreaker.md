@@ -46,3 +46,41 @@ Cite the convention doc in a brief comment at each site (one-line anchor, not a 
 - [backend/src/reputation.ts](backend/src/reputation.ts) lines 623, 812, 912.
 - [agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md](agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md) Rule 2.
 - HAF-query review run `w274tijk0` rank #33.
+
+## Implementation note (backend, 2026-06-06)
+
+Landed all 10 enumerated sites in one commit. The cross-reference line numbers
+had drifted; sites were located by grepping `ROW_NUMBER` / `DISTINCT ON` /
+`ORDER BY ... block_num DESC`.
+
+- **Tie-breaker column:** `operation_vote_view` and `operation_custom_json_view`
+  do NOT project `trx_in_block` (verified against the live HAF view: columns are
+  `id, timestamp, voter, author, weight, permlink, block_num`). Per the convention
+  doc's fallback rule, the monotonic HAF op `id` is the tie-breaker everywhere
+  (`v.id DESC` / `cj.id DESC`; reputation's union CTEs project `op_id` from each
+  arm — native `vo.id`, revote `cj.id` — then `op_id DESC`).
+- **The 10 sites:** window CTEs `accred_ranked` + `vouch_ranked` (`hafsql.ts`);
+  DISTINCT-ON vote sites `accreditedVoteCount` (`hafsql.ts`), batch native votes +
+  per-paper accredited voters + review net_votes (`papers.ts` ×3), review net_votes
+  (`profile.ts`), and `paper_latest_votes` + `review_latest_votes` +
+  `citing_latest_votes` (`reputation.ts` ×3).
+- **Self-caused test fix (in-scope):** `vouch_ranked` now requires `id` in its
+  synthetic VALUES; `active-vouches-signer-gate.test.ts` was updated to project it.
+
+### [Architect triage] related latest-wins sites OUTSIDE this task's enumerated 10
+These are latest-*config*/op-wins selections that share the same-block-ambiguity
+class but were not in the task's vote/accred scope. Flagging for a triage decision
+(file follow-up, or accept as practically-never-tied):
+- `reputation.ts` `update_weights` config: `ORDER BY cj.block_num DESC LIMIT 1` (no
+  tie-breaker; admin op, same-block tie practically impossible).
+- `profile.ts` (early custom_json selection): `ORDER BY cj.block_num DESC`.
+- `papers.ts` revote query: `ORDER BY cj.block_num DESC` (dedups via Map insertion
+  order downstream, so deterministic-by-Map, but SQL ordering is same-block-ambiguous).
+- `tests/bench-reputation.ts`: hand-copied vote-signal SQL (a benchmark, not a test)
+  with no tie-breaker.
+
+Verification: typecheck + lint clean; new `window-cte-deterministic-tiebreaker.test.ts`
+3/3 (same-block accredit/revoke + toggle votes proven deterministic across reordered
+VALUES); reputation-lifecycle (real HAF, validates the merged `op_id` SQL is
+executable), reputation-coauthor-claim-credit, active-vouches, hafsql all green on
+the integrated main tree.

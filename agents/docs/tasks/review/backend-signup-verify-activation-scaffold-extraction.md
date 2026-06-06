@@ -55,3 +55,34 @@ Coordination note: if the signup-activation hold fixes substantively change the 
 - Parent task `backend-signup-activation-failure-recovery-and-pool-hold` — "Coordination & opportunistic cleanup" section that originally named this extraction.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Implementation note (backend, 2026-06-06)
+
+Pure refactor, no behavioral change. Two helpers extracted:
+
+- `withSignupActivationLock(opts, fn)` in `backend/src/lib/signup-activation-lock.ts`
+  owns the acquire / 409-`LOCK_HELD` / try-catch-finally-release ceremony; the
+  mid-execution release seam stays in the route via a `releaseLock` callback passed
+  to `fn` (the route owns the "critical section complete" decision).
+- `broadcastAccreditationAndSeed(opts)` in `backend/src/routes/signup-verify.ts`
+  holds the HAF-probe → broadcast → `PostBroadcastWriteError` +
+  `classifyPostBroadcastSeverity` → seed cascade once, discriminated by
+  `routeFlavor: 'confirm' | 'link'` (one opts object, one two-way union — no
+  flag-arg explosion). It returns `'ok' | 'handled'` so the route returns early
+  when a 502/504 was already sent.
+
+`/confirm` and `/link` each now call both shared symbols once.
+
+Verification (integrated main tree): typecheck + lint clean; signup-verify suite
+green — `signup-verify.test.ts` 11/11, plus activation-recovery, concurrent-activation,
+stuck-recovery, postbroadcast-severity (25/25 across the five files). The five
+behavioral acceptance properties (single-fire, crash-resume without re-broadcast,
+encrypt-fail-fast before chain op, no pool starvation, 409 LOCK_HELD on slow holder)
+are exercised by those files and still hold.
+
+Note for review: the implementing worktree branched from a 62-commit-stale base
+whose `signup-verify.test.ts` still carried since-removed SEC-004 ORCID `/signup`
+tests (2 of which fail on that stale base, in the untouched `auth.ts` path). The
+source file `signup-verify.ts` is byte-identical between that base and current main,
+so the extraction applied cleanly; the authoritative current-main test file (11
+tests, no SEC-004 cases) passes in full.
