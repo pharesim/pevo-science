@@ -72,6 +72,10 @@ All three `redis.keys()` sites removed. typecheck (src+tests) + lint clean.
 - SADD-only (no SREM) as designed: item 2 adds the one SREM site that exists (revocation); no other removal path.
 - Pre-existing task-slug citations in reputation docblocks/test headers: already tracked by the blocked backend-haf-query-comment-anchor-sweep task.
 
+### On final archive (architect)
+
+When this task archives clean, judge whether the index writer-completeness rule clears the `/ce-compound` bar: an index maintained only inside the swap path drifts the moment any other writer creates or deletes the indexed keys (exactly what item 2's seed writers did); every writer of an indexed key must maintain the index, or the read path must tolerate AND eventually heal the divergence. Invoke `/ce-compound` if the re-review confirms the fix shape.
+
 ### Re-review signal
 
 When the four items land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next review scopes to the fix commits only.

@@ -52,3 +52,7 @@ Only `config.hiveAdminAccount`-signed `update_weights` ops may set reputation we
 - `backend/src/hive.ts` — write side signs with `required_posting_auths: [config.hiveAdminAccount]`.
 - `backend/src/reputation-batch.ts` — existing `cycle_blocks` clamp (defense-in-depth precedent).
 - `backend/src/hafsql.ts` — `decayMultiplierSql` docblock (item 3).
+
+## On final archive (architect)
+
+Invoke `/ce-compound` to capture the convention this defect instantiates: a HAF custom_json read gated only on `custom_id` + `action` is an authentication bypass, because any Hive account can broadcast any custom_id; every consumer must additionally gate on the signing authority (`required_posting_auths`), the way the accreditation, WoT, and consent-op readers already do. Deferred until the fix lands and this task archives clean, so the documented solution reflects the verified gate shape.
