@@ -407,11 +407,10 @@ const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
  *  throwing consume cleans up. Because JS is single-threaded, the
  *  `has` → `add` pair is an uninterruptible synchronous critical section.
  *
- *  Single-instance scope: PEvO is single-instance per memory
- *  `project_single_instance_only`; cross-process coordination isn't needed.
- *  A future multi-instance topology would re-open the race and require a
- *  Redis-side SETNX sentinel — the in-process lock is not a substitute for
- *  that under multi-instance. */
+ *  Single-instance scope: this deployment is single-process, so the
+ *  in-process lock is a complete guard; a multi-instance topology would
+ *  re-open the race and require a Redis-side SETNX sentinel, which the
+ *  in-process lock is not a substitute for. */
 const inFlightConsumes = new Set<string>();
 
 /** Periodic cleanup so the map doesn't grow unbounded under no-Redis ops.

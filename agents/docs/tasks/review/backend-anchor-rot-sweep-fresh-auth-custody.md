@@ -32,3 +32,31 @@ The architect re-review of the IPFS-upload-security cluster (`/ce-code-review`, 
 - `backend/src/lib/ipfs-upload-token.ts` — the already-de-rotted twin `inFlightConsumes` docblock to mirror.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Implementation note (backend, 2026-06-06)
+
+All three enumerated sites de-rotted, comment/title-only:
+
+1. `fresh-auth.ts` `inFlightConsumes` docblock — dropped the `project_single_instance_only`
+   memory-slug pointer; now states the single-process invariant inline, mirroring the
+   `ipfs-upload-token.ts` twin verbatim ("this deployment is single-process, so the
+   in-process lock is a complete guard; a multi-instance topology would re-open the
+   race and require a Redis-side SETNX sentinel, which the in-process lock is not a
+   substitute for").
+2. `custody.ts` consent-op consume status ternary — dropped "Round-4 hold #10 + round-5
+   hold #3"; re-anchored on the behavioral rule (binding violations are forbidden proofs
+   → 403; missing/expired/malformed mean no proof present → 401).
+3. `orcid.test.ts` — dropped "(round-4 hold #6)" from the `fresh_auth`-mode describe title.
+
+Verification: typecheck + lint clean (0 errors); orcid + custody-credit-ops +
+custody-consent-ops + fresh-auth lib 181/181.
+
+### [Architect triage] adjacent out-of-scope rot (NOT touched)
+The comment block immediately above the site-3 describe title (the `handleFreshAuth`
+coverage rationale header) still carries round-number anchors ("Round-4 hold #6",
+"Round 3 of …") and a task-slug citation ("BACKEND-COAUTHOR-TRUST-MODEL"). This was
+outside the three enumerated sites, so I left it per the task's deliberate scoping
+("filed here rather than swept opportunistically"). Flagging it in case you want it
+folded in or filed separately. `custody.ts` also retains other round-number anchors
+at unrelated sites (the `auditExtras` comment, the per-op target-binding comment, the
+`auditEvidence` docblock) — likewise out of this task's scope.

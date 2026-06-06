@@ -567,12 +567,12 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         },
         'custody.broadcast rejected — fresh-auth proof invalid',
       );
-      // Round-4 hold #10 + round-5 hold #3: discriminate status code on
-      // reason. `username_mismatch` and `target_mismatch` are binding
-      // violations (token issued for a different user / target) → 403; the
-      // remaining outcomes (`missing`, `expired`, `malformed`) are all
-      // "no valid proof present" → 401. `kind_mismatch` is also a binding
-      // violation (session-kind proof on the consent surface).
+      // Discriminate the status code on the failure reason. Binding
+      // violations are forbidden proofs and return 403: `username_mismatch`
+      // and `target_mismatch` (proof issued for a different user / target),
+      // plus `kind_mismatch` (a session-kind proof on the consent surface).
+      // The remaining outcomes (`missing`, `expired`, `malformed`) mean no
+      // valid proof is present and return 401.
       const status =
         result.reason === 'username_mismatch' ||
         result.reason === 'target_mismatch' ||

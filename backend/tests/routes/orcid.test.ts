@@ -3034,7 +3034,7 @@ describe('updateAccountOrcid — permanent vs transient error discrimination', (
 // + a stolen JWT minting fresh-auth tokens as another user.
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('POST /api/orcid/callback — fresh_auth mode (round-4 hold #6)', () => {
+describe('POST /api/orcid/callback — fresh_auth mode', () => {
   it('happy path: orcid-match → 200 with fresh_auth_proof and mechanism: orcid', async () => {
     const orcidId = '0000-0001-1234-5678';
     installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
