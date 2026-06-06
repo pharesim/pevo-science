@@ -771,8 +771,8 @@ export async function computeReputationBatch(
         -- unaccredited poster) — the prior target-user restriction dropped them
         -- and starved the claimer's credit. chain_papers membership admits
         -- exactly the votes on papers some target user is credited for.
-        SELECT voter, author, permlink, weight, block_num FROM (
-          SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
+        SELECT voter, author, permlink, weight, block_num, op_id FROM (
+          SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num, vo.id AS op_id
           FROM ${T.voteOps} vo
           WHERE vo.voter = ANY($2::text[])
             AND EXISTS (SELECT 1 FROM chain_papers cp WHERE cp.author = vo.author AND cp.permlink = vo.permlink)
@@ -783,7 +783,8 @@ export async function computeReputationBatch(
             cj.json::jsonb ->> 'author' AS author,
             cj.json::jsonb ->> 'permlink' AS permlink,
             CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
-            cj.block_num
+            cj.block_num,
+            cj.id AS op_id
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
             AND cj.json::jsonb ->> 'action' = 'revote'
@@ -796,7 +797,10 @@ export async function computeReputationBatch(
       paper_latest_votes AS (
         SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight, block_num
         FROM paper_vote_signals
-        ORDER BY voter, author, permlink, block_num DESC
+        -- Same-block tie-breaker: op_id (HAF op id projected from each union arm;
+        -- the views have no trx_in_block, op_id is monotonic per source stream) per
+        -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+        ORDER BY voter, author, permlink, block_num DESC, op_id DESC
       ),
 
       paper_resolved_votes AS (
@@ -1005,8 +1009,8 @@ export async function computeReputationBatch(
       ),
 
       review_vote_signals AS (
-        SELECT voter, author, permlink, weight, block_num FROM (
-          SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
+        SELECT voter, author, permlink, weight, block_num, op_id FROM (
+          SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num, vo.id AS op_id
           FROM ${T.voteOps} vo
           WHERE vo.voter = ANY($2::text[])
             AND vo.author IN (SELECT username FROM target_users)
@@ -1018,7 +1022,8 @@ export async function computeReputationBatch(
             cj.json::jsonb ->> 'author' AS author,
             cj.json::jsonb ->> 'permlink' AS permlink,
             CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
-            cj.block_num
+            cj.block_num,
+            cj.id AS op_id
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
             AND cj.json::jsonb ->> 'action' = 'revote'
@@ -1031,7 +1036,10 @@ export async function computeReputationBatch(
       review_latest_votes AS (
         SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight
         FROM review_vote_signals
-        ORDER BY voter, author, permlink, block_num DESC
+        -- Same-block tie-breaker: op_id (HAF op id projected from each union arm;
+        -- the views have no trx_in_block, op_id is monotonic per source stream) per
+        -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+        ORDER BY voter, author, permlink, block_num DESC, op_id DESC
       ),
 
       review_resolved_votes AS (
@@ -1097,8 +1105,8 @@ export async function computeReputationBatch(
       ),
 
       citing_vote_signals AS (
-        SELECT voter, permlink, author, weight, block_num FROM (
-          SELECT vo.voter, vo.permlink, vo.author, vo.weight, vo.block_num
+        SELECT voter, permlink, author, weight, block_num, op_id FROM (
+          SELECT vo.voter, vo.permlink, vo.author, vo.weight, vo.block_num, vo.id AS op_id
           FROM ${T.voteOps} vo
           WHERE vo.voter = ANY($2::text[])
             AND (vo.author, vo.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
@@ -1109,7 +1117,8 @@ export async function computeReputationBatch(
             cj.json::jsonb ->> 'permlink' AS permlink,
             cj.json::jsonb ->> 'author' AS author,
             CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
-            cj.block_num
+            cj.block_num,
+            cj.id AS op_id
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
             AND cj.json::jsonb ->> 'action' = 'revote'
@@ -1123,7 +1132,10 @@ export async function computeReputationBatch(
       citing_latest_votes AS (
         SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight
         FROM citing_vote_signals
-        ORDER BY voter, author, permlink, block_num DESC
+        -- Same-block tie-breaker: op_id (HAF op id projected from each union arm;
+        -- the views have no trx_in_block, op_id is monotonic per source stream) per
+        -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+        ORDER BY voter, author, permlink, block_num DESC, op_id DESC
       ),
 
       citing_paper_quality AS (

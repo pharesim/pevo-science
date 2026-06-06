@@ -92,17 +92,19 @@ describe('activeVouchesCteBody — required_posting_auths signer gate', () => {
 
       // $1 is the body's custom_id bind (also reused as every synthetic row's
       // custom_id so the WHERE custom_id = $1 matches). $2.. carry the per-row
-      // json + required_posting_auths; block_num is positional (100 + index).
+      // json + required_posting_auths; block_num and id are positional
+      // (100 + index). id is the same-block ROW_NUMBER tie-breaker the
+      // production SQL orders on; every distinct block here keeps it inert.
       const valueLines: string[] = [];
       const params: unknown[] = [config.appTag];
       SCENARIO.forEach((r, i) => {
         const jsonIdx = params.push(r.json);
         const authsIdx = params.push(r.auths);
-        valueLines.push(`($1::text, $${jsonIdx}::text, $${authsIdx}::jsonb, ${100 + i}::bigint)`);
+        valueLines.push(`($1::text, $${jsonIdx}::text, $${authsIdx}::jsonb, ${100 + i}::bigint, ${100 + i}::bigint)`);
       });
 
       const sql = `
-        WITH synthetic_cj(custom_id, json, required_posting_auths, block_num) AS (
+        WITH synthetic_cj(custom_id, json, required_posting_auths, block_num, id) AS (
           VALUES
             ${valueLines.join(',\n            ')}
         ),${redirected}

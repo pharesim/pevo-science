@@ -102,7 +102,10 @@ async function batchResolveVotes(
        WHERE (v.author, v.permlink) IN (${pairValues.join(', ')})
          AND v.voter = ANY(${accreditedParam}::text[])
          AND v.voter != v.author
-       ORDER BY v.author, v.permlink, v.voter, v.block_num DESC`,
+       -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
+       -- v.id is the monotonic HAF op id) per
+       -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+       ORDER BY v.author, v.permlink, v.voter, v.block_num DESC, v.id DESC`,
       pairParams,
     ),
     // All revotes for APP_TAG. The `block_num >= $genesis` floor was dropped
@@ -3294,7 +3297,10 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
          WHERE v.author = $1 AND v.permlink = $2
            AND v.voter = ANY($3::text[])
            AND v.voter != v.author
-         ORDER BY v.voter, v.block_num DESC`,
+         -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
+         -- v.id is the monotonic HAF op id) per
+         -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+         ORDER BY v.voter, v.block_num DESC, v.id DESC`,
         [author, permlink, accreditedArr],
       ),
       // Reviews from accredited reviewers (+ anon account) with accredited vote count.
@@ -3321,7 +3327,10 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
                    SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
                    WHERE v.author = c.author AND v.permlink = c.permlink
                      AND v.voter = ANY($4::text[]) AND v.voter != v.author
-                   ORDER BY v.voter, v.block_num DESC
+                   -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
+                   -- v.id is the monotonic HAF op id) per
+                   -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+                   ORDER BY v.voter, v.block_num DESC, v.id DESC
                  ) lv WHERE lv.weight != 0) AS net_votes
          FROM ${T.comments} c
          JOIN ${T.comments} p ON p.author = $1 AND p.permlink = $2

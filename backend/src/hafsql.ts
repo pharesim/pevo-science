@@ -145,7 +145,10 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
       cj.json::jsonb ->> 'orcid' AS orcid,
       cj.json::jsonb ->> 'timestamp' AS event_timestamp,
       cj.id AS event_id,
-      ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC) AS rn
+      -- Same-block tie-breaker: cj.id (operation_custom_json_view has no
+      -- trx_in_block; cj.id is the monotonic HAF op id) per
+      -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+      ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC, cj.id DESC) AS rn
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
@@ -264,7 +267,10 @@ export function activeVouchesCteBody(startIdx = 1): SqlFragment {
       cj.json::jsonb ->> 'timestamp' AS event_timestamp,
       ROW_NUMBER() OVER (
         PARTITION BY cj.json::jsonb ->> 'voucher', cj.json::jsonb ->> 'vouchee'
-        ORDER BY cj.block_num DESC
+        -- Same-block tie-breaker: cj.id (operation_custom_json_view has no
+        -- trx_in_block; cj.id is the monotonic HAF op id) per
+        -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+        ORDER BY cj.block_num DESC, cj.id DESC
       ) AS rn
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
@@ -929,7 +935,10 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
     JOIN active_accreditations aa ON aa.account = v.voter
     WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr}
       AND v.voter != ${authorExpr}
-    ORDER BY v.voter, v.block_num DESC
+    -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
+    -- v.id is the monotonic HAF op id) per
+    -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+    ORDER BY v.voter, v.block_num DESC, v.id DESC
   ) lv WHERE lv.weight != 0)`;
 }
 

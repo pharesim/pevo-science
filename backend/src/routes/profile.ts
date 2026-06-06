@@ -612,7 +612,10 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
           FROM (SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
                 WHERE v.author = c.author AND v.permlink = c.permlink
                   AND v.voter = ANY($${accreditedParamIdx}::text[]) AND v.voter != v.author
-                ORDER BY v.voter, v.block_num DESC) lv WHERE lv.weight != 0) AS net_votes`
+                -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
+                -- v.id is the monotonic HAF op id) per
+                -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+                ORDER BY v.voter, v.block_num DESC, v.id DESC) lv WHERE lv.weight != 0) AS net_votes`
       : '0 AS net_votes';
     const orderClause = sort === 'votes'
       ? `net_votes ${order === 'asc' ? 'ASC' : 'DESC'}, c.created DESC`
