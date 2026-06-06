@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
+import type { Response } from 'express';
 import { config } from '../config.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { evalScript } from './redis-scripts.js';
+import { sendError } from '../response.js';
 import { logger } from '../logger.js';
 
 /**
@@ -192,5 +194,72 @@ export async function acquireSignupActivationLock(authToken: string): Promise<Si
     }
     if (Date.now() >= deadline) return { acquired: false };
     await new Promise((r) => setTimeout(r, LOSER_POLL_INTERVAL_MS));
+  }
+}
+
+/**
+ * Options for {@link withSignupActivationLock}: the per-route ceremony the
+ * shared lock scaffold cannot infer.
+ */
+export interface WithSignupActivationLockOpts {
+  /** Express response the wrapper writes the 409 LOCK_HELD / 500 envelopes to. */
+  res: Response;
+  /** Attacker-influenced auth_token; hashed into the lock key by acquire. */
+  authToken: string;
+  /**
+   * Called from the outer catch when `fn` throws. Owns the route-specific
+   * structured `logger.error` AND the `sendError(res, 500, ...)` write. The
+   * wrapper does NOT send a 500 itself, so this MUST respond. The thrown error
+   * is passed for logging.
+   */
+  onError: (err: unknown) => void;
+}
+
+/**
+ * Wrap the per-auth_token activation-lock acquire/release + try/catch/finally
+ * scaffold shared by the /confirm and /link signup-finalization handlers.
+ *
+ * Flow:
+ *   1. {@link acquireSignupActivationLock}. On `{ acquired: false }` (a
+ *      concurrent holder kept the lock for the full wait budget) the wrapper
+ *      sends 409 LOCK_HELD `{ retriable: true }` and resolves without calling
+ *      `fn` — identical copy at both call sites, so it lives here.
+ *   2. On acquire, run `fn(releaseLock)`. `fn` is the route body; it MUST call
+ *      `releaseLock()` once at the single-fire-critical-section boundary (after
+ *      the verify_token-clearing finalize, before the slow accreditation
+ *      broadcast) so a concurrent same-token waiter is not blocked across the
+ *      broadcast for no single-fire benefit. The seam stays in the route
+ *      because the "critical section complete" decision is route-specific;
+ *      `releaseLock` is idempotent (CAS/nonce-safe), so the wrapper's `finally`
+ *      re-release is a no-op on the happy path and the durable backstop if `fn`
+ *      throws before reaching its own `releaseLock()`.
+ *   3. If `fn` throws, `opts.onError(err)` runs (route-specific 500 log +
+ *      response), then the `finally` releases the lock.
+ *
+ * The wrapper never writes a success envelope — `fn` owns every non-error
+ * response (200, and the 4xx/5xx rejects inside the body that `return` early).
+ */
+export async function withSignupActivationLock(
+  opts: WithSignupActivationLockOpts,
+  fn: (releaseLock: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  const lock = await acquireSignupActivationLock(opts.authToken);
+  if (!lock.acquired) {
+    sendError(
+      opts.res,
+      409,
+      'LOCK_HELD',
+      'An activation for this signup is already in progress. Please retry in a moment.',
+      { retriable: true },
+    );
+    return;
+  }
+
+  try {
+    await fn(lock.release);
+  } catch (err) {
+    opts.onError(err);
+  } finally {
+    await lock.release();
   }
 }

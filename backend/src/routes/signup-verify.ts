@@ -33,9 +33,195 @@ import {
   extractBindingCookie,
   verifyBinding,
 } from '../signup-session-binding.js';
-import { acquireSignupActivationLock } from '../lib/signup-activation-lock.js';
+import { withSignupActivationLock } from '../lib/signup-activation-lock.js';
 
 const router = Router();
+
+/**
+ * The accreditation-broadcast cascade shared by /confirm and /link. Holds the
+ * post-lock HAF-probe -> accredit `custom_json` broadcast -> reputation-seed
+ * sequence in one place so a future change to the probe-before-retry logic,
+ * the `PostBroadcastWriteError` severity classification, or the seed step lands
+ * at one site instead of two. Mirrors `orcid.ts` handleAccredit / handleLink.
+ *
+ * The single `routeFlavor` discriminator (plus the named fields below) carries
+ * every confirm-vs-link difference: the on-chain account name, the row whose
+ * profile fields populate the `accredit` op, the evidence-hash domain suffix,
+ * the log/error `routeLabel`, the recovery-hint copy, and the `isResume` gate
+ * that decides whether to HAF-probe before broadcasting.
+ */
+interface BroadcastAccreditationOpts {
+  res: Response;
+  /** 'confirm' = new light account (SF4); 'link' = existing Hive account (SF6). */
+  routeFlavor: 'confirm' | 'link';
+  /** On-chain account that gets accredited (and seeded). */
+  username: string;
+  /** Pending row supplying the accredit op's profile fields. */
+  account: {
+    email: string | null;
+    full_name: string;
+    institution: string;
+    field: string;
+    orcid: string | null;
+  };
+  /** Domain-separation suffix in the evidence hash ('signup' or 'link'). */
+  evidenceSuffix: string;
+  /** Log/error prefix, e.g. 'signup_verify.confirm'. */
+  routeLabel: string;
+  /** User-facing retry instruction appended to the broadcast error copy. */
+  recoveryHint: string;
+  /**
+   * True on a resume path (stuck-recovery, or the /confirm chain-exists
+   * crash-resume). Gates the HAF probe-before-rebroadcast: a prior attempt's
+   * ambiguous broadcast may have landed, so re-broadcasting would emit a
+   * duplicate accreditation event. See
+   * `chain-write-timeout-ambiguous-outcome` for the probe-before-retry rule.
+   */
+  isResume: boolean;
+  /** Stuck-recovery discriminator surfaced on the structured log context. */
+  resumeStuck: boolean;
+}
+
+/**
+ * Run the accreditation broadcast + reputation seed for a finalized signup row.
+ *
+ * Returns `'handled'` when it has already written a 502/504 error envelope (the
+ * broadcast threw, or the post-broadcast seed cascade threw): the caller MUST
+ * `return` without writing any further response. Returns `'ok'` when the
+ * accreditation op is on chain (freshly broadcast or found by the HAF probe)
+ * and the seed succeeded; the caller proceeds to issue the session JWT.
+ *
+ * Skips the broadcast entirely when `config.pevoAdminPostingKey` is unset
+ * (returns `'ok'`) so a deployment without an admin posting key still finalizes
+ * the account, matching the prior inline behavior.
+ */
+async function broadcastAccreditationAndSeed(
+  opts: BroadcastAccreditationOpts,
+): Promise<'ok' | 'handled'> {
+  const { res, routeFlavor, username, account, evidenceSuffix, routeLabel, recoveryHint, isResume, resumeStuck } = opts;
+
+  // No admin posting key configured: accreditation broadcast is skipped
+  // silently (matches the prior `if (config.pevoAdminPostingKey)` guard) and
+  // the caller still finalizes the session.
+  if (!config.pevoAdminPostingKey) {
+    return 'ok';
+  }
+
+  const broadcastErrOpts: HandleBroadcastErrorOpts = {
+    timeoutMsg: `Broadcasting accreditation timed out. ${recoveryHint}`,
+    failMsg: `Failed to broadcast accreditation to Hive. ${recoveryHint}`,
+    logContext: {
+      email_hash: safeHashEmailForLogs(account.email),
+      username,
+      orcid: account.orcid ?? undefined,
+      resume_stuck: resumeStuck,
+    },
+    routeLabel,
+    postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) =>
+      postBroadcastSuccessCopy(routeFlavor, failedStep),
+  };
+
+  // HAF probe BEFORE broadcasting on a resume path. If the user is already
+  // accredited on chain (a prior attempt's broadcast landed), skip the
+  // broadcast and proceed to the (idempotent SET NX) seed. A probe error does
+  // NOT fail the resume — fall through to re-broadcast; the read-time dedup and
+  // seed SET NX backstop a duplicate custom_json.
+  let probeFoundAccreditation = false;
+  if (isResume) {
+    try {
+      const accredSet = await getAccreditedSet([username]);
+      probeFoundAccreditation = accredSet.has(username);
+    } catch (probeErr) {
+      logger.warn(
+        { err: probeErr, username },
+        `${routeLabel} HAF probe for existing accreditation failed; falling through to broadcast retry`,
+      );
+    }
+  }
+
+  let txId: string;
+  if (probeFoundAccreditation) {
+    // Skip broadcast — already on chain. Sentinel tx_id so a
+    // PostBroadcastWriteError envelope still carries a greppable reference if
+    // the seed throws below.
+    txId = 'haf-probe-already-accredited';
+    logger.info(
+      { username },
+      `${routeLabel} stuck-resume: HAF probe found existing accreditation; skipping broadcast`,
+    );
+  } else {
+    const evidenceHash = crypto
+      .createHash('sha256')
+      .update(`${account.email}:${username}:${evidenceSuffix}`)
+      .digest('hex');
+
+    const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
+    let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
+    try {
+      result = await broadcastJsonWithTimeout(
+        {
+          id: config.appTag,
+          json: JSON.stringify({
+            action: 'accredit',
+            account: username,
+            name: account.full_name || username,
+            institution: account.institution || '',
+            field: account.field || '',
+            orcid: account.orcid || '',
+            method: 'email',
+            evidence_hash: evidenceHash,
+            timestamp: new Date().toISOString(),
+          }),
+          required_auths: [],
+          required_posting_auths: [config.hiveAdminAccount],
+        },
+        adminKey,
+      );
+    } catch (err) {
+      handleBroadcastError(res, err, broadcastErrOpts);
+      return 'handled';
+    }
+    txId = result.id;
+  }
+
+  // Post-broadcast cascade. Chain op confirmed (or already on chain); any throw
+  // here is a downstream failure, not an ambiguous-outcome class. Discriminate
+  // via PostBroadcastWriteError so the catch emits 502 POST_BROADCAST_FAILED
+  // (outcome:'confirmed' + tx_id + failed_step) instead of 504 / 502
+  // BROADCAST_FAILED. Pass severity explicitly so a permanent-class
+  // (TypeError) failure routes through the operator-required path rather than
+  // the default 'transient' "automatic reconciliation" copy. seedAccreditation-
+  // Bonus re-throws only permanent-class errors. Mirrors orcid.ts handleAccredit.
+  const currentStep: PostBroadcastFailedStep = 'reputation_seed';
+  try {
+    await seedAccreditationBonus(username);
+  } catch (postErr) {
+    handleBroadcastError(
+      res,
+      new PostBroadcastWriteError(txId, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
+      broadcastErrOpts,
+    );
+    return 'handled';
+  }
+
+  return 'ok';
+}
+
+/**
+ * Per-step user-facing copy for the 502 POST_BROADCAST_FAILED envelope, keyed
+ * by route flavor. 'confirm' speaks of a created light account; 'link' speaks
+ * of a linked existing Hive account. Only the `reputation_seed` step is
+ * reachable from `broadcastAccreditationAndSeed` today; the catch-all branch
+ * keeps the copy honest if a future step is threaded through.
+ */
+function postBroadcastSuccessCopy(routeFlavor: 'confirm' | 'link', failedStep: PostBroadcastFailedStep): string {
+  const subject = routeFlavor === 'confirm'
+    ? 'Your account is created and accredited on Hive'
+    : 'Your Hive account is linked and accredited on Hive';
+  return failedStep === 'reputation_seed'
+    ? `${subject}. Your reputation score will update at the next scheduled cycle.`
+    : `${subject} (step ${failedStep} pending operator reconciliation).`;
+}
 
 const SESSION_EXPIRY = '24h';
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
@@ -384,18 +570,21 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
   // pg advisory lock it replaces — survives the pg connection being released
   // across that ~30s broadcast, so a slow activation never pins a pool
   // connection. See `signup-activation-lock.ts` for the single-fire argument.
-  const lock = await acquireSignupActivationLock(auth_token);
-  if (!lock.acquired) {
-    return sendError(
+  // The wrapper owns the acquire/409-LOCK_HELD/finally-release ceremony; the
+  // body calls `releaseLock()` at the single-fire-critical-section boundary.
+  await withSignupActivationLock(
+    {
       res,
-      409,
-      'LOCK_HELD',
-      'An activation for this signup is already in progress. Please retry in a moment.',
-      { retriable: true },
-    );
-  }
-
-  try {
+      authToken: auth_token,
+      onError: (err) => {
+        logger.error(
+          { event: 'signup_verify.confirm.failed', route: 'signup-verify.confirm', err },
+          'Account confirmation failed',
+        );
+        sendError(res, 500, 'INTERNAL_ERROR', 'Account creation failed');
+      },
+    },
+    async (releaseLock) => {
     let account: SignupRow | null = null;
     // verify_token already NULL — a prior attempt completed the finalize UPDATE
     // (keys stored) but its accreditation broadcast failed. Keys already stored.
@@ -548,139 +737,30 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
     // The accreditation broadcast/seed below have their own dedup (HAF probe +
     // seed SET NX), so holding the lock across that slow step would only make a
     // concurrent same-token waiter block longer for no single-fire benefit. The
-    // `finally` re-release is a CAS/nonce-safe no-op on this happy path.
-    await lock.release();
+    // wrapper's `finally` re-release is a CAS/nonce-safe no-op on this happy path.
+    await releaseLock();
 
-    // Broadcast accreditation custom_json + seed reputation in a single
-    // discrimination block. Mirrors orcid.ts handleAccredit so a broadcast
-    // failure produces 502 BROADCAST_FAILED / 504 BROADCAST_TIMEOUT, and a
-    // post-broadcast cascade failure (permanent seed error) produces 502
-    // POST_BROADCAST_FAILED with `failed_step:'reputation_seed'`. Without
-    // this, prior code returned 200 + JWT for an account whose chain op
-    // never landed (the "dangling JWT" class: a session token must never be
-    // issued for an account whose accreditation op never reached the chain).
-    //
-    // Stuck-resume path (Option C): if we detected the user is in stuck
-    // state above, first
-    // probe HAF for an existing accreditation custom_json. A prior attempt
-    // whose broadcast was ambiguous (timeout / network failure mid-flight)
-    // may have actually landed on chain; re-broadcasting would emit a
-    // second accreditation event for the same user. Per
-    // `chain-write-timeout-ambiguous-outcome-2026-04-22`, probe-before-
-    // retry is the canonical handling.
-    if (config.pevoAdminPostingKey) {
-      // Recovery message: tell the stuck user (or the operator reading
-      // the response) that retrying /confirm with the same input is
-      // safe and idempotent under Option C. Discriminate at the response
-      // level so the SPA can render an appropriate retry CTA.
-      const recoveryHint = 'You may retry POST /api/auth/confirm with the same auth_token, username, and keys to recover this session.';
-      const broadcastErrOpts: HandleBroadcastErrorOpts = {
-        timeoutMsg: `Broadcasting accreditation timed out. ${recoveryHint}`,
-        failMsg: `Failed to broadcast accreditation to Hive. ${recoveryHint}`,
-        logContext: {
-          email_hash: safeHashEmailForLogs(confirmedAccount.email),
-          username: normalizedUsername,
-          orcid: confirmedAccount.orcid ?? undefined,
-          resume_stuck: resumeStuck,
-        },
-        routeLabel: 'signup_verify.confirm',
-        postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) =>
-          failedStep === 'reputation_seed'
-            ? 'Your account is created and accredited on Hive. Your reputation score will update at the next scheduled cycle.'
-            : `Your account is created and accredited on Hive (step ${failedStep} pending operator reconciliation).`,
-      };
-
-      // HAF probe BEFORE broadcasting on either resume path. If the user is
-      // already accredited on chain (a prior attempt's broadcast landed),
-      // skip the broadcast and proceed to the seed step. The seed is
-      // idempotent under SET NX so a re-seed is safe. (The chain-exists
-      // resume's prior attempt crashed before reaching accreditation, so the
-      // probe normally finds nothing there and the broadcast fires — harmless.)
-      let probeFoundAccreditation = false;
-      if (isResume) {
-        try {
-          const accredSet = await getAccreditedSet([normalizedUsername]);
-          probeFoundAccreditation = accredSet.has(normalizedUsername);
-        } catch (probeErr) {
-          // Don't fail the resume on a HAF probe error — fall through to
-          // re-broadcast. Worst case: a duplicate accreditation custom_json
-          // lands on chain (the SQL reads the most recent and de-dupes).
-          logger.warn(
-            { err: probeErr, username: normalizedUsername },
-            'signup_verify.confirm HAF probe for existing accreditation failed; falling through to broadcast retry',
-          );
-        }
-      }
-
-      let txId: string;
-      if (probeFoundAccreditation) {
-        // Skip broadcast — already on chain. Use a sentinel tx_id so the
-        // PostBroadcastWriteError envelope still carries something
-        // greppable if seedAccreditationBonus throws here.
-        txId = 'haf-probe-already-accredited';
-        logger.info(
-          { username: normalizedUsername },
-          'signup_verify.confirm stuck-resume: HAF probe found existing accreditation; skipping broadcast',
-        );
-      } else {
-        const evidenceHash = crypto
-          .createHash('sha256')
-          .update(`${confirmedAccount.email}:${normalizedUsername}:signup`)
-          .digest('hex');
-
-        const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
-        let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
-        try {
-          result = await broadcastJsonWithTimeout(
-            {
-              id: config.appTag,
-              json: JSON.stringify({
-                action: 'accredit',
-                account: normalizedUsername,
-                name: confirmedAccount.full_name || normalizedUsername,
-                institution: confirmedAccount.institution || '',
-                field: confirmedAccount.field || '',
-                orcid: confirmedAccount.orcid || '',
-                method: 'email',
-                evidence_hash: evidenceHash,
-                timestamp: new Date().toISOString(),
-              }),
-              required_auths: [],
-              required_posting_auths: [config.hiveAdminAccount],
-            },
-            adminKey,
-          );
-        } catch (err) {
-          handleBroadcastError(res, err, broadcastErrOpts);
-          return;
-        }
-        txId = result.id;
-      }
-
-      // Post-broadcast cascade. Chain op confirmed (or already on chain);
-      // any throw here is a downstream failure, not an ambiguous-outcome
-      // class. Discriminate via PostBroadcastWriteError so the catch
-      // emits 502 POST_BROADCAST_FAILED with `outcome:'confirmed'` +
-      // `tx_id` + `failed_step` instead of 504 / 502 BROADCAST_FAILED.
-      const currentStep: PostBroadcastFailedStep = 'reputation_seed';
-      try {
-        await seedAccreditationBonus(normalizedUsername);
-      } catch (postErr) {
-        // Pass severity explicitly so a permanent-class (TypeError) post-
-        // broadcast failure routes through the operator-required code path
-        // instead of the default 'transient' user copy claiming automatic
-        // reconciliation. seedAccreditationBonus re-throws only permanent-
-        // class errors, which classifyPostBroadcastSeverity then maps to
-        // 'permanent'. Mirrors orcid.ts handleAccredit's post-broadcast
-        // seed cascade.
-        handleBroadcastError(
-          res,
-          new PostBroadcastWriteError(txId, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
-          broadcastErrOpts,
-        );
-        return;
-      }
-    }
+    // Broadcast accreditation custom_json + seed reputation. The shared
+    // cascade mirrors orcid.ts handleAccredit: a broadcast failure produces 502
+    // BROADCAST_FAILED / 504 BROADCAST_TIMEOUT, and a post-broadcast seed
+    // failure produces 502 POST_BROADCAST_FAILED with
+    // `failed_step:'reputation_seed'`. Without it, prior code returned 200 + JWT
+    // for an account whose chain op never landed (the "dangling JWT" class). On
+    // the resume paths the cascade HAF-probes before re-broadcasting so an
+    // ambiguous prior broadcast that actually landed is not duplicated.
+    const cascade = await broadcastAccreditationAndSeed({
+      res,
+      routeFlavor: 'confirm',
+      username: normalizedUsername,
+      account: confirmedAccount,
+      evidenceSuffix: 'signup',
+      routeLabel: 'signup_verify.confirm',
+      recoveryHint:
+        'You may retry POST /api/auth/confirm with the same auth_token, username, and keys to recover this session.',
+      isResume,
+      resumeStuck,
+    });
+    if (cascade === 'handled') return;
 
     // No sibling-token invalidation sweep is needed here: migration 007's
     // partial unique index on accounts(orcid) WHERE orcid IS NOT NULL forbids
@@ -704,15 +784,8 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
       username: normalizedUsername,
       block_num: createResult.block_num,
     });
-  } catch (err) {
-    logger.error(
-      { event: 'signup_verify.confirm.failed', route: 'signup-verify.confirm', err },
-      'Account confirmation failed',
-    );
-    sendError(res, 500, 'INTERNAL_ERROR', 'Account creation failed');
-  } finally {
-    await lock.release();
-  }
+    },
+  );
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -751,18 +824,21 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
   // to /confirm. /link has no createClaimedAccount, but the lock still single-
   // fires the activation UPDATE + accreditation and lets the Hive existence
   // check run without a held pg connection. See `signup-activation-lock.ts`.
-  const lock = await acquireSignupActivationLock(auth_token);
-  if (!lock.acquired) {
-    return sendError(
+  // The wrapper owns the acquire/409-LOCK_HELD/finally-release ceremony; the
+  // body calls `releaseLock()` at the single-fire-critical-section boundary.
+  await withSignupActivationLock(
+    {
       res,
-      409,
-      'LOCK_HELD',
-      'An activation for this signup is already in progress. Please retry in a moment.',
-      { retriable: true },
-    );
-  }
-
-  try {
+      authToken: auth_token,
+      onError: (err) => {
+        logger.error(
+          { event: 'signup_verify.link.failed', route: 'signup-verify.link', err },
+          'Account linking failed',
+        );
+        sendError(res, 500, 'INTERNAL_ERROR', 'Account linking failed');
+      },
+    },
+    async (releaseLock) => {
     let account: LinkRow | null = null;
     // verify_token already NULL — a prior /link attempt completed the finalize
     // UPDATE (custody='self') but its accreditation broadcast failed. /link has
@@ -866,106 +942,28 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
     // verify_token-clearing finalize) is complete. The accreditation
     // broadcast/seed below have their own dedup, so holding the lock across
     // that slow step would only make a concurrent same-token waiter block
-    // longer. The `finally` re-release is a CAS/nonce-safe no-op here.
-    await lock.release();
+    // longer. The wrapper's `finally` re-release is a CAS/nonce-safe no-op here.
+    await releaseLock();
 
-    // Broadcast accreditation custom_json + seed reputation in a single
-    // discrimination block. See /confirm above for full rationale (no
-    // dangling JWT for an account whose chain op never landed). Mirrors the
-    // orcid.ts handleLink pattern: broadcast failure → 502/504; post-broadcast
-    // permanent seed failure → 502 POST_BROADCAST_FAILED.
-    //
-    // Stuck-resume path (Option C): if we detected the user is in stuck
-    // state above, first
-    // probe HAF for an existing accreditation custom_json. See /confirm
-    // above for the full rationale of HAF probe-before-retry.
-    if (config.pevoAdminPostingKey) {
-      const recoveryHint = 'You may retry POST /api/auth/link with the same auth_token and signed request to recover this session.';
-      const broadcastErrOpts: HandleBroadcastErrorOpts = {
-        timeoutMsg: `Broadcasting accreditation timed out. ${recoveryHint}`,
-        failMsg: `Failed to broadcast accreditation to Hive. ${recoveryHint}`,
-        logContext: {
-          email_hash: safeHashEmailForLogs(linkedAccount.email),
-          username: hiveUsername,
-          orcid: linkedAccount.orcid ?? undefined,
-          resume_stuck: resumeStuck,
-        },
-        routeLabel: 'signup_verify.link',
-        postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) =>
-          failedStep === 'reputation_seed'
-            ? 'Your Hive account is linked and accredited on Hive. Your reputation score will update at the next scheduled cycle.'
-            : `Your Hive account is linked and accredited on Hive (step ${failedStep} pending operator reconciliation).`,
-      };
-
-      let probeFoundAccreditation = false;
-      if (resumeStuck) {
-        try {
-          const accredSet = await getAccreditedSet([hiveUsername]);
-          probeFoundAccreditation = accredSet.has(hiveUsername);
-        } catch (probeErr) {
-          logger.warn(
-            { err: probeErr, username: hiveUsername },
-            'signup_verify.link HAF probe for existing accreditation failed; falling through to broadcast retry',
-          );
-        }
-      }
-
-      let txId: string;
-      if (probeFoundAccreditation) {
-        txId = 'haf-probe-already-accredited';
-        logger.info(
-          { username: hiveUsername },
-          'signup_verify.link stuck-resume: HAF probe found existing accreditation; skipping broadcast',
-        );
-      } else {
-        const evidenceHash = crypto
-          .createHash('sha256')
-          .update(`${linkedAccount.email}:${hiveUsername}:link`)
-          .digest('hex');
-
-        const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
-        let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
-        try {
-          result = await broadcastJsonWithTimeout(
-            {
-              id: config.appTag,
-              json: JSON.stringify({
-                action: 'accredit',
-                account: hiveUsername,
-                name: linkedAccount.full_name || hiveUsername,
-                institution: linkedAccount.institution || '',
-                field: linkedAccount.field || '',
-                orcid: linkedAccount.orcid || '',
-                method: 'email',
-                evidence_hash: evidenceHash,
-                timestamp: new Date().toISOString(),
-              }),
-              required_auths: [],
-              required_posting_auths: [config.hiveAdminAccount],
-            },
-            adminKey,
-          );
-        } catch (err) {
-          handleBroadcastError(res, err, broadcastErrOpts);
-          return;
-        }
-        txId = result.id;
-      }
-
-      const currentStep: PostBroadcastFailedStep = 'reputation_seed';
-      try {
-        await seedAccreditationBonus(hiveUsername);
-      } catch (postErr) {
-        // See /confirm above for severity rationale: permanent-class
-        // post-broadcast seed failures route to the operator-required path.
-        handleBroadcastError(
-          res,
-          new PostBroadcastWriteError(txId, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
-          broadcastErrOpts,
-        );
-        return;
-      }
-    }
+    // Broadcast accreditation custom_json + seed reputation. See /confirm above
+    // for full rationale (no dangling JWT for an account whose chain op never
+    // landed). Mirrors the orcid.ts handleLink pattern: broadcast failure →
+    // 502/504; post-broadcast permanent seed failure → 502
+    // POST_BROADCAST_FAILED. /link has only the stuck-recovery resume flavor
+    // (no chain-create crash gap), so `isResume` is just `resumeStuck`.
+    const cascade = await broadcastAccreditationAndSeed({
+      res,
+      routeFlavor: 'link',
+      username: hiveUsername,
+      account: linkedAccount,
+      evidenceSuffix: 'link',
+      routeLabel: 'signup_verify.link',
+      recoveryHint:
+        'You may retry POST /api/auth/link with the same auth_token and signed request to recover this session.',
+      isResume: resumeStuck,
+      resumeStuck,
+    });
+    if (cascade === 'handled') return;
 
     // No sibling-token invalidation sweep here, for the same reason as
     // `/confirm` above: migration 007's partial unique index on
@@ -987,15 +985,8 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       custody: 'self',
       username: hiveUsername,
     });
-  } catch (err) {
-    logger.error(
-      { event: 'signup_verify.link.failed', route: 'signup-verify.link', err },
-      'Account linking failed',
-    );
-    sendError(res, 500, 'INTERNAL_ERROR', 'Account linking failed');
-  } finally {
-    await lock.release();
-  }
+    },
+  );
 });
 
 export default router;
