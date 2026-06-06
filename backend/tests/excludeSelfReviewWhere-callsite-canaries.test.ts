@@ -35,25 +35,26 @@
  *
  * **Scope of pinned callsites** (mirrors the architect's hold-block list):
  *
- *   - papers.ts:        listing review_count (line 463-ish)
- *                       listing avg_rating  (line 484-ish)
- *                       paper-detail        (line 2229-ish)
- *   - profile.ts:       user_papers reviews list (line 98-ish)
- *                       fetchUserReviewsFromHaf (line 352-ish — variable
- *                                                `selfExclude` constructed)
- *   - search.ts:        type=review search (line 183-ish)
- *   - stats.ts:         review counter (line 57-ish)
+ *   - papers.ts:        listing rev_agg LATERAL (review_count + avg_rating,
+ *                       one combined accredited-review scan)
+ *                       paper-detail review list
+ *   - profile.ts:       user_papers reviews list
+ *                       fetchUserReviewsFromHaf (variable `selfExclude`)
+ *   - search.ts:        type=review search
+ *   - stats.ts:         review counter
  *   - reviews.ts:       fetchReviewFromHaf single-doc fetch (round-1 hold #1)
  *   - reputation.ts:    active_authors review arm (round-2 hold #3)
- *                       paper_reviews CTE   (line 627-ish)
- *                       user_reviews CTE    (line 693-ish)
- *                       citing_paper_quality CTE (line 847-ish)
+ *                       paper_reviews CTE
+ *                       user_reviews CTE
+ *                       citing_paper_quality CTE
  *
- * That's 12 callsites (the architect's original "8" rolled the three
+ * That's 11 callsites (the architect's original "8" rolled the three
  * reputation.ts sites into one bullet; round-1 hold #1 added the
  * reviews.ts single-doc fetch site; round-2 hold #3 added the
  * `active_authors` review arm as the 4th `validReviewWhere` composition
- * site that should also compose self-exclusion). The notification arms 1a/1b have their own inline
+ * site that should also compose self-exclusion; the listing's separate
+ * review_count and avg_rating sites later merged into one rev_agg LATERAL,
+ * dropping papers.ts from 3 to 2). The notification arms 1a/1b have their own inline
  * `co.author != $1` predicate covered separately by
  * `notifications-arm-sql-shape.test.ts`.
  *
@@ -80,8 +81,8 @@ const PROJECT_ROOT = resolve(__dirname, '..');
 const CALLSITES: Callsite[] = [
   {
     file: 'src/routes/papers.ts',
-    minOccurrences: 3,
-    callsites: ['listing review_count', 'listing avg_rating', 'paper-detail review list'],
+    minOccurrences: 2,
+    callsites: ['listing rev_agg LATERAL (review_count + avg_rating combined)', 'paper-detail review list'],
   },
   {
     file: 'src/routes/profile.ts',

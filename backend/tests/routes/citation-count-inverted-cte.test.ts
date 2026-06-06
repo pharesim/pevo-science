@@ -86,6 +86,19 @@ describe('citation count inverted CTE — source-level shape pin', () => {
       `ELSE '[]'::jsonb`,
     );
   });
+
+  it('the unnest carries per-element string-type guards (citation-count type-confusion inflation tripwire)', () => {
+    // The ->> extraction text-coerces a numeric or boolean citation value, so a
+    // citation {"author":"victim","permlink":123} would count against a real
+    // paper victim/123 where the old type-sensitive @> counted 0. Reverting
+    // either guard reopens the inflation vector.
+    expect(source, 'cited author must be guarded to JSON string type').toContain(
+      `jsonb_typeof(cit -> 'author') = 'string'`,
+    );
+    expect(source, 'cited permlink must be guarded to JSON string type').toContain(
+      `jsonb_typeof(cit -> 'permlink') = 'string'`,
+    );
+  });
 });
 
 describe('citation count inverted CTE — synthetic-VALUES behavioral parity', () => {
@@ -104,8 +117,16 @@ describe('citation count inverted CTE — synthetic-VALUES behavioral parity', (
       //   c3 (UNACCREDITED): cites bob/paper-B  → must be excluded by the aa join
       //   c4 (accredited): cites dave/paper-D TWICE → must count dave once
       //   c5 (accredited): citations is a STRING (non-array) → must not crash; 0
-      // Expected: alice=2, bob=1, carol=0 (uncited), dave=1, erin=0 (only the
-      // non-array citer "referenced" anything near erin, and it contributes 0).
+      //   c6 (accredited): cites {"author":"victim","permlink":123} (NUMERIC
+      //      permlink) → text-coerces to "123" but the type-sensitive @> counted
+      //      0; the jsonb_typeof = 'string' guard must keep new at 0 too.
+      //   c7 (accredited): cites {"author":456,"permlink":"paper-X"} (NUMERIC
+      //      author) → same type-confusion class on the author field → 0.
+      //   c8 (accredited): cites {"author":"victim2","permlink":true} (BOOLEAN
+      //      permlink) → 0.
+      // Expected: alice=2, bob=1, carol=0 (uncited), dave=1, erin=0; and the
+      // type-confusion targets victim/123, 456/paper-X, victim2/true all 0 in
+      // BOTH shapes (this is the citation-count inflation the string guard closes).
       const corpus = `
         ci(author, permlink, json_metadata) AS (
           VALUES
@@ -113,18 +134,25 @@ describe('citation count inverted CTE — synthetic-VALUES behavioral parity', (
             ('citer2'::text, 'c2'::text, '{"pevotest":{"type":"paper","citations":[{"author":"alice","permlink":"paper-A"}]}}'::jsonb),
             ('citer3'::text, 'c3'::text, '{"pevotest":{"type":"paper","citations":[{"author":"bob","permlink":"paper-B"}]}}'::jsonb),
             ('citer4'::text, 'c4'::text, '{"pevotest":{"type":"paper","citations":[{"author":"dave","permlink":"paper-D"},{"author":"dave","permlink":"paper-D"}]}}'::jsonb),
-            ('citer5'::text, 'c5'::text, '{"pevotest":{"type":"paper","citations":"not-an-array"}}'::jsonb)
+            ('citer5'::text, 'c5'::text, '{"pevotest":{"type":"paper","citations":"not-an-array"}}'::jsonb),
+            ('citer6'::text, 'c6'::text, '{"pevotest":{"type":"paper","citations":[{"author":"victim","permlink":123}]}}'::jsonb),
+            ('citer7'::text, 'c7'::text, '{"pevotest":{"type":"paper","citations":[{"author":456,"permlink":"paper-X"}]}}'::jsonb),
+            ('citer8'::text, 'c8'::text, '{"pevotest":{"type":"paper","citations":[{"author":"victim2","permlink":true}]}}'::jsonb)
         ),
         aa(account) AS (
-          VALUES ('citer1'::text), ('citer2'::text), ('citer4'::text), ('citer5'::text)
+          VALUES ('citer1'::text), ('citer2'::text), ('citer4'::text), ('citer5'::text),
+                 ('citer6'::text), ('citer7'::text), ('citer8'::text)
         ),
         page(author, permlink) AS (
           VALUES
-            ('alice'::text, 'paper-A'::text),
-            ('bob'::text,   'paper-B'::text),
-            ('carol'::text, 'paper-C'::text),
-            ('dave'::text,  'paper-D'::text),
-            ('erin'::text,  'paper-E'::text)
+            ('alice'::text,   'paper-A'::text),
+            ('bob'::text,     'paper-B'::text),
+            ('carol'::text,   'paper-C'::text),
+            ('dave'::text,    'paper-D'::text),
+            ('erin'::text,    'paper-E'::text),
+            ('victim'::text,  '123'::text),
+            ('456'::text,     'paper-X'::text),
+            ('victim2'::text, 'true'::text)
         )`;
 
       // OLD shape: per-row correlated @> containment (the pre-fix listing form).
@@ -163,8 +191,8 @@ describe('citation count inverted CTE — synthetic-VALUES behavioral parity', (
             ) cit
             WHERE (ci.json_metadata -> $1 ->> 'type') = 'paper'
               AND jsonb_typeof(cit) = 'object'
-              AND cit ->> 'author' IS NOT NULL
-              AND cit ->> 'permlink' IS NOT NULL
+              AND jsonb_typeof(cit -> 'author') = 'string'
+              AND jsonb_typeof(cit -> 'permlink') = 'string'
           ) deduped
           GROUP BY cited_author, cited_permlink
         )
@@ -189,6 +217,19 @@ describe('citation count inverted CTE — synthetic-VALUES behavioral parity', (
       expect(newCounts.get('carol'), 'uncited paper → 0 (LEFT JOIN NULL → COALESCE 0)').toBe(0);
       expect(newCounts.get('dave'), 'one citer listing the same citation twice → counted once').toBe(1);
       expect(newCounts.get('erin'), 'non-array citations citer contributes nothing and does not raise → 0').toBe(0);
+
+      // Type-coercion parity: the old @> containment is JSONB-type-sensitive, so
+      // a numeric/boolean citation value never matched a real (string-permlink)
+      // paper. The ->> extraction in the new shape text-coerces it, so without
+      // the per-element jsonb_typeof = 'string' guards a citation
+      // {"author":"victim","permlink":123} would inflate the count for paper
+      // victim/123 (all-digit permlinks are valid on Hive). Both shapes must read 0.
+      expect(oldCounts.get('victim'), 'old @> is type-sensitive: numeric permlink → 0').toBe(0);
+      expect(newCounts.get('victim'), 'string-type guard rejects numeric permlink → 0 (no inflation)').toBe(0);
+      expect(oldCounts.get('456'), 'old @> is type-sensitive: numeric author → 0').toBe(0);
+      expect(newCounts.get('456'), 'string-type guard rejects numeric author → 0 (no inflation)').toBe(0);
+      expect(oldCounts.get('victim2'), 'old @> is type-sensitive: boolean permlink → 0').toBe(0);
+      expect(newCounts.get('victim2'), 'string-type guard rejects boolean permlink → 0 (no inflation)').toBe(0);
     },
   );
 });

@@ -353,13 +353,15 @@ describe('DOI branch (meta[config.appTag].source.doi)', () => {
 // value instead of 500ing.
 describe('defensive coercion of absent or wrong-typed chain fields', () => {
   it('escape helpers return empty string on nullish or non-string input', () => {
-    expect(bibtexEscape(undefined as unknown as string)).toBe('');
-    expect(bibtexEscape(null as unknown as string)).toBe('');
-    expect(bibtexEscape(42 as unknown as string)).toBe('');
-    expect(risEscape(undefined as unknown as string)).toBe('');
-    expect(risEscape({} as unknown as string)).toBe('');
-    expect(singleLine(null as unknown as string)).toBe('');
-    expect(singleLine(['x'] as unknown as string)).toBe('');
+    // The helpers are typed `(s: unknown)` so these intentional non-string
+    // inputs pass without casts; each coerces to '' internally.
+    expect(bibtexEscape(undefined)).toBe('');
+    expect(bibtexEscape(null)).toBe('');
+    expect(bibtexEscape(42)).toBe('');
+    expect(risEscape(undefined)).toBe('');
+    expect(risEscape({})).toBe('');
+    expect(singleLine(null)).toBe('');
+    expect(singleLine(['x'])).toBe('');
   });
 
   it('generators do not throw when title and author are absent', () => {

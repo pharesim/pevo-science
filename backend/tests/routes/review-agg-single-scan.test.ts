@@ -49,6 +49,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getPool, isHafConfigured } from '../../src/db.js';
+import { validReviewWhere, excludeSelfReviewWhere } from '../../src/hafsql.js';
 
 const PROJECT_ROOT = resolve(__dirname, '../..');
 
@@ -118,7 +119,16 @@ describe('review aggregate single scan — synthetic-VALUES behavioral parity', 
       //   unacc (UNACCREDITED): 5/5/5/5 → excluded by the accreditation gate
       //   anonacct (= $2, not accredited): 3/3/3/3 → val 3.0 (anon arm includes it)
       //   alice (SELF, accredited): 5/5/5/5 → excluded by excludeSelfReviewWhere
-      //   → review_count = 3 (acc1, acc2, anon); avg = round((5+1+3)/3,1) = 3.0
+      //   acc1 (accredited, SECOND review): 5/5/5/5 → val 5.0; counted AGAIN
+      //     (count(*) carries NO DISTINCT, so a reviewer reviewing twice counts
+      //     twice — this row pins that no-DISTINCT semantics)
+      //   acc2 (accredited, MALFORMED rating): methodology '6' (out of [1-5]) →
+      //     excluded by validReviewWhere's `~ '^[1-5]$'` gate, which must run
+      //     BEFORE the `::float` casts in both shapes (a '6' would cast fine but
+      //     is semantically out of range; the gate also stops a non-numeric value
+      //     from reaching `::float` and raising). This row pins the gate.
+      //   → review_count = 4 (acc1, acc2, anon, acc1-again); unaccredited, self,
+      //     and malformed excluded; avg = round((5+1+3+5)/4,1) = 3.5
       //
       // Reviews on bob/paper-B:
       //   acc1 (accredited): 4/4/4/2 → val 3.5  → count 1, avg 3.5
@@ -132,6 +142,8 @@ describe('review aggregate single scan — synthetic-VALUES behavioral parity', 
             ('unacc'::text, 'r3'::text, 'alice'::text, 'paper-A'::text, '{"pevotest":{"type":"review","rating":{"methodology":"5","novelty":"5","clarity":"5","significance":"5"}}}'::jsonb),
             ('anonacct'::text, 'r4'::text, 'alice'::text, 'paper-A'::text, '{"pevotest":{"type":"review","rating":{"methodology":"3","novelty":"3","clarity":"3","significance":"3"}}}'::jsonb),
             ('alice'::text, 'r5'::text, 'alice'::text, 'paper-A'::text, '{"pevotest":{"type":"review","rating":{"methodology":"5","novelty":"5","clarity":"5","significance":"5"}}}'::jsonb),
+            ('acc1'::text, 'r7'::text, 'alice'::text, 'paper-A'::text, '{"pevotest":{"type":"review","rating":{"methodology":"5","novelty":"5","clarity":"5","significance":"5"}}}'::jsonb),
+            ('acc2'::text, 'r8'::text, 'alice'::text, 'paper-A'::text, '{"pevotest":{"type":"review","rating":{"methodology":"6","novelty":"5","clarity":"5","significance":"5"}}}'::jsonb),
             ('acc1'::text, 'r6'::text, 'bob'::text, 'paper-B'::text, '{"pevotest":{"type":"review","rating":{"methodology":"4","novelty":"4","clarity":"4","significance":"2"}}}'::jsonb)
         ),
         aa(account) AS (
@@ -145,20 +157,21 @@ describe('review aggregate single scan — synthetic-VALUES behavioral parity', 
         )`;
 
       // The shared review-row predicate, parameterized: $1 = appTag, $2 = anon.
-      // Mirrors validReviewWhere (type + rating-shape regex) + excludeSelfReviewWhere
-      // (self-author exclusion) + the accreditation/anon gate, against the
-      // synthetic `rv`/`aa` tables. excludeSelfReviewWhere's co-author arm is not
-      // exercised here (no pevo.authors[] on the synthetic page rows); the
-      // paper-author self-exclusion arm IS exercised (alice's own r5 review).
+      // Composed from the SAME production helpers the listing's rev_agg LATERAL
+      // uses — validReviewWhere (type + rating-shape regex) and
+      // excludeSelfReviewWhere (self/co-author exclusion) — so a change to either
+      // helper turns this canary red (it must not silently diverge from the
+      // listing's predicate). The parent-pair match and accreditation/anon gate
+      // stay inline here EXACTLY as papers.ts wraps them around the helpers in the
+      // rev_agg LATERAL. excludeSelfReviewWhere's co-author arm is inert here (the
+      // synthetic `page` rows carry no pevo.authors[], so the array guard yields
+      // an empty set); the paper-author self-exclusion arm IS exercised (alice's
+      // own r5 review). The helpers reference the review under `${alias}` and the
+      // paper row under `page`.
       const reviewWhere = (alias: string) => `
         ${alias}.parent_author = page.author AND ${alias}.parent_permlink = page.permlink
-        AND (${alias}.json_metadata -> $1 ->> 'type') = 'review'
-        AND jsonb_typeof(${alias}.json_metadata -> $1 -> 'rating') = 'object'
-        AND (${alias}.json_metadata -> $1 -> 'rating' ->> 'methodology')  ~ '^[1-5]$'
-        AND (${alias}.json_metadata -> $1 -> 'rating' ->> 'novelty')      ~ '^[1-5]$'
-        AND (${alias}.json_metadata -> $1 -> 'rating' ->> 'clarity')      ~ '^[1-5]$'
-        AND (${alias}.json_metadata -> $1 -> 'rating' ->> 'significance') ~ '^[1-5]$'
-        AND ${alias}.author != page.author
+        AND ${validReviewWhere({ commentAlias: alias, appTagParam: '$1' })}
+        AND ${excludeSelfReviewWhere({ commentAlias: alias, paperRowAlias: 'page', appTagParam: '$1' })}
         AND (EXISTS (SELECT 1 FROM aa WHERE aa.account = ${alias}.author) OR ${alias}.author = $2)`;
 
       const ratingMean = (alias: string) => `(
@@ -225,8 +238,11 @@ describe('review aggregate single scan — synthetic-VALUES behavioral parity', 
 
       // Explicit expectations the merge must preserve.
       const alice = newByAuthor.get('alice')!;
-      expect(alice[1], 'acc1 + acc2 + anon counted; unaccredited and self excluded → 3').toBe(3);
-      expect(alice[2], 'mean of vals 5.0, 1.0, 3.0 → round(3.0,1) = 3.0').toBe(3.0);
+      expect(
+        alice[1],
+        'acc1 (twice — no DISTINCT), acc2, and anon counted; unaccredited, self, and malformed-rating excluded → 4',
+      ).toBe(4);
+      expect(alice[2], 'mean of vals 5.0, 1.0, 3.0, 5.0 → round(14/4,1) = 3.5').toBe(3.5);
 
       const bob = newByAuthor.get('bob')!;
       expect(bob[1], 'one accredited review → 1').toBe(1);

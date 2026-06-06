@@ -44,6 +44,12 @@ describe('GET /api/papers', () => {
       expect(paper).toHaveProperty('discipline');
       expect(paper).toHaveProperty('keywords');
       expect(paper).toHaveProperty('net_votes');
+      // review_count + avg_rating are emitted by the listing's rev_agg LATERAL.
+      // Pinning them here makes the review-agg-single-scan canary's clause-(c)
+      // companion claim true: dropping either column from the SELECT now turns a
+      // real-HAF test red, not just the synthetic-VALUES parity canary.
+      expect(paper).toHaveProperty('review_count');
+      expect(paper).toHaveProperty('avg_rating');
       expect(paper).toHaveProperty('is_accredited');
     }
   });

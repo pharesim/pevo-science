@@ -1046,8 +1046,10 @@ async function fetchPapersFromHaf(
 
   const where = conditions.join(' AND ');
 
-  // anonParam is only used in SELECT subqueries (review/citation count),
-  // not in WHERE.
+  // anonParam is the pevo.anon account name, referenced only by the rev_agg
+  // review-aggregate LATERAL (its accreditation-OR-anon gate on review authors),
+  // never in the WHERE clause. The citation arm uses the paper_citation_counts
+  // CTE and does not reference anonParam.
   const anonParam = `$${paramIdx++}`;
   const dataParams = [...cteParams, ...filterParams, config.hiveAnonAccount || ''];
 
@@ -1141,6 +1143,13 @@ async function fetchPapersFromHaf(
          -- inner DISTINCT collapses a citation listed twice within one citing
          -- paper so it counts the citing paper once, matching the prior @>
          -- containment (which counted citing papers, not citation elements).
+         -- The per-element jsonb_typeof(cit -> 'author'/'permlink') = 'string'
+         -- guards preserve the old @> containment's JSONB-type sensitivity: the
+         -- ->> extraction text-coerces a numeric or boolean citation value, so a
+         -- citation {"author":"victim","permlink":123} would otherwise count
+         -- against a real paper victim/123 (all-digit permlinks are valid on
+         -- Hive) where the type-sensitive @> counted 0. The string-type guards
+         -- subsume the prior IS NOT NULL element checks (a string is non-null).
          SELECT cited_author, cited_permlink, count(*)::int AS citation_count
          FROM (
            SELECT DISTINCT
@@ -1160,8 +1169,8 @@ async function fetchPapersFromHaf(
              AND (ci.json_metadata -> ${appTagParam} ->> 'type') = 'paper'
              AND ci.json_metadata ->> 'app' LIKE ${appLikeParam}
              AND jsonb_typeof(cit) = 'object'
-             AND cit ->> 'author' IS NOT NULL
-             AND cit ->> 'permlink' IS NOT NULL
+             AND jsonb_typeof(cit -> 'author') = 'string'
+             AND jsonb_typeof(cit -> 'permlink') = 'string'
          ) deduped
          GROUP BY cited_author, cited_permlink
        )
@@ -3796,7 +3805,7 @@ const VALID_CITE_FORMATS = new Set(['bibtex', 'ris', 'apa']);
  * this helper introduces are not themselves re-escaped. A non-string input (null/undefined or a wrong-typed chain field) coerces
  * to '' so a missing chain field cannot 500 the export at `.replace`.
  */
-export function bibtexEscape(s: string): string {
+export function bibtexEscape(s: unknown): string {
   // Flatten line terminators first, then escape every metacharacter in a SINGLE
   // pass. A multi-pass approach (backslash -> braces -> specials) re-processes
   // the braces this helper itself emits for `\textbackslash{}`, double-escaping
@@ -3818,7 +3827,7 @@ export function bibtexEscape(s: string): string {
  * trailing/leading whitespace is trimmed for a clean record. A non-string input (null/undefined or a wrong-typed chain field)
  * coerces to ''.
  */
-export function risEscape(s: string): string {
+export function risEscape(s: unknown): string {
   const v = typeof s === 'string' ? s : '';
   return v.replace(LINE_TERMINATORS, ' ').trim();
 }
@@ -3829,7 +3838,7 @@ export function risEscape(s: string): string {
  * alphabet) in a title or author name from breaking the one-line citation into
  * multiple lines. A non-string input (null/undefined or a wrong-typed chain field) coerces to ''.
  */
-export function singleLine(s: string): string {
+export function singleLine(s: unknown): string {
   const v = typeof s === 'string' ? s : '';
   return v.replace(LINE_TERMINATORS, ' ').trim();
 }

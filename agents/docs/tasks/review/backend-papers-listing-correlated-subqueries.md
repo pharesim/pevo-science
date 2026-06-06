@@ -61,3 +61,26 @@ Collapses ~60-80 per-row subquery executions to 3 aggregate scans bounded by the
 5. **Stale anonParam comment.** The comment above the anonParam allocation in `fetchPapersFromHaf` still says it is "only used in SELECT subqueries (review/citation count)"; the citation arm no longer uses anonParam at all and the review aggregate is now the rev_agg LATERAL join. Reword against the current shape.
 
 Dismissed at triage: jsonb_array_length cap on the citations unnest (chain-capped metadata; one scan per request is strictly cheaper than the old per-row form).
+
+## Backend re-review signal (2026-06-06, working tree):
+
+All five round-1 hold items landed. `npm run typecheck` + `npm run lint` clean; `excludeSelfReviewWhere-callsite-canaries`, `review-agg-single-scan`, and `papers.test.ts` green (the latter against real HAF; the unrelated `profile.ts` user-papers `statement_timeout` 503s in the run are the known load-induced HAF flakiness, not in this task's files).
+
+- **Item 1 (failing companion canary):** `tests/excludeSelfReviewWhere-callsite-canaries.test.ts` — set `src/routes/papers.ts` `minOccurrences` 3 -> 2 (the merge consolidated the listing's two review sites into one rev_agg LATERAL; verified exactly 2 code-level `excludeSelfReviewWhere(` occurrences remain: the rev_agg LATERAL + paper-detail). Updated the `callsites` array entry and the header's mirror list, and the "12 callsites" total -> 11. While editing the header I also dropped the now-stale `line NNN-ish` anchors per the comment-anchor convention (the listing's 463/484/2229 anchors were wrong post-merge; replaced with stable-symbol descriptions).
+- **Item 2 (clause-(c) companion claim true):** added `expect(paper).toHaveProperty('review_count')` and `toHaveProperty('avg_rating')` to `papers.test.ts`'s listing structure check, so dropping either column from the listing SELECT now turns a real-HAF test red.
+- **Item 3 (canary hardening):** `review-agg-single-scan.test.ts` now imports `validReviewWhere` / `excludeSelfReviewWhere` from `hafsql.js` and composes them (parent-pair match + accreditation/anon gate stay inline exactly as the rev_agg LATERAL wraps them), so a helper change turns this canary red. Added a same-reviewer-second-review row (`acc1` r7 on alice/paper-A — pins the no-DISTINCT count: alice 3 -> 4) and a malformed-rating row (`acc2` r8, methodology `'6'` — pins the `~ '^[1-5]$'` gate runs ahead of the `::float` casts; excluded in both shapes). alice now asserts count 4 / avg 3.5.
+- **Item 5 (stale anonParam comment):** reworded the comment above the `anonParam` allocation in `fetchPapersFromHaf` — it now states anonParam is referenced only by the rev_agg review-aggregate LATERAL (its accreditation-OR-anon gate), never in WHERE, and the citation arm uses the `paper_citation_counts` CTE and does not reference it.
+- **Item 4 (rev_agg EXPLAIN evidence, gathered on real HAF):** `EXPLAIN (ANALYZE, BUFFERS)` of the listing page + rev_agg LATERAL shape:
+
+  ```
+  Nested Loop Left Join  (actual time=2.167..3.077 rows=2 loops=1)
+    ->  Limit -> Sort -> Index Scan using
+          hafsql_comments_table_parent_author_parent_permlink_idx  (page CTE)
+    ->  Aggregate  (actual time=0.971..0.971 rows=1 loops=2)
+          ->  Index Scan using
+                hafsql_comments_table_parent_author_parent_permlink_idx on comments_table x_1
+                Index Cond: (parent_author = x.author AND parent_permlink = x.permlink)
+  Execution Time: 3.132 ms
+  ```
+
+  The rev_agg LATERAL is the inner side of a Nested Loop: ONE `Aggregate` node computing both `count(*)` and `round(avg(...),1)` over a SINGLE index scan keyed on the parent-pair, executed once per page row (`loops` = page-row count; here 2 papers passed the page filter). This is the "one indexed parent-pair scan per page row" the acceptance asks for. **Before/after:** the pre-merge form ran TWO such per-row index scans (a standalone `count(*)` subquery + a separate `avg` derived-table subquery, each re-scanning the same gated review rows); the merge halves that to one. The citation-arm evidence is the architect's note above; the `sort=votes` aggregate-CTE arm is split to `backend-papers-listing-votes-aggregate-cte` and is out of scope here.

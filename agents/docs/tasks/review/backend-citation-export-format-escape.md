@@ -150,3 +150,10 @@ Round-2 verified: both 2026-05-30 hold items are FIXED (the shared LINE_TERMINAT
 2. **Digest docblock overclaim.** `digest.ts`'s `singleLine` docblock says the shared constant is "what stops a form-feed or vertical-tab in a paper title from surviving into the digest"; VT and FF are `\s` members in V8 and were already collapsed by the second `\s+` pass pre-change. Reword: the shared constant's value is single-source-of-truth against alphabet drift, and NEL (U+0085) is the member a `\s`-based pass would miss.
 
 Dismissed at triage: SEP test-table duplication across the two escape test files (self-contained suites double as independent value-pins); a jsonb_array_length cap proposal that belonged to the sibling listing tasks.
+
+## Backend re-review signal (2026-06-06, working tree):
+
+Both round-3 hold items landed. `npm run typecheck` + `npm run lint` clean (lone lint warning is the pre-existing unused-directive in `author-supersession.ts`, not in scope); `papers-cite-escape.test.ts` green.
+
+- **Item 1 (honest escape-helper signatures):** widened `bibtexEscape` / `risEscape` / `singleLine` in `routes/papers.ts` from `(s: string)` to `(s: unknown): string` (the internal `typeof s === 'string' ? s : ''` coercion was already there). Dropped the `undefined as unknown as string` double-casts in `papers-cite-escape.test.ts`'s "defensive coercion" test — the non-string inputs (`undefined`, `null`, `42`, `{}`, `['x']`) now pass without casts. The `42 as unknown as string` on `authors[].name` in the wrong-typed-author-name test stays: that cast targets the `name: string` field type, not the helper signature.
+- **Item 2 (digest docblock overclaim):** reworded `digest.ts`'s `singleLine` docblock. Removed the claim that the shared constant is "what stops a form-feed or vertical-tab from surviving" — VT and FF ARE `\s` members in V8 and were already collapsed by the second `\s+` pass. The docblock now states the explicit first pass earns its keep on NEL (U+0085) / LS / PS (the non-`\s` members), and what the SHARED constant buys is single-source-of-truth against separator-alphabet drift between the digest and cite-export paths.

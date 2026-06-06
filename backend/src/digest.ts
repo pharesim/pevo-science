@@ -52,18 +52,21 @@ export function verifyUnsubscribeToken(username: string, token: string): boolean
  * Flatten a chain-derived free-form string to a single line for safe
  * interpolation into the plain-text email body. The first pass strips every
  * member of the shared `LINE_TERMINATORS` alphabet (CR, LF, VT, FF, NEL, LS,
- * PS) explicitly. NEL (U+0085) is the one member that is not a `\s` member in
- * V8, so without this explicit pass it would survive the whitespace-collapse
- * pass below and forge a line break in clients that render it. The remaining
- * members are stripped here too so the alphabet stays sourced from a single
- * constant (`lib/line-terminators.js`) shared with the citation-export
- * escapers in `routes/papers.ts` — that lockstep is what stops a form-feed or
- * vertical-tab in a paper title from surviving into the digest while the
- * cite-export path strips it. Flattening these forged line breaks stops an
- * attacker-controlled paper title from forging digest lines or injecting a
- * header-spoofing line that starts at column 0. The second pass then collapses
- * remaining whitespace runs. Apply to any free-form chain field; Hive
- * usernames and internal enums are constrained and do not need it.
+ * PS); the second pass collapses remaining whitespace runs.
+ *
+ * Why the explicit first pass when a `\s+` collapse pass follows: NEL (U+0085),
+ * LS (U+2028), and PS (U+2029) are NOT `\s` members in V8, so without the first
+ * pass they would survive the collapse and forge a line break in clients that
+ * render them. VT and FF ARE `\s` members and would already be collapsed by the
+ * second pass — the first pass does not earn its keep on those two. What the
+ * SHARED constant buys is single-source-of-truth against separator-alphabet
+ * drift: the citation-export escapers in `routes/papers.ts` consume the same
+ * `lib/line-terminators.js` constant, so the digest and cite-export paths
+ * cannot diverge to different separator alphabets. Flattening these forged line
+ * breaks stops an attacker-controlled paper title from forging digest lines or
+ * injecting a header-spoofing line that starts at column 0. Apply to any
+ * free-form chain field; Hive usernames and internal enums are constrained and
+ * do not need it.
  */
 export function singleLine(s: string | null | undefined): string {
   return (s ?? '').replace(LINE_TERMINATORS, ' ').replace(/\s+/g, ' ').trim();

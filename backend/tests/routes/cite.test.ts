@@ -2,7 +2,11 @@
  * Route-level + generator tests for `GET /api/papers/:author/:permlink/cite`.
  *
  * The route block exercises the real HTTP handler against real HAF/Hive (400 on
- * bad format, 404 on missing paper, 200 + non-empty content for a real paper).
+ * bad format, 404 on missing paper, 200 + non-empty content for a real paper,
+ * and an end-to-end wiring assertion that a real paper's co-author NAME flows
+ * from fetchPaperDetailFromHaf through the generators into the BibTeX/RIS output
+ * — the exact regression class the pevo-metadata-key fix closed, which the
+ * hand-built-detail generator tests below cannot observe).
  *
  * The "live detail shape" block drives the exported generators with a `detail`
  * object shaped exactly like the one `fetchPaperDetailFromHaf` hands the route:
@@ -15,7 +19,7 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
-import { generateBibtex, generateRis, generateApa } from '../../src/routes/papers.js';
+import { generateBibtex, generateRis, generateApa, bibtexEscape, risEscape } from '../../src/routes/papers.js';
 import { config } from '../../src/config.js';
 
 const app = createApp();
@@ -47,6 +51,48 @@ describe('GET /api/papers/:author/:permlink/cite', () => {
       expect(typeof res.body.data.content).toBe('string');
       expect(res.body.data.content.length).toBeGreaterThan(0);
     }
+  });
+
+  it('threads a live co-author name from the detail path into BibTeX and RIS', { timeout: 30_000 }, async () => {
+    // Wiring-regression guard for the pevo-metadata-key fix: the generators must
+    // read detail.authors (the safePevoMeta-keyed projection the route builds via
+    // fetchPaperDetailFromHaf), not the old detail.json_metadata.pevo. Drive the
+    // REAL route end to end — listing -> detail -> cite — so a revert to the buggy
+    // read recurs visibly here; the hand-built-detail generator tests cannot see it.
+    const listRes = await request(app).get('/api/papers?limit=5');
+    if (listRes.body.data.length === 0) return; // HAF returned no papers (skip-guard)
+
+    // Find a paper whose detail carries at least one named author. (The skip-guard
+    // extends to "no named author in this slice" — same acceptable-skip class.)
+    let named: { author: string; permlink: string; name: string } | null = null;
+    for (const p of listRes.body.data) {
+      const detailRes = await request(app).get(`/api/papers/${p.author}/${p.permlink}`);
+      if (detailRes.status !== 200) continue;
+      const authors = detailRes.body.data?.authors;
+      const withName = Array.isArray(authors)
+        ? authors.find((a: { name?: unknown }) => typeof a?.name === 'string' && a.name.trim().length > 0)
+        : undefined;
+      if (withName) {
+        named = { author: p.author, permlink: p.permlink, name: withName.name as string };
+        break;
+      }
+    }
+    if (!named) return; // no paper with a named author in this slice — skip
+
+    const bibRes = await request(app).get(`/api/papers/${named.author}/${named.permlink}/cite?format=bibtex`);
+    expect(bibRes.status).toBe(200);
+    const bibAuthorLine = (bibRes.body.data.content as string)
+      .split('\n')
+      .find((l) => l.startsWith('  author = {'));
+    expect(bibAuthorLine, 'BibTeX must carry an author field').toBeDefined();
+    expect(bibAuthorLine).toContain(bibtexEscape(named.name));
+
+    const risRes = await request(app).get(`/api/papers/${named.author}/${named.permlink}/cite?format=ris`);
+    expect(risRes.status).toBe(200);
+    const auLines = (risRes.body.data.content as string)
+      .split('\n')
+      .filter((l) => l.startsWith('AU  - '));
+    expect(auLines.some((l) => l.includes(risEscape(named!.name))), 'a RIS AU line must carry the live co-author name').toBe(true);
   });
 });
 
