@@ -141,3 +141,12 @@ digest-side deferral ("whoever lands last dedups") now points here: when this
 task is reviewed/landed, weigh extracting a shared line-terminator constant
 consumed by both `digest.ts` and `papers.ts`, or record why the two surfaces
 intentionally stay self-contained.
+
+## Architect re-review (2026-06-06) — HELD PENDING FIXES:
+
+Round-2 verified: both 2026-05-30 hold items are FIXED (the shared LINE_TERMINATORS class — commits 4065e8e6 + 428ef752 — was security-reviewed as exactly the Unicode line-terminator alphabet, sufficient; the non-string coercion verified at helpers and generator call sites). The 2026-06-05 singleLine-dedup note above is RESOLVED by `lib/line-terminators.ts` (digest + papers consume one constant; the tests keep independent `String.fromCharCode` value-pins, complying with the dedup-value-pin convention). The DOI revert decision was correct; the keying bug is owned by `backend-cite-export-pevo-metadata-key-mismatch`. Two final items before archive:
+
+1. **Honest escape-helper signatures.** `bibtexEscape` / `risEscape` / `singleLine` are typed `(s: string)` but intentionally coerce any non-string input; the tests need `undefined as unknown as string` double-casts to compile. Widen the three signatures to `(s: unknown): string` and drop the double-casts in `papers-cite-escape.test.ts`.
+2. **Digest docblock overclaim.** `digest.ts`'s `singleLine` docblock says the shared constant is "what stops a form-feed or vertical-tab in a paper title from surviving into the digest"; VT and FF are `\s` members in V8 and were already collapsed by the second `\s+` pass pre-change. Reword: the shared constant's value is single-source-of-truth against alphabet drift, and NEL (U+0085) is the member a `\s`-based pass would miss.
+
+Dismissed at triage: SEP test-table duplication across the two escape test files (self-contained suites double as independent value-pins); a jsonb_array_length cap proposal that belonged to the sibling listing tasks.
