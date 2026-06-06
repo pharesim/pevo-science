@@ -69,7 +69,7 @@ When a defense, display rule, or server-override gates on an accreditation-recor
 The spoof surface created by treating no-on-chain-ORCID as "rare" rather than "normal" is **broad, not narrow**:
 
 - Every accredited user who exercised the optional-ORCID path is a spoof target.
-- A vouched co-author (or, post-co-author-trust-model, any account in the chain's cumulative author set) can broadcast `pevo.authors=[{hive:'alice', orcid:'fake-orcid'}]` for accredited alice (who shared no ORCID), and the forged value surfaces in the API response with no audit event under a naive `if (accreditedOrcid)` gate.
+- A consented co-author (or, post-co-author-trust-model, any account in the chain's cumulative author set) can broadcast `pevo.authors=[{hive:'alice', orcid:'fake-orcid'}]` for accredited alice (who shared no ORCID), and the forged value surfaces in the API response with no audit event under a naive `if (accreditedOrcid)` gate.
 - The audit blind spot is silent — operators have no signal that the spoof is happening at all.
 
 The fix is small (a few lines per gate), but the gap-detection failure mode is structural: a reviewer or implementer working from the default "ORCID is universally present" mental model will repeatedly draft, review, and ship code that silently trusts the broadcaster when the authority is silent. Documenting this once at the convention level closes the gap-class — future PRs touching ORCID can be reviewed against the four-branch enumeration above.
@@ -104,7 +104,7 @@ if (accreditedAccountSet.has(hive)) {
   }
   // ❌ Silent path: accredited + no on-chain ORCID + claim present
   //    `out.orcid` stays whatever the broadcaster claimed.
-  //    `claimedOrcid` (e.g., 'fake-orcid' broadcast by a vouched co-author) surfaces unchanged.
+  //    `claimedOrcid` (e.g., 'fake-orcid' broadcast by a consented co-author) surfaces unchanged.
   //    No audit event fires.
 }
 ```

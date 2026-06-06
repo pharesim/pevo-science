@@ -17,7 +17,7 @@ tags: [sql-js-parity, normalization, sibling-field-audit, jsonb-projection, broa
 
 ## Context
 
-PEvO landed `agents/docs/solutions/conventions/sql-trim-vs-js-trim-whitespace-character-set-asymmetry-2026-05-19.md` documenting that PostgreSQL `TRIM(string)` / `BTRIM(string)` with no character-set arg strips only U+0020, while JS `String.prototype.trim()` strips full ECMA-262 WhiteSpace + LineTerminator. A vouched co-author can post broadcaster-controlled JSON metadata with non-ASCII whitespace padding (`\t`, `\n`, NBSP, etc.) on any field to create cross-surface split-brain between SQL-projected and JS-projected responses.
+PEvO landed `agents/docs/solutions/conventions/sql-trim-vs-js-trim-whitespace-character-set-asymmetry-2026-05-19.md` documenting that PostgreSQL `TRIM(string)` / `BTRIM(string)` with no character-set arg strips only U+0020, while JS `String.prototype.trim()` strips full ECMA-262 WhiteSpace + LineTerminator. A consented co-author can post broadcaster-controlled JSON metadata with non-ASCII whitespace padding (`\t`, `\n`, NBSP, etc.) on any field to create cross-surface split-brain between SQL-projected and JS-projected responses.
 
 Round-3 of `backend-papers-canonical-orcid-resolution` (commit `ed7dfa9`) applied that convention to close the asymmetry on the `authors[i].hive` field via reject-at-boundary: extracted `trimAsciiSpace` helper mirroring PG `TRIM`, plus `[a-z0-9.-]+` charset regex guard on BOTH the SQL JOIN predicate (`LOWER(TRIM(a.elem ->> 'hive')) ~ '^[a-z0-9.-]+$'`) and the JS `normalizeHiveAccount` wrapper. The round-3 hold prescribed this exact shape; the round-3 backend signal landed it; the round-3 cluster review verified it on the hive field.
 

@@ -85,7 +85,7 @@ ROW_NUMBER() OVER (
 This pattern applies to **every** "latest op wins" computation in PEvO:
 - `active_accreditations` CTE in `backend/src/hafsql.ts` (accredit vs. revoke)
 - `active_vouches` CTE (vouch vs. retract_vouch)
-- Vouched-set computation for `author_accept` / `author_resign` (per ARCHITECTURE.md "Author Accept (custom_json)" validity rules)
+- Consented-set computation for `author_accept` / `author_resign` (per ARCHITECTURE.md "Author Accept (custom_json)" validity rules)
 - Late vote ops (`pevo.late_vote` after the 7-day window)
 - Any future `(subject, scope) → latest action` pattern
 
@@ -97,9 +97,9 @@ PEvO does not need a custom key-rotation primitive. Hive's `account_update` op t
 
 The PEvO brainstorm considered (and rejected) inventing a custom rotation primitive. The correct framing, captured in ARCHITECTURE.md "Compromised-key recovery":
 
-> Posting-key compromise admits a finite, bounded attack window. ... The legitimate co-author becomes unvouched until they:
+> Posting-key compromise admits a finite, bounded attack window. ... The legitimate co-author becomes unconsented until they:
 > 1. Rotate their posting key via Hive's native `account_update` op (Hive consensus rejects further ops signed by the old key from that block onward).
-> 2. Broadcast a new `author_accept` for the affected paper to restore vouched status going forward.
+> 2. Broadcast a new `author_accept` for the affected paper to restore consented status going forward.
 
 Bounded-window damage (ops broadcast under the compromised key before rotation) is permanent on chain (immutable), but functionally reversible by **inverse ops**: an attacker-broadcast `author_resign` is reversed by a post-rotation `author_accept`; an attacker-added continuation post can be superseded by a legitimate continuation pinned to the latest head.
 
@@ -119,7 +119,7 @@ The PEvO brainstorm started with three primitive options:
 2. Application-layer co-signing with embedded signatures in `pevo.authors[]`.
 3. Time-locked veto window (broadcast immediately, others can veto within N hours).
 
-It converged on **single-sided `author_accept` / `author_resign` ops**. The threat model is "vouched co-author turned adversarial," not "all co-authors must jointly commit." A new author broadcasts `author_accept` under their own posting key; a co-author who wants out broadcasts `author_resign` under their own posting key. Each op is signed by exactly one party, the party whose state is mutating.
+It converged on **single-sided `author_accept` / `author_resign` ops**. The threat model is "consented co-author turned adversarial," not "all co-authors must jointly commit." A new author broadcasts `author_accept` under their own posting key; a co-author who wants out broadcasts `author_resign` under their own posting key. Each op is signed by exactly one party, the party whose state is mutating.
 
 Wire format:
 ```
@@ -145,7 +145,7 @@ When NOT to use this: operations that semantically require joint commitment (e.g
 
 A `custom_json` op carries two pieces of identity information: the chain signer (`required_posting_auths[0]`) and any payload-level identity claim (`json.subject_hive_account` or analogous). **The validity rule must require these to be equal.** Otherwise an attacker crafts a payload citing a third party's identity and broadcasts under their own posting key — minting a consent op against someone else's name.
 
-The brainstorm's first-pass spec for `author_accept` only checked the payload's `accepting_author_hive` against on-chain criteria (presence in claimed authors set). A /ce-doc-review reviewer caught the gap: without `required_posting_auths[0] == accepting_author_hive`, mallory could broadcast `{type: "author_accept", accepting_author_hive: "alice", ...}` under mallory's own key, marking alice vouched without alice's consent.
+The brainstorm's first-pass spec for `author_accept` only checked the payload's `accepting_author_hive` against on-chain criteria (presence in claimed authors set). A /ce-doc-review reviewer caught the gap: without `required_posting_auths[0] == accepting_author_hive`, mallory could broadcast `{type: "author_accept", accepting_author_hive: "alice", ...}` under mallory's own key, marking alice as consented without alice's own consent op.
 
 Anti-pattern (validity rule missing signer-binding):
 ```ts
@@ -170,7 +170,7 @@ function isValidAuthorAccept(op: CustomJsonOp): boolean {
 }
 ```
 
-The SQL form (in a vouched-set CTE):
+The SQL form (in a consented-set CTE):
 ```sql
 AND cj.required_posting_auths ->> 0 = cj.json::jsonb ->> 'accepting_author_hive'
 ```
@@ -188,14 +188,14 @@ The accreditation op family is the **inverted shape** of this rule, and it is co
 
 A `custom_json` op can be broadcast at any time, including **before** the on-chain context that would make it valid exists. Without a temporal lower bound, an attacker pre-broadcasts a consent op that sits inert on chain, then activates retroactively when later ops create the eligibility context.
 
-Concrete attack (the "name-squatting" class): mallory pre-broadcasts `{type: "author_accept", accepting_author_hive: "mallory", root_author: "alice", root_permlink: "paper-1"}` at block N=1000. The op is invalid at block 1000 (mallory is not in the claimed authors set yet) but lives on chain. Later, at block N=5000, alice publishes a continuation post (or bob does, with alice's metadata) that lists mallory in `pevo.authors[]`. Without a temporal validity rule, mallory's old op suddenly becomes valid at read time — mallory is now vouched without ever broadcasting under post-eligibility conditions.
+Concrete attack (the "name-squatting" class): mallory pre-broadcasts `{type: "author_accept", accepting_author_hive: "mallory", root_author: "alice", root_permlink: "paper-1"}` at block N=1000. The op is invalid at block 1000 (mallory is not in the claimed authors set yet) but lives on chain. Later, at block N=5000, alice publishes a continuation post (or bob does, with alice's metadata) that lists mallory in `pevo.authors[]`. Without a temporal validity rule, mallory's old op suddenly becomes valid at read time — mallory is now consented without ever broadcasting under post-eligibility conditions.
 
 Defense: the op's `block_num` MUST be strictly greater than the earliest block at which the actor became eligible.
 
 ARCHITECTURE.md "Author Accept (custom_json)" validity rules capture this:
 > The accept op's `block_num` MUST be strictly greater than the `block_num` of the earliest admitted chain post operation that included `accepting_author_hive` in `pevo.authors[]`.
 
-SQL form (in a vouched-set CTE — illustrative):
+SQL form (in a consented-set CTE — illustrative):
 ```sql
 WITH earliest_claim AS (
   SELECT
@@ -320,7 +320,7 @@ Before (multi-sig sub-account proposal):
 
 After (single-sided per-actor consent):
 
-> Each co-author broadcasts `author_accept` under their own posting key when they join. Each co-author broadcasts `author_resign` under their own posting key when they leave. The vouched-set computation reads the latest op per (author, paper) pair. No joint commitment, no sub-account, no co-signing flow.
+> Each co-author broadcasts `author_accept` under their own posting key when they join. Each co-author broadcasts `author_resign` under their own posting key when they leave. The consented-set computation reads the latest op per (author, paper) pair. No joint commitment, no sub-account, no co-signing flow.
 
 ---
 
@@ -410,6 +410,7 @@ WHERE cj.custom_id = $1
 ## Related
 
 - [`pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`](pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md) — sibling convention. That doc is about identity-binding at gate predicates ("every OR-arm in an authorization gate must terminate in an identity predicate"); this doc is the Hive-primitive-aware extension at the op-type layer ("the chain signer is the identity predicate, and the validity rule must bind it to the payload subject"). Read together.
+- [`vouch-three-senses-consented-not-vouched-2026-06-06.md`](vouch-three-senses-consented-not-vouched-2026-06-06.md) — terminology convention. "vouch" carries three distinct PEvO senses (WoT accreditation vouch; object author-vouching; per-paper authorship consent). The `author_accept` / `author_resign` consent status in this doc is **"consented"** (sense 3); "vouch" stays reserved for the WoT ops (`active_vouches`, `vouch` / `retract_vouch`) and the object-identity read-gate.
 - [`../architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md`](../architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md) — adjacent architecture pattern. That doc covers the chain semantics (continuation pointers, head computation, edit pre-fill); this doc covers the underlying Hive primitives those semantics are built on (`custom_json` validity rules, `(block_num, trx_in_block)` ordering, `account_update`-based recovery).
 - [`enumerated-exemption-lists-are-drift-vectors-2026-04-28.md`](enumerated-exemption-lists-are-drift-vectors-2026-04-28.md) — methodology meta-rule. The six rules in this doc are themselves a checklist; future audits should resist the temptation to enumerate "ops that don't need rule N" carve-outs and instead surface drift via grep on the structural predicates (e.g., grep for `cj.required_posting_auths ->> 0` next to every `cj.json::jsonb ->> '<subject_field>'` equality).
 - [`hive-signature-request-binding-shape-2026-04-21.md`](hive-signature-request-binding-shape-2026-04-21.md) — adjacent "principal must be bound to the request, not self-asserted" pattern at the authentication layer. Same family as rule 5, applied to HTTP request binding instead of `custom_json` op binding.
@@ -417,4 +418,4 @@ WHERE cj.custom_id = $1
 - [`chain-write-timeout-ambiguous-outcome-2026-04-22.md`](chain-write-timeout-ambiguous-outcome-2026-04-22.md) — adjacent: relies on the same "Hive has no native idempotency keys" property the rules above explore from the validity-rule side.
 - `agents/docs/ARCHITECTURE.md` "Multi-Author Trust Model" section (and "Accreditation (custom_json)" subsection) — the embodying spec. The trust-model section enacts all six rules; the accreditation subsection is the prior-art `required_posting_auths` whitelist pattern (signer-binding via authority list, the inverted-shape sibling of rule 5).
 - `backend/src/hafsql.ts` — `activeAccreditationsCteBody` and `activeVouchesCteBody`. Current call sites for the `?|` whitelist pattern (rule 5 applied to admin-issued ops) and target sites for the `(block_num, trx_in_block)` ordering upgrade (rule 2).
-- `backend/src/routes/papers.ts` `resolveContinuationChain` — the chain-walk consumer of the rules; the pending `backend-coauthor-trust-model` Phase 2 implements the vouched-set computation that integrates rules 2, 5, and 6.
+- `backend/src/routes/papers.ts` `resolveContinuationChain` — the chain-walk consumer of the rules; the pending `backend-coauthor-trust-model` Phase 2 implements the consented-set computation that integrates rules 2, 5, and 6.

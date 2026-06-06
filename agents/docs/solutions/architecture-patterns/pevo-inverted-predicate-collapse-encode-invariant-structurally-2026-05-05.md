@@ -37,7 +37,7 @@ tags:
 
 PEvO's multi-author trust model went through three rounds of review on the `backend-continuation-post-author-consent-gate` task before the core issue became visible. Each round produced a defensible fix, but each fix generated new adjacent bugs that revealed the check itself was the wrong frame.
 
-Round 2 introduced `headAuthorsAreSubset` at `backend/src/routes/papers.ts:626+`. The check enforced `head ⊆ root` (a continuation's `pevo.authors[]` must be a subset of the root post's authorized-author set). The intent was sound: prevent a vouched co-author from widening the displayed authors beyond the root's authorized set.
+Round 2 introduced `headAuthorsAreSubset` at `backend/src/routes/papers.ts:626+`. The check enforced `head ⊆ root` (a continuation's `pevo.authors[]` must be a subset of the root post's authorized-author set). The intent was sound: prevent a consented co-author from widening the displayed authors beyond the root's authorized set.
 
 Round 3's architect re-review found the subset direction was inverted. `head ⊆ root` trivially passes when a continuation drops an author (alice's name disappears while bob's remains, and bob's set is still a subset of root). The correct rule, per version-chain edit semantics convention rule #4 in [`pevo-paper-version-chain-and-edit-semantics-2026-04-30.md`](pevo-paper-version-chain-and-edit-semantics-2026-04-30.md) ("authors[] is monotonic: no author entry is ever removed by a revision"), is `root ⊆ head`, a no-shrink direction. Round 3 inverted the check, renamed the audit event from `continuation_authors_subset_violation` to `continuation_authors_shrink_violation`, and added canaries.
 

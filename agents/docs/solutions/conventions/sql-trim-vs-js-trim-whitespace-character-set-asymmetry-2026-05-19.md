@@ -51,7 +51,7 @@ The concrete exploit is a cross-surface split-brain spoof. A broadcaster posting
 - JS path (`/api/profile/:username/papers`, chain-detail via `buildCumulativeAuthorsForChain`): canonicalizes `'\tBob'` → `'bob'`, matches accreditation, surfaces `orcid_verified` and `orcid_discrepancy=true`.
 - SQL path (`/api/papers` list, single-link detail via `authorsWithSupersessionSelect`): `LOWER(TRIM('\tBob'))` returns `'\tbob'`, JOIN against `aa.account = '\tbob'` misses (no real account has a tab in its name), `orcid_verified=null` and no discrepancy.
 
-Same paper, same broadcaster: the ORCID-discrepancy audit signal appears on some endpoints and disappears on others. A vouched co-author can suppress the audit signal on the list endpoint while leaving it on the detail endpoint — a near-perfect plausible-deniability spoof channel, defeating the entire purpose of `orcid_discrepancy`.
+Same paper, same broadcaster: the ORCID-discrepancy audit signal appears on some endpoints and disappears on others. A consented co-author can suppress the audit signal on the list endpoint while leaving it on the detail endpoint — a near-perfect plausible-deniability spoof channel, defeating the entire purpose of `orcid_discrepancy`.
 
 ## Guidance
 

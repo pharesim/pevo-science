@@ -42,7 +42,7 @@ detail.document_hash  = pevoString(headPevo, 'document_hash')  ?? pevoString(roo
 
 The helper extraction made the per-field-fallback shape canonical and easy to copy.
 
-Round-5 architect review surfaced the Frankenstein attack: a vouched co-author (already in the root paper's `pevo.authors[].hive`) broadcasts a continuation v2 with `pevo = { ipfs_cid: 'QmAttacker', ipfs_filename: 0, document_hash: 0 }`. Per-field fallback yields:
+Round-5 architect review surfaced the Frankenstein attack: a consented co-author (already in the root paper's `pevo.authors[].hive`) broadcasts a continuation v2 with `pevo = { ipfs_cid: 'QmAttacker', ipfs_filename: 0, document_hash: 0 }`. Per-field fallback yields:
 
 - `detail.ipfs_cid = 'QmAttacker'` (head supplied a valid string)
 - `detail.ipfs_filename = 'root.pdf'` (head's `0` collapses to null → falls back to root)
