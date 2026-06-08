@@ -33,6 +33,11 @@ const RETURN_PATH_KEY = 'pevo_fresh_auth_return_to';
 // and unwinds cleanly without a generic error toast firing during navigation.
 export const FRESH_AUTH_REDIRECT_PENDING = null;
 
+// Allowed ORCID OAuth redirect hosts. Validated before every `window.location`
+// assignment to a backend-supplied `redirect_url` (open-redirect defense),
+// shared by the session-auth and settings-action ORCID mint flows below.
+const ORCID_REDIRECT_HOSTS = ['orcid.org', 'sandbox.orcid.org'];
+
 function getCachedSessionProof() {
   try {
     const raw = sessionStorage.getItem(PROOF_KEY);
@@ -208,7 +213,7 @@ async function mintNonConsentProof() {
       clearReturnPath();
       throw new Error('Invalid ORCID redirect URL');
     }
-    if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
+    if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
       sessionStorage.removeItem('pevo_orcid_mode');
       clearReturnPath();
       throw new Error('Invalid ORCID redirect URL');
@@ -223,6 +228,62 @@ async function mintNonConsentProof() {
   } finally {
     _mintInFlight = null;
   }
+}
+
+// Initiate an ORCID fresh-auth round-trip for a settings critical action
+// (`change_email`, `set_password`, `delete_account`). Sibling of
+// `mintNonConsentProof`, but for the consent-op-kind, target-bound settings
+// surface rather than the session-kind broadcast surface: the proof the backend
+// mints binds to (action, <username>, ''), and the `/orcid/callback` handler
+// caches it via `cacheConsentOpProof` keyed on the echoed target. The settings
+// flow retrieves it post-redirect with `getCachedConsentOpProof(action,
+// username, '')`.
+//
+// This is the only mint factor for `set_password` (a passwordless account has
+// no password to base a password proof on) and the fallback factor for
+// `change_email` / `delete_account` on passwordless accounts. The backend
+// synthesizes the target from the authenticated username, so only `action` is
+// sent. Returns `FRESH_AUTH_REDIRECT_PENDING` after starting the full-page
+// redirect; callers abort cleanly and resume after the user returns. Throws on
+// transport / config / invalid-redirect-host errors.
+export async function beginSettingsActionOrcidFreshAuth(action) {
+  const returnPath = window.location.pathname || '/settings';
+  try {
+    sessionStorage.setItem(RETURN_PATH_KEY, returnPath);
+  } catch {
+    /* return-path fallback handled in callback */
+  }
+  // Per-tab marker so the callback dispatches to the fresh_auth handler. See
+  // mintNonConsentProof for the sessionStorage-vs-localStorage rationale.
+  sessionStorage.setItem('pevo_orcid_mode', 'fresh_auth');
+
+  let data;
+  try {
+    data = await startOrcid('fresh_auth', { action });
+  } catch (err) {
+    sessionStorage.removeItem('pevo_orcid_mode');
+    clearReturnPath();
+    throw err;
+  }
+
+  // Validate the redirect host before navigating — open-redirect defense
+  // shared with mintNonConsentProof and settings.js handleOrcidLink.
+  let target;
+  try {
+    target = new URL(data.redirect_url);
+  } catch {
+    sessionStorage.removeItem('pevo_orcid_mode');
+    clearReturnPath();
+    throw new Error('Invalid ORCID redirect URL');
+  }
+  if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
+    sessionStorage.removeItem('pevo_orcid_mode');
+    clearReturnPath();
+    throw new Error('Invalid ORCID redirect URL');
+  }
+
+  window.location.href = data.redirect_url;
+  return FRESH_AUTH_REDIRECT_PENDING;
 }
 
 // High-level wrapper around `broadcastOps`: mints a session-kind proof if

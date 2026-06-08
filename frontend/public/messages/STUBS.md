@@ -2110,3 +2110,36 @@ pt: reauth.message
 sv: reauth.message
 tr: reauth.message
 zh: reauth.message
+
+### Added 2026-06-09 (UI-SETTINGS-ACTION-FRESH-AUTH-PROOF-CHALLENGE)
+
+ar: settings.reauthPasswordPrompt
+cs: settings.reauthPasswordPrompt
+da: settings.reauthPasswordPrompt
+de: settings.reauthPasswordPrompt
+es: settings.reauthPasswordPrompt
+fa: settings.reauthPasswordPrompt
+fr: settings.reauthPasswordPrompt
+he: settings.reauthPasswordPrompt
+it: settings.reauthPasswordPrompt
+nl: settings.reauthPasswordPrompt
+pl: settings.reauthPasswordPrompt
+pt: settings.reauthPasswordPrompt
+sv: settings.reauthPasswordPrompt
+tr: settings.reauthPasswordPrompt
+zh: settings.reauthPasswordPrompt
+ar: settings.reauthFailed
+cs: settings.reauthFailed
+da: settings.reauthFailed
+de: settings.reauthFailed
+es: settings.reauthFailed
+fa: settings.reauthFailed
+fr: settings.reauthFailed
+he: settings.reauthFailed
+it: settings.reauthFailed
+nl: settings.reauthFailed
+pl: settings.reauthFailed
+pt: settings.reauthFailed
+sv: settings.reauthFailed
+tr: settings.reauthFailed
+zh: settings.reauthFailed

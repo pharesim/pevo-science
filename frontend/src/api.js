@@ -175,19 +175,29 @@ export function fetchDisciplines() {
 
 // ─── IPFS ────────────────────────────────────────────────────────
 
-// Mint a single-use, per-action fresh-auth proof bound to (ipfs_upload,
-// <username>, '') so the light-account (JWT) upload-token pre-flight can prove
-// fresh re-auth. Password path only: the backend re-verifies the account
-// password and rejects passwordless (ORCID-only) accounts with the same 401 it
-// returns for a wrong password. The proof is single-use, so callers mint one
-// per file. Returns the proof string. See `agents/docs/api-contracts/ipfs.md`.
-export async function mintIpfsUploadProof(password) {
+// Mint a single-use, per-action fresh-auth proof via the PASSWORD factor. POSTs
+// the account password to `/custody/fresh-auth`; the backend argon2-verifies it
+// against the account and returns a proof bound to (<action>, <username>, '').
+// A wrong password and a passwordless (ORCID-only) account both return the same
+// 401 UNAUTHORIZED (no password-existence oracle), so callers must route State-C
+// accounts to the ORCID factor instead of relying on this. The proof is
+// single-use with a 5-minute TTL; callers re-mint on retry. Returns the proof
+// string. Shared by the IPFS upload pre-flight and the settings critical-action
+// flow (change_email / delete_account); `set_password` is NOT mintable here (it
+// transitions a passwordless account, so the route rejects the password factor).
+async function mintPasswordFreshAuthProof(action, password) {
   const res = await authenticatedRequest('/custody/fresh-auth', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'ipfs_upload', password }),
+    body: JSON.stringify({ action, password }),
   });
   return res.data.fresh_auth_proof;
+}
+
+// Mint a fresh-auth proof for the light-account (JWT) upload-token pre-flight,
+// bound to (ipfs_upload, <username>, ''). See `agents/docs/api-contracts/ipfs.md`.
+export function mintIpfsUploadProof(password) {
+  return mintPasswordFreshAuthProof('ipfs_upload', password);
 }
 
 // Two-step IPFS upload for one file: (1) a pre-flight that binds the file's
@@ -611,14 +621,27 @@ export async function searchAccounts(q) {
 
 // ─── Password Settings ──────────────────────────────────────
 
+// Mint a single-use fresh-auth proof for a settings critical action via the
+// PASSWORD factor, bound to (<action>, <username>, ''). Used for `change_email`
+// and `delete_account` on accounts that have a password (State A/B). NOT for
+// `set_password`: that target account is passwordless, so its proof is minted
+// only via the ORCID factor (the password route rejects `set_password`).
+// Returns the proof string. The orchestration (factor selection, ORCID
+// fallback, retry) lives in `lib/settings-fresh-auth.js`.
+export function mintSettingsActionProof(action, password) {
+  return mintPasswordFreshAuthProof(action, password);
+}
+
 // Set a password on an account that has none (ORCID-verified signup and
 // recover flows leave `password_hash = NULL`; this lets the user opt
-// into password login later from Settings).
-export function setPassword(password) {
+// into password login later from Settings). On the JWT (light-account) path
+// the backend requires an ORCID-mechanism `fresh_auth_proof` bound to
+// (set_password, <username>, ''); the Keychain path needs none.
+export function setPassword(password, freshAuthProof) {
   return authenticatedRequest('/settings/set-password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) }),
   });
 }
 
@@ -628,11 +651,15 @@ export function fetchEmailStatus() {
   return authenticatedRequest('/settings/email');
 }
 
-export function submitEmail(email) {
+// Add or change the account email. The change branch on an existing row is a
+// critical action: on the JWT (light-account) path the backend requires a
+// `fresh_auth_proof` bound to (change_email, <username>, '') in the body; the
+// Keychain path needs none. `freshAuthProof` is omitted by self-custody callers.
+export function submitEmail(email, freshAuthProof) {
   return authenticatedRequest('/settings/email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) }),
   });
 }
 
@@ -640,11 +667,15 @@ export function verifyEmailToken(token) {
   return request(`/settings/email/verify/${encodeURIComponent(token)}`);
 }
 
-export function deleteEmail(confirm) {
+// Delete the account (de-facto right-to-erasure). A critical action: on the JWT
+// (light-account) path the backend requires a `fresh_auth_proof` bound to
+// (delete_account, <username>, '') alongside `confirm: true`; the Keychain path
+// needs only `confirm`. `freshAuthProof` is omitted by self-custody callers.
+export function deleteEmail(confirm, freshAuthProof) {
   return authenticatedRequest('/settings/email', {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirm }),
+    body: JSON.stringify({ confirm, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) }),
   });
 }
 

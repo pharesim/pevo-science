@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
 import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword } from '../api.js';
+import { withSettingsFreshAuth } from '../lib/settings-fresh-auth.js';
 import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, loadDhive, validateMnemonic } from '../hive-keys.js';
 import { isPasswordValid } from '../password-policy.js';
 import { getAppTag } from '../config.js';
@@ -714,13 +715,41 @@ export function initSettingsPage() {
       }
     },
 
+    // Context for the settings fresh-auth orchestrator. `custody` gates whether
+    // a body proof is sent at all (light → proof required on the JWT path;
+    // self-custody → the per-request Keychain signature is already fresh).
+    // `hasPassword` drives the password-vs-ORCID factor choice for change-email
+    // and delete-account (set-password is always ORCID, handled in the lib).
+    _freshAuthCtx() {
+      return {
+        custody: this.custody,
+        username: this.username,
+        hasPassword: this.emailStatus?.hasPassword === true,
+      };
+    },
+
     async handleEmailSubmit() {
       if (!this.newEmail.trim() || this.emailSubmitting) return;
       this.emailSubmitting = true;
       this.emailMessage = null;
       this.emailError = null;
+      const email = this.newEmail.trim();
       try {
-        await submitEmail(this.newEmail.trim());
+        // Critical action: the JWT path needs a change_email fresh-auth proof.
+        // The orchestrator mints it (password modal or ORCID round-trip) and
+        // threads it into submitEmail; self-custody passes no proof.
+        const outcome = await withSettingsFreshAuth(
+          'change_email',
+          this._freshAuthCtx(),
+          (proof) => submitEmail(email, proof),
+        );
+        // ORCID round-trip navigating away, or password modal dismissed: abort
+        // cleanly. The user resumes (re-clicks) after returning from ORCID.
+        if (outcome.redirect || outcome.cancelled) return;
+        if (outcome.freshAuthFailed) {
+          this.emailError = this.$t('settings.reauthFailed');
+          return;
+        }
         this.emailMessage = this.$t('settings.emailVerificationSent');
         this.newEmail = '';
         this.showChangeForm = false;
@@ -752,8 +781,32 @@ export function initSettingsPage() {
       if (!this.canSubmitPassword || this.passwordSubmitting) return;
       this.passwordSubmitting = true;
       this.passwordError = null;
+      // Snapshot the password as a primitive so the orchestrator's run callback
+      // captures it by value. set-password is ORCID-only (a passwordless State-C
+      // account has no password to base a password proof on), so on a light
+      // account this always routes through the ORCID round-trip; after the user
+      // returns and re-submits, the cached proof is consumed.
+      const password = this.newPasswordInput;
       try {
-        await setPassword(this.newPasswordInput);
+        const outcome = await withSettingsFreshAuth(
+          'set_password',
+          this._freshAuthCtx(),
+          (proof) => setPassword(password, proof),
+        );
+        if (outcome.redirect || outcome.cancelled) {
+          // Zero the plaintext password from reactive state before navigating
+          // away (ORCID redirect) or returning (cancel) — same XSS-read
+          // hygiene the custody-upgrade flow applies to held credentials.
+          this.newPasswordInput = '';
+          this.newPasswordConfirmInput = '';
+          return;
+        }
+        if (outcome.freshAuthFailed) {
+          this.newPasswordInput = '';
+          this.newPasswordConfirmInput = '';
+          this.passwordError = this.$t('settings.reauthFailed');
+          return;
+        }
         // Patch emailStatus FIRST. The outer `x-if` on
         // `emailStatus.hasPassword === false` is the single success signal;
         // flipping it hides the section in the next render tick. Mutating
@@ -782,7 +835,21 @@ export function initSettingsPage() {
       if (this.deleting) return;
       this.deleting = true;
       try {
-        await deleteEmail(true);
+        // Account erasure is a critical action: the JWT path needs a
+        // delete_account fresh-auth proof, minted via the orchestrator
+        // (password modal or ORCID round-trip) and threaded into deleteEmail.
+        const outcome = await withSettingsFreshAuth(
+          'delete_account',
+          this._freshAuthCtx(),
+          (proof) => deleteEmail(true, proof),
+        );
+        // ORCID round-trip navigating away, or password modal dismissed: abort
+        // cleanly. The user resumes (re-confirms) after returning from ORCID.
+        if (outcome.redirect || outcome.cancelled) return;
+        if (outcome.freshAuthFailed) {
+          this.emailError = this.$t('settings.reauthFailed');
+          return;
+        }
         // The DELETE erases the entire PEvO account row, not just the email
         // column. The current session JWT now points at a deleted account, so
         // there is no logged-in state left to render. Tear the session down

@@ -106,4 +106,37 @@ unwired and that the backend gates are live (light-account lockout), so the work
 re-scoped to a single canonical pattern across change-email + set-password +
 delete-account and elevated to P1.
 
+## UI implementation note (2026-06-09)
+
+Built the single reusable flow and wired all three actions:
+
+- `frontend/src/lib/settings-fresh-auth.js` (new) — `withSettingsFreshAuth(action, ctx, run)`
+  orchestrator: self-custody passes no proof; light path looks up the consent-op
+  cache, else mints via the password factor (reauth modal + `POST /custody/fresh-auth`)
+  when the account has a password and the action isn't `set_password`, else the ORCID
+  factor (`beginSettingsActionOrcidFreshAuth` full-page round-trip). `401` missing/
+  expired/malformed re-mints + retries once; `403`/`wrong_mechanism` → generic
+  `settings.reauthFailed`; wrong password re-prompts once.
+- `frontend/src/lib/fresh-auth.js` — added `beginSettingsActionOrcidFreshAuth` (sibling
+  of `mintNonConsentProof`, `mode: 'fresh_auth'`); deduped the ORCID redirect-host
+  allowlist into a shared module constant.
+- `frontend/src/api.js` — `mintSettingsActionProof` (password factor) + threaded
+  `fresh_auth_proof` through `submitEmail`/`setPassword`/`deleteEmail` (omitted on the
+  Keychain path).
+- `frontend/src/pages/settings.js` — `_freshAuthCtx()` + rewired the three handlers;
+  set-password wipes the typed password on every exit (XSS hygiene).
+- i18n: `settings.reauthPasswordPrompt` + `settings.reauthFailed` across 16 locales +
+  STUBS sweep. The reauth modal (`index.html`, global) is reused as-is.
+- Tests: unit (`lib-settings-fresh-auth.test.js` new, `api.test.js`, `pages-settings.test.js`)
+  — full suite 1412 green. E2E `settings.spec.js` change-email test **un-fixme'd** and
+  rewritten to drive the password-factor reauth modal end-to-end (it was disabled
+  pending exactly this integration); both settings specs pass against the test-mode stack.
+
+**For architect/backend (doc drift, out of UI zone):** `api-contracts/orcid.md` (the
+"as of 2026-05-16" note) and `api-contracts/custody.md`'s action enum still say the
+`change_email`/`delete_account` mint paths are "not live"/"a follow-up". The code
+contradicts this — both routes allowlist all three settings actions today (the
+`backend-change-email-mint-path-and-followups` follow-up has landed and is gone from the
+task tree). These contract docs need updating to match the live code.
+
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

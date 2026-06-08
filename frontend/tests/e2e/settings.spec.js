@@ -27,6 +27,7 @@
 import { test, expect } from './fixtures/keychain.js';
 import { mintSessionJwt } from './fixtures/auth.js';
 import { openAppPool } from './fixtures/db.js';
+import argon2 from '../../../backend/node_modules/argon2/argon2.cjs';
 
 // Specs in this file mint live backend-valid bearer JWTs via mintSessionJwt.
 // Disable trace/video/screenshot to keep those tokens out of trace.zip artifacts
@@ -39,6 +40,12 @@ test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 // suffix that includes `testInfo.retry`.
 const NEW_LOCALE = 'de';
 
+// Known password for the seeded light account. The change-email JWT path now
+// requires a fresh-auth proof; this account has a password, so the password
+// factor fires and the SPA mints the proof at POST /api/custody/fresh-auth,
+// which argon2-verifies this exact value against the seeded hash.
+const TEST_PASSWORD = 'E2eSettingsPass1';
+
 // Populated in beforeAll from (Date.now, testInfo.retry). Declared with `let`
 // so the tests + seedLightAccount + seedLightSession observe whatever the
 // most recent beforeAll computed.
@@ -48,9 +55,12 @@ let TEST_EMAIL_OLD;
 let TEST_EMAIL_NEW;
 
 async function seedLightAccount(pool) {
-  // custody='light', verify_token=NULL means an active light-account user
-  // with a verified email. password_hash is non-null but not exercised by
-  // the email-change flow (JWT Bearer auth bypasses the password path).
+  // custody='light', verify_token=NULL means an active light-account user with a
+  // verified email. password_hash holds a real argon2id hash of TEST_PASSWORD so
+  // the change-email password-factor fresh-auth mint (POST /api/custody/fresh-auth)
+  // can verify the password the reauth modal collects. (Was a dummy hash when
+  // change-email was JWT-only; the fresh-auth gate now exercises the password path.)
+  const passwordHash = await argon2.hash(TEST_PASSWORD, { type: argon2.argon2id });
   await pool.query(
     `INSERT INTO accounts (email, username, password_hash, full_name, institution, field, custody, verify_token)
      VALUES ($1, $2, $3, $4, $5, $6, 'light', NULL)
@@ -62,7 +72,7 @@ async function seedLightAccount(pool) {
        pending_email = NULL,
        pending_email_token = NULL,
        pending_email_expires_at = NULL`,
-    [TEST_EMAIL_OLD, TEST_USERNAME, 'argon2id$dummy', 'E2E Settings Tester', 'Test Institution', 'Test Science'],
+    [TEST_EMAIL_OLD, TEST_USERNAME, passwordHash, 'E2E Settings Tester', 'Test Institution', 'Test Science'],
   );
 }
 
@@ -168,17 +178,13 @@ test.describe('settings — light-account non-chain flows', () => {
     expect(storeLocale).toBe(NEW_LOCALE);
   });
 
-  // FIXME: backend commit b27bcdf added a fresh_auth_proof requirement on
-  // POST /api/settings/email (JWT path), and the SPA's handleEmailSubmit() in
-  // settings.js still POSTs { email } without minting/sending a proof. The
-  // mint-side wiring lands in backend-change-email-mint-path-and-followups
-  // (currently in tasks/review/); the SPA integration is queued for the UI
-  // agent once that task archives (see line 53 of the task file: "UI flow
-  // for prompting users to complete password or ORCID re-auth before
-  // requesting an email change. UI agent picks that up after this lands").
-  // Until both land, this test sees a 401 FRESH_AUTH_REQUIRED on submit.
-  // Un-fixme once the change-email SPA fresh-auth integration ships.
-  test.fixme('email change request sends verification mail, token verifies new email', async ({ page }) => {
+  // The change-email JWT path requires a `fresh_auth_proof`. This account has a
+  // password (State A/B), so the SPA's settings-action fresh-auth orchestrator
+  // takes the password factor: clicking "Send verification email" opens the
+  // reauth modal, the entered password mints a proof at POST /api/custody/fresh-auth,
+  // and the proof rides in the body of POST /api/settings/email. This exercises
+  // the full integrated change-email lockout-close end to end.
+  test('email change request sends verification mail, token verifies new email', async ({ page }) => {
     page.on('dialog', (dialog) => {
       throw new Error(`Unexpected dialog: ${dialog.type()} "${dialog.message()}"`);
     });
@@ -219,6 +225,9 @@ test.describe('settings — light-account non-chain flows', () => {
     const changeForm = page.locator('form').filter({ hasText: 'Send verification email' });
     await changeForm.locator('input[type="email"]').fill(TEST_EMAIL_NEW);
 
+    const mintResponsePromise = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/custody/fresh-auth') && resp.request().method() === 'POST',
+    );
     const submitRequestPromise = page.waitForRequest(
       (req) => req.url().endsWith('/api/settings/email') && req.method() === 'POST',
     );
@@ -228,8 +237,23 @@ test.describe('settings — light-account non-chain flows', () => {
 
     await changeForm.getByRole('button', { name: 'Send verification email' }).click();
 
+    // Password-factor fresh-auth: the reauth modal prompts for the account
+    // password, which the SPA exchanges for a single-use proof before the
+    // change-email request is sent.
+    const reauthPassword = page.locator('input[x-model="$store.reauthModal.password"]');
+    await expect(reauthPassword).toBeVisible();
+    await reauthPassword.fill(TEST_PASSWORD);
+    await page.getByRole('button', { name: 'Confirm' }).click();
+
+    const mintResp = await mintResponsePromise;
+    expect(mintResp.status()).toBe(200);
+
     const submitReq = await submitRequestPromise;
-    expect(JSON.parse(submitReq.postData() ?? '{}')).toMatchObject({ email: TEST_EMAIL_NEW });
+    const submitPayload = JSON.parse(submitReq.postData() ?? '{}');
+    expect(submitPayload).toMatchObject({ email: TEST_EMAIL_NEW });
+    // The proof minted above must ride in the change-email request body.
+    expect(typeof submitPayload.fresh_auth_proof).toBe('string');
+    expect(submitPayload.fresh_auth_proof.length).toBeGreaterThan(0);
 
     const submitResp = await submitResponsePromise;
     expect(submitResp.status()).toBe(200);

@@ -34,6 +34,9 @@ import {
   fetchDisciplines,
   completeOrcid,
   setPassword,
+  submitEmail,
+  deleteEmail,
+  mintSettingsActionProof,
   isRetriable503,
   resumeSignup,
   confirmAccount,
@@ -438,6 +441,57 @@ describe('signup-session-binding cookie credentials', () => {
     expect(url).toBe('/api/auth/link');
     expect(init.method).toBe('POST');
     expect(init.credentials).toBe('same-origin');
+  });
+});
+
+// The three settings critical actions (change_email / set_password /
+// delete_account) carry a single-use `fresh_auth_proof` in the request body on
+// the JWT path and omit it on the Keychain path. These pin that the field is
+// threaded through (and only when present), plus the password-factor mint shape.
+describe('settings critical-action proof threading', () => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    authStore = { token: 'jwt-1' };
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      mockJsonResponse(200, { status: 'ok', data: { fresh_auth_proof: 'minted', message: 'ok' } }),
+    );
+  });
+
+  afterEach(() => fetchSpy.mockRestore());
+
+  it('mintSettingsActionProof POSTs /custody/fresh-auth with action+password and returns the proof', async () => {
+    const proof = await mintSettingsActionProof('change_email', 'pw');
+    expect(proof).toBe('minted');
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/custody/fresh-auth');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-1', 'Content-Type': 'application/json' });
+    expect(JSON.parse(init.body)).toEqual({ action: 'change_email', password: 'pw' });
+  });
+
+  it('submitEmail includes fresh_auth_proof when provided and omits it when not', async () => {
+    await submitEmail('e@x.com', 'proof-1');
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({ email: 'e@x.com', fresh_auth_proof: 'proof-1' });
+    await submitEmail('e@x.com');
+    expect(JSON.parse(fetchSpy.mock.calls[1][1].body)).toEqual({ email: 'e@x.com' });
+  });
+
+  it('setPassword includes fresh_auth_proof when provided and omits it when not', async () => {
+    await setPassword('Abcdefgh1x', 'proof-2');
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({ password: 'Abcdefgh1x', fresh_auth_proof: 'proof-2' });
+    await setPassword('Abcdefgh1x');
+    expect(JSON.parse(fetchSpy.mock.calls[1][1].body)).toEqual({ password: 'Abcdefgh1x' });
+  });
+
+  it('deleteEmail includes fresh_auth_proof when provided and omits it when not', async () => {
+    await deleteEmail(true, 'proof-3');
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/settings/email');
+    expect(init.method).toBe('DELETE');
+    expect(JSON.parse(init.body)).toEqual({ confirm: true, fresh_auth_proof: 'proof-3' });
+    await deleteEmail(true);
+    expect(JSON.parse(fetchSpy.mock.calls[1][1].body)).toEqual({ confirm: true });
   });
 });
 

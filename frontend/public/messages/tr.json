@@ -1103,6 +1103,8 @@
     "orcidRecoveryFailed": "Could not recover your account with ORCID. Please try again. If the problem persists, contact support."
   },
   "settings": {
+    "reauthPasswordPrompt": "Enter your account password to confirm this action.",
+    "reauthFailed": "Re-authentication failed. Please try again.",
     "title": "Ayarlar",
     "signInRequired": "Ayarlara erişmek için giriş yapın.",
     "signIn": "Giriş Yap",

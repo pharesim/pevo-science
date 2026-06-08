@@ -16,6 +16,19 @@ vi.mock('../../src/api.js', () => ({
   setPassword: (...args) => mockSetPassword(...args),
 }));
 
+// settings.js routes the three critical-action handlers (change-email,
+// set-password, delete-account) through the settings-action fresh-auth
+// orchestrator. The orchestrator is unit-tested in lib-settings-fresh-auth.test.js;
+// here it is mocked. The default impl is a self-custody-style pass-through —
+// calls run() with no proof and wraps the result in { ok } — so the existing
+// success/error handler tests exercise the underlying api call unchanged.
+// Individual tests override the impl to return { redirect } / { cancelled } /
+// { freshAuthFailed } and assert the handler's outcome handling.
+const mockWithSettingsFreshAuth = vi.fn(async (_action, _ctx, run) => ({ ok: await run(undefined) }));
+vi.mock('../../src/lib/settings-fresh-auth.js', () => ({
+  withSettingsFreshAuth: (...args) => mockWithSettingsFreshAuth(...args),
+}));
+
 vi.mock('../../src/keychain.js', () => ({
   isKeychainInstalled: (...args) => mockIsKeychainInstalled(...args),
 }));
@@ -165,6 +178,10 @@ describe('settingsPage', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks resets call history but not implementations; a test that
+    // permanently overrides the orchestrator outcome would otherwise leak into
+    // siblings. Re-establish the pass-through default each test.
+    mockWithSettingsFreshAuth.mockImplementation(async (_action, _ctx, run) => ({ ok: await run(undefined) }));
     mockAuthStore.isConnected = true;
     mockAuthStore.custody = 'light';
     mockAuthStore.isAccredited = true;
@@ -224,7 +241,9 @@ describe('settingsPage', () => {
 
       await comp.handleEmailSubmit();
 
-      expect(mockSubmitEmail).toHaveBeenCalledWith('new@x.com');
+      // Routed through the orchestrator's run callback: submitEmail(email, proof).
+      // The pass-through mock supplies no proof (self-custody-style).
+      expect(mockSubmitEmail).toHaveBeenCalledWith('new@x.com', undefined);
       expect(comp.emailMessage).toBe('settings.emailVerificationSent');
       expect(comp.newEmail).toBe('');
     });
@@ -272,6 +291,58 @@ describe('settingsPage', () => {
       expect(warnedErr).toBe(leaky);
       warnSpy.mockRestore();
     });
+
+    // Settings-action fresh-auth orchestrator wiring: outcome routing + proof threading.
+    it('passes action=change_email + ctx and threads the orchestrator proof into submitEmail', async () => {
+      mockSubmitEmail.mockResolvedValue({});
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: true } });
+      mockWithSettingsFreshAuth.mockImplementationOnce(async (action, ctx, run) => {
+        expect(action).toBe('change_email');
+        expect(ctx).toMatchObject({ custody: 'light', username: 'alice' });
+        return { ok: await run('minted-proof') };
+      });
+      const comp = createComponent();
+      comp.newEmail = 'new@x.com';
+
+      await comp.handleEmailSubmit();
+
+      expect(mockSubmitEmail).toHaveBeenCalledWith('new@x.com', 'minted-proof');
+      expect(comp.emailMessage).toBe('settings.emailVerificationSent');
+    });
+
+    it('aborts cleanly on an ORCID redirect (no success message, no error)', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ redirect: true });
+      const comp = createComponent();
+      comp.newEmail = 'new@x.com';
+
+      await comp.handleEmailSubmit();
+
+      expect(comp.emailMessage).toBeNull();
+      expect(comp.emailError).toBeNull();
+      expect(comp.emailSubmitting).toBe(false);
+    });
+
+    it('aborts cleanly when the password modal is cancelled', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ cancelled: true });
+      const comp = createComponent();
+      comp.newEmail = 'new@x.com';
+
+      await comp.handleEmailSubmit();
+
+      expect(comp.emailMessage).toBeNull();
+      expect(comp.emailError).toBeNull();
+    });
+
+    it('surfaces the generic re-auth error on freshAuthFailed (403 / wrong-mechanism)', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ freshAuthFailed: true });
+      const comp = createComponent();
+      comp.newEmail = 'new@x.com';
+
+      await comp.handleEmailSubmit();
+
+      expect(comp.emailError).toBe('settings.reauthFailed');
+      expect(comp.emailMessage).toBeNull();
+    });
   });
 
   describe('handleEmailDelete', () => {
@@ -287,7 +358,7 @@ describe('settingsPage', () => {
 
       await comp.handleEmailDelete();
 
-      expect(mockDeleteEmail).toHaveBeenCalledWith(true);
+      expect(mockDeleteEmail).toHaveBeenCalledWith(true, undefined);
       expect(mockAuthStore.disconnect).toHaveBeenCalled();
       expect(mockNotificationsStore.stop).toHaveBeenCalled();
       expect(mockToastStore.show).toHaveBeenCalledWith('settings.accountDeleted', 'success');
@@ -320,6 +391,55 @@ describe('settingsPage', () => {
       const warnedErr = warnArgs[1];
       expect(warnedErr).toBe(leaky);
       warnSpy.mockRestore();
+    });
+
+    // Settings-action fresh-auth orchestrator wiring: outcome routing + proof threading.
+    it('threads action=delete_account and the orchestrator proof into deleteEmail', async () => {
+      mockDeleteEmail.mockResolvedValue({});
+      mockWithSettingsFreshAuth.mockImplementationOnce(async (action, _ctx, run) => {
+        expect(action).toBe('delete_account');
+        return { ok: await run('del-proof') };
+      });
+      const comp = createComponent();
+      comp.emailStatus = { hasEmail: true };
+
+      await comp.handleEmailDelete();
+
+      expect(mockDeleteEmail).toHaveBeenCalledWith(true, 'del-proof');
+      expect(mockAuthStore.disconnect).toHaveBeenCalled();
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/');
+    });
+
+    it('aborts cleanly on an ORCID redirect (no teardown, no navigate)', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ redirect: true });
+      const comp = createComponent();
+
+      await comp.handleEmailDelete();
+
+      expect(mockAuthStore.disconnect).not.toHaveBeenCalled();
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      expect(comp.deleting).toBe(false);
+    });
+
+    it('aborts cleanly when the password modal is cancelled', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ cancelled: true });
+      const comp = createComponent();
+
+      await comp.handleEmailDelete();
+
+      expect(mockAuthStore.disconnect).not.toHaveBeenCalled();
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the generic re-auth error on freshAuthFailed without tearing down the session', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ freshAuthFailed: true });
+      const comp = createComponent();
+
+      await comp.handleEmailDelete();
+
+      expect(comp.emailError).toBe('settings.reauthFailed');
+      expect(mockAuthStore.disconnect).not.toHaveBeenCalled();
+      expect(comp.deleting).toBe(false);
     });
   });
 
@@ -2141,7 +2261,7 @@ describe('settingsPage', () => {
 
       await comp.handleSetPassword();
 
-      expect(mockSetPassword).toHaveBeenCalledWith('Abcdefgh1x');
+      expect(mockSetPassword).toHaveBeenCalledWith('Abcdefgh1x', undefined);
       expect(comp.emailStatus.hasPassword).toBe(true);
       expect(comp.newPasswordInput).toBe('');
       expect(comp.newPasswordConfirmInput).toBe('');
@@ -2228,6 +2348,56 @@ describe('settingsPage', () => {
       const warnedErr = warnArgs[1];
       expect(warnedErr).toBe(leaky);
       warnSpy.mockRestore();
+    });
+
+    // Settings-action fresh-auth orchestrator wiring: outcome routing + proof threading.
+    // set-password is ORCID-only, so on a light account it routes through the
+    // ORCID round-trip; the handler must wipe the typed password before the
+    // page navigates away and not fire a premature success toast.
+    it('threads action=set_password and the orchestrator proof into setPassword', async () => {
+      mockSetPassword.mockResolvedValue({ status: 'ok' });
+      mockWithSettingsFreshAuth.mockImplementationOnce(async (action, _ctx, run) => {
+        expect(action).toBe('set_password');
+        return { ok: await run('orcid-proof') };
+      });
+      const comp = createComponent();
+      comp.emailStatus = { hasEmail: true, hasPassword: false };
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+
+      await comp.handleSetPassword();
+
+      expect(mockSetPassword).toHaveBeenCalledWith('Abcdefgh1x', 'orcid-proof');
+      expect(comp.emailStatus.hasPassword).toBe(true);
+    });
+
+    it('aborts cleanly and wipes the password on an ORCID redirect', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ redirect: true });
+      const comp = createComponent();
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+
+      await comp.handleSetPassword();
+
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+      expect(comp.newPasswordInput).toBe('');
+      expect(comp.newPasswordConfirmInput).toBe('');
+      expect(comp.passwordSubmitting).toBe(false);
+    });
+
+    it('surfaces the generic re-auth error and wipes the password on freshAuthFailed', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ freshAuthFailed: true });
+      const comp = createComponent();
+      comp.emailStatus = { hasEmail: true, hasPassword: false };
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+
+      await comp.handleSetPassword();
+
+      expect(comp.passwordError).toBe('settings.reauthFailed');
+      expect(comp.newPasswordInput).toBe('');
+      expect(comp.emailStatus.hasPassword).toBe(false);
+      expect(mockToastStore.show).not.toHaveBeenCalled();
     });
 
     it('newPasswordsMatch reflects equality of the two inputs', () => {
