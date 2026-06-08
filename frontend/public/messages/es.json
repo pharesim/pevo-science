@@ -779,7 +779,14 @@
     "hasKeychain": "¿Tienes Hive Keychain?",
     "connectKeychain": "Conectar con Keychain",
     "alreadySignedIn": "Ya has iniciado sesión.",
-    "goToPapers": "Ir a los artículos"
+    "goToPapers": "Ir a los artículos",
+    "confirm": "Confirm",
+    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
+    "uploadCancelled": "Upload cancelled."
+  },
+  "reauth": {
+    "title": "Confirm your password",
+    "message": "Enter your account password to upload files securely."
   },
   "contact": {
     "title": "Contáctenos",

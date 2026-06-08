@@ -2028,3 +2028,85 @@ pt: notifications.claimRevoked
 sv: notifications.claimRevoked
 tr: notifications.claimRevoked
 zh: notifications.claimRevoked
+
+### Added 2026-06-08 (UI-IPFS-UPLOAD-TOKEN-ROUNDTRIP)
+
+ar: common.confirm
+cs: common.confirm
+da: common.confirm
+de: common.confirm
+es: common.confirm
+fa: common.confirm
+fr: common.confirm
+he: common.confirm
+it: common.confirm
+nl: common.confirm
+pl: common.confirm
+pt: common.confirm
+sv: common.confirm
+tr: common.confirm
+zh: common.confirm
+
+ar: common.uploadReauthRequired
+cs: common.uploadReauthRequired
+da: common.uploadReauthRequired
+de: common.uploadReauthRequired
+es: common.uploadReauthRequired
+fa: common.uploadReauthRequired
+fr: common.uploadReauthRequired
+he: common.uploadReauthRequired
+it: common.uploadReauthRequired
+nl: common.uploadReauthRequired
+pl: common.uploadReauthRequired
+pt: common.uploadReauthRequired
+sv: common.uploadReauthRequired
+tr: common.uploadReauthRequired
+zh: common.uploadReauthRequired
+
+ar: common.uploadCancelled
+cs: common.uploadCancelled
+da: common.uploadCancelled
+de: common.uploadCancelled
+es: common.uploadCancelled
+fa: common.uploadCancelled
+fr: common.uploadCancelled
+he: common.uploadCancelled
+it: common.uploadCancelled
+nl: common.uploadCancelled
+pl: common.uploadCancelled
+pt: common.uploadCancelled
+sv: common.uploadCancelled
+tr: common.uploadCancelled
+zh: common.uploadCancelled
+
+ar: reauth.title
+cs: reauth.title
+da: reauth.title
+de: reauth.title
+es: reauth.title
+fa: reauth.title
+fr: reauth.title
+he: reauth.title
+it: reauth.title
+nl: reauth.title
+pl: reauth.title
+pt: reauth.title
+sv: reauth.title
+tr: reauth.title
+zh: reauth.title
+
+ar: reauth.message
+cs: reauth.message
+da: reauth.message
+de: reauth.message
+es: reauth.message
+fa: reauth.message
+fr: reauth.message
+he: reauth.message
+it: reauth.message
+nl: reauth.message
+pl: reauth.message
+pt: reauth.message
+sv: reauth.message
+tr: reauth.message
+zh: reauth.message

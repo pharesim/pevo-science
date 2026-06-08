@@ -768,8 +768,11 @@
     "discard": "Discard",
     "close": "Close",
     "cancel": "Cancel",
+    "confirm": "Confirm",
     "loading": "Loading...",
     "uploadFailed": "Upload failed",
+    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
+    "uploadCancelled": "Upload cancelled.",
     "publishingFailed": "Publishing failed",
     "loadVersionFailed": "Failed to load version",
     "diffLoadFailed": "Failed to load versions for comparison",
@@ -784,6 +787,10 @@
     "connectKeychain": "Connect with Keychain",
     "alreadySignedIn": "You are already signed in.",
     "goToPapers": "Go to Papers"
+  },
+  "reauth": {
+    "title": "Confirm your password",
+    "message": "Enter your account password to upload files securely."
   },
   "contact": {
     "title": "Contact Us",

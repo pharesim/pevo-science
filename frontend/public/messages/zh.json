@@ -779,7 +779,14 @@
     "hasKeychain": "已安装 Hive Keychain？",
     "connectKeychain": "使用 Keychain 连接",
     "alreadySignedIn": "您已登录。",
-    "goToPapers": "浏览论文"
+    "goToPapers": "浏览论文",
+    "confirm": "Confirm",
+    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
+    "uploadCancelled": "Upload cancelled."
+  },
+  "reauth": {
+    "title": "Confirm your password",
+    "message": "Enter your account password to upload files securely."
   },
   "contact": {
     "title": "联系我们",

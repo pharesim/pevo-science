@@ -15,8 +15,20 @@ vi.mock('../../src/editor.js', () => ({
   createEditor: (...args) => mockCreateEditor(...args),
 }));
 
+// Upload now goes through the batch session in lib/ipfs-upload.js. The page
+// drives `createUploadSession().upload(file)`; route every upload through one
+// controllable fn so tests set per-case resolve/reject.
+const mockSessionUpload = vi.fn();
+vi.mock('../../src/lib/ipfs-upload.js', () => ({
+  createUploadSession: () => ({ upload: (...a) => mockSessionUpload(...a), dispose: vi.fn() }),
+  uploadFile: (...a) => mockSessionUpload(...a),
+  describeUploadError: (err) =>
+    err?.code === 'UPLOAD_REAUTH_UNAVAILABLE' ? 'common.uploadReauthRequired'
+      : err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+        : 'common.uploadFailed',
+}));
+
 vi.mock('../../src/api.js', () => ({
-  uploadToIpfs: vi.fn(),
   fetchDisciplines: vi.fn(() => Promise.resolve({ data: [] })),
   fetchAccreditations: vi.fn(() => Promise.resolve({ data: [] })),
 }));
@@ -57,7 +69,6 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { broadcastOps } from '../../src/signer.js';
-import { uploadToIpfs } from '../../src/api.js';
 import { initPublishPage } from '../../src/pages/publish.js';
 
 function createComponent(overrides = {}) {
@@ -391,7 +402,7 @@ describe('publishPage', () => {
 
     it('writes ipfs_cid and document_hash to metadata when a PDF is attached', async () => {
       broadcastOps.mockResolvedValue({ tx_id: 'tx' });
-      uploadToIpfs.mockResolvedValue({ data: { cid: 'bafyPDF', filename: 'paper.pdf' } });
+      mockSessionUpload.mockResolvedValue({ data: { cid: 'bafyPDF', filename: 'paper.pdf' } });
 
       const comp = validComponent();
       comp.pdfFile = { name: 'paper.pdf', size: 1000, type: 'application/pdf' };
@@ -427,7 +438,7 @@ describe('publishPage', () => {
     // throws a separate i18n'd Error for the outer catch to surface.
     it('sanitizes supplementary upload failure: generic message to sf.error, raw err to console.warn', async () => {
       const leaky = new Error('ipfs boom hex=deadbeefcafebabe');
-      uploadToIpfs.mockRejectedValueOnce(leaky);
+      mockSessionUpload.mockRejectedValueOnce(leaky);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = validComponent();
       comp.supplementaryFiles = [{

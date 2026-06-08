@@ -779,7 +779,14 @@
     "hasKeychain": "יש לכם Hive Keychain?",
     "connectKeychain": "התחברות עם Keychain",
     "alreadySignedIn": "אתם כבר מחוברים.",
-    "goToPapers": "למאמרים"
+    "goToPapers": "למאמרים",
+    "confirm": "Confirm",
+    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
+    "uploadCancelled": "Upload cancelled."
+  },
+  "reauth": {
+    "title": "Confirm your password",
+    "message": "Enter your account password to upload files securely."
   },
   "contact": {
     "title": "צרו קשר",

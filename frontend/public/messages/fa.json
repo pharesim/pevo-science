@@ -779,7 +779,14 @@
     "hasKeychain": "Hive Keychain دارید؟",
     "connectKeychain": "اتصال با Keychain",
     "alreadySignedIn": "شما قبلاً وارد شده‌اید.",
-    "goToPapers": "رفتن به مقالات"
+    "goToPapers": "رفتن به مقالات",
+    "confirm": "Confirm",
+    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
+    "uploadCancelled": "Upload cancelled."
+  },
+  "reauth": {
+    "title": "Confirm your password",
+    "message": "Enter your account password to upload files securely."
   },
   "contact": {
     "title": "تماس با ما",

@@ -19,6 +19,13 @@ vi.mock('../../src/sign-request.js', () => ({
   })),
 }));
 
+// uploadFileToIpfs hashes the file via crypto.js; stub it for a deterministic
+// digest so the descriptor assertions are stable (real hashing is covered in
+// crypto.test.js).
+vi.mock('../../src/crypto.js', () => ({
+  sha256File: vi.fn(async () => 'a'.repeat(64)),
+}));
+
 import {
   ApiRequestError,
   fetchPlatformStats,
@@ -31,6 +38,8 @@ import {
   resumeSignup,
   confirmAccount,
   linkExistingAccount,
+  mintIpfsUploadProof,
+  uploadFileToIpfs,
 } from '../../src/api.js';
 
 // Helper: build a mock Response-like object for fetch.
@@ -429,5 +438,87 @@ describe('signup-session-binding cookie credentials', () => {
     expect(url).toBe('/api/auth/link');
     expect(init.method).toBe('POST');
     expect(init.credentials).toBe('same-origin');
+  });
+});
+
+describe('mintIpfsUploadProof', () => {
+  let fetchSpy;
+  afterEach(() => { fetchSpy?.mockRestore(); });
+
+  it('POSTs /api/custody/fresh-auth with the ipfs_upload action + password and returns the proof', async () => {
+    authStore = { token: 'jwt-light', username: 'alice', custody: 'light' };
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      mockJsonResponse(200, { status: 'ok', data: { fresh_auth_proof: 'proof-xyz', expires_at: 't' } }),
+    );
+
+    const proof = await mintIpfsUploadProof('hunter2');
+    expect(proof).toBe('proof-xyz');
+
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/custody/fresh-auth');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-light', 'Content-Type': 'application/json' });
+    expect(JSON.parse(init.body)).toEqual({ action: 'ipfs_upload', password: 'hunter2' });
+  });
+});
+
+describe('uploadFileToIpfs', () => {
+  let fetchSpy;
+  const makeFile = () => new Blob(['test-bytes'], { type: 'application/pdf' });
+  afterEach(() => { fetchSpy?.mockRestore(); });
+
+  it('self-custody signs the upload-token descriptor (no Bearer, no proof) then uploads with the token', async () => {
+    authStore = { token: 'jwt-self', username: 'bob', custody: 'self' };
+    fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(mockJsonResponse(200, { status: 'ok', data: { upload_token: 'tok-1', expires_in: 60 } }))
+      .mockResolvedValueOnce(mockJsonResponse(200, { status: 'ok', data: { cid: 'bafy', filename: 'paper.pdf' } }));
+
+    const res = await uploadFileToIpfs(makeFile());
+    expect(res.data.cid).toBe('bafy');
+
+    const [tokenUrl, tokenInit] = fetchSpy.mock.calls[0];
+    expect(tokenUrl).toBe('/api/ipfs/upload-token');
+    expect(tokenInit.headers).toMatchObject({ 'X-Hive-Signature': 'stub-sig', 'Content-Type': 'application/json' });
+    expect(tokenInit.headers.Authorization).toBeUndefined();
+    expect(JSON.parse(tokenInit.body)).toMatchObject({ file_sha256: 'a'.repeat(64), mimetype: 'application/pdf' });
+    expect('fresh_auth_proof' in JSON.parse(tokenInit.body)).toBe(false);
+
+    const [uploadUrl, uploadInit] = fetchSpy.mock.calls[1];
+    expect(uploadUrl).toBe('/api/ipfs/upload');
+    expect(uploadInit.headers).toMatchObject({ Authorization: 'Bearer jwt-self', 'X-Upload-Token': 'tok-1' });
+    expect(uploadInit.body).toBeInstanceOf(FormData);
+  });
+
+  it('light account sends the fresh-auth proof in the upload-token body and the token on upload', async () => {
+    authStore = { token: 'jwt-light', username: 'alice', custody: 'light' };
+    fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(mockJsonResponse(200, { status: 'ok', data: { upload_token: 'tok-2', expires_in: 60 } }))
+      .mockResolvedValueOnce(mockJsonResponse(200, { status: 'ok', data: { cid: 'bafy2', filename: 'f.pdf' } }));
+
+    const res = await uploadFileToIpfs(makeFile(), { freshAuthProof: 'proof-abc' });
+    expect(res.data.cid).toBe('bafy2');
+
+    const [tokenUrl, tokenInit] = fetchSpy.mock.calls[0];
+    expect(tokenUrl).toBe('/api/ipfs/upload-token');
+    expect(tokenInit.headers).toMatchObject({ Authorization: 'Bearer jwt-light' });
+    expect(JSON.parse(tokenInit.body)).toMatchObject({ file_sha256: 'a'.repeat(64), mimetype: 'application/pdf', fresh_auth_proof: 'proof-abc' });
+
+    const [uploadUrl, uploadInit] = fetchSpy.mock.calls[1];
+    expect(uploadUrl).toBe('/api/ipfs/upload');
+    expect(uploadInit.headers).toMatchObject({ Authorization: 'Bearer jwt-light', 'X-Upload-Token': 'tok-2' });
+  });
+
+  it('light account without a proof throws FRESH_AUTH_REQUIRED before any pre-flight is sent', async () => {
+    authStore = { token: 'jwt-light', username: 'alice', custody: 'light' };
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJsonResponse(200, { status: 'ok', data: {} }));
+    await expect(uploadFileToIpfs(makeFile())).rejects.toMatchObject({ code: 'FRESH_AUTH_REQUIRED' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('throws UNAUTHORIZED when no session is present', async () => {
+    authStore = null;
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJsonResponse(200, { status: 'ok', data: {} }));
+    await expect(uploadFileToIpfs(makeFile())).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

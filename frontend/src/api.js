@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { signRequest } from './sign-request.js';
+import { sha256File } from './crypto.js';
 
 const BASE_URL = '/api';
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -174,11 +175,76 @@ export function fetchDisciplines() {
 
 // ─── IPFS ────────────────────────────────────────────────────────
 
-export function uploadToIpfs(file) {
+// Mint a single-use, per-action fresh-auth proof bound to (ipfs_upload,
+// <username>, '') so the light-account (JWT) upload-token pre-flight can prove
+// fresh re-auth. Password path only: the backend re-verifies the account
+// password and rejects passwordless (ORCID-only) accounts with the same 401 it
+// returns for a wrong password. The proof is single-use, so callers mint one
+// per file. Returns the proof string. See `agents/docs/api-contracts/ipfs.md`.
+export async function mintIpfsUploadProof(password) {
+  const res = await authenticatedRequest('/custody/fresh-auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'ipfs_upload', password }),
+  });
+  return res.data.fresh_auth_proof;
+}
+
+// Two-step IPFS upload for one file: (1) a pre-flight that binds the file's
+// SHA-256 to the authenticated request and mints a single-use upload token,
+// then (2) the multipart upload carrying that token in `X-Upload-Token`.
+//
+// Only the pre-flight differs by custody. Self-custody (Keychain) signs the
+// descriptor — the signature body-hashes the declared SHA-256, so no fresh-auth
+// proof is needed (one Keychain prompt per file). Light accounts (JWT) cannot
+// sign per request, so the pre-flight carries a per-action `fresh_auth_proof`
+// (mint via `mintIpfsUploadProof`), supplied by the caller. The upload itself
+// is gated by the single-use token, not the auth method, so both custody types
+// authenticate it with their session JWT — self-custody therefore pays no
+// second signature. The upload orchestration (credential prompt, State-C
+// gating, per-file minting, retry) lives in `lib/ipfs-upload.js`.
+export async function uploadFileToIpfs(file, { freshAuthProof } = {}) {
+  const auth = Alpine.store('auth');
+  const username = auth?.username;
+  if (!username) throw new ApiRequestError('UNAUTHORIZED', 'Not logged in');
+
+  const descriptor = {
+    file_sha256: await sha256File(file),
+    mimetype: file.type,
+    size: file.size,
+  };
+
+  let uploadToken;
+  if (auth?.custody === 'self') {
+    const signed = await signRequest(username, 'POST', '/api/ipfs/upload-token', descriptor);
+    const tokenRes = await request('/ipfs/upload-token', {
+      method: 'POST',
+      headers: { ...signed.headers, 'Content-Type': 'application/json' },
+      body: signed.body,
+    });
+    uploadToken = tokenRes.data.upload_token;
+  } else {
+    if (!freshAuthProof) {
+      throw new ApiRequestError(
+        'FRESH_AUTH_REQUIRED',
+        'Re-authentication required to upload',
+        null,
+        { reason: 'missing' },
+      );
+    }
+    const tokenRes = await authenticatedRequest('/ipfs/upload-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...descriptor, fresh_auth_proof: freshAuthProof }),
+    });
+    uploadToken = tokenRes.data.upload_token;
+  }
+
   const formData = new FormData();
   formData.append('file', file);
   return authenticatedRequest('/ipfs/upload', {
     method: 'POST',
+    headers: { 'X-Upload-Token': uploadToken },
     body: formData,
   });
 }

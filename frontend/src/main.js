@@ -27,6 +27,7 @@ import { initCommentComposer } from './components/comment-composer.js';
 import { initVoteButtons } from './components/vote-buttons.js';
 import { initVouchSection } from './components/vouch-section.js';
 import { initBroadcastConfirm } from './components/broadcast-confirm.js';
+import { initReauthModal } from './components/reauth-modal.js';
 import { initPaperFeed } from './components/paper-feed.js';
 import { initPagination } from './components/pagination.js';
 
@@ -61,6 +62,7 @@ initCommentComposer();
 initVoteButtons();
 initVouchSection();
 initBroadcastConfirm();
+initReauthModal();
 initPaperFeed();
 initPagination();
 

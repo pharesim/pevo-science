@@ -779,7 +779,14 @@
     "hasKeychain": "Har du Hive Keychain?",
     "connectKeychain": "Forbind med Keychain",
     "alreadySignedIn": "Du er allerede logget ind.",
-    "goToPapers": "Gå til publikationer"
+    "goToPapers": "Gå til publikationer",
+    "confirm": "Confirm",
+    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
+    "uploadCancelled": "Upload cancelled."
+  },
+  "reauth": {
+    "title": "Confirm your password",
+    "message": "Enter your account password to upload files securely."
   },
   "contact": {
     "title": "Kontakt os",

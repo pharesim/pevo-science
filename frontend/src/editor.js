@@ -14,7 +14,7 @@ import remarkMath from 'remark-math';
 import remarkGfm from 'remark-gfm';
 import DOMPurify from 'dompurify';
 import { visit } from 'unist-util-visit';
-import { uploadToIpfs } from './api.js';
+import { uploadFile, describeUploadError } from './lib/ipfs-upload.js';
 import { escapeHtml } from './lib/escape-html.js';
 
 // --- Markdown -> HTML conversion ---
@@ -1169,7 +1169,7 @@ export class PevoEditor {
         return;
       }
 
-      const result = await uploadToIpfs(file);
+      const result = await uploadFile(file);
       if (result.data?.cid) {
         const gateway = (window.__PEVO_CONFIG__?.ipfsGateway) || '/api/ipfs/';
         const ipfsUrl = `${gateway.replace(/\/+$/, '')}/${result.data.cid}`;
@@ -1179,7 +1179,11 @@ export class PevoEditor {
       console.warn('[editor image upload]', err);
       try {
         const Alpine = (await import('alpinejs')).default;
-        Alpine.store('toast')?.show(this._t('imageUploadFailed'), 'error');
+        const key = describeUploadError(err);
+        const msg = key === 'common.uploadFailed'
+          ? this._t('imageUploadFailed')
+          : (Alpine.store('i18n')?.t(key) || this._t('imageUploadFailed'));
+        Alpine.store('toast')?.show(msg, 'error');
       } catch { /* toast unavailable */ }
     } finally {
       this.isUploading = false;

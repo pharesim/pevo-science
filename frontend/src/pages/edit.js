@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } from '../api.js';
+import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache } from '../api.js';
+import { createUploadSession, describeUploadError } from '../lib/ipfs-upload.js';
 import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
@@ -1027,25 +1028,35 @@ export function initEditPage() {
         const uploadedSupplementary = [...this.existingSupplementaryFiles];
         if (this.supplementaryFiles.length > 0) {
           this.step = 'uploading';
-          for (const sf of this.supplementaryFiles) {
-            sf.uploading = true;
-            try {
-              const res = await uploadToIpfs(sf.file);
-              if (!this._mounted) return;
-              sf.cid = res.data.cid;
-              uploadedSupplementary.push({
-                cid: res.data.cid,
-                filename: sf.fileName,
-                size: sf.file.size,
-                description: sf.description,
-                type: sf.file.type,
-              });
-            } catch {
-              sf.error = this.$t('publish.supplementaryUploadFailed', { name: sf.fileName });
-              throw new Error(sf.error);
-            } finally {
-              sf.uploading = false;
+          // One upload batch: the session prompts a light account for its
+          // password once, then mints a fresh proof per file. dispose() wipes it.
+          const uploadSession = createUploadSession();
+          try {
+            for (const sf of this.supplementaryFiles) {
+              sf.uploading = true;
+              try {
+                const res = await uploadSession.upload(sf.file);
+                if (!this._mounted) return;
+                sf.cid = res.data.cid;
+                uploadedSupplementary.push({
+                  cid: res.data.cid,
+                  filename: sf.fileName,
+                  size: sf.file.size,
+                  description: sf.description,
+                  type: sf.file.type,
+                });
+              } catch (err) {
+                // Inline error shows the actionable message for State-C / cancel
+                // and the generic per-file message otherwise; the thrown Error
+                // (swallowed by the outer catch) just aborts.
+                sf.error = this.$t(describeUploadError(err));
+                throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
+              } finally {
+                sf.uploading = false;
+              }
             }
+          } finally {
+            uploadSession.dispose();
           }
         }
 

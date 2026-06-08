@@ -1,7 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../src/api.js', () => ({
-  uploadToIpfs: vi.fn(),
+// editor.js uploads inline images via the single-shot helper in the upload lib.
+const mockUploadFile = vi.fn();
+vi.mock('../../src/lib/ipfs-upload.js', () => ({
+  uploadFile: (...a) => mockUploadFile(...a),
+  createUploadSession: () => ({ upload: (...a) => mockUploadFile(...a), dispose: vi.fn() }),
+  describeUploadError: (err) =>
+    err?.code === 'UPLOAD_REAUTH_UNAVAILABLE' ? 'common.uploadReauthRequired'
+      : err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+        : 'common.uploadFailed',
 }));
 
 // Minimal Alpine mock used by PevoEditor._handleImageUpload's dynamic import.
@@ -25,7 +32,6 @@ import {
   isImageFile,
   PevoEditor,
 } from '../../src/editor.js';
-import { uploadToIpfs } from '../../src/api.js';
 
 // --- markdownToHtml ---
 
@@ -305,7 +311,7 @@ describe('PevoEditor._handleImageUpload error sanitization', () => {
 
   it('generic key bound to toast, raw err to warn, no leak', async () => {
     const err = leakyError();
-    uploadToIpfs.mockRejectedValue(err);
+    mockUploadFile.mockRejectedValue(err);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     // Stub the editor instance without invoking the DOM-mounting constructor.
