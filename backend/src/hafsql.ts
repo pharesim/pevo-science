@@ -774,10 +774,19 @@ export function authorshipClaimsCteBody(
             -- approve_authorship signer gate: a self-signed approve (signer =
             -- claimer) is not a valid trust grant; only the post author or
             -- bridge can approve a co-author claim. Mirrors reputation.ts
-            -- accepted_claims.
+            -- accepted_claims. The self-asserted ap.paper_author read here is
+            -- harmless even though the ap.approver IN (ap.paper_author, ...)
+            -- gate references it: the approval is correlated to cb (a REAL
+            -- claim_authorship op via claims_base) and cb.paper_author is validated
+            -- as a real root post by the list-final EXISTS below, so ap.paper_author
+            -- must equal that validated value, making the signer the genuine post
+            -- author. (The notification claim_approved/claim_revoked arms lacked
+            -- this claim-base correlation and so needed an explicit
+            -- claimer-to-recipient gate to close the same self-referential vector.)
             AND ap.approver IN (ap.paper_author, $${bridgeIdx})
         ) AND EXISTS (
-          -- List-final gate (hive-schemas.md §2.9/2.10): approval binds the
+          -- List-final gate (per the Claim / Approve Authorship schemas in
+          -- hive-schemas.md): approval binds the
           -- claimer to a slot NAMED AT POSTING; author_index must resolve to an
           -- existing authors[] object entry. Mirrors reputation.ts accepted_claims
           -- so the cycle and read surfaces accept identically; without it an

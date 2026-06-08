@@ -367,6 +367,12 @@ describe('notification-queries.ts arm semantics', () => {
           p(author, permlink, json_metadata) AS (
             VALUES ('bob'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
           ),
+          -- alice's REAL claim_authorship op on bob/paper1 (signed by alice). The
+          -- claim-correlation gate fires the approve only because this row exists; a
+          -- victim who never claimed has no such row (see the victim canary below).
+          claims(required_posting_auths, json, custom_id) AS (
+            VALUES ('["alice"]'::jsonb, '{"action":"claim_authorship","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text)
+          ),
           cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
             -- mallory self-signs and self-names as paper_author of a fake paper -> no real paper -> dropped
             ('["mallory"]'::jsonb,    '{"action":"approve_authorship","claimer":"alice","paper_author":"mallory","paper_permlink":"fake"}'::jsonb, 'pevotest'::text, 100),
@@ -391,11 +397,20 @@ describe('notification-queries.ts arm semantics', () => {
             )
             OR cj.required_posting_auths ->> 0 = $2
           )
+          -- Claim-correlation gate: $1 must have a REAL claim on the same paper.
+          AND EXISTS (
+            SELECT 1 FROM claims cl
+            WHERE cl.custom_id = 'pevotest'
+              AND cl.json ->> 'action' = 'claim_authorship'
+              AND cl.json ->> 'paper_author' = cj.json ->> 'paper_author'
+              AND cl.json ->> 'paper_permlink' = cj.json ->> 'paper_permlink'
+              AND cl.required_posting_auths ->> 0 = $1
+          )
           AND cj.block_num > 0
       `;
       const r = await pool.query<{ hit_count: number }>(sql, ['alice', 'pevo.bridge']);
       // mallory (fake paper) + carol (real paper, not its author) dropped;
-      // bob (actual author) + pevo.bridge (param) fire.
+      // bob (actual author) + pevo.bridge (param) fire (alice DID claim bob/paper1).
       expect(r.rows[0]?.hit_count).toBe(2);
     },
   );
@@ -410,6 +425,11 @@ describe('notification-queries.ts arm semantics', () => {
         WITH
           p(author, permlink, json_metadata) AS (
             VALUES ('bob'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
+          ),
+          -- alice's REAL claim_authorship op on bob/paper1; the claim-correlation
+          -- gate fires the revoke only because this exists.
+          claims(required_posting_auths, json, custom_id) AS (
+            VALUES ('["alice"]'::jsonb, '{"action":"claim_authorship","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text)
           ),
           cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
             -- mallory self-signs and self-names as paper_author of a fake paper -> dropped
@@ -440,14 +460,155 @@ describe('notification-queries.ts arm semantics', () => {
               cj.json ->> 'claimer', $2, $3
             )
           )
+          -- Claim-correlation gate: $1 must have a REAL claim on the same paper.
+          AND EXISTS (
+            SELECT 1 FROM claims cl
+            WHERE cl.custom_id = 'pevotest'
+              AND cl.json ->> 'action' = 'claim_authorship'
+              AND cl.json ->> 'paper_author' = cj.json ->> 'paper_author'
+              AND cl.json ->> 'paper_permlink' = cj.json ->> 'paper_permlink'
+              AND cl.required_posting_auths ->> 0 = $1
+          )
           AND cj.block_num > 0
       `;
       const r = await pool.query<{ hit_count: number }>(sql, ['alice', 'pevo.bridge', 'pevo.admin']);
       // mallory (fake paper) + carol (real paper, not author/claimer/bridge/admin) dropped;
-      // bob (actual author) + alice(self) + bridge + admin fire.
+      // bob (actual author) + alice(self) + bridge + admin fire (alice DID claim bob/paper1).
       expect(r.rows[0]?.hit_count).toBe(4);
     },
   );
+
+  // Claim-correlation gate — the canary the signer-gate task omitted. An
+  // accredited owner approving their OWN real paper while naming a victim who
+  // never claimed must NOT notify the victim. Same signer + same paper for both
+  // recipients; only the one with a real claim is notified.
+  it.skipIf(!isHafConfigured())(
+    'arm-8 claim-correlation: an approve naming a non-claiming victim does not notify; the real claimer does',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const sql = `
+        WITH
+          p(author, permlink, json_metadata) AS (
+            VALUES ('bob'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
+          ),
+          -- alice claimed bob/paper1; eve never claimed anything.
+          claims(required_posting_auths, json, custom_id) AS (
+            VALUES ('["alice"]'::jsonb, '{"action":"claim_authorship","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text)
+          ),
+          cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+            -- bob (the REAL author) approves his own paper naming eve (no claim)
+            ('["bob"]'::jsonb, '{"action":"approve_authorship","claimer":"eve","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 101),
+            -- bob approves his own paper naming alice (who DID claim)
+            ('["bob"]'::jsonb, '{"action":"approve_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 102)
+          )
+        SELECT COUNT(*)::int AS hit_count FROM cj
+        WHERE cj.custom_id = 'pevotest'
+          AND cj.json ->> 'action' = 'approve_authorship'
+          AND cj.json ->> 'claimer' = $1
+          AND EXISTS (
+            SELECT 1 FROM p ap_paper
+            WHERE ap_paper.author = cj.json ->> 'paper_author'
+              AND ap_paper.permlink = cj.json ->> 'paper_permlink'
+              AND (ap_paper.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+              AND cj.required_posting_auths ->> 0 = ap_paper.author
+          )
+          AND EXISTS (
+            SELECT 1 FROM claims cl
+            WHERE cl.custom_id = 'pevotest'
+              AND cl.json ->> 'action' = 'claim_authorship'
+              AND cl.json ->> 'paper_author' = cj.json ->> 'paper_author'
+              AND cl.json ->> 'paper_permlink' = cj.json ->> 'paper_permlink'
+              AND cl.required_posting_auths ->> 0 = $1
+          )
+          AND cj.block_num > 0
+      `;
+      // eve never claimed -> signer gate passes (bob is the real author) but the
+      // correlation gate drops it: no spurious "claim approved" for the victim.
+      const victim = await pool.query<{ hit_count: number }>(sql, ['eve']);
+      expect(victim.rows[0]?.hit_count).toBe(0);
+      // alice DID claim bob/paper1 -> the same approve, same signer, fires for her.
+      const claimer = await pool.query<{ hit_count: number }>(sql, ['alice']);
+      expect(claimer.rows[0]?.hit_count).toBe(1);
+    },
+  );
+
+  // Per-paper dedup: an approve re-broadcast/edited on the same paper collapses
+  // to one notification via the DISTINCT ON (paper_author, paper_permlink) wrapper.
+  it.skipIf(!isHafConfigured())(
+    'arm-8 dedup: three identical approve broadcasts on one paper collapse to one notification',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const sql = `
+        WITH
+          p(author, permlink, json_metadata) AS (
+            VALUES ('bob'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
+          ),
+          claims(required_posting_auths, json, custom_id) AS (
+            VALUES ('["alice"]'::jsonb, '{"action":"claim_authorship","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text)
+          ),
+          cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+            ('["bob"]'::jsonb, '{"action":"approve_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 101),
+            ('["bob"]'::jsonb, '{"action":"approve_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 102),
+            ('["bob"]'::jsonb, '{"action":"approve_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 103)
+          )
+        SELECT COUNT(*)::int AS hit_count FROM (
+          SELECT DISTINCT ON (cj.json ->> 'paper_author', cj.json ->> 'paper_permlink') cj.block_num
+          FROM cj
+          WHERE cj.custom_id = 'pevotest'
+            AND cj.json ->> 'action' = 'approve_authorship'
+            AND cj.json ->> 'claimer' = $1
+            AND EXISTS (
+              SELECT 1 FROM p ap_paper
+              WHERE ap_paper.author = cj.json ->> 'paper_author'
+                AND ap_paper.permlink = cj.json ->> 'paper_permlink'
+                AND (ap_paper.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+                AND cj.required_posting_auths ->> 0 = ap_paper.author
+            )
+            AND EXISTS (
+              SELECT 1 FROM claims cl
+              WHERE cl.custom_id = 'pevotest'
+                AND cl.json ->> 'action' = 'claim_authorship'
+                AND cl.json ->> 'paper_author' = cj.json ->> 'paper_author'
+                AND cl.json ->> 'paper_permlink' = cj.json ->> 'paper_permlink'
+                AND cl.required_posting_auths ->> 0 = $1
+            )
+            AND cj.block_num > 0
+          ORDER BY cj.json ->> 'paper_author', cj.json ->> 'paper_permlink', cj.block_num ASC
+        ) dedup
+      `;
+      // DISTINCT ON collapses the three identical broadcasts to one (without it: 3).
+      const r = await pool.query<{ hit_count: number }>(sql, ['alice']);
+      expect(r.rows[0]?.hit_count).toBe(1);
+    },
+  );
+
+  // Source-level shape pin (always runs, no infra): the claim-correlation EXISTS
+  // and per-paper DISTINCT ON must be present in BOTH arms 8 and 9, and the
+  // section-number schema citations must be schema-name anchors. Pins arm 9's
+  // parity without a full behavioral duplicate (arms 8/9 share the gate shape).
+  it('arms 8/9 source carries the claim-correlation EXISTS, per-paper DISTINCT ON, and schema-name anchors', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(
+      fileURLToPath(new URL('../src/notification-queries.ts', import.meta.url)),
+      'utf8',
+    );
+    // Claim-correlation EXISTS binds the recipient ($1) to a real claim on the same
+    // paper — once per arm (claim_approved + claim_revoked).
+    expect(src.match(/cl\.required_posting_auths ->> 0 = \$1/g)?.length).toBe(2);
+    expect(src.match(/cl\.json::jsonb ->> 'action' = 'claim_authorship'/g)?.length).toBe(2);
+    // Per-paper dedup wrapper present in both arms.
+    expect(src.match(/DISTINCT ON \(cj\.json::jsonb ->> 'paper_author', cj\.json::jsonb ->> 'paper_permlink'\)/g)?.length).toBe(2);
+    // Section-number schema citations converted to schema-name anchors.
+    expect(src).not.toContain('§ 2.10');
+    expect(src).not.toContain('§ 2.11');
+    expect(src).toContain('Approve Authorship schema');
+    expect(src).toContain('Revoke Authorship schema');
+  });
 
   // ── Arms 2a/2b/2c (new_vote) content filter + target_type ───────
   // Votes must only notify for PEvO papers/reviews, with the right
