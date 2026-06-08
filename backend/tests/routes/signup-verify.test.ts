@@ -15,9 +15,13 @@ import { signRequestBound as signRequestBoundShared } from '../support/sign-requ
 //       verifyHiveSignature are all real here. Cryptographic signature
 //       verification is NOT bypassed in this file — only the chain-write
 //       seams above are mocked.
-//   (c) Real-path companion: signed-request signature verification against
-//       the same /confirm + /link routes with a real broadcast outcome is
-//       exercised in signup-verify-concurrent-activation.test.ts.
+//   (c) Real-path companion: signed-request signature verification (the real
+//       verifyHiveSignature middleware against signed requests) is exercised
+//       for the /link route in signup-verify-concurrent-activation.test.ts.
+//       /confirm carries no verifyHiveSignature middleware: its resume-path
+//       auth is the in-handler posting-key check, so /confirm's real-auth
+//       coverage in THIS file is the argon2 + pg path of clause (b), not
+//       middleware signature verification.
 const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock } = vi.hoisted(() => ({
   getAccountsMock: vi.fn().mockResolvedValue([]),
   broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'mock-tx' }),
@@ -176,7 +180,7 @@ async function seedOrcidNonce(nonce: string, orcidId: string, name = 'Test Resea
 // must start/end alphanumeric. Derive a short suffix from RUN_ID that fits.
 const SUFFIX = (RUN_ID % 100000).toString(36).padStart(4, '0').slice(-6);
 
-describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm without password', () => {
+describe.skipIf(!dbReachable)('ORCID signup + confirm without password (email+ORCID path, password_hash = NULL)', () => {
   const username = `sec004np${SUFFIX}`;
   const email = `sec004be_no_${RUN_ID}@example.com`;
   const orcidId = '0000-0001-0000-0001';
@@ -261,7 +265,7 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm without passwo
 // Action 2 — ORCID signup WITH password → login works
 // ──────────────────────────────────────────────────────────────
 
-describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password', () => {
+describe.skipIf(!dbReachable)('ORCID signup + confirm WITH password (ORCID-match then password-confirm path)', () => {
   const username = `sec004wp${SUFFIX}`;
   const email = `sec004be_wp_${RUN_ID}@example.com`;
   const password = 'OrcidOptIn1';

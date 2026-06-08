@@ -68,3 +68,11 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 **Why this slipped — widen the acceptance grep:** the task's acceptance grep (`BACKEND-[A-Z]|round-[0-9]|…`) does not match the `SEC-`/`BE-` slug-prefix family, so its "zero hits" was a false-clean. Before moving back to `review/`, re-grep each touched file with the widened pattern `BACKEND-[A-Z]|BE-[A-Z]|UI-[A-Z]|SEC-[0-9]|round-[0-9]|\.ts:[0-9]+|§ ?[0-9]+\.[0-9]+|project_[a-z_]+|see the task|task acceptance` and confirm zero hits. (A `/ce-compound` entry capturing this widened canonical pattern is being written at archive of the sibling sweep tasks.)
 
 Move back to `tasks/review/` once both items land; the move is the re-review signal.
+
+## Backend re-review signal (2026-06-08, working tree):
+
+Both round-2 hold items landed in `tests/routes/signup-verify.test.ts`:
+1. Reworded the two `SEC-004-BE`-prefixed describe titles to behavioral titles ("ORCID signup + confirm without password (email+ORCID path, password_hash = NULL)" / "ORCID signup + confirm WITH password (ORCID-match then password-confirm path)").
+2. Carve-out clause (c) reworded: scopes the signed-request signature-verification (real `verifyHiveSignature` middleware) claim to `/link` only, and notes `/confirm` carries no `verifyHiveSignature` middleware (its resume-path auth is the in-handler posting-key check), so `/confirm`'s real-auth coverage in this file is the argon2 + pg path of clause (b).
+
+Audit-own-replacement: no new slug/round-N/line-number/SHA/§ anchor. Widened-pattern in-file grep returns zero hits. `npm run typecheck` + `npm run lint` clean; label/comment-only, behavior parity.
