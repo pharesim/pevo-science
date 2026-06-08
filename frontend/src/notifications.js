@@ -108,7 +108,16 @@ export function initNotifications() {
             }).slice(0, MAX_EVENTS);
           }
           if (batch.latest_block > cursor) {
-            setCursor(username, batch.latest_block);
+            // The server applies its LIMIT after the in-app since_block cursor
+            // filter, so a `has_more` response means events sharing latest_block
+            // (or just beyond it) were cut from this batch. Advancing the cursor
+            // straight to latest_block would let the next poll's strict
+            // since_block filter skip those undelivered boundary events. Rewind
+            // to latest_block - 1 so the boundary block is re-fetched; the dedup
+            // key (block_num_type_actor_permlink) collapses the re-rendered
+            // overlap so the user never sees a duplicate.
+            const nextCursor = batch.has_more ? batch.latest_block - 1 : batch.latest_block;
+            setCursor(username, nextCursor);
           }
         }
 

@@ -28,6 +28,26 @@ When a poll response has `has_more === true`, do not advance the cursor past und
 
 The route currently recomputes `has_more` incorrectly (forced `false` whenever the in-app cursor filter removes any event), so a rewind consumer built today would never fire. The fix is item 2 of the architect hold on `backend-notifications-cache-key-since-block-miss` (coupled with the window-batch starvation redesign, item 1, which also changes what `has_more` ranges over). The backend agent moves this task to `pending/` when those hold items land, per the note in that hold block.
 
+## UI implementation note (2026-06-08)
+
+Implemented in `frontend/src/notifications.js` poll loop: the cursor-advance now
+reads `batch.has_more` and writes `latest_block - 1` when true, `latest_block`
+otherwise. Unit coverage added in `frontend/tests/unit/notifications.test.js`
+(`cursor update` block): has_more=true rewinds to latest_block-1, has_more=false
+advances to latest_block, plus a two-poll case proving the boundary block is
+re-fetched on the next poll and the overlap is deduplicated by the existing SPA
+key. Full notifications unit suite green (27 tests); frontend build green.
+
+**For architect during review — contract-doc discrepancy:** `agents/docs/api-contracts/notifications.md`
+(the `has_more` field-details bullet) instructs clients to "re-poll with
+`since_block` = `latest_block`". That advice drops intra-block boundary events:
+the route filter is strict `> since_block`, so re-polling at `latest_block` skips
+any events sharing `latest_block` that the LIMIT cut. This task (and the
+implemented fix) use `latest_block - 1` to re-fetch the boundary block. The
+contract file is architect-owned; flagging rather than editing it. Recommend
+updating that bullet to `latest_block - 1` (or documenting the rewind) so the
+contract and the SPA agree.
+
 ## Cross-references
 
 - frontend/src/notifications.js (poll loop, cursor advance).

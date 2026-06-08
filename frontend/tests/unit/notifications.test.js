@@ -293,5 +293,56 @@ describe('notifications store', () => {
       const cursorCalls = localStorage.setItem.mock.calls.filter((c) => c[0] === 'pevo_notification_cursor_alice');
       expect(cursorCalls).toHaveLength(0);
     });
+
+    // When the server's LIMIT cut the batch mid-window it reports has_more=true.
+    // Advancing the cursor to latest_block would skip events sharing that block
+    // (or just beyond it) on the next poll, so the cursor rewinds one block.
+    it('rewinds cursor to latest_block - 1 when has_more is true', async () => {
+      mockFetchNotifications.mockResolvedValue({
+        status: 'ok',
+        data: {
+          events: [{ block_num: 99, type: 'new_review', actor: 'a', permlink: 're-x' }],
+          latest_block: 99,
+          has_more: true,
+        },
+      });
+      store.start('alice');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_notification_cursor_alice', '98');
+    });
+
+    it('advances cursor to latest_block when has_more is false', async () => {
+      mockFetchNotifications.mockResolvedValue({
+        status: 'ok',
+        data: {
+          events: [{ block_num: 99, type: 'new_review', actor: 'a', permlink: 're-x' }],
+          latest_block: 99,
+          has_more: false,
+        },
+      });
+      store.start('alice');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_notification_cursor_alice', '99');
+    });
+
+    // End-to-end across the rewind: poll 1 cuts at block 99 (has_more) and
+    // rewinds the cursor to 98; poll 2 re-fetches from 98, re-delivering the
+    // block-99 boundary event plus the previously-cut remainder. The dedup key
+    // keeps the re-fetched boundary event from rendering twice.
+    it('re-fetches the boundary block on the next poll and dedups the overlap', async () => {
+      const boundary = { block_num: 99, type: 'new_review', actor: 'rev', permlink: 're-x' };
+      const remainder = { block_num: 99, type: 'new_review', actor: 'rev2', permlink: 're-y' };
+      mockFetchNotifications
+        .mockResolvedValueOnce({ status: 'ok', data: { events: [boundary], latest_block: 99, has_more: true } })
+        .mockResolvedValueOnce({ status: 'ok', data: { events: [boundary, remainder], latest_block: 99, has_more: false } });
+      store.start('alice');
+      await vi.advanceTimersByTimeAsync(0); // poll 1: since_block 0, rewinds cursor to 98
+      expect(mockFetchNotifications).toHaveBeenNthCalledWith(1, 0, 50);
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // scheduled poll 2 fires
+      expect(mockFetchNotifications).toHaveBeenNthCalledWith(2, 98, 50);
+      expect(store.events.filter((e) => e.permlink === 're-x')).toHaveLength(1);
+      expect(store.events.some((e) => e.permlink === 're-y')).toBe(true);
+      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_notification_cursor_alice', '99');
+    });
   });
 });
