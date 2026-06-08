@@ -389,13 +389,19 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
         ? await runWithArgon2Slot(() => argon2.hash(new_password!, ARGON2_OPTIONS), { signal: abortSignal })
         : null;
 
+      // Compute the invalidation timestamp in Node rather than SQL NOW() so the
+      // exact epoch-ms written to sessions_invalidated_at can be embedded in the
+      // fresh token's `reissuedAt` claim below. verifyHiveSignature uses that
+      // identity match to let this reissued token survive same-second revocation
+      // while a pre-reset token minted in the same integer second is still revoked.
+      const invalidatedAt = new Date();
       await pool.query(
         `UPDATE accounts
          SET password_hash = $1,
              email = $2,
-             sessions_invalidated_at = NOW()
-         WHERE id = $3`,
-        [passwordHash, normalizedEmail, account.id],
+             sessions_invalidated_at = $3
+         WHERE id = $4`,
+        [passwordHash, normalizedEmail, invalidatedAt, account.id],
       );
 
       pool.query(
@@ -405,7 +411,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
 
       const custody = account.upgraded_at ? 'self' : (account.custody || 'light');
       const token = jwt.sign(
-        { sub: account.username, custody },
+        { sub: account.username, custody, reissuedAt: invalidatedAt.getTime() },
         config.sessionSecret,
         { expiresIn: SESSION_EXPIRY },
       );
@@ -525,6 +531,12 @@ router.post('/recover/verify', recoverLimiter, async (req: Request, res: Respons
     // erasure. The forensic trail that survives is the anonymized
     // custody_audit_log account_recovery row written here, which records that a
     // recovery occurred without retaining the erased user's contact digests.
+    // Computed in Node (not SQL NOW()) so the exact epoch-ms written to
+    // sessions_invalidated_at can be embedded in the reissued token's
+    // `reissuedAt` claim below — the identity that lets verifyHiveSignature spare
+    // this token from same-second revocation while still revoking a pre-reset
+    // token minted in the same integer second.
+    const invalidatedAt = new Date();
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -532,9 +544,9 @@ router.post('/recover/verify', recoverLimiter, async (req: Request, res: Respons
         `UPDATE accounts
          SET password_hash = COALESCE($1, password_hash),
              email = $2,
-             sessions_invalidated_at = NOW()
-         WHERE id = $3`,
-        [staged.new_password_hash, staged.new_email, account.id],
+             sessions_invalidated_at = $3
+         WHERE id = $4`,
+        [staged.new_password_hash, staged.new_email, invalidatedAt, account.id],
       );
       await client.query(
         'UPDATE pending_recovery SET consumed_at = NOW() WHERE id = $1',
@@ -554,7 +566,7 @@ router.post('/recover/verify', recoverLimiter, async (req: Request, res: Respons
 
     const custody = account.upgraded_at ? 'self' : (account.custody || 'light');
     const sessionJwt = jwt.sign(
-      { sub: account.username, custody },
+      { sub: account.username, custody, reissuedAt: invalidatedAt.getTime() },
       config.sessionSecret,
       { expiresIn: SESSION_EXPIRY },
     );
