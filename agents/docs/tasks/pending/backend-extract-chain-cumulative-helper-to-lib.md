@@ -36,7 +36,7 @@ Extract two symbols into `backend/src/lib/chain-cumulative.ts`:
 
 - Changing the helper's signature or the option-bag shape (architect ratification already accepted `prebuiltChainPosts` as the contract).
 - Changing the cache key, TTL, or epoch-guard behavior (parent task `backend-cumulative-union-listing-surfaces-parity` carries the epoch-guard fix; coordinate the two landings so the extraction either lands before or after the parent task's hold cycle, not in parallel).
-- Extracting `findCanonicalRoot` or `resolveContinuationChain` — both stay in `papers.ts` for now; this task is scoped to the cumulative-union helper + its enrichment loop.
+- (SUPERSEDED 2026-06-08) The original scope kept `findCanonicalRoot` and `resolveContinuationChain` in `papers.ts`. The 2026-06-08 architect decision (option b) lifts that: the chain-walker closure now moves to lib. See the decision block at the end of this file for the authoritative scope.
 
 ## Coordination
 
@@ -60,7 +60,7 @@ When this task does land, fold the **affiliation strip** into the shared `enrich
 
 Unblock condition met: `backend-cumulative-union-listing-surfaces-parity` archived 2026-05-26 (round-4 clean), so the cumulative-union helper is at its final post-review shape. No parallel-landing merge-conflict risk remains. Moving `blocked/` → `pending/` for backend pickup. The affiliation-strip dedup folded in above is in scope.
 
-## [BLOCKED by Architect] (2026-06-02)
+## [BLOCKED by Architect] (2026-06-02) — RESOLVED 2026-06-08 (option b; see decision block at end of file)
 
 Backend verification before pickup surfaced a design fork the task spec does not
 resolve, so this needs an architect layering decision before it can land cleanly.
@@ -108,3 +108,51 @@ layering question is answered.
 **Unblock condition.** Architect rules on the layering fork (a / b / DI) and
 updates the Out-of-scope + Acceptance sections, then `git mv`s this file back to
 `pending/`. Backend then extracts per the agreed shape and re-points the two tests.
+
+## Architect decision (2026-06-08) — RESOLVED: option (b), full move to lib; moved to `pending/`
+
+Layering fork resolved in favor of **(b): move the cumulative helper AND its
+chain-walker dependency closure into `backend/src/lib/`**, for clean routes→lib
+layering with zero lib→route imports. This is the largest-blast-radius option,
+chosen deliberately for the clean end-state. Directed shape:
+
+- **Cumulative helpers → `backend/src/lib/chain-cumulative.ts`:**
+  `resolveChainCumulativeAuthors`, `computeChainCumulativeFromHaf`,
+  `buildChainCumulativeFromPosts`, the new `enrichRowsWithChainAuthors`, and the
+  `ChainCumulativeAuthorsResult` type.
+- **Chain-walker closure moves too — exclusion lifted.** `computeChainCumulativeFromHaf`
+  transitively needs the forward/backward walker pair: `resolveContinuationChain`,
+  `reconstructVersionsFromHaf`, AND `findCanonicalRoot` (the original Out-of-scope
+  kept the latter two in `papers.ts`; that is now lifted). Move the walker set into
+  a chain-domain lib module. The backend determines each walker's full call-site set
+  and places it to satisfy the invariant below: if a walker is cumulative-only it
+  may live in `chain-cumulative.ts`; if `papers.ts` still calls it on non-cumulative
+  paths (detail/version surfaces), put it in a shared `lib/chain-walkers.ts` that
+  BOTH `papers.ts` and `chain-cumulative.ts` import.
+- **`safePevoMeta` → neutral shared home, NOT the chain module.** It is a general
+  metadata sanitizer (16 `papers.ts` call-sites, only depends on `config.appTag`),
+  not chain-specific. Fold it into `backend/src/helpers.ts` (already references it)
+  or a small `backend/src/lib/pevo-meta.ts`, imported by both `papers.ts` and the
+  chain lib. Do not bury a general helper in a chain module.
+- **Signature unchanged.** Unlike the DI alternative, (b) keeps
+  `resolveChainCumulativeAuthors`'s signature and the `prebuiltChainPosts`
+  option-bag exactly as ratified — the existing Out-of-scope "no signature change"
+  still holds.
+
+**Invariant (hard acceptance):** after the move, no `import ... from './papers.js'`
+(or `../routes/papers.js`) for ANY moved symbol anywhere in the tree, AND no
+`import` of a `routes/` module inside any new `lib/` file (zero lib→route edges).
+Plus the existing acceptance: the two tests
+(`papers-cumulative-cross-surface-parity-mocked.test.ts`,
+`profile-papers-empty-cumulative-fallback.test.ts`) re-point to the lib module per
+the 2026-06-02 note; `npm run typecheck` + `npm run lint` clean; no behavioral
+change (cache key / TTL / epoch-guard unchanged).
+
+**Coordination gate (hard).** Option (b)'s ~57-ref churn across `papers.ts` collides
+with every in-flight `papers.ts` task. Land this ONLY after the papers.ts-touching
+siblings archive: `backend-papers-listing-correlated-subqueries`,
+`backend-citation-count-inverted-cte`, `backend-citation-export-format-escape`,
+`backend-cite-export-pevo-metadata-key-mismatch` (currently review/), and
+`backend-papers-listing-votes-aggregate-cte` (currently pending/). Backend confirms
+these have archived at pickup; if any still edits `fetchPapersFromHaf` or a walker
+body, wait. Sequence this last among the papers.ts queue.
