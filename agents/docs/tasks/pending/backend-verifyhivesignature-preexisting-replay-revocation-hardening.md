@@ -33,7 +33,7 @@ Per item, either land the fix with a test (concurrent-replay test under a SETNX-
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
-## [BLOCKED by Architect] (2026-06-05) — triage clarification requested
+## [BLOCKED by Architect] (2026-06-05) — triage clarification requested — RESOLVED 2026-06-08 (fix all three; see decision block at end of file)
 
 Per the user, handing this back to the architect to clarify the triage before backend implements. The task bundles three pre-existing `verifyHiveSignature.ts` edge cases, all in one production file, where item 1 is an explicit fix-vs-accept decision:
 
@@ -42,3 +42,46 @@ Per the user, handing this back to the architect to clarify the triage before ba
 3. **iat-absent JWTs skip the session-invalidation check** — `if (payload.iat)` gates the entire `sessions_invalidated_at` lookup, so a token with no `iat` bypasses revocation. Real gap.
 
 Items 2 and 3 are clear fixes; item 1 is the open call. Requesting the architect confirm the item-1 disposition (and whether to land 2+3 in the same pass or split) before backend implements. Moving to `blocked/` until clarified.
+
+## Architect decision (2026-06-08) — RESOLVED: fix all three, land together; moved to `pending/`
+
+Item-1 disposition: **FIX** (not accept-as-residual). It is an in-process race, so
+single-instance topology does not mitigate it; it exposes the non-idempotent PEvO
+sinks (vouch, accreditation request); and the fix reuses an established, tested
+synchronous-claim discipline at low cost. An accepted-residual on a replay-protection
+path would be re-flagged at every future security review. Land all three in one pass
+on `verifyHiveSignature.ts`.
+
+- **Item 1 — fix.** On the Redis-failure fallback branch inside `isReplaySignature`,
+  claim the signature in `seenSignatures` **synchronously (check-then-add) BEFORE the
+  `await getAccounts`**, rather than relying on `recordSignatureInMemory` running after
+  the await. Mirror the synchronous-claim discipline of `inFlightConsumes`
+  (`lib/ipfs-upload-token.ts`, `lib/fresh-auth.ts`): `has(sig) → treat as replay`;
+  else `add(sig)` then proceed. Guard map pollution by recording only after the cheap
+  structural validity check the middleware already does (do not record arbitrary
+  attacker bytes); the existing TTL sweep caps the map. The Redis-healthy path is
+  unchanged. Test per the in-memory-fallback discipline in
+  `agents/docs/solutions/conventions/redis-multi-rejection-retry-precondition-isredisavailable-2026-05-19.md`:
+  under a SETNX-throw stub, two concurrent identical signatures → exactly one passes.
+- **Item 2 — fix.** Same-second revocation: keep second-granularity comparison but
+  exempt the freshly-minted post-reset token **by identity** (the token whose `iat`
+  equals the post-reset mint must survive), rather than flipping `<` to `<=` (which
+  would also admit a pre-reset same-second token). Test the same-second boundary both
+  ways: pre-reset same-second token rejected, fresh post-reset same-second token
+  survives.
+- **Item 3 — fix, fail-closed.** Replace the `if (payload.iat)` gate so an absent/
+  non-numeric `iat` on the JWT path returns 401 rather than skipping the
+  `sessions_invalidated_at` lookup, so revocation completeness no longer rides on the
+  unenforced "every mint sets `iat`" cross-file invariant. Test: `iat`-absent JWT
+  rejected.
+
+**Build on the already-landed fail-closed catch.** `backend-session-invalidation-fail-closed`'s
+catch→503 (+ `details.retriable`, + de-emdashed strings) is already on `main` (that task
+sits in `review/` awaiting archive only). Branch from `main`; do NOT touch or reintroduce
+the catch block — item 2 edits the comparison inside the `try`, item 3 edits the
+`if (payload.iat)` gate. No code-collision dependency remains, which is why this task is
+now actionable.
+
+**Soft coordination (not a gate).** If `backend-anchor-rot-sweep-signup-verify` ends up
+editing comment anchors in `verifyHiveSignature.ts`, the overlap is comments-vs-logic and
+rebases trivially. Stage narrowly and re-verify the staged set before committing.
