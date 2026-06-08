@@ -61,3 +61,13 @@ Held items 2 and 3 landed (held item 1 duplicate-spam was already closed by the 
 - (item 2, test) Added an arm-6b BRIDGE behavioral `it.skipIf` test seeding `user_bridge_papers` (registered → hit, unregistered fake permlink → no hit), mirroring the arm-6a structure with the arm-6b shape (no `cited_ref.author = $1` clause).
 - (item 1, optional) Added the DISTINCT ON dedup regression test (a citations array naming the same ref 3x → one notification).
 `npm run typecheck` + `npm run lint` clean; notification-arm-semantics + notifications-arm-sql-shape green.
+
+---
+
+## Architect re-review (2026-06-08) — HELD PENDING FIXES
+
+`/ce-code-review` fan-out (correctness, testing, project-standards, maintainability) on commit 5a43c51c. The 2026-05-30 held items are RESOLVED: `COALESCE(cited_paper.title, '')` parity restored in both arms 6a/6b (matches sibling new_review arms 1a/1b exactly; the projection change does not affect the DISTINCT ON dedup key), the regression guard flipped to assert COALESCE present ×2, and the new arm-6b bridge test + DISTINCT ON dedup test both discriminate. One item blocks archive:
+
+1. **Bridge spam=0 case cannot catch a dropped `bp`-JOIN (P2, tests).** In the new arm-6b bridge test the spam permlink (`pevo.bridge/fake`) is absent from BOTH the `bp` (user_bridge_papers) CTE AND the `cited_paper` CTE, so the `cited_paper` INNER JOIN backstops the assertion: dropping the `bp` JOIN entirely — removing the recipient-`registered_by` ownership gate so a citation of ANY registered bridge paper would notify ANY registering user, not just the one who registered that paper — still leaves `hit_count=0` for the fake row and the test stays green. Add a fixture row present in `cited_paper` (a valid bridge_paper) but NOT in `bp` (registered by a different user), and assert citing it yields `hit_count=0`, so the `bp` JOIN's `registered_by=$1` predicate is proven load-bearing. The production SQL is correct today; this closes the test's blind spot for a future regression.
+
+Optional (non-blocking, while in the file): the dedup test's subquery alias `arm_6a` is misleading for a test whose `it` title says it covers arms 6a/6b — rename to `arm_6ab` or `dedup`; and its inner SELECT projects three named columns the outer `COUNT(*)` discards — replace with a bare `1`.
