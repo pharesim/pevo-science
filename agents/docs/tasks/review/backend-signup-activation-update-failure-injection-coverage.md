@@ -57,3 +57,13 @@ Implementer's call on which seam shape; the load-bearing property is "the test e
 - Parent task `backend-signup-activation-failure-recovery-and-pool-hold` — round-1 hold finding #6's note that test gaps a/b/c are folded into their coupled hold items and d (TTL-expires-mid-holder) is folded into the hold round, leaving e as the separate task this file covers.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Backend completion note (2026-06-08)
+
+End-to-end failure-transition test added; drives the real crash, not a pre-seeded row.
+
+- **Seam (production-side, gated):** `__test_seams.failNextFinalizeUpdate(authToken)` in `signup-verify.ts` arms a one-shot, per-`auth_token` failure that `maybeThrowInjectedFinalizeFailure` raises on the fresh path AFTER `createClaimedAccount` lands but BEFORE the finalize `UPDATE` — leaving the row exactly as a real mid-finalize crash would (verify_token set, posting_key_enc NULL, chain account materialized). It propagates through `withSignupActivationLock`'s catch to the route `onError` → 500. Gated by `process.env.VITEST || NODE_ENV === 'test'` (mirrors the existing `drainArgon2Queue` guard); a no-op in production. No pg pool mock added — the pool stays real, so no carve-out clause was needed for a pool mock; the file header carve-out was updated to document the new `__test_seams` injection.
+- **Test:** new `describe` in `signup-verify-activation-recovery.test.ts` drives request 1 (fresh path, injected failure → 500, `createClaimedAccount` called once, row still recoverable) then request 2 (chain now exists → `resumeChainExists` → 200, `createClaimedAccount` still called EXACTLY ONCE = no second claim-token burn, row finalized: verify_token NULL, posting_key_enc populated).
+- **Mutation-kill (documented in the test comment):** RED if any resume-path guard is reverted — the by-`verify_token` retry re-find (retry falls to the no-row 400), the chain-account-exists check (retry re-broadcasts → once-call fails), or the `if (!resumeChainExists)` skip-re-broadcast branch (retry re-broadcasts → once-call fails).
+- **ESLint:** `no-restricted-imports` in `eslint.config.mjs` extended to forbid production imports of the new `__test_seams` (mirrors the anonymousReview guard); rule verified to fire against a probe import.
+- **Verification:** implemented by a worktree subagent (commit cherry-picked to main); parent ran the file against real Postgres — 7/7 green. `npm run typecheck` + `npm run lint` clean.
