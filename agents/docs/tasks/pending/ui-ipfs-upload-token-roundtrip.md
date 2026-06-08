@@ -32,7 +32,9 @@ Confirm the proof kind with `backend-ipfs-upload-token-proof-binding` before wir
 - `agents/docs/api-contracts/ipfs.md` — the `/upload-token` + `/upload` contract (request/response/error shapes, `X-Upload-Token`).
 - `backend/src/routes/ipfs.ts` — the server side (for the exact field names and error codes).
 
-## [BLOCKED by Backend] (2026-05-30)
+## [BLOCKED by Backend] (2026-05-30) — RESOLVED 2026-06-08 (architect, moved to `tasks/pending/`)
+
+**RESOLVED 2026-06-08.** The backend posture decision landed: `backend-ipfs-upload-token-proof-binding` archived 2026-06-06 choosing **(b) per-action target binding**. ARCHITECTURE.md § 6.4 no longer carries the "under review" note and documents that the JWT path requires a per-action `ipfs_upload`-targeted fresh-auth proof (target `(ipfs_upload, <username>, '')`); `api-contracts/ipfs.md` documents the per-action requirement; the server validates it via `ipfsUploadFreshAuthTarget` (`backend/src/lib/fresh-auth.ts`) in the upload-token route. The SPA must mint the per-action proof via `POST /api/custody/fresh-auth` with `action='ipfs_upload'` (password path) or `POST /api/orcid/start` with `mode='fresh_auth' action='ipfs_upload'` (ORCID path) before requesting the upload token. Original blocking detail preserved below.
 
 The JWT-path proof kind is still undecided. `backend-ipfs-upload-token-proof-binding`
 remains in `tasks/pending/` with its (a) session-class vs (b) per-action target-binding
