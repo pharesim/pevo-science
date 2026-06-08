@@ -106,8 +106,8 @@ Fetch notification events for the authenticated user since a given Hive block nu
 **Field details:**
 
 - `events`: Array of `NotificationEvent` objects, ordered by `block_num` ascending.
-- `latest_block`: The highest `block_num` included in this response. The client should pass this as `since_block` on the next poll to avoid gaps or duplicates. When the response contains no events, `latest_block` echoes the caller's `since_block` so the cursor holds its position.
-- `has_more`: If `true`, undelivered events newer than this response's `latest_block` exist inside the server's look-back window. The client should re-poll with `since_block` = `latest_block` to fetch the remainder rather than waiting for the next interval.
+- `latest_block`: The highest `block_num` included in this response. On the next poll the client passes a cursor derived from this value (see `has_more` for the exact rule) to avoid gaps or duplicates. When the response contains no events, `latest_block` echoes the caller's `since_block` so the cursor holds its position.
+- `has_more`: If `true`, undelivered events remain inside the server's look-back window beyond this response's delivered slice. Because the cursor filter is strict (`block_num > since_block`), the server's `limit` can cut a batch in the middle of a block, leaving events that share `latest_block` undelivered. To re-fetch them the client must re-poll with `since_block` = `latest_block - 1` (rewind one block past the boundary), not `latest_block`, which would skip the boundary block's remaining events. The re-delivered overlap is expected: clients deduplicate it by a per-event key (block, type, actor, target permlink). If `has_more` is `false`, advance the cursor to `latest_block` as normal.
 
 **Event types:**
 
