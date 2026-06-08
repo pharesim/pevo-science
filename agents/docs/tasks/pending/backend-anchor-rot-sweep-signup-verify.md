@@ -54,3 +54,17 @@ The existing `backend-anchor-rot-sweep-2026-05-21` task established the pattern 
 - 2026-05-30 architect `/ce-code-review` of `e48b1d60` — maintainability persona flagged the cluster (rated P1 net-rot) and project-standards confirmed the rot is pre-existing.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-08) — HELD PENDING FIXES:
+
+`/ce-code-review` over the sweep commit (project-standards + testing + correctness + maintainability + learnings personas). The bulk of the sweep is correct and behavior-parity is established (comment/label-only diff). Two in-scope items remain — both P3, comment/label-only, no behavior impact:
+
+1. **Two `SEC-004-BE`-prefixed describe titles survive in `backend/tests/routes/signup-verify.test.ts`** — the `describe('SEC-004-BE: ORCID signup + confirm without password', …)` and `describe('SEC-004-BE: ORCID signup + confirm WITH password', …)` blocks. `SEC-004-BE` is a task-slug citation, and this task's Scope explicitly named "`SEC-004-BE deliverable` style invocations" as a target. The sweep removed the `SEC-004-BE deliverable` mention in the carve-out header but left these two block titles. Reword both to behavioral titles (e.g., "ORCID signup + confirm without password (email+ORCID path)" / "ORCID signup + confirm WITH password (ORCID-match then password-confirm path)").
+
+2. **Carve-out clause (c) overclaims `/confirm` signature verification.** The rewritten file-header carve-out clause (c) states the real-path companion exercises signed-request signature verification "against the same `/confirm` + `/link` routes." Only `/link` carries `verifyHiveSignature` middleware; `/confirm` does not (its resume-path auth is the in-handler `verifyPostingKeyAuthorized` posting-key check, a different mechanism), and the companion file `signup-verify-concurrent-activation.test.ts`'s own header scopes its real-`verifyHiveSignature` claim to `/link`. Reword clause (c) to scope the signed-request signature-verification claim to `/link`, and (if useful) note that `/confirm`'s real-auth coverage in this file is the argon2 + pg path of clause (b), not middleware signature verification.
+
+**Audit-own-replacement (per `convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17`):** the replacement titles/prose must introduce no new slug, round-N, line-number, SHA, or `§ N.M` anchor.
+
+**Why this slipped — widen the acceptance grep:** the task's acceptance grep (`BACKEND-[A-Z]|round-[0-9]|…`) does not match the `SEC-`/`BE-` slug-prefix family, so its "zero hits" was a false-clean. Before moving back to `review/`, re-grep each touched file with the widened pattern `BACKEND-[A-Z]|BE-[A-Z]|UI-[A-Z]|SEC-[0-9]|round-[0-9]|\.ts:[0-9]+|§ ?[0-9]+\.[0-9]+|project_[a-z_]+|see the task|task acceptance` and confirm zero hits. (A `/ce-compound` entry capturing this widened canonical pattern is being written at archive of the sibling sweep tasks.)
+
+Move back to `tasks/review/` once both items land; the move is the re-review signal.
