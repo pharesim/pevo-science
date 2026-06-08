@@ -51,14 +51,16 @@ export function verifyUnsubscribeToken(username: string, token: string): boolean
 /**
  * Flatten a chain-derived free-form string to a single line for safe
  * interpolation into the plain-text email body. The first pass strips every
- * member of the shared `LINE_TERMINATORS` alphabet (CR, LF, VT, FF, NEL, LS,
- * PS); the second pass collapses remaining whitespace runs.
+ * member of the shared `LINE_TERMINATORS` alphabet (CR, LF, VT, FF, FS, GS, RS,
+ * NEL, LS, PS); the second pass collapses remaining whitespace runs.
  *
- * Why the explicit first pass when a `\s+` collapse pass follows: NEL (U+0085),
- * LS (U+2028), and PS (U+2029) are NOT `\s` members in V8, so without the first
- * pass they would survive the collapse and forge a line break in clients that
- * render them. VT and FF ARE `\s` members and would already be collapsed by the
- * second pass — the first pass does not earn its keep on those two. What the
+ * Why the explicit first pass when a `\s+` collapse pass follows: NEL (U+0085)
+ * and the C0 information separators FS/GS/RS (U+001C-U+001E) are NOT `\s`
+ * members in V8 (verified empirically), so without the first pass they would
+ * survive the collapse and forge a line break in clients (or `splitlines()`-class
+ * importers) that render them. VT, FF, LS, and PS ARE `\s` members and would
+ * already be collapsed by the second pass — the first pass does not earn its
+ * keep on those four. What the
  * SHARED constant buys is single-source-of-truth against separator-alphabet
  * drift: the citation-export escapers in `routes/papers.ts` consume the same
  * `lib/line-terminators.js` constant, so the digest and cite-export paths

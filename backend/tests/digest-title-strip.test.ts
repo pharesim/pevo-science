@@ -46,9 +46,12 @@ describe('singleLine', () => {
     expect(singleLine('a\r\nb')).toBe('a b');
   });
 
-  it('strips Unicode line terminators that are not \\s members in V8 (NEL, LS, PS)', () => {
-    // NEL (U+0085) matches neither \r/\n nor \s in V8, so the explicit
-    // line-terminator pass — not the whitespace collapse — has to catch it.
+  it('strips Unicode line terminators NEL (the non-\\s survivor), LS, PS', () => {
+    // Of these three, only NEL (U+0085) is a non-\s member in V8: it matches
+    // neither \r/\n nor \s, so the explicit LINE_TERMINATORS pass (not the
+    // whitespace collapse) is what catches it. LS (U+2028) and PS (U+2029)
+    // ARE \s members (the collapse would catch them too); they are asserted
+    // here for completeness.
     expect(singleLine('a\u0085b')).toBe('a b');
     expect(singleLine('a\u2028b')).toBe('a b');
     expect(singleLine('a\u2029b')).toBe('a b');
@@ -81,6 +84,9 @@ describe('singleLine', () => {
 const SEP = {
   FF: String.fromCharCode(0x0c),
   VT: String.fromCharCode(0x0b),
+  FS: String.fromCharCode(0x1c),
+  GS: String.fromCharCode(0x1d),
+  RS: String.fromCharCode(0x1e),
   NEL: String.fromCharCode(0x85),
   LS: String.fromCharCode(0x2028),
   PS: String.fromCharCode(0x2029),
@@ -92,6 +98,9 @@ describe('digest extended line-terminator alphabet', () => {
   const SEPARATORS: ReadonlyArray<readonly [string, string]> = [
     ['form-feed 0x0C', SEP.FF],
     ['vertical-tab 0x0B', SEP.VT],
+    ['file-separator 0x1C', SEP.FS],
+    ['group-separator 0x1D', SEP.GS],
+    ['record-separator 0x1E', SEP.RS],
     ['NEL 0x85', SEP.NEL],
     ['line-separator 0x2028', SEP.LS],
     ['paragraph-separator 0x2029', SEP.PS],
@@ -110,7 +119,7 @@ describe('digest extended line-terminator alphabet', () => {
     const payload = 'Real Paper' + SEP.FF + '- mallory endorsed your paper';
     const line = '- ' + describeEvent(reviewEvent(payload));
     expect(line.split(SEP.LF)).toHaveLength(1);
-    expect(line).not.toMatch(new RegExp('[' + SEP.VT + SEP.FF + SEP.NEL + SEP.LS + SEP.PS + ']'));
+    expect(line).not.toMatch(new RegExp('[' + SEP.VT + SEP.FF + SEP.FS + SEP.GS + SEP.RS + SEP.NEL + SEP.LS + SEP.PS + ']'));
     expect(line).toBe('- alice reviewed your paper "Real Paper - mallory endorsed your paper"');
   });
 
@@ -118,8 +127,19 @@ describe('digest extended line-terminator alphabet', () => {
     const payload = 'Real Paper' + SEP.VT + '- mallory endorsed your paper';
     const line = '- ' + describeEvent(citationEvent(payload));
     expect(line.split(SEP.LF)).toHaveLength(1);
-    expect(line).not.toMatch(new RegExp('[' + SEP.VT + SEP.FF + SEP.NEL + SEP.LS + SEP.PS + ']'));
+    expect(line).not.toMatch(new RegExp('[' + SEP.VT + SEP.FF + SEP.FS + SEP.GS + SEP.RS + SEP.NEL + SEP.LS + SEP.PS + ']'));
     expect(line).toBe('- bob cited your paper "Real Paper - mallory endorsed your paper"');
+  });
+
+  it('flattens a record-separator-forged title to a single digest line (new_review)', () => {
+    // FS/GS/RS (U+001C-U+001E) are not whitespace members in V8 and break a
+    // splitlines()-class importer; the shared LINE_TERMINATORS pass strips them
+    // so a crafted title cannot fracture one digest line into a forged second.
+    const payload = 'Real Paper' + SEP.RS + '- mallory endorsed your paper';
+    const line = '- ' + describeEvent(reviewEvent(payload));
+    expect(line.split(SEP.LF)).toHaveLength(1);
+    expect(line).not.toMatch(new RegExp('[' + SEP.VT + SEP.FF + SEP.FS + SEP.GS + SEP.RS + SEP.NEL + SEP.LS + SEP.PS + ']'));
+    expect(line).toBe('- alice reviewed your paper "Real Paper - mallory endorsed your paper"');
   });
 });
 

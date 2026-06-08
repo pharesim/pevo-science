@@ -178,28 +178,36 @@ describe('generateApa', () => {
 });
 
 // The line-terminator class must cover more than CR/LF. Form-feed (0x0C),
-// vertical-tab (0x0B), NEL (0x85), LINE SEPARATOR (0x2028), and PARAGRAPH
-// SEPARATOR (0x2029) are treated as line breaks by lenient RIS importers and
-// plain-text renderers, so a crafted title using them reaches the same
-// file-format-injection class through a wider separator alphabet. Separator
-// code points are built via String.fromCharCode so this source stays pure ASCII
-// (no invisible bytes, no transport-fragile escape sequences).
+// vertical-tab (0x0B), the C0 information separators FS/GS/RS (0x1C-0x1E), NEL
+// (0x85), LINE SEPARATOR (0x2028), and PARAGRAPH SEPARATOR (0x2029) are treated
+// as line breaks by lenient RIS importers and plain-text renderers (FS/GS/RS
+// additionally break splitlines()-class tokenizers), so a crafted title using
+// them reaches the same file-format-injection class through a wider separator
+// alphabet. Separator code points are built via String.fromCharCode so this
+// source stays pure ASCII (no invisible bytes, no transport-fragile escape
+// sequences).
 const SEP = {
   FF: String.fromCharCode(0x0c),
   VT: String.fromCharCode(0x0b),
+  FS: String.fromCharCode(0x1c),
+  GS: String.fromCharCode(0x1d),
+  RS: String.fromCharCode(0x1e),
   NEL: String.fromCharCode(0x85),
   LS: String.fromCharCode(0x2028),
   PS: String.fromCharCode(0x2029),
   CR: String.fromCharCode(0x0d),
   LF: String.fromCharCode(0x0a),
 };
-const ANY_SEP = new RegExp('[' + SEP.VT + SEP.FF + SEP.NEL + SEP.LS + SEP.PS + ']');
+const ANY_SEP = new RegExp('[' + SEP.VT + SEP.FF + SEP.FS + SEP.GS + SEP.RS + SEP.NEL + SEP.LS + SEP.PS + ']');
 const countEntries = (bib: string): number => bib.split('@article{').length - 1;
 
 describe('extended line-terminator alphabet', () => {
   const SEPARATORS: ReadonlyArray<readonly [string, string]> = [
     ['form-feed 0x0C', SEP.FF],
     ['vertical-tab 0x0B', SEP.VT],
+    ['file-separator 0x1C', SEP.FS],
+    ['group-separator 0x1D', SEP.GS],
+    ['record-separator 0x1E', SEP.RS],
     ['NEL 0x85', SEP.NEL],
     ['line-separator 0x2028', SEP.LS],
     ['paragraph-separator 0x2029', SEP.PS],
@@ -239,6 +247,27 @@ describe('extended line-terminator alphabet', () => {
 
   it('BibTeX: a line-separator-smuggled entry header cannot create a second entry', () => {
     const detail = detailWith({ title: 'X' + SEP.LS + '@article{evil, title={y' });
+    const out = generateBibtex(detail);
+    expect(countEntries(out)).toBe(1);
+    expect(out).not.toMatch(ANY_SEP);
+  });
+
+  it('RIS: a C0-separator-smuggled record (FS/GS/RS) cannot emit extra TY/ER/AU lines', () => {
+    const detail = detailWith({
+      // FS/GS/RS (0x1C-0x1E) are non-whitespace and break splitlines()-class
+      // RIS importers; a crafted title using them must not fracture into a
+      // forged second record. Mirrors the form-feed/line-separator attack above.
+      title: 'Innocent' + SEP.RS + 'ER  - ' + SEP.GS + 'TY  - JOUR' + SEP.FS + 'AU  - Forged',
+      authors: [{ name: 'Alice Smith' }],
+    });
+    const lines = generateRis(detail).split(SEP.LF);
+    expect(lines.filter((l) => l.startsWith('TY  - '))).toHaveLength(1);
+    expect(lines.filter((l) => l.startsWith('ER  -'))).toHaveLength(1);
+    expect(lines.filter((l) => l.startsWith('AU  - '))).toHaveLength(1);
+  });
+
+  it('BibTeX: a C0-separator-smuggled entry header (GS) cannot create a second entry', () => {
+    const detail = detailWith({ title: 'X' + SEP.GS + '@article{evil, title={y' });
     const out = generateBibtex(detail);
     expect(countEntries(out)).toBe(1);
     expect(out).not.toMatch(ANY_SEP);
