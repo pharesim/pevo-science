@@ -58,3 +58,35 @@ While addressing the holds, append a brief `## Implementation notes` section (th
 When both items land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next architect review scopes `/ce-code-review` to the fix commits only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Implementation notes
+
+The change is a one-line predicate added to the `active_authors` paper arm: `AND c.author = ANY($2::text[])`, where `$2` is `accreditedArr` (the same param the review arm and the `voter_weights` `unnest` join already use). Semantically equivalent for the sole consumer — `voter_weights` joins `aa.author = a.voter` over `accreditedArr`, so any non-accredited paper author the arm previously materialized was already discarded downstream. The bridge OR-arm is deliberately NOT added (a bridge account is never a voter).
+
+## Backend re-review signal (2026-06-08, commit on main)
+
+Both held items landed:
+
+**Item 2 (positional-param comment).** Reworded the paper-arm comment to drop `$2` / `$17` / `$18` and use the stable names `accreditedArr`, `hiveBridgeAccount`, `hiveAnonAccount`. No SQL change.
+
+**Item 1 (EXPLAIN evidence).** Ran `EXPLAIN (ANALYZE, BUFFERS)` against the real HAF replica (`hafsql-sql.mahdiyari.info`) for the paper arm, with vs without the new `c.author = ANY(accreditedArr)` predicate. `accreditedArr` resolved to **7** accounts (the live pevotest accredited set, via the `active_accreditations` CTE).
+
+WITH the accredited filter (landed shape):
+```
+Index Scan using hafsql_comments_table_parent_author_parent_permlink_idx on comments_table x
+  Index Cond: ((parent_author = '') AND (parent_permlink = 'pevotest'))
+  Filter: ((metadata ->> 'app') ~~ 'pevotest/%') AND (author = ANY ('{curangel,gwajnberg,jesusalejos,pboulet,pevo.science,pharesim,testaccount23652}')) AND (((metadata->'pevotest'->>'type')='paper') OR (author='pevotest.admin' AND (metadata->'pevotest'->>'type')='bridge_paper'))
+  Rows Removed by Filter: 2 ; rows=2
+```
+
+WITHOUT the filter (pre-change baseline):
+```
+Index Scan using hafsql_comments_table_parent_author_parent_permlink_idx on comments_table x
+  Index Cond: ((parent_author = '') AND (parent_permlink = 'pevotest'))
+  Filter: ((metadata ->> 'app') ~~ 'pevotest/%') AND (((metadata->'pevotest'->>'type')='paper') OR (author='pevotest.admin' AND (...)='bridge_paper'))
+  Rows Removed by Filter: 2 ; rows=2
+```
+
+Honest reading of the plan: the scan is bounded by the `(parent_author, parent_permlink)` composite index (Index Cond on `parent_permlink='pevotest'`), NOT by a true site-wide sequential scan — so the original review's "full corpus scan" framing was pessimistic. The `c.author = ANY(accreditedArr)` predicate is applied as an ADDITIONAL in-memory Filter on the index-bounded rows, trimming non-accredited PEvO authors before they materialize into `active_authors`. Both variants return the identical 2 rows (equivalence confirmed). At beta scale (7 accredited accounts, ~4 top-level pevotest posts) the runtime delta is within cache noise; the predicate's value is structural and grows with the count of PEvO posts authored by non-accredited accounts. The change is retained as semantically-equivalent defense that keeps the materialized author set bounded to the accredited universe the consumer actually uses.
+
+`npm run typecheck` + `npm run lint` clean.

@@ -590,13 +590,14 @@ export async function computeReputationBatch(
             AND c.json_metadata ->> 'app' LIKE $4
             -- Bound the paper arm to accredited authors. The only consumer,
             -- voter_weights, joins active_authors aa ON aa.author = a.voter
-            -- where a.voter = unnest($2::text[]) (accreditedArr), so any
-            -- non-accredited paper author materialized here is discarded by
-            -- that join. Filtering on c.author = ANY($2) up front avoids
-            -- scanning the full site-wide PEvO corpus for rows the consumer
-            -- can never use. Bridge accounts ($17/$18) are intentionally NOT
-            -- OR'd in: a bridge account is never a voter, so a bridge term
-            -- would re-widen the scan with zero consumer benefit.
+            -- where a.voter iterates accreditedArr, so any non-accredited
+            -- paper author materialized here is discarded by that join.
+            -- Filtering on accreditedArr up front keeps active_authors from
+            -- materializing PEvO authors the consumer can never use. The
+            -- bridge and anon-proxy accounts (hiveBridgeAccount /
+            -- hiveAnonAccount) are intentionally NOT OR'd in: neither is ever
+            -- a voter, so adding them would re-widen the set with zero
+            -- consumer benefit.
             AND c.author = ANY($2::text[])
           UNION ALL
           -- Review arm: gate on accreditation (or the anon proxy), AND
