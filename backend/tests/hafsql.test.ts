@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { getPool, isHafConfigured } from '../src/db.js';
 import {
@@ -36,6 +37,20 @@ describe('decayMultiplierSql', () => {
   it('contains exactly one GREATEST (no redundant outer floor)', () => {
     const sql = decayMultiplierSql('ur.created');
     expect((sql.match(/GREATEST\(/g) ?? []).length).toBe(1);
+  });
+
+  // Adoption pin: the three *_scores CTEs (paper / review / citation) must
+  // consume this helper, never a re-inlined copy. A one-site revert to the
+  // identical inline formula keeps the snapshots above AND every behavior test
+  // green, silently reintroducing the per-site aging desync this helper exists
+  // to kill. The helper body lives in hafsql.ts, so the inline decay token
+  // `GREATEST(w.decay_floor` must NOT appear anywhere in reputation.ts source,
+  // and the helper must be invoked exactly three times. Anchored on SQL/call
+  // tokens (not line numbers), so it survives edits elsewhere in the file.
+  it('is the sole decay source in reputation.ts — no re-inlined formula', () => {
+    const src = readFileSync(new URL('../src/reputation.ts', import.meta.url), 'utf8');
+    expect(src.match(/GREATEST\(w\.decay_floor/g) ?? []).toHaveLength(0);
+    expect(src.match(/decayMultiplierSql\(/g) ?? []).toHaveLength(3);
   });
 });
 

@@ -71,3 +71,14 @@ Extracted `decayMultiplierSql(createdExpr, opts?)` into `hafsql.ts` (mirrors the
 When item 1 lands, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next review scopes to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-08, commit on main)
+
+Item 1 (adoption pin) landed in `tests/hafsql.test.ts`, folded into the existing `decayMultiplierSql` describe block. It reads `reputation.ts` source and asserts:
+
+- `GREATEST(w.decay_floor` (the inline decay-formula token) appears **0** times in the source — the helper body lives in `hafsql.ts`, so any one-site revert to the identical inline formula re-introduces this token into `reputation.ts` and turns the test RED.
+- `decayMultiplierSql(` is invoked **exactly 3** times (paper / review / citation `*_scores` CTEs) — a site dropped entirely also turns it RED.
+
+Together these tie the three CTEs to the helper, which the snapshot + behavior tests could not: a re-inline that reproduces the exact helper output keeps the snapshot green but now trips the source-absence assertion. Anchored on SQL/call tokens, not line numbers (per the hold's instruction), so it survives unrelated edits in `reputation.ts`.
+
+`npm run typecheck` clean; the `decayMultiplierSql` describe block is green (4 tests, +1 from this pin).
