@@ -13,7 +13,7 @@
  * /api/profile/:user/reviews while still being excluded from the reputation
  * paper_reviews CTE, etc.).
  *
- * Per BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #5 + the convention
+ * Per the convention
  * `defense-in-depth-canary-must-pin-each-layer-2026-05-07`: each callsite
  * is an independent defense layer; each gets its own canary.
  *
@@ -42,19 +42,18 @@
  *                       fetchUserReviewsFromHaf (variable `selfExclude`)
  *   - search.ts:        type=review search
  *   - stats.ts:         review counter
- *   - reviews.ts:       fetchReviewFromHaf single-doc fetch (round-1 hold #1)
- *   - reputation.ts:    active_authors review arm (round-2 hold #3)
+ *   - reviews.ts:       fetchReviewFromHaf single-doc fetch
+ *   - reputation.ts:    active_authors review arm
  *                       paper_reviews CTE
  *                       user_reviews CTE
  *                       citing_paper_quality CTE
  *
- * That's 11 callsites (the architect's original "8" rolled the three
- * reputation.ts sites into one bullet; round-1 hold #1 added the
- * reviews.ts single-doc fetch site; round-2 hold #3 added the
- * `active_authors` review arm as the 4th `validReviewWhere` composition
- * site that should also compose self-exclusion; the listing's separate
- * review_count and avg_rating sites later merged into one rev_agg LATERAL,
- * dropping papers.ts from 3 to 2). The notification arms 1a/1b have their own inline
+ * That's 11 callsites: the three `reputation.ts` sites are enumerated
+ * individually above; the `reviews.ts` single-doc fetch and the
+ * `reputation.ts` `active_authors` review arm are both `validReviewWhere`
+ * composition sites that must also compose self-exclusion; the listing's
+ * `review_count` and `avg_rating` share one rev_agg LATERAL, so `papers.ts`
+ * contributes 2 (not 3). The notification arms 1a/1b have their own inline
  * `co.author != $1` predicate covered separately by
  * `notifications-arm-sql-shape.test.ts`.
  *
@@ -102,7 +101,7 @@ const CALLSITES: Callsite[] = [
   {
     file: 'src/routes/reviews.ts',
     minOccurrences: 1,
-    callsites: ['fetchReviewFromHaf single-doc fetch (round-1 hold #1)'],
+    callsites: ['fetchReviewFromHaf single-doc fetch'],
   },
   {
     file: 'src/reputation.ts',
