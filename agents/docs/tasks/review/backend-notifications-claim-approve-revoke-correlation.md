@@ -40,3 +40,18 @@ Only fire `claim_approved`/`claim_revoked` notifications when a real `claim_auth
 - `agents/docs/hive-schemas.md` (Claim / Approve / Revoke Authorship schemas).
 - Origin: archived task `backend-notifications-claim-vouch-arms-signer-gate`.
 - Related solution docs: `pevo-object-identity-is-author-vouching-not-metadata-claim`, `hive-primitive-aware-design-rules-for-pevo-custom-json-ops` (Rule 5: signer-subject binding is necessary but not sufficient — the subject must also be linked to the recipient).
+
+## Backend re-review signal (2026-06-09, commit 5dc36c0a on main)
+
+Landed all four task items.
+
+- **Claim-correlation gate (arms 8/9):** added a correlated EXISTS so `claim_approved`/`claim_revoked` fire only when a real `claim_authorship` op by `$1` exists for the same `(paper_author, paper_permlink)`. Closes the vector where an accredited owner self-signs an approve/revoke of their OWN real paper naming an arbitrary victim as `claimer`.
+- **Per-pair dedup (arms 8/9):** wrapped both in `SELECT * FROM (SELECT DISTINCT ON (paper_author, paper_permlink) ... ORDER BY ..., cj.block_num ASC) AS arm_8/9`, mirroring arms 1a/6a (earliest-wins), so a re-broadcast/edit storm yields one notification.
+- **`authorshipClaimsCteBody` cross-surface audit:** CONFIRMED SAFE, no code change. The credit subject (`cb.claimer`) is bound to a real `claims_base` (claim_authorship ops only) and `cb.paper_author` is validated as a real root post by the list-final EXISTS, so the self-asserted `ap.paper_author` must equal that validated value (`ap.approver = ap.paper_author` is then the genuine post author). The notification arms lacked this claim-base correlation, hence needed the explicit gate. Rationale recorded in-code at the approve-gate comment.
+- **Comment anchors:** converted `§ 2.9/2.10/2.11` (arms 7/8/9) to schema-name anchors; also converted the adjacent hafsql.ts list-final gate `§2.9/2.10` citation while in the file.
+
+Tests (`notification-arm-semantics.test.ts`): victim canary (approve naming a non-claiming victim → 0; the real claimer → 1), dedup canary (3 identical broadcasts → 1), a source-shape pin asserting both arms carry the correlation EXISTS + per-paper `DISTINCT ON` + schema-name anchors (pins arm-9 parity without a behavioral duplicate), plus the existing arm-8/9 gate tests updated to seed the recipient's claim. 33/33 green (incl. `notifications-arm-sql-shape`); `npm run typecheck` + `npm run lint` clean.
+
+## [TODO Architect]
+
+The behavioral firing condition for `claim_approved` / `claim_revoked` notifications changed (now requires a real recipient claim, plus per-pair dedup). The response envelope/shape is unchanged. If `agents/docs/api-contracts/notifications.md` documents the firing conditions for these event types, reflect the claim-correlation requirement and the dedup during archive.
