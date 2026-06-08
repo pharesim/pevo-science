@@ -30,6 +30,7 @@ import {
   computeReputationBatch,
   getBatchReputationMap,
   getReputationWeights,
+  HEAD_QUERY_TIMEOUT_MS,
   queryWithStatementTimeout,
   scanAllKeys,
 } from './reputation.js';
@@ -96,15 +97,14 @@ let batchRunning = false;
 const CYCLE_SWAP_STAGING_SUBSTRING = `:batch:${STAGING_SEGMENT}`;
 const CYCLE_SWAP_PROD_SUBSTRING = ':batch:';
 
-const GETHEAD_TIMEOUT_MS = 5000;
-
 async function getHeadBlock(): Promise<number> {
   const pool = getPool();
   if (!pool) return 0;
   // Bound the head read so a hung HAF replica fails the cycle fast instead of
   // stranding it on the coarse pool-level 30s default (mirrors the per-query
-  // SET LOCAL the main batch query and loadReputationWeights use).
-  const result = await queryWithStatementTimeout(pool, GETHEAD_TIMEOUT_MS, `SELECT MAX(block_num) AS head FROM ${T.blocks}`, []);
+  // SET LOCAL the main batch query and loadReputationWeights use). Shares the
+  // head-read timeout constant with computeReputationBatch's own head read.
+  const result = await queryWithStatementTimeout<{ head: string | number | null }>(pool, HEAD_QUERY_TIMEOUT_MS, `SELECT MAX(block_num) AS head FROM ${T.blocks}`, []);
   return Number(result.rows[0]?.head ?? 0);
 }
 

@@ -62,3 +62,14 @@ Wrapped the three previously-unbounded HAF reads in a per-query `statement_timeo
 When the four items land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next review scopes to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-08, commit on main)
+
+All four held items landed in one fix commit:
+
+1. (residual-bound docblock) `queryWithStatementTimeout`'s docblock now states the residual bound explicitly: only the wrapped `sql` runs under `timeoutMs`; the BEGIN, COMMIT, and ROLLBACK statements fall under the pool-level 30s `statement_timeout`, so the true worst case against a hung replica is up to 30s at BEGIN + `timeoutMs` for the query + up to 30s at COMMIT.
+2. (row-type generic) signature is now `queryWithStatementTimeout<R extends pg.QueryResultRow = pg.QueryResultRow>(...): Promise<pg.QueryResult<R>>`, threading `client.query<R>(sql, params)`. The two head reads pass `<{ head: string | number | null }>`; the main batch query passes its `{ username, score, papers, reviews, citations, accreditation }` row shape, so `.rows[0].head` / `.score` are typed, not read through the `any` default.
+3. (constant dedup) `HEAD_QUERY_TIMEOUT_MS` is exported from `reputation.ts`; `reputation-batch.ts` imports it and `getHeadBlock` uses it; `GETHEAD_TIMEOUT_MS` removed.
+4. (docblock reword) "Mirrors loadReputationWeights' connect+BEGIN pattern" → "the same connect + BEGIN + SET LOCAL scoping technique loadReputationWeights uses". `loadReputationWeights` itself was not refactored here (it is being touched by the weights signer-gate task, now in review).
+
+`npm run typecheck` + `npm run lint` clean. `reputation-batch-internals` (9) and `reputation-batch-sql-failure` pass in isolation. A cross-file `getBatchReputationMap` collision on the shared `REDIS_KEY_BATCH_MEMBERS` set appears only when those two files run in the same vitest process — that members-set test-isolation gap is the subject of `backend-redis-keys-scan-replacement` item 3, not a regression from this change.
