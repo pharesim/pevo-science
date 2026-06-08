@@ -53,6 +53,16 @@ Only `config.hiveAdminAccount`-signed `update_weights` ops may set reputation we
 - `backend/src/reputation-batch.ts` — existing `cycle_blocks` clamp (defense-in-depth precedent).
 - `backend/src/hafsql.ts` — `decayMultiplierSql` docblock (item 3).
 
+## Backend completion note (2026-06-08)
+
+Closed the P0 takeover and added value sanitization.
+
+- **Signer gate (both queries):** `loadReputationWeights` now appends `AND cj.required_posting_auths ? $2` to BOTH the cheap existence probe and the latest-op read, bound to `config.hiveAdminAccount` (singular, not widened to an authorities array). The `?` element-existence form mirrors the `retract_paper` / WoT singular-admin gate shape; `required_posting_auths` is jsonb in `operation_custom_json_view`, the same column the accreditation/WoT/consent readers gate on. A non-admin `update_weights` no longer returns from either query, so weights stay at defaults / the last admin-signed value.
+- **Value sanitization:** extracted `sanitizeReputationWeights(raw)` (exported, pure). Each known weight is accepted only if a finite number (non-numeric / NaN / ±Infinity / missing / unknown-shaped fields drop, so the caller's spread over `DEFAULT_REPUTATION_WEIGHTS` restores the default). Domain clamps: `decay_floor` and `self_citation_discount` to `[0,1]`, `decay_rate` and `decay_grace_months` to `>= 0`. `cycle_blocks` stays unbounded here (clamped `> 0` downstream in `reputation-batch.ts`). The loader now spreads `sanitizeReputationWeights(payload?.weights)` (also null-safe vs the old raw `payload.weights`).
+- **Item 3 docblock:** `decayMultiplierSql` in `hafsql.ts` now names the source of the `decay_floor <= 1.0` invariant ("which `sanitizeReputationWeights` clamps to [0, 1] at load time"), so the self-flooring claim is unconditionally true rather than resting on an unvalidated assumption.
+- **`loadReputationWeights` is now exported** so the signer-gate canary can drive it directly (consistent with the file's existing exported helpers `queryWithStatementTimeout` / `scanAllKeys` / `batchKey`).
+- **Tests:** new `tests/routes/reputation-weights-signer-gate.test.ts` — (1) a HAF-free SQL-shape canary (mocks `getPool`, carve-out clauses a/b/c documented in the header) asserting both queries carry `required_posting_auths ? $2` bound to the admin account, the latest read keeps `ORDER BY cj.block_num DESC`, and an admin payload applies + clamps (`decay_floor: 1.5 -> 1.0`); (2) pure-function unit tests pinning every clamp + the non-numeric/NaN/Infinity/unknown-field/non-object fallbacks. 9 tests green; `npm run typecheck` + `npm run lint` clean.
+
 ## On final archive (architect)
 
 Invoke `/ce-compound` to capture the convention this defect instantiates: a HAF custom_json read gated only on `custom_id` + `action` is an authentication bypass, because any Hive account can broadcast any custom_id; every consumer must additionally gate on the signing authority (`required_posting_auths`), the way the accreditation, WoT, and consent-op readers already do. Deferred until the fix lands and this task archives clean, so the documented solution reflects the verified gate shape.

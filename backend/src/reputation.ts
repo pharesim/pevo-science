@@ -319,7 +319,53 @@ export function batchMapToScoreRecord(map: Map<string, ReputationScore>): Record
 
 const WEIGHTS_TTL = 30 * 60_000;
 
-async function loadReputationWeights(): Promise<ReputationWeights> {
+/**
+ * Validate and clamp an on-chain `update_weights` payload before it overrides
+ * the defaults. Only admin-signed ops reach this (the SQL signer gate in
+ * `loadReputationWeights`), but the values themselves are still untrusted
+ * operator input: a fat-fingered or malformed payload must not poison
+ * reputation scoring. Each known weight is accepted only if it is a finite
+ * number; non-numeric, NaN, Infinity, missing, and unknown-shaped fields are
+ * dropped so the caller's spread falls back to DEFAULT_REPUTATION_WEIGHTS.
+ * Domain-bounded fields are clamped to their valid range so a downstream SQL
+ * consumer cannot receive an out-of-range multiplier:
+ *   - decay_floor            -> [0, 1]  (a multiplier; >1 would amplify, not decay)
+ *   - self_citation_discount -> [0, 1]  (a credit fraction)
+ *   - decay_rate             -> >= 0    (negative would grow weight with age)
+ *   - decay_grace_months     -> >= 0
+ * `cycle_blocks` is accepted here if finite and clamped to > 0 downstream in
+ * `reputation-batch.ts` (the catch-up-loop guard), so it stays unbounded here.
+ */
+export function sanitizeReputationWeights(raw: unknown): Partial<ReputationWeights> {
+  if (raw === null || typeof raw !== 'object') return {};
+  const input = raw as Record<string, unknown>;
+  const out: Partial<ReputationWeights> = {};
+  for (const key of Object.keys(DEFAULT_REPUTATION_WEIGHTS) as (keyof ReputationWeights)[]) {
+    const value = input[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    out[key] = value;
+  }
+  if (out.decay_floor !== undefined) out.decay_floor = Math.min(1, Math.max(0, out.decay_floor));
+  if (out.self_citation_discount !== undefined) {
+    out.self_citation_discount = Math.min(1, Math.max(0, out.self_citation_discount));
+  }
+  if (out.decay_rate !== undefined) out.decay_rate = Math.max(0, out.decay_rate);
+  if (out.decay_grace_months !== undefined) out.decay_grace_months = Math.max(0, out.decay_grace_months);
+  return out;
+}
+
+/**
+ * Load the latest on-chain reputation weights. Gated on the SIGNER: an
+ * `update_weights` custom_json is honored only when its `required_posting_auths`
+ * carries `config.hiveAdminAccount` (the same authority the write side signs
+ * with). Without this gate any Hive account could broadcast a custom_json under
+ * the app's `custom_id` and seize every reputation parameter — custom_id +
+ * action alone is unauthenticated, since any account can broadcast any custom_id.
+ * Mirrors the `required_posting_auths` gate the accreditation / WoT / consent-op
+ * readers already apply. Accepted payloads are value-sanitized via
+ * `sanitizeReputationWeights` before overriding defaults.
+ */
+export async function loadReputationWeights(): Promise<ReputationWeights> {
   const pool = getPool();
   if (!pool) return DEFAULT_REPUTATION_WEIGHTS;
 
@@ -333,8 +379,9 @@ async function loadReputationWeights(): Promise<ReputationWeights> {
       `SELECT 1 FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
          AND cj.json LIKE '%update_weights%'
+         AND cj.required_posting_auths ? $2
        LIMIT 1`,
-      [config.appTag],
+      [config.appTag, config.hiveAdminAccount],
     );
 
     if (exists.rows.length === 0) {
@@ -348,9 +395,10 @@ async function loadReputationWeights(): Promise<ReputationWeights> {
       `SELECT cj.json FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
          AND cj.json::jsonb ->> 'action' = 'update_weights'
+         AND cj.required_posting_auths ? $2
        ORDER BY cj.block_num DESC
        LIMIT 1`,
-      [config.appTag],
+      [config.appTag, config.hiveAdminAccount],
     );
     await client.query('COMMIT');
     client.release();
@@ -361,7 +409,7 @@ async function loadReputationWeights(): Promise<ReputationWeights> {
       ? JSON.parse(result.rows[0].json)
       : result.rows[0].json;
 
-    return { ...DEFAULT_REPUTATION_WEIGHTS, ...payload.weights };
+    return { ...DEFAULT_REPUTATION_WEIGHTS, ...sanitizeReputationWeights(payload?.weights) };
   } catch (err) {
     if (client) {
       await client.query('ROLLBACK').catch(() => {});
