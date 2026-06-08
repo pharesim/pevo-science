@@ -34,12 +34,15 @@
  *      pool; getReputationWeights / getCachedGenesisBlock / getAllAccredited-
  *      Accounts read cycle config and the accredited corpus; all are stubbed,
  *      and computeReputationBatch is stubbed to inject the failure / observe
- *      the call decision. Arm 3 additionally wraps redis.pipeline so one queued
- *      command's exec() tuple carries an error — a real per-command staging
- *      failure cannot be provoked deterministically against live Redis, and the
+ *      the call decision. Arm 3 additionally wraps redis.pipeline so the FIRST
+ *      returned exec() tuple carries an error while every underlying queued SET
+ *      still executes for real against live Redis (the wrap calls the real
+ *      exec() unconditionally and only rewrites the reported result) — a genuine
+ *      per-command staging failure cannot be provoked deterministically, and the
  *      guard's contract is purely the tuple-error inspection, which the wrap
- *      exercises against the real exec result shape (all other commands and the
- *      cycle:last / sentinel reads stay on real Redis).
+ *      exercises against the real exec result shape. The written staging key is
+ *      cleaned in afterEach; all other commands and the cycle:last / sentinel
+ *      reads stay on real Redis.
  *  (b) No auth/permission middleware is in scope. runBatchComputation is a
  *      scheduler internal; verifyHiveSignature does not run and is not mocked.
  *  (c) Real-path companions: reputation-lifecycle.test.ts runs
@@ -218,12 +221,16 @@ describe('reputation batch: a per-command staging error does not advance cycle:l
       new Map([[TEST_USER, { score: 50, breakdown: { papers: 30, reviews: 15, citations: 0, accreditation: 5 } }]]),
     );
 
-    // Wrap redis.pipeline so the staging pipeline's exec() surfaces a
-    // per-command error tuple (the ioredis shape: [err, result] per command),
-    // without throwing. All queued .set() calls still proxy to a real pipeline,
-    // so no production staging key is actually written for the errored command;
-    // the guard's contract is the tuple-error inspection alone. Every other
-    // Redis op in the run (cycle:last reads, sentinel keys glob) stays real.
+    // Wrap redis.pipeline so the staging pipeline's exec() returns a per-command
+    // error tuple (the ioredis shape: [err, result] per command) WITHOUT
+    // throwing. The wrap calls the real exec() unconditionally, so every queued
+    // .set() executes for real and the staging key IS written to live Redis; the
+    // spy only rewrites the FIRST returned tuple to carry an error. That
+    // written-but-"errored" staging key is exactly the partial-staging state the
+    // guard must bail on (its contract is the tuple-error inspection alone); it
+    // is cleaned by clearKeys() in afterEach, and a real run's next-cycle
+    // clearStagingKeys would drop it regardless. Every other Redis op in the run
+    // (cycle:last reads, sentinel keys glob) stays real.
     const realPipeline = redis.pipeline.bind(redis);
     const pipelineSpy = vi.spyOn(redis, 'pipeline').mockImplementation((...args: Parameters<typeof realPipeline>) => {
       const p = realPipeline(...args);
@@ -231,8 +238,11 @@ describe('reputation batch: a per-command staging error does not advance cycle:l
       p.exec = (async (...execArgs: Parameters<typeof realExec>) => {
         const res = await realExec(...execArgs);
         if (!res || res.length === 0) return res;
-        // Flip the first command's tuple to an error; leave its result slot null
-        // to mirror ioredis' error-tuple shape ([Error, null]).
+        // Rewrite the first command's RETURNED tuple to an error (result slot
+        // null, mirroring ioredis' [Error, null] error-tuple shape). The
+        // underlying SET already ran against real Redis above — only the
+        // reported result changes — which is the realistic shape of a
+        // per-command failure the guard must catch.
         return [[new Error('injected staging SET failure'), null], ...res.slice(1)];
       }) as typeof p.exec;
       return p;

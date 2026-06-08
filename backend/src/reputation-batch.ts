@@ -367,7 +367,14 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       // cycle; the next run's clearStagingKeys drops the partial set cleanly.
       const results = await pipeline.exec();
       if (!results || results.some(([err]) => err !== null)) {
-        logger.error({ cycle, userCount: users.length }, 'Reputation staging pipeline returned a per-command error; bailing without advancing cycle:last');
+        logger.error(
+          {
+            cycle,
+            userCount: users.length,
+            err: results?.find(([e]) => e !== null)?.[0]?.message,
+          },
+          'Reputation staging pipeline returned a per-command error; bailing without advancing cycle:last',
+        );
         break;
       }
 

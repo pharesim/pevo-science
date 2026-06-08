@@ -68,3 +68,16 @@ While addressing the holds, append a brief `## Implementation notes` section (th
 When both items land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next review scopes to the fix commits only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Implementation notes
+
+The staging pipeline in `runBatchComputation` builds a fresh `redis.pipeline()` queuing one `SET ${REDIS_KEY_STAGING_PREFIX}<user>` per scored user, then `await pipeline.exec()`. The guard sits between that exec and the sentinel SET + atomic `CYCLE_SWAP` Lua: `if (!results || results.some(([err]) => err !== null)) { logger.error(...); break; }`. `break` (not `continue`) leaves `cycle:last` unadvanced, so the next scheduled run re-attempts the cycle and `clearStagingKeys` drops the partial staging set before the destructive Lua path is ever reached. This closes the ioredis-`exec()`-doesn't-throw-on-per-command-error gap that would otherwise let a partially-staged set flow into the RENAME-and-advance swap.
+
+## Backend re-review signal (2026-06-08, commit on main)
+
+Both held items landed:
+
+1. (P1 testing/correctness comment accuracy) Rewrote the three Arm-3 comment sites in `reputation-batch-sql-failure.test.ts` — the test-header Arm-3 wrap description, the inline `redis.pipeline` wrap comment, and the tuple-flip comment. They no longer claim "no production staging key is actually written for the errored command" (false: the wrap calls the real `exec()` unconditionally, so every queued SET writes a real staging key; only the FIRST returned tuple is rewritten to an error). The comments now state: all queued `.set()` calls execute for real; the spy alters only the returned result tuple; the written staging key is the exact partial-staging state the guard must bail on, and is cleaned by `clearKeys()` in `afterEach` (a real run's next-cycle `clearStagingKeys` would drop it regardless); the guard's contract is the tuple-error inspection alone. No logic change.
+2. (P2 reliability) The bail `logger.error` now includes the first failed command's message: `err: results?.find(([e]) => e !== null)?.[0]?.message`, in the same single log line (zero log-volume cost), so an operator can distinguish OOM vs WRONGTYPE vs eviction.
+
+`npm run typecheck` + `npm run lint` clean; `reputation-batch-sql-failure` green (3/3) in isolation. The dismissed sibling — the unchecked `pipeline.exec()` in `backfillAccreditationSeeds` — is being addressed under `backend-redis-keys-scan-replacement` item 2 as noted at triage.
