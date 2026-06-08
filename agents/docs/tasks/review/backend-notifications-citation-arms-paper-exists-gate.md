@@ -71,3 +71,12 @@ Held items 2 and 3 landed (held item 1 duplicate-spam was already closed by the 
 1. **Bridge spam=0 case cannot catch a dropped `bp`-JOIN (P2, tests).** In the new arm-6b bridge test the spam permlink (`pevo.bridge/fake`) is absent from BOTH the `bp` (user_bridge_papers) CTE AND the `cited_paper` CTE, so the `cited_paper` INNER JOIN backstops the assertion: dropping the `bp` JOIN entirely — removing the recipient-`registered_by` ownership gate so a citation of ANY registered bridge paper would notify ANY registering user, not just the one who registered that paper — still leaves `hit_count=0` for the fake row and the test stays green. Add a fixture row present in `cited_paper` (a valid bridge_paper) but NOT in `bp` (registered by a different user), and assert citing it yields `hit_count=0`, so the `bp` JOIN's `registered_by=$1` predicate is proven load-bearing. The production SQL is correct today; this closes the test's blind spot for a future regression.
 
 Optional (non-blocking, while in the file): the dedup test's subquery alias `arm_6a` is misleading for a test whose `it` title says it covers arms 6a/6b — rename to `arm_6ab` or `dedup`; and its inner SELECT projects three named columns the outer `COUNT(*)` discards — replace with a bare `1`.
+
+## Backend re-review signal (2026-06-09, commit 1c692bf8 on main)
+
+Round-3 hold item 1 (bridge spam=0 blind spot) landed; test-only, production SQL untouched.
+
+- The arm-6b bridge test now seeds a SECOND `cited_paper` row: a valid `bridge_paper` (`pevo.bridge/other`) registered by a DIFFERENT user — present in `cited_paper` but absent from alice's `bp`. The new assertion cites it and asserts `hit_count=0`. Because the `cited_paper` INNER JOIN alone would admit a real bridge paper, that 0 now rides on the `bp` JOIN's `registered_by=$1` predicate: drop the `bp` JOIN and this case becomes a spurious hit. The `bp` ownership gate is now load-bearing in the test, closing the blind spot (the prior `pevo.bridge/fake` row is in neither CTE, so the `cited_paper` INNER JOIN backstopped it regardless of the `bp` JOIN).
+- Optional cleanups also landed: the dedup test's alias `arm_6a` → `arm_6ab` (covers both arms) and its inner `SELECT DISTINCT ON (...) <3 named cols>` → `SELECT DISTINCT ON (...) 1` (the outer `COUNT(*)` discards the projection; the DISTINCT ON 4-tuple and ORDER BY are unchanged, so dedup behavior is identical).
+
+`npm run typecheck` clean; `notification-arm-semantics` green (17/17, including the new other-user assertion and the dedup canary).
