@@ -10,9 +10,10 @@
  * real Redis for the SETNX semantics under concurrent access.
  *
  * Real-path companion (carve-out clause c):
- * `backend/tests/routes/orcid.test.ts:1040` — the `same-tick SETNX lock
- * (SEC-002-TOCTOU-LOCK)` describe block. That suite runs against the
- * project's live Redis container (resolved via `getRedis()` against
+ * the same-tick SETNX-lock contention `describe` block in
+ * `backend/tests/routes/orcid.test.ts` — the suite that drives the ORCID
+ * binding lock under concurrent same-key requests. That suite runs against
+ * the project's live Redis container (resolved via `getRedis()` against
  * `REDIS_URL`) and covers the same SETNX-contention risk class this file
  * mocks. Specifically the orcid block exercises:
  *   - SET NX with a TTL (EX/PX) on a deterministic per-orcid key
@@ -21,8 +22,8 @@
  *     same key: exactly one 200, the other 409 from the lock-held
  *     branch, with `Promise.race(...)` synchronization replacing any
  *     timing fence (matches the barrier pattern used here).
- *   - Lock TTL self-cleanup ("stale lock from a crashed holder expires
- *     after TTL and a retry succeeds" at orcid.test.ts:1192).
+ *   - Lock TTL self-cleanup (its stale-lock-expiry spec: a stale lock
+ *     from a crashed holder expires after TTL and a retry succeeds).
  *   - Lua CAS release via the production path's finally block: the
  *     winner's release runs the registered CAS-release Lua script
  *     under `withOrcidBindingLock`, and post-release lock-key absence
@@ -298,8 +299,7 @@ async function signedPost(path: string, username: string, body: Record<string, u
  * timing pair so the test is deterministic under CI load (slow GC, parallel
  * workers, event-loop contention). Polling-based (zero-delay yield via
  * `setImmediate`) because `FakeRedis.store` doesn't expose a
- * change-notification primitive; typical wait is sub-millisecond. See
- * `backend-bridge-test-fence-replace-setTimeout` in tasks-archive.md.
+ * change-notification primitive; typical wait is sub-millisecond.
  */
 async function waitForLockAcquired(lockKey: string, timeoutMs = 200): Promise<void> {
   const start = Date.now();

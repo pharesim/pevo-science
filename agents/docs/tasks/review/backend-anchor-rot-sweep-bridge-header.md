@@ -33,3 +33,12 @@ The prior `backend-anchor-rot-sweep-bridge-tests` task (archived) scoped itself 
 - `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend completion (2026-06-08, working tree):
+
+All three sites in `bridge-haf-lag-locks.test.ts` re-anchored on stable behavioral/symbol semantics:
+1. Header "Real-path companion" docblock — dropped the `orcid.test.ts:1040`/`:1192` line numbers; re-anchored on "the same-tick SETNX-lock contention `describe` block in `orcid.test.ts`" and its stale-lock-expiry spec.
+2. Dropped the `(SEC-002-TOCTOU-LOCK)` slug parenthetical.
+3. `waitForLockAcquired` docblock — dropped the `tasks-archive.md` redirect sentence (the setTimeout-stagger rationale is already inline).
+
+Widened in-file grep (`BACKEND-[A-Z]|BE-[A-Z]|UI-[A-Z]|SEC-[0-9]|round-[0-9]|.ts:[0-9]+|§ ?[0-9]+.[0-9]+|project_[a-z_]+|see the task|task acceptance|tasks-archive`) returns zero hits. Audit-own-replacement: no new rot class. `npm run typecheck` + `npm run lint` clean (lone pre-existing `author-supersession.ts` unused-directive warning, not in scope); comment-only, behavior parity.
