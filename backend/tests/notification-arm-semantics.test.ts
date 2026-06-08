@@ -156,8 +156,7 @@ describe('notification-queries.ts arm semantics', () => {
           )
         SELECT COUNT(*)::int AS hit_count
         FROM (
-          SELECT DISTINCT ON (citing.author, citing.permlink, cited_ref.author, cited_ref.permlink)
-            citing.author AS citing_author, cited_ref.author AS cited_author, cited_ref.permlink AS cited_permlink
+          SELECT DISTINCT ON (citing.author, citing.permlink, cited_ref.author, cited_ref.permlink) 1
           FROM citing
           CROSS JOIN LATERAL jsonb_array_elements(
             CASE WHEN jsonb_typeof(citing.json_metadata -> 'pevotest' -> 'citations') = 'array'
@@ -177,7 +176,7 @@ describe('notification-queries.ts arm semantics', () => {
             AND cited_ref.author = $1
             AND (citing.json_metadata -> 'pevotest' ->> 'type') = 'paper'
           ORDER BY citing.author, citing.permlink, cited_ref.author, cited_ref.permlink, citing.block_num ASC
-        ) AS arm_6a
+        ) AS arm_6ab
       `;
 
       const dupes = JSON.stringify({
@@ -220,7 +219,14 @@ describe('notification-queries.ts arm semantics', () => {
           citing(author, json_metadata, block_num) AS (VALUES ('bob'::text, $2::jsonb, 100)),
           bp(author, permlink) AS (VALUES ('pevo.bridge'::text, 'real'::text)),
           cited_paper(author, permlink, title, json_metadata) AS (
-            VALUES ('pevo.bridge'::text, 'real'::text, 'Bridge Paper'::text,
+            VALUES
+              ('pevo.bridge'::text, 'real'::text, 'Bridge Paper'::text,
+                    '{"pevotest":{"type":"bridge_paper"}}'::jsonb),
+              -- A valid bridge paper registered by a DIFFERENT user: present in
+              -- cited_paper (the belt-and-suspenders validPevoPaperWhere gate) but
+              -- absent from bp (alice's user_bridge_papers). It exists so the
+              -- bp-JOIN-dropped regression has something to slip through.
+              ('pevo.bridge'::text, 'other'::text, 'Another User Bridge Paper'::text,
                     '{"pevotest":{"type":"bridge_paper"}}'::jsonb)
           )
         SELECT COUNT(*)::int AS hit_count, MIN(COALESCE(cited_paper.title, '')) AS title
@@ -255,6 +261,18 @@ describe('notification-queries.ts arm semantics', () => {
       const legitResult = await pool.query<{ hit_count: number; title: string }>(sql, ['alice', legit]);
       expect(legitResult.rows[0]?.hit_count).toBe(1);
       expect(legitResult.rows[0]?.title).toBe('Bridge Paper');
+
+      // A valid bridge paper registered by ANOTHER user: present in cited_paper
+      // but absent from alice's bp. Must yield 0. Because the cited_paper INNER
+      // JOIN alone would admit it (it is a real bridge_paper), a 0 here proves the
+      // bp JOIN's registered_by=$1 ownership gate is load-bearing — drop the bp
+      // JOIN and this turns into a spurious notification to alice about a paper she
+      // never registered. (The earlier fake-permlink spam case cannot catch that
+      // regression: pevo.bridge/fake is in neither bp nor cited_paper, so the
+      // cited_paper INNER JOIN backstops it regardless of the bp JOIN.)
+      const otherUser = JSON.stringify({ pevotest: { type: 'paper', citations: [{ author: 'pevo.bridge', permlink: 'other' }] } });
+      const otherResult = await pool.query<{ hit_count: number }>(sql, ['alice', otherUser]);
+      expect(otherResult.rows[0]?.hit_count).toBe(0);
     },
   );
 
