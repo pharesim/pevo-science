@@ -109,7 +109,7 @@ layering question is answered.
 updates the Out-of-scope + Acceptance sections, then `git mv`s this file back to
 `pending/`. Backend then extracts per the agreed shape and re-points the two tests.
 
-## Architect decision (2026-06-08) — RESOLVED: option (b), full move to lib; moved to `pending/`
+## Architect decision (2026-06-08) — RESOLVED: option (b), full move to lib (design fork closed; task stays in `blocked/` on sibling sequencing — see `[BLOCKED by Backend]` note below)
 
 Layering fork resolved in favor of **(b): move the cumulative helper AND its
 chain-walker dependency closure into `backend/src/lib/`**, for clean routes→lib
@@ -156,3 +156,22 @@ siblings archive: `backend-papers-listing-correlated-subqueries`,
 `backend-papers-listing-votes-aggregate-cte` (currently pending/). Backend confirms
 these have archived at pickup; if any still edits `fetchPapersFromHaf` or a walker
 body, wait. Sequence this last among the papers.ts queue.
+
+## [BLOCKED by Backend] (2026-06-08)
+
+The architect layering decision (option b, above) closes the design fork — no
+further architect input is needed, and the task is ready to implement *as written*.
+But it is NOT yet actionable: the Coordination gate makes landing it conditional on
+the five in-flight `papers.ts` tasks archiving first, otherwise the ~57-ref churn
+collides. Kept in `blocked/` rather than `pending/` so the backend startup listing
+does not surface it as pickup-ready before its sequencing dependency clears (same
+posture as `backend-haf-query-comment-anchor-sweep`, which waits on its own sibling
+set to archive).
+
+**Unblock condition:** all five papers.ts-touching siblings archive
+(`backend-papers-listing-correlated-subqueries`, `backend-citation-count-inverted-cte`,
+`backend-citation-export-format-escape`, `backend-cite-export-pevo-metadata-key-mismatch`,
+`backend-papers-listing-votes-aggregate-cte`). The architect archives tasks, so the
+architect moves this file `blocked/` → `pending/` upon archiving the last of the five
+(the backend may also move it once it confirms all five are archived and `papers.ts`
+is quiescent). At that point the design is final and pickup needs no further decisions.
