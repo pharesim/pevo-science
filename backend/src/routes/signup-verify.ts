@@ -38,6 +38,39 @@ import { withSignupActivationLock } from '../lib/signup-activation-lock.js';
 const router = Router();
 
 /**
+ * Test-only injection: arm a one-shot failure of the post-`createClaimedAccount`
+ * finalize UPDATE on `/confirm`, keyed by auth_token. Lets a test drive the
+ * ACTUAL crash transition end-to-end — `createClaimedAccount` succeeds, the
+ * chain account materializes, then the finalize UPDATE throws — instead of
+ * pre-seeding the post-crash row state. The throw propagates out of the
+ * activation-lock body to its catch, producing the same 500 a real
+ * mid-finalize pg failure would, and leaving `verify_token` still set so a
+ * retry hits the `resumeChainExists` branch.
+ *
+ * Gated behind the Vitest / `NODE_ENV === 'test'` runtime check (mirrors the
+ * guard in `drainArgon2Queue`): outside a test process `maybeThrowInjected-
+ * FinalizeFailure` returns immediately and never consults the armed set, so
+ * production behaviour is untouched. The `eslint.config.mjs`
+ * `no-restricted-imports` rule additionally forbids importing `__test_seams`
+ * from `src/`, so no production module can arm the injection in the first place.
+ */
+const injectedFinalizeFailures = new Set<string>();
+
+/**
+ * Consumed at the `/confirm` finalize UPDATE site. If a one-shot failure is
+ * armed for `authToken`, clear it and throw so the NEXT finalize UPDATE for the
+ * same token (the retry) is NOT failed — the retry must reach the
+ * `resumeChainExists` resume and finalize the row. No-op when nothing is armed
+ * or when not running under a test process.
+ */
+function maybeThrowInjectedFinalizeFailure(authToken: string): void {
+  if (!process.env.VITEST && process.env.NODE_ENV !== 'test') return;
+  if (injectedFinalizeFailures.delete(authToken)) {
+    throw new Error('injected finalize UPDATE failure (test seam)');
+  }
+}
+
+/**
  * The accreditation-broadcast cascade shared by /confirm and /link. Holds the
  * post-lock HAF-probe -> accredit `custom_json` broadcast -> reputation-seed
  * sequence in one place so a future change to the probe-before-retry logic,
@@ -703,6 +736,13 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
         );
       }
 
+      // Test-only injection point: simulate a failure of the finalize UPDATE
+      // AFTER createClaimedAccount has landed (on the fresh path) but BEFORE the
+      // row is durably activated. No-op outside NODE_ENV=test. Placed before the
+      // UPDATE so the row is left exactly as a real mid-finalize crash would:
+      // verify_token still set, posting_key_enc NULL, chain account materialized.
+      maybeThrowInjectedFinalizeFailure(auth_token);
+
       // Activate: set username, keys, custody, clear verify_token AND the
       // signup_binding_hash (it has served its purpose; carrying it forward
       // would let a signup-ceremony cookie re-use the row). Single atomic
@@ -988,5 +1028,18 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
     },
   );
 });
+
+// Test-only seam: arms a one-shot failure of the `/confirm` finalize UPDATE for
+// a given auth_token so a test can drive the createClaimedAccount-succeeds-then-
+// finalize-fails crash transition end-to-end (the row is left in the
+// resumeChainExists-recoverable state). The route handler reads the armed set
+// via `maybeThrowInjectedFinalizeFailure`, which is itself a no-op unless
+// NODE_ENV=test. NOT for production import — the no-restricted-imports rule in
+// `eslint.config.mjs` flags any import of this seam from `src/`.
+export const __test_seams = {
+  failNextFinalizeUpdate(authToken: string): void {
+    injectedFinalizeFailures.add(authToken);
+  },
+} as const;
 
 export default router;

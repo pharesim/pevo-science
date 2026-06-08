@@ -396,13 +396,21 @@ export default tseslint.config(
     },
   },
   {
-    // Production code (`src/`) must NOT import the anonymous-review test seam.
-    // `__test_seams` on the anonymousReview module re-exports `storeAnonMapping`
-    // / `encryptMapping`, which bypass the route-level accreditation, self-block,
-    // and rate-limit gates. Only the test file legitimately imports them, and
-    // `npm run lint` lints `src/` only — so this rule never trips on tests. A
-    // production importer would silently undermine the anonymous-review trust
-    // model; this rule turns that into a build error.
+    // Production code (`src/`) must NOT import a route's test-only seam.
+    // `__test_seams` exports exist purely so test files can drive otherwise
+    // hard-to-reach states; importing one from `src/` would let production code
+    // bypass a route's gates or arm a test-only failure injection. Only test
+    // files legitimately import them, and `npm run lint` lints `src/` only — so
+    // this rule never trips on tests. A production importer turns into a build
+    // error here.
+    //
+    //   - routes/anonymousReview `__test_seams` re-exports storeAnonMapping /
+    //     encryptMapping, which bypass the route-level accreditation,
+    //     self-block, and rate-limit gates.
+    //   - routes/signup-verify `__test_seams` arms a one-shot failure of the
+    //     `/confirm` finalize UPDATE (createClaimedAccount-succeeds-then-fail
+    //     crash-transition coverage). A production importer could inject signup
+    //     activation failures.
     files: ['src/**/*.ts'],
     rules: {
       'no-restricted-imports': [
@@ -414,6 +422,12 @@ export default tseslint.config(
               importNames: ['__test_seams'],
               message:
                 'Do not import __test_seams from routes/anonymousReview in production code. It re-exports storeAnonMapping/encryptMapping, which bypass the route-level accreditation, self-block, and rate-limit gates. The seam is for tests/ only.',
+            },
+            {
+              group: ['**/routes/signup-verify', '**/routes/signup-verify.js'],
+              importNames: ['__test_seams'],
+              message:
+                'Do not import __test_seams from routes/signup-verify in production code. It arms a one-shot failure of the /confirm finalize UPDATE for crash-transition coverage. The seam is for tests/ only.',
             },
           ],
         },

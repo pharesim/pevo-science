@@ -3,7 +3,7 @@
  * covering the redesign that moves the createClaimedAccount broadcast out of a
  * held pg connection and behind a per-auth_token activation lock.
  *
- * Three properties:
+ * Four properties:
  *
  *   (1) Facet-1 crash-resume. A failure between createClaimedAccount landing
  *       and the finalize UPDATE leaves verify_token still set but the Hive
@@ -17,12 +17,24 @@
  *   (3) Pool not starved. `max` concurrent distinct-token activations blocked
  *       inside their createClaimedAccount broadcast must NOT pin pool
  *       connections — a plain pool query mid-broadcast still resolves promptly.
+ *   (4) End-to-end failure-to-recovery transition. Drives the ACTUAL crash
+ *       transition the property-(1) block pre-seeds: a first /confirm where
+ *       createClaimedAccount succeeds, then the finalize UPDATE fails (via the
+ *       production `__test_seams` injection), leaving the row in the
+ *       resumeChainExists-recoverable state; a retry then resumes and finalizes.
+ *       Property (1) seeds the post-crash row directly to isolate the resume
+ *       branch; this block proves the transition that produces that row state.
  *
  * **Carve-out clause-(a)/(c) justification.** Mocks `createClaimedAccount`,
  * `broadcastJsonWithTimeout`, `seedAccreditationBonus`, and `getAccreditedSet`
  * at module level so the chain/broadcast outcomes can be driven deterministically
  * per-test (real account creation / Hive broadcast / HAF accreditation corpus
- * are impractical to stage per-test).
+ * are impractical to stage per-test). The pg pool is NOT mocked — every
+ * accounts-table read/write runs against real Postgres. The finalize-UPDATE
+ * failure in property (4) is injected via the production `__test_seams`
+ * `failNextFinalizeUpdate` hook (NODE_ENV=test gated) so the handler throws at
+ * the real finalize site without a pool-boundary mock, exercising the genuine
+ * activation-lock catch → 500 path against a real, unmodified row.
  *   (b) verifyHiveSignature is NOT mocked — /confirm has no signature middleware;
  *       its ownership proof is the supplied posting_private, and the real
  *       PrivateKey.fromString + PublicKey derivation + key comparison in
@@ -32,7 +44,8 @@
  *       /confirm flow end-to-end against real pg (broadcast mocked), and
  *       `signup-verify-concurrent-activation.test.ts` drives the real
  *       activation lock + real pg single-fire. The mocked blocks here cover
- *       ONLY the crash-resume / fail-fast / pool-pressure branches.
+ *       ONLY the crash-resume / fail-fast / pool-pressure / failure-transition
+ *       branches.
  */
 import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
 import crypto from 'node:crypto';
@@ -86,6 +99,7 @@ import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { config } from '../../src/config.js';
 import { SIGNUP_BINDING_COOKIE_NAME } from '../../src/signup-session-binding.js';
+import { __test_seams as signupVerifySeams } from '../../src/routes/signup-verify.js';
 
 if (!process.env.CUSTODY_ENCRYPTION_KEY || process.env.CUSTODY_ENCRYPTION_KEY.length < 32) {
   process.env.CUSTODY_ENCRYPTION_KEY = 'test-activation-recovery-key-32chars';
@@ -275,6 +289,125 @@ describe.skipIf(!dbReachable)('/confirm chain-exists crash-resume (Facet 1)', ()
     expect(res.body.error?.code).toBe('DUPLICATE');
     expect(createClaimedAccountMock).not.toHaveBeenCalled();
     expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// (4) End-to-end failure-to-recovery transition.
+//
+// Property (1) above seeds the post-crash row state directly to isolate the
+// resumeChainExists branch. This block drives the ACTUAL transition that
+// produces that state: a first /confirm where createClaimedAccount succeeds and
+// then the finalize UPDATE fails, leaving verify_token still set + chain account
+// materialized; a retry then hits resumeChainExists and finalizes. This proves
+// the failure path's interaction with the resume path end-to-end — a refactor
+// that moved the finalize UPDATE before the broadcast, or changed the row state
+// the failure leaves behind, would break this test but not the seeded-state one.
+//
+// The finalize UPDATE is failed via the production `__test_seams`
+// `failNextFinalizeUpdate` injection (NODE_ENV=test gated): it throws at the
+// real finalize site on the fresh path, AFTER createClaimedAccount lands but
+// BEFORE the row is written, so the row is left exactly as a real mid-finalize
+// crash would. The throw propagates to the activation-lock catch → 500.
+//
+// MUTATION-KILL: this test goes RED if any of these resume-path guards in the
+// /confirm handler is reverted —
+//   - the by-verify_token row lookup that re-finds the pending row on retry:
+//     the failed finalize never cleared verify_token, so the retry's
+//     `WHERE verify_token = $authToken` lookup still matches. Break that match
+//     (so the still-set token no longer re-finds its row) and the retry falls
+//     to the no-row 400 reject → the `retry.status === 200` assertion fails;
+//   - the chain-account-exists check (the `getAccounts` → existingAccount gate
+//     that sets resumeChainExists): drop it and resumeChainExists stays false,
+//     so the retry RE-BROADCASTS createClaimedAccount → the "called EXACTLY
+//     ONCE" assertion fails (a second claim-token burn);
+//   - the skip-re-broadcast branch (`if (!resumeChainExists)` guarding
+//     createClaimedAccount): remove the guard and the retry calls
+//     createClaimedAccount again → the same once-call assertion fails.
+// ─────────────────────────────────────────────────────────────────
+describe.skipIf(!dbReachable)('/confirm createClaimedAccount-succeeds-then-finalize-fails → retry resumes', () => {
+  const username = `artx${SUFFIX}`;
+  const email = `ar_tx_${RUN_ID}@example.com`;
+  const keys = buildKeys(username);
+
+  afterAll(async () => cleanup(username, email));
+
+  it('first /confirm 500s when the finalize UPDATE fails post-broadcast; retry hits resumeChainExists, finalizes, and never re-broadcasts createClaimedAccount', async () => {
+    await cleanup(username, email);
+    await clearRateLimitKeys(['signup-confirm', 'signup-confirm-token']);
+
+    const binding = mintBinding();
+    const authToken = `confirmed:${'a4'.repeat(32)}`;
+    await seedUnfinalizedRow(email, binding.hash, authToken);
+    const cookie = `${SIGNUP_BINDING_COOKIE_NAME}=${binding.cookieValue}`;
+    const body = { auth_token: authToken, username, keys };
+
+    // ── Request 1: fresh path. createClaimedAccount succeeds, finalize fails. ──
+    // getAccounts returns [] so the handler takes the fresh path and broadcasts
+    // createClaimedAccount (resumeChainExists stays false).
+    getAccountsMock.mockResolvedValue([]);
+    // Arm the one-shot finalize-UPDATE failure for this token: createClaimed-
+    // Account resolves normally, then the finalize UPDATE throws.
+    signupVerifySeams.failNextFinalizeUpdate(authToken);
+
+    const first = await request(app)
+      .post('/api/auth/confirm')
+      .set('Cookie', cookie)
+      .send(body);
+
+    // The activation-lock catch turns the finalize throw into a 500.
+    expect(first.status).toBe(500);
+    // The irreversible chain op DID fire (that is the transition under test).
+    expect(createClaimedAccountMock).toHaveBeenCalledTimes(1);
+
+    // Post-failure row state: the finalize UPDATE never committed, so
+    // verify_token is still set and no encrypted keys were stored — exactly the
+    // resumeChainExists-recoverable state, not a permanent lockout.
+    const pool = getAppPool()!;
+    const afterFail = await pool.query<{ verify_token: string | null; posting_key_enc: Buffer | null; username: string | null }>(
+      'SELECT verify_token, posting_key_enc, username FROM accounts WHERE email = $1',
+      [email],
+    );
+    expect(afterFail.rows.length).toBe(1);
+    expect(afterFail.rows[0].verify_token).toBe(authToken);
+    expect(afterFail.rows[0].posting_key_enc).toBeNull();
+    expect(afterFail.rows[0].username).toBeNull();
+
+    // ── Request 2: retry. The chain account now exists (request 1's broadcast
+    // landed), so getAccounts returns it with the caller's posting key. The
+    // handler takes the resumeChainExists path: it finalizes WITHOUT re-
+    // broadcasting createClaimedAccount. The seam is NOT re-armed, so the retry's
+    // finalize UPDATE runs for real.
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      if (names.includes(username)) {
+        return [{ name: username, posting: { key_auths: [[keys.posting_public, 1]] } }];
+      }
+      return [];
+    });
+
+    await clearRateLimitKeys(['signup-confirm', 'signup-confirm-token']);
+    const retry = await request(app)
+      .post('/api/auth/confirm')
+      .set('Cookie', cookie)
+      .send(body);
+
+    expect(retry.status, JSON.stringify(retry.body?.error)).toBe(200);
+    expect(retry.body.data?.token).toBeTruthy();
+    expect(retry.body.data?.custody).toBe('light');
+
+    // Single-fire preserved across the failure transition: createClaimedAccount
+    // fired EXACTLY ONCE total (no second claim-token burn on the resume).
+    expect(createClaimedAccountMock).toHaveBeenCalledTimes(1);
+
+    // Row is now finalized: verify_token cleared, encrypted keys stored.
+    const afterResume = await pool.query<{ verify_token: string | null; custody: string; posting_key_enc: Buffer | null }>(
+      'SELECT verify_token, custody, posting_key_enc FROM accounts WHERE username = $1',
+      [username],
+    );
+    expect(afterResume.rows.length).toBe(1);
+    expect(afterResume.rows[0].verify_token).toBeNull();
+    expect(afterResume.rows[0].custody).toBe('light');
+    expect(afterResume.rows[0].posting_key_enc).not.toBeNull();
   });
 });
 
