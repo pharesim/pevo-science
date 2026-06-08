@@ -85,3 +85,13 @@ now actionable.
 **Soft coordination (not a gate).** If `backend-anchor-rot-sweep-signup-verify` ends up
 editing comment anchors in `verifyHiveSignature.ts`, the overlap is comments-vs-logic and
 rebases trivially. Stage narrowly and re-verify the staged set before committing.
+
+## Backend re-review signal (2026-06-09, commit 9ac96ba2 on main)
+
+All three items landed in one pass on `verifyHiveSignature.ts` plus the two `recover.ts` reissue sites, per the architect decision.
+
+- **Item 1 (replay TOCTOU) — fixed.** `isReplaySignature` now claims the signature synchronously (check-then-add) on the Redis-down / SETNX-throw fallback, before the `await getAccounts`. The `has()` read moved to AFTER the await (not a stale pre-await snapshot) so a SETNX-throw flap still collapses concurrent identical replays to exactly one survivor. Timestamp validation and the `Signature.fromString` structural parse moved ahead of the replay claim, so the in-memory map records only valid, in-window signatures (closes the arbitrary-attacker-bytes pollution the architect flagged). Mirrors the `inFlightConsumes` discipline.
+- **Item 2 (same-second revocation) — fixed by identity.** The two `recover.ts` reissue sites write `sessions_invalidated_at` from a Node `Date` and embed that exact epoch-ms in the reissued token's `reissuedAt` claim; the middleware revokes `iat <= invalidatedSec` EXCEPT the token whose `reissuedAt === invalidatedAtMs`. A pre-reset same-second token is revoked; the legitimate reissued one survives without a blanket `<=`. `auth.ts` `/reset` mints no token (user logs in afterward), so it stays on `NOW()` and needs no claim.
+- **Item 3 (iat-absent) — fixed, fail-closed.** `typeof payload.iat !== 'number'` returns 401 before the lookup.
+
+Tests: new `tests/middleware/verifyHiveSignature-replay-revocation-hardening.test.ts` (5: concurrent-replay-under-SETNX-throw admits exactly one; pre-reset same-second revoked; reissued same-second survives; stale reissued-from-earlier-reset revoked; iat-absent 401). Existing `-replay-timestamp`, `-session-invalidation-failclosed`, `-authmethod` middleware suites and `recover.test.ts` (32) all green. `npm run typecheck` + `npm run lint` clean (the single lint warning is pre-existing in `author-supersession.ts`, untouched here).
