@@ -98,11 +98,20 @@ end
  * stay at the caller.
  *
  * Single-instance assumption: the script RENAMEs across distinct keys under one
- * appTag prefix, which is a CROSSSLOT error under Redis Cluster — the batch is
- * inherently single-instance (memory `project_single_instance_only`), so the
- * members-set key being a separate KEY raises no cross-slot concern here.
+ * appTag prefix, which is a CROSSSLOT error under Redis Cluster. PEvO is
+ * single-instance by design and does not run Redis Cluster, so the members-set
+ * key being a separate KEY raises no cross-slot concern here.
+ *
+ * Arity guard: KEYS must carry at least the sentinel + members-set (2 entries);
+ * a caller passing fewer (e.g. a pre-members-set 2-part layout that predates the
+ * index, or a miscount) would index KEYS[nKeys-1]/KEYS[nKeys] out of range and
+ * RENAME against nil. The guard fails fast BEFORE any RENAME so a malformed call
+ * cannot commit a partial swap.
  */
 export const CYCLE_SWAP_LUA = `
+if #KEYS < 2 then
+  return redis.error_reply('CYCLE_SWAP requires at least the sentinel and members-set KEYS')
+end
 local nKeys = #KEYS
 local membersSet = KEYS[nKeys]
 local sentinel = KEYS[nKeys - 1]

@@ -411,6 +411,10 @@ export default tseslint.config(
     //     `/confirm` finalize UPDATE (createClaimedAccount-succeeds-then-fail
     //     crash-transition coverage). A production importer could inject signup
     //     activation failures.
+    //   - reputation `__test_seams` repoints the batch-members index key so a
+    //     deterministic empty-index backfill test can isolate it from the shared
+    //     production members set. A production importer could silently divert the
+    //     index off the real key.
     files: ['src/**/*.ts'],
     rules: {
       'no-restricted-imports': [
@@ -428,6 +432,12 @@ export default tseslint.config(
               importNames: ['__test_seams'],
               message:
                 'Do not import __test_seams from routes/signup-verify in production code. It arms a one-shot failure of the /confirm finalize UPDATE for crash-transition coverage. The seam is for tests/ only.',
+            },
+            {
+              group: ['**/reputation', '**/reputation.js'],
+              importNames: ['__test_seams'],
+              message:
+                'Do not import __test_seams from reputation in production code. It repoints the batch-members index key for a deterministic backfill test. The seam is for tests/ only.',
             },
           ],
         },

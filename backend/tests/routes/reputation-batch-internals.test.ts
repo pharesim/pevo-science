@@ -24,10 +24,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getRedis } from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
-import { batchKey, BATCH_KEY_PREFIX, REDIS_KEY_STAGING_PREFIX, getBatchReputationMap } from '../../src/reputation.js';
+import { batchKey, BATCH_KEY_PREFIX, REDIS_KEY_STAGING_PREFIX, getBatchReputationMap, __test_seams as reputationSeams } from '../../src/reputation.js';
 import { __test_seams } from '../../src/reputation-batch.js';
 
 const TEST_USERS = ['pevo-batch-internals-alice', 'pevo-batch-internals-bob'];
+
+// A members-index key OUTSIDE BATCH_KEY_PREFIX (so the backfill SCAN of
+// `${BATCH_KEY_PREFIX}*` never enumerates it) and unique to this file, so tests
+// that exercise the empty-index backfill path can isolate the members set from
+// sibling files racing the shared production index under the concurrent runner.
+// Routed in via the reputation __test_seams override.
+const TEST_MEMBERS_KEY = BATCH_KEY_PREFIX.replace(/batch:$/, 'test_backfill_members');
 
 async function cleanup() {
   const redis = getRedis();
@@ -42,6 +49,10 @@ async function cleanup() {
   // Sweep any in_progress sentinel left behind by this test file alone.
   const sentinels = await redis.keys(`${__test_seams.REDIS_KEY_IN_PROGRESS_PREFIX}*`);
   if (sentinels.length > 0) await redis.del(...sentinels);
+  // Drop the isolated members index and restore the production members-set key,
+  // so a test that repointed the index can't leak the override into the next.
+  await redis.del(TEST_MEMBERS_KEY);
+  reputationSeams.setBatchMembersKey(null);
   // Don't touch REDIS_KEY_LAST_CYCLE — other suites may rely on it.
 }
 
@@ -245,6 +256,12 @@ describe('reputation-batch internals: getBatchReputationMap staging-key filter',
     const redis = getRedis();
     if (!redis) return ctx.skip(true, 'Redis unavailable');
 
+    // Isolate the members index onto a test-unique key so the empty-index
+    // backfill SCAN (which this assertion depends on, to surface the prod key
+    // and filter the staging key) fires deterministically instead of racing a
+    // sibling file's CYCLE_SWAP SADD into the shared production members set.
+    reputationSeams.setBatchMembersKey(TEST_MEMBERS_KEY);
+
     // Seed: prod entry for alice with score 50, staging entry for alice with
     // score 999 (the "in-flight" value a reader must NOT observe).
     const prodKey = batchKey(TEST_USERS[0]);
@@ -267,6 +284,72 @@ describe('reputation-batch internals: getBatchReputationMap staging-key filter',
     expect(map.get(TEST_USERS[0])?.score).toBe(50);
     // Map keys are bare usernames — no staging-prefix leakage either.
     expect([...map.keys()]).not.toContain(`staging:${TEST_USERS[0]}`);
+  });
+});
+
+describe('reputation-batch internals: getBatchReputationMap empty-index backfill', () => {
+  // The members index is repointed onto TEST_MEMBERS_KEY (cleanup DELs it and
+  // restores the production key), so the empty-set backfill path is exercised
+  // deterministically — the shared production members set is written by sibling
+  // files under the concurrent runner and would race non-empty between the
+  // cleanup DEL and the SMEMBERS read, skipping the backfill under test.
+  const BACKFILL_USER = 'pevo-batch-backfill-carol';
+
+  async function backfillCleanup() {
+    await cleanup();
+    const redis = getRedis();
+    if (!redis) return;
+    await redis.del(batchKey(BACKFILL_USER));
+    await redis.del(`${REDIS_KEY_STAGING_PREFIX}${BACKFILL_USER}`);
+  }
+
+  beforeEach(backfillCleanup);
+  afterEach(backfillCleanup);
+
+  it('SCAN-backfills an empty members index, SADDs the prod key, then takes the SMEMBERS fast path', async (ctx) => {
+    const redis = getRedis();
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
+    reputationSeams.setBatchMembersKey(TEST_MEMBERS_KEY);
+    await redis.set(batchKey(BACKFILL_USER), JSON.stringify({ score: 42, breakdown: { papers: 20, reviews: 10, citations: 7, accreditation: 5 } }));
+
+    // First read: SMEMBERS(TEST_MEMBERS_KEY) is empty -> SCAN finds the prod key
+    // -> SADD into the index -> returns it. Robust to sibling prod keys the SCAN
+    // may surface: only our user is asserted.
+    const first = await getBatchReputationMap();
+    expect(first.get(BACKFILL_USER)?.score).toBe(42);
+    // The backfill registered the prod key in the (now non-empty) index.
+    expect(await redis.sismember(TEST_MEMBERS_KEY, batchKey(BACKFILL_USER))).toBe(1);
+
+    // Second read takes the SMEMBERS fast path (index non-empty) and still
+    // returns the user.
+    const second = await getBatchReputationMap();
+    expect(second.get(BACKFILL_USER)?.score).toBe(42);
+  });
+
+  it('skips a stale member whose prod key is absent (MGET-null) without throwing', async (ctx) => {
+    const redis = getRedis();
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
+    reputationSeams.setBatchMembersKey(TEST_MEMBERS_KEY);
+    // Index references a prod key that no longer exists (e.g. a revoked user the
+    // SREM raced, or a dropped cycle key). MGET returns null; the reader skips it
+    // rather than throwing or surfacing a zero-score ghost.
+    await redis.sadd(TEST_MEMBERS_KEY, batchKey(BACKFILL_USER));
+    const map = await getBatchReputationMap();
+    expect(map.has(BACKFILL_USER)).toBe(false);
+  });
+
+  it('never surfaces a staging-prefixed key that contaminated the index', async (ctx) => {
+    const redis = getRedis();
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
+    reputationSeams.setBatchMembersKey(TEST_MEMBERS_KEY);
+    // A staging key SADD'd into the index must be filtered (the reader excludes
+    // by REDIS_KEY_STAGING_PREFIX), never surfaced as a `staging:<name>` user.
+    const stagingKey = `${REDIS_KEY_STAGING_PREFIX}${BACKFILL_USER}`;
+    await redis.set(stagingKey, JSON.stringify({ score: 999, breakdown: { papers: 999, reviews: 0, citations: 0, accreditation: 0 } }));
+    await redis.sadd(TEST_MEMBERS_KEY, stagingKey);
+    const map = await getBatchReputationMap();
+    expect([...map.keys()].some((k) => k.includes('staging'))).toBe(false);
+    expect(map.has(BACKFILL_USER)).toBe(false);
   });
 });
 

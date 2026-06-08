@@ -252,4 +252,16 @@ describe.skipIf(skipIfNoRedis)('evalScript / loadAllScripts', () => {
       await redis.del(stagingKey, prodKey, lastCycleKey, sentinelKey, membersKey);
     }
   });
+
+  it('CYCLE_SWAP arity guard: rejects a call with fewer than 2 KEYS before any RENAME', async () => {
+    if (!redis) throw new Error('redis required');
+    await loadAllScripts(redis);
+    // A pre-members-set 2-part layout or a miscount that passes < 2 KEYS would
+    // index the sentinel/members slots out of range and RENAME against nil. The
+    // guard must fail fast (error_reply) before committing any partial swap.
+    const loneKey = `${config.appTag}:csarity${crypto.randomBytes(4).toString('hex')}`;
+    await expect(
+      evalScript(redis, 'CYCLE_SWAP', [loneKey], ['1', `${config.appTag}:cslast`, ':a:', ':b:']),
+    ).rejects.toThrow(/CYCLE_SWAP requires at least/);
+  });
 });

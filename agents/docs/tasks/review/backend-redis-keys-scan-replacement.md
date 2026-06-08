@@ -81,3 +81,18 @@ When this task archives clean, judge whether the index writer-completeness rule 
 When the four items land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next review scopes to the fix commits only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-08, commit on main)
+
+All four held items landed:
+
+1. (P1) The CYCLE_SWAP docblock in `redis-scripts.ts` no longer cites the agent-memory filename. Replaced with the plain invariant: "PEvO is single-instance by design and does not run Redis Cluster, so the members-set key being a separate KEY raises no cross-slot concern here."
+2. (P2) Seed writers now maintain the members index, closing the steady-state invisibility regression:
+   - `seedAccreditationBonus` SADDs the prod key into the index only when the NX SET returns `'OK'` (a no-op SET means a real cycle value already exists, already a member from the swap).
+   - `invalidateOnRevocation` SREMs the prod key after the DEL, so revoked members stop accumulating.
+   - `backfillAccreditationSeeds` queues `pipeline.sadd(...)` alongside each `pipeline.set(...)` (SADD idempotent), and its `pipeline.exec()` now inspects the per-command tuples and log-and-skips on error (the same defect class as the staging guard, lower blast radius), surfacing the first failed command's message.
+3. (P2) Added a deterministic empty-index backfill describe in `reputation-batch-internals.test.ts`. The index is repointed onto a test-unique key (`TEST_MEMBERS_KEY`, OUTSIDE `BATCH_KEY_PREFIX` so the backfill SCAN never enumerates it) via a new gated `reputation` `__test_seams.setBatchMembersKey`, dodging the maxWorkers race on the shared production members set. Three pins: (a) empty index → SCAN-backfill SADDs the prod key → first read returns the user, second read takes the SMEMBERS fast path; (b) stale member whose prod key is absent → MGET-null skip, no throw; (c) staging-prefixed key in the index → never surfaces. The seam export is guarded by `no-restricted-imports` in `eslint.config.mjs` (verified the rule fires against a probe import).
+   - **In-scope determinism fix (surfaced):** the pre-existing `getBatchReputationMap staging-key filter` test relied on the backfill firing (empty production members set) and so collided with `reputation-batch-sql-failure` under the concurrent runner (its CYCLE_SWAP SADD left the shared index non-empty, skipping the backfill — the exact maxWorkers race this hold names). Repointed that test onto the same isolated members key. `internals + sql-failure` run together now passes 15/15 (was 1 failed before this fix). This is a fix to a flakiness caused by the members-index migration this task owns, kept in scope per the green-suite preference.
+4. (P3) Added the arity guard at the top of `CYCLE_SWAP_LUA` (`if #KEYS < 2 then return redis.error_reply(...) end`) before any RENAME, plus a pin in `redis-scripts.test.ts` asserting a <2-KEYS call rejects with the guard message.
+
+`npm run typecheck` + `npm run lint` clean. Green in isolation: `reputation-batch-internals` (12), `reputation-batch-sql-failure` (3), `redis-scripts` (8), `reputation-prefix` (2), `stats-profile-parity` (5), `accreditation-idempotency` (19), `wot-retract-cascaderevocation` (8); and `internals + sql-failure` together (15).

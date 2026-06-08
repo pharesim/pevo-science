@@ -52,6 +52,33 @@ export function batchKey(username: string): string {
 }
 
 /**
+ * Resolves the batch-members index key. Production always reads
+ * REDIS_KEY_BATCH_MEMBERS; tests repoint it via `__test_seams.setBatchMembersKey`
+ * so a deterministic empty-index backfill test does not race a sibling file's
+ * SADD to the shared members set under the concurrent (maxWorkers) runner.
+ */
+let batchMembersKeyOverride: string | null = null;
+function batchMembersKey(): string {
+  return batchMembersKeyOverride ?? REDIS_KEY_BATCH_MEMBERS;
+}
+
+/**
+ * @internal Test-only seams. Production imports of `__test_seams` are blocked by
+ * eslint `no-restricted-imports` (see eslint.config.mjs).
+ */
+export const __test_seams = {
+  /**
+   * Repoint the batch-members index at a test-unique key so a deterministic
+   * empty-index backfill test does not race a sibling file's SADD to the shared
+   * production members set under the concurrent (maxWorkers) runner. Pass null
+   * to restore the production key.
+   */
+  setBatchMembersKey(key: string | null): void {
+    batchMembersKeyOverride = key;
+  },
+};
+
+/**
  * Non-blocking keyspace enumeration via an iterative `SCAN` cursor loop
  * (COUNT 500), replacing the O(N) blocking `KEYS` command that stalls the
  * single-threaded Redis server for the scan's duration. Returns every key
@@ -196,7 +223,16 @@ export async function seedAccreditationBonus(username: string): Promise<void> {
   try {
     const weights = await getReputationWeights();
     const provisional = provisionalScore(weights.accreditation_bonus);
-    await redis.set(batchKey(username), JSON.stringify(provisional), 'NX');
+    // SADD into the members index only when the NX SET actually wrote the key
+    // (returns 'OK'; null means a real cycle value already exists, and that key
+    // is already a member from the CYCLE_SWAP swap). Without this the freshly
+    // seeded provisional key would be invisible to getBatchReputationMap's
+    // SMEMBERS read until the next cycle swap — the regression the members-index
+    // migration would otherwise introduce vs the old KEYS-glob read.
+    const setResult = await redis.set(batchKey(username), JSON.stringify(provisional), 'NX');
+    if (setResult === 'OK') {
+      await redis.sadd(batchMembersKey(), batchKey(username));
+    }
   } catch (err) {
     if (isPermanentSeedError(err)) {
       // Permanent (data-shape regression in weights or provisionalScore):
@@ -223,6 +259,10 @@ export async function invalidateOnRevocation(username: string): Promise<void> {
   if (!redis) return;
   try {
     await redis.del(batchKey(username));
+    // Drop the member too, so a revoked user's stale prod-key path does not
+    // accumulate in the index (it would otherwise be MGET-null-skipped on read,
+    // but pruning keeps the index bounded by the live accredited set).
+    await redis.srem(batchMembersKey(), batchKey(username));
   } catch (err) {
     logger.warn({ err, username }, 'Failed to invalidate batch entry on revocation');
   }
@@ -245,11 +285,24 @@ export async function backfillAccreditationSeeds(): Promise<void> {
     if (accredited.size === 0) return;
     logger.info({ count: accredited.size }, 'Accreditation seed backfill starting');
     const value = JSON.stringify(provisionalScore(weights.accreditation_bonus));
+    const membersKey = batchMembersKey();
     const pipeline = redis.pipeline();
     for (const username of accredited) {
       pipeline.set(batchKey(username), value, 'NX');
+      // Maintain the members index alongside each seed. SADD is idempotent, so a
+      // user whose NX SET no-ops (a real cycle value already exists) is already a
+      // member and unaffected; a user whose provisional SET lands becomes visible
+      // to getBatchReputationMap's SMEMBERS read this cycle.
+      pipeline.sadd(membersKey, batchKey(username));
     }
-    await pipeline.exec();
+    const results = await pipeline.exec();
+    // ioredis pipeline.exec() does not throw on a per-command error; inspect the
+    // tuples and log-and-skip (best-effort backfill) so a partial failure is
+    // visible rather than silently leaving the seed or index incomplete.
+    const failed = results?.find(([err]) => err !== null);
+    if (failed) {
+      logger.warn({ err: failed[0]?.message }, 'Accreditation seed backfill pipeline had a per-command error; some seeds or index entries may be incomplete');
+    }
     logger.info({ count: accredited.size }, 'Accreditation seed backfill complete');
   } catch (err) {
     logger.warn({ err }, 'Accreditation seed backfill failed');
@@ -269,7 +322,7 @@ export async function getBatchReputationMap(): Promise<Map<string, ReputationSco
   try {
     // Fast path: the membership index (maintained by the CYCLE_SWAP Lua) bounds
     // enumeration by accredited-user count instead of the whole keyspace.
-    let prodKeys = await redis.smembers(REDIS_KEY_BATCH_MEMBERS);
+    let prodKeys = await redis.smembers(batchMembersKey());
     if (prodKeys.length === 0) {
       // Members-set miss. Either a genuinely empty batch (no cycle has run) or a
       // pre-members-set deployment whose prod keys predate the index. Enumerate
@@ -279,7 +332,7 @@ export async function getBatchReputationMap(): Promise<Map<string, ReputationSco
       const scanned = (await scanAllKeys(redis, `${BATCH_KEY_PREFIX}*`))
         .filter((k) => !k.startsWith(REDIS_KEY_STAGING_PREFIX));
       if (scanned.length > 0) {
-        await redis.sadd(REDIS_KEY_BATCH_MEMBERS, ...scanned);
+        await redis.sadd(batchMembersKey(), ...scanned);
         prodKeys = scanned;
       }
     }
