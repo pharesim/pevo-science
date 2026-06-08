@@ -69,10 +69,18 @@ router.get('/', verifyHiveSignature, async (req: Request, res: Response) => {
  * The cached batch holds ascending events in `(windowFloor, head]`; the SPA's
  * cursor advances past `windowFloor`, so the in-app filter restores the
  * contract's `(since_block, head]` range. After the cursor filter the result is
- * sliced to the response `limit` (oldest-first forward pagination: the SPA
- * re-polls with `since_block = latest_block`, which is the highest block among
- * the delivered events). When the filter empties the batch, `latest_block`
- * falls back to the caller's `since_block` so the cursor does not regress.
+ * sliced to the response `limit` (oldest-first forward pagination). `latest_block`
+ * is the highest block among the delivered events; the SPA's re-poll cursor then
+ * depends on `has_more`: on `has_more === true` the client rewinds to
+ * `latest_block - 1` and re-fetches the boundary block (the events a truncating
+ * `limit` cut that share `latest_block`), deduping the overlap; on
+ * `has_more === false` it advances to `latest_block`. Re-polling at exactly
+ * `latest_block` on a truncated page would skip those boundary events under the
+ * strict `block_num > since_block` filter. The authoritative client-facing rule
+ * is the `has_more` bullet in `agents/docs/api-contracts/notifications.md`; keep
+ * this comment consistent with it. When the filter empties the batch,
+ * `latest_block` falls back to the caller's `since_block` so the cursor does not
+ * regress.
  *
  * `has_more` is true when in-window events beyond the delivered slice remain —
  * either the cursor filter left more than `limit` events (undelivered, in this

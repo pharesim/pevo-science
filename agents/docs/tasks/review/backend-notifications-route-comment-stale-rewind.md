@@ -25,3 +25,7 @@ Update the `applySinceBlockFilter` docblock so its description of the client cur
 - `backend/src/routes/notifications.ts` (`applySinceBlockFilter` docblock).
 - `agents/docs/api-contracts/notifications.md` (`has_more` field bullet — the authoritative client contract).
 - `frontend/src/notifications.js` (poll loop rewind — the consumer).
+
+## Backend completion (2026-06-08, working tree):
+
+Updated the `applySinceBlockFilter` docblock in `routes/notifications.ts` to match the `has_more` rewind contract: on `has_more === true` the client rewinds to `latest_block - 1` and re-fetches the boundary block (deduping the overlap); on `has_more === false` it advances to `latest_block`. Removed the stale unconditional "re-polls at `latest_block`" claim. Anchored on the behavioral rule (strict `> since_block` filter, boundary-block rewind) and the authoritative `agents/docs/api-contracts/notifications.md` `has_more` bullet; no line-number / slug / SHA anchors. Comment-only, no functional change.
