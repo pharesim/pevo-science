@@ -33,6 +33,17 @@ import { config } from '../src/config.js';
  * Clause-(c): the assembled accreditation and vote-count read paths run against
  * the live HAF corpus in their own integration coverage; these synthetic cases
  * pin the same-block ordering determinism the live corpus cannot seed.
+ *
+ * Scope note — inline accreditation-state reads NOT covered by the SQL-shape
+ * canary below: the "latest accredit/revoke wins" reads in `routes/orcid.ts`
+ * (`findAccreditedAccountWithOrcid`'s first read + its binding-live re-check,
+ * and `getExistingAccreditation`) and `routes/profile.ts`
+ * (`getAccreditationFromHaf`) also carry the `block_num DESC, id DESC`
+ * tie-breaker. They are inline `pool.query` strings, not exported SQL fragments,
+ * so the canary's `toContain` assertion cannot reach them; their determinism is
+ * exercised by their own route integration tests against the live HAF corpus.
+ * The canary asserts only the exported-fragment sites; a future edit dropping
+ * the tie-breaker from an inline read is caught at route-test level, not here.
  */
 
 function runAccredCte(

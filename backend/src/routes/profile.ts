@@ -33,13 +33,16 @@ async function getAccreditationFromHaf(username: string) {
     // accreditation and paint attacker-chosen metadata onto someone's profile.
     // See SEC-AUTH-BYPASS. Mirrors the same filter in accreditations.ts and
     // orcid.ts's getExistingAccreditation.
+    // `cj.id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
+    // id) per the custom-json hive-primitive design-rules convention, so a
+    // same-block accredit/revoke resolves to the later op.
     const result = await pool.query(
       `SELECT cj.json, cj.id AS event_id FROM ${T.customJson} cj
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
          AND cj.required_posting_auths ?| $3::text[]
          AND cj.json::jsonb ->> 'account' = $1
-       ORDER BY cj.block_num DESC
+       ORDER BY cj.block_num DESC, cj.id DESC
        LIMIT 1`,
       [username, config.appTag, config.accreditationAuthorities],
     );

@@ -1950,6 +1950,10 @@ async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string |
 
   // Latest authorized on-chain accredit op carrying this ORCID. Filter by
   // accreditationAuthorities so a self-broadcast custom_json can't poison the check.
+  // `cj.id DESC` is the same-block deterministic tie-breaker (the monotonic HAF
+  // op id) per the custom-json hive-primitive design-rules convention; without
+  // it, two ops affecting this ORCID in the same 3s block resolve
+  // non-deterministically.
   const recent = await pool.query<{ account: string | null }>(
     `SELECT cj.json::jsonb ->> 'account' AS account
      FROM ${T.customJson} cj
@@ -1957,7 +1961,7 @@ async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string |
        AND cj.json::jsonb ->> 'action' = 'accredit'
        AND cj.json::jsonb ->> 'orcid' = $1
        AND cj.required_posting_auths ?| $3::text[]
-     ORDER BY cj.block_num DESC
+     ORDER BY cj.block_num DESC, cj.id DESC
      LIMIT 1`,
     [orcidId, config.appTag, config.accreditationAuthorities],
   );
@@ -1969,6 +1973,9 @@ async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string |
   // if that action is still an 'accredit' carrying THIS orcid; a subsequent
   // 'revoke' clears it, and a subsequent 'accredit' with a different orcid
   // means the account rebound to another identity (freeing this orcid).
+  // `cj.id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
+  // id) per the custom-json hive-primitive design-rules convention, so a
+  // same-block accredit/revoke for this account resolves to the later op.
   const status = await pool.query<{ action: string | null; orcid: string | null }>(
     `SELECT cj.json::jsonb ->> 'action' AS action,
             cj.json::jsonb ->> 'orcid' AS orcid
@@ -1977,7 +1984,7 @@ async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string |
        AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
        AND cj.json::jsonb ->> 'account' = $1
        AND cj.required_posting_auths ?| $3::text[]
-     ORDER BY cj.block_num DESC
+     ORDER BY cj.block_num DESC, cj.id DESC
      LIMIT 1`,
     [account, config.appTag, config.accreditationAuthorities],
   );
@@ -1996,13 +2003,16 @@ async function getExistingAccreditation(username: string): Promise<{
   // Filter by accreditationAuthorities so a self-broadcast custom_json (signed
   // by the target account's own posting key) cannot masquerade as a real
   // accreditation and unlock the /link flow. See SEC-AUTH-BYPASS.
+  // `cj.id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
+  // id) per the custom-json hive-primitive design-rules convention, so a
+  // same-block accredit/revoke resolves to the later op.
   const result = await pool.query(
     `SELECT cj.json FROM ${T.customJson} cj
      WHERE cj.custom_id = $2
        AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
        AND cj.json::jsonb ->> 'account' = $1
        AND cj.required_posting_auths ?| $3::text[]
-     ORDER BY cj.block_num DESC
+     ORDER BY cj.block_num DESC, cj.id DESC
      LIMIT 1`,
     [username, config.appTag, config.accreditationAuthorities],
   );
