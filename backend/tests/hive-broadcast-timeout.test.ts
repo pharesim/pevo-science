@@ -1,23 +1,35 @@
 /**
- * Unit tests for broadcastJsonWithTimeout and broadcastSendOperationsWithTimeout.
+ * Unit tests for broadcastJsonWithTimeout, broadcastSendOperationsWithTimeout,
+ * and broadcastAdminCustomJson.
  *
  * Justification for the mocked `hiveClient.broadcast.{json,sendOperations}`:
- * the behavior under test is the wrapper's wall-clock timeout contract, not
- * dhive's on-wire broadcast semantics. A real Hive node broadcast would take
- * 2-10s on the happy path and cannot be reliably induced to hang past 30s
- * from an integration test. Mocking dhive is the only way to exercise the
- * slow-broadcast failure mode deterministically. Per root CLAUDE.md
- * carve-out: no `verifyHiveSignature` or auth middleware mocking here — the
- * wrappers live in src/hive.ts and have no middleware surface.
+ * the behavior under test is the wrapper's wall-clock timeout contract (and,
+ * for `broadcastAdminCustomJson`, the admin custom_json envelope shape it
+ * assembles), not dhive's on-wire broadcast semantics. A real Hive node
+ * broadcast would take 2-10s on the happy path and cannot be reliably induced
+ * to hang past 30s from an integration test. Mocking dhive is the only way to
+ * exercise the slow-broadcast failure mode deterministically, and spying
+ * `hiveClient.broadcast.json` is the only way to capture the exact
+ * `{ id, required_auths, required_posting_auths }` envelope the real
+ * `broadcastAdminCustomJson` emits without burning a chain write per test.
+ * The focus of every spec here is wrapper / envelope shape, NOT cryptographic
+ * auth: these are src/hive.ts helper unit tests with no middleware surface, so
+ * no `verifyHiveSignature` / `MOCK_VERIFY_SIGNATURE` is involved. The
+ * `broadcastAdminCustomJson` happy path sets a valid throwaway WIF on
+ * `config.pevoAdminPostingKey` locally (restored in `finally`) purely so the
+ * real helper passes its unset-key guard and reaches the broadcast call.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { PrivateKey } from '@hiveio/dhive';
 import {
   broadcastJsonWithTimeout,
   broadcastSendOperationsWithTimeout,
+  broadcastAdminCustomJson,
+  AdminKeyNotConfiguredError,
   BroadcastTimeoutError,
   hiveClient,
 } from '../src/hive.js';
+import { config } from '../src/config.js';
 
 const DUMMY_KEY = PrivateKey.fromSeed('pevo-test-seed-only');
 const DUMMY_PAYLOAD = {
@@ -257,5 +269,61 @@ describe('broadcastSendOperationsWithTimeout input validation (wrapper-entry gua
 
     const result = await broadcastSendOperationsWithTimeout(DUMMY_OPERATIONS, DUMMY_KEY, 5000);
     expect(result).toEqual(expected);
+  });
+});
+
+// Pins the admin custom_json envelope assembled by the REAL
+// `broadcastAdminCustomJson` — the one place every admin-broadcast call site
+// shares the `id` / `required_auths` / `required_posting_auths` shape and the
+// admin posting key. Every call-site test mocks this helper and rebuilds the
+// envelope in-test, so a drift in the real helper's `required_posting_auths`
+// (e.g. to `required_auths`, or to a wrong account) would pass those suites
+// green. Driving the real helper into a spied `hiveClient.broadcast.json` and
+// reading back the captured operation closes that gap. The unset-key spec
+// independently pins the `AdminKeyNotConfiguredError` guard that the call-site
+// mocks never exercise. `config.pevoAdminPostingKey` is mutated locally and
+// restored in `finally` so neither spec leaks state into sibling tests.
+describe('broadcastAdminCustomJson admin-envelope shape', () => {
+  // A valid throwaway WIF so the real helper's `PrivateKey.fromString` parse
+  // and unset-key guard both pass; the broadcast itself is spied, so this key
+  // never signs a real chain write.
+  const VALID_ADMIN_WIF = PrivateKey.fromSeed('pevo-admin-envelope-test').toString();
+
+  it('emits id=config.appTag, required_auths=[], required_posting_auths=[config.hiveAdminAccount] through the real helper', async () => {
+    const savedKey = config.pevoAdminPostingKey;
+    config.pevoAdminPostingKey = VALID_ADMIN_WIF;
+    const broadcastSpy = vi
+      .spyOn(hiveClient.broadcast, 'json')
+      .mockResolvedValueOnce({ id: 'admin-tx', block_num: 1, expired: false, trx_num: 0 } as never);
+    try {
+      await broadcastAdminCustomJson({ action: 'accredit', account: 'someone' });
+
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
+      const [op] = broadcastSpy.mock.calls[0] as unknown as [
+        { id: string; required_auths: unknown[]; required_posting_auths: unknown[]; json: string },
+        unknown,
+      ];
+      expect(op.id).toBe(config.appTag);
+      // Empty active-auth array (admin signs with posting authority only).
+      expect(op.required_auths).toEqual([]);
+      // Single posting authority: the configured admin account.
+      expect(op.required_posting_auths).toEqual([config.hiveAdminAccount]);
+    } finally {
+      config.pevoAdminPostingKey = savedKey;
+    }
+  });
+
+  it('throws AdminKeyNotConfiguredError and never broadcasts when the admin key is unset', async () => {
+    const savedKey = config.pevoAdminPostingKey;
+    config.pevoAdminPostingKey = '';
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'json');
+    try {
+      await expect(
+        broadcastAdminCustomJson({ action: 'accredit', account: 'someone' }),
+      ).rejects.toBeInstanceOf(AdminKeyNotConfiguredError);
+      expect(broadcastSpy).not.toHaveBeenCalled();
+    } finally {
+      config.pevoAdminPostingKey = savedKey;
+    }
   });
 });

@@ -124,7 +124,7 @@ interface BroadcastAccreditationOpts {
  *   - `routeLabel` prefixes the structured log/error context.
  *   - `recoveryHint` is the user-facing retry instruction appended to broadcast errors.
  */
-const ROUTE_FLAVOR_DERIVATION: Record<
+export const ROUTE_FLAVOR_DERIVATION: Record<
   'confirm' | 'link',
   { evidenceSuffix: string; routeLabel: string; recoveryHint: string }
 > = {

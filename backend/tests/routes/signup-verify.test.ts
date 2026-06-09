@@ -64,6 +64,7 @@ import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { orcidVerified } from '../../src/routes/orcid.js';
 import { config } from '../../src/config.js';
+import { ROUTE_FLAVOR_DERIVATION } from '../../src/routes/signup-verify.js';
 import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 import { TIMING_ORACLE_FLOOR_MS } from '../support/timing-constants.js';
@@ -653,6 +654,202 @@ describe.skipIf(!dbReachable)('/link broadcast-rejection on ORCID-only (email=NU
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Per-flavor evidence_hash pin. The on-chain accreditation attestation's
+// `evidence_hash` is `sha256(`${email}:${username}:${suffix}`)`, where the
+// domain suffix is derived from the route flavor inside
+// `broadcastAccreditationAndSeed` (`confirm` → 'signup', `link` → 'link').
+// Both halves go on chain irreversibly, so a silent suffix drift (e.g. the
+// naive 'signup' → 'confirm' "fix") corrupts every future accreditation hash.
+//
+// The existing broadcast-rejection harnesses above all `mockRejectedValue`
+// BEFORE the hash-computation branch runs, so they cannot observe the hash. To
+// pin it, these specs drive the broadcast to COMPLETION (the afterEach default
+// resolves `broadcastJsonMock`, and real Redis lets the post-broadcast seed
+// succeed), then decode the captured custom_json and assert the hash. The
+// expected suffix is a LITERAL in the test, never imported from
+// `ROUTE_FLAVOR_DERIVATION` — importing the production constant as the expected
+// value would let the shared-constant dedup defeat the pin.
+//
+// `broadcastJsonMock` backs BOTH the `hiveClient.broadcast.json` seam and
+// `broadcastJsonWithTimeout` (see the vi.mock above), so its first call
+// argument is the custom_json payload object the route passes to
+// `broadcastJsonWithTimeout`; `payload.json` is the stringified accredit op.
+function findAccreditOp(): { evidence_hash: string; account: string } {
+  for (const call of broadcastJsonMock.mock.calls) {
+    const [payload] = call as [{ json?: string } | undefined];
+    if (payload && typeof payload.json === 'string') {
+      const decoded = JSON.parse(payload.json) as { action?: string; evidence_hash?: string; account?: string };
+      if (decoded.action === 'accredit' && typeof decoded.evidence_hash === 'string') {
+        return { evidence_hash: decoded.evidence_hash, account: decoded.account ?? '' };
+      }
+    }
+  }
+  throw new Error('no accredit custom_json captured on broadcastJsonMock');
+}
+
+const EVIDENCE_RUN_ID = Date.now();
+const EVIDENCE_SUFFIX = (EVIDENCE_RUN_ID % 100000).toString(36).padStart(4, '0').slice(-6);
+
+describe.skipIf(!dbReachable)('/confirm accreditation evidence_hash uses the signup domain suffix', () => {
+  const username = `evcfm${EVIDENCE_SUFFIX}`;
+  const email = `evidence_confirm_${EVIDENCE_RUN_ID}@example.com`;
+  const confirmedToken = `confirmed:${'c0nf1rm0'.repeat(8)}`;
+  const binding = makeBindingForSeededRow();
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+    // Fresh /confirm row: known non-null email so the evidence-hash preimage
+    // is fully test-controlled. binding hash mirrors the /signup cookie so the
+    // session-binding check passes; the same cookie is forwarded below.
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await pool.query(
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at, signup_binding_hash)
+       VALUES ($1, NULL, 'Evidence Confirm', 'MIT', 'physics', NULL, $2, $3, $4)`,
+      [email, confirmedToken, expiresAt, binding.hash],
+    );
+  });
+
+  afterAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  it('broadcasts evidence_hash = sha256(email:username:signup) and never the confirm suffix', async () => {
+    await clearRateLimitKeys(['auth-signup', 'signup-confirm', 'signup-confirm-token']);
+    // Username available on Hive (fresh path) and the broadcast resolves so the
+    // hash branch actually runs (afterEach already primes both defaults; reset
+    // here for locality).
+    getAccountsMock.mockReset();
+    getAccountsMock.mockResolvedValue([]);
+    broadcastJsonMock.mockReset();
+    broadcastJsonMock.mockResolvedValue({ id: 'evidence-confirm-tx' });
+
+    const res = await request(app)
+      .post('/api/auth/confirm')
+      .set('Cookie', binding.cookieHeader)
+      .send({
+        auth_token: confirmedToken,
+        username,
+        keys: {
+          owner_public: PrivateKey.fromSeed(`${username}-o`).createPublic().toString(),
+          active_public: PrivateKey.fromSeed(`${username}-a`).createPublic().toString(),
+          posting_public: PrivateKey.fromSeed(`${username}-p`).createPublic().toString(),
+          memo_public: PrivateKey.fromSeed(`${username}-m`).createPublic().toString(),
+          posting_private: PrivateKey.fromSeed(`${username}-p`).toString(),
+          memo_private: PrivateKey.fromSeed(`${username}-m`).toString(),
+        },
+      });
+
+    expect(res.status).toBe(200);
+
+    const op = findAccreditOp();
+    expect(op.account).toBe(username);
+    const expectedSignup = crypto.createHash('sha256').update(`${email}:${username}:signup`).digest('hex');
+    expect(op.evidence_hash).toBe(expectedSignup);
+    // The 'signup' → 'confirm' regression must flip this red: the wrong-suffix
+    // preimage must NOT match what was broadcast.
+    const confirmSuffixHash = crypto.createHash('sha256').update(`${email}:${username}:confirm`).digest('hex');
+    expect(op.evidence_hash).not.toBe(confirmSuffixHash);
+  });
+});
+
+// /link uses the real verifyHiveSignature middleware (per file header). The
+// harness signs a request-bound message with a deterministic test key and
+// primes getAccountsMock to publish the matching public key on the test
+// username so middleware + the route's existence check both pass; the
+// broadcast then resolves so the link-suffix hash branch runs.
+describe.skipIf(!dbReachable)('/link accreditation evidence_hash uses the link domain suffix', () => {
+  const username = `evlnk${EVIDENCE_SUFFIX}`;
+  const email = `evidence_link_${EVIDENCE_RUN_ID}@example.com`;
+  const confirmedToken = `confirmed:${'l1nk0p00'.repeat(8)}`;
+  const TEST_KEY = PrivateKey.fromSeed(`evidence-link-${EVIDENCE_SUFFIX}`);
+  const TEST_PUB = TEST_KEY.createPublic().toString();
+  const binding = makeBindingForSeededRow();
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+    // Fresh /link row: known non-null email, username still NULL (so the
+    // route's `WHERE username = $1` existence check finds no collision).
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await pool.query(
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at, signup_binding_hash)
+       VALUES ($1, NULL, 'Evidence Link', 'MIT', 'physics', NULL, $2, $3, $4)`,
+      [email, confirmedToken, expiresAt, binding.hash],
+    );
+  });
+
+  afterAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
+    return signRequestBoundShared(TEST_KEY, method, fullPath, body, timestamp);
+  }
+
+  it('broadcasts evidence_hash = sha256(email:username:link) and never the signup suffix', async () => {
+    await clearRateLimitKeys(['auth-link']);
+    // verifyHiveSignature reads posting.key_auths to verify the recovered key;
+    // the route then calls getAccounts again for the existence check (same
+    // return value works). Broadcast resolves so the hash branch runs.
+    getAccountsMock.mockReset();
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      if (names.includes(username)) {
+        return [{ name: username, posting: { key_auths: [[TEST_PUB, 1]] } }];
+      }
+      return [];
+    });
+    broadcastJsonMock.mockReset();
+    broadcastJsonMock.mockResolvedValue({ id: 'evidence-link-tx' });
+
+    const body = { auth_token: confirmedToken };
+    const timestamp = new Date().toISOString();
+    const signature = signRequestBound('POST', '/api/auth/link', body, timestamp);
+
+    const res = await request(app)
+      .post('/api/auth/link')
+      .set('X-Hive-Username', username)
+      .set('X-Hive-Signature', signature)
+      .set('X-Hive-Timestamp', timestamp)
+      .set('Cookie', binding.cookieHeader)
+      .send(body);
+
+    expect(res.status).toBe(200);
+
+    const op = findAccreditOp();
+    expect(op.account).toBe(username);
+    const expectedLink = crypto.createHash('sha256').update(`${email}:${username}:link`).digest('hex');
+    expect(op.evidence_hash).toBe(expectedLink);
+    // A 'link' → 'signup' regression must flip this red.
+    const signupSuffixHash = crypto.createHash('sha256').update(`${email}:${username}:signup`).digest('hex');
+    expect(op.evidence_hash).not.toBe(signupSuffixHash);
+  });
+});
+
+// Direct literal pin of the two route-flavor evidence suffixes against the
+// PRODUCTION map, asserting the literals 'signup' / 'link' and that they
+// differ. The literals are hard-coded here (NOT imported as the expected
+// value) so the shared-constant dedup cannot defeat the pin: a hand-edit that
+// swaps either suffix in `ROUTE_FLAVOR_DERIVATION` diverges from these
+// literals and turns the spec red. This is the value-level companion to the
+// behavioral broadcast pins above.
+describe('ROUTE_FLAVOR_DERIVATION evidence-suffix literals', () => {
+  it('maps confirm → signup and link → link, and the two differ', () => {
+    expect(ROUTE_FLAVOR_DERIVATION.confirm.evidenceSuffix).toBe('signup');
+    expect(ROUTE_FLAVOR_DERIVATION.link.evidenceSuffix).toBe('link');
+    expect(ROUTE_FLAVOR_DERIVATION.confirm.evidenceSuffix).not.toBe(
+      ROUTE_FLAVOR_DERIVATION.link.evidenceSuffix,
+    );
   });
 });
 
