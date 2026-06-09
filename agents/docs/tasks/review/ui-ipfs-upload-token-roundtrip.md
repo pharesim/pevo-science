@@ -177,3 +177,61 @@ pre-existing — fix opportunistically if you touch those lines, not required he
 When the five fixes land, `git mv` this file back to `tasks/review/` for re-review.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09, commit b469a935 on main)
+
+All five hold-block fixes landed (worker implemented in a worktree; parent
+cherry-picked the single commit cleanly onto main as b469a935; the original
+worktree commit 87b46234 was a stale-base recovery, see note at the bottom).
+
+- **Fix 1 (P1, `tests/unit/pages-edit.test.js`):** dropped the dead `uploadToIpfs`
+  stub from the api.js mock; added `vi.mock('../../src/lib/ipfs-upload.js', ...)`
+  mirroring `pages-publish.test.js` (hoisted `mockSessionUpload`/`mockSessionDispose`);
+  added describe block `editPage handleSubmit supplementary-file upload session`
+  with two tests — one asserts `createUploadSession().upload(sf.file)` runs per
+  file with the cid embedded in the broadcast `json_metadata.supplementary_files`,
+  the other asserts `dispose()` fires in the `finally` even when an upload throws.
+- **Fix 2 (P2, `editor.js`):** chose the architect's second sanctioned option
+  ("queue concurrent `_handleImageUpload` invocations") — a fire-and-forget
+  sequential `_imageUploadQueue` + `_drainImageUploadQueue` with a re-entrancy
+  guard; the three `forEach(_handleImageUpload)` call sites (`_bindFileInput`,
+  `handleDrop`, `handlePaste`) now enqueue, and `handleDrop`/`handlePaste` keep
+  their synchronous boolean return. This fixes the **primary** deliverable: a
+  light account can drop several images at once without all-but-first cancelling.
+  **OPEN FOR ARCHITECT:** the cross-surface sub-case you flagged ("an editor
+  inline-image upload that races a publish/edit batch") is NOT covered by an
+  editor-instance-local queue — neither editor-local option (one-session or
+  queued-invocations) serializes the editor's session against a separate
+  publish/edit-page batch session, because both call the singleton
+  `reauthModal.request()` and the refuse-while-open guard resolves the second
+  concurrent caller to null. Covering it needs a GLOBAL gate (reauthModal-level
+  FIFO queue instead of refuse-while-open, or a shared upload-in-progress flag),
+  which changes the reauthModal contract (modeled on broadcast-confirm) and is a
+  larger, separate change. Please confirm whether the editor-local serialization
+  satisfies Fix 2 as written, or whether you want the global gate (here or as a
+  follow-up task).
+- **Fix 3 (P2, `lib/ipfs-upload.js`):** `repromptUsed` flag (reset in `dispose()`)
+  bounds the password re-prompt to once per session across both `mintProof` sites;
+  a second `UNAUTHORIZED` rethrows. Retry-path comment corrected.
+- **Fix 4 (P2, `lib/ipfs-upload.js`):** `ensureCredential` wraps `fetchEmailStatus()`
+  in try/catch; only explicit `hasPassword === false` blocks (State-C), a
+  thrown/unknown status falls through to the prompt.
+- **Fix 5 (P3, `api.js`):** the `agents/docs/api-contracts/ipfs.md` citation in the
+  `mintIpfsUploadProof` docblock is replaced with a behavioral description of the
+  two-step `/upload-token` then `/upload` round-trip; the unrelated `orcid.md` /
+  `common.md` references are untouched.
+
+**Verification (parent, on main after cherry-pick):** full frontend unit suite
+green — 1415 pass (up from 1413; +2 from the new edit-page tests). The 3
+`pages-edit.test.js` `_mountEditors` "Unhandled Rejection" warnings are
+PRE-EXISTING (reproduce on base before any edit here) and do not fail the suite.
+`npm run build` green. Not E2E-run (architect's hold block: E2E not required).
+
+**Stale-base note (for fan-out hygiene):** the worker's worktree was branched
+127 commits behind main (HEAD `aa60d465`), the `feedback_worktree_fanout_stale_base`
+failure mode; the worker recovered with `git merge --ff-only main` before working
+(its HEAD was a clean ancestor, lossless) and committed 87b46234. Parent verified
+parent `1150c50a` is an ancestor of main and cherry-picked to b469a935 with zero
+conflicts (the two concurrent `ui(notifications)` commits touched disjoint files).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
