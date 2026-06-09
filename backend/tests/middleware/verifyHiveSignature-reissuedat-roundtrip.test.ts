@@ -103,11 +103,18 @@ describe('verifyHiveSignature — reissuedAt <-> sessions_invalidated_at round-t
       const oldEmail = `${username}_old@example.com`;
       const newEmail = `${username}_new@example.com`;
 
-      // Seed a light account (verify_token NULL, not upgraded) and a staged
-      // memo-key recovery row whose verify token we control.
+      // Seed a reachable account state named by its dimension tuple:
+      // (custody=light, password-set, no ORCID, not upgraded). The /recover/verify
+      // apply path reads only custody + upgraded_at, but the fixture must still seed
+      // a state the account state machine can actually reach — a light account with
+      // verify_token already cleared is password-set, so set a sentinel
+      // password_hash rather than leaving it NULL (the prior NULL combination was
+      // unreachable for a light account). Plus a staged memo-key recovery row whose
+      // verify token we control.
+      const sentinelPasswordHash = '$2b$10$reissueRtSentinelNotARealHashAAAAAAAAAAAAAAAAAAAAAAAAA';
       await pool.query(
-        `INSERT INTO accounts (email, username, custody, verify_token) VALUES ($1, $2, 'light', NULL)`,
-        [oldEmail, username],
+        `INSERT INTO accounts (email, username, custody, password_hash, verify_token) VALUES ($1, $2, 'light', $3, NULL)`,
+        [oldEmail, username, sentinelPasswordHash],
       );
       const verifyToken = crypto.randomBytes(32).toString('hex');
       const disputeToken = crypto.randomBytes(32).toString('hex');
@@ -144,7 +151,12 @@ describe('verifyHiveSignature — reissuedAt <-> sessions_invalidated_at round-t
       const decoded = jwt.decode(reissued) as { reissuedAt?: number; iat?: number } | null;
       expect(decoded?.reissuedAt).toBe(storedMs);
 
-      // The reissued token SURVIVES the real verifyHiveSignature same-second gate.
+      // End-to-end sanity: the real reissued token is accepted by the real
+      // verifyHiveSignature (the recover flow mints a usable token). This alone is
+      // NOT the discrimination proof — the reissue's sign-time iat lands at
+      // invalidatedSec or invalidatedSec+1 depending on whether the reissue
+      // transaction crossed a second boundary, so this token could survive via the
+      // trivial iat>invalidatedSec branch without reissuedAt ever deciding.
       const survive = await request(app)
         .post('/probe')
         .set('Authorization', `Bearer ${reissued}`)
@@ -152,10 +164,25 @@ describe('verifyHiveSignature — reissuedAt <-> sessions_invalidated_at round-t
       expect(survive.status).toBe(200);
       expect(survive.body.hiveUsername).toBe(username);
 
-      // A pre-reset token minted in the SAME integer second (no reissuedAt) is
-      // revoked — proving the survival above is the reissuedAt identity match,
-      // not a second-grained iat accident.
+      // Deterministic discrimination of the reissuedAt exemption: two control
+      // tokens minted at the SAME integer second as the stored invalidation,
+      // differing ONLY in the reissuedAt claim, isolate the gate's decision from
+      // the real reissue's nondeterministic sign-time iat. The control WITH
+      // reissuedAt === storedMs must SURVIVE (the identity exemption fires); the
+      // control WITHOUT reissuedAt at the same second must be REVOKED — so survival
+      // is pinned to the reissuedAt identity, not to a second-grained iat accident.
       const invalidatedSec = Math.floor(storedMs / 1000);
+      const controlWithReissue = jwt.sign(
+        { sub: username, custody: 'light', iat: invalidatedSec, reissuedAt: storedMs, exp: 9_999_999_999 },
+        config.sessionSecret,
+      );
+      const controlSurvive = await request(app)
+        .post('/probe')
+        .set('Authorization', `Bearer ${controlWithReissue}`)
+        .send({});
+      expect(controlSurvive.status).toBe(200);
+      expect(controlSurvive.body.hiveUsername).toBe(username);
+
       const preReset = jwt.sign(
         { sub: username, custody: 'light', iat: invalidatedSec, exp: 9_999_999_999 },
         config.sessionSecret,

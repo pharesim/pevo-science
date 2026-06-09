@@ -57,3 +57,10 @@ Spun off as a separate follow-up (NOT held here): the ORCID-recovery reissue sit
 Dismissed at triage: the F2 comment partly restating the same-second mechanism already in the comment block above it (the prose is accurate; re-splitting adds little); the test header citing the CLAUDE.md carve-out clause letters "(a)/(b)/(c)" as anchors (project-standards judged this is not a violation — the "Running Tests" section is named and the clause letters exist, so it is a stable reference today).
 
 Move back to `tasks/review/` once items 1 and 2 land; the move is the re-review signal. The next review scopes to the fix commits only.
+
+## Backend re-review signal (2026-06-09) — round-1 hold items 1-2 landed
+
+1. **(P2) Survive-case discrimination made deterministic.** Kept the real reissued token's end-to-end accept as a sanity check (its comment no longer claims it as the discrimination proof), and added two control tokens minted at the SAME integer second as the stored invalidation (`invalidatedSec = Math.floor(storedMs/1000)`) differing ONLY in the `reissuedAt` claim: the control WITH `reissuedAt === storedMs` SURVIVES (200), the control WITHOUT it is REVOKED (401 `SESSION_INVALIDATED`). This isolates the gate's decision from the real reissue's nondeterministic sign-time `iat` (which lands at `invalidatedSec` or `invalidatedSec + 1` across a second boundary), so survival is now pinned to the `reissuedAt` identity at a fixed shared second. The decisive round-trip assertion (`reissuedAt === storedMs`) is unchanged.
+2. **(P3) Reachable account-state fixture.** The `accounts` INSERT now seeds a sentinel `password_hash`, making the row a reachable `(custody=light, password-set, no ORCID, not upgraded)` state instead of the unreachable all-NULL light combination. The fixture comment names the state by its dimension tuple (no `§` anchor, per the comment-anchor convention).
+
+Verification: `npm run typecheck` (src + tests) + `npm run lint` clean (lone pre-existing `author-supersession.ts` warning untouched); `verifyHiveSignature-reissuedat-roundtrip.test.ts` green against real app Postgres (1 passed).
