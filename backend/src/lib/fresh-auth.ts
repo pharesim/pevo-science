@@ -30,9 +30,9 @@
  *   verifies the JWT subject equals the stored username; cross-account
  *   replay is rejected at the route layer.
  * - `mechanism` is an informational discriminator carried into
- *   `custody_audit_log.auth_mechanism` (round-3 audit-log extension); it is
- *   NOT used as a security predicate. The security primitives are token
- *   secrecy + single-use + username binding + TTL.
+ *   `custody_audit_log.auth_mechanism`; it is NOT used as a security
+ *   predicate. The security primitives are token secrecy + single-use +
+ *   username binding + TTL.
  *
  * Issuance paths (route-layer; this module is the storage primitive)
  * ------------------------------------------------------------------
@@ -217,11 +217,11 @@ export function setPasswordFreshAuthTarget(username: string): FreshAuthTarget {
   };
 }
 
-/** Round-4 hold #8: type-guard for the storage `mechanism` field. The
- *  membership test diverges from the union if the union grows and the
- *  test isn't updated; consolidating it here means a single point of
- *  maintenance. Used by `consumeFreshAuthToken` to narrow `unknown` from
- *  `JSON.parse` into the typed `FreshAuthMechanism`. */
+/** Type-guard for the storage `mechanism` field. The membership test diverges
+ *  from the `FreshAuthMechanism` union if the union grows and the test isn't
+ *  updated; consolidating it here means a single point of maintenance. Used by
+ *  `consumeFreshAuthToken` to narrow `unknown` from `JSON.parse` into the typed
+ *  `FreshAuthMechanism`. */
 export function isFreshAuthMechanism(value: unknown): value is FreshAuthMechanism {
   return value === 'password' || value === 'orcid';
 }
@@ -230,9 +230,8 @@ export function isFreshAuthMechanism(value: unknown): value is FreshAuthMechanis
  *  if the token leaks, generous enough for a "re-auth then broadcast" UX
  *  without forcing the user to re-prompt mid-flow.
  *
- *  Round-4 hold #13: kept exported for tests (the in-memory TTL-expiry
- *  fake-timer test in `tests/lib/fresh-auth.test.ts` advances `Date.now()`
- *  past this boundary). */
+ *  Kept exported for tests: the in-memory TTL-expiry fake-timer test in
+ *  `tests/lib/fresh-auth.test.ts` advances `Date.now()` past this boundary. */
 export const FRESH_AUTH_TTL_SECONDS = 300;
 
 const TOKEN_BYTES = 32;
@@ -258,10 +257,10 @@ interface StoredEntry {
    *  predating this field are treated as `'consent_op'` on consume so the
    *  consume-side bind check still fires (closed-default). */
   kind: FreshAuthKind;
-  /** Round-5 hold #3: SHA-256 hex of the target triple under a
-   *  length-prefixed encoding (see `computeFreshAuthTargetHash`). The
-   *  consume side recomputes the hash from the bundle's consent op fields
-   *  and rejects on mismatch. Stored as hex (64 chars) for JSON-safety.
+  /** SHA-256 hex of the per-op target under a length-prefixed encoding (see
+   *  `computeFreshAuthTargetHash`). The consume side recomputes the hash from
+   *  the bundle's gated-op fields and rejects on mismatch. Stored as hex (64
+   *  chars) for JSON-safety.
    *
    *  Optional only when `kind === 'session'` — session-kind proofs are not
    *  bound to a per-op target. Consent-op-kind entries MUST carry a
@@ -319,10 +318,10 @@ export function computeFreshAuthTargetHash(target: FreshAuthTarget): string {
   return crypto.createHash('sha256').update(concat).digest('hex');
 }
 
-/** Round-5 hold #3: type-guard for the `target_hash` field on the stored
- *  entry. A stored entry written by the round-4 path (no `target_hash`
- *  field) MUST be rejected on consume — closed-default policy. The
- *  membership check is structural: hex-string of length 64. */
+/** Type-guard for the `target_hash` field on the stored entry. A stored entry
+ *  written before per-op target binding existed (no `target_hash` field) MUST
+ *  be rejected on consume — closed-default policy. The membership check is
+ *  structural: hex-string of length 64. */
 function isValidTargetHash(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 }
@@ -450,7 +449,8 @@ export function creditOpFreshAuthTarget(fields: CreditOpTargetFields): FreshAuth
 
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are
  *  short-lived and process-local fallback is acceptable when Redis is
- *  unavailable (matches the convention in `routes/orcid.ts:151`). */
+ *  unavailable (matches the in-memory `orcidStates` fallback in
+ *  `routes/orcid.ts`). */
 const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
 
 /** In-process lock set for the consume helpers. Closes the concurrent
@@ -484,7 +484,7 @@ const inFlightConsumes = new Set<string>();
 /** Periodic cleanup so the map doesn't grow unbounded under no-Redis ops.
  *  Same shape as the orcid_state cleaner in orcid.ts. Wrapped in a
  *  start/stop pair so tests can deterministically pause the cleaner during
- *  fake-timer scenarios (round-4 hold #15). */
+ *  fake-timer scenarios. */
 const CLEANUP_INTERVAL_MS = 60_000;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -503,31 +503,29 @@ startCleanup();
 
 interface IssuedFreshAuth {
   token: string;
-  /** ISO-8601 string at which the token expires.
-   *  Wire format per `agents/docs/api-contracts/custody.md:108` and
-   *  `agents/docs/api-contracts/orcid.md:208,239`. The frontend reads this
-   *  via `new Date(expiresAt).getTime()` — emitting epoch seconds (number)
-   *  here would be silently interpreted as milliseconds and resolve to
-   *  1970, making the SPA cache 100% non-functional (every broadcast
-   *  triggers a full ORCID OAuth round-trip). See P0 task
-   *  `backend-expires-at-iso-conformance` (archived 2026-05-16). */
+  /** ISO-8601 string at which the token expires. Wire format per the
+   *  `fresh_auth_proof` response shape documented in the custody and orcid
+   *  API-contract files. The frontend reads this via
+   *  `new Date(expiresAt).getTime()` — emitting epoch seconds (number) here
+   *  would be silently interpreted as milliseconds and resolve to 1970, making
+   *  the SPA cache 100% non-functional (every broadcast triggers a full ORCID
+   *  OAuth round-trip). The ISO-8601 string form is the load-bearing
+   *  invariant. */
   expires_at: string;
   mechanism: FreshAuthMechanism;
 }
 
 /**
  * Mint a fresh-auth token for `username` with the given mechanism, bound to
- * the per-op target (action + root_author + root_permlink). The caller
- * (route handler) is responsible for verifying the user actually proved
- * control via that mechanism BEFORE calling this function. The caller is
- * also responsible for sourcing the target from the actual op the user
- * intends to authorize.
+ * the per-op target (via `computeFreshAuthTargetHash`). The caller (route
+ * handler) is responsible for verifying the user actually proved control via
+ * that mechanism BEFORE calling this function. The caller is also responsible
+ * for sourcing the target from the actual op the user intends to authorize.
  *
- * Round-5 hold #3: the proof is bound to the consent op via a SHA-256 of
- * the target triple. Without this bind the proof was 1-fold-amplifiable: a
- * compromised SPA could authenticate the user for `author_accept` on
- * paper X then use the proof to broadcast `author_resign` on paper Y under
- * the same TTL.
+ * The proof is bound to the gated op via a SHA-256 of the target. Without this
+ * bind the proof would be 1-fold-amplifiable: a compromised SPA could
+ * authenticate the user for `author_accept` on paper X then use the proof to
+ * broadcast `author_resign` on paper Y under the same TTL.
  *
  * Storage path: Redis preferred; falls back to the module-local map on
  * unavailable Redis or write failure. Both paths are TTL-bounded.
@@ -552,15 +550,15 @@ export async function issueFreshAuthToken(
   // doc-comment above for why epoch-seconds breaks the SPA cache.
   const expiresAt = new Date(memExpiresAtMs).toISOString();
 
-  // Round-4 hold #3: write to memStore as a backup whenever Redis-issuance
-  // succeeds. The pre-fix path stored the token only in Redis on the happy
-  // path; if Redis flapped between issue and consume, the consume side
-  // fell through to memStore.get(token) → empty → spurious 'expired' 401
-  // (the user just authenticated). With the backup write, a Redis-down
-  // consume can recover the entry from memStore. Single-use semantics are
-  // preserved: a successful Redis GETDEL deletes the canonical entry; the
-  // mem-store fallback path also calls memStore.delete() so the entry is
-  // consumed exactly once across the storage tiers.
+  // Write to memStore as a backup whenever Redis-issuance succeeds. Storing
+  // the token only in Redis on the happy path means that if Redis flaps
+  // between issue and consume, the consume side falls through to
+  // memStore.get(token) → empty → spurious 'expired' 401 (the user just
+  // authenticated). With the backup write, a Redis-down consume can recover
+  // the entry from memStore. Single-use semantics are preserved: a successful
+  // Redis GETDEL deletes the canonical entry; the mem-store fallback path also
+  // calls memStore.delete() so the entry is consumed exactly once across the
+  // storage tiers.
   memStore.set(token, { entry, expiresAt: memExpiresAtMs });
 
   const redis = getRedis();
@@ -595,13 +593,12 @@ export async function issueFreshAuthToken(
  * path.
  *
  * Rationale: non-consent ops (vote, comment, non-consent custom_json) do
- * not have the action/paper substitution-attack surface that motivated
- * round-5 hold #3's target binding. Forcing State C users (ORCID-only,
- * passwordless) to fabricate a target triple to mint an ORCID proof would
- * be UX friction without security benefit. Session-kind proofs encode "the
- * user re-authed via this mechanism in the last 5 minutes" — enough to
- * close the JWT-only-takeover gap on the non-consent path per ARCH.md
- * § 6.5 invariant #1.
+ * not have the action/paper substitution-attack surface that motivated the
+ * per-op target binding. Forcing State C users (ORCID-only, passwordless) to
+ * fabricate a target to mint an ORCID proof would be UX friction without
+ * security benefit. Session-kind proofs encode "the user re-authed via this
+ * mechanism in the last 5 minutes" — enough to close the JWT-only-takeover
+ * gap on the non-consent path per ARCH.md § 6.5 invariant #1.
  *
  * The caller (route handler) is responsible for verifying the user
  * actually proved control via that mechanism BEFORE calling this function,
@@ -625,12 +622,12 @@ export async function issueSessionFreshAuthToken(
   // doc-comment above for why epoch-seconds breaks the SPA cache.
   const expiresAt = new Date(memExpiresAtMs).toISOString();
 
-  // Round-4 hold #3 (carried from `issueFreshAuthToken`): write to memStore
-  // as a backup whenever Redis-issuance succeeds. The pre-fix path stored
-  // the token only in Redis on the happy path; if Redis flapped between
-  // issue and consume, the consume side fell through to memStore.get(token)
-  // → empty → spurious 'expired' 401 (the user just authenticated). With
-  // the backup write, a Redis-down consume can recover the entry from
+  // Write to memStore as a backup whenever Redis-issuance succeeds (same
+  // recovery rationale as `issueFreshAuthToken`). Storing the token only in
+  // Redis on the happy path means that if Redis flaps between issue and
+  // consume, the consume side falls through to memStore.get(token) → empty →
+  // spurious 'expired' 401 (the user just authenticated). With the backup
+  // write, a Redis-down consume can recover the entry from
   // memStore. Single-use semantics are preserved: a successful Redis GETDEL
   // deletes the canonical entry; the mem-store fallback path also calls
   // memStore.delete() so the entry is consumed exactly once across the
@@ -700,27 +697,25 @@ type FreshAuthVerifyResult =
  * `{ valid: false, reason: 'expired' }` (already consumed by the GETDEL /
  * map.delete()).
  *
- * Round-5 hold #1: dual-tier deletion is now SYMMETRIC across both legs.
- * The Redis-success leg deletes the memStore backup (so a sibling consume
- * can't replay the token via the fallback path). The memStore-fallback
- * leg issues a best-effort `redis.del` of the canonical entry (so a
- * Redis flap mid-call that consumed the memStore copy doesn't leave the
- * canonical entry behind for a replay once Redis recovers within the
- * TTL window). The pre-fix asymmetric variant — only the Redis-success
- * leg cleared the other tier — admitted a same-process double-consume
- * under a Redis blip mid-`getdel` even though the docstring claimed
- * symmetry.
+ * Dual-tier deletion is SYMMETRIC across both legs. The Redis-success leg
+ * deletes the memStore backup (so a sibling consume can't replay the token via
+ * the fallback path). The memStore-fallback leg issues a best-effort
+ * `redis.del` of the canonical entry (so a Redis flap mid-call that consumed
+ * the memStore copy doesn't leave the canonical entry behind for a replay once
+ * Redis recovers within the TTL window). An asymmetric variant — only the
+ * Redis-success leg clearing the other tier — would admit a same-process
+ * double-consume under a Redis blip mid-`getdel`.
  *
- * Round-4 hold #3 carry-over: the Redis-flap fallback recovery path
- * (memStore backup written at issuance) makes the consume side resilient
- * to mid-call Redis failures without sacrificing single-use semantics.
+ * The Redis-flap fallback recovery path (memStore backup written at issuance)
+ * makes the consume side resilient to mid-call Redis failures without
+ * sacrificing single-use semantics.
  *
- * Round-5 hold #3: consume requires `expectedTargetHash` (computed by the
- * caller from the actual consent op being authorized). A token that was
- * minted for one (action, paper) target cannot authorize a different
- * target. Closed-default: a missing or non-hex `expectedTargetHash`
- * rejects with `target_mismatch` rather than skipping the check (the
- * caller MUST be on the new wire shape for the proof to be honored).
+ * Consume requires `expectedTargetHash` (computed by the caller from the
+ * actual gated op being authorized). A token minted for one (action, paper)
+ * target cannot authorize a different target. Closed-default: a missing or
+ * non-hex `expectedTargetHash` rejects with `target_mismatch` rather than
+ * skipping the check, so a caller that doesn't supply a well-formed hash
+ * cannot accidentally bypass the bind.
  *
  * The route layer rejects the broadcast on any non-valid outcome.
  */
@@ -792,16 +787,15 @@ async function consumeFreshAuthTokenLocked(
 
   if (!raw) return { valid: false, reason: 'expired' };
 
-  // Round-5 hold #1: when we consumed from the memStore fallback path
-  // (Redis was unavailable or threw on getdel), issue a best-effort
-  // `redis.del` of the canonical Redis entry. Without this, a transient
-  // Redis flap mid-getdel that didn't actually delete the entry would
-  // leave the canonical Redis copy alive — and a replay within the TTL
-  // window once Redis recovered would hit Redis getdel and return valid
-  // a second time (double-consume). The redis.del here is best-effort:
-  // we already consumed the memStore copy, so the user's broadcast is
-  // good to proceed regardless of whether this paired delete lands.
-  // Logging on error correlates the recovery attempt with the flap.
+  // When we consumed from the memStore fallback path (Redis was unavailable
+  // or threw on getdel), issue a best-effort `redis.del` of the canonical
+  // Redis entry. Without this, a transient Redis flap mid-getdel that didn't
+  // actually delete the entry would leave the canonical Redis copy alive — and
+  // a replay within the TTL window once Redis recovered would hit Redis getdel
+  // and return valid a second time (double-consume). The redis.del here is
+  // best-effort: we already consumed the memStore copy, so the user's
+  // broadcast is good to proceed regardless of whether this paired delete
+  // lands. Logging on error correlates the recovery attempt with the flap.
   if (consumedFromMemStore && redis) {
     try {
       await redis.del(KEY_PREFIX + token);
@@ -821,13 +815,13 @@ async function consumeFreshAuthTokenLocked(
     return { valid: false, reason: 'malformed' };
   }
 
-  // Round-4 hold #8 + round-5 hold #3: structural narrowing replaces the
-  // prior unsafe `JSON.parse(raw) as StoredEntry`. Adding a new field to
-  // StoredEntry requires extending this guard; a future refactor that
-  // relaxes the schema is forced to update the consume path explicitly.
-  // The `target_hash` field MUST be present and well-shaped — a stored
-  // entry without it is a round-4-shape leak (e.g., a token written
-  // before redeploy and consumed after) and is rejected as malformed.
+  // Structural narrowing rather than an unsafe `JSON.parse(raw) as
+  // StoredEntry`. Adding a new field to StoredEntry requires extending this
+  // guard; a future refactor that relaxes the schema is forced to update the
+  // consume path explicitly. The `target_hash` field MUST be present and
+  // well-shaped on consent-op entries — a consent-op entry without it is a
+  // pre-target-binding stored shape (e.g., a token written before redeploy and
+  // consumed after) and is rejected as malformed (checked below).
   if (
     typeof parsed !== 'object' ||
     parsed === null ||
@@ -852,10 +846,10 @@ async function consumeFreshAuthTokenLocked(
     return { valid: false, reason: 'malformed' };
   }
 
-  // A consent-op entry MUST carry a well-shaped target_hash; absence is the
-  // round-4-shape leak. A session-kind entry MUST NOT carry one (its
-  // target field is forbidden at issuance); presence on a session entry is
-  // malformed because someone wrote a kind/target combo this code never
+  // A consent-op entry MUST carry a well-shaped target_hash; absence is a
+  // pre-target-binding stored shape. A session-kind entry MUST NOT carry one
+  // (its target field is forbidden at issuance); presence on a session entry
+  // is malformed because someone wrote a kind/target combo this code never
   // mints.
   const rawTargetHash = (parsed as { target_hash?: unknown }).target_hash;
   if (kind === 'consent_op') {
@@ -895,9 +889,9 @@ async function consumeFreshAuthTokenLocked(
     return { valid: false, reason: 'kind_mismatch' };
   }
 
-  // Round-5 hold #3: closed-default — caller MUST supply a well-formed
-  // expected hash. An empty / malformed argument rejects rather than
-  // bypasses the bind so legacy callers can't accidentally re-enable the
+  // Closed-default — the caller MUST supply a well-formed expected hash. An
+  // empty / malformed argument rejects rather than bypasses the bind, so a
+  // caller that doesn't compute the hash can't accidentally re-enable the
   // 1-fold substitution attack.
   if (!isValidTargetHash(expectedTargetHash)) {
     return { valid: false, reason: 'target_mismatch' };
@@ -1112,12 +1106,12 @@ export function _setMemStoreEntryForTests(
   memStore.set(token, { entry: entry as StoredEntry, expiresAt });
 }
 
-/** Round-4 hold #15: test-only hooks to pause / restart the module-level
- *  cleanup interval. Without these, fake-timer tests that need to advance
- *  past the TTL boundary race the cleaner and observe non-deterministic
- *  results (the cleaner fires under fake timers and pre-deletes the entry
- *  the test was about to assert on). Pair with `_resetFreshAuthMemStoreForTests`
- *  in `beforeEach` so suites have full control over the in-memory state. */
+/** Test-only hooks to pause / restart the module-level cleanup interval.
+ *  Without these, fake-timer tests that need to advance past the TTL boundary
+ *  race the cleaner and observe non-deterministic results (the cleaner fires
+ *  under fake timers and pre-deletes the entry the test was about to assert
+ *  on). Pair with `_resetFreshAuthMemStoreForTests` in `beforeEach` so suites
+ *  have full control over the in-memory state. */
 export function _stopCleanupForTests(): void {
   if (cleanupInterval !== null) {
     clearInterval(cleanupInterval);
