@@ -55,3 +55,55 @@ the `reauthModal` contract, confirm with the architect first):
 - Origin: `ui-ipfs-upload-token-roundtrip` (the cross-surface case the editor-local queue did not cover).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI implementation note (2026-06-09, commit 8367faed on main)
+
+**Chosen shape: option 2 (shared upload-layer gate), NOT a FIFO inside reauthModal.**
+The contract change in option 1 is unnecessary, so no architect confirmation was
+needed per the task's "if the chosen shape changes the reauthModal contract,
+confirm first."
+
+**Implementation.** A process-wide prompt-serialization gate in
+`frontend/src/lib/ipfs-upload.js`: a module-level `promptChain` (a promise chain)
+and `withPromptLock(requestPrompt)` that queues each caller behind the in-flight
+prompt and advances the chain on settle (resolve OR reject, so a cancelled/failed
+prompt never wedges the next waiter). `ensureCredential` now wraps its
+`Alpine.store('reauthModal').request()` call in `withPromptLock(...)`. Because
+every upload surface (the editor's one-shot `uploadFile` session and the
+publish/edit page-batch `createUploadSession`) routes through `ensureCredential`,
+the gate covers them transparently — **no edits to `editor.js`, `publish.js`, or
+`edit.js` were needed.** The State-C block (`hasPassword === false`) still throws
+before acquiring the gate, so a passwordless account never holds it.
+
+**Why option 2 is the right depth (acceptance: contract untouched).** The two
+genuinely-concurrent prompt requesters are both in the upload domain and on the
+same page surface. `reauthModal`'s only other caller,
+`frontend/src/lib/settings-fresh-auth.js`, lives on the settings page, prompts
+strictly sequentially (it awaits the first `request()` fully before any
+re-prompt), and cannot realistically race an upload. So the concurrency is a
+property of the upload layer's fan-in; confining the gate there matches where the
+problem originates and leaves the modal a dumb collector (as its docblock
+intends). The Keychain/self-custody path returns before `ensureCredential`, so it
+is ungated and unprompted (acceptance criterion 2).
+
+**Tests** (`tests/unit/lib-ipfs-upload.test.js`, new `describe('cross-surface
+prompt serialization')`). The reauthModal mock models the REAL refuse-while-open
+contract (a `request()` while one is open resolves `null`), so the test fails if
+the gate is removed (the second session would hit that branch → `UPLOAD_CANCELLED`
+→ the assertion that both complete fails). Two `it`s: two concurrent light
+sessions keep `maxConcurrent` open prompts at 1 and both complete uncancelled; the
+self-custody path is ungated and unprompted.
+
+**Verification.** `tests/unit/lib-ipfs-upload.test.js` green — 17 pass (up from
+15). Full frontend unit suite green — 1436 pass (0 failures; the 3
+`pages-edit.test.js` `_mountEditors` unhandled rejections are PRE-EXISTING,
+confirmed by re-running with this change stashed). `npm run build` green. Not
+E2E-run (the collision needs concurrent compose+submit on the full stack; unit
+tests model the modal contract directly). A `/simplify` pass (4 agents:
+reuse/simplification/efficiency/altitude) ran clean — altitude explicitly
+confirmed option 2 is the correct depth; one minor `[...deduped]`-spread
+simplification in the separate `notifications.js` task was intentionally not
+folded in here (that file is already in `review/`, and the spread is a defensible
+non-mutating idiom with negligible cost).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
