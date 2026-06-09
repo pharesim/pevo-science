@@ -493,4 +493,4 @@ export const __test_seams = {
   REDIS_KEY_BATCH_MEMBERS,
   clearStagingKeys,
   clearInProgressSentinels,
-};
+} as const;

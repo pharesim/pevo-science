@@ -24,7 +24,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getRedis } from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
-import { batchKey, BATCH_KEY_PREFIX, REDIS_KEY_STAGING_PREFIX, getBatchReputationMap, __test_seams as reputationSeams } from '../../src/reputation.js';
+import { batchKey, BATCH_KEY_PREFIX, REDIS_KEY_STAGING_PREFIX, getBatchReputationMap, seedAccreditationBonus, invalidateOnRevocation, __test_seams as reputationSeams } from '../../src/reputation.js';
 import { __test_seams } from '../../src/reputation-batch.js';
 
 const TEST_USERS = ['pevo-batch-internals-alice', 'pevo-batch-internals-bob'];
@@ -425,5 +425,67 @@ describe('reputation-batch internals: prev_scores rehydration uses batchMapToSco
       }
       await redis.del(batchKey(seededUser));
     }
+  });
+});
+
+describe('reputation-batch internals: members-index write paths (seed SADD / revoke SREM)', () => {
+  // seedAccreditationBonus must SADD the prod key into the members index and
+  // invalidateOnRevocation must SREM it, so getBatchReputationMap's SMEMBERS read
+  // sees a freshly-seeded user and stops seeing a revoked one. A revert of either
+  // index-maintenance line turns these red. The index is repointed onto
+  // TEST_MEMBERS_KEY (cleanup DELs it + restores the production key) so the
+  // assertions don't race a sibling file's SADD to the shared production members set.
+  const WRITE_USER = 'pevo-batch-write-path-dave';
+
+  async function writePathCleanup() {
+    const redis = getRedis();
+    if (!redis) return;
+    await redis.del(batchKey(WRITE_USER));
+    await redis.del(TEST_MEMBERS_KEY);
+    reputationSeams.setBatchMembersKey(null);
+  }
+  beforeEach(writePathCleanup);
+  afterEach(writePathCleanup);
+
+  it('seedAccreditationBonus SADDs the prod key into the members index on a fresh seed', async (ctx) => {
+    const redis = getRedis();
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
+    reputationSeams.setBatchMembersKey(TEST_MEMBERS_KEY);
+
+    await seedAccreditationBonus(WRITE_USER);
+
+    expect(await redis.exists(batchKey(WRITE_USER))).toBe(1);
+    expect(await redis.sismember(TEST_MEMBERS_KEY, batchKey(WRITE_USER))).toBe(1);
+  });
+
+  it('seedAccreditationBonus re-indexes an already-present prod key (unconditional SADD closes the orphan window)', async (ctx) => {
+    const redis = getRedis();
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
+    reputationSeams.setBatchMembersKey(TEST_MEMBERS_KEY);
+
+    // Orphan window: the prod key already exists (e.g. a prior crash wrote the SET
+    // but died before its separate SADD) but is NOT in the members index. A retry's
+    // NX SET no-ops; the SADD must still run unconditionally — a form gated on the
+    // NX result would skip it here and leave the user invisible to the SMEMBERS read.
+    await redis.set(batchKey(WRITE_USER), JSON.stringify({ score: 1, breakdown: { papers: 0, reviews: 0, citations: 0, accreditation: 1 } }));
+    expect(await redis.sismember(TEST_MEMBERS_KEY, batchKey(WRITE_USER))).toBe(0);
+
+    await seedAccreditationBonus(WRITE_USER);
+
+    expect(await redis.sismember(TEST_MEMBERS_KEY, batchKey(WRITE_USER))).toBe(1);
+  });
+
+  it('invalidateOnRevocation SREMs the prod key from the members index', async (ctx) => {
+    const redis = getRedis();
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
+    reputationSeams.setBatchMembersKey(TEST_MEMBERS_KEY);
+
+    await seedAccreditationBonus(WRITE_USER);
+    expect(await redis.sismember(TEST_MEMBERS_KEY, batchKey(WRITE_USER))).toBe(1);
+
+    await invalidateOnRevocation(WRITE_USER);
+
+    expect(await redis.exists(batchKey(WRITE_USER))).toBe(0);
+    expect(await redis.sismember(TEST_MEMBERS_KEY, batchKey(WRITE_USER))).toBe(0);
   });
 });

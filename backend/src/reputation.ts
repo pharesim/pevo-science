@@ -76,7 +76,7 @@ export const __test_seams = {
   setBatchMembersKey(key: string | null): void {
     batchMembersKeyOverride = key;
   },
-};
+} as const;
 
 /**
  * Non-blocking keyspace enumeration via an iterative `SCAN` cursor loop
@@ -223,16 +223,21 @@ export async function seedAccreditationBonus(username: string): Promise<void> {
   try {
     const weights = await getReputationWeights();
     const provisional = provisionalScore(weights.accreditation_bonus);
-    // SADD into the members index only when the NX SET actually wrote the key
-    // (returns 'OK'; null means a real cycle value already exists, and that key
-    // is already a member from the CYCLE_SWAP swap). Without this the freshly
-    // seeded provisional key would be invisible to getBatchReputationMap's
-    // SMEMBERS read until the next cycle swap — the regression the members-index
-    // migration would otherwise introduce vs the old KEYS-glob read.
-    const setResult = await redis.set(batchKey(username), JSON.stringify(provisional), 'NX');
-    if (setResult === 'OK') {
-      await redis.sadd(batchMembersKey(), batchKey(username));
-    }
+    // Write the provisional score if no real cycle value exists yet (NX), then
+    // SADD the key into the members index UNCONDITIONALLY. The prod key exists
+    // after this NX SET regardless of whether this call wrote it (a no-op means a
+    // real cycle value already exists). SADD is idempotent, so re-indexing an
+    // already-present member costs one round-trip — and that is the point: gating
+    // the SADD on the NX result reopened an orphan window where a crash between a
+    // prior SET and its separate SADD leaves the key unindexed, and a later retry
+    // reads the NX no-op and would skip the SADD on a false "already a member"
+    // assumption, leaving the user invisible to getBatchReputationMap's SMEMBERS
+    // read until the next cycle swap or a restart's backfill. Unconditional SADD
+    // closes that window. Without index maintenance at all, the freshly seeded
+    // provisional key would be invisible to the SMEMBERS read — the regression the
+    // members-index migration would otherwise introduce vs the old KEYS-glob read.
+    await redis.set(batchKey(username), JSON.stringify(provisional), 'NX');
+    await redis.sadd(batchMembersKey(), batchKey(username));
   } catch (err) {
     if (isPermanentSeedError(err)) {
       // Permanent (data-shape regression in weights or provisionalScore):
