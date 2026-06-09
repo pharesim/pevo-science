@@ -330,3 +330,84 @@ describe('PevoEditor._handleImageUpload error sanitization', () => {
     warnSpy.mockRestore();
   });
 });
+
+// --- Sequential image-upload queue ---
+//
+// Drop/paste/file-select can hand the editor several images at once. They must
+// drain one at a time through _handleImageUpload so a light account sees a
+// single shared re-auth prompt for the batch (concurrent uploads would each
+// open a session + modal, and the modal's refuse-while-open guard would cancel
+// all but the first). We drive _queueImageUploads/_drainImageUploadQueue on a
+// prototype-backed stub (no DOM / no Tiptap mount) with _handleImageUpload
+// replaced by a recorder.
+describe('PevoEditor image-upload queue', () => {
+  function makeQueueStub() {
+    const stub = Object.create(PevoEditor.prototype);
+    stub.editor = {};
+    stub._imageUploadQueue = [];
+    stub._imageUploadDraining = false;
+    return stub;
+  }
+
+  const img = (name) => ({ type: 'image/png', name });
+  // Macrotask flush: lets the fire-and-forget drain settle all its microtasks.
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('_queueImageUploads enqueues all files and drains them in FIFO order, one at a time', async () => {
+    const stub = makeQueueStub();
+    const order = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    stub._handleImageUpload = vi.fn(async (file) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      order.push(file.name);
+      await Promise.resolve(); // yield so any concurrency would surface
+      inFlight -= 1;
+    });
+
+    stub._queueImageUploads([img('a.png'), img('b.png'), img('c.png')]);
+    await flush();
+
+    expect(stub._handleImageUpload).toHaveBeenCalledTimes(3);
+    expect(order).toEqual(['a.png', 'b.png', 'c.png']); // FIFO
+    expect(maxInFlight).toBe(1); // strictly sequential, never concurrent
+    expect(stub._imageUploadDraining).toBe(false); // flag cleared when done
+  });
+
+  it('the _imageUploadDraining guard prevents a concurrent second drain from double-processing', async () => {
+    const stub = makeQueueStub();
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    stub._handleImageUpload = vi.fn(async () => { await gate; });
+
+    stub._imageUploadQueue.push(img('a.png'));
+    const first = stub._drainImageUploadQueue(); // starts; parks awaiting a.png
+    // A second drain entered while the first holds the flag must early-return,
+    // not pick up the newly-queued file itself.
+    stub._imageUploadQueue.push(img('b.png'));
+    await stub._drainImageUploadQueue();
+    expect(stub._handleImageUpload).toHaveBeenCalledTimes(1); // only a.png so far
+
+    release();
+    await first; // the original drain continues and picks up b.png
+    expect(stub._handleImageUpload).toHaveBeenCalledTimes(2);
+    expect(stub._imageUploadDraining).toBe(false);
+  });
+
+  it('stops draining when the editor is torn down mid-drain and resets the flag', async () => {
+    const stub = makeQueueStub();
+    const seen = [];
+    stub._handleImageUpload = vi.fn(async (file) => {
+      seen.push(file.name);
+      stub.editor = null; // simulate destroy() landing during the first upload
+    });
+
+    stub._imageUploadQueue.push(img('a.png'), img('b.png'));
+    await stub._drainImageUploadQueue();
+
+    expect(seen).toEqual(['a.png']); // b.png never processed
+    expect(stub._handleImageUpload).toHaveBeenCalledTimes(1);
+    expect(stub._imageUploadDraining).toBe(false); // flag reset even on early break
+  });
+});

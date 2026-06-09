@@ -7,11 +7,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockUploadFileToIpfs = vi.fn();
 const mockMintProof = vi.fn();
 const mockFetchEmailStatus = vi.fn();
-vi.mock('../../src/api.js', () => ({
-  uploadFileToIpfs: (...a) => mockUploadFileToIpfs(...a),
-  mintIpfsUploadProof: (...a) => mockMintProof(...a),
-  fetchEmailStatus: (...a) => mockFetchEmailStatus(...a),
-}));
+vi.mock('../../src/api.js', async (importOriginal) => {
+  // Spread the real module so ApiRequestError (and any other real exports) stay
+  // available; override only the three functions the session calls. Tests build
+  // errors via the real ApiRequestError so the shape stays honest -- the class
+  // carries `code`, never `status` (test-fabricated-error-shape convention).
+  // importOriginal loads api.js, whose top level is pure declarations, so it is
+  // side-effect-free under the mocked alpinejs below.
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    uploadFileToIpfs: (...a) => mockUploadFileToIpfs(...a),
+    mintIpfsUploadProof: (...a) => mockMintProof(...a),
+    fetchEmailStatus: (...a) => mockFetchEmailStatus(...a),
+  };
+});
 
 let custody = 'light';
 const reauthRequest = vi.fn();
@@ -34,10 +44,14 @@ import {
   UPLOAD_REAUTH_UNAVAILABLE,
   UPLOAD_CANCELLED,
 } from '../../src/lib/ipfs-upload.js';
+import { ApiRequestError } from '../../src/api.js';
 
 const okUpload = (cid) => ({ status: 'ok', data: { cid, filename: 'f', type: 'application/pdf', size: 1 } });
 const file = () => new Blob(['x'], { type: 'application/pdf' });
-const codedError = (code) => Object.assign(new Error(code), { code });
+// Build the real ApiRequestError production throws, not a hand-rolled stand-in.
+// The class sets `code` (and optional message/details) and has no `status`
+// field; constructing via the real type keeps every error-shape guard honest.
+const codedError = (code) => new ApiRequestError(code, code);
 
 describe('createUploadSession', () => {
   beforeEach(() => {
@@ -145,6 +159,66 @@ describe('createUploadSession', () => {
     const session = createUploadSession();
     await expect(session.upload(file())).rejects.toMatchObject({ code: 'SERVICE_UNAVAILABLE' });
     expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(1);
+  });
+
+  // The password re-prompt is bounded to once per session: a session-JWT expiry
+  // or a mid-batch credential change can make the mint return UNAUTHORIZED again
+  // with an already-correct password, which must NOT loop the user through
+  // endless prompts.
+  it('bounds the re-prompt to once per session: a second UNAUTHORIZED rethrows without a third prompt', async () => {
+    // Initial mint UNAUTHORIZED -> re-prompt + retry; retry mint UNAUTHORIZED ->
+    // repromptUsed is now set, so mintProof rethrows instead of prompting again.
+    mockMintProof
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'));
+    reauthRequest.mockResolvedValueOnce('pw1').mockResolvedValueOnce('pw2');
+    const session = createUploadSession();
+    await expect(session.upload(file())).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    // Exactly two prompts: the initial credential prompt + one re-prompt. No third.
+    expect(reauthRequest).toHaveBeenCalledTimes(2);
+    expect(mockMintProof).toHaveBeenCalledTimes(2);
+    expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
+  });
+
+  it('dispose() resets the re-prompt bound so a reused session can re-prompt again', async () => {
+    const session = createUploadSession();
+    // Batch 1: first mint UNAUTHORIZED -> re-prompt (2nd prompt) -> retry succeeds.
+    mockMintProof.mockRejectedValueOnce(codedError('UNAUTHORIZED')).mockResolvedValueOnce('proof-1');
+    await session.upload(file());
+    expect(reauthRequest).toHaveBeenCalledTimes(2);
+
+    session.dispose();
+
+    // Batch 2 on the same session: the bound is reset, so a fresh UNAUTHORIZED
+    // re-prompts (4th prompt overall) rather than rethrowing.
+    mockMintProof.mockRejectedValueOnce(codedError('UNAUTHORIZED')).mockResolvedValueOnce('proof-2');
+    const r2 = await session.upload(file());
+    expect(r2.data.cid).toBe('bafy');
+    expect(reauthRequest).toHaveBeenCalledTimes(4);
+  });
+
+  // Fix 4: ensureCredential must not dead-end a valid password-holder when the
+  // account-status fetch fails transiently. Only an explicit hasPassword===false
+  // (State C) blocks; a thrown/unknown status falls through to the prompt, and
+  // the backend re-verifies at mint time. NOTE: a real transient failure (network
+  // down / 30s timeout) surfaces from fetch as a raw TypeError / DOMException,
+  // NOT an ApiRequestError -- so the catch is intentionally untyped. This test
+  // uses a raw TypeError to pin that non-ApiRequestError throws still fall
+  // through (it would fail if the catch were narrowed to ApiRequestError-only).
+  it('falls through to the password prompt when the status fetch throws transiently, and succeeds', async () => {
+    mockFetchEmailStatus.mockRejectedValue(new TypeError('Failed to fetch'));
+    const session = createUploadSession();
+    const res = await session.upload(file());
+    expect(res.data.cid).toBe('bafy');
+    expect(reauthRequest).toHaveBeenCalledTimes(1); // prompted despite the status failure
+    expect(mockMintProof).toHaveBeenCalledTimes(1);
+  });
+
+  it('still blocks without prompting when the status explicitly reports hasPassword=false', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    const session = createUploadSession();
+    await expect(session.upload(file())).rejects.toMatchObject({ code: UPLOAD_REAUTH_UNAVAILABLE });
+    expect(reauthRequest).not.toHaveBeenCalled();
   });
 });
 

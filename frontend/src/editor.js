@@ -715,6 +715,12 @@ export class PevoEditor {
       this.editor.destroy();
       this.editor = null;
     }
+    // Drop any images still queued for upload and clear the drain guard, so a
+    // re-mounted editor cannot resume a torn-down instance's backlog. The drain
+    // loop already breaks on the now-null editor; this is the teardown-side
+    // guarantee for the flag-before-await idempotency invariant.
+    this._imageUploadQueue = [];
+    this._imageUploadDraining = false;
     if (this._escHandler) document.removeEventListener('keydown', this._escHandler);
     if (this._outsideClickHandler) document.removeEventListener('click', this._outsideClickHandler);
     if (this._i18nEffect) {
