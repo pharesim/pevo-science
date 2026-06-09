@@ -97,3 +97,83 @@ build green. Not E2E-run (the two-step upload needs the full stack in test-mode)
 the architect to decide whether an E2E spec is wanted before archive.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `1e1b2cde` (10 personas). Security is clean: §6.5
+invariant #1 holds (the JWT path always carries the `ipfs_upload` proof, no JWT-only
+reach to the upload token), no XSS in the modal/i18n, the password is never logged or
+attached to an error, and the SHA-256 descriptor binds the exact uploaded bytes. The
+happy paths for Keychain self-custody and light+password single-file upload are sound.
+The following must land before archive. Anchor any code comments on the named symbols,
+not on line numbers.
+
+**1. (P1) `edit.js` supplementary-upload path has no page-level test, plus a dead mock.**
+`pages-edit.test.js` mocks `uploadToIpfs` (a symbol `edit.js` no longer imports) and
+never mocks `lib/ipfs-upload.js`, so the `createUploadSession()` upload region in
+`edit.js`'s submit handler is entirely unverified while the structurally-identical
+`publish.js` path is tested — the stale mock gives false green. Add a
+`vi.mock('../../src/lib/ipfs-upload.js', ...)` mirroring `pages-publish.test.js`, add at
+least one test that sets `supplementaryFiles` and asserts the session's `upload` is
+called and `dispose()` runs in the `finally`, and remove the stale `uploadToIpfs` stub
+from the api.js mock.
+
+**2. (P2) Multi-image upload cancels all but the first image (light accounts).**
+In `editor.js` the paste/drop/file-select handlers invoke `_handleImageUpload` per file
+inside a `forEach`, firing concurrent `uploadFile` calls. Each opens its own session and
+calls `reauthModal.request()`; the modal's refuse-while-open guard resolves every caller
+after the first to `null`, surfacing a per-image "Upload cancelled" toast. Serialize
+multi-image upload (drain the images sequentially through one session, or queue
+concurrent `_handleImageUpload` invocations) so a light account can drop several images
+at once. The same shared-`reauthModal` contention also bites an editor inline-image
+upload that races a publish/edit batch — serializing, or gating on an "upload in
+progress" flag, covers both.
+
+**3. (P2) `mintProof` re-prompts on every UNAUTHORIZED, contradicting its own comment.**
+In `lib/ipfs-upload.js`, `uploadOnce` calls `mintProof` for the initial mint and again on
+the token-expiry retry; `mintProof` calls `ensureCredential` (a password prompt) on any
+`UNAUTHORIZED`. The retry-path comment claims "the cached password means no re-prompt,"
+but a session-JWT expiry or a mid-batch password change makes the retry mint return
+`UNAUTHORIZED` and triggers a third, useless password prompt. Bound the re-prompt to once
+per session (e.g. a `repromptUsed` flag that rethrows instead of re-prompting), and
+correct the comment to state the actual behavior.
+
+**4. (P2) `fetchEmailStatus()` failure hard-blocks a valid password-holder.**
+`ensureCredential` awaits `fetchEmailStatus()` with no `try/catch`; a transient network
+failure rejects and dead-ends the upload with a generic "upload failed," even for an
+account that has a password. Wrap the status fetch so only an explicit
+`hasPassword === false` blocks (the State-C carve-out); on a thrown/unknown status, fall
+through to the password prompt (the backend re-verifies and 401s a genuine passwordless
+account anyway).
+
+**5. (P3) Production docblock cites a coordination path.**
+The `api.js` upload docblock references `agents/docs/api-contracts/ipfs.md`. Per the
+comment-anchor convention, replace it with a behavioral description of the two-step
+pre-flight (the `/upload-token` then `/upload` round-trip), not an `agents/docs/` path.
+
+**Architect-resolved — do NOT change in code (review finding on State C).** The State-C
+"set a password" block is approved product behavior. I reconciled the docs to match
+(commit subject `architect(ipfs-upload): record SPA State-C upload carve-out`):
+ARCHITECTURE.md §6.4 and `api-contracts/ipfs.md` now record the SPA's password-only
+carve-out. Do not wire the ORCID upload path.
+
+**E2E decision.** A full-stack E2E spec for the two-step upload is NOT required for
+archive. The unit suite plus fix #1 (edit-path page coverage) is sufficient. A real-stack
+E2E can be a separate follow-up if wanted; it does not block this task.
+
+**Reviewed and dismissed (no action).** Preemptive/theoretical or covered by the
+project's stance against preemptive test-hardening: `describeUploadError` reimplemented in
+two test mocks; retry tests not asserting the fresh proof is passed; untested editor
+i18n-key error branch; untested publish primary-PDF failure toast; `api.test.js`
+descriptor omitting the `size` assertion; no "incorrect password" feedback after the 2nd
+wrong password; 503 treated as terminal (no `isRetriable503` retry); 403 binding-violation
+not distinguished from 401 before the retry; orphaned API calls when navigating away
+mid-modal; State-D routed to the Keychain path (not a new dead-end — the existing
+broadcast step already Keychain-gates State D); lib reaching into `Alpine.store` (works;
+design-purity only). The pre-existing `FE-ERR-MESSAGE-SANITIZE-SWEEP` task-slug comment in
+`pages-publish.test.js` and the missing `isSubmitting` entry guard in `handleSubmit` are
+pre-existing — fix opportunistically if you touch those lines, not required here.
+
+When the five fixes land, `git mv` this file back to `tasks/review/` for re-review.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
