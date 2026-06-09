@@ -70,3 +70,36 @@ at all four unguarded handlers, using the shared exported `ORCID_REDIRECT_HOSTS`
 - Origin: `ui-orcid-redirect-host-allowlist-sweep` review (the semantic siblings the literal-scoped sweep missed).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI implementation note (2026-06-09, commit f669035d on main)
+
+All four unguarded handlers now validate the redirect host against the shared
+`ORCID_REDIRECT_HOSTS` constant before `window.location.href = data.redirect_url`,
+matching the `settings.js` `handleOrcidLink` shape exactly (`new URL(...)` +
+`throw new Error('Invalid ORCID redirect URL')` on a non-allowlisted host):
+- `pages/login.js` `handleOrcidLogin`
+- `pages/recover.js` `handleOrcidVerify`
+- `pages/signup.js` `handleOrcidVerify` and `handleOrcidSignup`
+
+The internal throw routes through each handler's PRE-EXISTING sanitized catch (no
+new copy): generic localized error to the DOM, raw err to `console.warn`,
+`orcidLoading` reset, and the existing `sessionStorage` cleanup (`pevo_orcid_mode`,
+plus `pevo_orcid_return_to` for recover). Each page gained
+`import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js'`. The guard is inlined
+at each site (NOT extracted to a helper) because the task requires matching the
+five existing guarded sites' inline shape; a helper would deviate from that
+established pattern and is out of scope.
+
+`ORCID_REDIRECT_HOSTS` is now `Object.freeze`'d in `fresh-auth.js` (`.includes()`
+unaffected), and its docblock is corrected to claim uniform coverage — now true.
+
+**Acceptance met.** Grep: 8 `window.location.href = data.redirect_url` sites, 8
+`ORCID_REDIRECT_HOSTS.includes` checks (every `startOrcid` redirect is guarded).
+Per-handler rejection-path unit test added (mock `startOrcid` → non-allowlisted
+host; assert `window.location.href` stays `''` i.e. no navigation, the localized
+`*.orcidStartFailed` error, `orcidLoading` reset, and the raw
+`'Invalid ORCID redirect URL'` to `console.warn`). Happy-path (allowlisted host)
+behavior unchanged. Full frontend unit suite green (1440 pass, +4); build green;
+comment anchors clean (no slug/round/line/SHA citations in the new code).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
