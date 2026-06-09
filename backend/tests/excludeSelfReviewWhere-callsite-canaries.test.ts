@@ -7,7 +7,7 @@
  * equality between display and reputation paths; the load-bearing canary
  * in `tests/routes/reputation-paper-reviews-self-exclusion-canary.test.ts`
  * tests the AVG/5 inflation. None of these pin that each individual
- * callsite still composes the helper — a revert at any one of the 8 SQL
+ * callsite still composes the helper — a revert at any one of the 11 SQL
  * sites would leave the helper-level tests green but reintroduce the
  * mutation-class at that callsite (a self-review surfaces on
  * /api/profile/:user/reviews while still being excluded from the reputation
@@ -17,13 +17,14 @@
  * `defense-in-depth-canary-must-pin-each-layer-2026-05-07`: each callsite
  * is an independent defense layer; each gets its own canary.
  *
- * **Approach.** A source-level canary: read each of the 8 callsite files
+ * **Approach.** A source-level canary: read each of the 6 callsite files
  * and assert that `excludeSelfReviewWhere(` appears at least once. A
  * mutation that removes the call from any callsite fails this test red.
  *
  * **Why source-level (vs SQL-string runtime inspection).** The architect's
  * hold-block fix recipe asked for runtime SQL inspection via mock-pool.
- * 8 routes × full auth/middleware setup × distinct query-param shapes is
+ * 6 callsite files (five route modules plus the reputation batch module)
+ * × full auth/middleware setup × distinct query-param shapes is
  * a large surface; the source-level form catches the same mutation class
  * (any line `AND ${excludeSelfReviewWhere(...)}` removed from the SQL
  * template). The trade-off: a contrived refactor that calls the helper
@@ -59,8 +60,8 @@
  *
  * A repeated-mutation kill (e.g., a refactor that consolidates two adjacent
  * callsites into one shared variable) reduces the expected count for the
- * affected file — adjust the per-file `expected` count in this file's
- * data table at that time, NOT silently relax the assertion to
+ * affected file — adjust the per-file `minOccurrences` count in this file's
+ * `CALLSITES` table at that time, NOT silently relax the assertion to
  * `>=` everywhere.
  */
 import { describe, it, expect } from 'vitest';

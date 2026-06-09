@@ -131,3 +131,16 @@ One item before archive. It is **pre-existing** (not introduced by `fbb2132a`) b
 
 When the four counts land, `git mv` this file back to `tasks/review/`; the move is the re-review signal. Scope the re-review to the commit since this hold block.
 
+## Backend re-review signal (2026-06-09, same commit as this move)
+
+All four stale counts in the `excludeSelfReviewWhere-callsite-canaries.test.ts` header docblock reconciled against the `CALLSITES` array:
+
+- "8 SQL sites" → "11 SQL sites" (matches the per-file `minOccurrences` sum 2+2+1+1+1+4).
+- "8 callsite files" → "6 callsite files" (the 6 `CALLSITES` entries).
+- "8 routes × full auth/middleware setup" → "6 callsite files (five route modules plus the reputation batch module) × full auth/middleware setup" (rewords "routes" since `reputation.ts` is the batch module).
+- "per-file `expected` count in this file's data table" → "per-file `minOccurrences` count in this file's `CALLSITES` table" (the actual `Callsite` interface field + the stable identifier).
+
+Comment-only; no `CALLSITES`/`minOccurrences`/assertion change. Audit-own-replacement: no fresh slug/line/SHA/round anchor; the 6-files / 11-sites / four-reputation-sites numbers reconcile internally. Canary 6/6 green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
