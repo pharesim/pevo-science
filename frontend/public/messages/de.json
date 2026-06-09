@@ -386,7 +386,7 @@
     "retractBroadcastPending": "Bürgschaft zurückgezogen. Backend-Benachrichtigung ausstehend.",
     "vouchFailed": "Bürgschaft konnte nicht übermittelt werden",
     "retractFailed": "Bürgschaft konnte nicht zurückgezogen werden",
-    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractUnverified": "Your vouch retraction was submitted but is not yet confirmed on-chain, so dependent accreditations were not re-evaluated. Re-check shortly.",
     "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
     "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting.",
     "accreditedViaWot": "{username} wurde über Web of Trust akkreditiert!",

@@ -113,3 +113,34 @@ STUBS.md kept in sync, full frontend unit suite green. `git mv` back to `tasks/r
 (the move is the re-review signal).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09, working tree)
+
+Reworded `wot.retractUnverified` across `en.json` + the 15 non-English locale
+stubs (textual `fs` replace, preserving each locale's formatting/escaping). New
+copy:
+
+> Your vouch retraction was submitted but is not yet confirmed on-chain, so
+> dependent accreditations were not re-evaluated. Re-check shortly.
+
+This matches the contract's fail-closed `unverified` definition in
+`api-contracts/accreditation.md` (the retraction itself is not yet reflected
+on-chain; nothing evaluated, no revocation issued): the copy now (a) attributes
+the on-chain lag to the unconfirmed retraction rather than to a dependent
+revocation, (b) states dependent accreditations were not re-evaluated, and (c) no
+longer asserts the retract as confirmed-done ("submitted but is not yet
+confirmed"). It stays green / non-error (handler arm unchanged) and keeps the
+re-check-shortly guidance. Emdash-free, verified across all 16 locales.
+
+STUBS.md unchanged: `wot.retractUnverified` is still an untranslated stub under
+its existing `### Added 2026-06-09 (UI-WOT-RETRACT-OUTCOME-MESSAGING)` heading, so
+that entry is already accurate. No `### Updated` heading was added — that variant
+exists for keys whose prior translation memory could mislead, and this key was
+never translated, so re-stubbing the new English in place keeps it in sync without
+duplicating the pending entry.
+
+Tests: full frontend unit suite green (1448 pass, count unchanged — no test
+added/removed; the `unverified` test asserts the i18n key, not the rendered
+string). Build green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

@@ -388,7 +388,7 @@
     "accreditationRevoked": "Accréditation révoquée pour : {accounts}.",
     "retractBroadcastPending": "Parrainage retiré. Notification au serveur en attente.",
     "retractFailed": "Impossible de retirer le parrainage",
-    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractUnverified": "Your vouch retraction was submitted but is not yet confirmed on-chain, so dependent accreditations were not re-evaluated. Re-check shortly.",
     "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
     "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
