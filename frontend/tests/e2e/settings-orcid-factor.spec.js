@@ -22,25 +22,25 @@
  * mocks) to exercise that seam.
  *
  * Mocking justification (project-CLAUDE.md "Carve-out for deterministic
- * edge-case coverage", clause a): the REAL `/api/orcid/callback` performs a
- * live OAuth token exchange against `config.orcidBaseUrl/oauth/token`. ORCID is
- * unconfigured in the local stack (empty ORCID_CLIENT_ID; no ORCID keys in
- * frontend/.env.test) and the E2E harness ships NO stub ORCID OAuth provider,
- * so a real ORCID-minted fresh-auth proof cannot be produced in E2E. We
- * therefore network-stub the backend `/api/orcid/callback` POST to return a
- * fresh_auth proof shape and stub `/api/settings/set-password` to capture the
- * resumed request body. This mirrors how every existing ORCID E2E spec works
- * (orcid-link.spec.js, orcid-no-password.spec.js both stub the callback and
- * `test.fixme` their real-backend ORCID assertions).
+ * edge-case coverage", clause a): the first two tests network-stub the backend
+ * `/api/orcid/callback` POST (to return a fresh_auth proof shape) and
+ * `/api/settings/set-password` (to capture the resumed request body) so the
+ * FRONTEND dispatch + cache-key seam is asserted deterministically, independent
+ * of backend proof verification. The clause-c real-path companion is the third
+ * test in this file: it removes both stubs and drives the whole flow against the
+ * real test stack — the orcid-stub OAuth sidecar in docker-compose.test.override.yml
+ * lets the real `/api/orcid/callback` complete a genuine token exchange
+ * in-network — so a real backend-minted proof is produced and consumed
+ * end-to-end.
  *
- * Auth-focus carve-out (clause b): none of these tests assert cryptographic
- * verification of the proof. They assert the FRONTEND dispatch + cache-key
- * round-trip and that the cached proof rides into the action request. The real
- * backend proof verification (the action succeeding with a genuine proof) is
- * the clause-c real-path companion that CANNOT run until a stub ORCID OAuth
- * provider is added to the harness; it is captured in the `test.fixme` at the
- * bottom of this file. Real `GET /api/settings/email` runs unstubbed (it is the
- * State-C `hasPassword:false` discriminator), as does the seeded account row.
+ * Auth-focus carve-out (clause b): the first two tests do not assert
+ * cryptographic verification of the proof — they assert the FRONTEND dispatch +
+ * cache-key round-trip and that the cached proof rides into the action request.
+ * The real backend proof verification (the action succeeding with a genuine
+ * proof) is the clause-c real-path companion: the third test below, which mints
+ * and consumes a real proof end-to-end. Real `GET /api/settings/email` runs
+ * unstubbed in all three (it is the State-C `hasPassword:false` discriminator),
+ * as does the seeded account row.
  */
 
 import { test, expect } from './fixtures/keychain.js';
@@ -280,28 +280,131 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
       fresh_auth_proof: STUB_PROOF,
     });
   });
+
+  // Real-backend round-trip. The two tests above stub the backend callback +
+  // set-password to assert the FRONTEND dispatch + cache-key seam deterministically.
+  // This one removes both stubs and drives the whole flow against the real test
+  // stack so a genuine backend-minted proof is produced and consumed: real
+  // /orcid/start -> in-page authorize fulfil -> real /orcid/callback (real proof)
+  // -> real /api/settings/set-password (proof accepted, password_hash populated).
+  // Requires the orcid-stub OAuth sidecar from docker-compose.test.override.yml
+  // (ORCID_BASE_URL=http://orcid-stub:8099 on the backend) so the real callback's
+  // token exchange resolves in-network.
+  test('ORCID-factor set_password succeeds end-to-end with a real backend-minted proof', async ({ page, baseURL }) => {
+    page.on('dialog', (dialog) => {
+      throw new Error(`Unexpected dialog: ${dialog.type()} "${dialog.message()}"`);
+    });
+
+    await seedSession(page);
+    await page.context().clearCookies();
+
+    // Bridge the SPA open-redirect guard. The real /api/orcid/start builds
+    // redirect_url from config.orcidBaseUrl, which the test stack points at the
+    // in-network stub (http://orcid-stub:8099). beginSettingsActionOrcidFreshAuth
+    // validates the redirect host against the ORCID_REDIRECT_HOSTS allowlist
+    // (orcid.org / sandbox.orcid.org) before navigating, so an orcid-stub host
+    // throws before the browser ever leaves the app. Pass /start through to the
+    // REAL backend (it allocates the real Redis state), then rewrite ONLY the
+    // redirect_url host to orcid.org so the guard passes and the authorize
+    // navigation actually fires. The real `state` rides through untouched.
+    await page.route('**/api/orcid/start', async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const real = new URL(body.data.redirect_url);
+      body.data.redirect_url = `https://orcid.org${real.pathname}${real.search}`;
+      await route.fulfill({
+        status: response.status(),
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    // In-page fulfil of the ORCID authorize hop. No browser can reach the
+    // compose-internal stub, and the stub serves no /oauth/authorize endpoint by
+    // design. Intercept the authorize navigation, read the real `state` the
+    // backend stored in Redis, and 302 the browser to the real /orcid/callback
+    // with code=<seeded ORCID iD>. The backend then exchanges that code against
+    // the stub's /oauth/token, which reflects it straight back as the `orcid`
+    // field (matching accounts.orcid for this run), so handleFreshAuth mints a
+    // genuine target-bound proof.
+    await page.route('**/oauth/authorize*', async (route) => {
+      const state = new URL(route.request().url()).searchParams.get('state');
+      await route.fulfill({
+        status: 302,
+        headers: { location: `${baseURL}/orcid/callback?code=${TEST_ORCID}&state=${state}` },
+      });
+    });
+
+    // /api/orcid/callback and /api/settings/set-password are NOT stubbed here:
+    // both run against the real backend so the real proof is minted and consumed.
+
+    await page.goto('/settings');
+    await page.waitForSelector('[x-data="settingsPage"]');
+    await expect(page.getByTestId('set-password-section')).toBeVisible();
+
+    // First submit: no cached proof, so the set_password ORCID factor starts the
+    // real round-trip (real /start -> authorize fulfil -> real /orcid/callback,
+    // which mints + caches the proof and navigates back to /settings).
+    await page.getByTestId('set-password-input').fill(NEW_PASSWORD);
+    await page.getByTestId('set-password-confirm-input').fill(NEW_PASSWORD);
+
+    const callbackResponse = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/orcid/callback') && resp.request().method() === 'POST',
+    );
+    await page.getByTestId('set-password-submit').click();
+    const cbResp = await callbackResponse;
+    expect(cbResp.status()).toBe(200);
+
+    // _handleFreshAuth caches the real proof and navigates back to /settings.
+    await page.waitForURL('**/settings');
+    await page.waitForSelector('[x-data="settingsPage"]');
+
+    // The consent-op cache now holds a REAL backend-minted proof bound to
+    // (set_password, username, '') — not the stubbed token of the tests above.
+    const cached = await page.evaluate((key) => window.sessionStorage.getItem(key), CONSENT_OP_KEY);
+    expect(cached).toBeTruthy();
+    const parsedCache = JSON.parse(cached);
+    expect(parsedCache).toMatchObject({
+      action: 'set_password',
+      rootAuthor: TEST_USERNAME,
+      rootPermlink: '',
+    });
+    expect(typeof parsedCache.token).toBe('string');
+    expect(parsedCache.token.length).toBeGreaterThan(0);
+
+    // Second submit: withSettingsFreshAuth finds the cached proof and threads it
+    // into the REAL POST /api/settings/set-password (no second redirect).
+    await expect(page.getByTestId('set-password-section')).toBeVisible();
+    await page.getByTestId('set-password-input').fill(NEW_PASSWORD);
+    await page.getByTestId('set-password-confirm-input').fill(NEW_PASSWORD);
+
+    const setPwResponse = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/settings/set-password') && resp.request().method() === 'POST',
+    );
+    await page.getByTestId('set-password-submit').click();
+    const setPwResp = await setPwResponse;
+    expect(setPwResp.status()).toBe(200);
+
+    // The real backend persisted the password hash: State C (passwordless) ->
+    // State B (password + ORCID). This is the proof the whole round-trip exists
+    // to produce.
+    const row = await pool.query(
+      'SELECT password_hash FROM accounts WHERE username = $1',
+      [TEST_USERNAME],
+    );
+    expect(row.rows[0]?.password_hash).toBeTruthy();
+
+    // The "Set a password" section stops rendering after a reload: GET
+    // /api/settings/email now reports hasPassword:true.
+    await page.reload();
+    await page.waitForSelector('[x-data="settingsPage"]');
+    await expect(page.getByTestId('set-password-section')).toBeHidden();
+
+    // Password login with the new password now succeeds (State B account).
+    const loginResp = await page.request.post('/api/auth/login', {
+      data: { email_or_username: TEST_EMAIL, password: NEW_PASSWORD },
+    });
+    expect(loginResp.status()).toBe(200);
+  });
 });
 
-/**
- * Real-backend round-trip. CANNOT run until the E2E harness ships a stub ORCID
- * OAuth provider: the real `/api/orcid/callback` does a live token exchange
- * against `config.orcidBaseUrl/oauth/token`, ORCID is unconfigured locally
- * (empty ORCID_CLIENT_ID, no keys in frontend/.env.test), and there is no mock
- * provider in global-setup or the test compose override. Un-fixme once a stub
- * ORCID provider exists so the real backend mints a genuine fresh-auth proof and
- * `/api/settings/set-password` accepts it (password_hash populated, login with
- * the new password succeeds, and the "Set a password" section stops rendering).
- */
-test.fixme(
-  'ORCID-factor set_password succeeds end-to-end with a real backend-minted proof (needs a stub ORCID OAuth provider)',
-  async () => {
-    // 1. Seed a State-C (null password_hash) ORCID-linked account + session.
-    // 2. Drive /settings set-password -> real /orcid/start -> stub ORCID provider
-    //    issues a code -> real /orcid/callback mints a real fresh_auth proof bound
-    //    to (set_password, username, '') and caches it.
-    // 3. Re-submit set-password -> real /api/settings/set-password accepts the
-    //    proof -> 200, accounts.password_hash populated.
-    // 4. Log in with email + NEW_PASSWORD -> 200; the set-password section no
-    //    longer renders.
-  },
-);

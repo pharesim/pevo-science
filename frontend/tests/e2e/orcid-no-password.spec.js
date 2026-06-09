@@ -353,13 +353,26 @@ test.describe('recover — ORCID branch never persists password', () => {
 });
 
 /**
- * Real-backend assertions. Pending SEC-004-BE: today `/api/auth/signup`
- * returns 400 on password: null (the VALIDATION_ERROR path this task is
- * removing), and `/api/settings/set-password` does not exist yet. Once
- * SEC-004-BE deploys, un-fixme these to exercise the full atomic flow.
+ * Real-backend ORCID round-trips.
+ *
+ * The set-password real round-trip on a null-hash State-C account (real ORCID
+ * fresh-auth proof -> real /api/settings/set-password -> password_hash
+ * populated -> password login succeeds -> "Set a password" stops rendering) is
+ * implemented as the third test in settings-orcid-factor.spec.js
+ * ("ORCID-factor set_password succeeds end-to-end with a real backend-minted
+ * proof"), which drives it against the orcid-stub OAuth sidecar. It is not
+ * duplicated here.
+ *
+ * The signup and recovery round-trips below stay `test.fixme`: both drive the
+ * ORCID *signup* mode, whose backend handler additionally fetches a works count
+ * from a hardcoded pub.orcid.org URL. The orcid-stub sidecar only serves
+ * /oauth/token (it reflects the submitted code back as the orcid iD); it does
+ * NOT serve the pub.orcid.org works endpoint, so the signup-mode works-count
+ * gate cannot be satisfied in-network. Driving these needs a second stub for the
+ * works API; out of scope for the token-only orcid-stub, filed as a follow-up.
  */
 test.fixme(
-  'SEC-004-BE integration: ORCID signup with password: null creates an account with password_hash = NULL',
+  'ORCID signup with password: null creates an account with password_hash = NULL (needs a pub.orcid.org works stub)',
   async () => {
     // 1. Drive /signup through the ORCID branch end-to-end.
     // 2. Real /api/auth/signup accepts password: null and returns 200.
@@ -370,20 +383,7 @@ test.fixme(
 );
 
 test.fixme(
-  'SEC-004-BE integration: settings "Set a password" happy path on null-hash account',
-  async () => {
-    // 1. Seed a null-hash account (via the ORCID signup flow above, or
-    //    directly via SQL).
-    // 2. Authenticate as that user.
-    // 3. Navigate to /settings, fill the new-password form.
-    // 4. POST /api/settings/set-password → 200, password_hash populated.
-    // 5. Log in with email + password → 200.
-    // 6. The "Set a password" surface no longer renders on /settings.
-  },
-);
-
-test.fixme(
-  'SEC-004-BE integration: ORCID recovery with new_password: null preserves password_hash = NULL',
+  'ORCID recovery with new_password: null preserves password_hash = NULL (needs a pub.orcid.org works stub)',
   async () => {
     // 1. Seed an ORCID-linked account.
     // 2. Drive /recover through the ORCID branch with new_password: null.
