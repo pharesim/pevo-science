@@ -131,10 +131,15 @@ describe('runDigest — wide-floor dedup + advance-only-when-drained', () => {
     // The dedup-re-fire fix hinges on the floor being the wide window floor so the
     // DISTINCT ON sees each event's publication row, not last_digest_block.
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [account, floor] = fetchMock.mock.calls[0] as unknown as [string, number, number];
+    const [account, floor, , direction] = fetchMock.mock.calls[0] as unknown as [string, number, number, string];
     expect(account).toBe('alice');
     expect(floor).toBe(WIDE_FLOOR);
     expect(floor).not.toBe(950_000);
+    // The digest MUST fetch oldest-first ('asc') so it drains the window forward;
+    // a silent flip to 'desc' would deliver newest-first and skip in-between
+    // events for long-offline users with zero OTHER failing tests (the cap-edge
+    // drop + advance-only-when-drained logic both assume oldest-first ordering).
+    expect(direction).toBe('asc');
   });
 
   it('an edit of pre-cursor content does not re-fire a digest line in the next run', async () => {

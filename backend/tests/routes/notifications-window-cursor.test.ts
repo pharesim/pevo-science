@@ -27,14 +27,19 @@
  *           low-numbered deterministic fixtures). The genesis/clamp path is NOT
  *           the behavior under test here; notifications.test.ts exercises the
  *           real genesis clamp against real HAF.
- *   (b) `verifyHiveSignature` is mocked via the project-wide MOCK_VERIFY_SIGNATURE
- *       fixture (see test-mock-carve-out-clause-c-2026-05-04.md). This file's
- *       focus is the route's cursor/has_more/cache-sharing behavior, NOT
- *       cryptographic verification; the fixture preserves the 401-on-missing-header
- *       gate and username extraction, bypassing only the signature check. The
- *       clause-(c) real-path companion for the cryptographic-verification risk
- *       class on /api/notifications is auth.test.ts (real verifyHiveSignature
- *       against signed requests).
+ *       The MOCK_VERIFY_SIGNATURE fixture additionally bypasses CRYPTOGRAPHIC
+ *       signature verification (see test-mock-carve-out-clause-c-2026-05-04.md):
+ *       this file's focus is the route's cursor / has_more / whole-block / cache
+ *       behavior, NOT cryptographic verification, so the bypass is permitted. The
+ *       fixture still preserves the 401-on-missing-header gate and the
+ *       username-extraction the route depends on; only the signature check is
+ *       skipped.
+ *   (b) Auth/permission middleware runs REAL in tests whose focus IS
+ *       authentication; this file's focus is downstream route behavior, so the
+ *       MOCK_VERIFY_SIGNATURE fixture is acceptable under the carve-out's
+ *       clause-(b) refinement. The clause-(c) real-path companion for the
+ *       cryptographic-verification risk class on /api/notifications is
+ *       auth.test.ts (real verifyHiveSignature against signed requests).
  *   (c) Real-path companion: notifications.test.ts exercises the envelope shape,
  *       ascending order, whole-block limit handling, the in-app since_block
  *       filter, and the real genesis clamp against real HAF; this file covers the
@@ -121,6 +126,14 @@ function reviewRowAt(block: number, seq: number): Record<string, unknown> {
   };
 }
 
+// cap+1 rows in DESC (newest-first) order — simulates the route's 'desc' fetch
+// returning ONE probe row beyond the cap (the genuine-truncation signal). Blocks
+// run `hi` down to `hi - cap` (cap + 1 distinct blocks). The mock returns these
+// verbatim; the shared fetch slices the probe at the truncated (oldest) end.
+function descCapPlusOne(hi: number): Array<Record<string, unknown>> {
+  return Array.from({ length: NOTIFICATION_WINDOW_FETCH_CAP + 1 }, (_, i) => reviewRow(hi - i));
+}
+
 beforeEach(async () => {
   windowRows = [];
   notificationQueryCalls = 0;
@@ -155,12 +168,13 @@ describe('GET /api/notifications — window-batch cursor + has_more', () => {
     windowRows = [reviewRow(100), reviewRow(200)];
     const res = await poll(0, 2);
     expect(res.status).toBe(200);
-    // $3 (index 2) is the SQL LIMIT. It must be the internal window cap,
-    // decoupled from the response limit (2). If a refactor re-couples the fetch
-    // LIMIT to the response limit, the cached batch shrinks to a `limit`-sized
-    // slice and the starvation bug returns. Pin the exact exported constant so a
-    // silent change to the cap (or a re-coupling to `limit`) fails red.
-    expect(lastNotificationParams[2]).toBe(NOTIFICATION_WINDOW_FETCH_CAP);
+    // $3 (index 2) is the SQL LIMIT. It must be the internal window cap PLUS the
+    // +1 truncation probe (cap + 1), decoupled from the response limit (2). If a
+    // refactor re-couples the fetch LIMIT to the response limit, the cached batch
+    // shrinks to a `limit`-sized slice and the starvation bug returns; if the +1
+    // probe is dropped, the exactly-cap false-drop bug (item 1) returns. Pin the
+    // exact value so either regression fails red.
+    expect(lastNotificationParams[2]).toBe(NOTIFICATION_WINDOW_FETCH_CAP + 1);
   });
 
   it('the bell-feed fetch is newest-first with the op_id same-block tie-breaker', async () => {
@@ -223,21 +237,33 @@ describe('GET /api/notifications — window-batch cursor + has_more', () => {
     expect(res.body.data.has_more).toBe(false);
   });
 
+  it('an EXACTLY-cap window drops nothing — the complete boundary block is delivered (item-1 fix)', async () => {
+    // Exactly `cap` events, all complete blocks: the +1 probe row does NOT
+    // materialize (only `cap` rows exist), so capHit is false and the boundary
+    // (oldest) block is NOT dropped. The pre-fix `>= cap` over a plain `LIMIT cap`
+    // false-fired here and dropped block 1 — which a forward newest-first cursor
+    // never recovers. Mutation-kill: under the bug `Math.min` would be 2, not 1.
+    windowRows = Array.from({ length: NOTIFICATION_WINDOW_FETCH_CAP }, (_, i) => reviewRow(NOTIFICATION_WINDOW_FETCH_CAP - i));
+    const res = await poll(0, 100);
+    expect(res.status).toBe(200);
+    const blocks = res.body.data.events.map((e: { block_num: number }) => e.block_num);
+    expect(Math.min(...blocks)).toBe(1);  // oldest COMPLETE block present, not dropped
+  });
+
   it('a cap-hit batch does NOT force has_more for a caught-up cursor (no permanent park)', async () => {
-    // A full-cap batch means OLDER events exist below the window floor (the
-    // shared fetch sets batch.has_more). Under newest-first those are unreachable
-    // by a forward cursor — the digest covers them — so the route must NOT OR-in
-    // batch.has_more: a cursor caught up to the newest delivered block reports
-    // has_more=false instead of parking at true forever (the old `|| batch.has_more`
-    // form returned true here).
-    windowRows = Array.from({ length: NOTIFICATION_WINDOW_FETCH_CAP }, (_, i) => reviewRow(i + 1));
+    // A genuine >cap window (cap+1 rows, newest-first): block 1 is the probe
+    // (sliced at the truncated end), block 2 is the dropped boundary, so the batch
+    // is blocks 3..(cap+1). batch.has_more is true (older events exist below the
+    // floor), but under newest-first those are unreachable by a forward cursor —
+    // the digest covers them — so the route must NOT OR-in batch.has_more: a
+    // cursor caught up to the newest delivered block reports has_more=false
+    // instead of parking at true forever (the old `|| batch.has_more` form did).
+    windowRows = descCapPlusOne(NOTIFICATION_WINDOW_FETCH_CAP + 1);
     const res = await poll(999, 10);
     expect(res.status).toBe(200);
-    // Block 1 (cap-truncation boundary, oldest) is dropped by the shared fetch;
-    // only block 1000 is newer than the cursor.
-    expect(res.body.data.events.map((e: { block_num: number }) => e.block_num)).toEqual([1000]);
-    expect(res.body.data.latest_block).toBe(1000);
-    // filtered (1) === delivered (1): nothing undelivered ABOVE the cursor.
+    expect(res.body.data.events.map((e: { block_num: number }) => e.block_num)).toEqual([1000, 1001]);
+    expect(res.body.data.latest_block).toBe(1001);
+    // filtered (2) === delivered (2): nothing undelivered ABOVE the cursor.
     expect(res.body.data.has_more).toBe(false);
   });
 
@@ -266,32 +292,45 @@ describe('GET /api/notifications — window-batch cursor + has_more', () => {
   });
 
   it('surfaces the newest events to a caught-up cursor even when the cap was hit (no starvation)', async () => {
-    // A window with cap-many events: the shared fetch keeps the NEWEST cap and
-    // drops the oldest partial block. A cursor caught up near the top still
-    // receives the newest events — the old oldest-first fetch starved them.
-    windowRows = Array.from({ length: NOTIFICATION_WINDOW_FETCH_CAP }, (_, i) => reviewRow(i + 1));
+    // A genuine >cap window (cap+1 rows, newest-first): the shared fetch keeps the
+    // NEWEST cap and drops the truncated boundary. A cursor caught up near the top
+    // still receives the newest events — the old oldest-first fetch starved them.
+    windowRows = descCapPlusOne(NOTIFICATION_WINDOW_FETCH_CAP + 1);
     const res = await poll(990, 50);
     expect(res.status).toBe(200);
     const blocks = res.body.data.events.map((e: { block_num: number }) => e.block_num);
     expect(blocks.length).toBeGreaterThan(0);  // NOT an empty batch
-    expect(blocks).toEqual([991, 992, 993, 994, 995, 996, 997, 998, 999, 1000]);
-    expect(res.body.data.latest_block).toBe(1000);  // cursor advances
+    expect(blocks).toEqual([991, 992, 993, 994, 995, 996, 997, 998, 999, 1000, 1001]);
+    expect(res.body.data.latest_block).toBe(1001);  // newest delivered; cursor advances
   });
 
   it('drops the whole cap-truncation boundary block (never ends mid-block)', async () => {
-    // Block 1 carries 3 events and is the cap-truncation boundary (oldest under
-    // newest-first). The shared fetch drops the WHOLE block so the batch never
-    // ends mid-block: no event of block 1 is ever delivered and the lowest
+    // Genuine >cap window (cap+1 rows, newest-first, distinct blocks 1..(cap+1)).
+    // Block 1 is the probe (sliced at the truncated/oldest end); block 2 is the
+    // boundary block the cap cut through, dropped WHOLE so the batch never ends
+    // mid-block. No event of block 1 or 2 reaches the response; the lowest
     // delivered block is a complete one.
-    windowRows = [
-      reviewRowAt(1, 0), reviewRowAt(1, 1), reviewRowAt(1, 2),
-      ...Array.from({ length: NOTIFICATION_WINDOW_FETCH_CAP - 3 }, (_, i) => reviewRow(i + 2)),
-    ];
+    windowRows = descCapPlusOne(NOTIFICATION_WINDOW_FETCH_CAP + 1);
     const res = await poll(0, 50);
     expect(res.status).toBe(200);
     const blocks = res.body.data.events.map((e: { block_num: number }) => e.block_num);
-    expect(blocks).not.toContain(1);        // boundary block dropped whole
-    expect(Math.min(...blocks)).toBe(2);    // lowest delivered block is complete
+    expect(blocks).not.toContain(1);        // probe, sliced before the boundary-drop
+    expect(blocks).not.toContain(2);        // truncation boundary, dropped whole
+    expect(Math.min(...blocks)).toBe(3);    // lowest delivered block is complete
+  });
+
+  it('single block exceeding the cap empties the batch (documented residual deferral)', async () => {
+    // The pathological case: more than `cap` events all share ONE Hive block. The
+    // +1 probe fires capHit; truncate-to-cap then boundary-drop removes the whole
+    // (only) block, emptying the shared batch. The route surfaces empty events,
+    // latest_block echoing the cursor (no regression), has_more=false — the block
+    // is deferred until the window floor slides to contain it (or the digest).
+    windowRows = Array.from({ length: NOTIFICATION_WINDOW_FETCH_CAP + 1 }, (_, i) => reviewRowAt(500, i));
+    const res = await poll(100, 50);
+    expect(res.status).toBe(200);
+    expect(res.body.data.events).toEqual([]);
+    expect(res.body.data.latest_block).toBe(100);  // echoes since_block, cursor holds
+    expect(res.body.data.has_more).toBe(false);
   });
 
   it('a second poll with a different cursor reuses the cached window (zero extra notification queries)', async () => {

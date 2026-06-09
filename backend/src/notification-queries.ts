@@ -126,11 +126,12 @@ export const NOTIFICATION_WINDOW_BLOCKS = 100_000;
 
 // Internal fetch cap for the window batch, deliberately larger than any response
 // `limit`. fetchNotificationsFromHaf orders by the caller's `direction` and
-// LIMITs to this cap, so the batch holds at most the newest (route, 'desc') or
-// oldest (digest, 'asc') `cap` events above the floor. On cap-hit the partial
-// boundary block is dropped whole so no consumer ever sees a cap-truncated
-// block. Callers apply their cursor in-app over this wider batch. See the
-// route's applySinceBlockFilter and the digest's drain logic.
+// LIMITs to this cap plus a +1 truncation probe, so the batch holds at most the
+// newest (route, 'desc') or oldest (digest, 'asc') `cap` events above the floor.
+// Only when the probe row materializes (a genuine >cap window) is the partial
+// boundary block dropped whole, so no consumer ever sees a cap-truncated block.
+// Callers apply their cursor in-app over this wider batch. See the route's
+// applySinceBlockFilter and the digest's drain logic.
 export const NOTIFICATION_WINDOW_FETCH_CAP = 1000;
 
 /**
@@ -169,11 +170,19 @@ export function filterEventsAfter(events: NotificationEvent[], sinceBlock: numbe
  *
  * Same-block ordering is broken deterministically by the monotonic global
  * `haf_operations` PK (`<view>.id`, the views expose no intra-block index), so
- * the cap cut is reproducible. On cap-hit the partial boundary block (the
- * truncated end: the OLDEST block for 'desc', the NEWEST for 'asc') is dropped
- * whole, so no consumer is ever handed a cap-truncated block. `has_more`
- * reflects the cap-hit. The single-block-exceeds-cap case can empty the batch;
- * that is the documented residual (graceful deferral until the floor slides).
+ * the cap cut is reproducible. Truncation is detected with a `cap + 1` probe
+ * fetch: only when the (cap+1)th row exists is the window genuinely larger than
+ * the cap (`capHit`). On `capHit` the boundary block at the truncated end (the
+ * OLDEST block for 'desc', the NEWEST for 'asc') may be partial, so it is dropped
+ * whole — no consumer is ever handed a cap-truncated block. An exactly-cap,
+ * fully-contained window drops nothing. `has_more` reflects `capHit`.
+ *
+ * Residual: the single-block-exceeds-cap case can empty the batch. For 'desc'
+ * (SPA) the dropped oldest block is NOT recovered by a forward floor-slide (the
+ * floor only moves forward, aging it out); recovery happens only if the
+ * in-window count later falls below the cap, or via the email digest for
+ * enrolled users. For 'asc' (digest) the dropped newest block resurfaces on the
+ * next drain once the floor has slid to contain it.
  */
 export async function fetchNotificationsFromHaf(
   account: string,
@@ -796,11 +805,26 @@ export async function fetchNotificationsFromHaf(
 
       ORDER BY block_num ${dir}, op_id ${dir}
       LIMIT $3`,
-      [account, floor, cap, ...accredCte.params, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount, config.hiveAdminAccount],
+      // $3 = cap + 1: fetch one probe row beyond the cap so a genuine >cap
+      // truncation (probe present) is distinguishable from an exactly-cap
+      // fully-contained window (probe absent). See the capHit computation below.
+      [account, floor, cap + 1, ...accredCte.params, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount, config.hiveAdminAccount],
     );
 
+    // The probe row (the (cap+1)th) is the genuine-truncation signal. A plain
+    // `>= cap` over a `LIMIT cap` fetch fires at EXACTLY cap even when no
+    // truncation occurred, dropping a genuinely-complete boundary block; under
+    // the SPA's forward newest-first cursor the floor only slides forward, so that
+    // block ages out and is never recovered (a silent skip, not graceful
+    // deferral). `> cap` over the cap+1 fetch fires only on a real >cap window.
+    const capHit = result.rows.length > cap;
+    // Truncate the probe back to `cap` before building events. The fetch is
+    // ordered (block_num, op_id) `dir`, so the probe sits at the truncated end.
+    const keptRows = capHit
+      ? (result.rows as Array<Record<string, unknown>>).slice(0, cap)
+      : (result.rows as Array<Record<string, unknown>>);
     const events: NotificationEvent[] = [];
-    for (const r of result.rows as Array<Record<string, unknown>>) {
+    for (const r of keptRows) {
       const base = {
         block_num: Number(r.block_num),
         timestamp: r.event_timestamp instanceof Date
@@ -900,15 +924,14 @@ export async function fetchNotificationsFromHaf(
     // block_num for the returned contract (both consumers expect ascending).
     events.sort((a, b) => a.block_num - b.block_num);
 
-    const capHit = result.rows.length >= cap;
     let delivered = events;
     if (capHit && events.length > 0) {
-      // The cap cut through the boundary block at the truncated end — the OLDEST
-      // block for 'desc' (newest-first), the NEWEST block for 'asc'
-      // (oldest-first). Drop that whole block so a cap-truncated (partial) block
-      // is never exposed. In the single-block-exceeds-cap case this empties the
-      // batch (documented residual: the block surfaces once the floor slides to
-      // contain it).
+      // On a genuine >cap truncation the boundary block at the truncated end — the
+      // OLDEST block for 'desc' (newest-first), the NEWEST block for 'asc'
+      // (oldest-first) — may be partial, so drop that whole block: a cap-truncated
+      // partial block is never exposed. In the single-block-exceeds-cap case this
+      // empties the batch (documented residual: the block surfaces once the floor
+      // slides to contain it).
       const boundaryBlock = direction === 'desc'
         ? events[0].block_num
         : events[events.length - 1].block_num;
