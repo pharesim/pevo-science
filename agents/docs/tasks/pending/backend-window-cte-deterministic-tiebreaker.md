@@ -84,3 +84,32 @@ Verification: typecheck + lint clean; new `window-cte-deterministic-tiebreaker.t
 VALUES); reputation-lifecycle (real HAF, validates the merged `op_id` SQL is
 executable), reputation-coauthor-claim-credit, active-vouches, hafsql all green on
 the integrated main tree.
+
+## Architect review (2026-06-09) — HELD PENDING FIXES (2 items, + 2 bundled)
+
+`/ce-code-review` (correctness + adversarial on Opus; testing, maintainability, project-standards, performance on Sonnet; learnings-researcher; ce-agent-native-reviewer skipped per PEvO) on commit b02ad69d. **The enumerated 10-site change is VERIFIED CORRECT**: every DISTINCT ON `ORDER BY` begins with its DISTINCT ON key before the `block_num/id` tiebreaker; both ROW_NUMBER CTEs add `cj.id DESC` without changing the no-tie result; and — verified empirically against the live HAF node — `id` is a GLOBAL monotonic `haf_operations` PK shared across `operation_vote_view` and `operation_custom_json_view`, so the cross-arm `op_id DESC` tie-break in the reputation union CTEs is genuinely latest-wins, not merely deterministic. But the task's "atomic landing of ALL latest-op-wins sites, no partial-fix drift" acceptance is **not met**: the fleet found latest-wins sites OUTSIDE the enumerated 10 that share the exact pattern of fixed sites.
+
+### Items held (must fix before archive)
+
+1. (P2, correctness, confidence 80) MISSED SITE — `getAccreditedSet` (`accreditation.ts`) inlines the same `ROW_NUMBER() OVER (PARTITION BY …'account' ORDER BY cj.block_num DESC)` pattern fixed in `accred_ranked`, but WITHOUT `cj.id DESC`. This is the primary accreditation gate (called from wot / search / reviews / claims / profile), so a same-block accredit/revoke resolves non-deterministically here and can disagree with the now-deterministic `active_accreditations` CTE. Either append `, cj.id DESC` + the convention-path comment, or (preferred) refactor `getAccreditedSet` to reuse `activeAccreditationsCteBody` so the latest-wins logic has a single source of truth.
+2. (P2, testing, confidence 90) The SQL-shape canary pins the tiebreaker at only 2 of the patched sites (`activeAccreditationsCteBody`, `accreditedVoteCount`); the behavioral tests skip when HAF is unconfigured (CI), so the other inspectable sites have no always-on guard. Extend the canary to assert the `block_num DESC, …id DESC` tiebreaker at every site reachable through an exported fragment — at minimum `activeVouchesCteBody` (vouch_ranked). The three reputation union CTEs are not exported as fragments; note that limitation in the test rather than leaving it silent.
+
+### Bundled while in these files (cheap, land with 1-2)
+
+3. (P3, correctness, confidence 80) MISSED SITE — the accreditation list endpoint (`routes/accreditations.ts`) hand-copies the same `accred_ranked` ROW_NUMBER pattern without the tiebreaker (display-surface drift). Same one-line fix as item 1.
+4. (P3, correctness, confidence 75) The three reputation union-CTE comments say op_id is "monotonic per source stream", which UNDERSTATES the verified global monotonicity. Reword to document the global-`haf_operations`-id invariant (comparable across the vote and custom_json views) so a future maintainer does not "fix" the cross-arm union by namespacing op_id and break the genuine cross-arm latest-wins.
+
+### Accepted residuals / dismissed (no implementer action)
+
+- (P3, adversarial) `batchResolveVotes` (`papers.ts`) reconciles same-block native-vote-vs-revote in JS by `block_num >`, so cross-arm same-block ties resolve native-always — diverging from reputation's op_id ordering. DISPLAY surface only (net_votes / sort=votes); reputation scoring and accreditation state are unaffected; requires a same-block (<3s) native+revote collision by the same voter on the same paper. Accepted as a known display-surface residual at PEvO scale (the implementer already self-flagged this site out-of-scope); may be addressed in a future `papers.ts` pass, not a blocker here.
+- The implementer's other self-flagged out-of-scope sites — `update_weights` read `ORDER BY cj.block_num DESC LIMIT 1` (admin-singular, practically never tied; adversarial agrees acceptable on the single-instance posture), `profile.ts` early custom_json selection, and `tests/bench-reputation.ts` (a benchmark, not a correctness path) — accepted as-is.
+
+### Architect companion action (deferred to clean archive — NOT implementer work)
+
+- The convention doc `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md` Rule 2 still shows `cj.trx_in_block DESC` as the "correct" example and claims `trx_in_block` is exposed — but the deployed HAF mirror views omit it (the reason this whole task exists). Anyone implementing a new latest-wins site from the doc would copy the wrong, absent column. The architect will correct Rule 2 to use `id` (the global `haf_operations` PK) when this task re-reviews clean and archives, alongside a `/ce-compound` on the partial-fix-drift / convention-sweep-misses-semantic-siblings lesson.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next review scopes to the fix commits only.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
