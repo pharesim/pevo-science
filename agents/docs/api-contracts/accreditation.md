@@ -206,12 +206,15 @@ Vouch status for a user in the Web of Trust system. Returns the number of vouche
     { "voucher": "scientist2", "relationship": "colleague", "timestamp": "2026-03-25T10:00:00Z" },
     { "voucher": "scientist3", "relationship": "advisor", "timestamp": "2026-03-25T11:00:00Z" }
   ],
-  "eligible": false
+  "eligible": false,
+  "accreditation_method": "email"
 }
 ```
 
+`accreditation_method` is the account's own active accreditation method (`wot`, `email`, `orcid`, or `manual`), or `null` when the account is not currently accredited. It is the method of the most recent authority-signed `accredit` event and is independent of `eligible` (which reflects only the vouch count against the threshold).
+
 **Errors:**
-- `INTERNAL_ERROR` — HAF database unavailable (required for WoT queries)
+- `INTERNAL_ERROR`: HAF database unavailable (required for WoT queries)
 
 ---
 
@@ -277,8 +280,7 @@ Notify the backend that a `retract_vouch` custom_json has been broadcast. The ba
 `revocation_outcome` is one of:
 - `revoked`: the vouchee fell below threshold and its accreditation was revoked. `revocations` carries the revocation transaction ID.
 - `skipped`: the retraction was verified on-chain but the vouchee still meets the threshold, so no revocation was needed.
-- `unverified`: the retraction is not yet reflected on-chain (HAF ingestion lag, HAF unavailable, or no retract was broadcast). Fail-closed: nothing was evaluated and no revocation was issued.
-- `query_error`: the re-evaluation lookup failed, so the threshold could not be determined. The caller should re-attempt.
+- `unverified`: the retraction could not be confirmed against current chain state. This covers both the not-yet-on-chain case (HAF ingestion lag, HAF unavailable, or no retract was broadcast) and the case where the single verification-and-re-evaluation read itself failed. Fail-closed: nothing was evaluated and no revocation was issued. Retry once HAF is healthy.
 - `timeout`: the revocation broadcast timed out and its on-chain outcome is ambiguous. Check on-chain status before re-attempting.
 - `chain_error`: the revocation broadcast failed.
 
