@@ -156,3 +156,40 @@ Re-review acceptance: items 1-3 landed; the new dispose-cancel and cancel/reject
 respective guard is removed; full frontend unit suite green. `git mv` back to `tasks/review/` when done.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09, round 2, commit a2542dd3 on main)
+
+All three round-2 hold items landed in `frontend/src/lib/ipfs-upload.js` (+
+`tests/unit/lib-ipfs-upload.test.js`).
+
+- **Item 1 (P3, disposed-session guard).** `createUploadSession` now carries a
+  `disposed` flag. `dispose()` sets it; the `withPromptLock` lambda resolves to
+  `null` (→ `UPLOAD_CANCELLED`) instead of calling `reauthModal.request()` when
+  the session is disposed, so a session abandoned WHILE queued behind another
+  session's open prompt never opens the modal and a typed password is never
+  routed into a discarded session. `uploadOnce` clears `disposed` at its start so
+  the `dispose()`-then-reuse path (exercised by the existing `dispose() resets the
+  re-prompt bound` test) still prompts — the flag only blocks a prompt for a
+  session abandoned mid-wait.
+- **Item 2 (P3, test-isolation seam).** Added an exported `resetPromptChain()`
+  that resets the module-level `promptChain` to resolved; the `cross-surface
+  prompt serialization` describe calls it in `beforeEach`. Not used in production
+  (every real prompt settles, so the chain self-heals); the seam exists only so a
+  future test that never settles the modal mock cannot stall later tests.
+- **Item 3 (tests).** Four new tests in the cross-surface describe, each fails if
+  its guard is removed: (a) a cancelled (null) first-session prompt advances the
+  gate so the second prompts and completes uncancelled; (b) a rejecting prompt
+  advances the chain (no wedge); (c) 3 concurrent sessions serialize one prompt at
+  a time (`maxConcurrent === 1`, prompts open strictly sequentially); (d) a
+  session disposed while queued never opens the modal (item 1). A shared
+  `refusingModal()` helper models the singleton refuse-while-open contract.
+  Delayed-reject promises are pre-handled (`pX.catch(() => {})`) so the tests
+  introduce no unhandled-rejection leak — the property the gate is supposed to
+  preserve.
+
+**Verification.** `tests/unit/lib-ipfs-upload.test.js` green — 21 pass (up from
+17), 0 unhandled-rejection errors. Full frontend unit suite green — 1444 pass (+4;
+the 3 `pages-edit.test.js` `_mountEditors` rejections are pre-existing). Build
+green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
