@@ -65,6 +65,7 @@ Error:
 |------|------|-------------|
 | 400 | `BAD_REQUEST` | Invalid or missing parameters |
 | 401 | `UNAUTHORIZED` | Authentication required |
+| 401 | `SESSION_INVALIDATED` | Bearer session token was revoked by a password reset, account recovery, or key rotation (the `sessions_invalidated_at` overlay; see ARCHITECTURE § 6.7). Emitted by `verifyHiveSignature` on any authenticated route. The SPA treats it as session expiry and redirects to login. |
 | 403 | `FORBIDDEN` | Insufficient permissions |
 | 404 | `NOT_FOUND` | Resource not found |
 | 413 | `FILE_TOO_LARGE` | Upload exceeds configured size limit |
