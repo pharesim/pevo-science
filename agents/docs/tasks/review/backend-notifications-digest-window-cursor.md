@@ -113,3 +113,21 @@ Verification: `npm run typecheck` + `npm run lint` clean (the one lint warning i
 Items 2-5 touch `notification-queries.ts` and the test header beyond `digest.ts` — the "confined to digest.ts + test" scope is exactly why (a)/(c)/(d) were missed. When all items land, `git mv` this file back to `tasks/review/`. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-09, commit `eb44eba1`)
+
+All five items from the hold landed. The change is no longer confined to `digest.ts` + its test; it now spans `digest.ts`, `notification-queries.ts`, the digest test, and a new asc canary.
+
+1. **False-recovery invariant corrected** in the `runDigest` cursor-advance comment, the empty-batch deferral test, and `fetchNotificationsFromHaf`'s "Residual" docblock + inline boundary-drop comment. They now distinguish a MULTI-block truncation (the dropped newest block is re-fetched by the asc/digest caller because its cursor stops below the drop, so it is recovered) from a TRUE single-block-exceeds-cap burst (empties the batch; the lone block ages below the forward-only floor and is a PERMANENT drop in either direction). The empty-batch test is renamed and reworked into a multi-run scenario that advances the simulated head and asserts the lone over-cap block is NEVER delivered.
+2. **Minor (a)-(d):** (a) defect-1 residual documented near the window-floor logic in `runDigest` (edits of content older than the ~100k window depth re-fire once). (b) cold-start `getLastBlock()===0` document-and-accepted in code (real genesis means the floor falls back to `genesis-1`, bounded; a fresh deploy has no enrolled digest users; no early-return guard). (c) `NOTIFICATION_WINDOW_BLOCKS` export dropped (zero external consumers, grep-confirmed) and its over-scoped comment trimmed. (d) clause-(c) carve-out companion references in the digest test header corrected to include the `routes/` subdir.
+3. **Stale cursor-setup anchor** in `runDigest` reworded to the current advance-on-every-non-empty-run behavior.
+4. **New asc canary** (`tests/fetch-notifications-asc-whole-block.test.ts`) pins the asc/capHit whole-block drop: cut-inside-block drops the newest block whole; a lone over-cap single block empties the batch; an exactly-cap window drops nothing (cap+1 probe). Mocked-pool per the project recipe; carve-out header documents clauses (a)/(b)/(c).
+5. **Send/advance non-atomicity** documented above `sendDigestEmail` as the intended duplicate-over-silent-skip failure direction.
+
+**Merge note (for re-review):** implemented in an isolated worktree branched from a stale base, before the sibling cap+1 partial-block-drop refinement landed in `notification-queries.ts`. At merge the `notification-queries.ts` hunks were re-applied by hand onto current main, so the cap+1 / edge-aligned-keep logic is preserved and only the comment + export-drop intents were layered on. The asc canary's "drops newest block whole" case uses a cut-inside-block setup, so it pins current main's edge-aligned-keep behavior correctly. Worth reviewing `notification-queries.ts` as a hand-merged file.
+
+**Verification (main checkout, real Postgres/Redis):** `npm run typecheck` (src+tests) clean; `npm run lint` clean (1 pre-existing warning in `lib/author-supersession.ts`, untouched); `digest-window-cursor.test.ts` 5/5 and `fetch-notifications-asc-whole-block.test.ts` 3/3 green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
