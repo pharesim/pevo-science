@@ -91,7 +91,7 @@ export function initNotifications() {
           if (batch.events.length > 0) {
             const merged = [...batch.events, ...this.events];
             const seen = new Set();
-            this.events = merged.filter((e) => {
+            const deduped = merged.filter((e) => {
               const actor = 'actor' in e ? e.actor : 'system';
               // Events carry their target's permlink under different keys by type
               // (new_review/new_reply: permlink; new_vote: target_permlink;
@@ -105,19 +105,26 @@ export function initNotifications() {
               if (seen.has(key)) return false;
               seen.add(key);
               return true;
-            }).slice(0, MAX_EVENTS);
+            });
+            // Whole-block delivery: the server delivers each Hive block atomically,
+            // so a single response can exceed MAX_EVENTS (e.g. a citation fan-out
+            // block). The merge prepends the ascending batch, so a bare
+            // slice(0, MAX_EVENTS) keeps the array front -- the OLDEST of an
+            // oversized block -- and would drop the newest events. When over the
+            // cap, retain the newest MAX_EVENTS by block_num so the most recent
+            // activity is never dropped; under the cap, preserve arrival order.
+            this.events = deduped.length > MAX_EVENTS
+              ? [...deduped].sort((a, b) => b.block_num - a.block_num).slice(0, MAX_EVENTS)
+              : deduped;
           }
           if (batch.latest_block > cursor) {
-            // The server applies its LIMIT after the in-app since_block cursor
-            // filter, so a `has_more` response means events sharing latest_block
-            // (or just beyond it) were cut from this batch. Advancing the cursor
-            // straight to latest_block would let the next poll's strict
-            // since_block filter skip those undelivered boundary events. Rewind
-            // to latest_block - 1 so the boundary block is re-fetched; the dedup
-            // key (block_num_type_actor_permlink) collapses the re-rendered
-            // overlap so the user never sees a duplicate.
-            const nextCursor = batch.has_more ? batch.latest_block - 1 : batch.latest_block;
-            setCursor(username, nextCursor);
+            // Whole-block delivery guarantees latest_block is a fully delivered
+            // block (the server never splits a Hive block across responses), so
+            // advancing the cursor straight to it can never skip intra-block
+            // events. Advance unconditionally regardless of has_more -- there is
+            // no rewind. A persistent has_more drains on the next timer-driven
+            // poll, not by re-fetching a boundary block.
+            setCursor(username, batch.latest_block);
           }
         }
 
@@ -150,6 +157,10 @@ export function initNotifications() {
 
     markAllRead() {
       if (!this._username || this.events.length === 0) return;
+      // The poll cap retains the newest MAX_EVENTS, so the max block_num here is
+      // the newest event the user could have seen. Advancing seenBlock to it
+      // never zeroes the unread count for a newer event that was dropped before
+      // being shown -- a drop only ever sheds events older than what is retained.
       const maxBlock = Math.max(...this.events.map((e) => e.block_num));
       this.seenBlock = maxBlock;
       setSeenBlock(this._username, maxBlock);

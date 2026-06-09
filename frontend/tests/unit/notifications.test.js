@@ -148,6 +148,25 @@ describe('notifications store', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(store.events.length).toBe(200);
     });
+
+    // Whole-block delivery can hand back a single response larger than
+    // MAX_EVENTS (a citation fan-out block is delivered atomically). The cap must
+    // retain the NEWEST events (highest block_num): a bare slice(0, MAX_EVENTS) on
+    // the ascending-prepended merge would keep the oldest 200 and silently drop
+    // the most recent activity.
+    it('retains the newest events when a single response exceeds the cap', async () => {
+      const events = Array.from({ length: 250 }, (_, i) => ({
+        block_num: i + 1, type: 'vote', actor: `user${i}`, permlink: `p${i}`,
+      }));
+      mockFetchNotifications.mockResolvedValue({ status: 'ok', data: { events, latest_block: 250 } });
+      store.start('alice');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.events.length).toBe(200);
+      const blocks = store.events.map((e) => e.block_num);
+      expect(Math.max(...blocks)).toBe(250); // newest retained
+      expect(Math.min(...blocks)).toBe(51); // newest 200 kept, oldest 50 dropped
+      expect(store.events.some((e) => e.block_num === 1)).toBe(false);
+    });
   });
 
   describe('markAllRead', () => {
@@ -294,10 +313,10 @@ describe('notifications store', () => {
       expect(cursorCalls).toHaveLength(0);
     });
 
-    // When the server's LIMIT cut the batch mid-window it reports has_more=true.
-    // Advancing the cursor to latest_block would skip events sharing that block
-    // (or just beyond it) on the next poll, so the cursor rewinds one block.
-    it('rewinds cursor to latest_block - 1 when has_more is true', async () => {
+    // Whole-block delivery makes latest_block a fully delivered block, so the
+    // client advances straight to it even when has_more is set -- there is no
+    // rewind. A persistent has_more drains on the next timer-driven poll.
+    it('advances cursor to latest_block when has_more is true (no rewind)', async () => {
       mockFetchNotifications.mockResolvedValue({
         status: 'ok',
         data: {
@@ -308,7 +327,7 @@ describe('notifications store', () => {
       });
       store.start('alice');
       await vi.advanceTimersByTimeAsync(0);
-      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_notification_cursor_alice', '98');
+      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_notification_cursor_alice', '99');
     });
 
     it('advances cursor to latest_block when has_more is false', async () => {
@@ -325,24 +344,22 @@ describe('notifications store', () => {
       expect(localStorage.setItem).toHaveBeenCalledWith('pevo_notification_cursor_alice', '99');
     });
 
-    // End-to-end across the rewind: poll 1 cuts at block 99 (has_more) and
-    // rewinds the cursor to 98; poll 2 re-fetches from 98, re-delivering the
-    // block-99 boundary event plus the previously-cut remainder. The dedup key
-    // keeps the re-fetched boundary event from rendering twice.
-    it('re-fetches the boundary block on the next poll and dedups the overlap', async () => {
+    // No rewind across polls: a has_more=true poll advances the cursor straight
+    // to latest_block, so the next poll fetches from latest_block (not
+    // latest_block - 1). Whole-block delivery guarantees the boundary block was
+    // delivered in full, so there is nothing to re-fetch.
+    it('advances the cursor with no rewind across consecutive polls', async () => {
       const boundary = { block_num: 99, type: 'new_review', actor: 'rev', permlink: 're-x' };
-      const remainder = { block_num: 99, type: 'new_review', actor: 'rev2', permlink: 're-y' };
       mockFetchNotifications
         .mockResolvedValueOnce({ status: 'ok', data: { events: [boundary], latest_block: 99, has_more: true } })
-        .mockResolvedValueOnce({ status: 'ok', data: { events: [boundary, remainder], latest_block: 99, has_more: false } });
+        .mockResolvedValueOnce({ status: 'ok', data: { events: [], latest_block: 99, has_more: false } });
       store.start('alice');
-      await vi.advanceTimersByTimeAsync(0); // poll 1: since_block 0, rewinds cursor to 98
+      await vi.advanceTimersByTimeAsync(0); // poll 1: since_block 0, advances cursor to 99
       expect(mockFetchNotifications).toHaveBeenNthCalledWith(1, 0, 50);
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // scheduled poll 2 fires
-      expect(mockFetchNotifications).toHaveBeenNthCalledWith(2, 98, 50);
-      expect(store.events.filter((e) => e.permlink === 're-x')).toHaveLength(1);
-      expect(store.events.some((e) => e.permlink === 're-y')).toBe(true);
       expect(localStorage.setItem).toHaveBeenCalledWith('pevo_notification_cursor_alice', '99');
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // scheduled poll 2 fires
+      expect(mockFetchNotifications).toHaveBeenNthCalledWith(2, 99, 50);
+      expect(store.events.filter((e) => e.permlink === 're-x')).toHaveLength(1);
     });
   });
 });
