@@ -353,7 +353,7 @@ Until that claim flow ships, the bridge importer MUST keep `pevo.authors[].hive`
 
 No flag-day cutover and nothing to grandfather: no production papers use these consent ops yet, so the consented model is the go-forward definition, not a migration of existing state. The consent-gated credit computation lands with the backend implementation task; until it does, `reputation-algorithm.md` "Co-author Credit" documents the model as the target while the live reputation cycle still credits via the legacy claim/approve resolution (docs ahead of code). Single-author papers are unaffected — the root broadcaster is implicitly consented.
 
-Shipping the consent UX depends on two follow-up surfaces: a backend `GET /api/me/authorships/pending` endpoint (`backend-notification-infra-for-consent-ops`) and a UI surface for paper-detail accept / claim / approve / resign affordances (`ui-multi-author-consent-affordances`). Until they ship, co-authors have no in-platform discovery path for slots awaiting their consent.
+Shipping the consent UX depends on two follow-up surfaces: a backend `GET /api/me/authorships/pending` endpoint (`backend-consented-set-read-surfaces`) and a UI surface for paper-detail accept / claim / approve / resign affordances (`ui-multi-author-consent-affordances`). Until they ship, co-authors have no in-platform discovery path for slots awaiting their consent.
 
 #### Pinner constraint
 

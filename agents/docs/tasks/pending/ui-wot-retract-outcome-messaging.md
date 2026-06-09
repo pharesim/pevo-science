@@ -68,3 +68,48 @@ chain_error -> degraded error; revoked -> success with accounts). Full frontend
 unit suite green (1448 pass, +4; i18n parity across 16 locales holds); build green.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect review (2026-06-09) — HELD PENDING FIXES
+
+`/ce-code-review` ran on the implementing commit `cee02ffa` (6 personas: correctness on Opus;
+api-contract/testing/maintainability/project-standards/learnings on Sonnet; ce-agent-native
+skipped per PEvO). The branch on `revocation_outcome` is **exhaustive** across all six enum arms
+plus the absent/pre-discriminator case (backward-compatible via the `else` success arm);
+`res.data.revocations || []` guards the non-revoked arms; the `unverified` green vs
+`query_error`/`timeout`/`chain_error` red split is correct; i18n parity holds across all 16
+locales + STUBS.md; copy is emdash-free; comment anchors are clean. One fix blocks archive.
+
+1. **(P2) The `unverified` copy contradicts the contract's fail-closed semantics.**
+   `wot.retractUnverified` reads "Vouch retracted. The revocation of dependent accreditations is
+   not yet reflected on-chain; re-check shortly." Per the authoritative contract in
+   `api-contracts/accreditation.md`, the `unverified` outcome means the RETRACTION ITSELF is not
+   yet confirmed on-chain and is fail-closed: nothing was evaluated and NO dependent revocation
+   was issued. The current copy instead tells the user a dependent revocation happened and is
+   merely lagging ingestion (the opposite of fail-closed), and asserts the retract as definitely
+   done. Reword so it (a) attributes the on-chain lag to the unconfirmed retraction rather than to
+   a dependent revocation, and (b) states that dependent accreditations were not re-evaluated.
+   Keep it green / non-error and keep the "re-check shortly" guidance (the retract `custom_json`
+   was broadcast client-side; the backend simply has not confirmed it via HAF yet). Apply the
+   equivalent reword across all 15 non-English locale stubs (the keys already exist; only the
+   string values change) and keep STUBS.md in sync. Anchor any rationale on the `accreditation.md`
+   `unverified` definition behaviorally; introduce no task-slug / round / line-number / SHA
+   citation in code, test, or locale comments.
+
+**Considered and dismissed (no action — do not implement):**
+- (P2 to P3, forward-compat) A FUTURE new `revocation_outcome` fail-arm would fall to the `else`
+  success branch and read as success. Speculative: no seventh arm exists, and adding one is a
+  coordinated backend+frontend change; all six current arms are handled correctly and
+  absent->success is required backward-compat. If ever hardened, distinguish absent (`undefined`
+  -> success) from a non-empty unknown string (-> caution); do NOT add a `console.warn` (PEvO runs
+  lean on logs). Not held.
+- (P3) `skipped` has no dedicated unit test — it is structurally identical to the already-tested
+  absent-outcome `else` path. Preemptive; not held.
+- (pre-existing, not introduced by this diff) the `FE-ERR-MESSAGE-SANITIZE-...` task-slug comments
+  and the `APP_TAG2` name in `vouch-section.js` — out of scope for this task.
+
+Re-review acceptance: the `unverified` copy reworded across `en.json` + the 15 locale stubs to
+match the contract's fail-closed semantics (retraction unconfirmed; dependents not re-evaluated),
+STUBS.md kept in sync, full frontend unit suite green. `git mv` back to `tasks/review/` when done
+(the move is the re-review signal).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
