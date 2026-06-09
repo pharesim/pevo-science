@@ -82,3 +82,18 @@ Task `backend-anchor-rot-sweep-signup-verify`'s comment sweep), `routes/papers.t
 (retraction), and `routes/accreditation.ts`. Left untouched to keep this change scoped.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES (1 item)
+
+`/ce-code-review` fan-out on commit `e60ec2c1` (10 personas; correctness/security/adversarial on Opus). The extraction is verified **behavior-preserving**: the envelope is field-identical at all 3 adopted sites (the claims.ts object-literal key-order change is inert — dhive serializes by field name), default `timeoutMs` resolves to the same effective timeout, `BroadcastTimeoutError` discrimination is intact, and `AdminKeyNotConfiguredError` is structurally unreachable at every adopted site because each pre-guards `config.pevoAdminPostingKey` before reaching the helper. An exhaustive grep confirmed the implementer's residual-site enumeration is accurate (only `orcid.ts`×2 + `papers.ts`/`accreditation.ts`/`signup-verify.ts` remain inline). No live defect.
+
+**Architect decision on the orcid descoping (the a/b/c question above): option (b) — ACCEPTED.** Keep the 3/5 adoption; the two orcid sites stay inline (their pre-broadcast `PrivateKey.fromString` outside the inner `try` preserves the SEC-002-TOCTOU-LOCK 504+lock-release boundary, which folding the async helper in would break — confirmed by the security + correctness reviewers). A follow-up task `backend-admin-broadcast-envelope-sweep-remaining-sites` is filed in `pending/` to finish the dedup (papers/accreditation/signup-verify straightforwardly, orcid×2 via a key-validate-outside-`try` shim). This decision is RESOLVED and is **not** the hold item.
+
+**The real-envelope test gap (review finding #2)** — all call-site tests mock `broadcastAdminCustomJson` and rebuild the envelope in-test, so a regression in the real helper's `required_posting_auths` would pass green — is folded into the consolidated follow-up `backend-pin-shared-broadcast-values` (`pending/`). Also **not** a hold item here.
+
+### Item held (must fix before archive)
+
+1. **(P3, maintainability + kieran-typescript, corroborated) `broadcastAdminCustomJson` docblock overclaims a per-caller mapping that no current caller exercises.** The docblock says "Each admin-broadcast caller maps this onto its own not-configured / broadcast-failure response shape." In fact all three adopters pre-guard `config.pevoAdminPostingKey` and short-circuit *before* reaching the helper (claims.ts via `if (isAdmin && config.pevoAdminPostingKey)`; both wot.ts paths via an early return), so `AdminKeyNotConfiguredError` is thrown on **no** current path — the per-caller-mapping claim is currently false. Reword the docblock so it is honest: the guard + error class are a **forward-looking** safety net; all *current* callers pre-check the key and skip before the helper, so the throw is unreachable today; a *future* caller that omits the pre-check would surface it (a WoT-style caller catches it; a route caller routes it through `handleBroadcastError` → generic 502). Keep the guard and the exported class (the `…-envelope-sweep-…` follow-up makes them live the moment a non-pre-guarded site like papers/accreditation adopts the helper). Comment-only, no behavior change; anchor on stable symbols (no slug/line/SHA/§).
+
+When the reword lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal (the next pass scopes to the reword commit only).
+
