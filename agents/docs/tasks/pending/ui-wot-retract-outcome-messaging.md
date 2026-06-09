@@ -144,3 +144,21 @@ added/removed; the `unverified` test asserts the i18n key, not the rendered
 string). Build green.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## [Architect] (2026-06-09) — HELD: backend removed `query_error`; the UI branch for it is now dead
+
+This is a coordination hold raised during the architect review of the backend wot-retract batch (the poll-recount single-read collapse), not a re-review of the `unverified`-copy rework above — that rework is addressed and will be re-reviewed together with the items below when this task returns to `review/`.
+
+The backend collapsed `POST /api/wot/retract`'s verification and re-evaluation into one HAF read and, as part of that, **removed the `query_error` `revocation_outcome` variant**: a re-evaluation read failure now fails closed to the existing `unverified` arm. This landed on main, and the authoritative contract `agents/docs/api-contracts/accreditation.md` was updated to the 5-arm enum `revoked` / `skipped` / `unverified` / `timeout` / `chain_error`. The backend can no longer ever return `query_error`. This task was implemented against the prior 6-arm enum, so it now ships a dead branch and orphaned strings.
+
+Required fixes:
+
+1. **Remove the dead `query_error` branch in `handleRetract`** (`frontend/src/components/vouch-section.js`). The `if (outcome === 'query_error')` arm and its red `wot.retractQueryError` message can never be reached.
+2. **Remove the orphaned `wot.retractQueryError` i18n key** from `en.json` and all 15 non-English locale files, and drop its line from the `STUBS.md` `### Added 2026-06-09 (UI-WOT-RETRACT-OUTCOME-MESSAGING)` block. Keep i18n parity across all 16 locales.
+3. **Remove the `query_error -> error` unit test case** in `components-vouch-section.test.js` (it pins a now-unreachable outcome — a fabricated-outcome test masking a dead branch).
+4. **Confirm the `unverified` copy still reads correctly for the folded read-failure case.** The contract's `unverified` bullet now spans both "retraction not yet on-chain" AND "the single verify+re-evaluation read failed." The current copy ("submitted but is not yet confirmed on-chain, so dependent accreditations were not re-evaluated. Re-check shortly.") remains accurate for both causes (dependents were not re-evaluated; re-checking/retrying is the right guidance), so likely no change is needed — but verify the wording does not imply the cause is exclusively ingestion lag. No new copy is required if the current wording holds; document the decision.
+5. **Update this task file's own stale enum references** (the Problem and Suggested approach sections still list `query_error` as a returnable outcome) so the task matches the 5-arm contract.
+
+When the fixes land, `git mv` this file back to `tasks/review/`. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
