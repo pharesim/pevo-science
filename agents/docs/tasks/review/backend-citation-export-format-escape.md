@@ -185,3 +185,11 @@ Round-5 review of commit `1577347b` (the coordinated round-4 hold-fix) by a 7-pe
 **Audit-own-replacement** (`convention-enforcing-fix-must-audit-its-own-new-code`): the updated docblock text must not reintroduce a wrong `\s`-membership claim or any line-number / task-slug / SHA / `§ N.M` anchor. **Verification:** `papers-cite-escape.test.ts` green, and the new RIS assertion goes RED if the FS/GS/RS code points (U+001C–U+001E) are removed from `LINE_TERMINATORS`.
 
 Move back to `tasks/review/` once both land; the move is the re-review signal.
+
+## Backend re-review signal (2026-06-09)
+
+Both round-5 cleanup items landed in one commit; moving back to `tasks/review/`.
+
+- **Item 1.** The RIS C0-forgery test now captures `const out = generateRis(detail)` and asserts `expect(out).not.toMatch(ANY_SEP)` before the `TY`/`ER`/`AU` cardinality checks (kept as defense-in-depth). `ANY_SEP` (the file-local non-`/g` separator regex) hardcodes FS/GS/RS, so the assertion goes RED on revert by construction: dropping FS/GS/RS from `LINE_TERMINATORS` stops `risEscape` flattening them, they survive mid-line in the TI value, and `ANY_SEP` matches. Mirrors the sibling BibTeX C0 test. A code comment on the assertion records why it is the load-bearing one.
+- **Item 2.** The `routes/papers.ts` consumer docblock enumeration updated from "7-character separator alphabet (CR, LF, VT, FF, NEL, LS, PS)" to "10-character separator alphabet (CR, LF, VT, FF, FS, GS, RS, NEL, LS, PS)", FS/GS/RS inserted in code-point order (matching `ANY_SEP`). Audit-own-replacement: no `\s`-membership claim, no line-number / task-slug / SHA / `§ N.M` anchor introduced. Staging caution from the hold block did not apply: `routes/papers.ts` had no sibling working-tree edits at commit time, so the file was staged whole (only the one docblock hunk changed) rather than via `git add -p`.
+- Verification: `npm run typecheck` + `npm run lint` clean (the one lint warning is a pre-existing unused-directive in `src/lib/author-supersession.ts`, untouched). `papers-cite-escape.test.ts` 57/57 green.

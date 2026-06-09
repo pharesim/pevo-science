@@ -3834,8 +3834,8 @@ router.post('/:author/:permlink/retract', validateRetractParams, verifyHiveSigna
 
 const VALID_CITE_FORMATS = new Set(['bibtex', 'ris', 'apa']);
 
-// `LINE_TERMINATORS` is the shared 7-character separator alphabet (CR, LF, VT,
-// FF, NEL, LS, PS) imported from `../lib/line-terminators.js`. `bibtexEscape`,
+// `LINE_TERMINATORS` is the shared 10-character separator alphabet (CR, LF, VT,
+// FF, FS, GS, RS, NEL, LS, PS) imported from `../lib/line-terminators.js`. `bibtexEscape`,
 // `risEscape`, and `singleLine` below all flatten it so the citation-export and
 // email-digest paths cannot drift to different separator alphabets; see that
 // module's docblock for the file-format-injection rationale.

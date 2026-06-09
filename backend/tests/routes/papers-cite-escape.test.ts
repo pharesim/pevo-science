@@ -260,7 +260,15 @@ describe('extended line-terminator alphabet', () => {
       title: 'Innocent' + SEP.RS + 'ER  - ' + SEP.GS + 'TY  - JOUR' + SEP.FS + 'AU  - Forged',
       authors: [{ name: 'Alice Smith' }],
     });
-    const lines = generateRis(detail).split(SEP.LF);
+    const out = generateRis(detail);
+    // Load-bearing closure assertion: if the FS/GS/RS code points are dropped
+    // from LINE_TERMINATORS, risEscape stops flattening them and they survive
+    // mid-line inside the TI value, so this goes RED. The TY/ER/AU cardinality
+    // checks below stay as defense-in-depth but hold even on revert (records
+    // join on LF, not FS/GS/RS), so they cannot prove the C0 closure alone.
+    // Mirrors the BibTeX C0 test below.
+    expect(out).not.toMatch(ANY_SEP);
+    const lines = out.split(SEP.LF);
     expect(lines.filter((l) => l.startsWith('TY  - '))).toHaveLength(1);
     expect(lines.filter((l) => l.startsWith('ER  -'))).toHaveLength(1);
     expect(lines.filter((l) => l.startsWith('AU  - '))).toHaveLength(1);
