@@ -134,6 +134,16 @@ export interface VouchInfo {
   timestamp: string;
 }
 
+/**
+ * The closed set of accreditation methods an `accredit` custom_json can carry
+ * (mirrors the `method` enum in the accreditation op schema: WoT auto-grant,
+ * email-verified, ORCID-verified, manual operator grant). Typed as a literal
+ * union (not a bare `string`) so `shouldRevokeOnRetract`'s `=== 'wot'`
+ * discriminant is compiler-visible: a future caller comparing against a method
+ * that is not in this set becomes a type error rather than a silent always-false.
+ */
+export type AccreditationMethod = 'wot' | 'email' | 'orcid' | 'manual';
+
 export interface VouchStatus {
   username: string;
   vouch_count: number;
@@ -142,15 +152,12 @@ export interface VouchStatus {
   eligible: boolean;
   /**
    * The account's OWN active-accreditation method (the most-recent `accredit`
-   * event's `method`: `'wot'`, `'email'`, `'orcid'`, ...), or `null` if the
-   * account is not currently accredited. Carried so the retract path can decide
-   * whether to revoke from the SAME snapshot that verified the retraction — a
-   * WoT-method accreditation that has fallen below threshold is revocable; an
-   * email/ORCID accreditation, or none, is not. A second independent read of
-   * this flag could straddle a re-vouch's HAF-ingestion lag and revoke an
-   * account that is actually at-threshold on-chain.
+   * event's `method`), or `null` if the account is not currently accredited.
+   * Carried so the retract path can decide whether to revoke from the SAME
+   * snapshot that verified the retraction. See `shouldRevokeOnRetract` for the
+   * revoke-gating rationale.
    */
-  accreditation_method: string | null;
+  accreditation_method: AccreditationMethod | null;
 }
 
 /**
@@ -158,8 +165,9 @@ export interface VouchStatus {
  * accredited via the Web of Trust (`method = 'wot'`) AND has fallen below the
  * vouch threshold. Derived purely from a single `VouchStatus` snapshot so the
  * verification and the threshold/method check read one consistent view of HAF.
- * An account accredited by email/ORCID (or not at all) is never revoked here,
- * even below threshold — only WoT auto-accreditations track the vouch count.
+ * An account accredited by email/ORCID/manual (or not at all) is never revoked
+ * here, even below threshold — only WoT auto-accreditations track the vouch
+ * count.
  */
 export function shouldRevokeOnRetract(status: VouchStatus): boolean {
   return status.accreditation_method === 'wot' && !status.eligible;
@@ -176,37 +184,39 @@ export function vouchStatusCacheKey(vouchee: string): string {
 }
 
 /**
- * Get the vouch status for a user from HAF.
+ * SQL for the combined vouch-status read: one row carrying BOTH the account's
+ * own active-accreditation `method` (a scalar subquery) AND its accredited-only
+ * voucher list (`json_agg`). Exported so the real-planner regression runs this
+ * exact SELECT against a synthetic graph rather than a hand-rewritten copy.
+ *
+ * Shape invariants this SELECT must preserve (the retract path depends on them):
+ *  - The `json_agg(...) FILTER (WHERE av.voucher IS NOT NULL)` over the
+ *    `LEFT`-less inner JOIN yields one row even for an account with ZERO
+ *    accredited vouchers, with `vouches = []` (the COALESCE collapses the
+ *    aggregate-over-empty-set NULL to an empty array). There is no `GROUP BY`:
+ *    the scalar subquery plus a single bare aggregate produce exactly one group.
+ *    So `self_method` survives the all-vouches-retracted case the retract path
+ *    must revoke on.
+ *  - The scalar subquery and the aggregate read the same `active_accreditations`
+ *    snapshot, so a caller reusing this status to decide a revoke
+ *    (`shouldRevokeOnRetract`) never straddles a separate read's ingestion lag.
+ *  - The inner `JOIN active_accreditations aa ON aa.account = av.voucher` keeps
+ *    only accredited vouchers, so `vouches.length` equals the accredited-voucher
+ *    recount the cascade discovery query expresses as
+ *    `COUNT(DISTINCT av_all.voucher) FILTER (WHERE aa_voucher IS NOT NULL)`;
+ *    `active_vouches` carries one row per (voucher, vouchee) edge, so no DISTINCT
+ *    is needed here.
+ *
+ * Expects `active_accreditations` and `active_vouches` CTEs in scope (combine
+ * with `buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody)` in
+ * production; the real-Postgres regression substitutes fixture CTEs of the same
+ * shape).
+ *
+ * @param usernameParam - `$N` placeholder bound to the account being read (used
+ *   in both the self-method subquery and the vouches WHERE filter).
  */
-export async function getVouchStatus(username: string): Promise<VouchStatus | null> {
-  return hafCache.getOrSet<VouchStatus | null>(vouchStatusCacheKey(username), async () => {
-    const pool = getPool();
-    if (!pool) return null;
-
-    try {
-      const threshold = await getWotThreshold();
-
-      // One read carries BOTH the account's accredited vouchers AND its own
-      // active-accreditation method: the aggregate produces exactly one row even
-      // when the account has zero accredited vouchers (an aggregate over an empty
-      // set still yields one group), so `self_method` survives the
-      // all-vouches-retracted case that the retract path must revoke on. The
-      // self-method scalar subquery and the vouches aggregate read the same
-      // `active_accreditations` snapshot, so a caller that reuses this status to
-      // decide a revoke (see `shouldRevokeOnRetract`) never straddles a separate
-      // read's HAF-ingestion lag.
-      //
-      // The `JOIN active_accreditations aa ON aa.account = av.voucher` keeps only
-      // accredited vouchers, so `vouches.length` equals the accredited-voucher
-      // recount the cascade discovery query expresses as
-      // `COUNT(DISTINCT av_all.voucher) FILTER (WHERE aa_voucher IS NOT NULL)`;
-      // `active_vouches` carries one row per (voucher, vouchee) edge, so no
-      // DISTINCT is needed here.
-      const cte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
-      const usernameParam = `$${cte.nextIdx}`;
-      const result = await pool.query<{ self_method: string | null; vouches: VouchInfo[] }>(
-        `${cte.sql}
-         SELECT
+export function vouchStatusSelect(usernameParam: string): string {
+  return `SELECT
            (SELECT method FROM active_accreditations WHERE account = ${usernameParam}) AS self_method,
            COALESCE(
              json_agg(
@@ -220,7 +230,29 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
            ) AS vouches
          FROM active_vouches av
          JOIN active_accreditations aa ON aa.account = av.voucher
-         WHERE av.vouchee = ${usernameParam}`,
+         WHERE av.vouchee = ${usernameParam}`;
+}
+
+/**
+ * Get the vouch status for a user from HAF.
+ */
+export async function getVouchStatus(username: string): Promise<VouchStatus | null> {
+  return hafCache.getOrSet<VouchStatus | null>(vouchStatusCacheKey(username), async () => {
+    const pool = getPool();
+    if (!pool) return null;
+
+    try {
+      const threshold = await getWotThreshold();
+
+      // One read carries BOTH the account's accredited vouchers AND its own
+      // active-accreditation method via `vouchStatusSelect` (see that builder's
+      // docblock for the single-snapshot / aggregate-over-empty-set invariants
+      // the retract path depends on).
+      const cte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
+      const usernameParam = `$${cte.nextIdx}`;
+      const result = await pool.query<{ self_method: string | null; vouches: VouchInfo[] }>(
+        `${cte.sql}
+         ${vouchStatusSelect(usernameParam)}`,
         [...cte.params, username],
       );
 
@@ -233,7 +265,12 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
         threshold,
         vouches,
         eligible: vouches.length >= threshold,
-        accreditation_method: row?.self_method ?? null,
+        // The `method` column is free text in HAF; narrow it to the closed
+        // accreditation-method union at this single read site so the rest of the
+        // codebase (notably `shouldRevokeOnRetract`'s `=== 'wot'` discriminant)
+        // sees the literal type. An off-enum value would compare unequal to every
+        // arm and fall through to non-revocable, the same as `null`.
+        accreditation_method: (row?.self_method ?? null) as AccreditationMethod | null,
       };
     } catch (err) {
       logger.error({ err }, 'Failed to get vouch status');

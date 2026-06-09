@@ -63,7 +63,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
-import type { VouchStatus } from '../../src/wot.js';
+import type { AccreditationMethod, VouchStatus } from '../../src/wot.js';
 
 const {
   hafQueryMock,
@@ -144,7 +144,7 @@ function jwtFor(username: string): string {
  * `method` is the vouchee's OWN accreditation method (drives the WoT-only revoke
  * gate).
  */
-function statusFor(opts: { vouchers: string[]; method: string | null; threshold?: number }): VouchStatus {
+function statusFor(opts: { vouchers: string[]; method: AccreditationMethod | null; threshold?: number }): VouchStatus {
   const threshold = opts.threshold ?? 3;
   return {
     username: VOUCHEE,
@@ -183,7 +183,7 @@ function statusFor(opts: { vouchers: string[]; method: string | null; threshold?
  */
 function makeHafMock(opts: {
   voucheeVouches?: string[];
-  voucheeMethod?: string | null;
+  voucheeMethod?: AccreditationMethod | null;
   accredited?: boolean;
   statusThrows?: boolean;
   snapshot?: { params: unknown[] | null };
@@ -296,18 +296,39 @@ describe('revokeVoucheeIfBelowThreshold — retract-time vouchee re-evaluation',
     expect(broadcastAdminMock).not.toHaveBeenCalled();
   });
 
-  it('issues NO HAF query of its own (decision taken from the passed snapshot)', async () => {
-    await revokeVoucheeIfBelowThreshold(statusFor({ vouchers: ['carol', 'dave', 'erin'], method: 'wot' }));
+  it('issues NO HAF query of its own on the REVOKE branch (decision taken from the passed snapshot)', async () => {
+    // Drive the BELOW-threshold WoT case so the function takes the revoke branch
+    // — the path where a reintroduced second read would actually fire. An
+    // at-threshold status would short-circuit to `skipped` before the revoke
+    // branch, making this assertion vacuously pass. The broadcast SUCCEEDS so the
+    // function runs all the way through `revoked` without any HAF read.
+    broadcastAdminMock.mockResolvedValue({ id: 'tx-revoke-bob' });
+
+    const result = await revokeVoucheeIfBelowThreshold(statusFor({ vouchers: ['carol', 'dave'], method: 'wot' }));
+
+    // The revoke branch was taken (not skipped), so the no-query assertion below
+    // pins the actual revoke path, not a pre-revoke early return.
+    expect(result).toEqual({ outcome: 'revoked', txId: 'tx-revoke-bob' });
+    expect(broadcastAdminMock).toHaveBeenCalledTimes(1);
 
     // The revoke decision reads the status snapshot, not a second discovery
     // query. The cascade's `SELECT av_target.vouchee` find query and the old
-    // `FROM active_accreditations aa_target` recount must NEVER fire here.
+    // `FROM active_accreditations aa_target` recount must NEVER fire here. Pinned
+    // on the revoke branch, this fails if any second read is reintroduced:
+    // `getVouchStatus`'s combined snapshot (json_agg + self_method) and any other
+    // HAF read are all caught by the zero-total-calls assertion.
     const cascadeFindCalls = hafQueryMock.mock.calls.filter((c) =>
       String(c[0]).includes('SELECT av_target.vouchee'));
     const recountCalls = hafQueryMock.mock.calls.filter((c) =>
       String(c[0]).includes('FROM active_accreditations aa_target'));
+    const snapshotReReadCalls = hafQueryMock.mock.calls.filter((c) =>
+      String(c[0]).includes('json_agg(') && String(c[0]).includes('AS self_method'));
     expect(cascadeFindCalls).toHaveLength(0);
     expect(recountCalls).toHaveLength(0);
+    expect(snapshotReReadCalls).toHaveLength(0);
+    // Strongest pin: revokeVoucheeIfBelowThreshold takes its decision purely from
+    // the passed snapshot, so it must issue ZERO HAF queries of any shape.
+    expect(hafQueryMock).not.toHaveBeenCalled();
   });
 
   it('fires invalidateOnRevocation BEFORE broadcast on the timeout-ambiguous path', async () => {
