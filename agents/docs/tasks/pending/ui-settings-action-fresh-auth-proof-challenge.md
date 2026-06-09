@@ -140,3 +140,86 @@ contradicts this — both routes allowlist all three settings actions today (the
 task tree). These contract docs need updating to match the live code.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES
+
+`/ce-code-review` ran on the implementing commit (10 personas). Strong positives:
+project-standards clean (no emdash in the two new keys; both keys present in all 16
+locales + STUBS; comment anchors clean; commit stays in the UI zone; account-state
+branching maps to §6.1 states A/B/C), and security found no exploit (§6.5 #1 holds; the
+cross-action target binding is defended in depth at both the cache and the backend;
+password wiped on every exit path). Held on the following:
+
+1. **(P1) The 401 re-mint+retry-once path is dead code, and the unit test masks it.**
+   In `withSettingsFreshAuth`, the retry guard tests `err.status === 401`, but
+   `ApiRequestError` (api.js) never sets a `status` field — it carries `code`,
+   `details`, `data`, `retryAfterSeconds`. So the guard is always false: every
+   `FRESH_AUTH_REQUIRED` short-circuits to `{ freshAuthFailed: true }` and the
+   re-mint+retry-once behavior the task requires never runs. The `codedError` helper in
+   `lib-settings-fresh-auth.test.js` fabricates a `status` field, so the test exercises a
+   shape production never emits and passes green. Fix: gate the retry on
+   `REMINTABLE_REASONS.includes(err.details?.reason)` — the preceding
+   `err.code === 'FRESH_AUTH_REQUIRED'` check already establishes the class, and the
+   reason set ({missing,expired,malformed}) is the retryable discriminator, so the broken
+   `err.status === 401` conjunct can be dropped. Then remove the fabricated `status` from
+   the test helper so the suite runs against the real `ApiRequestError` shape, and assert
+   the retry path actually fires for an error constructed the way `api.js` throws it (the
+   test must fail if a `status`-based gate is reintroduced). (A status-carrying
+   `ApiRequestError` is the alternative, but it widens the error contract for all
+   consumers; the reason-based gate is the smaller change and matches how the handler
+   already discriminates by `code`.)
+
+2. **(P2) `beginSettingsActionOrcidFreshAuth` re-inlines the redirect-host allowlist.**
+   It uses the literal `['orcid.org', 'sandbox.orcid.org']` instead of the
+   `ORCID_REDIRECT_HOSTS` module constant this same commit introduced and that
+   `mintNonConsentProof` adopts. Replace the inline literal with the constant. (This is
+   exactly the failure mode in the `convention-enforcing-fix-must-audit-its-own-new-code`
+   learning: the dedup commit missed its own new call site. Same two hosts today, so it's
+   divergence-prevention, not an active open-redirect.)
+
+3. **(P2) Second wrong-password mint in `mintViaPassword` is unwrapped.** After a
+   wrong-password re-prompt, the second `mintSettingsActionProof` call is outside the
+   try/catch, so a second `UNAUTHORIZED` (or any transport error on it) escapes the
+   orchestrator and surfaces the action's generic message (`emailUpdateFailed` /
+   `emailDeleteFailed`) instead of `settings.reauthFailed`. Wrap the second attempt and
+   map a second auth failure to the same cancelled / freshAuthFailed outcome the first
+   attempt yields.
+
+4. **(P2, test) `beginSettingsActionOrcidFreshAuth` has no direct unit test.** Its
+   open-redirect host-allowlist rejection and `pevo_orcid_mode` / return-path
+   cleanup-on-error run only behind the mock boundary in `lib-settings-fresh-auth.test.js`.
+   Add a direct test mirroring `mintNonConsentProof`'s coverage: redirect to an
+   allowlisted host; rejection of a non-allowlisted host without navigating; sessionStorage
+   cleanup when `startOrcid` throws.
+
+5. **(P2, test) Action-specific coverage is `change_email`-only.** The passwordless
+   (State-C) `delete_account` ORCID-factor route and the 401/403 paths are not exercised
+   for `set_password` or `delete_account`, so an action-name typo in a future refactor
+   would go undetected. Add at minimum: a passwordless `delete_account` → ORCID-factor
+   assertion, plus one 401-reprompt and one 403-generic case on an action other than
+   `change_email`.
+
+   Fold into item 1: once the retry branch is live, decide the ORCID-factor behavior on a
+   401-on-arrival. Re-running `resolveProof` would re-trigger a full-page ORCID redirect,
+   risking a re-OAuth loop near the 5-minute proof TTL. Prefer a terminal `freshAuthFailed`
+   ("re-auth expired, try again") for the ORCID factor over a silent second redirect. This
+   only manifests after item 1 restores the retry path.
+
+**Verify (confirm; no change if already correct):** (a) `orcid-callback.js` dispatches on
+the new `pevo_orcid_mode = 'fresh_auth'` value and lands the proof in the consent-op cache
+keyed `(action, username, '')` — the settings ORCID-factor path has no E2E, so this is the
+only guard that the round-trip resumes. (b) Test-stub `expires_at` is an ISO-8601 string,
+not an epoch integer, per the `wire-contract-shape-pinned-on-backend-not-stub` learning.
+
+**Considered and dismissed (P3, no action):** concurrent-action-while-modal-open silent
+no-op (the refuse-while-open guard is a correct anti-cross-contamination safety; only the
+missing feedback is suboptimal); `mintSettingsActionProof` one-line delegation wrapper
+(harmless indirection); single-slot consent-op cache eviction by an unrelated action
+(pre-existing by-design trait, not introduced here).
+
+**Architect-handled (not your concern):** the `api-contracts/orcid.md` + `custody.md`
+drift you flagged (`delete_account` enum + stale `change_email` "not live" note) was
+corrected in this same review pass.
+
+Re-review acceptance: items 1-5 landed; unit suite green against the real `ApiRequestError`
+shape. `git mv` back to `tasks/review/` when done.
