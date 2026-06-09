@@ -221,17 +221,17 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
 
       await sendDigestEmail(user, newEvents);
 
-      // Advance the stored cursor ONLY when the window fully drained
-      // (`has_more === false`). A truncated batch (`has_more === true`) means
-      // recipient-relevant events beyond the fetch cap are still undelivered —
-      // including a single block whose events overflowed the cap. Advancing past
-      // them would skip them permanently (the original boundary-drop bug);
-      // leaving the cursor lets the next digest re-fetch and drain further, so
-      // the overflow appears in a later digest rather than being lost. Advance to
-      // the highest delivered block (ascending order → last element).
-      if (!batch.has_more) {
-        await updateLastDigestBlock(user.username, newEvents[newEvents.length - 1].block_num);
-      }
+      // Advance the stored cursor to the highest delivered block on EVERY
+      // non-empty run (ascending order → last element). fetchNotificationsFromHaf
+      // drops the cap-truncated boundary block, so every delivered block is whole
+      // and advancing past it never skips an undelivered overflow event. Gating
+      // the advance on `!batch.has_more` (the prior shape) re-sent the same oldest
+      // batch forever for any account with a sustained >cap-event window, because
+      // `has_more` stayed true across cadences while the cursor never moved. The
+      // single-block-exceeds-cap case is handled upstream: the shared function
+      // drops that block, yielding an empty batch here, so the cursor holds and
+      // the block surfaces once the window floor slides to contain it.
+      await updateLastDigestBlock(user.username, newEvents[newEvents.length - 1].block_num);
       sent++;
     } catch (err) {
       logger.error({ err, username: user.username }, 'Failed to process digest for user');

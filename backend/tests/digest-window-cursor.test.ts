@@ -1,11 +1,12 @@
 /**
- * runDigest cursor-consumption tests: wide-floor dedup + advance-only-when-drained.
+ * runDigest cursor-consumption tests: wide-floor dedup + advance-to-highest-
+ * delivered-block on every non-empty run.
  *
  * Per CLAUDE.md "Running Tests" carve-out clauses (a)/(b)/(c):
  *   (a) Real-corpus seeding is impractical: these canaries need to drive
  *       runDigest across two consecutive runs with a DETERMINISTIC notification
- *       batch (an edit-of-pre-cursor-content scenario, and a window that reports
- *       has_more=true then false), plus an observable cursor-advance and email
+ *       batch (an edit-of-pre-cursor-content scenario, and a sustained >cap window
+ *       that reports has_more=true), plus an observable cursor-advance and email
  *       payload. The public HAF corpus cannot be seeded with a published-then-
  *       edited paper at exact block numbers at test time. The mocked surfaces are
  *       all inside the carve-out's mock-target scope:
@@ -29,8 +30,11 @@
  *       in this test (only fetchNotificationsFromHaf's HAF round-trip is stubbed).
  *
  * Mutation kill: reverting runDigest to fetch against `last_digest_block` (the
- * narrow floor) fails the wide-floor assertion; reverting to advance the cursor
- * unconditionally fails the has_more=true no-advance assertion.
+ * narrow floor) fails the wide-floor assertion; re-introducing the
+ * advance-only-on-`!has_more` gate fails the >cap-window advance assertion (that
+ * gate caused the re-send cascade — fetchNotificationsFromHaf drops the cap
+ * boundary block, so every delivered block is whole and the cursor must advance
+ * to it on every non-empty run regardless of has_more).
  */
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
 import type { NotificationBatch, NotificationEvent } from '../src/notification-queries.js';
@@ -121,7 +125,7 @@ beforeEach(() => {
   fetchMock.mockReset();
 });
 
-describe('runDigest — wide-floor dedup + advance-only-when-drained', () => {
+describe('runDigest — wide-floor dedup + advance-to-highest-delivered-block', () => {
   it('fetches against the wide window floor, not the per-user last_digest_block', async () => {
     digestUsers = [{ username: 'alice', email: 'a@x.test', digest_frequency: 'daily', last_digest_block: 950_000 }];
     fetchMock.mockResolvedValue({ events: [reviewEvent(960_000, 'Paper P')], latest_block: 960_000, has_more: false });
@@ -138,7 +142,8 @@ describe('runDigest — wide-floor dedup + advance-only-when-drained', () => {
     // The digest MUST fetch oldest-first ('asc') so it drains the window forward;
     // a silent flip to 'desc' would deliver newest-first and skip in-between
     // events for long-offline users with zero OTHER failing tests (the cap-edge
-    // drop + advance-only-when-drained logic both assume oldest-first ordering).
+    // boundary-block drop + advance-to-highest-delivered logic both assume
+    // oldest-first ordering).
     expect(direction).toBe('asc');
   });
 
@@ -165,10 +170,14 @@ describe('runDigest — wide-floor dedup + advance-only-when-drained', () => {
     expect(updateCalls).toHaveLength(0);
   });
 
-  it('does not advance the cursor on a truncated (has_more) batch, and delivers the rollover next run exactly once', async () => {
-    // Run 1: a window with more recipient-relevant events than the fetch cap —
-    // batch truncated (has_more=true). Events are emailed but the cursor is NOT
-    // advanced, so the undelivered tail is not skipped.
+  it('advances to the highest delivered block on a sustained >cap (has_more) batch, then drains the next slice exactly once', async () => {
+    // Run 1: a sustained window holding more recipient-relevant events than the
+    // fetch cap, so fetchNotificationsFromHaf reports has_more=true. Crucially it
+    // has ALREADY dropped the cap-truncated boundary block, so every delivered
+    // event sits in a WHOLE block — the digest emails them and advances to the
+    // highest delivered block (920_000). Gating the advance on !has_more here was
+    // the re-send cascade: the cursor would never move and this same oldest slice
+    // would re-email every cadence while head-side events stayed buried.
     digestUsers = [{ username: 'bob', email: 'b@x.test', digest_frequency: 'daily', last_digest_block: 905_000 }];
     fetchMock.mockResolvedValue({
       events: [reviewEvent(910_000, 'Paper A'), reviewEvent(915_000, 'Paper B'), reviewEvent(920_000, 'Paper C')],
@@ -177,19 +186,21 @@ describe('runDigest — wide-floor dedup + advance-only-when-drained', () => {
     });
     await runDigest('daily');
     expect(sentMails).toHaveLength(1);
-    expect(updateCalls).toHaveLength(0); // has_more=true → no advance (boundary not dropped)
+    expect(updateCalls).toEqual([{ username: 'bob', block: 920_000 }]); // advance despite has_more
 
-    // Run 2: the window now fully drains (has_more=false) and includes the
-    // rolled-over event at 930_000. The cursor advances to the final block, and
-    // the rollover is delivered exactly once (this run).
+    // Run 2: the cursor (now 920_000) re-fetches the wide window. The DISTINCT ON
+    // batch still includes the already-delivered prefix, but filterEventsAfter
+    // strips everything at/below 920_000, so only the next slice (930_000) is
+    // emailed and the cursor advances once more. No duplicate of the run-1 events.
     sentMails.length = 0;
     updateCalls.length = 0;
+    digestUsers[0].last_digest_block = 920_000;
     fetchMock.mockResolvedValue({
       events: [
         reviewEvent(910_000, 'Paper A'),
         reviewEvent(915_000, 'Paper B'),
         reviewEvent(920_000, 'Paper C'),
-        reviewEvent(930_000, 'Paper D rollover'),
+        reviewEvent(930_000, 'Paper D next slice'),
       ],
       latest_block: 930_000,
       has_more: false,
@@ -197,7 +208,24 @@ describe('runDigest — wide-floor dedup + advance-only-when-drained', () => {
     await runDigest('daily');
     expect(updateCalls).toEqual([{ username: 'bob', block: 930_000 }]);
     expect(sentMails).toHaveLength(1);
-    expect(sentMails[0].text).toContain('Paper D rollover');
+    expect(sentMails[0].text).toContain('Paper D next slice');
+    expect(sentMails[0].text).not.toContain('Paper A'); // run-1 prefix not re-emailed
+  });
+
+  it('holds the cursor when the batch is empty (single-block-exceeds-cap deferral)', async () => {
+    // The single-block-exceeds-cap case: fetchNotificationsFromHaf drops the lone
+    // cap-truncated boundary block, returning an empty batch even though chain
+    // events exist. The digest skips (nothing to email) and the cursor holds, so
+    // the block surfaces in a later run once the window floor slides to contain it.
+    // This is the graceful-deferral half of the partial-block-drop contract; it is
+    // what makes advancing-on-every-non-empty-run safe (an undelivered overflow is
+    // never in a "non-empty" batch).
+    digestUsers = [{ username: 'dave', email: 'd@x.test', digest_frequency: 'daily', last_digest_block: 905_000 }];
+    fetchMock.mockResolvedValue({ events: [], latest_block: 905_000, has_more: true });
+    const result = await runDigest('daily');
+    expect(sentMails).toHaveLength(0);
+    expect(updateCalls).toHaveLength(0);
+    expect(result.skipped).toBe(1);
   });
 
   it('skips a user with no events past the cursor without advancing', async () => {
