@@ -64,3 +64,47 @@ backend.
 - Paired backend task: `backend-notifications-route-newest-first-whole-block`.
 - Origin: the rewind this task removes was added by archived `ui-notifications-block-cursor-boundary-rewind`;
   the redesign supersedes it.
+
+## UI implementation note (2026-06-09)
+
+Landed in `frontend/src/notifications.js` (+ `tests/unit/notifications.test.js`). Commit `088890aa`
+(code) and this task-file move.
+
+**Item 1 (drop rewind).** The poll loop now `setCursor(username, batch.latest_block)` unconditionally
+when `latest_block > cursor`; the `has_more ? latest_block - 1 : latest_block` branch is gone. The
+comment block above it describes whole-block delivery (server never splits a Hive block, so advancing
+straight to `latest_block` cannot skip intra-block events; a persistent `has_more` drains on the next
+timer-driven poll). Anchored on behavioral semantics, no line/slug/SHA references and no `agents/docs/`
+path in the production comment.
+
+**Item 2 (MAX_EVENTS + display order) — DECISION, please confirm at review.** The dropdown
+(`index.html` notifications `x-for`) renders `events` in raw array order with no reverse/sort. The merge
+is `[...batch.events, ...this.events]` (ascending batch prepended). A bare `slice(0, MAX_EVENTS)` keeps
+the array front, which for a single oversized whole-block (a citation fan-out >200) is the OLDEST of
+that block, dropping the newest. Chosen fix: **only when `deduped.length > MAX_EVENTS`, retain the
+newest MAX_EVENTS by `block_num` (sort desc + slice); under the cap, preserve arrival order unchanged.**
+This is the minimal, scope-respecting fix: the common (<=200) path keeps its exact current order, so no
+product-visible reordering except in the rare over-cap case. I did NOT globally flip the feed to
+newest-first (that would fix the pre-existing "newest renders at the bottom of a batch" oddity but is
+out of this task's scope). Flag if you'd prefer the global newest-first reorder instead.
+
+**Item 3 (seenBlock).** `markAllRead` still sets `seenBlock = max(block_num of in-memory events)`.
+Because item 2 guarantees `events` retains the newest MAX_EVENTS, that max is the newest event the user
+could have seen, so advancing `seenBlock` never zeroes unread for a newer-but-dropped event (a drop only
+sheds events older than what is retained). Added a comment stating this invariant; no guard needed.
+
+**Item 4 (no tight loop).** Confirmed: `_scheduleNext` is timer-only (`setTimeout(..., _currentInterval)`,
+5-min base after success); nothing re-polls on `has_more`. Dropping the rewind cannot create a tight loop.
+No change.
+
+**Tests.** `notifications.test.js`: the `rewinds cursor to latest_block - 1` test became
+`advances cursor to latest_block when has_more is true (no rewind)`; the boundary-refetch test became
+`advances the cursor with no rewind across consecutive polls`; added
+`retains the newest events when a single response exceeds the cap` (250-event batch -> keeps blocks
+51..250, drops block 1). Full frontend unit suite green (1413 pass; the 3 `pages-edit.test.js`
+`_mountEditors` unhandled rejections are pre-existing and unrelated). Build green.
+
+**Deploy ordering (unchanged).** Per the "Deploy ordering" section above, ship after/atomically with
+`backend-notifications-route-newest-first-whole-block` (still in `tasks/pending/`); never frontend-first.
+NOT manually smoke-tested against the new backend because that route change is not yet deployed; unit
+tests mock `fetchNotifications` against the documented (2026-06-09) contract shape.
