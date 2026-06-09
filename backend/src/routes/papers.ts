@@ -3316,6 +3316,21 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 // GET /api/papers/:author/:permlink/enrichment
 // ──────────────────────────────────────────────
 
+// Shape of the per-paper authorship-claims projection consumed by the enrichment
+// fetcher. Typed so the accepted-claimer self-vote exclusion (the `status ===
+// 'accepted'` filter feeding `acceptedClaimers`) reads `status`/`claimer` as
+// declared columns rather than untyped `any`: a projection change that drops a
+// consumed column surfaces at the use site instead of silently emptying the
+// exclusion set and reopening the self-dealing gap.
+type ClaimsRow = {
+  claimer: string;
+  paper_author: string;
+  paper_permlink: string;
+  author_index: number | null;
+  status: string;
+  claimed_at: string;
+};
+
 async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?: AbortSignal) {
   const pool = getPool();
   if (!pool) return null;
@@ -3418,7 +3433,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       // Authorship claims
       (async () => {
         const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
-        return pool.query(
+        return pool.query<ClaimsRow>(
           `${cte.sql}
            SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at
            FROM authorship_claims
@@ -3531,7 +3546,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     // surface. claimsResult is scoped to this paper, so the claimer name is the key.
     const acceptedClaimers = new Set<string>();
     for (const r of claimsResult.rows) {
-      if (r.status === 'accepted') acceptedClaimers.add(r.claimer as string);
+      if (r.status === 'accepted') acceptedClaimers.add(r.claimer);
     }
 
     // Vote resolution: for each voter, pick the signal with the highest block_num
@@ -3607,11 +3622,11 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       : 0;
     const vote_strength = effectiveVoters.length > 0 ? voteStrengthTier(avgWeight) : null;
 
-    const authorship_claims = claimsResult.rows.map((r: Record<string, unknown>) => ({
-      claimer: r.claimer as string,
-      author_index: r.author_index as number | null,
-      status: r.status as string,
-      claimed_at: r.claimed_at as string,
+    const authorship_claims = claimsResult.rows.map((r) => ({
+      claimer: r.claimer,
+      author_index: r.author_index,
+      status: r.status,
+      claimed_at: r.claimed_at,
     }));
 
     // Cache-poisoning defense: if the wall-clock budget tripped during
