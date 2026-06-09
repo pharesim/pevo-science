@@ -849,15 +849,15 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(sendOperationsMock).not.toHaveBeenCalled();
     });
 
-    // Round-5 hold #6: prior round-4 "bridge-paper exclusion: vouched-set
-    // excludes a non-bridge signer..." test deleted. The test name claimed
-    // to cover hold #7 but the only assertion was `res.status === 200` and
-    // its own body comment said the broadcast surface is paper-type-blind
-    // by design — zero mutation-kill at the broadcast surface. Bridge-paper
-    // exclusion is correctly tested at the pure-function layer in
-    // `consent-ops.test.ts` (where `computeVouchedAuthors` enforces the
-    // claimed-set membership check). The framing — "broadcast surface is
-    // paper-type-blind; vouched-set inertness is read-time" — survives in
+    // A prior "bridge-paper exclusion: consented-set excludes a non-bridge
+    // signer..." test was deleted: its only assertion was
+    // `res.status === 200` and its own body comment said the broadcast
+    // surface is paper-type-blind by design — zero mutation-kill at the
+    // broadcast surface. Bridge-paper exclusion is correctly tested at the
+    // pure-function layer in `consent-ops.test.ts` (where
+    // `computeConsentedAuthors` enforces the anchored-slot membership
+    // check). The framing — "broadcast surface is paper-type-blind;
+    // consented-set inertness is read-time" — survives in
     // `consent-ops.test.ts`'s coverage and ARCH.md.
 
     it('non-allowlisted custom_json action → 403 FORBIDDEN (allowlist regression)', async () => {

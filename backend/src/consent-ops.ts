@@ -1,20 +1,28 @@
 /**
- * Multi-author trust model: vouched-set computation helpers.
+ * Multi-author trust model: consented-set computation helpers.
  *
- * Read-time vouched-set computation as a fetch + pure-compute split
- * (`fetchConsentOpsForPaper` + `computeVouchedAuthors`). NOTE: these
- * primitives are not yet wired into any read path — `resolveContinuationChain`
- * currently reconstructs cumulative-union membership only and does not apply
- * accept/resign vouched-status decay. Wiring the consent layer into the
- * admit gate is pending follow-up.
+ * Read-time consented-set computation as a fetch + pure-compute split
+ * (`fetchConsentOpsForPaper` + `computeConsentedAuthors`). The SQL twin —
+ * `consentedAuthorsCteBody` in `hafsql.ts` — is the single source of truth
+ * for credited-set membership consumed by the reputation cycle and the read
+ * surfaces; these JS primitives provide the unit-testable resolution logic
+ * and the per-paper fetch path for surfaces that resolve in JS.
  *
  * Spec: `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust Model"
- *   - "Vouched vs claimed authorship": a claimed author is **vouched** iff
- *     they broadcast the root post OR their latest valid `author_accept`
- *     op has not been superseded by a later `author_resign`.
+ *   - "Consented vs claimed authorship": a claimed author is **consented**
+ *     iff they broadcast the root post OR their latest valid `author_accept`
+ *     op has not been superseded by a later `author_resign` (or a
+ *     `revoke_authorship` backstop, resolved at the SQL layer).
  *   - "Author Accept (custom_json)" / "Author Resign (custom_json)":
  *     wire format + validity rules (signer-binding, temporal-ordering for
- *     accept, latest-op-wins per `(block_num, trx_in_block)`).
+ *     accept, latest-op-wins per `(block_num, id)`).
+ *
+ * Eligibility anchors (route 2): a claimed slot anchors a signer when the
+ * slot's `hive` equals the signer, OR the slot's `orcid` equals the signer's
+ * authority-attested ORCID (latest accredit/revoke wins). A null attested
+ * ORCID never matches an orcid-anchored slot: a broadcaster-claimed ORCID
+ * only establishes who may consent, never credit, and only the on-chain
+ * attestation proves the signer owns the ORCID.
  *
  * Convention: `agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`
  *   - Rule 2: use `(block_num, trx_in_block)` for op ordering.
@@ -29,9 +37,9 @@
  *     way to mint a third party's consent.
  *   - Rule 6: reject pre-broadcast ops where `block_num` predates the
  *     actor's eligibility. For `author_accept`, the accept op MUST be
- *     strictly later than the first block in which the accepter's handle
- *     was claimed in `pevo.authors[]`. (Resign ops have no temporal-ordering
- *     rule per ARCH.md "Author Resign" validity.)
+ *     strictly later than the first block in which a slot anchoring the
+ *     accepter appeared in `pevo.authors[]`. (Resign ops have no
+ *     temporal-ordering rule per ARCH.md "Author Resign" validity.)
  */
 
 import { config } from './config.js';
@@ -56,96 +64,121 @@ export interface ConsentOp {
   opId: string;
 }
 
-/** Round-4 hold #8: type-guard for the `action` field on the SQL row.
- *  The query's `IN ('author_accept', 'author_resign')` predicate filters
- *  the result set, but TS sees no relationship between the predicate and
- *  the row shape. If the SQL filter is ever relaxed or the view changes
- *  shape, an unrecognized `action` string would silently propagate and
- *  fall through `=== 'author_accept'` checks (treated as resign). The
- *  guard centralizes the membership test. */
+/**
+ * One claimed author slot from the paper's cumulative chain union (the
+ * append-only union of `pevo.authors[]` entries across all operations on
+ * admitted chain posts). Anchors are pre-normalized by the caller:
+ * `hive` via `normalizeHiveAccount` (lowercase + ASCII-space trim + charset
+ * guard), `orcid` via ASCII-C-whitespace trim (the
+ * `CHAIN_ORCID_BTRIM_CHARSET` family — NOT full-Unicode `.trim()`, which
+ * diverges from the SQL twin on exotic whitespace; see the
+ * sql-trim-vs-js-trim convention).
+ */
+export interface ClaimedSlot {
+  /** Normalized hive anchor, or null when the slot carries none. */
+  hive: string | null;
+  /** Normalized chain orcid anchor, or null when the slot carries none. */
+  orcid: string | null;
+  /**
+   * Earliest admitted operation block that named this slot — the
+   * `author_accept` temporal lower bound (Rule 6).
+   */
+  firstAppearanceBlock: number;
+}
+
+/**
+ * Discriminated fetch result: "no ops" and "HAF unavailable" are different
+ * answers. The consented layer fails closed (ARCHITECTURE.md "Consented-set
+ * computation"): a caller seeing `haf_unavailable` must surface 503, never
+ * degrade to a root-only consented set, and must never cache the sentinel.
+ */
+export type ConsentOpsFetchResult =
+  | { status: 'ok'; ops: ConsentOp[] }
+  | { status: 'haf_unavailable' };
+
+/** Type-guard for the `action` field on the SQL row. The query's
+ *  `IN ('author_accept', 'author_resign')` predicate filters the result
+ *  set, but TS sees no relationship between the predicate and the row
+ *  shape. If the SQL filter is ever relaxed or the view changes shape, an
+ *  unrecognized `action` string would silently propagate and fall through
+ *  `=== 'author_accept'` checks (treated as resign). The guard centralizes
+ *  the membership test. */
 function isConsentAction(value: unknown): value is ConsentAction {
   return value === 'author_accept' || value === 'author_resign';
 }
 
-/** Round-4 hold #4: hard cap on the consent-op row set per paper. The
- *  threat-model concern is `author_accept` / `author_resign` spam by a
- *  malicious claimed co-author: Hive enforces account-level rate limits
- *  but no per-paper cap, so an adversary can grow a paper's consent-op
- *  history unbounded. With LIMIT applied + ORDER BY id DESC, the latest
- *  ops are retained when the cap fires, which is the operationally
- *  relevant slice (latest valid op wins per `computeVouchedAuthors`). The
- *  threshold is sized for the cumulative-union task's expected chain
- *  length (a multi-author paper with weekly version bumps over the
- *  beta phase; well below 1000 in any plausible scenario). */
+/** Hard cap on the consent-op row set per paper. The threat-model concern
+ *  is `author_accept` / `author_resign` spam by a malicious claimed
+ *  co-author: Hive enforces account-level rate limits but no per-paper cap,
+ *  so an adversary can grow a paper's consent-op history unbounded. With
+ *  LIMIT applied + ORDER BY id DESC, the latest ops are retained when the
+ *  cap fires, which is the operationally relevant slice (latest valid op
+ *  wins per `computeConsentedAuthors`). The threshold is sized for the
+ *  cumulative-union chain length (a multi-author paper with weekly version
+ *  bumps over the beta phase; well below 1000 in any plausible scenario). */
 const FETCH_CONSENT_OPS_LIMIT = 1000;
 
 /**
  * Fetch consent ops (`author_accept` / `author_resign`) for a paper from
- * HAF. Returns ops in arbitrary order; `computeVouchedAuthors` is
- * responsible for ordering. Returns `[]` if HAF is unavailable — callers
- * can safely compute the vouched-set from an empty op list (which yields
- * just the root broadcaster, matching ARCH.md rule 1).
+ * HAF. Returns ops in arbitrary order; `computeConsentedAuthors` is
+ * responsible for ordering. Returns `{ status: 'haf_unavailable' }` when the
+ * pool is absent or the query throws — fail-closed, distinguishable from a
+ * legitimate empty op list (`{ status: 'ok', ops: [] }`).
  *
- * Round-4 hold #4: capped at `FETCH_CONSENT_OPS_LIMIT` rows per paper to
- * bound memory + sort cost under spam. The `ORDER BY cj.id DESC` clause
- * ensures the latest ops are retained when the cap fires (latest-op-wins
- * is the only ordering `computeVouchedAuthors` cares about). When the cap
- * is reached the helper currently does not surface a "more ops exist"
- * signal to the caller; round-2 integration may want a warning event.
+ * Capped at `FETCH_CONSENT_OPS_LIMIT` rows per paper to bound memory + sort
+ * cost under spam. The `ORDER BY cj.id DESC` clause ensures the latest ops
+ * are retained when the cap fires (latest-op-wins is the only ordering
+ * `computeConsentedAuthors` cares about).
  *
- * Round-5 hold #2: signer-filter pushed down into the SQL WHERE. Without
- * it, the LIMIT 1000 + ORDER BY cj.id DESC admitted a de-vouch attack:
- * any Hive account can post a fee-less `custom_json {action:
- * 'author_accept', root_author: P, root_permlink: P}` against any
- * paper. The op fails the consent-action validity check at
- * `computeVouchedAuthors` (signer not in claimed-set), but it still
+ * Signer-filter pushed down into the SQL WHERE. Without it, the LIMIT +
+ * ORDER BY cj.id DESC admits a de-consent attack: any Hive account can post
+ * a fee-less `custom_json {action: 'author_accept', root_author: P,
+ * root_permlink: P}` against any paper. The op fails the eligibility check
+ * at `computeConsentedAuthors` (signer anchored by no slot), but it still
  * counts against the LIMIT. An attacker spamming 1000+ such ops pushes
- * legitimate co-authors' `author_accept` ops below the cut: the latest
- * 1000 rows by `cj.id` DESC are all attacker-signed, and the legitimate
- * co-author's accept is invisible to the computation → de-vouched.
- * Filtering by `cj.required_posting_auths ->> 0 IN (claimed_set)` at
- * the SQL layer ensures the LIMIT bounds attacker-signed rows OUT of
- * the row set entirely; the cap only fires on legitimate signer spam,
- * which is bounded by the claimed-set's cardinality (a few co-authors
- * per paper) under Hive's per-account rate limit.
+ * legitimate co-authors' `author_accept` ops below the cut: the latest 1000
+ * rows by `cj.id` DESC are all attacker-signed, and the legitimate
+ * co-author's accept is invisible to the computation. Filtering by
+ * `cj.required_posting_auths ->> 0 IN (eligible set)` at the SQL layer
+ * ensures the LIMIT bounds attacker-signed rows OUT of the row set
+ * entirely; the cap only fires on legitimate signer spam, which is bounded
+ * by the eligible set's cardinality (a few co-authors per paper) under
+ * Hive's per-account rate limit.
  *
  * Per HAF Rule 5
  * (`agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`):
  * the `required_posting_auths[0]` IS the consent op's implicit
- * accepter/resigner (the chain signer is the actor). Filtering by
- * signer membership at the SQL is therefore equivalent to the
- * `claimedAuthors.has(signer)` check at `computeVouchedAuthors:221` —
- * any signer outside the claimed-set produces an inert op no matter
- * what the broadcast surface allows.
+ * accepter/resigner (the chain signer is the actor). Filtering by signer
+ * membership at the SQL is therefore equivalent to the eligibility check at
+ * `computeConsentedAuthors` — any signer outside the eligible set produces
+ * an inert op no matter what the broadcast surface allows.
  *
- * Round-4 hold #16: this fetch runs against the HAF Pool which currently
- * has no per-query `statement_timeout`. The follow-up task
- * `architect-haf-unavailability-vouched-set-policy` handles policy for
- * timeouts and HAF-unavailability at the integration site (round 2).
- * Until then, slow HAF can hold the paper-detail thread for the duration
- * of the upstream pool's connection-level timeout. The bounded LIMIT +
- * ORDER BY means a worst-case scan is bounded by the cap.
+ * @param eligibleSigners - accounts that could possibly be consented for
+ *   this paper: the claimed slots' hive anchors plus any account whose
+ *   authority-attested ORCID matches a claimed slot's orcid anchor. The
+ *   caller resolves the orcid-to-account dimension (it requires the
+ *   attestation map); `getConsentedAuthors` derives the set internally.
  */
 export async function fetchConsentOpsForPaper(
   rootAuthor: string,
   rootPermlink: string,
-  claimedAuthors: ReadonlySet<string>,
-): Promise<ConsentOp[]> {
+  eligibleSigners: ReadonlySet<string>,
+): Promise<ConsentOpsFetchResult> {
   const pool = getPool();
-  if (!pool) return [];
+  if (!pool) return { status: 'haf_unavailable' };
 
-  // Round-5 hold #2: empty claimed-set produces no possible vouched
-  // signers; short-circuit the SQL entirely. Avoids issuing a query with
-  // an empty `IN ()` clause (which is invalid SQL on most dialects) and
-  // matches the semantic at `computeVouchedAuthors`: no claimed authors
-  // means no vouchable consent ops.
-  if (claimedAuthors.size === 0) return [];
+  // An empty eligible set produces no possible consented signers;
+  // short-circuit the SQL entirely. Avoids issuing a query with an empty
+  // `IN ()` clause (invalid SQL on most dialects) and matches the semantic
+  // at `computeConsentedAuthors`: no eligible signers means no resolvable
+  // consent ops. This is a real "no ops" answer, not an availability fault.
+  if (eligibleSigners.size === 0) return { status: 'ok', ops: [] };
 
-  // Build the `IN ($k, $k+1, ...)` placeholder list for the claimed-set
-  // signer filter. Parameterized to prevent SQL injection from any
-  // upstream caller that didn't pre-validate handle shape.
-  const claimedArray = Array.from(claimedAuthors);
-  const claimedPlaceholders = claimedArray
+  // Build the `IN ($k, $k+1, ...)` placeholder list for the eligible-signer
+  // filter. Parameterized to prevent SQL injection from any upstream caller
+  // that didn't pre-validate handle shape.
+  const signersArray = Array.from(eligibleSigners);
+  const signerPlaceholders = signersArray
     .map((_, idx) => `$${idx + 4}`)
     .join(', ');
 
@@ -162,7 +195,7 @@ export async function fetchConsentOpsForPaper(
       AND cj.json::jsonb ->> 'action' IN ('author_accept', 'author_resign')
       AND cj.json::jsonb ->> 'root_author' = $2
       AND cj.json::jsonb ->> 'root_permlink' = $3
-      AND cj.required_posting_auths ->> 0 IN (${claimedPlaceholders})
+      AND cj.required_posting_auths ->> 0 IN (${signerPlaceholders})
     ORDER BY cj.id DESC
     LIMIT ${FETCH_CONSENT_OPS_LIMIT}
   `;
@@ -170,12 +203,12 @@ export async function fetchConsentOpsForPaper(
     config.appTag,
     rootAuthor,
     rootPermlink,
-    ...claimedArray,
+    ...signersArray,
   ];
 
   try {
     const result = await pool.query(sql, params);
-    return result.rows.flatMap((row): ConsentOp[] => {
+    const ops = result.rows.flatMap((row): ConsentOp[] => {
       // Defensive narrowing: even though the WHERE filter restricts the
       // action to the two consent values, we re-validate at the row
       // boundary so a future SQL change can't silently corrupt the
@@ -190,6 +223,7 @@ export async function fetchConsentOpsForPaper(
         opId: String(row.op_id),
       }];
     });
+    return { status: 'ok', ops };
   } catch (err) {
     logger.error(
       {
@@ -201,7 +235,9 @@ export async function fetchConsentOpsForPaper(
       },
       'consent-ops fetch failed',
     );
-    return [];
+    // Fail closed: an error is an availability fault, not an empty history.
+    // Returning ops: [] here would silently demote every non-root co-author.
+    return { status: 'haf_unavailable' };
   }
 }
 
@@ -218,36 +254,60 @@ function compareOpsDesc(a: ConsentOp, b: ConsentOp): number {
 }
 
 /**
- * Compute the vouched-author set for a paper from claimed-set context plus
- * the consent op history. Pure function — no I/O.
+ * The slots anchoring a signer, per the route-2 eligibility rule: a slot
+ * anchors the signer when its `hive` equals the signer, OR its `orcid`
+ * equals the signer's authority-attested ORCID. A signer with a null or
+ * absent attested ORCID is never anchored through an orcid slot — the
+ * attestation, not a broadcaster claim, proves ORCID ownership. The
+ * consented identity resolves atomically from one attestation lookup (the
+ * caller-supplied map entry), never per-field.
+ */
+function slotsAnchoring(
+  signer: string,
+  claimedSlots: readonly ClaimedSlot[],
+  attestedOrcid: string | null | undefined,
+): ClaimedSlot[] {
+  return claimedSlots.filter((slot) =>
+    (slot.hive !== null && slot.hive === signer)
+    || (slot.orcid !== null && slot.orcid !== ''
+        && attestedOrcid != null && attestedOrcid !== ''
+        && slot.orcid === attestedOrcid),
+  );
+}
+
+/**
+ * Compute the consented-author set for a paper from the claimed slot union
+ * plus the consent op history. Pure function — no I/O.
  *
  * @param rootBroadcaster - the chain-level author of the root post.
- *   Implicitly vouched per ARCH.md "Vouched vs claimed authorship" rule 1.
- *   The implicit-vouched flag fires only if the broadcaster also appears
- *   in `claimedAuthors`; otherwise the broadcaster isn't a claimed author
- *   of the paper and `pevo.authors[]` is the source of truth for credit.
- *   (For native papers the broadcaster is always in `pevo.authors[]`; this
- *   defensive check covers degenerate metadata where they aren't listed.)
- * @param claimedAuthors - the historical union of `pevo.authors[].hive`
- *   across all admitted operations on the paper's continuation chain.
- *   Lowercased Hive handles. The caller is responsible for case-folding
- *   and chain-walk computation (round 2 integration site).
- * @param firstClaimBlockByAuthor - per-author `block_num` of the earliest
- *   admitted operation that listed them in `pevo.authors[]`. Used to
- *   reject pre-broadcast `author_accept` ops per the temporal-ordering
- *   rule (rejects name-squatting under a colliding handle).
+ *   Implicitly consented per ARCH.md "Consented vs claimed authorship"
+ *   rule 1. The implicit-consent flag fires only if the broadcaster is also
+ *   anchored by some claimed slot; otherwise the broadcaster isn't a claimed
+ *   author of the paper and `pevo.authors[]` is the source of truth for
+ *   credit. (For native papers the broadcaster is always in
+ *   `pevo.authors[]`; this defensive check covers degenerate metadata where
+ *   they aren't listed.)
+ * @param claimedSlots - the historical union of `pevo.authors[]` slots
+ *   across all admitted operations on the paper's continuation chain, with
+ *   pre-normalized anchors (see `ClaimedSlot`). The caller is responsible
+ *   for case-folding and chain-walk computation.
+ * @param attestedOrcidBySigner - per-account authority-attested ORCID,
+ *   latest accredit/revoke wins; `null` (or an absent key) means the account
+ *   has no live attested ORCID and cannot anchor through an orcid slot.
  * @param consentOps - all `author_accept` / `author_resign` ops for this
  *   paper, in any order.
  */
-export function computeVouchedAuthors(
+export function computeConsentedAuthors(
   rootBroadcaster: string,
-  claimedAuthors: Set<string>,
-  firstClaimBlockByAuthor: Map<string, number>,
+  claimedSlots: readonly ClaimedSlot[],
+  attestedOrcidBySigner: ReadonlyMap<string, string | null>,
   consentOps: ConsentOp[],
 ): Set<string> {
-  const vouched: Set<string> = new Set();
+  const consented: Set<string> = new Set();
   const root = rootBroadcaster.trim().toLowerCase();
-  if (claimedAuthors.has(root)) vouched.add(root);
+  if (slotsAnchoring(root, claimedSlots, attestedOrcidBySigner.get(root)).length > 0) {
+    consented.add(root);
+  }
 
   // Group ops by signer (= accepting/resigning author per implicit binding).
   const opsBySigner = new Map<string, ConsentOp[]>();
@@ -260,10 +320,13 @@ export function computeVouchedAuthors(
 
   for (const [signer, ops] of opsBySigner) {
     if (signer === root) continue; // already handled by rule 1
-    if (!claimedAuthors.has(signer)) continue; // not a claimed author — op is inert
+    const anchors = slotsAnchoring(signer, claimedSlots, attestedOrcidBySigner.get(signer));
+    if (anchors.length === 0) continue; // no slot anchors the signer — op is inert
 
-    const firstClaimBlock = firstClaimBlockByAuthor.get(signer);
-    if (firstClaimBlock === undefined) continue; // claimed but no first-claim block — defensive: treat as not vouched
+    // Rule 6 lower bound: the earliest first-appearance block among the
+    // slots anchoring this signer. A signer anchored by several slots is
+    // eligible from the earliest of them.
+    const firstClaimBlock = Math.min(...anchors.map((s) => s.firstAppearanceBlock));
 
     // Filter accepts by temporal-ordering rule. ARCH.md "Author Accept"
     // validity: block_num MUST be strictly greater than the earliest
@@ -277,29 +340,61 @@ export function computeVouchedAuthors(
     // Latest valid op wins per (blockNum, opId) descending.
     validOps.sort(compareOpsDesc);
     const latest = validOps[0];
-    if (latest.action === 'author_accept') vouched.add(signer);
-    // 'author_resign' (or no valid ops) → not vouched.
+    if (latest.action === 'author_accept') consented.add(signer);
+    // 'author_resign' (or no valid ops) → not consented.
   }
 
-  return vouched;
+  return consented;
 }
 
+/** Result of `getConsentedAuthors` — propagates the fetch's fail-closed
+ *  discriminant so integration sites apply the 503 policy explicitly. */
+export type ConsentedAuthorsResult =
+  | { status: 'ok'; consented: Set<string> }
+  | { status: 'haf_unavailable' };
+
 /**
- * Convenience orchestrator: fetch consent ops then compute the vouched
- * set. Round 2's integration site (`resolveContinuationChain` in
- * `routes/papers.ts`) calls this once per paper-detail request.
+ * Convenience orchestrator: derive the eligible-signer set from the claimed
+ * slots + attestation map, fetch consent ops, then compute the consented
+ * set. Propagates `haf_unavailable` — callers MUST fail closed on it (503,
+ * never a degraded root-only set, never cached).
  */
-export async function getVouchedAuthors(
+export async function getConsentedAuthors(
   rootAuthor: string,
   rootPermlink: string,
-  claimedAuthors: Set<string>,
-  firstClaimBlockByAuthor: Map<string, number>,
-): Promise<Set<string>> {
-  const consentOps = await fetchConsentOpsForPaper(rootAuthor, rootPermlink, claimedAuthors);
-  return computeVouchedAuthors(
-    rootAuthor,
-    claimedAuthors,
-    firstClaimBlockByAuthor,
-    consentOps,
+  claimedSlots: readonly ClaimedSlot[],
+  attestedOrcidBySigner: ReadonlyMap<string, string | null>,
+): Promise<ConsentedAuthorsResult> {
+  // Eligible signers: every hive anchor, plus every account whose attested
+  // ORCID matches some slot's orcid anchor.
+  const eligible = new Set<string>();
+  const slotOrcids = new Set(
+    claimedSlots.flatMap((s) => (s.orcid !== null && s.orcid !== '' ? [s.orcid] : [])),
   );
+  for (const slot of claimedSlots) {
+    if (slot.hive !== null) eligible.add(slot.hive);
+  }
+  for (const [account, orcid] of attestedOrcidBySigner) {
+    if (orcid != null && orcid !== '' && slotOrcids.has(orcid)) eligible.add(account);
+  }
+
+  const fetched = await fetchConsentOpsForPaper(rootAuthor, rootPermlink, eligible);
+  switch (fetched.status) {
+    case 'ok':
+      return {
+        status: 'ok',
+        consented: computeConsentedAuthors(
+          rootAuthor,
+          claimedSlots,
+          attestedOrcidBySigner,
+          fetched.ops,
+        ),
+      };
+    case 'haf_unavailable':
+      return { status: 'haf_unavailable' };
+    default: {
+      const exhaustive: never = fetched;
+      throw new Error(`Unhandled consent fetch status: ${JSON.stringify(exhaustive)}`);
+    }
+  }
 }

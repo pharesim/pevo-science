@@ -927,6 +927,344 @@ export function authorshipClaimsCteBody(
   };
 }
 
+// ─── Consented authorship (chain backbone + Route 1/2 resolution) ─────────
+
+/**
+ * Scope for `consentChainCteBody`. `{ paperAuthor, paperPermlink }` seeds the
+ * recursive walk at one root (read surfaces); `{ roots: 'all' }` seeds it at
+ * every PEvO root post (`continues` absent) for corpus-wide resolution (the
+ * reputation cycle).
+ */
+export type ConsentChainScope =
+  | { paperAuthor: string; paperPermlink: string }
+  | { roots: 'all' };
+
+/**
+ * SQL expression for one post's contribution to the walk's cumulative
+ * admit-set: the normalized `pevo.authors[].hive` entries of the post's
+ * CURRENT metadata, with the bridge-paper special case (the bridge account is
+ * the sole authorized continuator). Mirrors
+ * `extractAuthorizedContinuationAuthors` (`helpers.ts`): LOWER + TRIM
+ * (PostgreSQL TRIM strips U+0020 only, matching the JS `trimAsciiSpace`) plus
+ * the Hive-consensus charset regex, which rejects entries carrying any other
+ * whitespace — keeping the SQL and JS admit-sets in lockstep (see the
+ * sql-trim-vs-js-trim convention).
+ */
+function hiveContributionSql(alias: string, appTagParam: string, bridgeParam: string): string {
+  return `CASE WHEN ${alias}.json_metadata -> ${appTagParam} ->> 'type' = 'bridge_paper' AND ${alias}.author = ${bridgeParam}
+        THEN ARRAY[${bridgeParam}::text]
+        ELSE COALESCE((
+          SELECT array_agg(DISTINCT LOWER(TRIM(e ->> 'hive')))
+          FROM jsonb_array_elements(${alias}.json_metadata -> ${appTagParam} -> 'authors') e
+          WHERE jsonb_typeof(${alias}.json_metadata -> ${appTagParam} -> 'authors') = 'array'
+            AND LOWER(TRIM(e ->> 'hive')) ~ '^[a-z0-9.-]+$'
+        ), ARRAY[]::text[]) END`;
+}
+
+/**
+ * CTE bodies for the cumulative continuation-chain walk — the SQL port of the
+ * JS walker (`resolveContinuationChain` + `buildCumulativeAuthorsForChain` in
+ * `routes/papers.ts`). Foundational infrastructure for consented-authorship
+ * credit: all three consent routes resolve against the chain this emits.
+ *
+ * MUST be composed under `WITH RECURSIVE` (use `buildRecursiveWith`). Emits,
+ * in dependency order:
+ *
+ *   - `chain_tree` — recursive walk over `pevo.continues` pointers. A
+ *     candidate continuation is admitted iff its chain author is in the
+ *     cumulative union of normalized `authors[].hive` built from its OWN
+ *     root-path prefix (the JS walker's author-consent gate), it is a valid
+ *     PEvO paper class (`validPevoPaperWhere`), it is not already on its path
+ *     (cycle guard — `continues` is broadcaster-controlled and a root's own
+ *     pointer can close a loop), and depth < 50 (the JS walker's hop cap).
+ *     Because each post carries exactly ONE `continues` pointer, every node
+ *     has a unique root-path: the recursion is linear in the number of
+ *     admissible posts, with no exponential fan-out. Forks (two admitted
+ *     posts continuing the same parent) materialize as siblings here and are
+ *     resolved by `canonical_chain`.
+ *   - `chain_node_created` — per node, the creation block (MIN op block) and
+ *     a same-block op-id tie-breaker from `operation_comment_view`.
+ *   - `ranked_children` — sibling rank per parent by creation order. The JS
+ *     walker picks the earliest-created admissible continuation
+ *     (`ORDER BY co.block_num ASC LIMIT 1`); rank 1 is that choice, with the
+ *     monotonic HAF op id as the deterministic same-block tie-break.
+ *   - `canonical_chain` — second recursion selecting the rank-1 child at each
+ *     hop: exactly the path the JS walker resolves. Slots named only in
+ *     orphaned (non-canonical) fork branches are NOT claimable or creditable.
+ *   - `display_slots` — the display-ordered cumulative author union over the
+ *     canonical chain's CURRENT metadata, two never-merging tracks keyed and
+ *     first-occurrence-ordered exactly like `buildCumulativeAuthorsForChain`
+ *     (hive-keyed track: normalized hive; hive-less track: normalized orcid,
+ *     else normalized name). `author_index` (0-based) is the dense
+ *     first-occurrence rank — the resolution domain for name-only
+ *     `claim_authorship` ops per the Claim Authorship schema
+ *     (hive-schemas.md: the author list is the cumulative union across the
+ *     chain).
+ *   - `claimed_hive_slots` / `claimed_orcid_slots` — the append-only claimed
+ *     set: anchor unions across ALL `operation_comment_view` operations on
+ *     canonical-chain posts (broadcasts AND edits), per the Multi-Author
+ *     Trust Model's historical-union rule. A native edit that removes an
+ *     entry from a post's current metadata does NOT remove the anchor here.
+ *     `first_block` is the earliest op block naming the anchor — the
+ *     Author Accept temporal lower bound (an accept at or before it is
+ *     name-squatting and invalid). Chain orcids are normalized with
+ *     `CHAIN_ORCID_BTRIM_CHARSET` (ASCII C-whitespace), matching the
+ *     supersession projection.
+ *
+ * Cost note: the walk is seeded per scope; `{ roots: 'all' }` walks every
+ * root's chain once per query. Chains are short (50-hop cap) and each
+ * admissible post is visited once, so the cost is linear in the number of
+ * PEvO continuation posts. No `block_num` floor on any `custom_json` or
+ * comment scan (BitmapAnd avoidance — see `activeAccreditationsCteBody`).
+ */
+export function consentChainCteBody(startIdx = 1, scope: ConsentChainScope): SqlFragment {
+  const p = startIdx; // $p = appTag, $p+1 = bridge account
+  const tag = `$${p}`;
+  const bridge = `$${p + 1}`;
+  const perPaper = 'paperAuthor' in scope;
+  const scopeParams: unknown[] = perPaper ? [scope.paperAuthor, scope.paperPermlink] : [];
+  const seedFilter = perPaper
+    ? `AND c.author = $${p + 2} AND c.permlink = $${p + 3}`
+    : `AND (c.json_metadata -> ${tag} -> 'continues') IS NULL`;
+  const nextIdx = perPaper ? p + 4 : p + 2;
+  const contrib = (alias: string) => hiveContributionSql(alias, tag, bridge);
+  return {
+    sql: `
+  chain_tree AS (
+    SELECT
+      c.author AS root_author, c.permlink AS root_permlink,
+      c.author, c.permlink,
+      NULL::text AS parent_author, NULL::text AS parent_permlink,
+      0 AS depth,
+      ARRAY[c.author || '/' || c.permlink] AS visited,
+      ${contrib('c')} AS cum_authors
+    FROM ${T.comments} c
+    WHERE c.parent_author = '' AND c.parent_permlink = ${tag}
+      AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: tag, bridgeAccountParam: bridge, source: 'all' })}
+      ${seedFilter}
+    UNION ALL
+    SELECT
+      p.root_author, p.root_permlink,
+      c.author, c.permlink,
+      p.author, p.permlink,
+      p.depth + 1,
+      p.visited || (c.author || '/' || c.permlink),
+      p.cum_authors || ${contrib('c')}
+    FROM chain_tree p
+    JOIN ${T.comments} c
+      ON c.parent_author = '' AND c.parent_permlink = ${tag}
+     AND c.json_metadata -> ${tag} -> 'continues' ->> 'author' = p.author
+     AND c.json_metadata -> ${tag} -> 'continues' ->> 'permlink' = p.permlink
+    WHERE p.depth < 50
+      AND c.author = ANY(p.cum_authors)
+      AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: tag, bridgeAccountParam: bridge, source: 'all' })}
+      AND NOT (c.author || '/' || c.permlink) = ANY(p.visited)
+  ),
+  chain_node_created AS (
+    SELECT t.*,
+      (SELECT MIN(o.block_num) FROM ${T.commentOps} o
+        WHERE o.author = t.author AND o.permlink = t.permlink) AS created_block,
+      (SELECT MIN(o.id) FROM ${T.commentOps} o
+        WHERE o.author = t.author AND o.permlink = t.permlink
+          AND o.block_num = (SELECT MIN(o2.block_num) FROM ${T.commentOps} o2
+                              WHERE o2.author = t.author AND o2.permlink = t.permlink)
+      ) AS created_id
+    FROM chain_tree t
+  ),
+  ranked_children AS (
+    SELECT *,
+      ROW_NUMBER() OVER (
+        PARTITION BY root_author, root_permlink, parent_author, parent_permlink
+        ORDER BY created_block ASC NULLS LAST, created_id ASC NULLS LAST
+      ) AS sibling_rank
+    FROM chain_node_created
+    WHERE depth > 0
+  ),
+  canonical_chain AS (
+    SELECT root_author, root_permlink, author, permlink, depth
+    FROM chain_node_created WHERE depth = 0
+    UNION ALL
+    SELECT r.root_author, r.root_permlink, r.author, r.permlink, r.depth
+    FROM canonical_chain p
+    JOIN ranked_children r
+      ON r.root_author = p.root_author AND r.root_permlink = p.root_permlink
+     AND r.parent_author = p.author AND r.parent_permlink = p.permlink
+     AND r.sibling_rank = 1
+  ),
+  display_slot_occurrences AS (
+    SELECT cc.root_author, cc.root_permlink, cc.depth,
+           e.ordinality AS pos, e.value AS entry,
+           CASE
+             WHEN LOWER(TRIM(e.value ->> 'hive')) ~ '^[a-z0-9.-]+$'
+               THEN 'hive:' || LOWER(TRIM(e.value ->> 'hive'))
+             WHEN BTRIM(COALESCE(e.value ->> 'orcid', ''), E'${CHAIN_ORCID_BTRIM_CHARSET}') != ''
+               THEN 'orcid:' || LOWER(BTRIM(e.value ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}'))
+             WHEN TRIM(COALESCE(e.value ->> 'name', '')) != ''
+               THEN 'name:' || LOWER(TRIM(e.value ->> 'name'))
+             ELSE NULL
+           END AS slot_key
+    FROM canonical_chain cc
+    JOIN ${T.comments} c ON c.author = cc.author AND c.permlink = cc.permlink
+    CROSS JOIN LATERAL jsonb_array_elements(c.json_metadata -> ${tag} -> 'authors') WITH ORDINALITY AS e(value, ordinality)
+    WHERE jsonb_typeof(c.json_metadata -> ${tag} -> 'authors') = 'array'
+  ),
+  display_slots AS (
+    SELECT root_author, root_permlink, slot_key,
+           (ROW_NUMBER() OVER (PARTITION BY root_author, root_permlink
+                               ORDER BY MIN(depth * 1000000 + pos)) - 1)::int AS author_index
+    FROM display_slot_occurrences
+    WHERE slot_key IS NOT NULL
+    GROUP BY root_author, root_permlink, slot_key
+  ),
+  ops_slot_occurrences AS (
+    SELECT cc.root_author, cc.root_permlink, o.block_num, e.value AS entry
+    FROM canonical_chain cc
+    JOIN ${T.commentOps} o ON o.author = cc.author AND o.permlink = cc.permlink
+    CROSS JOIN LATERAL jsonb_array_elements(o.json_metadata -> ${tag} -> 'authors') AS e(value)
+    WHERE jsonb_typeof(o.json_metadata -> ${tag} -> 'authors') = 'array'
+  ),
+  claimed_hive_slots AS (
+    SELECT root_author, root_permlink, LOWER(TRIM(entry ->> 'hive')) AS hive, MIN(block_num) AS first_block
+    FROM ops_slot_occurrences
+    WHERE LOWER(TRIM(entry ->> 'hive')) ~ '^[a-z0-9.-]+$'
+    GROUP BY 1, 2, 3
+  ),
+  claimed_orcid_slots AS (
+    SELECT root_author, root_permlink, BTRIM(entry ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') AS orcid, MIN(block_num) AS first_block
+    FROM ops_slot_occurrences
+    WHERE BTRIM(COALESCE(entry ->> 'orcid', ''), E'${CHAIN_ORCID_BTRIM_CHARSET}') != ''
+    GROUP BY 1, 2, 3
+  )`,
+    params: [config.appTag, config.hiveBridgeAccount, ...scopeParams],
+    nextIdx,
+  };
+}
+
+/**
+ * CTE bodies for the consented-author set — Routes 1 and 2 of the consent
+ * model (ARCHITECTURE.md "Consented vs claimed authorship") plus their
+ * demotions. Route 3 (name-only claim + approve) stays in
+ * `authorshipClaimsCteBody`; the full credit union is Routes 1 ∪ 2 ∪ 3.
+ *
+ * Requires `consentChainCteBody` (canonical_chain / claimed_*_slots) AND
+ * `activeAccreditationsCteBody` (active_accreditations, for the
+ * attested-ORCID anchor) to be composed EARLIER in the same WITH block.
+ *
+ * Emits:
+ *   - `consent_ops_raw` — `author_accept` / `author_resign` ops (subject =
+ *     the chain signer per the implicit signer-binding rule: the payload has
+ *     no subject field, so an op only ever counts for its own signer) UNION
+ *     `revoke_authorship` ops re-keyed to subject = payload `claimer` (the
+ *     author/admin/bridge demotion backstop, which applies to a co-author
+ *     consented via either route).
+ *   - `route2_stream` — ops joined to signer eligibility. A signer is
+ *     eligible iff a claimed slot anchors them: a hive slot equal to the
+ *     signer, OR an orcid slot equal to the signer's authority-attested
+ *     ORCID (latest accredit/revoke wins via active_accreditations; an
+ *     account with no live attested ORCID is NOT eligible through an orcid
+ *     slot — a broadcaster-claimed ORCID never anchors). Accept validity
+ *     additionally requires the accept block to be strictly after the slot's
+ *     first-appearance block (anti-name-squat; resigns carry no temporal
+ *     rule). Revoke rows are valid only when signed by the real root author,
+ *     the bridge account, the admin account, or the subject themself.
+ *   - `route2_latest` — latest valid op wins per (paper, account), ordered
+ *     by `(block_num, id)` descending (the monotonic HAF op id is the
+ *     intra-block key).
+ *   - `consented_authors` — Route 1 (the root broadcaster, implicitly
+ *     consented via the post signature, gated on membership in the claimed
+ *     hive set — or being the bridge account on a bridge paper — and
+ *     demotable by a later resign/revoke like any consented author) UNION
+ *     Route 2 (eligible signers whose latest valid op is an accept).
+ *
+ * @param scope - optional `{ signers }` narrows the resolved accounts to the
+ *   given set (the reputation cycle's target users). The chain walk itself is
+ *   scoped by `consentChainCteBody`, not here.
+ */
+export function consentedAuthorsCteBody(
+  startIdx = 1,
+  scope?: { signers: string[] },
+): SqlFragment {
+  const p = startIdx; // $p = appTag, $p+1 = bridge, $p+2 = admin
+  const tag = `$${p}`;
+  const bridge = `$${p + 1}`;
+  const admin = `$${p + 2}`;
+  const signersFilter = scope ? `AND se.signer = ANY($${p + 3}::text[])` : '';
+  const scopeParams: unknown[] = scope ? [scope.signers] : [];
+  return {
+    sql: `
+  consent_ops_raw AS (
+    SELECT cj.required_posting_auths ->> 0 AS signer,
+           cj.json::jsonb ->> 'action' AS action,
+           cj.json::jsonb ->> 'root_author' AS r_author,
+           cj.json::jsonb ->> 'root_permlink' AS r_permlink,
+           cj.required_posting_auths ->> 0 AS subject,
+           cj.block_num, cj.id
+    FROM ${T.customJson} cj
+    WHERE cj.custom_id = ${tag}
+      AND cj.json::jsonb ->> 'action' IN ('author_accept', 'author_resign')
+    UNION ALL
+    SELECT cj.required_posting_auths ->> 0,
+           'demote_revoke',
+           cj.json::jsonb ->> 'paper_author',
+           cj.json::jsonb ->> 'paper_permlink',
+           cj.json::jsonb ->> 'claimer',
+           cj.block_num, cj.id
+    FROM ${T.customJson} cj
+    WHERE cj.custom_id = ${tag}
+      AND cj.json::jsonb ->> 'action' = 'revoke_authorship'
+  ),
+  consent_signer_eligibility AS (
+    SELECT root_author, root_permlink, signer, MIN(first_block) AS first_block
+    FROM (
+      SELECT root_author, root_permlink, hive AS signer, first_block FROM claimed_hive_slots
+      UNION ALL
+      SELECT o.root_author, o.root_permlink, aa.account AS signer, o.first_block
+      FROM claimed_orcid_slots o
+      JOIN active_accreditations aa
+        ON aa.orcid IS NOT NULL AND aa.orcid != '' AND aa.orcid = o.orcid
+    ) anchors
+    GROUP BY 1, 2, 3
+  ),
+  route2_stream AS (
+    SELECT se.root_author, se.root_permlink, se.signer AS account, ops.action, ops.block_num, ops.id
+    FROM consent_ops_raw ops
+    JOIN consent_signer_eligibility se
+      ON se.root_author = ops.r_author AND se.root_permlink = ops.r_permlink
+     AND se.signer = ops.subject
+    WHERE ((ops.action IN ('author_accept', 'author_resign')
+            AND ops.signer = se.signer
+            AND (ops.action = 'author_resign' OR ops.block_num > se.first_block))
+       OR (ops.action = 'demote_revoke'
+            AND (ops.signer = ops.r_author OR ops.signer = ${bridge} OR ops.signer = ${admin} OR ops.signer = ops.subject)))
+      ${signersFilter}
+  ),
+  route2_latest AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY root_author, root_permlink, account
+                                 ORDER BY block_num DESC, id DESC) AS rn
+    FROM route2_stream
+  ),
+  consented_authors AS (
+    SELECT cc.root_author, cc.root_permlink, cc.root_author AS account
+    FROM canonical_chain cc
+    JOIN ${T.comments} rc ON rc.author = cc.root_author AND rc.permlink = cc.root_permlink
+    WHERE cc.depth = 0
+      ${scope ? `AND cc.root_author = ANY($${p + 3}::text[])` : ''}
+      AND (EXISTS (SELECT 1 FROM claimed_hive_slots s
+                    WHERE s.root_author = cc.root_author AND s.root_permlink = cc.root_permlink
+                      AND s.hive = cc.root_author)
+           OR (rc.json_metadata -> ${tag} ->> 'type' = 'bridge_paper' AND rc.author = ${bridge}))
+      AND NOT EXISTS (SELECT 1 FROM route2_latest rl
+                       WHERE rl.root_author = cc.root_author AND rl.root_permlink = cc.root_permlink
+                         AND rl.account = cc.root_author AND rl.rn = 1 AND rl.action != 'author_accept')
+    UNION
+    SELECT root_author, root_permlink, account
+    FROM route2_latest WHERE rn = 1 AND action = 'author_accept'
+  )`,
+    params: [config.appTag, config.hiveBridgeAccount, config.hiveAdminAccount, ...scopeParams],
+    nextIdx: scope ? p + 4 : p + 3,
+  };
+}
+
 // ─── Genesis block ──────────────────────────────────────────────
 
 /**
@@ -1270,4 +1608,18 @@ export function buildWith(startIdx: number, ...cteBuilders: Array<(idx: number) 
     idx = frag.nextIdx;
   }
   return { sql: `WITH ${cteParts.join(', ')}`, params: allParams, nextIdx: idx };
+}
+
+/**
+ * `buildWith` variant emitting `WITH RECURSIVE`. Required whenever the CTE
+ * list contains a self-referential member (`consentChainCteBody`'s
+ * `chain_tree` / `canonical_chain`); PostgreSQL applies the RECURSIVE
+ * keyword to the whole list, so non-recursive members compose unchanged. A
+ * separate builder (rather than always emitting RECURSIVE from `buildWith`)
+ * keeps the SQL strings of existing non-recursive queries byte-stable for
+ * their shape canaries.
+ */
+export function buildRecursiveWith(startIdx: number, ...cteBuilders: Array<(idx: number) => SqlFragment>): SqlFragment {
+  const base = buildWith(startIdx, ...cteBuilders);
+  return { ...base, sql: base.sql.replace(/^WITH /, 'WITH RECURSIVE ') };
 }

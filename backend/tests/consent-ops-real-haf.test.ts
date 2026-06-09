@@ -1,49 +1,46 @@
 /**
  * Real-HAF coverage for `fetchConsentOpsForPaper` — closes carve-out
  * clause (c) for `backend/tests/consent-ops.test.ts` (mocked-pool unit
- * suite). See the originating task
- * `backend-consent-ops-fetcher-real-haf-coverage.md` for rationale, and
+ * suite). See
  * `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`
  * for the convention this file's header template follows.
  *
  * Risk class covered by THIS file: row-shape regressions at the production
- * fetcher. A mutation in `consent-ops.ts:103-126` that renames a SELECT
- * projection (`signer` / `action` / `root_author` / `root_permlink` /
+ * fetcher. A mutation inside `fetchConsentOpsForPaper`'s SELECT that renames
+ * a projection (`signer` / `action` / `root_author` / `root_permlink` /
  * `block_num` / `op_id`), changes the `IN ('author_accept', 'author_resign')`
- * action whitelist values, or breaks the `root_author = $3` /
- * `root_permlink = $4` filter so a known-positive paper no longer
- * round-trips will fail the row-shape assertions in the second `it`
- * block. The block exercises `fetchConsentOpsForPaper` directly — a
- * regression that breaks the typed `ConsentOp` shape surfaces here.
+ * action whitelist values, or breaks the root_author / root_permlink
+ * filters so a known-positive paper no longer round-trips will fail the
+ * row-shape assertions in the second `it` block. The block exercises
+ * `fetchConsentOpsForPaper` directly — a regression that breaks the typed
+ * `ConsentOp` shape surfaces here.
  *
  * Risk classes covered ELSEWHERE (deliberate division of labor):
- *   - SQL-string mutations (dropping `cj.custom_id = $1`,
- *     `cj.block_num >= $2`, the `cj.id::text` projection, the
- *     `ORDER BY cj.id DESC` clause, or the `LIMIT 1000` cap) are pinned
- *     by SQL-string regex assertions in the mocked sibling
- *     `backend/tests/consent-ops.test.ts` →
+ *   - SQL-string mutations (dropping `cj.custom_id = $1`, the
+ *     `cj.id::text` projection, the `ORDER BY cj.id DESC` clause, or the
+ *     `LIMIT 1000` cap) are pinned by SQL-string regex assertions in the
+ *     mocked sibling `backend/tests/consent-ops.test.ts` →
  *     `describe('fetchConsentOpsForPaper — SQL contract')`. A real-HAF
  *     test cannot distinguish these mutations from a working query
  *     while only one `appTag` namespace exists on chain and the result
  *     set fits below the LIMIT.
  *   - Validity-rule mutations (temporal-ordering, signer-binding,
  *     same-block tie-break, resign supersession, bridge-paper
- *     claimed-set membership) are covered by the mocked sibling's
- *     `computeVouchedAuthors` describe blocks against synthesized op
- *     shapes.
+ *     anchored-slot membership, attested-ORCID anchoring) are covered by
+ *     the mocked sibling's `computeConsentedAuthors` describe blocks
+ *     against synthesized op shapes.
  *
  * Skip-if-no-HAF guard mirrors `tests/hafsql.test.ts`: when
  * `isHafConfigured()` is false (no `HAF_DATABASE_URL`), every assertion
  * skips so CI environments without HAF stay green.
  *
- * Skip-if-no-fixture guard (per the originating task option (a)): if
- * the live HAF has no `author_accept` / `author_resign` op in this
- * `appTag` namespace yet (broadcast surface lands with the round-3 SPA
- * affordances in `ui-multi-author-consent-affordances`), the row-shape
- * assertion skips. The empty-result assertion still runs — it does not
- * depend on consent ops existing on chain. Once UI affordances ship and
- * real consent ops appear in `pevotest`, the row-shape assertion
- * activates automatically without test-file edits.
+ * Skip-if-no-fixture guard: if the live HAF has no `author_accept` /
+ * `author_resign` op in this `appTag` namespace yet (broadcast surface
+ * lands with the consent-affordances SPA work), the row-shape assertion
+ * skips. The empty-result assertion still runs — it does not depend on
+ * consent ops existing on chain. Once real consent ops appear in the
+ * namespace, the row-shape assertion activates automatically without
+ * test-file edits.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -56,9 +53,9 @@ import { queryWithRetry } from './support/haf-query.js';
 /**
  * Probe HAF for any existing consent op in this appTag namespace. Returns
  * the first row's `(root_author, root_permlink, signer)` so the row-shape
- * tests have a known-positive fixture (including a claimed-set member to
- * pass through round-5 hold #2's signer-filter), or `null` if no consent
- * ops exist yet.
+ * tests have a known-positive fixture (including an eligible-signer member
+ * to pass through the SQL signer-filter), or `null` if no consent ops exist
+ * yet.
  */
 async function findKnownPaperWithConsentOps(): Promise<{
   rootAuthor: string;
@@ -101,7 +98,7 @@ async function findKnownPaperWithConsentOps(): Promise<{
 
 describe('fetchConsentOpsForPaper — real HAF SQL shape', () => {
   it.skipIf(!isHafConfigured())(
-    'returns [] for a paper with no consent ops',
+    'returns ok/empty for a paper with no consent ops',
     { timeout: 60_000 },
     async (ctx) => {
       const pool = getPool();
@@ -111,17 +108,18 @@ describe('fetchConsentOpsForPaper — real HAF SQL shape', () => {
       }
 
       // Deterministic non-existent (author, permlink) — astronomically
-      // unlikely to collide with any real PEvO paper. Round-5 hold #2:
-      // the claimed-set is a single non-existent handle so the SQL
-      // signer-filter has placeholders to bind against; combined with
-      // the non-existent paper identity, the result is unconditionally
-      // empty regardless of HAF state.
-      const ops = await fetchConsentOpsForPaper(
+      // unlikely to collide with any real PEvO paper. The eligible set is
+      // a single non-existent handle so the SQL signer-filter has
+      // placeholders to bind against; combined with the non-existent paper
+      // identity, the result is unconditionally empty regardless of HAF
+      // state. An empty history is status ok — `haf_unavailable` is
+      // reserved for pool-absent / query-throw faults.
+      const result = await fetchConsentOpsForPaper(
         'pevo-real-haf-test-no-such-author',
         'pevo-real-haf-test-no-such-permlink-zzzzz',
         new Set(['pevo-real-haf-test-no-such-signer']),
       );
-      expect(ops).toEqual([]);
+      expect(result).toEqual({ status: 'ok', ops: [] });
     },
   );
 
@@ -139,22 +137,25 @@ describe('fetchConsentOpsForPaper — real HAF SQL shape', () => {
       if (!fixture) {
         ctx.skip(
           'HAF has no author_accept / author_resign ops yet — ' +
-            'broadcast surface lands with ui-multi-author-consent-affordances. ' +
+            'broadcast surface lands with the consent-affordances SPA work. ' +
             'This assertion auto-activates once consent ops appear on chain.',
         );
         return;
       }
 
-      // Round-5 hold #2: pass the discovered signer as the claimed-set
-      // so the SQL signer-filter admits at least the probe's row. A
-      // production caller derives `claimedAuthors` from the chain-walk;
-      // here we use the signer directly because the test asserts
-      // round-trip parsing of any consent op, not vouched-set semantics.
-      const ops = await fetchConsentOpsForPaper(
+      // Pass the discovered signer as the eligible set so the SQL
+      // signer-filter admits at least the probe's row. A production caller
+      // derives the eligible set from the chain-walk's claimed slots plus
+      // the attestation map; here we use the signer directly because the
+      // test asserts round-trip parsing of any consent op, not
+      // consented-set semantics.
+      const result = await fetchConsentOpsForPaper(
         fixture.rootAuthor,
         fixture.rootPermlink,
         new Set([fixture.signer]),
       );
+      expect(result.status).toBe('ok');
+      const ops = result.status === 'ok' ? result.ops : [];
       expect(ops.length).toBeGreaterThan(0);
 
       // op_id projection must round-trip through BigInt — this is the
