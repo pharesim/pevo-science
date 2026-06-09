@@ -75,8 +75,12 @@ interface ResolvedVotes {
 /**
  * Compute resolved vote counts for a set of papers using parallel native + revote queries.
  * Returns a Map keyed by "author/permlink" with net_votes and vote_strength.
+ *
+ * Exported so the cross-channel claimer self-vote exclusion (the `claimedSet`
+ * skip that must hold across BOTH the native-vote and revote channels) can be
+ * exercised directly against a controlled (native + revote + claims) rowset.
  */
-async function batchResolveVotes(
+export async function batchResolveVotes(
   pool: { query: (sql: string, params: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
   papers: Array<{ author: string; permlink: string }>,
   accreditedArr: string[],
@@ -3339,6 +3343,11 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     const drAccreditedIdx = drIdx++;
     const drReviewAuthorsIdx = drIdx++;
     const drBridgeIdx = drIdx++;
+    // The vote query binds only 3 trailing params (author, permlink, accreditedArr),
+    // so accreditedArr lands at drAuthorIdx + 2 — numerically equal to drAppTagIdx
+    // by coincidence of the current layout, not by design. Bind it through its own
+    // named slot so a future param insertion cannot silently mis-bind it.
+    const drVoteAccreditedIdx = drAuthorIdx + 2;
 
     const [voteResult, reviewsResult, versions, claimsResult] = await Promise.all([
       // Accredited voters (excluding self-votes AND credited-claimer self-votes)
@@ -3348,7 +3357,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
         `${detailCte.sql}
          SELECT DISTINCT ON (v.voter) v.voter, v.weight, v.timestamp, v.block_num FROM ${T.voteOps} v
          WHERE v.author = $${drAuthorIdx} AND v.permlink = $${drPermlinkIdx}
-           AND v.voter = ANY($${drAuthorIdx + 2}::text[])
+           AND v.voter = ANY($${drVoteAccreditedIdx}::text[])
            AND v.voter != v.author
            AND ${excludeClaimedSelfWhere({ authorExpr: 'v.voter', paperAuthorExpr: `$${drAuthorIdx}`, paperPermlinkExpr: `$${drPermlinkIdx}` })}
          -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
@@ -3507,6 +3516,18 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       };
     });
 
+    // Accepted-claimer self-vote exclusion. A credited claimer (ORCID / name-only
+    // slot, absent from authors[].hive) must not have their self-vote on this paper
+    // counted toward the displayed net_votes. The native vote SQL query already
+    // drops them via excludeClaimedSelfWhere, but the revote custom_json channel is
+    // resolved in JS and carries no SQL gate — so skip accepted claimers in BOTH
+    // vote loops below, mirroring batchResolveVotes' claimedSet skip on the listing
+    // surface. claimsResult is scoped to this paper, so the claimer name is the key.
+    const acceptedClaimers = new Set<string>();
+    for (const r of claimsResult.rows) {
+      if (r.status === 'accepted') acceptedClaimers.add(r.claimer as string);
+    }
+
     // Vote resolution: for each voter, pick the signal with the highest block_num
     // across native votes and revote custom_json. Handle weight=0 as retraction.
     const processedVoters = new Set<string>();
@@ -3530,6 +3551,9 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     // Process voters with native votes
     for (const r of voteResult.rows) {
       const voter = r.voter as string;
+      // Defense-in-depth: the native SQL already excludes accepted claimers, but
+      // skip here too so the revote-override branch below cannot reintroduce one.
+      if (acceptedClaimers.has(voter)) continue;
       const nativeWeight = Number(r.weight);
       const nativeBlock = Number(r.block_num);
       processedVoters.add(voter);
@@ -3556,6 +3580,10 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     // Process revote-only voters (no native Hive vote)
     for (const [voter, revote] of revoteMap) {
       if (processedVoters.has(voter)) continue;
+      // Drop a credited claimer's self-revote: the revote channel has no SQL gate,
+      // so without this an accepted claimer's revote inflates the paper-detail
+      // net_votes (the listing path already excludes them via batchResolveVotes).
+      if (acceptedClaimers.has(voter)) continue;
       if (revote.weight === 0) continue;
 
       voters.push({

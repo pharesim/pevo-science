@@ -49,14 +49,23 @@ const surfaceFile = (rel: string) => readFileSync(fileURLToPath(new URL(`../../s
 
 describe('display claimer self-review exclusion — source-level shape pin', () => {
   it('every display review surface composes excludeClaimedSelfWhere', () => {
-    // papers.ts carries BOTH the listing review-agg LATERAL and the paper-detail
-    // enrichment review list, so it must reference the gate at least twice.
+    // papers.ts carries THREE gate sites: the listing review-agg LATERAL, the
+    // paper-detail enrichment review list, and the paper-detail vote query. Pin the
+    // exact count so dropping any one (e.g. the highest-traffic listing review-agg)
+    // fails red instead of silently passing a loose >= 2 floor.
     const papers = surfaceFile('routes/papers.ts');
     expect(
       (papers.match(/excludeClaimedSelfWhere\(/g) ?? []).length,
-      'papers.ts must gate both the listing review-agg and the paper-detail review list',
+      'papers.ts must gate the listing review-agg, the paper-detail review list, and the paper-detail vote query',
+    ).toBe(3);
+    // profile.ts carries TWO gate sites (getProfileStats review_count + the
+    // reviews-list query); assert both so a regression in one fails red rather than
+    // being masked by the other's match (a single .toContain() passed either way).
+    expect(
+      (surfaceFile('routes/profile.ts').match(/excludeClaimedSelfWhere\(/g) ?? []).length,
+      'profile.ts must gate both getProfileStats and fetchUserReviewsFromHaf',
     ).toBeGreaterThanOrEqual(2);
-    for (const rel of ['routes/profile.ts', 'routes/search.ts', 'routes/stats.ts', 'routes/reviews.ts']) {
+    for (const rel of ['routes/search.ts', 'routes/stats.ts', 'routes/reviews.ts']) {
       expect(surfaceFile(rel), `${rel} must compose excludeClaimedSelfWhere`).toContain('excludeClaimedSelfWhere(');
     }
   });
@@ -73,6 +82,9 @@ describe('display claimer self-review exclusion — source-level shape pin', () 
     expect(papers, 'paper-detail voteResult must gate v.voter via excludeClaimedSelfWhere').toContain(
       "excludeClaimedSelfWhere({ authorExpr: 'v.voter'",
     );
+    // The paper-detail revote channel is resolved in JS (no SQL gate), so it must
+    // skip accepted claimers explicitly in the vote-merge loops.
+    expect(papers, 'paper-detail revote merge must skip accepted-claimer self-revotes').toContain('acceptedClaimers.has(');
   });
 });
 
