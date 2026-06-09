@@ -680,9 +680,15 @@ export function validPevoPaperWhere(opts: {
  * The CASE inside `authorship_claims` correlates on (claimer, paper_author,
  * paper_permlink). Scopes must match that key shape so approve/revoke rows
  * retained for a given claim remain in scope.
+ *
+ * `claimers` is the multi-claimer variant the reputation cycle uses to scope the
+ * shared builder to its target users (`= ANY($N::text[])` over the same COALESCE
+ * claimer expression as `claims_base`); it is the dimension that lets the cycle
+ * consume this builder instead of hand-rolling an inline accepted_claims copy.
  */
 export type AuthorshipClaimsScope =
   | { claimer: string }
+  | { claimers: string[] }
   | { paperAuthor: string; paperPermlink: string };
 
 /**
@@ -713,8 +719,8 @@ export type AuthorshipClaimsScope =
  * @param startIdx - first available $N parameter index
  * @param scope - optional narrowing filter pushed into `claim_events`. Without
  *   a scope the CTE materializes every claim event in PEvO history. Scoping by
- *   claimer or paper key avoids that full scan. The scope key must match the
- *   dimension the caller filters on downstream, since the CASE's EXISTS
+ *   claimer, claimers, or paper key avoids that full scan. The scope key must
+ *   match the dimension the caller filters on downstream, since the CASE's EXISTS
  *   subqueries correlate on the same key.
  */
 export function authorshipClaimsCteBody(
@@ -735,6 +741,14 @@ export function authorshipClaimsCteBody(
       scopeFilter = `
       AND COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0) = $${scopeIdx}`;
       scopeParams.push(scope.claimer);
+      scopeIdx += 1;
+    } else if ('claimers' in scope) {
+      // Multi-claimer scope (the reputation cycle scopes to its target users).
+      // ANY($N::text[]) over the IDENTICAL COALESCE expression as claims_base.claimer
+      // so approve/revoke rows for an in-scope claimer stay materialized.
+      scopeFilter = `
+      AND COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0) = ANY($${scopeIdx}::text[])`;
+      scopeParams.push(scope.claimers);
       scopeIdx += 1;
     } else {
       scopeFilter = `

@@ -1,39 +1,33 @@
 /**
- * HAF-free SQL-shape canary for the approve_authorship signer gate on the
- * REPUTATION CYCLE surface (`computeReputationBatch`'s inline `accepted_claims`
- * CTE in `reputation.ts`).
+ * HAF-free SQL-shape canary for the approve_authorship signer gate as it now
+ * appears on the REPUTATION CYCLE surface. The cycle (`computeReputationBatch`
+ * in `reputation.ts`) COMPOSES the shared `authorshipClaimsCteBody` builder
+ * instead of an inline `accepted_claims` copy, so the approve gate lives in the
+ * builder and is emitted into the cycle SQL in TWO places: the "accepted" EXISTS
+ * arm AND the revoke-override `MAX(approve_block)` subquery — both as
+ * `ap.approver IN (ap.paper_author, $23)`, where the builder's allocation at
+ * startIdx 21 binds `config.hiveBridgeAccount` at $23.
  *
- * The read surface (`authorshipClaimsCteBody` in `hafsql.ts`) is covered
- * behaviorally by `authorship-approve-signer-gate.test.ts`. The cycle applies
- * the IDENTICAL predicate — `ap.approver IN (ap.paper_author, $17)` — in TWO
- * places: the "Explicitly approved" EXISTS arm AND the revoke-override
- * `MAX(approve_block)` subquery, where `$17` binds `config.hiveBridgeAccount`.
- * The two surfaces are kept in sync only by mirrored comments and a hardcoded
- * `$17`, and the cycle is where the forged co-author reputation credit actually
- * accrues. A param insertion before `$17`, or a predicate removal in
- * `reputation.ts` alone, would silently re-open the forgery on the cycle while
- * the read-surface behavioral test stays green.
- *
- * This canary pins the predicate's presence at BOTH arms and the exact `$17`
- * param on the cycle's emitted SQL, independently of the read surface and of
- * whether HAF is configured — so predicate-removal and bridge-param drift on
- * the cycle are caught.
+ * This canary pins, on the cycle's emitted SQL and independently of whether HAF
+ * is configured: (1) the cycle composes the builder (authorship_claims + thin
+ * accepted_claims projection — re-inlining the resolution fails red), and (2) the
+ * approve signer gate survives the merge at BOTH arms with the builder's `$23`
+ * bridge param. The builder's param POSITION ($23 = bridge) is pinned
+ * structurally by `hafsql.test.ts`; the read-surface approve behavior is pinned
+ * against real Postgres by `authorship-approve-signer-gate.test.ts`.
  *
  * **Carve-out (per root CLAUDE.md "Running Tests"):** mocks `getPool()` with a
  * capturing pool that records the SQL `computeReputationBatch` emits and returns
  * empty rowsets, so the cycle's query string is asserted without HAF.
  *   (a) Real path impractical: running the full daily reputation cycle against
- *       real HAF to assert a SQL-shape invariant is heavy, HAF-config-dependent
- *       (the architect needs this to run even when HAF is unconfigured), and
- *       would not deterministically exercise both arms of the predicate.
+ *       real HAF to assert a SQL-shape invariant is heavy and HAF-config-
+ *       dependent (the architect needs this to run even when HAF is unconfigured).
  *   (b) No auth/permission middleware in scope — this drives the batch helper
  *       directly; `verifyHiveSignature` does not run and is not the focus.
- *   (c) Real-path companion: the identical read-surface predicate is exercised
- *       against real Postgres in `authorship-approve-signer-gate.test.ts`'s
- *       synthetic-VALUES tests, and the cycle itself runs against real HAF in
- *       the reputation lifecycle/batch suites. The risk class pinned HERE is
- *       the cycle's approve arm trusting only author-/bridge-signed approves —
- *       a removal/param-drift tripwire the read-surface test cannot catch.
+ *   (c) Real-path companion: the builder's approve arm runs against real Postgres
+ *       in `authorship-approve-signer-gate.test.ts`'s synthetic-VALUES tests, and
+ *       the assembled cycle runs against real HAF in the reputation
+ *       lifecycle/batch suites.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
@@ -67,22 +61,28 @@ afterEach(() => {
   capturedSqls.length = 0;
 });
 
-describe('reputation cycle accepted_claims — approve_authorship signer gate SQL shape', () => {
-  it('emits `ap.approver IN (ap.paper_author, $17)` at BOTH the approved-EXISTS arm and the revoke-override MAX subquery', async () => {
+describe('reputation cycle — composes the shared claims builder (approve signer gate survives)', () => {
+  it('emits authorship_claims + thin accepted_claims, with the approve gate at $23 in BOTH arms', async () => {
     getPoolMock.mockReturnValue(capturingPool as unknown as ReturnType<typeof getPoolMock>);
 
     // cycleEndBlock provided (skips the head-block lookup); prevScores provided
-    // (skips the prev-score read). Both keep the run to the inline cycle query.
+    // (skips the prev-score read). Both keep the run to the cycle query.
     await computeReputationBatch(['some-target-user'], {}, 12_345);
 
     const cycleSql = capturedSqls.find((s) => s.includes('accepted_claims'));
     expect(cycleSql, 'computeReputationBatch must emit the accepted_claims cycle query').toBeDefined();
 
-    // The signer gate appears once in the revoke-override MAX(approve_block)
-    // subquery and once in the "Explicitly approved" EXISTS arm. Pinning the
-    // exact `$17` catches a param insertion that would drift the bridge param;
-    // requiring TWO occurrences catches a removal from either arm alone.
-    const matches = cycleSql!.match(/ap\.approver IN \(ap\.paper_author, \$17\)/g) ?? [];
+    // Merge landed: the cycle composes authorshipClaimsCteBody, not an inline copy.
+    expect(cycleSql).toContain('authorship_claims AS (');
+    expect(cycleSql).toMatch(
+      /accepted_claims AS \(\s*SELECT DISTINCT claimer, paper_author, paper_permlink\s+FROM authorship_claims\s+WHERE status = 'accepted'/,
+    );
+
+    // The approve signer gate appears once in the revoke-override MAX(approve_block)
+    // subquery and once in the accepted-status EXISTS arm — both emitted by the
+    // builder with bridge bound at $23 (authorshipClaimsCteBody(21) → bridgeIdx 23).
+    // Requiring TWO occurrences catches a removal from either arm.
+    const matches = cycleSql!.match(/ap\.approver IN \(ap\.paper_author, \$23\)/g) ?? [];
     expect(matches).toHaveLength(2);
   });
 });

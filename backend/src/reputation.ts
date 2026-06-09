@@ -12,7 +12,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, activeAccreditationsCteBody, chainOrcidAutoAcceptMatchSql, decayMultiplierSql } from './hafsql.js';
+import { T, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, activeAccreditationsCteBody, authorshipClaimsCteBody, decayMultiplierSql } from './hafsql.js';
 
 // ─── Batch key helpers ──────────────────────────────────────────
 
@@ -502,12 +502,15 @@ export async function startReputationWeightsCache(): Promise<void> {
  * $19 = config.appTag, $20 = config.accreditationAuthorities — the
  *       authority-gated active_accreditations CTE (composed via
  *       activeAccreditationsCteBody) backing the co-author ORCID auto-accept
- *       arm; only authority-signed accredit/revoke ops are trusted.
- * $21 = config.hiveAdminAccount — the admin signer for the
- *       revoke_authorship signer gate in accepted_claims (alongside
- *       paper_author, the $17 bridge, and the claimer). Per
- *       hive-schemas.md §2.11 a revoke is authoritative only when signed by
- *       one of those four; a stranger-signed revoke must not void the claim.
+ *       arm in the shared claims builder; only authority-signed accredit/revoke
+ *       ops are trusted.
+ * $21-$25 = the shared `authorshipClaimsCteBody` allocation (appTag, appTag,
+ *       bridge, claimers[] scope, admin), composed after active_accreditations.
+ *       The cycle's accepted_claims is now the `status = 'accepted'` projection
+ *       of that builder's authorship_claims CTE instead of an inline copy, so the
+ *       revoke/approve signer gates (admin re-bound at $25 per hive-schemas.md
+ *       §2.11) and the ORCID/hive auto-accept arms live in one place shared with
+ *       the read surfaces.
  *
  * The same FOUR review CTEs also compose `excludeSelfReviewWhere` so
  * paper-authors and named co-authors reviewing their own paper are
@@ -582,6 +585,18 @@ export async function computeReputationBatch(
     }
 
     const prevJson = prevScores ?? batchMapToScoreRecord(await getBatchReputationMap());
+
+    // Shared authorship-claims resolution: the cycle consumes the SAME builder as
+    // the read surfaces instead of an inline copy. Scoped to the target users
+    // ({claimers}); allocates $21-$25 (appTag, appTag, bridge, claimers, admin) in
+    // the slots after the cycle's hand-numbered $1-$20 block. $21 — formerly a
+    // standalone admin bind for the inline revoke gate — is reclaimed by the
+    // builder, which re-binds the admin signer at $25; no existing $1-$20
+    // placeholder shifts. The builder's authorship_claims CTE is projected to
+    // accepted_claims (status='accepted') in the WITH chain below; it MUST be
+    // composed after activeAccreditationsCteBody(19) (its ORCID arm joins
+    // active_accreditations).
+    const claimsCte = authorshipClaimsCteBody(21, { claimers: usernames });
 
     const result = await queryWithStatementTimeout<{
       username: string;
@@ -693,21 +708,6 @@ export async function computeReputationBatch(
       ),
 
       -- ═══ AUTHORSHIP CLAIMS (for co-author credit) ═══
-      claim_events AS (
-        SELECT
-          cj.json::jsonb ->> 'action' AS action,
-          COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0) AS claimer,
-          cj.json::jsonb ->> 'paper_author' AS paper_author,
-          cj.json::jsonb ->> 'paper_permlink' AS paper_permlink,
-          CASE WHEN (cj.json::jsonb ->> 'author_index') ~ '^[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'author_index')::int END AS author_index,
-          -- On-chain signer of the op; for approve_authorship this is the
-          -- approver, gated to post author / bridge in the arms below.
-          cj.required_posting_auths ->> 0 AS approver,
-          cj.block_num
-        FROM ${T.customJson} cj
-        WHERE cj.custom_id = $3
-          AND cj.json::jsonb ->> 'action' IN ('claim_authorship', 'approve_authorship', 'revoke_authorship')
-      ),
       -- Authority-gated accreditation source for the co-author ORCID
       -- auto-accept arm below. accred_ranked applies the
       -- required_posting_auths ?| accreditationAuthorities gate, so only an
@@ -720,107 +720,27 @@ export async function computeReputationBatch(
       -- removes the divergence class entirely; a revoke clears the account
       -- from active_accreditations so a prior attestation stops matching.
       ${activeAccreditationsCteBody(19).sql},
+      -- Shared claims resolution: the cycle composes the SAME builder the read
+      -- surfaces use (papers/profile/search/stats) instead of an inline copy that
+      -- mirrored it line-for-line. The builder emits claim_events / claims_base /
+      -- approvals / revocations / authorship_claims, scoped to the target-user
+      -- claimers via the {claimers} variant. It MUST follow active_accreditations
+      -- (the builder's ORCID arm joins it). The revoke / approve signer gates,
+      -- list-final slot gate, and ORCID-trim / hive-match auto-accept arms all
+      -- live in the builder now — pinned by the read-surface tests
+      -- (authorship-*-signer-gate, hafsql.test.ts) so the cycle and read surfaces
+      -- can no longer drift.
+      ${claimsCte.sql},
+      -- accepted_claims is the thin status='accepted' projection of the builder's
+      -- authorship_claims CTE — byte-identical to the prior inline resolution:
+      -- status='accepted' ⟺ NOT revoked AND (approval+list-final OR ORCID OR
+      -- hive). SELECT DISTINCT collapses to the (claimer, paper_author,
+      -- paper_permlink) key user_papers and the self-dealing NOT EXISTS gates
+      -- join on.
       accepted_claims AS (
-        SELECT DISTINCT ce.claimer, ce.paper_author, ce.paper_permlink
-        FROM claim_events ce
-        WHERE ce.action = 'claim_authorship'
-          AND ce.claimer IN (SELECT username FROM target_users)
-          AND NOT EXISTS (
-            SELECT 1 FROM claim_events rv
-            WHERE rv.action = 'revoke_authorship'
-              AND rv.claimer = ce.claimer
-              AND rv.paper_author = ce.paper_author
-              AND rv.paper_permlink = ce.paper_permlink
-              AND rv.block_num > ce.block_num
-              -- revoke_authorship signer gate (hive-schemas.md §2.11): a
-              -- revoke voids a claim only when signed by the post author, the
-              -- bridge account, the admin account, or the claimer themselves.
-              -- Without it any Hive account could broadcast a forged revoke
-              -- naming a victim's claim and silently strip its co-author
-              -- reputation credit. Mirrors authorshipClaimsCteBody's revoked
-              -- arm so the cycle and read surfaces void claims identically.
-              AND rv.approver IN (rv.paper_author, $17, $21, rv.claimer)
-              AND rv.block_num > COALESCE((
-                SELECT MAX(ap.block_num) FROM claim_events ap
-                WHERE ap.action = 'approve_authorship'
-                  AND ap.claimer = ce.claimer
-                  AND ap.paper_author = ce.paper_author
-                  AND ap.paper_permlink = ce.paper_permlink
-                  AND ap.approver IN (ap.paper_author, $17)
-              ), 0)
-          )
-          AND (
-            -- Explicitly approved. approve_authorship signer gate: a
-            -- self-signed approve (signer = claimer) is not a valid trust
-            -- grant; only the post author or the bridge account can approve a
-            -- co-author claim. Mirrors authorshipClaimsCteBody's approvals arm
-            -- on the read surface so cycle and read surfaces resolve claims
-            -- identically.
-            --
-            -- List-final gate (hive-schemas.md §2.9/2.10): an approved claim
-            -- binds the claimer to an author slot NAMED AT POSTING; author_index
-            -- must resolve to an existing authors[] object entry. Without it the
-            -- post author or bridge could approve an unlisted claimer
-            -- (author_index null, or pointing past the end of authors[]) and mint
-            -- full co-author credit for an account that was never on the paper —
-            -- a credit-stuffing vector and the root of the claimer self-dealing
-            -- surface. The ORCID and hive auto-accept arms below already require
-            -- a resolvable slot; this brings the explicit-approval arm to parity.
-            (
-              ce.author_index IS NOT NULL
-              AND EXISTS (
-                SELECT 1 FROM claim_events ap
-                WHERE ap.action = 'approve_authorship'
-                  AND ap.claimer = ce.claimer
-                  AND ap.paper_author = ce.paper_author
-                  AND ap.paper_permlink = ce.paper_permlink
-                  AND ap.block_num > ce.block_num
-                  AND ap.approver IN (ap.paper_author, $17)
-              )
-              AND EXISTS (
-                SELECT 1 FROM ${T.comments} c
-                WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
-                  AND c.parent_author = ''
-                  AND jsonb_typeof(c.json_metadata -> $3 -> 'authors' -> ce.author_index) = 'object'
-              )
-            )
-            -- Auto-accept: ORCID match. This arm and the read-surface
-            -- authorshipClaimsCteBody arm share the chainOrcidAutoAcceptMatchSql
-            -- helper, which BTRIMs the broadcaster-controlled chain ORCID with
-            -- the ASCII C-whitespace charset before byte-equality against the
-            -- authority-attested aa.orcid (from the gated active_accreditations
-            -- source above, canonical and not broadcaster-controlled, so it
-            -- stays raw). The authorsWithSupersessionSelect supersession
-            -- projection shares the same CHAIN_ORCID_BTRIM_CHARSET charset, so
-            -- a whitespace-padded claim (e.g. a tab-prefixed orcid copied from
-            -- the ORCID page) resolves identically across the read surfaces and
-            -- the reputation cycle. Without the trim, a padded claim
-            -- auto-accepts on the read surfaces but byte-mismatches here,
-            -- denying the co-author reputation credit every cycle.
-            OR (ce.author_index IS NOT NULL AND EXISTS (
-              SELECT 1 FROM ${T.comments} c
-              JOIN active_accreditations aa ON aa.account = ce.claimer
-              WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
-                AND c.parent_author = ''
-                AND aa.orcid IS NOT NULL AND aa.orcid != ''
-                AND ${chainOrcidAutoAcceptMatchSql({ metadataExpr: 'c.json_metadata', appTagParam: '$3', authorIndexExpr: 'ce.author_index', attestedOrcidExpr: 'aa.orcid' })}
-            ))
-            -- Auto-accept: hive username match. Canonicalize the
-            -- broadcaster-controlled authors[i].hive via LOWER(TRIM(...))
-            -- plus the Hive-account charset regex (mirrors
-            -- normalizeHiveAccount and the SQL-side guard in
-            -- authorsWithSupersessionSelect) before byte-equality against
-            -- the chain-validated lowercase ce.claimer. An uppercase
-            -- mid-case entry would otherwise leave a legitimate co-author's
-            -- claim unaccepted in the reputation cycle.
-            OR (ce.author_index IS NOT NULL AND EXISTS (
-              SELECT 1 FROM ${T.comments} c
-              WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
-                AND c.parent_author = ''
-                AND LOWER(TRIM(c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'hive')) ~ '^[a-z0-9.-]+$'
-                AND LOWER(TRIM(c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'hive')) = ce.claimer
-            ))
-          )
+        SELECT DISTINCT claimer, paper_author, paper_permlink
+        FROM authorship_claims
+        WHERE status = 'accepted'
       ),
 
       -- ═══ PAPERS ═══
@@ -1411,9 +1331,11 @@ export async function computeReputationBatch(
                                           //  never matches)
         config.appTag,                    // $19 (active_accreditations custom_id)
         config.accreditationAuthorities,  // $20 (required_posting_auths ?| authority gate)
-        config.hiveAdminAccount,          // $21 (revoke_authorship admin signer
-                                          //  in accepted_claims, with paper_author /
-                                          //  $17 bridge / claimer per §2.11)
+        // $21-$25: shared authorshipClaimsCteBody allocation (appTag, appTag,
+        // bridge, claimers[], admin) — see the claimsCte capture above. The
+        // builder re-binds the admin signer (its revoke gate) at $25, replacing
+        // the cycle's former standalone $21 admin bind.
+        ...claimsCte.params,
       ],
     );
 

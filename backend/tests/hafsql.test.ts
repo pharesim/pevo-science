@@ -99,6 +99,45 @@ describe('authorshipClaimsCteBody scope', () => {
   );
 
   it.skipIf(!isHafConfigured())(
+    'claimers (array) scope matches unscoped + post-filter',
+    { timeout: 60_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      const unscoped = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
+      const unscopedRows = (await queryWithRetry(pool,
+        `${unscoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
+        unscoped.params,
+      )).rows;
+
+      const sampleClaimer = unscopedRows[0]?.claimer as string | undefined;
+      if (!sampleClaimer) {
+        ctx.skip('HAF has no authorship_claim events — invariant not exercisable');
+        return;
+      }
+
+      // The reputation cycle scopes the shared builder to its target users via the
+      // {claimers} array variant; it must return the same rows as the unscoped CTE
+      // post-filtered to those claimers in JS (the cycle-vs-read-surface dedup
+      // rests on this equivalence).
+      const claimers = [sampleClaimer];
+      const expected = unscopedRows.filter((r) => claimers.includes(r.claimer as string));
+
+      const scoped = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimers }));
+      const scopedRows = (await queryWithRetry(pool,
+        `${scoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
+        scoped.params,
+      )).rows;
+
+      expect(scopedRows).toEqual(expected);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
     'paper scope matches unscoped + post-filter',
     { timeout: 60_000 },
     async (ctx) => {
@@ -163,6 +202,18 @@ describe('authorshipClaimsCteBody param arithmetic', () => {
     expect(frag.params).toHaveLength(5);
     expect(frag.params[2]).toBe(config.hiveBridgeAccount);
     expect(frag.params[3]).toBe('alice');
+    expect(frag.params[4]).toBe(config.hiveAdminAccount);
+    expect(frag.nextIdx).toBe(10);
+  });
+
+  it('claimers (array) scope inserts 1 array param between bridge and admin, nextIdx advances by 5', () => {
+    const frag = authorshipClaimsCteBody(5, { claimers: ['alice', 'bob'] });
+    // Same single-param-slot arithmetic as the claimer scope, but the bound value
+    // is the text[] array (consumed by `= ANY($N::text[])`). The reputation cycle
+    // depends on this slot landing between bridge ($7) and admin ($9).
+    expect(frag.params).toHaveLength(5);
+    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[3]).toEqual(['alice', 'bob']);
     expect(frag.params[4]).toBe(config.hiveAdminAccount);
     expect(frag.nextIdx).toBe(10);
   });

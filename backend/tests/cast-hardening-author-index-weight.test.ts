@@ -105,9 +105,11 @@ describe('integer cast hardening — author_index / weight guards', () => {
     }
 
     // Pin the known site inventory so an accidentally-deleted guarded site is
-    // also caught: 2 author_index (hafsql claim_events + reputation claim_events)
-    // and 5 weight (3 reputation revote arms + 2 papers revote queries).
-    expect(totalAuthorIndex).toBe(2);
+    // also caught: 1 author_index (hafsql claim_events — the reputation cycle now
+    // composes that shared builder via authorshipClaimsCteBody instead of an
+    // inline claim_events copy, so its former cast is gone) and 5 weight (3
+    // reputation revote arms + 2 papers revote queries).
+    expect(totalAuthorIndex).toBe(1);
     expect(totalWeight).toBe(5);
   });
 });

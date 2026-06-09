@@ -110,14 +110,20 @@ describe('co-author claim credit — source-level shape pin', () => {
     ).not.toContain('LEFT JOIN paper_reviews pr ON pr.author = up.author AND pr.permlink = up.permlink');
   });
 
-  // ── List-final gate (hive-schemas.md §2.9/2.10): the explicit-approval arm
-  //    must resolve author_index to an existing authors[] slot, else the post
-  //    author/bridge could approve an unlisted claimer into full co-author credit.
-  it('accepted_claims explicit-approval arm gates on a resolvable named slot', () => {
-    expect(
-      source,
-      'the approval arm must require author_index to resolve to an existing authors[] object entry',
-    ).toContain(`jsonb_typeof(c.json_metadata -> $3 -> 'authors' -> ce.author_index) = 'object'`);
+  // ── The cycle now COMPOSES the shared authorshipClaimsCteBody builder rather
+  //    than an inline accepted_claims copy. The list-final slot gate
+  //    (hive-schemas.md §2.9/2.10), the revoke/approve signer gates, and the
+  //    ORCID/hive auto-accept arms all live in that builder now — pinned by the
+  //    read-surface "approvals arm gates on a resolvable named slot" test below
+  //    and the signer-gate suites.
+  it('the cycle composes the shared authorship-claims builder (no inline resolution copy)', () => {
+    expect(source).toContain('authorshipClaimsCteBody(21, { claimers: usernames })');
+    expect(source).toMatch(
+      /accepted_claims AS \(\s*SELECT DISTINCT claimer, paper_author, paper_permlink\s+FROM authorship_claims\s+WHERE status = 'accepted'/,
+    );
+    // The inline list-final slot gate that used to live in reputation.ts is gone;
+    // it now lives in the builder (hafsql.ts) — verified by the parity pin below.
+    expect(source).not.toContain(`-> 'authors' -> ce.author_index`);
   });
 
   // ── Claimer self-dealing close (accepted_claims NOT EXISTS gate): a credited
