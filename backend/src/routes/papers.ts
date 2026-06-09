@@ -1,8 +1,7 @@
 import crypto from 'crypto';
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { PrivateKey } from '@hiveio/dhive';
 import { getPool, HafQueryError, isRetriableHafError } from '../db.js';
-import { broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastAdminCustomJson } from '../hive.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
@@ -3861,11 +3860,7 @@ router.post('/:author/:permlink/retract', validateRetractParams, verifyHiveSigna
   };
 
   try {
-    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await broadcastJsonWithTimeout(
-      { id: config.appTag, json: JSON.stringify(payload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
-      key,
-    );
+    const result = await broadcastAdminCustomJson(payload);
     // Invalidate retraction cache so the change is visible immediately
     void hafCache.invalidate('retracted-papers');
     sendOk(res, { message: 'Paper retracted', tx_id: result.id });

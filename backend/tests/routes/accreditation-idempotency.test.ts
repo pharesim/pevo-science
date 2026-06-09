@@ -55,6 +55,15 @@ vi.mock('../../src/hive.js', () => ({
   },
   broadcastJsonWithTimeout: (...args: unknown[]) =>
     (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
+  // Admin-broadcast envelope helper now backs the migrated admin custom_json
+  // sites; route it through the same `broadcastJsonMock` so staged
+  // results/rejections and call-arg inspection carry over from the prior wiring.
+  broadcastAdminCustomJson: (payload: Record<string, unknown>, timeoutMs?: number) =>
+    (broadcastJsonMock as (...a: unknown[]) => unknown)(
+      { required_auths: [], required_posting_auths: [], json: JSON.stringify(payload) },
+      undefined,
+      timeoutMs,
+    ),
   BroadcastTimeoutError: MockBroadcastTimeoutError,
   DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));

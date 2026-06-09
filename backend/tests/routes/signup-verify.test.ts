@@ -35,6 +35,16 @@ vi.mock('../../src/hive.js', () => ({
   },
   broadcastJsonWithTimeout: (...args: unknown[]) =>
     (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
+  // The admin-broadcast envelope helper now backs `broadcastAccreditationAndSeed`'s
+  // accredit broadcast; route it through the same `broadcastJsonMock` so staged
+  // results/rejections and `findAccreditOp`'s `.json` payload inspection carry
+  // over unchanged from the pre-helper wiring.
+  broadcastAdminCustomJson: (payload: Record<string, unknown>, timeoutMs?: number) =>
+    (broadcastJsonMock as (...a: unknown[]) => unknown)(
+      { required_auths: [], required_posting_auths: [], json: JSON.stringify(payload) },
+      undefined,
+      timeoutMs,
+    ),
   // Mirror the real BroadcastTimeoutError shape (timeoutMs ctor arg) so code
   // under test that reads `err.timeoutMs` after `instanceof` discrimination
   // gets the property rather than undefined. signup-verify treats accreditation

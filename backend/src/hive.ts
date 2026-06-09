@@ -190,14 +190,17 @@ export async function broadcastSendOperationsWithTimeout(
 
 /**
  * Thrown by `broadcastAdminCustomJson` when the admin posting key
- * (`config.pevoAdminPostingKey`) is unset. The guard and this class are a
- * forward-looking safety net: every current adopter pre-checks
- * `config.pevoAdminPostingKey` and short-circuits BEFORE reaching the helper
- * (the WoT paths return a `skipped` result; the `claims.ts` admin revoke is
- * gated by an `isAdmin && config.pevoAdminPostingKey` branch), so the throw is
- * unreachable on every present call path. A future adopter that omits the
- * pre-check would surface it — a WoT-style caller catches it inline; a route
- * caller routes it through `handleBroadcastError` to a generic 502.
+ * (`config.pevoAdminPostingKey`) is unset. This is a LIVE failure mode of the
+ * helper: it checks the key on every call and throws before broadcasting, so
+ * the throw is reachable from any adopter that does not pre-guard the key.
+ * Adopters handle it two ways:
+ *   - A WoT-style caller catches it inline and reports a `skipped` result.
+ *   - A route caller pre-guards (or skip-guards) the key and returns its own
+ *     response shape on the unset-key path (e.g. 500 "admin posting key not
+ *     configured", or skipping the broadcast), OR lets the throw fall into
+ *     `handleBroadcastError`, which maps it to a generic 502.
+ * Pre-guard at the call site whenever the unset-key path needs a response shape
+ * more specific than that generic 502.
  */
 export class AdminKeyNotConfiguredError extends Error {
   constructor() {

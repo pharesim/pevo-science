@@ -2,9 +2,8 @@ import { Router, type Request, type Response } from 'express';
 import type { z } from 'zod';
 import crypto from 'node:crypto';
 import { createSmtpTransporter } from '../lib/smtp.js';
-import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
-import { broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastAdminCustomJson } from '../hive.js';
 import { handleBroadcastError, PostBroadcastWriteError } from '../lib/broadcast-error.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
@@ -879,7 +878,7 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
         // throws stay swallowed inside the cascade fn so this branch never
         // sees them. The branch handles the error envelope locally rather
         // than re-throwing because the success-path catch is scoped to the
-        // `broadcastJsonWithTimeout` call — re-throwing would propagate to
+        // `broadcastAdminCustomJson` call — re-throwing would propagate to
         // the Express async-error handler instead of producing the
         // discriminated envelope.
         try {
@@ -976,7 +975,7 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
   // permanently consume slots — only definitive 502 BROADCAST_FAILED
   // outcomes count toward the cap.
   //
-  // The pre-INCR call sits OUTSIDE the `broadcastJsonWithTimeout` try,
+  // The pre-INCR call sits OUTSIDE the `broadcastAdminCustomJson` try,
   // so an `evalScript` rejection (OOM, Lua error, connection drop) would
   // propagate to Express 5's async handler → 500 INTERNAL_ERROR with no
   // retry guidance, asymmetric to the broadcast site's 502/504 envelope
@@ -1079,11 +1078,7 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
   };
 
   try {
-    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await broadcastJsonWithTimeout(
-      { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
-      key,
-    );
+    const result = await broadcastAdminCustomJson(customJsonPayload);
 
     // Wrap seedAccreditationBonus in PostBroadcastWriteError discipline (the
     // pattern documented at

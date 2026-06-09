@@ -8,7 +8,7 @@ import { sendOk, sendError } from '../response.js';
 import { config } from '../config.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { getAppPool } from '../app-db.js';
-import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
+import { hiveClient, broadcastAdminCustomJson } from '../hive.js';
 import { encryptKey } from '../custody-crypto.js';
 import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
@@ -216,28 +216,19 @@ async function broadcastAccreditationAndSeed(
       .update(`${account.email}:${username}:${evidenceSuffix}`)
       .digest('hex');
 
-    const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
-    let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
+    let result: Awaited<ReturnType<typeof broadcastAdminCustomJson>>;
     try {
-      result = await broadcastJsonWithTimeout(
-        {
-          id: config.appTag,
-          json: JSON.stringify({
-            action: 'accredit',
-            account: username,
-            name: account.full_name || username,
-            institution: account.institution || '',
-            field: account.field || '',
-            orcid: account.orcid || '',
-            method: 'email',
-            evidence_hash: evidenceHash,
-            timestamp: new Date().toISOString(),
-          }),
-          required_auths: [],
-          required_posting_auths: [config.hiveAdminAccount],
-        },
-        adminKey,
-      );
+      result = await broadcastAdminCustomJson({
+        action: 'accredit',
+        account: username,
+        name: account.full_name || username,
+        institution: account.institution || '',
+        field: account.field || '',
+        orcid: account.orcid || '',
+        method: 'email',
+        evidence_hash: evidenceHash,
+        timestamp: new Date().toISOString(),
+      });
     } catch (err) {
       handleBroadcastError(res, err, broadcastErrOpts);
       return 'handled';
