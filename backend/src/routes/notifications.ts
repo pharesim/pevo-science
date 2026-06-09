@@ -9,6 +9,7 @@ import {
   filterEventsAfter,
   NOTIFICATION_WINDOW_FETCH_CAP,
   type NotificationBatch,
+  type NotificationEvent,
 } from '../notification-queries.js';
 import { getGenesisBlock } from '../hafsql.js';
 import { getLastBlock } from '../block-watcher.js';
@@ -51,7 +52,7 @@ router.get('/', verifyHiveSignature, async (req: Request, res: Response) => {
   const cacheKey = `notifications:${account}:${limit}`;
   const windowResult = await hafCache.getOrSet(
     cacheKey,
-    () => fetchNotificationsFromHaf(account, windowFloor, NOTIFICATION_WINDOW_FETCH_CAP),
+    () => fetchNotificationsFromHaf(account, windowFloor, NOTIFICATION_WINDOW_FETCH_CAP, 'desc'),
     NOTIFICATION_CACHE_TTL_MS,
     true,
   );
@@ -64,41 +65,59 @@ router.get('/', verifyHiveSignature, async (req: Request, res: Response) => {
 });
 
 /**
- * Re-apply the poll-specific `since_block` cursor to a window-relative batch
- * computed against `windowFloor` and capped at NOTIFICATION_WINDOW_FETCH_CAP.
- * The cached batch holds ascending events in `(windowFloor, head]`; the SPA's
- * cursor advances past `windowFloor`, so the in-app filter restores the
- * contract's `(since_block, head]` range. After the cursor filter the result is
- * sliced to the response `limit` (oldest-first forward pagination). `latest_block`
- * is the highest block among the delivered events; the SPA's re-poll cursor then
- * depends on `has_more`: on `has_more === true` the client rewinds to
- * `latest_block - 1` and re-fetches the boundary block (the events a truncating
- * `limit` cut that share `latest_block`), deduping the overlap; on
- * `has_more === false` it advances to `latest_block`. Re-polling at exactly
- * `latest_block` on a truncated page would skip those boundary events under the
- * strict `block_num > since_block` filter. The authoritative client-facing rule
- * is the `has_more` bullet in `agents/docs/api-contracts/notifications.md`; keep
- * this comment consistent with it. When the filter empties the batch,
- * `latest_block` falls back to the caller's `since_block` so the cursor does not
- * regress.
+ * Re-apply the poll-specific `since_block` cursor to the cached newest-first
+ * window batch, delivering whole Hive blocks only.
  *
- * `has_more` is true when in-window events beyond the delivered slice remain —
- * either the cursor filter left more than `limit` events (undelivered, in this
- * batch) or the internal fetch hit its cap (newer events exist beyond the
- * batch). The prior form (`events.length >= batch.events.length && batch.has_more`)
- * forced `has_more` to false whenever the cursor removed any event, starving a
- * follow-up poll while undelivered in-window events still existed.
+ * The batch (from `fetchNotificationsFromHaf(..., 'desc')`) holds the NEWEST
+ * NOTIFICATION_WINDOW_FETCH_CAP events above `windowFloor` in ascending
+ * `block_num` order, with the partial cap-boundary (oldest) block already
+ * dropped by the shared fetch. Here we filter to events strictly after
+ * `since_block` (the shared `>` cursor), then pack COMPLETE blocks from the
+ * oldest undelivered block forward until adding the next whole block would
+ * exceed `limit`, always including at least the oldest undelivered block in
+ * full. A single Hive block holding more than `limit` events is therefore
+ * delivered atomically (the response may exceed `limit`) rather than split.
+ *
+ * Whole-block delivery is what lets the client advance its cursor to
+ * `latest_block` on every poll with NO rewind step: because `latest_block` is
+ * always a fully-delivered block, advancing to it can never skip an intra-block
+ * event. When the filter is empty, `latest_block` echoes `since_block` so a
+ * forward cursor never regresses.
+ *
+ * `has_more` is purely `filtered.length > delivered.length` — undelivered events
+ * ABOVE the cursor remain in this batch. It deliberately does NOT OR-in
+ * `batch.has_more`: under newest-first, `batch.has_more` means OLDER events exist
+ * below the window floor, which a forward cursor cannot re-fetch and which the
+ * email digest covers; OR-ing it would park a caught-up cursor at
+ * `has_more: true` forever. The authoritative client-facing contract is the
+ * `has_more` / `latest_block` bullets in
+ * `agents/docs/api-contracts/notifications.md`; keep this consistent with it.
  */
 function applySinceBlockFilter(batch: NotificationBatch, sinceBlock: number, limit: number): NotificationBatch {
   const filtered = filterEventsAfter(batch.events, sinceBlock);
-  const events = filtered.slice(0, limit);
-  const latestBlock = events.length > 0
-    ? Math.max(...events.map((e) => e.block_num))
-    : sinceBlock;
+  if (filtered.length === 0) {
+    return { events: [], latest_block: sinceBlock, has_more: false };
+  }
+
+  // `filtered` is ascending, so events of one block are contiguous. Take the
+  // first (oldest undelivered) block in full unconditionally; add each later
+  // whole block only while it still fits within `limit`.
+  const delivered: NotificationEvent[] = [];
+  let i = 0;
+  while (i < filtered.length) {
+    const blockNum = filtered[i].block_num;
+    let j = i;
+    while (j < filtered.length && filtered[j].block_num === blockNum) j++;
+    const blockSize = j - i;
+    if (delivered.length > 0 && delivered.length + blockSize > limit) break;
+    for (let k = i; k < j; k++) delivered.push(filtered[k]);
+    i = j;
+  }
+
   return {
-    events,
-    latest_block: latestBlock,
-    has_more: filtered.length > events.length || batch.has_more,
+    events: delivered,
+    latest_block: delivered[delivered.length - 1].block_num,
+    has_more: filtered.length > delivered.length,
   };
 }
 

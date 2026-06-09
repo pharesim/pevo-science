@@ -366,7 +366,7 @@ describe('fetchNotificationsFromHaf — user_bridge_papers CTE bridge-author pin
     // captured. The query returns no rows → the function returns an empty
     // batch; we assert on the captured SQL not the response.
     const { fetchNotificationsFromHaf } = await import('../../src/notification-queries.js');
-    await fetchNotificationsFromHaf('testuser', 0, 50);
+    await fetchNotificationsFromHaf('testuser', 0, 50, 'desc');
     const related = bridgeRelatedCaptures();
     expect(related.length).toBeGreaterThan(0);
     for (const cap of related) {

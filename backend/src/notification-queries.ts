@@ -125,11 +125,12 @@ export interface NotificationBatch {
 export const NOTIFICATION_WINDOW_BLOCKS = 100_000;
 
 // Internal fetch cap for the window batch, deliberately larger than any response
-// `limit`. fetchNotificationsFromHaf orders ascending and LIMITs, so a small cap
-// would return only the OLDEST events above the floor and a caught-up cursor
-// would strip them all while newer in-window events sit beyond the cut. Callers
-// apply their cursor in-app over this wider batch. See the route's
-// applySinceBlockFilter and the digest's drain logic.
+// `limit`. fetchNotificationsFromHaf orders by the caller's `direction` and
+// LIMITs to this cap, so the batch holds at most the newest (route, 'desc') or
+// oldest (digest, 'asc') `cap` events above the floor. On cap-hit the partial
+// boundary block is dropped whole so no consumer ever sees a cap-truncated
+// block. Callers apply their cursor in-app over this wider batch. See the
+// route's applySinceBlockFilter and the digest's drain logic.
 export const NOTIFICATION_WINDOW_FETCH_CAP = 1000;
 
 /**
@@ -155,16 +156,41 @@ export function filterEventsAfter(events: NotificationEvent[], sinceBlock: numbe
   return events.filter((e) => e.block_num > sinceBlock);
 }
 
+/**
+ * Fetch a window batch of notification events for `account` in `(floor, head]`,
+ * capped at `cap` rows.
+ *
+ * `direction` selects which end of the window the cap keeps:
+ *   - 'desc' (SPA bell feed): the NEWEST `cap` events above the floor.
+ *   - 'asc'  (email digest):  the OLDEST `cap` events above the floor.
+ * Regardless of direction the returned `events` are in ascending `block_num`
+ * order — `direction` only chooses which events survive the cap, not the
+ * presentation order.
+ *
+ * Same-block ordering is broken deterministically by the monotonic global
+ * `haf_operations` PK (`<view>.id`, the views expose no intra-block index), so
+ * the cap cut is reproducible. On cap-hit the partial boundary block (the
+ * truncated end: the OLDEST block for 'desc', the NEWEST for 'asc') is dropped
+ * whole, so no consumer is ever handed a cap-truncated block. `has_more`
+ * reflects the cap-hit. The single-block-exceeds-cap case can empty the batch;
+ * that is the documented residual (graceful deferral until the floor slides).
+ */
 export async function fetchNotificationsFromHaf(
   account: string,
-  sinceBlock: number,
-  limit: number,
+  floor: number,
+  cap: number,
+  direction: 'asc' | 'desc',
 ): Promise<NotificationBatch | null> {
   const pool = getPool();
   if (!pool) return null;
 
+  // Outer-order direction for the cap cut: ASC keeps the oldest `cap`, DESC the
+  // newest. The same-block tie-breaker is the monotonic HAF op id (op_id) per
+  // agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2.
+  const dir = direction === 'desc' ? 'DESC' : 'ASC';
+
   try {
-    // $1 = account, $2 = sinceBlock, $3 = limit, $4/$5 = CTE params, $N = appTag, $N+1 = appTag/%, $N+2 = bridgeAccount
+    // $1 = account, $2 = floor, $3 = cap, $4/$5 = CTE params, $N = appTag, $N+1 = appTag/%, $N+2 = bridgeAccount
     const accredStartIdx = 4;
     const accredCte = activeAccreditationsCteBody(accredStartIdx);
     const at = `$${accredCte.nextIdx}`;       // appTag for WHERE clauses
@@ -228,7 +254,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           NULL::text AS parent_author,
-          NULL::text AS parent_permlink_ref
+          NULL::text AS parent_permlink_ref,
+          co.id AS op_id
         FROM ${T.commentOps} co
         JOIN ${T.comments} p
           ON p.author = co.parent_author AND p.permlink = co.parent_permlink
@@ -261,7 +288,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           NULL::text AS parent_author,
-          NULL::text AS parent_permlink_ref
+          NULL::text AS parent_permlink_ref,
+          co.id AS op_id
         FROM ${T.commentOps} co
         JOIN user_bridge_papers bp ON bp.author = co.parent_author AND bp.permlink = co.parent_permlink
         -- LEFT JOIN (vs the INNER JOIN + validPevoPaperWhere in arm 1a) is
@@ -311,7 +339,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           NULL::text AS parent_author,
-          NULL::text AS parent_permlink_ref
+          NULL::text AS parent_permlink_ref,
+          v.id AS op_id
         FROM ${T.voteOps} v
         JOIN active_accreditations aa ON aa.account = v.voter
         JOIN ${T.comments} p
@@ -344,7 +373,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           NULL::text AS parent_author,
-          NULL::text AS parent_permlink_ref
+          NULL::text AS parent_permlink_ref,
+          v.id AS op_id
         FROM ${T.voteOps} v
         JOIN active_accreditations aa ON aa.account = v.voter
         JOIN user_bridge_papers bp ON bp.author = v.author AND bp.permlink = v.permlink
@@ -378,7 +408,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           NULL::text AS parent_author,
-          NULL::text AS parent_permlink_ref
+          NULL::text AS parent_permlink_ref,
+          v.id AS op_id
         FROM ${T.voteOps} v
         JOIN active_accreditations aa ON aa.account = v.voter
         JOIN ${T.comments} c
@@ -402,7 +433,8 @@ export async function fetchNotificationsFromHaf(
         NULL, NULL, NULL, NULL, NULL, NULL,
         cj.json::jsonb ->> 'action',
         cj.json::jsonb ->> 'method',
-        NULL, NULL, NULL
+        NULL, NULL, NULL,
+        cj.id AS op_id
       FROM ${T.customJson} cj
       WHERE cj.custom_id = ${at}
         AND cj.json::jsonb ->> 'account' = $1
@@ -426,7 +458,8 @@ export async function fetchNotificationsFromHaf(
         cj.json::jsonb ->> 'voucher',
         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
         cj.json::jsonb ->> 'relationship',
-        NULL, NULL
+        NULL, NULL,
+        cj.id AS op_id
       FROM ${T.customJson} cj
       WHERE cj.custom_id = ${at}
         AND cj.json::jsonb ->> 'vouchee' = $1
@@ -469,7 +502,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           co.parent_author AS parent_author,
-          co.parent_permlink AS parent_permlink_ref
+          co.parent_permlink AS parent_permlink_ref,
+          co.id AS op_id
         FROM ${T.commentOps} co
         JOIN active_accreditations aa_c ON aa_c.account = co.author
         WHERE co.parent_author = $1
@@ -505,7 +539,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           NULL::text AS parent_author,
-          NULL::text AS parent_permlink_ref
+          NULL::text AS parent_permlink_ref,
+          citing.id AS op_id
         FROM ${T.commentOps} citing
         JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
         -- CASE-WHEN array-guard at SRF argument position. Without it, a chain
@@ -562,7 +597,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           NULL::text AS parent_author,
-          NULL::text AS parent_permlink_ref
+          NULL::text AS parent_permlink_ref,
+          citing.id AS op_id
         FROM ${T.commentOps} citing
         JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
         -- CASE-WHEN array-guard at SRF argument position. Same defensive
@@ -603,7 +639,8 @@ export async function fetchNotificationsFromHaf(
         cj.required_posting_auths ->> 0,
         cj.json::jsonb ->> 'paper_author',
         cj.json::jsonb ->> 'paper_permlink',
-        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        cj.id AS op_id
       FROM ${T.customJson} cj
       WHERE cj.custom_id = ${at}
         AND cj.json::jsonb ->> 'action' = 'claim_authorship'
@@ -637,7 +674,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           NULL::text AS parent_author,
-          NULL::text AS parent_permlink_ref
+          NULL::text AS parent_permlink_ref,
+          cj.id AS op_id
         FROM ${T.customJson} cj
         WHERE cj.custom_id = ${at}
           AND cj.json::jsonb ->> 'action' = 'approve_authorship'
@@ -706,7 +744,8 @@ export async function fetchNotificationsFromHaf(
           NULL::text AS accredit_method,
           NULL::text AS vouch_relationship,
           NULL::text AS parent_author,
-          NULL::text AS parent_permlink_ref
+          NULL::text AS parent_permlink_ref,
+          cj.id AS op_id
         FROM ${T.customJson} cj
         WHERE cj.custom_id = ${at}
           AND cj.json::jsonb ->> 'action' = 'revoke_authorship'
@@ -755,9 +794,9 @@ export async function fetchNotificationsFromHaf(
         ORDER BY cj.json::jsonb ->> 'paper_author', cj.json::jsonb ->> 'paper_permlink', cj.block_num ASC
       ) AS arm_9
 
-      ORDER BY block_num ASC
+      ORDER BY block_num ${dir}, op_id ${dir}
       LIMIT $3`,
-      [account, sinceBlock, limit, ...accredCte.params, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount, config.hiveAdminAccount],
+      [account, floor, cap, ...accredCte.params, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount, config.hiveAdminAccount],
     );
 
     const events: NotificationEvent[] = [];
@@ -857,22 +896,41 @@ export async function fetchNotificationsFromHaf(
       }
     }
 
-    const latestBlock = events.length > 0
-      ? Math.max(...events.map((e) => e.block_num))
-      : sinceBlock;
+    // Rows arrive in (block_num, op_id) `dir` order; normalize to ascending
+    // block_num for the returned contract (both consumers expect ascending).
+    events.sort((a, b) => a.block_num - b.block_num);
+
+    const capHit = result.rows.length >= cap;
+    let delivered = events;
+    if (capHit && events.length > 0) {
+      // The cap cut through the boundary block at the truncated end — the OLDEST
+      // block for 'desc' (newest-first), the NEWEST block for 'asc'
+      // (oldest-first). Drop that whole block so a cap-truncated (partial) block
+      // is never exposed. In the single-block-exceeds-cap case this empties the
+      // batch (documented residual: the block surfaces once the floor slides to
+      // contain it).
+      const boundaryBlock = direction === 'desc'
+        ? events[0].block_num
+        : events[events.length - 1].block_num;
+      delivered = events.filter((e) => e.block_num !== boundaryBlock);
+    }
+
+    const latestBlock = delivered.length > 0
+      ? delivered[delivered.length - 1].block_num
+      : floor;
 
     return {
-      events,
+      events: delivered,
       latest_block: latestBlock,
-      has_more: events.length >= limit,
+      has_more: capHit,
     };
   } catch (err) {
     // Intentional swallow-to-null (kept asymmetric with the
     // single-resource paper/review/comment-existence sites that throw):
     // this notifications query is a broad multi-CTE scan keyed on a
-    // caller-supplied `sinceBlock` that can legitimately reach the
-    // 30s statement_timeout under wide ranges (e.g. since_block=genesis
-    // for a fresh client). Translating to 503 retriable on every such
+    // window `floor` ($2) that can legitimately reach the 30s
+    // statement_timeout under a wide window (a low floor for a recipient
+    // with deep history). Translating to 503 retriable on every such
     // timeout would mis-classify "expensive query" as "HAF outage"
     // and the polling SPA's retry would compound load. The route
     // surfaces an empty-events response on null — same observational

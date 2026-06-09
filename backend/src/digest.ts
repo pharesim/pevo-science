@@ -203,7 +203,10 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
       const cursor = genesis > 0 && user.last_digest_block < genesis
         ? genesis - 1
         : user.last_digest_block;
-      const batch = await fetchNotificationsFromHaf(user.username, windowFloor, NOTIFICATION_WINDOW_FETCH_CAP);
+      // Oldest-first drain: the digest covers long offline gaps, so it wants the
+      // OLDEST cap events above the floor and advances its cursor forward as
+      // whole blocks drain (see the advance-only-when-drained logic below).
+      const batch = await fetchNotificationsFromHaf(user.username, windowFloor, NOTIFICATION_WINDOW_FETCH_CAP, 'asc');
 
       if (!batch) {
         skipped++;

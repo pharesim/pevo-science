@@ -74,13 +74,18 @@ describe('GET /api/notifications', () => {
     expect(Array.isArray(res.body.data.events)).toBe(true);
   });
 
-  it('respects limit parameter', { timeout: 60_000 }, async () => {
+  it('respects limit via whole-block delivery (at most one block at limit=1)', { timeout: 60_000 }, async () => {
     const res = await request(app)
       .get(`/api/notifications?since_block=${genesisBlock}&limit=1`)
       .set('X-Hive-Username', 'pevo.admin')
       .set('X-Hive-Signature', 'mock-sig');
     expect(res.status).toBe(200);
-    expect(res.body.data.events.length).toBeLessThanOrEqual(1);
+    // Whole-block delivery never splits a Hive block across responses, so at
+    // limit=1 the response carries the events of at most ONE block (the oldest
+    // undelivered). The event COUNT may exceed 1 only when that single block is
+    // oversized; the distinct block count must not.
+    const blocks = new Set(res.body.data.events.map((e: { block_num: number }) => e.block_num));
+    expect(blocks.size).toBeLessThanOrEqual(1);
   });
 
   it('events are sorted by block_num ascending', { timeout: 60_000 }, async () => {
