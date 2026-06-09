@@ -244,3 +244,72 @@ describe('describeUploadError', () => {
     expect(describeUploadError(null)).toBe('common.uploadFailed');
   });
 });
+
+// The reauthModal is a singleton with a refuse-while-open guard: a second
+// concurrent request() resolves to null. Two independent upload sessions (an
+// editor inline-image upload and a publish/edit page batch) can race to it, and
+// the loser would surface UPLOAD_CANCELLED. createUploadSession serializes the
+// prompt across ALL sessions so only one reauthModal.request() is ever open.
+describe('cross-surface prompt serialization', () => {
+  // Macrotask flush so the fire-and-forget prompt chain settles its microtasks.
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    mockUploadFileToIpfs.mockReset();
+    mockMintProof.mockReset();
+    mockFetchEmailStatus.mockReset();
+    reauthRequest.mockReset();
+    custody = 'light';
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    mockMintProof.mockResolvedValue('proof');
+    mockUploadFileToIpfs.mockResolvedValue(okUpload('bafy'));
+  });
+
+  it('serializes the prompt across two concurrent sessions so the loser is not cancelled', async () => {
+    // Faithful reauthModal model: only one prompt may be open; a request() while
+    // one is open returns null (the real refuse-while-open contract). With the
+    // gate the second session waits its turn and never hits that branch.
+    let openCount = 0;
+    let maxConcurrent = 0;
+    const resolvers = [];
+    reauthRequest.mockImplementation(() => {
+      if (openCount > 0) return Promise.resolve(null); // refuse-while-open
+      openCount += 1;
+      maxConcurrent = Math.max(maxConcurrent, openCount);
+      return new Promise((resolve) => {
+        resolvers.push((pw) => { openCount -= 1; resolve(pw); });
+      });
+    });
+
+    const s1 = createUploadSession();
+    const s2 = createUploadSession();
+    const p1 = s1.upload(file());
+    const p2 = s2.upload(file());
+    await flush();
+
+    // Both sessions raced to the prompt, but only one is open.
+    expect(maxConcurrent).toBe(1);
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+
+    // Resolve the first prompt; the gate then lets the second session prompt.
+    resolvers[0]('pw-1');
+    await flush();
+    expect(reauthRequest).toHaveBeenCalledTimes(2);
+    expect(maxConcurrent).toBe(1); // never two open at once
+
+    resolvers[1]('pw-2');
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1.data.cid).toBe('bafy');
+    expect(r2.data.cid).toBe('bafy'); // the second session was NOT cancelled
+  });
+
+  it('leaves the self-custody (Keychain) path ungated and unprompted', async () => {
+    custody = 'self';
+    const s1 = createUploadSession();
+    const s2 = createUploadSession();
+    const [r1, r2] = await Promise.all([s1.upload(file()), s2.upload(file())]);
+    expect(r1.data.cid).toBe('bafy');
+    expect(r2.data.cid).toBe('bafy');
+    expect(reauthRequest).not.toHaveBeenCalled();
+  });
+});

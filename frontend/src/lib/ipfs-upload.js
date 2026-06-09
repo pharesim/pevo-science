@@ -28,6 +28,30 @@ export function describeUploadError(err) {
   }
 }
 
+// Process-wide serialization of the password prompt across ALL upload sessions.
+// The reauthModal is a singleton with a refuse-while-open guard: a second
+// concurrent request() resolves to null. Two INDEPENDENT upload surfaces -- an
+// editor inline-image upload (a one-shot session) and a publish/edit page batch
+// (a session held across the batch) -- can each reach reauthModal.request() at
+// the same time (e.g. the user drops an image into the body then immediately
+// hits Submit). Without coordination the loser resolves null and surfaces
+// UPLOAD_CANCELLED, silently dropping its upload. This chain queues every
+// session's prompt so only one reauthModal.request() is ever in flight; the next
+// waiter prompts only after the previous prompt settles. The serialization lives
+// entirely in the upload layer, so the reauthModal contract -- and its non-upload
+// settings-action caller -- is untouched.
+let promptChain = Promise.resolve();
+
+function withPromptLock(requestPrompt) {
+  // Queue behind whatever prompt is currently in flight, then run requestPrompt
+  // (the reauthModal.request() call). Advance the chain regardless of how the
+  // prompt settles so a cancelled or failed prompt never wedges the gate for the
+  // next waiter.
+  const run = promptChain.then(() => requestPrompt());
+  promptChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 // A batch-scoped uploader for one publish/edit action.
 //
 // Self-custody (Keychain) signs each file's pre-flight descriptor — one Keychain
@@ -73,7 +97,10 @@ export function createUploadSession() {
         'Uploads require a password on this account',
       );
     }
-    const entered = await Alpine.store('reauthModal').request();
+    // Serialize the prompt across all upload sessions (see promptChain above) so
+    // a concurrent editor-image and page-batch upload never collide on the
+    // singleton modal and cancel each other.
+    const entered = await withPromptLock(() => Alpine.store('reauthModal').request());
     if (entered === null || entered === undefined) {
       throw new UploadSessionError(UPLOAD_CANCELLED, 'Upload cancelled');
     }
