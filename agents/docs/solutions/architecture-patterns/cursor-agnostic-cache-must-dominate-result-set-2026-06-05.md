@@ -93,6 +93,7 @@ With `INTERNAL_CAP=500`: all ten events are in the batch, the filter keeps `[106
 
 ## Related
 
+- [[forward-cursor-feed-newest-first-and-rewind-masks-cap-edge]] (`agents/docs/solutions/architecture-patterns/forward-cursor-feed-newest-first-and-rewind-masks-cap-edge-2026-06-09.md`): the fetch-DIRECTION companion at this exact surface. This doc covers fetch SIZE (cap-vs-limit domination); that one covers which END the LIMIT keeps (newest-first for a forward feed), why a client rewind can mask a fetch-cap skip, and why co-consumers of one query can need opposite fetch orders. Read together.
 - [[caching-wrapper-discriminated-union-poisoning]] (`agents/docs/solutions/conventions/caching-wrapper-discriminated-union-poisoning-2026-05-11.md`): sibling failure class at the same shared-batch layer; that doc covers caching the wrong VALUE (failure sentinels), this one covers caching insufficient QUANTITY (non-dominant batch).
 - [[single-flight-coalescing-amplifies-cache-invalidation-race]] (`agents/docs/solutions/conventions/single-flight-coalescing-amplifies-cache-invalidation-race-2026-05-20.md`): cache-write correctness for the same `QueryCache` layer.
 - [[per-request-memo-catch-block-negative-cache-contract]] (`agents/docs/solutions/conventions/per-request-memo-catch-block-negative-cache-contract-2026-05-06.md`): within-request counterpart in the caching-under-degradation design space.
