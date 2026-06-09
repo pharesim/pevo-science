@@ -387,7 +387,10 @@
     "vouchBroadcastPending": "Aanbeveling succesvol verzonden! Backendmelding in afwachting.",
     "retractBroadcastPending": "Aanbeveling ingetrokken. Backendmelding in afwachting.",
     "vouchFailed": "Verzenden van aanbeveling mislukt",
-    "retractFailed": "Intrekken van aanbeveling mislukt"
+    "retractFailed": "Intrekken van aanbeveling mislukt",
+    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
+    "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
   "comments": {
     "titleWithCount": "Discussie ({count})",

@@ -387,7 +387,10 @@
     "vouchBroadcastPending": "Kefalet başarıyla yayınlandı! Arka uç bildirimi bekleniyor.",
     "retractBroadcastPending": "Kefalet geri çekildi. Arka uç bildirimi bekleniyor.",
     "vouchFailed": "Kefalet yayınlanamadı",
-    "retractFailed": "Kefalet geri çekilemedi"
+    "retractFailed": "Kefalet geri çekilemedi",
+    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
+    "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
   "comments": {
     "titleWithCount": "Tartışma ({count})",

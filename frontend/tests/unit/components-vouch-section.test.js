@@ -194,6 +194,44 @@ describe('vouchSection', () => {
       expect(comp.message).toContain('carol');
     });
 
+    // revocation_outcome discriminates the cascade-revocation result; the
+    // fail-closed / errored arms must not read as a clean success.
+    it('unverified outcome renders a distinct non-error message (not success copy)', async () => {
+      mockNotifyRetractVouch.mockResolvedValue({ data: { revocations: [], revocation_outcome: 'unverified' } });
+      const comp = createComponent({ targetUsername: 'bob' });
+      await comp.handleRetract();
+      expect(comp.step).toBe('success'); // benign on-chain lag, stays green
+      expect(comp.message).toBe('wot.retractUnverified');
+      expect(comp.message).not.toBe('wot.retractSuccess');
+    });
+
+    it('query_error outcome renders an error message', async () => {
+      mockNotifyRetractVouch.mockResolvedValue({ data: { revocations: [], revocation_outcome: 'query_error' } });
+      const comp = createComponent({ targetUsername: 'bob' });
+      await comp.handleRetract();
+      expect(comp.step).toBe('error');
+      expect(comp.message).toBe('wot.retractQueryError');
+    });
+
+    it('timeout and chain_error outcomes render the degraded message as an error', async () => {
+      for (const outcome of ['timeout', 'chain_error']) {
+        mockNotifyRetractVouch.mockResolvedValue({ data: { revocations: [], revocation_outcome: outcome } });
+        const comp = createComponent({ targetUsername: 'bob' });
+        await comp.handleRetract();
+        expect(comp.step).toBe('error');
+        expect(comp.message).toBe('wot.retractRevocationDegraded');
+      }
+    });
+
+    it('revoked outcome keeps the success copy with the revoked accounts', async () => {
+      mockNotifyRetractVouch.mockResolvedValue({ data: { revocations: ['carol'], revocation_outcome: 'revoked' } });
+      const comp = createComponent({ targetUsername: 'bob' });
+      await comp.handleRetract();
+      expect(comp.step).toBe('success');
+      expect(comp.message).toContain('wot.retractSuccess');
+      expect(comp.message).toContain('carol');
+    });
+
     // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
     // surfaces a generic localized message; raw err reaches console.warn.
     it('sanitizes retract broadcast failure: generic message to DOM, raw err to console.warn', async () => {

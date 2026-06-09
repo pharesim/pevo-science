@@ -387,7 +387,10 @@
     "vouchBroadcastPending": "Zaručení úspěšně vysíláno! Čeká se na potvrzení backendu.",
     "retractBroadcastPending": "Zaručení odvoláno. Čeká se na potvrzení backendu.",
     "vouchFailed": "Nepodařilo se odeslat zaručení",
-    "retractFailed": "Nepodařilo se odvolat zaručení"
+    "retractFailed": "Nepodařilo se odvolat zaručení",
+    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
+    "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
   "comments": {
     "titleWithCount": "Diskuze ({count})",

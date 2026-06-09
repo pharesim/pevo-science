@@ -387,7 +387,10 @@
     "vouchBroadcastPending": "Garanzia trasmessa con successo! Notifica al backend in sospeso.",
     "retractBroadcastPending": "Garanzia ritirata. Notifica al backend in sospeso.",
     "vouchFailed": "Impossibile trasmettere la garanzia",
-    "retractFailed": "Impossibile ritirare la garanzia"
+    "retractFailed": "Impossibile ritirare la garanzia",
+    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
+    "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
   "comments": {
     "titleWithCount": "Discussione ({count})",

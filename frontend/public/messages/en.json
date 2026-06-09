@@ -387,7 +387,10 @@
     "vouchBroadcastPending": "Vouch broadcast successfully! Backend notification pending.",
     "retractBroadcastPending": "Vouch retracted. Backend notification pending.",
     "vouchFailed": "Failed to broadcast vouch",
-    "retractFailed": "Failed to retract vouch"
+    "retractFailed": "Failed to retract vouch",
+    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
+    "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
   "comments": {
     "titleWithCount": "Discussion ({count})",

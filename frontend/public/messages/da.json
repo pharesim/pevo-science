@@ -387,7 +387,10 @@
     "vouchBroadcastPending": "Anbefaling sendt! Backend-notifikation afventer.",
     "retractBroadcastPending": "Anbefaling trukket tilbage. Backend-notifikation afventer.",
     "vouchFailed": "Kunne ikke sende anbefaling",
-    "retractFailed": "Kunne ikke trække anbefaling tilbage"
+    "retractFailed": "Kunne ikke trække anbefaling tilbage",
+    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
+    "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
   "comments": {
     "titleWithCount": "Diskussion ({count})",

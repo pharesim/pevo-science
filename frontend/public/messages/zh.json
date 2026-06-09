@@ -387,7 +387,10 @@
     "vouchBroadcastPending": "担保广播成功！后端通知处理中。",
     "retractBroadcastPending": "担保已撤回。后端通知处理中。",
     "vouchFailed": "担保广播失败",
-    "retractFailed": "撤回担保失败"
+    "retractFailed": "撤回担保失败",
+    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
+    "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
   "comments": {
     "titleWithCount": "讨论 ({count})",

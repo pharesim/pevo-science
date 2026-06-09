@@ -157,12 +157,33 @@ export function initVouchSection() {
         try {
           const res = await notifyRetractVouch(this.targetUsername);
           if (!this._mounted) return;
-          const revocations = res.data.revocations;
-          const revMsg = revocations.length > 0
-            ? ` ${this.$t('wot.accreditationRevoked', { accounts: revocations.join(', ') })}`
-            : '';
-          this.step = 'success';
-          this.message = `${this.$t('wot.retractSuccess')}${revMsg}`;
+          // The retract custom_json broadcast already succeeded above;
+          // revocation_outcome describes the cascade revocation of dependent
+          // accreditations. Surface its state honestly rather than always showing
+          // success copy: a fail-closed (unverified) or errored cascade must not
+          // read as a clean success. revocations is [] on the non-revoked arms.
+          const outcome = res.data.revocation_outcome;
+          if (outcome === 'query_error') {
+            this.step = 'error';
+            this.message = this.$t('wot.retractQueryError');
+          } else if (outcome === 'timeout' || outcome === 'chain_error') {
+            this.step = 'error';
+            this.message = this.$t('wot.retractRevocationDegraded');
+          } else if (outcome === 'unverified') {
+            // The on-chain retract may just be lagging HAF ingestion; not an
+            // error, so it stays green with a re-check-shortly message.
+            this.step = 'success';
+            this.message = this.$t('wot.retractUnverified');
+          } else {
+            // 'revoked' (cascade done), 'skipped' (nothing to cascade), or a
+            // response that predates the discriminator: the retract succeeded.
+            const revocations = res.data.revocations || [];
+            const revMsg = revocations.length > 0
+              ? ` ${this.$t('wot.accreditationRevoked', { accounts: revocations.join(', ') })}`
+              : '';
+            this.step = 'success';
+            this.message = `${this.$t('wot.retractSuccess')}${revMsg}`;
+          }
         } catch {
           if (!this._mounted) return;
           this.step = 'success';

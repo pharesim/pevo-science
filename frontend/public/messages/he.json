@@ -387,7 +387,10 @@
     "vouchBroadcastPending": "הערבות שודרה בהצלחה! ממתין לאישור השרת.",
     "retractBroadcastPending": "הערבות בוטלה. ממתין לאישור השרת.",
     "vouchFailed": "שידור הערבות נכשל",
-    "retractFailed": "ביטול הערבות נכשל"
+    "retractFailed": "ביטול הערבות נכשל",
+    "retractUnverified": "Vouch retracted. The revocation of dependent accreditations is not yet reflected on-chain; re-check shortly.",
+    "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
+    "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
   "comments": {
     "titleWithCount": "דיון ({count})",
