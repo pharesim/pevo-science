@@ -172,10 +172,13 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
   if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
     // Name-only-route credit ops. paper_author / paper_permlink are Hive
     // identifier slugs; trim=true. claim/approve additionally require a
-    // non-negative-integer author_index; revoke carries none on the wire
-    // (`agents/docs/hive-schemas.md` § 2.11). The handler-side re-read enforces
-    // the same caps; this pre-limiter shape check keeps malformed bodies off
-    // the argon2.verify path.
+    // non-negative-integer author_index (`agents/docs/hive-schemas.md`
+    // § 2.9 / § 2.10); approve/revoke additionally require a `claimer`
+    // identifier (§ 2.10 / § 2.11) naming the credited / stripped co-author,
+    // which the fresh-auth target binds so a proof cannot be redirected to a
+    // different co-author. The handler-side re-read enforces the same caps;
+    // this pre-limiter shape check keeps malformed bodies off the argon2.verify
+    // path.
     const paperAuthor = requireStringField(body, 'paper_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
     if (!paperAuthor.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperAuthor.error);
     const paperPermlink = requireStringField(body, 'paper_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
@@ -185,6 +188,10 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
       if (typeof rawIndex !== 'number' || !Number.isInteger(rawIndex) || rawIndex < 0) {
         return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
       }
+    }
+    if (action !== 'claim_authorship') {
+      const claimer = requireStringField(body, 'claimer', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
+      if (!claimer.ok) return sendError(res, 400, 'VALIDATION_ERROR', claimer.error);
     }
     return next();
   }
@@ -236,25 +243,35 @@ export function hashUserAgentForAudit(value: unknown): string | undefined {
 
 /** Result discriminator for `findGatedOpsInBundle`. The single-gated-op rule
  *  is structural: a bundle either contains zero fresh-auth-gated ops (no
- *  fresh-auth required), exactly one (fresh-auth required for that op), or
- *  more than one (rejected). "Gated op" spans both the anchored-route consent
- *  ops (`CONSENT_OP_ACTIONS`) and the name-only-route credit ops
+ *  fresh-auth required), exactly one (fresh-auth required for that op), more
+ *  than one (rejected), or one whose required target fields are malformed
+ *  (rejected). "Gated op" spans both the anchored-route consent ops
+ *  (`CONSENT_OP_ACTIONS`) and the name-only-route credit ops
  *  (`CREDIT_OP_ACTIONS`).
  *
  *  The `single` arm carries the full `FreshAuthTarget` so the consume side
  *  can compute the expected target hash and reject substitution attacks where
- *  a compromised SPA swaps action / paper / slot between the user's auth
- *  ceremony and the broadcast. For consent ops the target binds
+ *  a compromised SPA swaps action / paper / slot / claimer between the user's
+ *  auth ceremony and the broadcast. For consent ops the target binds
  *  `(action, root_author, root_permlink)`; for credit ops it additionally
- *  binds `author_index` (omitted for `revoke_authorship`, which carries no
- *  `author_index` on the wire). A gated op whose payload omits or malforms
- *  the required fields is treated as malformed and skipped (the broadcast then
- *  falls into the no-gated-op branch and proceeds without proof, but the op
- *  itself will be rejected by the chain since it lacks required fields). */
+ *  binds `author_index` (claim/approve) and `claimer` (approve/revoke).
+ *
+ *  The `malformed` arm is the SECURITY-CRITICAL closure of an implicit
+ *  fresh-auth downgrade: a gated op whose action is recognized but whose
+ *  required target fields are missing or ill-typed MUST reject the broadcast
+ *  with 400, NOT silently fall through to the no-gated-op branch. The
+ *  fall-through path consumes a target-LESS session-kind proof (the weaker
+ *  surface), so treating a malformed gated op as "no gated op" would let an
+ *  attacker strip the per-op target binding off a credit/consent op by
+ *  omitting (e.g.) `author_index` or `claimer` and presenting only a session
+ *  proof. Rejecting at the route closes that downgrade before any proof is
+ *  consumed. The `field` names which target field was malformed for the 400
+ *  message. */
 type GatedOpScan =
   | { kind: 'none' }
   | { kind: 'single'; target: FreshAuthTarget }
-  | { kind: 'multiple' };
+  | { kind: 'multiple' }
+  | { kind: 'malformed'; action: string; field: string };
 
 /** Type guard: a Hive operation is a [type, params] tuple where params is a
  *  non-null object. Replaces the round-3 `as { json?: unknown }` cast at
@@ -269,60 +286,112 @@ function isOpTuple(op: unknown): op is [string, Record<string, unknown>] {
   );
 }
 
+/** Result of extracting a per-op fresh-auth target from a gated-op payload.
+ *  `ok` carries the built `FreshAuthTarget`; `malformed` names the missing or
+ *  ill-typed required field so the route can reject with a 400 rather than
+ *  silently downgrade the gated op to the target-less session path. */
+type TargetExtraction =
+  | { ok: true; target: FreshAuthTarget }
+  | { ok: false; field: string };
+
+/** Read a required non-empty-string field from a custom_json payload. Centralizes
+ *  the `typeof === 'string' && length > 0` check the gated-op extractors share so
+ *  a future field addition (or a relaxation of the check) lands at one site. */
+function readRequiredString(payload: object, field: string): { ok: true; value: string } | { ok: false } {
+  const raw = (payload as Record<string, unknown>)[field];
+  if (typeof raw !== 'string' || raw.length === 0) return { ok: false };
+  return { ok: true, value: raw };
+}
+
+/** Read a required non-negative-integer field from a custom_json payload.
+ *  Mirrors the `author_index` validity check used at the issuance routes so the
+ *  three sites cannot diverge on what counts as a valid slot index. */
+function readNonNegativeInt(payload: object, field: string): { ok: true; value: number } | { ok: false } {
+  const raw = (payload as Record<string, unknown>)[field];
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return { ok: false };
+  return { ok: true, value: raw };
+}
+
 /** Extract the per-op fresh-auth target from a single consent op payload
- *  (`author_accept` / `author_resign`). Returns `null` when the payload omits
- *  or malforms the `(root_author, root_permlink)` pair — that op falls through
- *  to the no-gated-op path and the chain rejects it for the missing fields.
- *  The `action` is already known to be in `CONSENT_OP_ACTIONS` at the call
- *  site, so the cast onto `FreshAuthTargetAction` is sound. */
-function consentOpTarget(action: string, payload: object): FreshAuthTarget | null {
-  const rawRootAuthor = (payload as { root_author?: unknown }).root_author;
-  const rawRootPermlink = (payload as { root_permlink?: unknown }).root_permlink;
-  if (
-    typeof rawRootAuthor !== 'string' || rawRootAuthor.length === 0 ||
-    typeof rawRootPermlink !== 'string' || rawRootPermlink.length === 0
-  ) {
-    return null;
-  }
+ *  (`author_accept` / `author_resign`). Returns `{ ok: false, field }` when the
+ *  payload omits or malforms a required field so the caller rejects the
+ *  broadcast with a 400 (closing the downgrade-to-session-proof path). The
+ *  `action` is already known to be in `CONSENT_OP_ACTIONS` at the call site, so
+ *  the cast onto `FreshAuthTargetAction` is sound. */
+function consentOpTarget(action: string, payload: object): TargetExtraction {
+  const rootAuthor = readRequiredString(payload, 'root_author');
+  if (!rootAuthor.ok) return { ok: false, field: 'root_author' };
+  const rootPermlink = readRequiredString(payload, 'root_permlink');
+  if (!rootPermlink.ok) return { ok: false, field: 'root_permlink' };
   return {
-    action: action as FreshAuthTargetAction,
-    root_author: rawRootAuthor,
-    root_permlink: rawRootPermlink,
+    ok: true,
+    target: {
+      action: action as FreshAuthTargetAction,
+      root_author: rootAuthor.value,
+      root_permlink: rootPermlink.value,
+    },
   };
 }
 
 /** Extract the per-op fresh-auth target from a single name-only-route credit
  *  op payload (`claim_authorship` / `approve_authorship` / `revoke_authorship`).
  *  The wire fields are `paper_author` / `paper_permlink` (mapped onto the
- *  target's `root_author` / `root_permlink` hash slots) and, for claim/approve,
- *  `author_index`. `revoke_authorship` carries no `author_index` on the wire
- *  (`agents/docs/hive-schemas.md` § 2.11), so its target binds the paper +
- *  action only. Returns `null` when the payload omits or malforms a required
- *  field — that op falls through to the no-gated-op path and the chain rejects
- *  it for the missing fields. The target is built through
- *  `creditOpFreshAuthTarget` so the consume side and the issuance routes share
- *  one encoding. */
-function creditOpTarget(action: CreditOpAction, payload: object): FreshAuthTarget | null {
-  const rawPaperAuthor = (payload as { paper_author?: unknown }).paper_author;
-  const rawPaperPermlink = (payload as { paper_permlink?: unknown }).paper_permlink;
-  if (
-    typeof rawPaperAuthor !== 'string' || rawPaperAuthor.length === 0 ||
-    typeof rawPaperPermlink !== 'string' || rawPaperPermlink.length === 0
-  ) {
-    return null;
+ *  target's `root_author` / `root_permlink` hash slots), plus op-specific
+ *  fields: `author_index` for claim/approve and `claimer` for approve/revoke
+ *  (`agents/docs/hive-schemas.md` § 2.9–§ 2.11). Returns `{ ok: false, field }`
+ *  when a required field is missing or ill-typed so the caller rejects the
+ *  broadcast with a 400 — NOT a silent fall-through to the target-less session
+ *  path, which would let an attacker strip the per-op binding (especially the
+ *  `claimer` binding on approve/revoke) by omitting a field. The target is built
+ *  through `creditOpFreshAuthTarget` so the consume side and the issuance routes
+ *  share one encoding. */
+function creditOpTarget(action: CreditOpAction, payload: object): TargetExtraction {
+  const paperAuthor = readRequiredString(payload, 'paper_author');
+  if (!paperAuthor.ok) return { ok: false, field: 'paper_author' };
+  const paperPermlink = readRequiredString(payload, 'paper_permlink');
+  if (!paperPermlink.ok) return { ok: false, field: 'paper_permlink' };
+
+  if (action === 'claim_authorship') {
+    const authorIndex = readNonNegativeInt(payload, 'author_index');
+    if (!authorIndex.ok) return { ok: false, field: 'author_index' };
+    return {
+      ok: true,
+      target: creditOpFreshAuthTarget({
+        action,
+        paperAuthor: paperAuthor.value,
+        paperPermlink: paperPermlink.value,
+        authorIndex: authorIndex.value,
+      }),
+    };
   }
-  let authorIndex: number | undefined;
-  if (action === 'revoke_authorship') {
-    // No author_index on the revoke wire; the target binds paper + action.
-    authorIndex = undefined;
-  } else {
-    const rawAuthorIndex = (payload as { author_index?: unknown }).author_index;
-    if (typeof rawAuthorIndex !== 'number' || !Number.isInteger(rawAuthorIndex) || rawAuthorIndex < 0) {
-      return null;
-    }
-    authorIndex = rawAuthorIndex;
+  if (action === 'approve_authorship') {
+    const authorIndex = readNonNegativeInt(payload, 'author_index');
+    if (!authorIndex.ok) return { ok: false, field: 'author_index' };
+    const claimer = readRequiredString(payload, 'claimer');
+    if (!claimer.ok) return { ok: false, field: 'claimer' };
+    return {
+      ok: true,
+      target: creditOpFreshAuthTarget({
+        action,
+        paperAuthor: paperAuthor.value,
+        paperPermlink: paperPermlink.value,
+        authorIndex: authorIndex.value,
+        claimer: claimer.value,
+      }),
+    };
   }
-  return creditOpFreshAuthTarget(action, rawPaperAuthor, rawPaperPermlink, authorIndex);
+  // revoke_authorship: binds claimer, no author_index on the wire.
+  const claimer = readRequiredString(payload, 'claimer');
+  if (!claimer.ok) return { ok: false, field: 'claimer' };
+  return {
+    ok: true,
+    target: creditOpFreshAuthTarget({
+      action,
+      paperAuthor: paperAuthor.value,
+      paperPermlink: paperPermlink.value,
+      claimer: claimer.value,
+    }),
+  };
 }
 
 /** Scan the operations bundle for fresh-auth-gated ops: the anchored-route
@@ -334,16 +403,19 @@ function creditOpTarget(action: CreditOpAction, payload: object): FreshAuthTarge
  *  compromised SPA convert one auth ceremony into N gated broadcasts
  *  (substitution-attack vector). The function returns a discriminator so the
  *  caller can distinguish "no gated op" (no proof needed) from "exactly one"
- *  (verify proof) from "multiple" (reject 400).
+ *  (verify proof) from "multiple" (reject 400) from "malformed" (reject 400).
  *
- *  Gated ops whose payload omits or malforms the required target fields fall
- *  through to the no-gated-op path. Chain rejection is the backstop — a missing
- *  or non-string `root_author`/`paper_author` (etc.) makes the custom_json op
- *  invalid at the consensus layer, so the bundle's atomic-transaction semantic
- *  rolls back any sibling ops along with it. Treating this as "no gated op
- *  detected" keeps the substitution-attack surface flat: an attacker can't slip
- *  a malformed gated op into a legitimate bundle to bypass the fresh-auth gate,
- *  because the chain rejects the entire bundle along with the malformed op. */
+ *  A gated op whose action is recognized but whose required target fields are
+ *  missing or ill-typed returns the `malformed` discriminator so the caller
+ *  rejects with a 400. This is SECURITY-CRITICAL: the alternative (treating a
+ *  malformed gated op as "no gated op detected") would route the broadcast
+ *  through the target-LESS session-proof path, letting an attacker strip the
+ *  per-op binding off a credit/consent op by omitting a field (e.g. `claimer`
+ *  on approve/revoke, or `author_index` on claim/approve). Chain rejection is
+ *  not a sufficient backstop here because the downgrade happens at the
+ *  fresh-auth gate, before broadcast — the gate, not the chain, is what the
+ *  binding defends. The first malformed gated op short-circuits; multiplicity
+ *  is only assessed across well-formed gated ops. */
 function findGatedOpsInBundle(operations: unknown[]): GatedOpScan {
   let firstTarget: FreshAuthTarget | null = null;
   for (const op of operations) {
@@ -361,18 +433,22 @@ function findGatedOpsInBundle(operations: unknown[]): GatedOpScan {
     const action = (payload as { action?: unknown }).action;
     if (typeof action !== 'string') continue;
 
-    let target: FreshAuthTarget | null;
+    let extraction: TargetExtraction;
     if (CONSENT_OP_ACTIONS.has(action)) {
-      target = consentOpTarget(action, payload);
+      extraction = consentOpTarget(action, payload);
     } else if (CREDIT_OP_ACTIONS.has(action)) {
-      target = creditOpTarget(action as CreditOpAction, payload);
+      extraction = creditOpTarget(action as CreditOpAction, payload);
     } else {
       continue;
     }
-    if (target === null) continue;
+    if (!extraction.ok) {
+      // Recognized gated action with a malformed required field — reject at
+      // the route rather than downgrade to the session-proof path.
+      return { kind: 'malformed', action, field: extraction.field };
+    }
 
     if (firstTarget === null) {
-      firstTarget = target;
+      firstTarget = extraction.target;
     } else {
       // Second gated op detected — short-circuit with the multi-gated-op
       // discriminator. The caller responds 400 MULTIPLE_CONSENT_OPS without
@@ -518,6 +594,29 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       'A custody broadcast bundle may contain at most one consent or credit operation (author_accept, author_resign, claim_authorship, approve_authorship, or revoke_authorship). Submit each in its own request with its own fresh-auth proof.',
     );
   }
+  if (gatedScan.kind === 'malformed') {
+    // SECURITY-CRITICAL: a recognized gated op with a malformed required
+    // target field is rejected with 400 BEFORE any proof is consumed. Falling
+    // through to the no-gated-op session path would strip the per-op binding
+    // (the very substitution defense the gate exists for) by letting an
+    // attacker omit a bound field. No proof has been consumed at this point.
+    logger.warn(
+      {
+        event: 'custody.broadcast.gated_op_malformed',
+        route: 'custody.broadcast',
+        username,
+        gated_action: gatedScan.action,
+        malformed_field: gatedScan.field,
+      },
+      'custody.broadcast rejected — gated op has a malformed required target field',
+    );
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      `Operation '${gatedScan.action}' is missing or has a malformed required field '${gatedScan.field}'.`,
+    );
+  }
 
   // Fresh-auth verification hoisted ABOVE the idempotency check (round-2 F2).
   // Pre-fix order ran idempotency first so a retry of a confirmed consent op
@@ -563,6 +662,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
           consent_root_author: expectedTarget.root_author,
           consent_root_permlink: expectedTarget.root_permlink,
           consent_author_index: expectedTarget.author_index ?? null,
+          consent_claimer: expectedTarget.claimer ?? null,
           reason: result.reason,
         },
         'custody.broadcast rejected — fresh-auth proof invalid',
@@ -958,24 +1058,53 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
     };
   } else if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
     // Name-only-route credit ops. The proof binds to (action, paper_author,
-    // paper_permlink, author_index). paper_author / paper_permlink are
-    // identifier slugs (trim=true); author_index is a non-negative integer
-    // for claim/approve and absent for revoke (`hive-schemas.md` § 2.11).
-    // The target is built through `creditOpFreshAuthTarget` so this issuance
-    // path and the broadcast consume path share one encoding.
+    // paper_permlink) plus op-specific fields: author_index for claim/approve
+    // and `claimer` for approve/revoke. paper_author / paper_permlink / claimer
+    // are identifier slugs (trim=true); author_index is a non-negative integer.
+    // Binding `claimer` on approve/revoke stops a proof being redirected to a
+    // different co-author (`hive-schemas.md` § 2.10 / § 2.11). The target is
+    // built through `creditOpFreshAuthTarget` so this issuance path and the
+    // broadcast consume path share one encoding.
     const paperAuthorResult = requireStringField(body, 'paper_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
     if (!paperAuthorResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperAuthorResult.error);
     const paperPermlinkResult = requireStringField(body, 'paper_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
     if (!paperPermlinkResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperPermlinkResult.error);
-    let authorIndex: number | undefined;
-    if (action !== 'revoke_authorship') {
+    if (action === 'claim_authorship') {
       const rawIndex = body.author_index;
       if (typeof rawIndex !== 'number' || !Number.isInteger(rawIndex) || rawIndex < 0) {
         return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
       }
-      authorIndex = rawIndex;
+      target = creditOpFreshAuthTarget({
+        action,
+        paperAuthor: paperAuthorResult.value,
+        paperPermlink: paperPermlinkResult.value,
+        authorIndex: rawIndex,
+      });
+    } else if (action === 'approve_authorship') {
+      const rawIndex = body.author_index;
+      if (typeof rawIndex !== 'number' || !Number.isInteger(rawIndex) || rawIndex < 0) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
+      }
+      const claimerResult = requireStringField(body, 'claimer', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
+      if (!claimerResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', claimerResult.error);
+      target = creditOpFreshAuthTarget({
+        action,
+        paperAuthor: paperAuthorResult.value,
+        paperPermlink: paperPermlinkResult.value,
+        authorIndex: rawIndex,
+        claimer: claimerResult.value,
+      });
+    } else {
+      // revoke_authorship: binds claimer, no author_index on the wire.
+      const claimerResult = requireStringField(body, 'claimer', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
+      if (!claimerResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', claimerResult.error);
+      target = creditOpFreshAuthTarget({
+        action,
+        paperAuthor: paperAuthorResult.value,
+        paperPermlink: paperPermlinkResult.value,
+        claimer: claimerResult.value,
+      });
     }
-    target = creditOpFreshAuthTarget(action, paperAuthorResult.value, paperPermlinkResult.value, authorIndex);
   } else {
     return sendError(
       res,
@@ -1032,10 +1161,20 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
     }
 
     const issued = await issueFreshAuthToken(username, 'password', target);
+    // Echo the bound target so the SPA can cache the proof keyed on its actual
+    // binding (mirrors the ORCID-mechanism `handleFreshAuth` echo). The optional
+    // credit-op fields (`author_index` for claim/approve, `claimer` for
+    // approve/revoke) are echoed only when bound so the SPA can confirm the
+    // proof is pinned to the intended slot and co-author, not a substitute.
     return sendOk(res, {
       fresh_auth_proof: issued.token,
       expires_at: issued.expires_at,
       mechanism: issued.mechanism,
+      action: target.action,
+      root_author: target.root_author,
+      root_permlink: target.root_permlink,
+      ...(target.author_index !== undefined ? { author_index: target.author_index } : {}),
+      ...(target.claimer !== undefined ? { claimer: target.claimer } : {}),
     });
   } catch (err) {
     if (handleArgonError(res, err, { logContext: { username } }) === ARGON_HANDLED) return;

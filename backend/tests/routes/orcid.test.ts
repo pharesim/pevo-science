@@ -3835,3 +3835,138 @@ describe('orcid.ts structured-log shape coverage (round-2 hold-fix — Item 3 pa
     },
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST /api/orcid/start { mode: 'fresh_auth' } — name-only-route credit ops.
+// The ORCID-mechanism issuance side of the credit-op fresh-auth gate. /start
+// validates the credit-op body and stashes the per-op `fresh_auth_target` in
+// the OAuth state map; the later /callback mints a proof bound to that target.
+// These cases pin that the credit-op target binding is built correctly on the
+// ORCID side — especially the `claimer` binding on approve/revoke, which is the
+// defense against redirecting a minted proof to a different co-author
+// (`agents/docs/ARCHITECTURE.md` § 6.4 credit-op row, `hive-schemas.md`
+// § 2.9–§ 2.11). /start does only JWT auth + body validation + state stash for
+// these modes (no DB query, no OAuth round-trip), so the cases are deterministic
+// without reaching ORCID. verifyHiveSignature / the auth middleware chain run
+// real (the JWT auth gate is exercised, not mocked). When Redis is configured
+// the stashed target is read back and its fields asserted; otherwise the
+// in-memory state map is authoritative and not test-readable, so those cases
+// assert the validation status only.
+// ─────────────────────────────────────────────────────────────────────────
+describe('POST /api/orcid/start { mode: fresh_auth } — credit ops', () => {
+  async function startCreditOp(body: Record<string, unknown>) {
+    return request(app)
+      .post('/api/orcid/start')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ mode: 'fresh_auth', ...body });
+  }
+
+  async function readStashedTarget(state: string): Promise<Record<string, unknown> | null> {
+    const redis = getRedis();
+    if (!redis) return null;
+    const raw = await redis.get(`${config.appTag}:orcid_state:${state}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { fresh_auth_target?: Record<string, unknown> };
+    return parsed.fresh_auth_target ?? null;
+  }
+
+  it('claim_authorship with author_index → 200; stashed target binds the slot, no claimer', async () => {
+    const res = await startCreditOp({
+      action: 'claim_authorship',
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+      author_index: 2,
+    });
+    expect(res.status).toBe(200);
+    const state = new URL(res.body.data.redirect_url).searchParams.get('state')!;
+    const target = await readStashedTarget(state);
+    if (target) {
+      expect(target.action).toBe('claim_authorship');
+      expect(target.root_author).toBe('bob');
+      expect(target.root_permlink).toBe('paper-1');
+      expect(target.author_index).toBe(2);
+      expect(target.claimer).toBeUndefined();
+    }
+  });
+
+  it('claim_authorship missing author_index → 400 VALIDATION_ERROR', async () => {
+    const res = await startCreditOp({
+      action: 'claim_authorship',
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('approve_authorship with author_index + claimer → 200; stashed target binds the claimer', async () => {
+    const res = await startCreditOp({
+      action: 'approve_authorship',
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+      author_index: 2,
+      claimer: 'carol',
+    });
+    expect(res.status).toBe(200);
+    const state = new URL(res.body.data.redirect_url).searchParams.get('state')!;
+    const target = await readStashedTarget(state);
+    if (target) {
+      expect(target.action).toBe('approve_authorship');
+      expect(target.author_index).toBe(2);
+      expect(target.claimer).toBe('carol');
+    }
+  });
+
+  it('approve_authorship missing claimer → 400 VALIDATION_ERROR', async () => {
+    const res = await startCreditOp({
+      action: 'approve_authorship',
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+      author_index: 2,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('revoke_authorship with claimer (no author_index) → 200; stashed target binds the claimer', async () => {
+    const res = await startCreditOp({
+      action: 'revoke_authorship',
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+      claimer: 'carol',
+    });
+    expect(res.status).toBe(200);
+    const state = new URL(res.body.data.redirect_url).searchParams.get('state')!;
+    const target = await readStashedTarget(state);
+    if (target) {
+      expect(target.action).toBe('revoke_authorship');
+      expect(target.claimer).toBe('carol');
+      expect(target.author_index).toBeUndefined();
+    }
+  });
+
+  it('revoke_authorship missing claimer → 400 VALIDATION_ERROR', async () => {
+    const res = await startCreditOp({
+      action: 'revoke_authorship',
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('credit-op fresh_auth /start without auth headers → 401 UNAUTHORIZED (real auth gate)', async () => {
+    const res = await request(app)
+      .post('/api/orcid/start')
+      .send({
+        mode: 'fresh_auth',
+        action: 'approve_authorship',
+        paper_author: 'bob',
+        paper_permlink: 'paper-1',
+        author_index: 2,
+        claimer: 'carol',
+      });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+});

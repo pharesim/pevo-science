@@ -60,15 +60,18 @@ const StartBodySchema = z.object({
   // round-trip stores the target in the state map alongside `mode`/`username`,
   // and the callback reads it back to mint a target-bound proof. Anchored-route
   // consent ops carry (`action`, `root_author`, `root_permlink`); name-only-
-  // route credit ops carry (`action`, `paper_author`, `paper_permlink`,
-  // `author_index`) where claim/approve include `author_index` and revoke does
-  // not (`agents/docs/hive-schemas.md` § 2.11).
+  // route credit ops carry (`action`, `paper_author`, `paper_permlink`) plus
+  // op-specific fields: `author_index` for claim/approve and `claimer` for
+  // approve/revoke (`agents/docs/hive-schemas.md` § 2.9–§ 2.11). Binding
+  // `claimer` stops a minted approve/revoke proof being redirected to a
+  // different co-author.
   action: z.string().optional(),
   root_author: z.string().optional(),
   root_permlink: z.string().optional(),
   paper_author: z.string().optional(),
   paper_permlink: z.string().optional(),
   author_index: z.number().int().nonnegative().optional(),
+  claimer: z.string().optional(),
 });
 
 const router = Router();
@@ -372,6 +375,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
       paper_author: paperAuthor,
       paper_permlink: paperPermlink,
       author_index: authorIndex,
+      claimer,
     } = startParsed.data;
     if (action === 'set_password' || action === 'change_email' || action === 'delete_account' || action === 'ipfs_upload') {
       // Non-broadcast actions bind the target to the authenticated
@@ -427,24 +431,55 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
     } else if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
       // Name-only-route credit ops. The ORCID-mechanism issuance side serves
       // state C (ORCID-only, no password) and state B accounts. The target
-      // binds (action, paper_author, paper_permlink, author_index); revoke
-      // carries no author_index on the wire (`hive-schemas.md` § 2.11) and the
-      // Zod schema admitted it as an optional number, so a present-but-invalid
-      // index is already rejected at the parse layer. claim/approve require it.
+      // binds (action, paper_author, paper_permlink) plus op-specific fields:
+      // author_index for claim/approve and `claimer` for approve/revoke.
+      // `revoke_authorship` carries no author_index on the wire
+      // (`hive-schemas.md` § 2.11); the Zod schema admits author_index as an
+      // optional non-negative integer, so a present-but-invalid index is
+      // already rejected at the parse layer. Binding `claimer` on approve/revoke
+      // stops a proof being redirected to a different co-author.
       if (typeof paperAuthor !== 'string' || paperAuthor.length === 0) {
         return sendError(res, 400, 'VALIDATION_ERROR', 'paper_author is required');
       }
       if (typeof paperPermlink !== 'string' || paperPermlink.length === 0) {
         return sendError(res, 400, 'VALIDATION_ERROR', 'paper_permlink is required');
       }
-      let idx: number | undefined;
-      if (action !== 'revoke_authorship') {
+      if (action === 'claim_authorship') {
         if (typeof authorIndex !== 'number') {
           return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
         }
-        idx = authorIndex;
+        freshAuthTarget = creditOpFreshAuthTarget({
+          action,
+          paperAuthor,
+          paperPermlink,
+          authorIndex,
+        });
+      } else if (action === 'approve_authorship') {
+        if (typeof authorIndex !== 'number') {
+          return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
+        }
+        if (typeof claimer !== 'string' || claimer.length === 0) {
+          return sendError(res, 400, 'VALIDATION_ERROR', 'claimer is required');
+        }
+        freshAuthTarget = creditOpFreshAuthTarget({
+          action,
+          paperAuthor,
+          paperPermlink,
+          authorIndex,
+          claimer,
+        });
+      } else {
+        // revoke_authorship: binds claimer, no author_index on the wire.
+        if (typeof claimer !== 'string' || claimer.length === 0) {
+          return sendError(res, 400, 'VALIDATION_ERROR', 'claimer is required');
+        }
+        freshAuthTarget = creditOpFreshAuthTarget({
+          action,
+          paperAuthor,
+          paperPermlink,
+          claimer,
+        });
       }
-      freshAuthTarget = creditOpFreshAuthTarget(action, paperAuthor, paperPermlink, idx);
     } else {
       return sendError(
         res,
@@ -1236,15 +1271,16 @@ async function handleFreshAuth(
   }
 
   const issued = await issueFreshAuthToken(username, 'orcid', target);
-  // BACKEND-ORCID-FRESH-AUTH-CALLBACK-ECHOES-TARGET-TRIPLE:
-  // Echo the target triple so the SPA can cache the issued proof keyed on
-  // its actual binding. `target` is non-null here: the dispatch-site
-  // defensive 400 above (search for `fresh_auth state is missing the
-  // per-op target binding`) fires BEFORE handleFreshAuth, so
-  // `storedFreshAuthTarget` is guaranteed defined at the call site that
-  // passes it in. Without this echo, the frontend's `cacheConsentOpProof`
-  // helper writes the cache entry with undefined target fields and the
-  // subsequent strict-equality lookup becomes a permanent no-op.
+  // Echo the bound target so the SPA can cache the issued proof keyed on its
+  // actual binding. `target` is non-null here: the dispatch-site defensive 400
+  // (search for `fresh_auth state is missing the per-op target binding`) fires
+  // BEFORE handleFreshAuth, so `storedFreshAuthTarget` is guaranteed defined at
+  // the call site that passes it in. Without this echo, the frontend's
+  // `cacheConsentOpProof` helper writes the cache entry with undefined target
+  // fields and the subsequent strict-equality lookup becomes a permanent no-op.
+  // The optional credit-op fields (`author_index` for claim/approve, `claimer`
+  // for approve/revoke) are echoed only when bound so the SPA can confirm the
+  // proof is pinned to the intended slot and co-author rather than a substitute.
   sendOk(res, {
     mode: 'fresh_auth',
     fresh_auth_proof: issued.token,
@@ -1253,6 +1289,8 @@ async function handleFreshAuth(
     action: target.action,
     root_author: target.root_author,
     root_permlink: target.root_permlink,
+    ...(target.author_index !== undefined ? { author_index: target.author_index } : {}),
+    ...(target.claimer !== undefined ? { claimer: target.claimer } : {}),
   });
 }
 

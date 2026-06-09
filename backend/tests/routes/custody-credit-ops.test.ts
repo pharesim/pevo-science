@@ -6,8 +6,10 @@
  * same `POST /api/custody/broadcast` endpoint as the consent ops; per
  * `agents/docs/ARCHITECTURE.md` § 6.4 + § 6.5 invariant #1, a stolen JWT alone
  * must not be able to mint or revoke authorship credit. This suite mirrors the
- * `custody-consent-ops` coverage shape and adds the credit-op-specific
- * `author_index` binding axis.
+ * `custody-consent-ops` coverage shape and adds the credit-op-specific binding
+ * axes: `author_index` (claim/approve) and `claimer` (approve/revoke). The
+ * `claimer` binding is the defense against redirecting a minted approve/revoke
+ * proof to credit or strip a DIFFERENT co-author at the same paper / slot.
  *
  * Coverage shape (real-DB + mocked-dhive):
  *  - POST /api/custody/fresh-auth (password mechanism) for credit ops
@@ -17,10 +19,12 @@
  *  - POST /api/custody/broadcast for credit ops
  *      - claim_authorship with valid fresh-auth → 200; audit-log row carries
  *        auth_mechanism / fresh_auth_outcome / session_id / user_agent.
- *      - approve_authorship + revoke_authorship valid → 200.
+ *      - approve_authorship + revoke_authorship valid (claimer bound) → 200.
  *      - claim_authorship WITHOUT fresh_auth_proof → 401 FRESH_AUTH_REQUIRED.
- *      - cross-paper / cross-action / cross-author_index proofs → 403
- *        target_mismatch.
+ *      - cross-paper / cross-action / cross-author_index / cross-claimer proofs
+ *        → 403 target_mismatch.
+ *      - approve/claim op with a missing bound field (claimer / author_index) →
+ *        400 VALIDATION_ERROR (no silent downgrade to the session-proof path).
  *      - replay (token reused) → 401 expired.
  *      - cross-account proof → 403 username_mismatch.
  *      - two credit ops in one bundle → 400 MULTIPLE_CONSENT_OPS.
@@ -274,12 +278,65 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
           paper_author: 'bob',
           paper_permlink: 'paper-1',
           author_index: 'two',
+          claimer: 'someclaimer',
         });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('VALIDATION_ERROR');
     });
 
-    it('revoke_authorship without author_index → 200 + token (no index on the wire)', async () => {
+    it('approve_authorship missing claimer → 400 VALIDATION_ERROR', async () => {
+      const res = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'approve_authorship',
+          paper_author: 'bob',
+          paper_permlink: 'paper-1',
+          author_index: 2,
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('approve_authorship with author_index + claimer → 200 + token; response echoes the bound claimer', async () => {
+      const res = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'approve_authorship',
+          paper_author: 'bob',
+          paper_permlink: 'paper-1',
+          author_index: 2,
+          claimer: 'someclaimer',
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
+      // Echo the bound target so the SPA can verify what the proof is pinned to.
+      expect(res.body.data.action).toBe('approve_authorship');
+      expect(res.body.data.author_index).toBe(2);
+      expect(res.body.data.claimer).toBe('someclaimer');
+    });
+
+    it('revoke_authorship with claimer (no author_index) → 200 + token (no index on the wire)', async () => {
+      const res = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'revoke_authorship',
+          paper_author: 'bob',
+          paper_permlink: 'paper-1',
+          claimer: 'someclaimer',
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
+      expect(res.body.data.claimer).toBe('someclaimer');
+      expect(res.body.data.author_index).toBeUndefined();
+    });
+
+    it('revoke_authorship missing claimer → 400 VALIDATION_ERROR', async () => {
       const res = await request(app)
         .post('/api/custody/fresh-auth')
         .set('Authorization', bearerFor(ALICE))
@@ -289,8 +346,8 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
           paper_author: 'bob',
           paper_permlink: 'paper-1',
         });
-      expect(res.status).toBe(200);
-      expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
     });
   });
 
@@ -301,7 +358,7 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
       const issued = await issueFreshAuthToken(
         ALICE,
         'password',
-        creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 2),
+        creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2 }),
       );
       const res = await request(app)
         .post('/api/custody/broadcast')
@@ -332,11 +389,11 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
       expect(rows[0].user_agent).toBe(sha256Hex('PEvO-Credit/1.0'));
     });
 
-    it('approve_authorship with valid fresh-auth → 200', async () => {
+    it('approve_authorship with valid fresh-auth (claimer bound) → 200', async () => {
       const issued = await issueFreshAuthToken(
         ALICE,
         'password',
-        creditOpFreshAuthTarget('approve_authorship', 'bob', 'paper-1', 3),
+        creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 3, claimer: 'someclaimer' }),
       );
       const res = await request(app)
         .post('/api/custody/broadcast')
@@ -348,11 +405,11 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
       expect(res.status).toBe(200);
     });
 
-    it('revoke_authorship (no author_index) with valid fresh-auth → 200', async () => {
+    it('revoke_authorship (no author_index, claimer bound) with valid fresh-auth → 200', async () => {
       const issued = await issueFreshAuthToken(
         ALICE,
         'password',
-        creditOpFreshAuthTarget('revoke_authorship', 'bob', 'paper-1', undefined),
+        creditOpFreshAuthTarget({ action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'someclaimer' }),
       );
       const res = await request(app)
         .post('/api/custody/broadcast')
@@ -362,6 +419,114 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
           operations: [revokeOp(ALICE, 'bob', 'paper-1')],
         });
       expect(res.status).toBe(200);
+    });
+
+    it('approve proof bound to claimer X cannot credit a DIFFERENT claimer Y at the same slot → 403 target_mismatch', async () => {
+      // SECURITY: the claimer binding is the defense against redirecting a
+      // minted approve proof to credit a different co-author.
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 3, claimer: 'realclaimer' }),
+      );
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: issued.token,
+          // approveOp hard-codes claimer 'someclaimer' — differs from the proof's
+          // bound 'realclaimer', so the target hash must not match.
+          operations: [approveOp(ALICE, 'bob', 'paper-1', 3)],
+        });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(res.body.error.details?.reason).toBe('target_mismatch');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+    });
+
+    it('revoke proof bound to claimer X cannot strip a DIFFERENT claimer Y at the same paper → 403 target_mismatch', async () => {
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        creditOpFreshAuthTarget({ action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'realclaimer' }),
+      );
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: issued.token,
+          operations: [revokeOp(ALICE, 'bob', 'paper-1')],
+        });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(res.body.error.details?.reason).toBe('target_mismatch');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+    });
+
+    it('approve_authorship op missing claimer → 400 VALIDATION_ERROR (no downgrade to session path, no proof consumed)', async () => {
+      // The implicit-downgrade closure: an approve op that omits the bound
+      // `claimer` must reject with 400, not fall through to the target-less
+      // session-proof path.
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 3, claimer: 'someclaimer' }),
+      );
+      const opNoClaimer = [
+        'custom_json',
+        {
+          required_auths: [],
+          required_posting_auths: [ALICE],
+          id: config.appTag,
+          json: JSON.stringify({
+            action: 'approve_authorship',
+            paper_author: 'bob',
+            paper_permlink: 'paper-1',
+            author_index: 3,
+          }),
+        },
+      ];
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({ fresh_auth_proof: issued.token, operations: [opNoClaimer] });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+
+      // Proof was NOT consumed by the malformed rejection: a follow-up
+      // well-formed op with the same token + matching target still lands.
+      const followup = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: issued.token,
+          operations: [approveOp(ALICE, 'bob', 'paper-1', 3)],
+        });
+      expect(followup.status).toBe(200);
+    });
+
+    it('claim_authorship op missing author_index → 400 VALIDATION_ERROR (no downgrade to session path)', async () => {
+      const opNoIndex = [
+        'custom_json',
+        {
+          required_auths: [],
+          required_posting_auths: [ALICE],
+          id: config.appTag,
+          json: JSON.stringify({
+            action: 'claim_authorship',
+            paper_author: 'bob',
+            paper_permlink: 'paper-1',
+          }),
+        },
+      ];
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({ operations: [opNoIndex] });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
     });
 
     it('claim_authorship WITHOUT fresh_auth_proof → 401 FRESH_AUTH_REQUIRED missing', async () => {
@@ -379,7 +544,7 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
       const issued = await issueFreshAuthToken(
         ALICE,
         'password',
-        creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-x', 2),
+        creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-x', authorIndex: 2 }),
       );
       const res = await request(app)
         .post('/api/custody/broadcast')
@@ -398,7 +563,7 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
       const issued = await issueFreshAuthToken(
         ALICE,
         'password',
-        creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 2),
+        creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2 }),
       );
       const res = await request(app)
         .post('/api/custody/broadcast')
@@ -417,7 +582,7 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
       const issued = await issueFreshAuthToken(
         ALICE,
         'password',
-        creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 2),
+        creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2 }),
       );
       const res = await request(app)
         .post('/api/custody/broadcast')
@@ -436,7 +601,7 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
       const issued = await issueFreshAuthToken(
         ALICE,
         'password',
-        creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 2),
+        creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2 }),
       );
       const first = await request(app)
         .post('/api/custody/broadcast')
@@ -463,7 +628,7 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
       const bobToken = await issueFreshAuthToken(
         BOB,
         'password',
-        creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 2),
+        creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2 }),
       );
       const res = await request(app)
         .post('/api/custody/broadcast')
@@ -481,7 +646,7 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
       const issued = await issueFreshAuthToken(
         ALICE,
         'password',
-        creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-c', 2),
+        creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-c', authorIndex: 2 }),
       );
       const res = await request(app)
         .post('/api/custody/broadcast')

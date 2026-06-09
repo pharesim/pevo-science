@@ -206,36 +206,63 @@ describe('computeFreshAuthTargetHash — content hash', () => {
 
   // Name-only-route credit ops fold author_index into the target hash.
   it('author_index changes the hash for claim/approve', () => {
-    const base = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 2);
-    const other = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 3);
+    const base = creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2 });
+    const other = creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 3 });
     expect(computeFreshAuthTargetHash(base)).not.toBe(computeFreshAuthTargetHash(other));
   });
 
-  it('omitting author_index is byte-identical to the pre-author_index triple (backward compat)', () => {
-    // A target with author_index === undefined must hash exactly as the
-    // original (action, root_author, root_permlink) triple did, so consent-op
-    // and non-broadcast-critical proofs minted before this field existed still
-    // verify. revoke_authorship carries no author_index, so its target lands
-    // in this no-index form.
-    const withoutIndex = creditOpFreshAuthTarget('revoke_authorship', 'bob', 'paper-1', undefined);
-    const tripleOnly = {
-      action: 'revoke_authorship' as const,
+  it('claim target (no claimer, has index) is byte-identical to the bare index-bound triple (backward compat)', () => {
+    // claim_authorship carries author_index but no claimer (the claimer IS the
+    // signer). Its target hash must equal the pre-claimer encoding of an
+    // (action, root_author, root_permlink, author_index) target so a
+    // claim proof minted before the claimer field existed still verifies.
+    const claim = creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2 });
+    const preClaimerForm = {
+      action: 'claim_authorship' as const,
       root_author: 'bob',
       root_permlink: 'paper-1',
+      author_index: 2,
     };
-    expect(computeFreshAuthTargetHash(withoutIndex)).toBe(computeFreshAuthTargetHash(tripleOnly));
+    expect(computeFreshAuthTargetHash(claim)).toBe(computeFreshAuthTargetHash(preClaimerForm));
   });
 
   it('a present author_index never collides with the absent form', () => {
-    const absent = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', undefined);
-    const presentZero = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 0);
+    const absent = {
+      action: 'claim_authorship' as const,
+      root_author: 'bob',
+      root_permlink: 'paper-1',
+    };
+    const presentZero = creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 0 });
     expect(computeFreshAuthTargetHash(absent)).not.toBe(computeFreshAuthTargetHash(presentZero));
   });
 
   it('credit-op action changes the hash even with identical paper + index tails', () => {
-    const claim = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 1);
-    const approve = creditOpFreshAuthTarget('approve_authorship', 'bob', 'paper-1', 1);
+    const claim = creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 1 });
+    const approve = creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 1, claimer: 'carol' });
     expect(computeFreshAuthTargetHash(claim)).not.toBe(computeFreshAuthTargetHash(approve));
+  });
+
+  // SECURITY: the claimer binding stops a minted approve/revoke proof being
+  // redirected to a DIFFERENT co-author at the same paper / slot.
+  it('claimer changes the hash for approve at the same paper + index', () => {
+    const carol = creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2, claimer: 'carol' });
+    const dave = creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2, claimer: 'dave' });
+    expect(computeFreshAuthTargetHash(carol)).not.toBe(computeFreshAuthTargetHash(dave));
+  });
+
+  it('claimer changes the hash for revoke at the same paper', () => {
+    const carol = creditOpFreshAuthTarget({ action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'carol' });
+    const dave = creditOpFreshAuthTarget({ action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'dave' });
+    expect(computeFreshAuthTargetHash(carol)).not.toBe(computeFreshAuthTargetHash(dave));
+  });
+
+  it('revoke (claimer, no index) and approve (claimer + index) at the same paper hash distinctly', () => {
+    // revoke encodes claimer with the index segment absent; approve encodes
+    // both index and claimer. The fixed index-before-claimer order keeps the
+    // two unambiguous, so a revoke proof cannot be replayed against an approve.
+    const revoke = creditOpFreshAuthTarget({ action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'carol' });
+    const approve = creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2, claimer: 'carol' });
+    expect(computeFreshAuthTargetHash(revoke)).not.toBe(computeFreshAuthTargetHash(approve));
   });
 });
 
@@ -254,7 +281,7 @@ describe('CREDIT_OP_ACTIONS — wire predicate', () => {
 
 describe('creditOpFreshAuthTarget — credit-op target builder + consume round-trip', () => {
   it('claim target validly consumes when issued and consumed at the same (action, paper, index)', async () => {
-    const target = creditOpFreshAuthTarget('claim_authorship', 'bob', 'paper-1', 4);
+    const target = creditOpFreshAuthTarget({ action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 4 });
     const issued = await issueFreshAuthToken('alice', 'password', target);
     const result = await consumeFreshAuthToken(
       issued.token,
@@ -265,9 +292,9 @@ describe('creditOpFreshAuthTarget — credit-op target builder + consume round-t
   });
 
   it('approve proof minted for index 4 rejects a consume bound to index 5 → target_mismatch', async () => {
-    const minted = creditOpFreshAuthTarget('approve_authorship', 'bob', 'paper-1', 4);
+    const minted = creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 4, claimer: 'carol' });
     const issued = await issueFreshAuthToken('alice', 'password', minted);
-    const wrongIndex = creditOpFreshAuthTarget('approve_authorship', 'bob', 'paper-1', 5);
+    const wrongIndex = creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 5, claimer: 'carol' });
     const result = await consumeFreshAuthToken(
       issued.token,
       'alice',
@@ -277,8 +304,36 @@ describe('creditOpFreshAuthTarget — credit-op target builder + consume round-t
     if (!result.valid) expect(result.reason).toBe('target_mismatch');
   });
 
-  it('revoke target (no index) validly consumes at the matching paper + action', async () => {
-    const target = creditOpFreshAuthTarget('revoke_authorship', 'bob', 'paper-1', undefined);
+  it('approve proof minted for claimer carol rejects a consume bound to claimer dave → target_mismatch', async () => {
+    // The core threat the claimer binding defeats: a proof minted to credit
+    // carol at a slot must not authorize crediting dave at the same slot.
+    const minted = creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 4, claimer: 'carol' });
+    const issued = await issueFreshAuthToken('alice', 'password', minted);
+    const wrongClaimer = creditOpFreshAuthTarget({ action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 4, claimer: 'dave' });
+    const result = await consumeFreshAuthToken(
+      issued.token,
+      'alice',
+      computeFreshAuthTargetHash(wrongClaimer),
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toBe('target_mismatch');
+  });
+
+  it('revoke proof minted for claimer carol rejects a consume bound to claimer dave → target_mismatch', async () => {
+    const minted = creditOpFreshAuthTarget({ action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'carol' });
+    const issued = await issueFreshAuthToken('alice', 'orcid', minted);
+    const wrongClaimer = creditOpFreshAuthTarget({ action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'dave' });
+    const result = await consumeFreshAuthToken(
+      issued.token,
+      'alice',
+      computeFreshAuthTargetHash(wrongClaimer),
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toBe('target_mismatch');
+  });
+
+  it('revoke target validly consumes at the matching paper + action + claimer', async () => {
+    const target = creditOpFreshAuthTarget({ action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'carol' });
     const issued = await issueFreshAuthToken('alice', 'orcid', target);
     const result = await consumeFreshAuthToken(
       issued.token,

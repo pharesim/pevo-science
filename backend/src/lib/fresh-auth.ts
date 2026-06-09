@@ -80,10 +80,15 @@ export const CONSENT_OP_ACTIONS: ReadonlySet<string> = new Set([
  *  reputation-weighty, identity-binding ops (they mint or revoke authorship
  *  credit), so a stolen JWT alone must not be able to broadcast them per
  *  `agents/docs/ARCHITECTURE.md` § 6.5 invariant #1. Their target binds
- *  `(action, paper_author, paper_permlink, author_index)` where the wire
- *  carries those fields. `revoke_authorship` carries no `author_index` on the
- *  wire (see `agents/docs/hive-schemas.md` § 2.11), so its target binds
- *  `(action, paper_author, paper_permlink)` only. Kept separate from
+ *  `(action, paper_author, paper_permlink)` plus the op-specific fields the
+ *  wire carries (`agents/docs/hive-schemas.md` § 2.9–§ 2.11):
+ *  - `claim_authorship` — `author_index` (signer claims their own slot).
+ *  - `approve_authorship` — `author_index` AND `claimer` (the other account
+ *    being credited at that slot).
+ *  - `revoke_authorship` — `claimer` (the account being stripped); no
+ *    `author_index` on the wire.
+ *  Binding `claimer` on approve/revoke prevents a minted proof being redirected
+ *  to credit or strip a DIFFERENT co-author. Kept separate from
  *  `CONSENT_OP_ACTIONS` because the consent ops and credit ops use different
  *  payload field names. */
 export const CREDIT_OP_ACTIONS: ReadonlySet<string> = new Set([
@@ -110,13 +115,17 @@ export type FreshAuthMechanism = 'password' | 'orcid';
  *
  *  - **Credit-op actions (broadcast):** `claim_authorship`,
  *    `approve_authorship`, and `revoke_authorship` bind to
- *    `(action, <paper_author>, <paper_permlink>, <author_index>)`. These
- *    name-only-route ops issue a `custom_json` on chain (see
+ *    `(action, <paper_author>, <paper_permlink>)` plus op-specific fields.
+ *    These name-only-route ops issue a `custom_json` on chain (see
  *    `CREDIT_OP_ACTIONS` above); the paper fields map onto `root_author` /
- *    `root_permlink` and the slot index onto `author_index`.
- *    `revoke_authorship` carries no `author_index` on the wire (see
- *    `agents/docs/hive-schemas.md` § 2.11), so its target omits
- *    `author_index` and binds the paper + action only.
+ *    `root_permlink`, the slot index onto `author_index`, and the credited /
+ *    stripped account onto `claimer`. `claim_authorship` binds `author_index`
+ *    (the signer claims their own slot, no `claimer` on the wire);
+ *    `approve_authorship` binds `author_index` AND `claimer`;
+ *    `revoke_authorship` binds `claimer` only (no `author_index` on the wire,
+ *    see `agents/docs/hive-schemas.md` § 2.11). Binding `claimer` on
+ *    approve/revoke stops a minted proof being redirected to a DIFFERENT
+ *    co-author at the same slot.
  *
  *  - **Non-broadcast critical actions:** `set_password`, `change_email`,
  *    `delete_account`, and `ipfs_upload` bind to
@@ -155,11 +164,11 @@ export type FreshAuthTargetAction =
   | 'delete_account'
   | 'ipfs_upload';
 
-/** Round-5 hold #3: shape of the per-op target the fresh-auth proof
- *  binds to. The triple is reduced to a SHA-256 hash at issuance time
- *  via `computeFreshAuthTargetHash`. The hash, not the cleartext fields,
- *  is what's stored in the entry — the hash domain-separates from any
- *  other fields that may share the same underlying string-concat shape. */
+/** Shape of the per-op target the fresh-auth proof binds to. The fields are
+ *  reduced to a SHA-256 hash at issuance time via `computeFreshAuthTargetHash`.
+ *  The hash, not the cleartext fields, is what's stored in the entry — the
+ *  hash domain-separates from any other fields that may share the same
+ *  underlying string-concat shape. */
 export interface FreshAuthTarget {
   action: FreshAuthTargetAction;
   root_author: string;
@@ -174,6 +183,21 @@ export interface FreshAuthTarget {
    *  the hash is identical to the pre-`author_index` encoding, so existing
    *  consent-op and non-broadcast-critical proofs are unchanged. */
   author_index?: number;
+  /** Credited/stripped account for the name-only-route credit ops that act on
+   *  a co-author OTHER than the broadcasting signer: `approve_authorship` and
+   *  `revoke_authorship` both carry a `claimer` on the wire (`hive-schemas.md`
+   *  § 2.10 / § 2.11) naming the account whose credit the op binds or strips.
+   *  WITHOUT folding `claimer` into the hash, a minted approve/revoke proof for
+   *  `(action, paper_author, paper_permlink, author_index)` could be redirected
+   *  by a compromised SPA to credit or strip a DIFFERENT co-author at the same
+   *  slot — the exact substitution this binding exists to defeat
+   *  (`agents/docs/ARCHITECTURE.md` § 6.4 credit-op row, § 6.5 invariant #1).
+   *  `claim_authorship` carries no `claimer` (the claimer IS the signer, already
+   *  pinned by the consume-side username check), so its target omits this field;
+   *  consent ops and the non-broadcast criticals omit it too. When omitted, the
+   *  hash is identical to the pre-`claimer` encoding, so existing proofs that
+   *  never carry it are unchanged. */
+  claimer?: string;
 }
 
 /** Helper that builds the canonical `FreshAuthTarget` for the `/set-password`
@@ -246,8 +270,8 @@ interface StoredEntry {
 }
 
 /**
- * Round-5 hold #3: compute the per-op target hash. The bind is over a
- * length-prefixed encoding of the triple:
+ * Compute the per-op target hash. The bind is over a length-prefixed encoding
+ * of the target triple:
  *
  *   `<len(action)>|<action>|<len(root_author)>|<root_author>|<len(root_permlink)>|<root_permlink>`
  *
@@ -261,16 +285,24 @@ interface StoredEntry {
  * makes the binding contract self-evidently correct under any string
  * input rather than relying on an external invariant.
  *
- * `author_index` (name-only-route credit ops) is appended ONLY when present.
- * When absent the encoding is byte-identical to the original triple form, so
- * consent-op and non-broadcast-critical proofs minted before this field
- * existed (and those that never carry it) hash to the same value. When
- * present it is appended in the same length-prefixed form as a string-ified
- * integer, keeping the encoding unambiguous: an absent index and an index of
- * any value produce distinct encodings (the absent form has no trailing
- * segment at all), so a `revoke_authorship` proof cannot be replayed against
- * a `claim_authorship` op on the same paper even if both share action-paper
- * tails, because the actions differ in the leading segment.
+ * The two optional credit-op fields are appended ONLY when present, each in
+ * the same length-prefixed form, in a FIXED order (`author_index` then
+ * `claimer`). When both are absent the encoding is byte-identical to the
+ * original triple form, so consent-op and non-broadcast-critical proofs that
+ * never carry them hash to the same value as before either field existed.
+ *
+ * - `author_index` (name-only-route credit ops `claim_authorship` /
+ *   `approve_authorship`) is appended as a string-ified integer. An absent
+ *   index and an index of any value produce distinct encodings (the absent
+ *   form has no segment at all), so a `revoke_authorship` proof cannot be
+ *   replayed against a `claim_authorship` op on the same paper.
+ * - `claimer` (`approve_authorship` / `revoke_authorship`) names the credited
+ *   or stripped co-author. Folding it in is what stops a minted approve/revoke
+ *   proof from being redirected to a DIFFERENT co-author at the same slot. The
+ *   fixed `author_index`-before-`claimer` order keeps the encoding unambiguous
+ *   even though `revoke_authorship` carries `claimer` but no `author_index`:
+ *   its encoding has the index segment absent and the claimer segment present,
+ *   distinct from any `approve_authorship` encoding (which carries both).
  */
 export function computeFreshAuthTargetHash(target: FreshAuthTarget): string {
   let concat =
@@ -280,6 +312,9 @@ export function computeFreshAuthTargetHash(target: FreshAuthTarget): string {
   if (target.author_index !== undefined) {
     const idx = String(target.author_index);
     concat += `|${idx.length}|${idx}`;
+  }
+  if (target.claimer !== undefined) {
+    concat += `|${target.claimer.length}|${target.claimer}`;
   }
   return crypto.createHash('sha256').update(concat).digest('hex');
 }
@@ -356,27 +391,60 @@ export function ipfsUploadFreshAuthTarget(username: string): FreshAuthTarget {
  *  set. */
 export type CreditOpAction = 'claim_authorship' | 'approve_authorship' | 'revoke_authorship';
 
+/** Per-op field shape for the three name-only-route credit ops, expressed so
+ *  the type system pins which wire fields each op carries (`hive-schemas.md`
+ *  § 2.9–§ 2.11):
+ *
+ *  - `claim_authorship` — `author_index` (the slot the signer claims for
+ *    THEMSELVES); NO `claimer` (the claimer IS the signer, already bound by the
+ *    consume-side username check).
+ *  - `approve_authorship` — `author_index` (the slot) AND `claimer` (the OTHER
+ *    account being credited at that slot).
+ *  - `revoke_authorship` — `claimer` (the account being stripped); NO
+ *    `author_index` on the wire.
+ *
+ *  This discriminated shape is the single source of truth the builder, the
+ *  broadcast scan, and both issuance routes agree on, so a caller cannot omit
+ *  `claimer` on approve/revoke (the binding the security gate depends on) or
+ *  supply it on claim (which would diverge the hash from the wire payload). */
+export type CreditOpTargetFields =
+  | { action: 'claim_authorship'; paperAuthor: string; paperPermlink: string; authorIndex: number }
+  | { action: 'approve_authorship'; paperAuthor: string; paperPermlink: string; authorIndex: number; claimer: string }
+  | { action: 'revoke_authorship'; paperAuthor: string; paperPermlink: string; claimer: string };
+
 /** Target-binding helper for the name-only-route credit ops. The proof binds
- *  to `(action, paper_author, paper_permlink, author_index)`. The paper fields
- *  map onto `root_author` / `root_permlink` (the same hash slots the consent
- *  ops use), and the slot index onto `author_index`. `claim_authorship` and
- *  `approve_authorship` carry `author_index` on the wire (`hive-schemas.md`
- *  § 2.9 / § 2.10); `revoke_authorship` does not (§ 2.11), so callers pass
- *  `authorIndex === undefined` for revoke and the resulting hash binds the
- *  paper + action only. Both issuance routes and the broadcast consume side
- *  build the target through this single helper so the two sides cannot diverge
- *  on the encoding. */
-export function creditOpFreshAuthTarget(
-  action: CreditOpAction,
-  paperAuthor: string,
-  paperPermlink: string,
-  authorIndex: number | undefined,
-): FreshAuthTarget {
+ *  to `(action, paper_author, paper_permlink)` plus the op-specific fields:
+ *  `author_index` for claim/approve and `claimer` for approve/revoke. The paper
+ *  fields map onto `root_author` / `root_permlink` (the same hash slots the
+ *  consent ops use). Binding `claimer` on approve/revoke is the defense against
+ *  redirecting a minted proof to a different co-author at the same slot
+ *  (`agents/docs/ARCHITECTURE.md` § 6.4 credit-op row). Both issuance routes
+ *  and the broadcast consume side build the target through this single helper
+ *  so the two sides cannot diverge on the encoding. */
+export function creditOpFreshAuthTarget(fields: CreditOpTargetFields): FreshAuthTarget {
+  if (fields.action === 'claim_authorship') {
+    return {
+      action: fields.action,
+      root_author: fields.paperAuthor,
+      root_permlink: fields.paperPermlink,
+      author_index: fields.authorIndex,
+    };
+  }
+  if (fields.action === 'approve_authorship') {
+    return {
+      action: fields.action,
+      root_author: fields.paperAuthor,
+      root_permlink: fields.paperPermlink,
+      author_index: fields.authorIndex,
+      claimer: fields.claimer,
+    };
+  }
+  // revoke_authorship: claimer bound, no author_index on the wire.
   return {
-    action,
-    root_author: paperAuthor,
-    root_permlink: paperPermlink,
-    author_index: authorIndex,
+    action: fields.action,
+    root_author: fields.paperAuthor,
+    root_permlink: fields.paperPermlink,
+    claimer: fields.claimer,
   };
 }
 
