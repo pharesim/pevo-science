@@ -99,3 +99,14 @@ Round-2 hold item 1 landed: de-rotted the round/hold-number + task-slug anchors 
 - Rewrote the "11 callsites" paragraph to describe the current structure (the rev_agg LATERAL consolidation, the `validReviewWhere` composition sites) without round-history narration.
 
 Audit-own-replacement: no new slug/line-number/SHA/§/round-N anchor. No assertion changes (`minOccurrences` / `callsites` semantics unchanged). `npm run typecheck` + `npm run lint` clean; canary green (6/6).
+
+---
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES
+
+`/ce-code-review` (correctness on Opus; testing, maintainability, project-standards on Sonnet; `ce-agent-native-reviewer` skipped per PEvO) on the de-rot commit `137e0940`. The de-rot is VERIFIED: it is truly comment-only (the `callsites` array labels feed only the `it()` description via `.join(', ')`, never an assertion; `minOccurrences` unchanged), no new rot anchor was introduced, and no residual round/hold/slug anchor remains in the changed hunks. One item before archive:
+
+1. **The de-rot introduced a factual inaccuracy (the convention-fix did not audit its own new text).** The rewritten count paragraph states "the **three** `reputation.ts` sites are enumerated individually above" — but the scope list enumerates **four** (`active_authors` review arm, `paper_reviews` CTE, `user_reviews` CTE, `citing_paper_quality` CTE) and the `CALLSITES` array carries `reputation.ts` `minOccurrences: 4`. The "11 callsites" total the sentence is explaining requires `reputation.ts = 4` (2 + 2 + 1 + 1 + 1 + 4 = 11); "three" yields 10 and is internally self-contradicting (the same sentence then treats `active_authors` — one of the four — as a separate composition site). The old wording "three" was historically accurate only because the very next clause said `active_authors` was "added as the 4th"; the rewrite dropped that clause but kept "three". Fix: change "the three `reputation.ts` sites" to "the four `reputation.ts` sites" so the narration matches the scope list, the `minOccurrences: 4`, and the 11-callsite total. Comment-only; no assertion change; mind `convention-enforcing-fix-must-audit-its-own-new-code` for the replacement.
+
+When item 1 lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal.
+
