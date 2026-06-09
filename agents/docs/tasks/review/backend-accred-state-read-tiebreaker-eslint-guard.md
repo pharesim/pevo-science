@@ -43,3 +43,17 @@ Add an ESLint rule that flags any HAF `custom_json` read filtering on `action IN
 - `agents/docs/solutions/conventions/convention-sweep-syntactic-form-misses-semantic-siblings-2026-05-21.md` (Section 2 — structural enforcement for a recurring drift class).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend completion note (2026-06-09, commit `4f47ac84`, worktree-fan-out worker merged to main)
+
+Landed `pevo/no-accred-state-read-missing-id-tiebreaker` in `backend/eslint.config.mjs`, mirroring the `noCustomIdBlockNumFloorRule` static-SQL-literal AST shape (shared `foldStringExpr` core, comments stripped). Zero suppressions; only the two allowed files changed (`eslint.config.mjs` + the `window-cte-deterministic-tiebreaker.test.ts` scope-note, which now names the lint rule as the guard for the inline reads).
+
+**Detection fingerprint:** a flattened literal containing a single-line `'action' = / IN (...'accredit'|'revoke')` predicate gates the rule on the accreditation-state family (excludes `update_params`, `update_weights`, `'revote'`, idempotency probes by construction). Two region shapes are then classified as latest-action-wins reads: (a) `ORDER BY` clauses scanned with paren-depth tracking to a clause-depth `LIMIT 1` (pagination `LIMIT $N` skips; DISTINCT-ON subquery arms and `${'$'}{dir}` interpolations exit the region); (b) any `OVER (...)` window body (ROW_NUMBER rankings). In a classified region, every `block_num DESC` must be immediately followed by `, <alias.>id DESC` / `op_id DESC`.
+
+**Probe evidence (both arms):** dropping `, cj.id DESC` from `getAccreditationFromHaf` (`routes/profile.ts`) → exactly one eslint error on that site (LIMIT-1 arm); dropping it from `getAccreditedSet`'s ROW_NUMBER ranking (`accreditation.ts`) → exactly one error (window arm). Both probes reverted.
+
+**Calibration confirmed:** window-feed reads, the genesis `MIN()` aggregate, and the accepted-residual reads stay green (clean full-`src/` run). `npx eslint src/ --report-unused-disable-directives` clean except the pre-existing accepted `author-supersession.ts` directive; typecheck + lint clean; `window-cte-deterministic-tiebreaker.test.ts` 3/3 and `tests/eslint/` 47/47 green. Post-merge combined-tree verification (with the concurrently-landed orcid admin-broadcast migration): lint + typecheck clean, 152/152 across orcid + tiebreaker + eslint suites.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
