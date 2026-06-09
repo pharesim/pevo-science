@@ -154,3 +154,43 @@ for `backend-notifications-route-newest-first-whole-block`.
 When the fixes land, `git mv` this file back to `tasks/review/`.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09, commit 7aacd479 on main)
+
+All three hold-block fixes landed in `frontend/src/notifications.js` (+
+`tests/unit/notifications.test.js`).
+
+- **Fix 1 (P2, newest-first feed order).** The merge now sorts the deduped array
+  by `block_num` descending and trims to `MAX_EVENTS` on EVERY poll — the
+  over-cap-only ternary is gone, so the cap is a pure tail-trim. An oversized
+  whole-block poll can no longer flip the list asc<->desc against the next
+  under-cap poll, and the pre-existing "newest renders at the bottom of a batch"
+  oddity is fixed. The comment is anchored on behavioral semantics (no line/slug/
+  SHA references).
+- **Fix 2 (P3, narrowed comments).** The `markAllRead`/`seenBlock` comment now
+  states the honest bounded-feed trade-off (the cap sheds the OLDEST events
+  beyond `MAX_EVENTS`, which leave memory and stop counting toward `unreadCount`
+  regardless of `markAllRead`) instead of claiming it "never zeroes unread." The
+  merge/sort comment stops claiming the single-oversized-block case is handled:
+  it notes events sharing one `block_num` are not separable by the comparator and
+  marks that a deferred single-instance non-concern. No code fix for the
+  single-block tie case, per the architecture deferral.
+- **Fix 3 (P3, tests).** Added the newest-first order assertion to the over-cap
+  test (`store.events[0].block_num === 250`); added a new `renders newest-first
+  under the cap` test (pins the common-path order against an ascending
+  regression); added a `toHaveBeenCalledTimes(1)` tight-loop fence after poll 1
+  in the consecutive-polls test; and restored cross-poll merge+dedup coverage —
+  the boundary event re-arrives in poll 2 and dedups while a new `remainder`
+  event (block 100) merges in and renders ahead of the boundary (block 99).
+
+**Verification.** `tests/unit/notifications.test.js` green — 29 pass (up from 27;
++2 from the new under-cap-order test and the dedup assertions folded into the
+consecutive-polls test). Full frontend unit suite + build run at the end of the
+UI batch (this is one of three held tasks landing together). Per the "Deploy
+ordering" section, ship after/atomically with
+`backend-notifications-route-newest-first-whole-block`; never frontend-first. Not
+manually smoke-tested against the new backend (that route change is not yet
+deployed); unit tests mock `fetchNotifications` against the documented
+(2026-06-09) whole-block contract shape.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
