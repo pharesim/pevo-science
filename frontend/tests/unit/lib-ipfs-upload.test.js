@@ -41,6 +41,7 @@ import {
   createUploadSession,
   uploadFile,
   describeUploadError,
+  resetPromptChain,
   UPLOAD_REAUTH_UNAVAILABLE,
   UPLOAD_CANCELLED,
 } from '../../src/lib/ipfs-upload.js';
@@ -255,6 +256,9 @@ describe('cross-surface prompt serialization', () => {
   const flush = () => new Promise((r) => setTimeout(r, 0));
 
   beforeEach(() => {
+    // promptChain is module-level state shared across tests; reset it so a prior
+    // test that left a prompt pending cannot stall these.
+    resetPromptChain();
     mockUploadFileToIpfs.mockReset();
     mockMintProof.mockReset();
     mockFetchEmailStatus.mockReset();
@@ -311,5 +315,112 @@ describe('cross-surface prompt serialization', () => {
     expect(r1.data.cid).toBe('bafy');
     expect(r2.data.cid).toBe('bafy');
     expect(reauthRequest).not.toHaveBeenCalled();
+  });
+
+  // Models the singleton reauthModal: only one prompt open at a time; a request
+  // while one is open resolves null (refuse-while-open). Returns counters + a
+  // resolver queue so a test can settle prompts in order and assert serialization.
+  function refusingModal() {
+    const state = { openCount: 0, maxConcurrent: 0, resolvers: [] };
+    reauthRequest.mockImplementation(() => {
+      if (state.openCount > 0) return Promise.resolve(null);
+      state.openCount += 1;
+      state.maxConcurrent = Math.max(state.maxConcurrent, state.openCount);
+      return new Promise((resolve) => {
+        state.resolvers.push((pw) => { state.openCount -= 1; resolve(pw); });
+      });
+    });
+    return state;
+  }
+
+  // The gate's correctness rests on the chain advancing on EVERY settle, not just
+  // success. A cancelled (null) first-session prompt must still let the next
+  // waiter prompt and complete uncancelled.
+  it('advances the gate after a cancelled (null) first-session prompt', async () => {
+    const modal = refusingModal();
+    const s1 = createUploadSession();
+    const s2 = createUploadSession();
+    const p1 = s1.upload(file());
+    p1.catch(() => {}); // p1 rejects later; pre-attach so it is never flagged unhandled
+    const p2 = s2.upload(file());
+    await flush();
+    expect(reauthRequest).toHaveBeenCalledTimes(1); // s2 queued behind s1
+
+    modal.resolvers[0](null); // s1 dismisses
+    await flush();
+    expect(reauthRequest).toHaveBeenCalledTimes(2); // gate advanced -> s2 prompts
+
+    modal.resolvers[1]('pw-2');
+    await expect(p1).rejects.toMatchObject({ code: UPLOAD_CANCELLED });
+    expect((await p2).data.cid).toBe('bafy'); // s2 not collateral-cancelled
+    expect(modal.maxConcurrent).toBe(1);
+  });
+
+  // A rejecting/throwing prompt must also advance the chain (the reject handler
+  // on the chain tail), not wedge every later waiter.
+  it('advances the chain after a rejecting prompt (no wedge)', async () => {
+    let firstCall = true;
+    const resolvers = [];
+    reauthRequest.mockImplementation(() => {
+      if (firstCall) {
+        firstCall = false;
+        return Promise.reject(new Error('prompt boom'));
+      }
+      return new Promise((resolve) => { resolvers.push(resolve); });
+    });
+    const s1 = createUploadSession();
+    const s2 = createUploadSession();
+    const p1 = s1.upload(file());
+    p1.catch(() => {}); // p1 rejects later; pre-attach so it is never flagged unhandled
+    const p2 = s2.upload(file());
+    await flush();
+    expect(reauthRequest).toHaveBeenCalledTimes(2); // chain advanced past the rejection
+
+    resolvers[0]('pw-2');
+    await expect(p1).rejects.toThrow('prompt boom');
+    expect((await p2).data.cid).toBe('bafy');
+  });
+
+  it('serializes 3 concurrent sessions one prompt at a time', async () => {
+    const modal = refusingModal();
+    const sessions = [createUploadSession(), createUploadSession(), createUploadSession()];
+    const ps = sessions.map((s) => s.upload(file()));
+    await flush();
+    expect(reauthRequest).toHaveBeenCalledTimes(1); // only the first is open
+
+    modal.resolvers[0]('pw0');
+    await flush();
+    expect(reauthRequest).toHaveBeenCalledTimes(2); // second opens only now
+
+    modal.resolvers[1]('pw1');
+    await flush();
+    expect(reauthRequest).toHaveBeenCalledTimes(3); // third opens only now
+
+    modal.resolvers[2]('pw2');
+    const results = await Promise.all(ps);
+    expect(results.every((r) => r.data.cid === 'bafy')).toBe(true);
+    expect(modal.maxConcurrent).toBe(1); // never two prompts open at once
+  });
+
+  // A session disposed while queued behind another session's prompt must NOT open
+  // the modal when its turn comes -- a typed password would be spent on a dead
+  // session. It resolves to UPLOAD_CANCELLED instead.
+  it('a session disposed while queued never opens the modal', async () => {
+    const modal = refusingModal();
+    const s1 = createUploadSession();
+    const s2 = createUploadSession();
+    const p1 = s1.upload(file());
+    const p2 = s2.upload(file());
+    p2.catch(() => {}); // p2 rejects later; pre-attach so it is never flagged unhandled
+    await flush();
+    expect(reauthRequest).toHaveBeenCalledTimes(1); // s1 open, s2 queued
+
+    s2.dispose(); // abandon s2 while it waits
+    modal.resolvers[0]('pw-1'); // s1 completes, gate advances to s2
+
+    expect((await p1).data.cid).toBe('bafy');
+    await expect(p2).rejects.toMatchObject({ code: UPLOAD_CANCELLED });
+    // The modal was never opened for the disposed session.
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
   });
 });

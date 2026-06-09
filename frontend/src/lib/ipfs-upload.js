@@ -52,6 +52,16 @@ function withPromptLock(requestPrompt) {
   return run;
 }
 
+// Test-only seam: reset the module-level prompt chain to a resolved state. The
+// chain is module-private mutable state that persists across tests; a test that
+// starts a light-account upload and never settles the reauthModal mock would
+// otherwise leave `promptChain` pending and silently stall every later test in
+// the file. Call this in `beforeEach` for any suite exercising the gate. Not
+// used in production (every real prompt settles, so the chain self-heals).
+export function resetPromptChain() {
+  promptChain = Promise.resolve();
+}
+
 // A batch-scoped uploader for one publish/edit action.
 //
 // Self-custody (Keychain) signs each file's pre-flight descriptor — one Keychain
@@ -69,6 +79,13 @@ export function createUploadSession() {
   // the user through endless prompts. Once a re-prompt has fired, a further
   // UNAUTHORIZED rethrows instead of prompting a third time.
   let repromptUsed = false;
+  // Set by `dispose()`. A session can be queued behind another session's open
+  // prompt (the gate above serializes them); if it is disposed while waiting --
+  // the editor is torn down, or the user navigates -- its queued prompt lambda
+  // must NOT open the modal, or the user gets a surprise prompt and any password
+  // typed is spent on a discarded session. A fresh `upload()` revives the session
+  // (clears this), so the dispose()-then-reuse path still prompts.
+  let disposed = false;
 
   function isLight() {
     return Alpine.store('auth')?.custody === 'light';
@@ -99,8 +116,11 @@ export function createUploadSession() {
     }
     // Serialize the prompt across all upload sessions (see promptChain above) so
     // a concurrent editor-image and page-batch upload never collide on the
-    // singleton modal and cancel each other.
-    const entered = await withPromptLock(() => Alpine.store('reauthModal').request());
+    // singleton modal and cancel each other. A session disposed while queued
+    // behind another prompt resolves to null here rather than opening the modal,
+    // so a typed password is never routed into a discarded session.
+    const entered = await withPromptLock(() =>
+      (disposed ? null : Alpine.store('reauthModal').request()));
     if (entered === null || entered === undefined) {
       throw new UploadSessionError(UPLOAD_CANCELLED, 'Upload cancelled');
     }
@@ -128,6 +148,11 @@ export function createUploadSession() {
   }
 
   async function uploadOnce(file) {
+    // A fresh upload revives a session that was disposed after a prior batch
+    // (dispose() wipes the credential but the session object can be reused). The
+    // disposed flag only blocks a prompt for a session abandoned WHILE a prompt
+    // is queued behind another session's.
+    disposed = false;
     if (!isLight()) return uploadFileToIpfs(file);
     await ensureCredential();
     const proof = await mintProof();
@@ -151,6 +176,7 @@ export function createUploadSession() {
   return {
     upload: uploadOnce,
     dispose() {
+      disposed = true;
       password = null;
       credentialResolved = false;
       repromptUsed = false;
