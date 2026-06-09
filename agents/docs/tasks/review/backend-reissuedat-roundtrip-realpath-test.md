@@ -33,3 +33,13 @@ Risk if unaddressed: a future change that switches either reissue writer back to
 - CLAUDE.md "Carve-out for deterministic edge-case coverage" clause (c).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend completion note (2026-06-09)
+
+**F1 (real-path round-trip).** Added `backend/tests/middleware/verifyHiveSignature-reissuedat-roundtrip.test.ts`. Against real app Postgres (no mocked pool) it seeds a light account + a `pending_recovery` row, drives a genuine `POST /api/auth/recover/verify` reissue, reads back `sessions_invalidated_at`, and asserts the reissued JWT's `reissuedAt === stored.getTime()`. It then presents the reissued token to the REAL `verifyHiveSignature` (SURVIVES, 200) alongside a pre-reset same-second token with no `reissuedAt` (REVOKED, 401 `SESSION_INVALIDATED`). Real middleware + real `jsonwebtoken`; no `MOCK_VERIFY_SIGNATURE`. Only `getRedis`/`isRedisAvailable` are stubbed to the in-memory fallback (enumerated carve-out scope) so the byIp `recoverLimiter` is process-local under cross-file Redis contention; `getAppPool` stays REAL — the round-trip is the point. Skips cleanly when Postgres is unreachable (mirrors `recover.test.ts`). A future `recover.ts` switch to SQL `NOW()` (microsecond) or seconds-rounding turns the decisive assertion AND the survive case red.
+
+**F2 (doc comment).** Added a scope note beside the `iat <= invalidatedAtSec && reissuedAt !== invalidatedAtMs` comparison in `verifyHiveSignature.ts`: the exemption is keyed ONLY to the `recover.ts` reissue sites; `/api/auth/reset` (sets `sessions_invalidated_at`, returns no token) followed by a separate `/api/auth/login` relogin in the same integer second is revoked on its first request and self-heals on the next login (accepted sub-second residual). Anchored on stable symbols (no slug/line/SHA).
+
+**Out of scope (left as-is per task):** the same-second `/reset`→`/login` logic edge (documented only), a `typeof` guard on `reissuedAt`, a size cap on `seenSignatures`.
+
+**Verification:** `npm run typecheck` (src + tests) + `npm run lint` clean (the lone lint warning is a pre-existing unused-directive in `lib/author-supersession.ts`, untouched); `verifyHiveSignature-reissuedat-roundtrip.test.ts` + `verifyHiveSignature-replay-revocation-hardening.test.ts` green (6 tests).

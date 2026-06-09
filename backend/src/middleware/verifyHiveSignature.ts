@@ -159,6 +159,18 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
               // very event — identified by a `reissuedAt` claim carrying the exact
               // stored sessions_invalidated_at epoch-ms (set at the reissue site in
               // routes/recover.ts). Identity, not timestamp, picks the survivor.
+              //
+              // Scope of the exemption: it is keyed ONLY to the recover.ts reissue
+              // sites, which write sessions_invalidated_at from a Node Date and
+              // embed that exact epoch-ms as reissuedAt. A password reset that
+              // invalidates sessions WITHOUT reissuing — /api/auth/reset sets
+              // sessions_invalidated_at and returns no token, leaving the user to
+              // re-authenticate via /api/auth/login — mints its fresh session on the
+              // normal login path with no reissuedAt. So a relogin completed in the
+              // SAME integer second as the reset is revoked on its first request and
+              // self-heals on the next login (a second later, iat > invalidatedSec).
+              // That sub-second window is an accepted, self-healing residual on the
+              // email-reset path; only the recover.ts reissue is spared here.
               if (payload.iat <= invalidatedAtSec && payload.reissuedAt !== invalidatedAtMs) {
                 return sendError(res, 401, 'SESSION_INVALIDATED', 'Session has been invalidated. Please log in again.');
               }
