@@ -417,18 +417,22 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
     );
     expect(row.rows[0]?.password_hash).toBeTruthy();
 
-    // The "Set a password" section stops rendering after a reload: GET
-    // /api/settings/email now reports hasPassword:true. waitForSelector resolves
-    // on Alpine init, not on the async email fetch, so without gating on the
-    // response the visibility assertion can evaluate against the pre-fetch
-    // (still-visible) state on a loaded runner. Arm the waitForResponse before
-    // reload and await it before asserting.
-    const emailAfterReload = page.waitForResponse(
-      (resp) => resp.url().endsWith('/api/settings/email') && resp.request().method() === 'GET',
-    );
+    // After reload the account is State B (password + verified email), so GET
+    // /api/settings/email reports hasPassword:true and the "Set a password"
+    // section must stay hidden. But that section's gate is
+    // `x-if="!emailLoading && emailStatus && emailStatus.hasPassword === false"`,
+    // and settingsPage boots emailLoading:true / emailStatus:null — so the
+    // section is ALSO absent through the whole email-fetch window, regardless of
+    // hasPassword. A toBeHidden() evaluated on that loading frame passes for the
+    // wrong reason; it only becomes discriminating once emailLoading flips false,
+    // at which point hasPassword:true is what keeps the section hidden. Gate on a
+    // positive post-loading surface first: the verified-email "Change email"
+    // control renders only in the settled state (!emailLoading && emailStatus &&
+    // hasEmail && verified), so its visibility proves the email fetch resolved
+    // before the toBeHidden() is evaluated.
     await page.reload();
     await page.waitForSelector('[x-data="settingsPage"]');
-    await emailAfterReload;
+    await expect(page.getByRole('button', { name: 'Change email' })).toBeVisible();
     await expect(page.getByTestId('set-password-section')).toBeHidden();
 
     // Password login with the new password now succeeds (State B account).
