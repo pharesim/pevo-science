@@ -914,8 +914,12 @@ export async function computeReputationBatch(
       paper_latest_votes AS (
         SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight, block_num
         FROM paper_vote_signals
-        -- Same-block tie-breaker: op_id (HAF op id projected from each union arm;
-        -- the views have no trx_in_block, op_id is monotonic per source stream) per
+        -- Same-block tie-breaker: op_id is the GLOBAL haf_operations PK (vo.id for
+        -- native votes, cj.id for revotes), one monotonic sequence shared across
+        -- operation_vote_view and operation_custom_json_view (the views have no
+        -- trx_in_block), so op_id DESC across the union arms is genuine cross-arm
+        -- latest-wins, not merely per-stream-deterministic. Do NOT namespace op_id
+        -- per arm (that would break the cross-arm latest-wins). Per
         -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
         ORDER BY voter, author, permlink, block_num DESC, op_id DESC
       ),
@@ -1153,8 +1157,12 @@ export async function computeReputationBatch(
       review_latest_votes AS (
         SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight
         FROM review_vote_signals
-        -- Same-block tie-breaker: op_id (HAF op id projected from each union arm;
-        -- the views have no trx_in_block, op_id is monotonic per source stream) per
+        -- Same-block tie-breaker: op_id is the GLOBAL haf_operations PK (vo.id for
+        -- native votes, cj.id for revotes), one monotonic sequence shared across
+        -- operation_vote_view and operation_custom_json_view (the views have no
+        -- trx_in_block), so op_id DESC across the union arms is genuine cross-arm
+        -- latest-wins, not merely per-stream-deterministic. Do NOT namespace op_id
+        -- per arm (that would break the cross-arm latest-wins). Per
         -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
         ORDER BY voter, author, permlink, block_num DESC, op_id DESC
       ),
@@ -1249,8 +1257,12 @@ export async function computeReputationBatch(
       citing_latest_votes AS (
         SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight
         FROM citing_vote_signals
-        -- Same-block tie-breaker: op_id (HAF op id projected from each union arm;
-        -- the views have no trx_in_block, op_id is monotonic per source stream) per
+        -- Same-block tie-breaker: op_id is the GLOBAL haf_operations PK (vo.id for
+        -- native votes, cj.id for revotes), one monotonic sequence shared across
+        -- operation_vote_view and operation_custom_json_view (the views have no
+        -- trx_in_block), so op_id DESC across the union arms is genuine cross-arm
+        -- latest-wins, not merely per-stream-deterministic. Do NOT namespace op_id
+        -- per arm (that would break the cross-arm latest-wins). Per
         -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
         ORDER BY voter, author, permlink, block_num DESC, op_id DESC
       ),

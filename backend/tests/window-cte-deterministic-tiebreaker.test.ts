@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getPool, isHafConfigured } from '../src/db.js';
-import { T, activeAccreditationsCteBody, accreditedVoteCount } from '../src/hafsql.js';
+import { T, activeAccreditationsCteBody, activeVouchesCteBody, accreditedVoteCount } from '../src/hafsql.js';
 import { config } from '../src/config.js';
 
 /**
@@ -218,8 +218,19 @@ describe('window CTE / vote DISTINCT ON — same-block deterministic tie-breaker
     expect(activeAccreditationsCteBody().sql).toContain(
       'ORDER BY cj.block_num DESC, cj.id DESC',
     );
+    // vouch_ranked: the same per-(voucher,vouchee) latest-wins ROW_NUMBER, gated
+    // through an exported fragment, so it is inspectable here.
+    expect(activeVouchesCteBody().sql).toContain(
+      'ORDER BY cj.block_num DESC, cj.id DESC',
+    );
     expect(accreditedVoteCount('a', 'b')).toContain(
       'ORDER BY v.voter, v.block_num DESC, v.id DESC',
     );
+    // Coverage limitation: the three reputation union CTEs (paper_latest_votes,
+    // review_latest_votes, citing_latest_votes in reputation.ts) carry the same
+    // `block_num DESC, op_id DESC` tie-breaker but are inlined, NOT exported as
+    // fragments, so this shape canary cannot reach them. They are exercised
+    // end-to-end by the real-HAF reputation-lifecycle suite, which executes the
+    // assembled union SQL against live Postgres.
   });
 });

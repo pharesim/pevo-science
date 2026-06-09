@@ -60,7 +60,10 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
           SELECT
             cj.json::jsonb ->> 'action' AS action,
             cj.json::jsonb ->> 'account' AS account,
-            ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC) AS rn
+            -- Same-block tie-breaker: cj.id (operation_custom_json_view has no
+            -- trx_in_block; cj.id is the monotonic HAF op id) per
+            -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+            ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC, cj.id DESC) AS rn
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $1
             AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
