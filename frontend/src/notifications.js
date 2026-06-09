@@ -106,16 +106,21 @@ export function initNotifications() {
               seen.add(key);
               return true;
             });
-            // Whole-block delivery: the server delivers each Hive block atomically,
-            // so a single response can exceed MAX_EVENTS (e.g. a citation fan-out
-            // block). The merge prepends the ascending batch, so a bare
-            // slice(0, MAX_EVENTS) keeps the array front -- the OLDEST of an
-            // oversized block -- and would drop the newest events. When over the
-            // cap, retain the newest MAX_EVENTS by block_num so the most recent
-            // activity is never dropped; under the cap, preserve arrival order.
-            this.events = deduped.length > MAX_EVENTS
-              ? [...deduped].sort((a, b) => b.block_num - a.block_num).slice(0, MAX_EVENTS)
-              : deduped;
+            // Render newest-first: sort the deduped merge by block_num descending
+            // and trim to MAX_EVENTS. Sorting unconditionally (not only when over
+            // the cap) keeps the feed order stable across polls -- an oversized
+            // whole-block poll cannot flip the list asc<->desc against the next
+            // under-cap poll. Whole-block delivery can hand back a single response
+            // larger than MAX_EVENTS (a citation fan-out block is delivered
+            // atomically), so the trim is a pure tail-cut that keeps the most
+            // recent activity and sheds the oldest. Caveat: events that share one
+            // block_num are not separable by this comparator, so a single block
+            // carrying more than MAX_EVENTS events for one recipient is not
+            // trimmed newest-first within that block -- deferred as a
+            // single-instance non-concern.
+            this.events = [...deduped]
+              .sort((a, b) => b.block_num - a.block_num)
+              .slice(0, MAX_EVENTS);
           }
           if (batch.latest_block > cursor) {
             // Whole-block delivery guarantees latest_block is a fully delivered
@@ -157,10 +162,12 @@ export function initNotifications() {
 
     markAllRead() {
       if (!this._username || this.events.length === 0) return;
-      // The poll cap retains the newest MAX_EVENTS, so the max block_num here is
-      // the newest event the user could have seen. Advancing seenBlock to it
-      // never zeroes the unread count for a newer event that was dropped before
-      // being shown -- a drop only ever sheds events older than what is retained.
+      // Advance seenBlock to the newest retained block_num, marking everything
+      // currently in memory as read. The cap keeps the newest MAX_EVENTS, so this
+      // never marks a newer-than-shown event read. It does NOT guarantee full
+      // unread integrity: the cap sheds the OLDEST events beyond MAX_EVENTS --
+      // those leave memory and stop counting toward unreadCount regardless of
+      // markAllRead. That is the accepted trade-off of a bounded in-memory feed.
       const maxBlock = Math.max(...this.events.map((e) => e.block_num));
       this.seenBlock = maxBlock;
       setSeenBlock(this._username, maxBlock);

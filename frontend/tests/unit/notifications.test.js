@@ -166,6 +166,24 @@ describe('notifications store', () => {
       expect(Math.max(...blocks)).toBe(250); // newest retained
       expect(Math.min(...blocks)).toBe(51); // newest 200 kept, oldest 50 dropped
       expect(store.events.some((e) => e.block_num === 1)).toBe(false);
+      // Newest-first order: a regression to ascending / a bare slice(0, MAX_EVENTS)
+      // would put the oldest-retained (block 51) at the front and fail here.
+      expect(store.events[0].block_num).toBe(250);
+    });
+
+    // The feed is sorted newest-first on every poll, not only when over the cap,
+    // so an under-cap batch renders highest-block_num first too. This pins the
+    // common-path order against a regression to arrival-order (ascending) render.
+    it('renders newest-first under the cap', async () => {
+      const events = [
+        { block_num: 10, type: 'vote', actor: 'a', permlink: 'old' },
+        { block_num: 30, type: 'vote', actor: 'b', permlink: 'new' },
+        { block_num: 20, type: 'vote', actor: 'c', permlink: 'mid' },
+      ];
+      mockFetchNotifications.mockResolvedValue({ status: 'ok', data: { events, latest_block: 30 } });
+      store.start('alice');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.events.map((e) => e.block_num)).toEqual([30, 20, 10]);
     });
   });
 
@@ -347,19 +365,30 @@ describe('notifications store', () => {
     // No rewind across polls: a has_more=true poll advances the cursor straight
     // to latest_block, so the next poll fetches from latest_block (not
     // latest_block - 1). Whole-block delivery guarantees the boundary block was
-    // delivered in full, so there is nothing to re-fetch.
-    it('advances the cursor with no rewind across consecutive polls', async () => {
+    // delivered in full, so there is nothing to re-fetch. Also pins two
+    // properties: poll 1 does not tight-loop into an immediate re-fetch on
+    // has_more (the schedule is timer-driven), and the boundary event that
+    // re-arrives in poll 2 dedups across polls rather than doubling.
+    it('advances the cursor with no rewind across consecutive polls and dedups the boundary', async () => {
       const boundary = { block_num: 99, type: 'new_review', actor: 'rev', permlink: 're-x' };
+      const remainder = { block_num: 100, type: 'new_review', actor: 'rev2', permlink: 're-y' };
       mockFetchNotifications
         .mockResolvedValueOnce({ status: 'ok', data: { events: [boundary], latest_block: 99, has_more: true } })
-        .mockResolvedValueOnce({ status: 'ok', data: { events: [], latest_block: 99, has_more: false } });
+        .mockResolvedValueOnce({ status: 'ok', data: { events: [boundary, remainder], latest_block: 100, has_more: false } });
       store.start('alice');
       await vi.advanceTimersByTimeAsync(0); // poll 1: since_block 0, advances cursor to 99
       expect(mockFetchNotifications).toHaveBeenNthCalledWith(1, 0, 50);
+      // has_more=true must NOT trigger an immediate re-poll; scheduling is timer-only.
+      expect(mockFetchNotifications).toHaveBeenCalledTimes(1);
       expect(localStorage.setItem).toHaveBeenCalledWith('pevo_notification_cursor_alice', '99');
       await vi.advanceTimersByTimeAsync(5 * 60 * 1000); // scheduled poll 2 fires
       expect(mockFetchNotifications).toHaveBeenNthCalledWith(2, 99, 50);
+      // The boundary re-arrives in poll 2 but dedups; remainder merges in.
       expect(store.events.filter((e) => e.permlink === 're-x')).toHaveLength(1);
+      expect(store.events.filter((e) => e.permlink === 're-y')).toHaveLength(1);
+      expect(store.events).toHaveLength(2);
+      // Newest-first: block 100 (re-y) renders ahead of block 99 (re-x).
+      expect(store.events[0].permlink).toBe('re-y');
     });
   });
 });
