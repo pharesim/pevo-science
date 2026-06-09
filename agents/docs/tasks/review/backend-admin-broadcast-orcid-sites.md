@@ -37,3 +37,18 @@ To migrate safely:
 - `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` (grep both directions to confirm the migration is exhaustive).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend completion note (2026-06-09, commit `7c6f756c` worktree worker, cherry-picked to main as `d29f9708`)
+
+Both orcid sites (`handleAccredit`, `handleLink`) migrated to `broadcastAdminCustomJson` via the task's option 1 (pre-validate outside the inner try):
+
+- **504+lock-release boundary preserved:** each site keeps a `PrivateKey.fromString(config.pevoAdminPostingKey)` validation parse inside `withOrcidBindingLock`'s `fn` but OUTSIDE the inner `try` (result discarded; in-code comment documents the failure-shape invariant), then calls `broadcastAdminCustomJson` inside the inner `try`. A malformed-key throw still escapes synchronously to the wrapper → 504 ambiguous-outcome + lock release. The helper's `AdminKeyNotConfiguredError` is unreachable at both sites because the existing pre-lock `if (!config.pevoAdminPostingKey)` 500-guard runs first (documented in code). This also keeps the suite's `vi.spyOn(PrivateKey, 'fromString')` injection point live.
+- **SEC-002-TOCTOU-LOCK specs: zero behavioral changes.** Only comment prose inside the describe block was updated (helper rename in descriptions; three pre-existing stale line-number anchors replaced with stable-symbol anchors per the comment-anchor convention).
+- **Exhaustiveness greps (both directions):** `required_posting_auths.*hiveAdminAccount` → only `hive.ts` (the helper) + the `hafsql.ts` doc comment (task-excluded); the envelope literal now exists only in `hive.ts`. `PrivateKey.fromString(config.pevoAdminPostingKey)` → the helper + the two sanctioned validation parses in `orcid.ts` (no envelope, key discarded). Reverse: `broadcastAdminCustomJson(` call sites cover orcid (2), papers, accreditation, signup-verify, claims, wot (3).
+- **Mock factory:** `orcid.test.ts`'s hive.js mock factory now provides `broadcastAdminCustomJson`, routed through the existing `broadcastJsonMock`, mirroring the retract/accreditation/signup-verify factories.
+
+Verification: orcid suite 102/102 green vs real Redis/Postgres (incl. all SEC-002-TOCTOU-LOCK specs in both accredit and link modes); typecheck + lint clean. Post-merge combined-tree verification with the concurrently-landed accred-state lint rule (which scans the migrated `orcid.ts`): lint + typecheck clean, 152/152 across orcid + tiebreaker + eslint suites.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
