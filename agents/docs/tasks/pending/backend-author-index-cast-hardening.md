@@ -91,3 +91,17 @@ Two departures from the literal spec, both made to actually satisfy the task's g
    batch orchestrator's cycle-advance decision under a mocked pool, an unrelated concern.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES (1 item)
+
+`/ce-code-review` fan-out (correctness + security + adversarial on Opus; testing/maintainability/project-standards/performance/reliability/kieran-typescript on Sonnet; learnings unstructured; ce-agent-native skipped per PEvO) on commit `fa572740`. **The P0 fix is VERIFIED correct and complete and STAYS.** All 7 broadcaster-controlled cast sites (2 `author_index` + 5 `weight`) are regex-guarded and fail closed — the no-ELSE `CASE` yields NULL, dropped cleanly downstream (author_index by the `IS NOT NULL` accept-arm guards; weight by `!= 0` and the `SUM FILTER` aggregates) — so the query completes instead of aborting. The POSIX trailing-newline anchor trap was empirically refuted on PG 16.13 (`'5\n' ~ '^[0-9]{1,9}$'` → FALSE); ASCII-only `[0-9]` rejects full-width / Arabic-Indic / zero-width digits; the `{1,9}` bound closes the int4 overflow-re-abort that the spec's unbounded `+` would have left open; the drop is signer-bound (an accredited attacker can only NULL their own forged op, never erase a third party's signal). Sibling review-rating `::numeric`/`::float` casts are separately gated by `validReviewWhere`'s `^[1-5]$` and were never abortable. Both deviations the implementer flagged (the `{1,9}` bound; 7 sites incl. the two papers.ts weight casts the spec missed) are correct.
+
+One item before archive:
+
+1. (P2, maintainability) **Anchor the `{1,9}` overflow rationale in-source.** The reason the weight guard is `^-?[0-9]{1,9}$` and NOT the task's `^-?[0-9]+$` — an unbounded match admits a 14-digit string that then overflows `::int` and re-aborts the very query this fix protects — currently lives only in the commit message and the test docblock. A future editor reading `~ '^-?[0-9]{1,9}$'` at a guard site has no local cue and could "simplify" the bound to `+`, silently reopening the overflow-abort on this P0 path. Add a brief inline SQL comment at the weight-guard sites (or once per file near the first occurrence) stating the bound is overflow-safety (max Hive weight is 10000; an unbounded match overflows `::int` and aborts the query). Anchor on the behavioral reason — no task slug, round number, line number, or SHA. The same bound makes `author_index`'s `^[0-9]{1,9}$` overflow-safe too; a one-line note there is optional.
+
+Dismissed at triage (no action): the papers.ts NULL-weight → `Number(null)===0` implicit self-retraction (correct as-is — signer-bound to the voter's own vote, caught by the `effectiveWeight===0` skip, matches existing retraction semantics, strictly better than the pre-fix crash); the preemptive test-hardening notes (the HAF-gated behavioral test could run on `getAppPool`; the exact 10-digit boundary case; test-local guard constants) — theoretical failure modes already backstopped by the source-shape count canary plus the real-HAF companion. Pre-existing comment-anchor rot in reputation.ts/papers.ts is tracked by the blocked `backend-haf-query-comment-anchor-sweep`, not this task.
+
+When the comment lands, `git mv` this file back to `tasks/review/`. Do not edit the held item above — the commit diff is the evidence.
