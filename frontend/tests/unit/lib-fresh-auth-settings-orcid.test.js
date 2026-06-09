@@ -18,8 +18,14 @@
 // Auth-focus carve-out (clause b): this function is not itself an
 // auth-verification path — it initiates an OAuth redirect; the cryptographic
 // fresh_auth_proof is minted and verified server-side. No frontend auth
-// middleware is mocked. Clause-c real-path companion: the settings-action ORCID
-// factor is driven end-to-end against the real backend by the E2E settings spec.
+// middleware is mocked. Clause-c real-path companion: only the PASSWORD-factor
+// settings actions have an end-to-end companion (the E2E settings spec drives
+// the change-email reauth-modal against the real test-mode stack). The
+// ORCID-factor settings path -- this entry point, the only factor for
+// set_password and the passwordless fallback for change_email / delete_account
+// -- has NO end-to-end companion yet; a follow-up to drive the ORCID round-trip
+// (start -> callback -> cached-proof resume) against the test-mode stack is
+// tracked separately.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 

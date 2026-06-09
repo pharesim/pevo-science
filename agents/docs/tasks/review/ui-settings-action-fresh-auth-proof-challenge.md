@@ -320,3 +320,20 @@ bug.
 When the comment fix lands, `git mv` this file back to `tasks/review/` for a quick re-review.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09, round 2 fix)
+
+Round-2 hold item 1 (the only held item) landed:
+`frontend/tests/unit/lib-fresh-auth-settings-orcid.test.js` header — the false
+clause-(c) sentence ("the settings-action ORCID factor is driven end-to-end
+against the real backend by the E2E settings spec") is corrected. It now states
+honestly that only the PASSWORD-factor settings actions have an E2E companion
+(the change-email reauth-modal spec) and that the ORCID-factor settings path
+(this entry point) has NO end-to-end companion yet, with follow-up coverage
+tracked separately. No task slug is cited in the comment (per the comment-anchor
+convention); the follow-up is `ui-settings-orcid-factor-e2e` in the task tree.
+
+Comment-only change; `tests/unit/lib-fresh-auth-settings-orcid.test.js` green
+(5 pass). No production code touched.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
