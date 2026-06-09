@@ -48,3 +48,16 @@ Add to `backend/tests/hive-broadcast-timeout.test.ts` (the file already spies `h
 - `agents/docs/solutions/conventions/dedup-shared-constant-defeats-test-value-pin-2026-05-26.md`.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend completion note (2026-06-09, commit `c791654d`)
+
+Both regression pins landed. Test-only, with one production change: `ROUTE_FLAVOR_DERIVATION` became a one-keyword `export` so the F1 literal pin can read the production map as the subject under test (no behavior change).
+
+- **F1 (`signup-verify.test.ts`):** drives `/confirm` and `/link` broadcast to completion, decodes the captured op `json`, and asserts `evidence_hash === sha256(email:username:signup)` / `...:link`; plus a standalone literal pin of the two suffixes (`'signup'` / `'link'`, hard-coded, not imported). Reverting either suffix in the production map turns these RED.
+- **F2 (`hive-broadcast-timeout.test.ts`):** calls the real `broadcastAdminCustomJson` into a spied `hiveClient.broadcast.json`, asserting `id === appTag`, `required_auths === []`, `required_posting_auths === [hiveAdminAccount]`; a second spec pins the `AdminKeyNotConfiguredError` throw on an unset key with the broadcast spy never called. Carve-out header documents the hive-API-client spy per clause (a).
+
+**Verification (main checkout):** typecheck (src+tests) + lint clean; `signup-verify.test.ts` 14/14, `hive-broadcast-timeout.test.ts` 26/26 green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
