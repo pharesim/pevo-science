@@ -273,3 +273,77 @@ sql-shape / arm-semantics / bridge-author canaries all green.
 
 The pre-staged `/ce-compound` for the cap+1 lesson is left for the architect to fire at
 clean archive per the hold note.
+
+---
+
+## Architect re-review (2026-06-09, round 3) — HELD PENDING FIXES
+
+`/ce-code-review` fan-out on commit `e3336dff` (11 personas: correctness + security +
+adversarial on Opus; testing, maintainability, project-standards, performance, reliability,
+api-contract, kieran-typescript, learnings on Sonnet; ce-agent-native skipped per PEvO).
+**All four round-2 hold items are RESOLVED and verified:** the `cap + 1` probe with
+`capHit = rows.length > cap` + `slice(0, cap)` correctly makes an exactly-cap fully-contained
+window drop nothing (the new exactly-cap test mutation-kills the old `>=` false-drop, min
+block 1 not 2); the MOCK_VERIFY_SIGNATURE bypass acknowledgment moved to carve-out clause (a)
+with clause (b) keeping only the positive constraint; the digest direction pin destructures
+4 args and asserts `direction === 'asc'` non-vacuously; the single-block-exceeds-cap
+empty-batch test pins `events:[]` / `latest_block` echoes `since_block` / `has_more:false`.
+Cache mechanics, cross-account isolation, SQL-injection surface, op_id tie-breaker, and the
+LIMIT-independent query cost were all probed and refuted as risks. Two items block archive
+(both P3, surfaced new this round — not regressions of the four resolved items):
+
+1. **Cap-edge over-drop of a COMPLETE boundary block (P3, correctness/adversarial).** The
+   `cap + 1` probe distinguishes exactly-cap (no drop) from >cap (drop), but the boundary-drop
+   still over-drops a *complete* block when the cap boundary aligns with a block edge — i.e.
+   when the probe row (`result.rows[cap]`) belongs to a *different* block than the last kept
+   row (`result.rows[cap-1]`). In that case the truncated-end block is fully contained in the
+   kept set, yet `delivered = events.filter(e => e.block_num !== boundaryBlock)` still drops it.
+   On the `'desc'`/SPA path this is a one-block loss at the floor edge (within the accepted
+   "older gaps are digest-covered" spirit). On the `'asc'`/digest path — the consumer
+   `backend-notifications-digest-window-cursor` (in `pending/`) will inherit from this SHARED
+   function — it is PERMANENT loss once the window floor slides past the block, and it is NOT
+   covered by the current Residual section (which documents only single-block-*exceeds*-cap).
+   Reachability is ~nil at accredited single-instance beta scale (needs >cap in-window events
+   for one account AND exact block-edge alignment), but the fix is cheap and stops the digest
+   from inheriting a latent silent-skip. Fix: gate the boundary-drop on whether the cut went
+   *through* a block, using the probe already fetched — when `capHit`, capture
+   `probeBlock = Number(result.rows[cap].block_num)` and
+   `lastKeptBlock = Number(result.rows[cap-1].block_num)` and drop the boundary block ONLY when
+   `probeBlock === lastKeptBlock` (the cut fell inside a block → partial → drop). When they
+   differ, the boundary block is complete — keep it. `has_more = capHit` stays correct in both
+   sub-cases (the probe still proves >cap events exist below/above the delivered set). Add
+   regression coverage: an edge-aligned cap boundary for `'desc'` (oldest kept block has all
+   its events within cap; probe is from the next-older block) delivers the complete boundary
+   block (not dropped) and advances the cursor past it, plus the `'asc'` companion (newest kept
+   block complete; probe from the next-newer block). Correct the `fetchNotificationsFromHaf`
+   docblock, the `NOTIFICATION_WINDOW_FETCH_CAP` constant comment, and the Residual section so
+   they no longer imply "only a genuine >cap window drops the (possibly partial) boundary
+   block" — the precise invariant is "a >cap window drops the truncated-end block only when the
+   cap cut falls *inside* a block; an edge-aligned cut drops nothing." Anchor every comment on
+   that behavioral invariant, not on item/round numbers, line numbers, or SHAs.
+
+2. **Hold-item ordinals leaked into test source (P3, project-standards).** Drop the coordination
+   ordinals from `notifications-window-cursor.test.ts`: `(item-1 fix)` in the EXACTLY-cap
+   test's `it(...)` title and `(item 1)` in the cap-hit test's comment. Per root `CLAUDE.md`
+   "Comment anchors": round numbers / hold items / task slugs / SHAs belong in commit messages
+   and task files, not in production or test source. The behavioral descriptions already stand
+   alone — just remove the parentheticals. While there, audit the rest of this round's changed
+   test lines for any other ordinal/round leakage.
+
+**Triaged-and-dismissed (do NOT action):** the kieran-typescript double-cast redundancy on the
+`keptRows` non-capHit branch and the mock-calls tuple `direction: string` typing (both
+confidence-50 advisory, no runtime consequence); the "only 1 of 4 digest tests asserts
+direction" testing note (one assertion suffices to mutation-kill a constant flip). Optional
+polish, not required for archive.
+
+**Pre-staged `/ce-compound` (unchanged; fire at clean archive after item 1 lands):** fold the
+lesson into `agents/docs/solutions/architecture-patterns/forward-cursor-feed-newest-first-and-rewind-masks-cap-edge-2026-06-09.md`.
+The cap-edge over-drop refinement STRENGTHENS that lesson: a windowed fetch that drops a partial
+boundary block on cap-hit must (a) detect truncation with a `cap + 1` probe (`> cap`, not
+`>= cap`) so an exactly-cap fully-contained result drops nothing, AND (b) compare the probe's
+block to the last-kept block so an edge-aligned (complete) boundary block is not over-dropped —
+under a forward/newest-first cursor a falsely-dropped complete block is never recovered. Do NOT
+create a new doc.
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`; re-review scopes to the
+commits since this hold.
