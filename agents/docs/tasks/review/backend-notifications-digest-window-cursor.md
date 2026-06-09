@@ -147,3 +147,16 @@ One doc-accuracy item before archive:
 When the prose lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit only. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-09, same commit as this move)
+
+The hold's single item (multi-block 'asc' recovery prose overstating recovery timing) landed; comment-only, both locations:
+
+- `notification-queries.ts` Residual docblock: dropped the "caller's cursor stops below it, so the next call re-fetches and delivers it whole" causal attribution. Now states the digest fetches from the wide window floor (not its delivery cursor), an immediately-following call re-fetches the same oldest-cap batch and drops the same partial block again, and the dropped block is delivered whole only once the forward-sliding floor has aged the already-delivered older blocks below the floor (it becomes the oldest-kept rows instead of the cap-truncated end).
+- `digest.ts` `runDigest` cursor-advance comment: same rework ("Recovery is deferred, not next-run"), naming the wide-floor fetch + `filterEventsAfter` stripping already-delivered older blocks as the mechanism. Floor-slide described as the recovery driver per the implementer note (no "newer events displace" framing, no quiet-account-recurs-indefinitely framing).
+
+No behavior or assertion change; anchors behavioral/stable-symbol only. Verification: typecheck (src+tests) clean; lint 0 errors (1 pre-existing warning in `lib/author-supersession.ts`, untouched); `digest-window-cursor.test.ts` 5/5 + `fetch-notifications-asc-whole-block.test.ts` 3/3 green; grep confirmed no test pins the old prose.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

@@ -182,11 +182,16 @@ export function filterEventsAfter(events: NotificationEvent[], sinceBlock: numbe
  * Residual: distinguish a MULTI-block truncation from a true single-block
  * overflow; the two recover differently. On a MULTI-block truncation the partial
  * boundary block is dropped but the rest are delivered whole. For 'asc' (digest)
- * the dropped block is the NEWEST in the batch and the caller's cursor stops below
- * it, so the next call re-fetches and delivers it whole (recovered). For 'desc'
- * (SPA) the dropped block is the OLDEST and the route's cursor only moves FORWARD
- * (newest-first), so that consumer never re-fetches it; recovery for old activity
- * is the email digest's job, not the bell feed's.
+ * the dropped block is the NEWEST in the batch, and its recovery is DEFERRED, not
+ * next-call: the digest fetches from the wide window floor (not from its delivery
+ * cursor), so an immediately-following call re-fetches the same oldest-cap batch
+ * and drops the same partial block again. The dropped block is delivered whole
+ * only once the forward-sliding window floor has aged the already-delivered older
+ * blocks below the floor, leaving it as the oldest-kept rows instead of the
+ * cap-truncated end. For 'desc' (SPA) the dropped block is the OLDEST and the
+ * route's cursor only moves FORWARD (newest-first), so that consumer never
+ * re-fetches it; recovery for old activity is the email digest's job, not the
+ * bell feed's.
  *
  * A TRUE single-block-exceeds-cap burst (one Hive block alone holding >cap events)
  * is worse: it empties the batch entirely, and the lone block is NOT recovered in

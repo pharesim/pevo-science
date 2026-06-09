@@ -256,9 +256,14 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
       //
       // Multi-block truncation vs single-block overflow differ here, and only the
       // first recovers: when the cap cuts across MULTIPLE blocks, the shared
-      // function drops the partial newest block but the cursor still advances to the
-      // highest WHOLE delivered block, so the dropped block resurfaces on the next
-      // run (the cursor has not advanced past it). But a TRUE single-block-exceeds-cap
+      // function drops the partial newest block while the cursor advances only to
+      // the highest WHOLE delivered block, below the drop. Recovery is deferred,
+      // not next-run: every run fetches from the wide window floor (not from this
+      // cursor), so the next run re-fetches the same oldest-cap batch, drops the
+      // same partial block again, and filterEventsAfter strips the already-delivered
+      // older blocks. The dropped block is delivered whole only on a later run, once
+      // the forward-sliding floor has aged those delivered older blocks below the
+      // floor and the block is no longer the cap-truncated end. But a TRUE single-block-exceeds-cap
       // burst (one Hive block alone holding >cap recipient-relevant events) yields an
       // EMPTY batch — the shared function drops that lone block, the digest skips, and
       // the cursor holds. That block is NEVER delivered: its event count is fixed, and
