@@ -32,3 +32,39 @@ Add i18n keys for the new arms. `vouch_status` may be `null` in the `unverified`
 
 - Backend contract: `agents/docs/api-contracts/accreditation.md` POST /api/wot/retract is the authoritative enum.
 - The backend write-side hardening that introduced these outcomes is archived under the wot-retract-cascaderevocation work.
+
+## UI implementation note (2026-06-09, commit cee02ffa on main)
+
+`handleRetract()` in `frontend/src/components/vouch-section.js` now branches on
+`res.data.revocation_outcome` (the retract `custom_json` already succeeded above;
+the outcome describes the dependent-accreditation cascade revocation):
+- `unverified` -> `step='success'` (green) with `wot.retractUnverified` ("not yet
+  reflected on-chain, re-check shortly") — benign HAF-ingestion lag, explicitly
+  not an error per the task.
+- `query_error` -> `step='error'` (red) with `wot.retractQueryError` ("re-evaluation
+  could not complete, re-attempt").
+- `timeout` / `chain_error` -> `step='error'` with `wot.retractRevocationDegraded`
+  ("degraded or failed, check on-chain status before re-attempting").
+- `revoked` / `skipped` / absent (pre-discriminator response) -> the existing
+  success copy, with the revoked accounts when present.
+
+The profile template (`profile.js`) styles `message` binary: `step === 'error'`
+renders red, anything else green — so the benign `unverified` lag stays green while
+the actionable failures go red. `revocations` is read as `|| []` so the
+non-revoked arms cannot throw. The task's "`vouch_status` may be null" guard is
+N/A to this handler — `handleRetract` reads `revocations`/`revocation_outcome`,
+never `vouch_status`; the post-retract `loadVouchStatus()` (unchanged) already
+tolerates a null status.
+
+**i18n.** 3 new `wot.*` keys in `en.json`, English stubs across the 15 other
+locales (inserted textually via `fs` to preserve each locale's formatting/escaping
+per the unicode-escape-corruption convention), and a STUBS.md sweep
+`### Added 2026-06-09 (UI-WOT-RETRACT-OUTCOME-MESSAGING)` (45 lines). All copy is
+emdash-free (verified).
+
+**Tests.** 4 new `handleRetract` cases in `components-vouch-section.test.js`
+(unverified -> non-error distinct message; query_error -> error; timeout +
+chain_error -> degraded error; revoked -> success with accounts). Full frontend
+unit suite green (1448 pass, +4; i18n parity across 16 locales holds); build green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
