@@ -133,3 +133,51 @@ three pre-existing orcid-no-password failures are the reauth-modal selector
 collision above.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES
+
+`/ce-code-review` on the round-trip work (the happy-path real-backend test in
+`settings-orcid-factor.spec.js` + the `orcid-no-password.spec.js` consolidation)
+surfaced three test-quality findings. None break the tests today; all harden
+them. The follow-up selector-scoping commit is sound and not held.
+
+1. **Post-reload visibility assertion races the async email fetch (soft flake).**
+   In the happy-path test, after `page.reload()` the assertion that the
+   set-password section is hidden depends on the async `GET /api/settings/email`
+   reporting `hasPassword:true`, but only `waitForSelector('[x-data=settingsPage]')`
+   is awaited — that resolves on Alpine init, not on the fetch completing. On a
+   loaded CI runner the section can still be in its pre-fetch visible state when
+   the assertion first evaluates. `toBeHidden()` polls within its timeout, so
+   this is a soft-flake channel rather than a hard failure, but it is a real one.
+   **Fix:** arm a `waitForResponse` for `GET /api/settings/email` before the
+   `page.reload()` and await it before the visibility assertion.
+
+2. **Redirect-host bridge is duplicated between the happy-path and mismatch tests.**
+   The `**/api/orcid/start` passthrough+rewrite and the `**/oauth/authorize*`
+   302-fulfil block are byte-for-byte identical in both tests (only the `code`
+   value differs), along with their ~12-line rationale comments.
+   **Fix:** extract one helper (e.g. `routeOrcidStubBridge(page, baseURL, code)`)
+   that registers both routes, carry the rationale comment once on the helper,
+   and adopt it at both call sites. Coordinate with the negative-path task
+   (`ui-orcid-factor-negative-path-e2e`, also held): it adds a one-line message
+   assertion to the mismatch test, so sequence the two edits to that test to
+   avoid a collision.
+
+3. **`orcid-no-password.spec.js` file-level header now contradicts its body.**
+   The header (the top-of-file docblock) still says the real-backend assertions
+   are "marked with `test.fixme` pending SEC-004-BE. Un-fixme them once the
+   backend lands." But this work LANDED SEC-004-BE — the set-password fixme became
+   the real third test in `settings-orcid-factor.spec.js` — and rewrote the
+   mid-file block to the real remaining reason: the signup/recover fixmes stay
+   because the token-only orcid-stub does not serve the `pub.orcid.org` works
+   endpoint. **Fix:** update the header to match the body — the remaining fixmes
+   are blocked on a `pub.orcid.org` works stub, not on SEC-004-BE.
+
+**Dismissed (no action required):** the pre-existing `SEC-004-UI` / `SEC-004-BE`
+comment-slug citations elsewhere in `orcid-no-password.spec.js` are out of scope
+here — this diff already improved slug usage by removing the "SEC-004-BE
+integration:" test-name prefixes. While editing the header for finding 3 you may
+optionally drop the SEC-004-BE phrasing in favor of a behavioral anchor, but a
+broader slug sweep is not required by this task.
+
+When these land, `git mv` this file back to `tasks/review/`.
