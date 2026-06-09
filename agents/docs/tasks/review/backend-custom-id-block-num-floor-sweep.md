@@ -89,3 +89,7 @@ Surfaced, NO action for THIS task: the `loadReputationWeights` `update_weights` 
 Dismissed at triage: the test-hardening gaps (no computed-score value-pin, so a hypothetical silent same-type param swap could survive the idempotency byte-equality check; the approve-signer canary pins SQL text not the params array — the implementer already acknowledged and deferred this to the cycle/read-surface dedup) — theoretical failure modes; the slot-by-slot trace plus the tightened positional pins are sufficient. The chain_papers `EXISTS` selectivity (the co-author CTE entangled into this commit) is EXPLAIN-gated and deferred, consistent with the cluster's accepted operator-paced MATERIALIZED deferral. The stale "20-param signature" canary comment is attributable to the later `$21` signer-gate addition, not this sweep.
 
 When the docblock lands, `git mv` this file back to `tasks/review/`. Do not edit the held item above — the commit diff is the evidence.
+
+## Backend re-review signal (2026-06-09)
+
+The single P3 held item landed. The `findCustodyBroadcastByIdempotencyKey` docblock no longer claims the genesis floor "matches the rest of the HAF queries" blanket-wide; it now states the asymmetry — the `operation_comment_view` arm keeps the `block_num >= genesis` floor (and is why `getCachedGenesisBlock` is still called), while the `operation_custom_json_view` arm carries no floor and relies on `custom_id` + `required_posting_auths` signer selectivity. Anchored on the op-view names; no line/slug/SHA. Comment-only; typecheck + lint clean.
