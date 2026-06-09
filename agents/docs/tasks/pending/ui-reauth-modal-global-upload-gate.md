@@ -107,3 +107,52 @@ folded in here (that file is already in `review/`, and the spread is a defensibl
 non-mutating idiom with negligible cost).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect review (2026-06-09) — HELD PENDING FIXES
+
+`/ce-code-review` ran on the implementing commit `8367faed` (9 personas; correctness/security/adversarial
+on the session model, ce-agent-native-reviewer skipped per PEvO). **The core gate is verified correct**
+with strong cross-persona consensus: the `run` vs `promptChain` split returns the real prompt result to the
+caller while only the chain tail collapses to `undefined`; a rejected or cancelled prompt advances the
+chain (`run.then(() => undefined, () => undefined)`) with no unhandled-rejection leak and no wedge; FIFO
+serialization holds for N callers; no cross-session password leakage (security clean); no self-deadlock on
+the wrong-password re-prompt; no unbounded promise-chain growth (resolved links GC-collectable);
+project-standards clean (comment anchors stable, no emdash, UI zone). Held on two fixes plus their tests:
+
+1. **(P3) A disposed/abandoned session still opens the prompt for a dead session.** A queued
+   `withPromptLock` waiter has no cancellation check: if a session is disposed (the editor is torn down, or
+   the user navigates) while it waits behind another session's open prompt, the queued lambda still fires
+   `Alpine.store('reauthModal').request()` when the prior prompt settles. The user gets a surprise second
+   prompt, and any password entered is spent on a session that has been discarded. This is a behavior the
+   gate newly introduces: before the gate, the second concurrent caller fast-failed to `UPLOAD_CANCELLED`
+   instead of opening a modal. Low-probability (needs concurrent sessions with one disposed mid-wait), but
+   it routes a typed password into a dead session. Fix: give each session a disposed/cancelled flag set by
+   `dispose()`, and check it inside the `withPromptLock` lambda before calling `reauthModal.request()` —
+   resolve to null (→ `UPLOAD_CANCELLED`) immediately if the session is gone, so a disposed session never
+   opens the modal.
+
+2. **(P3) Module-level `promptChain` has no reset path — test-isolation footgun.** `promptChain` is
+   module-private mutable state that persists across `it` / `describe` blocks. Today every test fully drains
+   it, but any future test that starts a light-account upload and never resolves the `reauthModal` mock
+   would leave `promptChain` pending and silently stall every subsequent test in the file. Fix: add a
+   test-only reset seam (export a `resetPromptChain()` or equivalent) and call it in the
+   `cross-surface prompt serialization` describe's `beforeEach`, so module state is fresh per test.
+
+3. **(test, fold into items 1-2) Pin the wedge-prevention behaviors that are currently unexercised.** The
+   advance-on-settle property the gate's correctness rests on is untested for the failure branches. Add: (a)
+   a cancelled/null first-session prompt still advances the gate so the second session prompts and completes
+   uncancelled; (b) a rejecting/throwing `requestPrompt()` advances the chain for the next waiter; (c) 3+
+   concurrent sessions serialize in order (only N=2 is covered today); plus a dispose-while-queued test for
+   item 1 (a disposed waiter never opens the modal). Each must fail if the respective guard is removed.
+
+**Considered and dismissed (no action):** the never-settling-prompt wedge (the `reauthModal.request()`
+contract always settles — to null on any dismiss path — verified; residual risk only, not reachable today);
+the settings-fresh-auth cross-caller collision (explicitly out of scope for this task — the settings flow
+prompts strictly sequentially on a different page and cannot realistically race an upload); the
+wrong-password re-prompt ordering inversion under concurrency (correct serialization, surprising ordering,
+not a defect).
+
+Re-review acceptance: items 1-3 landed; the new dispose-cancel and cancel/reject/3-session tests fail if the
+respective guard is removed; full frontend unit suite green. `git mv` back to `tasks/review/` when done.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
