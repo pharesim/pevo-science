@@ -586,6 +586,127 @@ describe('notification-queries.ts arm semantics', () => {
     },
   );
 
+  // Arm-9 claim-correlation gate — mirrors the arm-8 victim canary. A revoke
+  // signed by the REAL post author (NOT the claimer-self path, which trivially
+  // implies a claim) naming a victim who never claimed must NOT notify the
+  // victim; only the real claimer is. Goes RED if the correlation `= $1` is
+  // inverted to `!= $1`: the non-claiming victim would then fire (1, not 0).
+  it.skipIf(!isHafConfigured())(
+    'arm-9 claim-correlation: a revoke (real-author signer) naming a non-claiming victim does not notify; the real claimer does',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const sql = `
+        WITH
+          p(author, permlink, json_metadata) AS (
+            VALUES ('bob'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
+          ),
+          -- alice claimed bob/paper1; eve never claimed anything.
+          claims(required_posting_auths, json, custom_id) AS (
+            VALUES ('["alice"]'::jsonb, '{"action":"claim_authorship","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text)
+          ),
+          cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+            -- bob (the REAL author) revokes naming eve (no claim). The signer gate
+            -- passes via the author branch, so ONLY the correlation gate decides.
+            ('["bob"]'::jsonb, '{"action":"revoke_authorship","claimer":"eve","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 101),
+            -- bob revokes naming alice (who DID claim)
+            ('["bob"]'::jsonb, '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 102)
+          )
+        SELECT COUNT(*)::int AS hit_count FROM cj
+        WHERE cj.custom_id = 'pevotest'
+          AND cj.json ->> 'action' = 'revoke_authorship'
+          AND cj.json ->> 'claimer' = $1
+          AND (
+            EXISTS (
+              SELECT 1 FROM p rv_paper
+              WHERE rv_paper.author = cj.json ->> 'paper_author'
+                AND rv_paper.permlink = cj.json ->> 'paper_permlink'
+                AND (rv_paper.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+                AND cj.required_posting_auths ->> 0 = rv_paper.author
+            )
+            OR cj.required_posting_auths ->> 0 IN (
+              cj.json ->> 'claimer', $2, $3
+            )
+          )
+          -- Claim-correlation gate: $1 must have a REAL claim on the same paper.
+          AND EXISTS (
+            SELECT 1 FROM claims cl
+            WHERE cl.custom_id = 'pevotest'
+              AND cl.json ->> 'action' = 'claim_authorship'
+              AND cl.json ->> 'paper_author' = cj.json ->> 'paper_author'
+              AND cl.json ->> 'paper_permlink' = cj.json ->> 'paper_permlink'
+              AND cl.required_posting_auths ->> 0 = $1
+          )
+          AND cj.block_num > 0
+      `;
+      // eve never claimed -> signer gate passes (bob is the real author) but the
+      // correlation gate drops it: no spurious "claim revoked" for the victim.
+      const victim = await pool.query<{ hit_count: number }>(sql, ['eve', 'pevo.bridge', 'pevo.admin']);
+      expect(victim.rows[0]?.hit_count).toBe(0);
+      // alice DID claim bob/paper1 -> the same revoke, same signer, fires for her.
+      const claimer = await pool.query<{ hit_count: number }>(sql, ['alice', 'pevo.bridge', 'pevo.admin']);
+      expect(claimer.rows[0]?.hit_count).toBe(1);
+    },
+  );
+
+  // Per-paper dedup for revoke (mirrors the arm-8 dedup): three identical revoke
+  // broadcasts on one paper collapse to one notification via the DISTINCT ON.
+  it.skipIf(!isHafConfigured())(
+    'arm-9 dedup: three identical revoke broadcasts on one paper collapse to one notification',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const sql = `
+        WITH
+          p(author, permlink, json_metadata) AS (
+            VALUES ('bob'::text, 'paper1'::text, '{"pevotest":{"type":"paper"}}'::jsonb)
+          ),
+          claims(required_posting_auths, json, custom_id) AS (
+            VALUES ('["alice"]'::jsonb, '{"action":"claim_authorship","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text)
+          ),
+          cj(required_posting_auths, json, custom_id, block_num) AS (VALUES
+            ('["bob"]'::jsonb, '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 101),
+            ('["bob"]'::jsonb, '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 102),
+            ('["bob"]'::jsonb, '{"action":"revoke_authorship","claimer":"alice","paper_author":"bob","paper_permlink":"paper1"}'::jsonb, 'pevotest'::text, 103)
+          )
+        SELECT COUNT(*)::int AS hit_count FROM (
+          SELECT DISTINCT ON (cj.json ->> 'paper_author', cj.json ->> 'paper_permlink') cj.block_num
+          FROM cj
+          WHERE cj.custom_id = 'pevotest'
+            AND cj.json ->> 'action' = 'revoke_authorship'
+            AND cj.json ->> 'claimer' = $1
+            AND (
+              EXISTS (
+                SELECT 1 FROM p rv_paper
+                WHERE rv_paper.author = cj.json ->> 'paper_author'
+                  AND rv_paper.permlink = cj.json ->> 'paper_permlink'
+                  AND (rv_paper.json_metadata -> 'pevotest' ->> 'type') = 'paper'
+                  AND cj.required_posting_auths ->> 0 = rv_paper.author
+              )
+              OR cj.required_posting_auths ->> 0 IN (
+                cj.json ->> 'claimer', $2, $3
+              )
+            )
+            AND EXISTS (
+              SELECT 1 FROM claims cl
+              WHERE cl.custom_id = 'pevotest'
+                AND cl.json ->> 'action' = 'claim_authorship'
+                AND cl.json ->> 'paper_author' = cj.json ->> 'paper_author'
+                AND cl.json ->> 'paper_permlink' = cj.json ->> 'paper_permlink'
+                AND cl.required_posting_auths ->> 0 = $1
+            )
+            AND cj.block_num > 0
+          ORDER BY cj.json ->> 'paper_author', cj.json ->> 'paper_permlink', cj.block_num ASC
+        ) dedup
+      `;
+      // DISTINCT ON collapses the three identical broadcasts to one (without it: 3).
+      const r = await pool.query<{ hit_count: number }>(sql, ['alice', 'pevo.bridge', 'pevo.admin']);
+      expect(r.rows[0]?.hit_count).toBe(1);
+    },
+  );
+
   // Source-level shape pin (always runs, no infra): the claim-correlation EXISTS
   // and per-paper DISTINCT ON must be present in BOTH arms 8 and 9, and the
   // section-number schema citations must be schema-name anchors. Pins arm 9's

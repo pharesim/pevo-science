@@ -744,11 +744,11 @@ export function authorshipClaimsCteBody(
       scopeIdx += 2;
     }
   }
-  // revoke_authorship signer gate (per agents/docs/hive-schemas.md §2.11): a
-  // revoke voids a claim only when signed by the post author, the bridge
-  // account, the admin account, or the claimer themselves. adminIdx binds
-  // config.hiveAdminAccount for that IN-list. Appended AFTER the scope params
-  // so the bridge and scope param indices stay fixed.
+  // revoke_authorship signer gate (per the Revoke Authorship schema in
+  // hive-schemas.md): a revoke voids a claim only when signed by the post
+  // author, the bridge account, the admin account, or the claimer themselves.
+  // adminIdx binds config.hiveAdminAccount for that IN-list. Appended AFTER the
+  // scope params so the bridge and scope param indices stay fixed.
   const adminIdx = scopeIdx;
   return {
     sql: `

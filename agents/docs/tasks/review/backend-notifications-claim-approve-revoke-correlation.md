@@ -74,3 +74,11 @@ Recorded dispositions (do NOT re-triage — for implementer context):
 - **DEFERRED, non-blocking (maintainability):** the 15-column NULL-projection duplicated across arms with no documented column-order contract (pre-existing pattern, not introduced here) and the ~95-char overlong arm-7 comment line from the §-conversion. Optional to fold while addressing items 1/2; not required.
 
 When items 1 and 2 land, `git mv` this file back to `tasks/review/`; the move is the re-review signal. Scope the re-review to the commits since this hold block.
+
+## Backend re-review signal (2026-06-09)
+
+Both items landed; moving back to `tasks/review/`.
+
+- **Item 1.** The `revoke_authorship` signer-gate comment in `authorshipClaimsCteBody` (`hafsql.ts`) no longer cites `§2.11`; it now reads "per the Revoke Authorship schema in hive-schemas.md" (schema-NAME anchor, matching the sibling §2.9/2.10 conversion). Comment-only. Audit-own-replacement: reflowed the block so the new anchor did not leave a dangling clause, and introduced no new line-number / slug / SHA / `§ N.M` anchor.
+- **Item 2.** Added an arm-9 behavioral victim canary to `notification-arm-semantics.test.ts`, mirroring the arm-8 canary: a `revoke_authorship` signed by the REAL post author (bob, NOT the claimer-self path) naming a non-claiming victim (eve) → 0, and naming the real claimer (alice) → 1. Because the signer is the author, the signer gate's author-EXISTS branch passes for BOTH recipients, so the correlation EXISTS is the sole discriminator. It goes RED on a `= $1` → `!= $1` inversion (eve would fire → 1, alice would drop → 0; both assertions fail), which the brittle source-shape string pin could not catch. Also added the nice-to-have arm-9 dedup canary (three identical revokes on one paper collapse to one via DISTINCT ON), symmetric with arm-8.
+- Verification: `npm run typecheck` + `npm run lint` clean (the one lint warning is a pre-existing unused-directive in `src/lib/author-supersession.ts`, untouched). `notification-arm-semantics.test.ts` 22/22 green (was 20; the two new arm-9 cases ran against real Postgres, 0 skipped).
