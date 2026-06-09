@@ -108,3 +108,49 @@ No change.
 `backend-notifications-route-newest-first-whole-block` (still in `tasks/pending/`); never frontend-first.
 NOT manually smoke-tested against the new backend because that route change is not yet deployed; unit
 tests mock `fetchNotifications` against the documented (2026-06-09) contract shape.
+
+## Architect review (2026-06-09) — items 1–4 VERIFIED; HELD PENDING ORDERING FIX
+
+Reviewed commit `088890aa` via `/ce-code-review` (8 personas; correctness/adversarial on the session
+model). **All four spec items landed and verify against the documented whole-block contract:** the
+rewind is dropped (cursor advances to `latest_block` unconditionally), `_scheduleNext` is timer-only
+(no tight loop on a persistent `has_more`), the empty-batch cursor advance and the failure/backoff path
+are unaffected, and the generation guard / `refresh()` race traced clean. project-standards is fully
+clean (anchor-clean comments, no emdash, no new logs). No P0.
+
+**Backend pairing is NOT a hold reason.** The client is correct against the future whole-block backend,
+the "never frontend-first" constraint is already documented in this task, and the SPA is served from
+`backend/public` (same deploy unit) so atomic co-deploy is the safety mechanism — no code-level
+capability flag is wanted. Once the fixes below land and re-review passes, this archives without waiting
+for `backend-notifications-route-newest-first-whole-block`.
+
+**HELD PENDING FIXES:**
+
+1. **(P2) Make the feed order consistent — sort newest-first unconditionally** (`notifications.js`,
+   your flagged Item-2 decision). Today the over-cap branch sorts descending while the under-cap branch
+   keeps arrival order, so one oversized poll flips the feed asc→desc and the next under-cap poll renders
+   a mixed `[asc-new, desc-old]` list (4 reviewers independently flagged it). Sort newest-first by
+   `block_num` in BOTH cases so the cap becomes a pure tail-trim — drop the size ternary, e.g.
+   `this.events = [...deduped].sort((a, b) => b.block_num - a.block_num).slice(0, MAX_EVENTS)`. This also
+   fixes the pre-existing "newest renders at the bottom of a batch" oddity. Keep the comment anchored on
+   behavioral semantics.
+2. **(P3) Narrow the two overclaiming comments.**
+   - The `markAllRead`/`seenBlock` comment asserts an unread-integrity guarantee the cap does not
+     provide. The code is correct and strictly better than before, but the cap inherently sheds the
+     OLDEST-unread events beyond `MAX_EVENTS` (they leave memory and stop counting toward `unreadCount`)
+     independent of `markAllRead`. State that honest trade-off instead of "never zeroes unread."
+   - The over-cap comment says "retain the newest" — true ACROSS blocks, but a single oversized block
+     (> `MAX_EVENTS` events sharing one `block_num`) defeats the `b.block_num - a.block_num` comparator
+     (stable no-op → keeps the arrival-order front). The architecture doc
+     (`forward-cursor-feed-newest-first-and-rewind-masks-cap-edge`) explicitly defers the
+     >cap-for-one-recipient-in-one-block case as a single-instance non-concern, so NO code fix is needed
+     — just stop claiming the single-block case is handled.
+3. **(P3) Tests.** Add an order assertion to the over-cap test (`store.events[0].block_num === 250`) so
+   a regression to ascending / `slice(0, MAX_EVENTS)` fails; add a `toHaveBeenCalledTimes(1)` fence after
+   poll 1 in the consecutive-polls test (tight-loop guard); and restore a cross-poll dedup assertion (the
+   deleted `remainder` event was the only coverage of merge+dedup across polls under the new cursor
+   contract). If fix 1 lands, the order assertion is trivial.
+
+When the fixes land, `git mv` this file back to `tasks/review/`.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
