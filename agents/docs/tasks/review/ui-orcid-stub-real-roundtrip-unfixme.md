@@ -84,3 +84,52 @@ The flow to drive, per spec:
 - Parent: `architect-e2e-stub-orcid-oauth-provider` (the standup, now landed).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI completion note (2026-06-09, commit 66a46ec1 on main)
+
+Done:
+- **settings-orcid-factor.spec.js** (acceptance target): the `test.fixme` is now a
+  live, green test, "ORCID-factor set_password succeeds end-to-end with a real
+  backend-minted proof". It drives the State-C set_password ORCID factor against
+  the orcid-stub: real /orcid/start -> in-page fulfil of the authorize hop -> real
+  /orcid/callback (genuine proof mint, orcid == seeded iD) -> real
+  /api/settings/set-password (200). Asserts the real cached proof shape,
+  password_hash populated (State C -> State B), the set-password section gone on
+  reload, and password login with the new password returning 200. The header's
+  stale "no stub provider / test.fixme" mocking-justification notes were updated.
+- **orcid-link.spec.js**: its real-backend block (the 403 cross-user state-hijack
+  test) was already a live `test(...)` with a skip guard that fired only when
+  /start returned non-200 (ORCID unconfigured). With the stub setting
+  ORCID_CLIENT_ID/SECRET it no longer skips and runs for real (green). The two
+  other tests there are frontend request-header contract tests (deliberately
+  stubbed; not proof round-trips), left as-is.
+- **orcid-no-password.spec.js**: the set-password real round-trip (its fixme #2)
+  is a duplicate of the settings-orcid-factor test above; consolidated to a
+  pointer rather than a second Docker-backed round-trip. The signup/recover fixmes
+  stay fixme'd: both drive ORCID *signup* mode, whose handler fetches a works
+  count from a hardcoded pub.orcid.org URL the token-only orcid-stub does not
+  serve. Filed as follow-up `ui-orcid-signup-recover-real-roundtrip`.
+
+Redirect-host bridge (non-obvious; not in the task recipe): the backend builds
+redirect_url from `config.orcidBaseUrl` = `http://orcid-stub:8099`, and
+`beginSettingsActionOrcidFreshAuth` validates the host against the frozen
+`ORCID_REDIRECT_HOSTS` allowlist (orcid.org / sandbox.orcid.org) BEFORE navigating,
+so an orcid-stub host throws before the browser leaves the app. The test passes
+/orcid/start through to the real backend (real Redis state) and rewrites only the
+redirect_url host to orcid.org so the guard passes and `**/oauth/authorize*` can be
+intercepted. The recipe assumed the SPA would navigate to the stub host directly;
+the allowlist makes that impossible, hence the bridge.
+
+Pre-existing failures surfaced (NOT introduced here, NOT fixed here): three tests
+in orcid-no-password.spec.js (lines 99/166/307) fail a Playwright strict-mode check
+— `page.locator('form button[type="submit"]')` matches two elements because the
+global reauth modal (password fresh-auth factor) renders its own submit "Confirm"
+button in the layout. The SPA is built from current main and these tests'
+selectors are untouched by this task. The fix is to scope the submit selector to
+the page form; flagged for separate triage.
+
+Verification: settings-orcid-factor 3/3 green in isolation; orcid-link green; the
+three pre-existing orcid-no-password failures are the reauth-modal selector
+collision above.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
