@@ -264,3 +264,36 @@ eventually un-fixme'd).
 When this lands, `git mv` this file back to `tasks/review/`.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09, commit f921f9a8 on main)
+
+Round-2 item 1 landed in the happy-path real-round-trip test
+(`settings-orcid-factor.spec.js`).
+
+Both parts of the fix:
+
+1. **Discriminating assertion.** The prior `waitForResponse('**/api/settings/email')`
+   arm was non-discriminating — it resolved on the HTTP response, but the section's
+   gate `x-if="!emailLoading && emailStatus && emailStatus.hasPassword === false"`
+   keeps the section hidden through the whole email-fetch window (the component
+   boots `emailLoading:true` / `emailStatus:null`), so `toBeHidden()` soft-PASSED on
+   the loading frame regardless of `hasPassword`. Replaced it with a positive
+   post-loading-surface gate: `await expect(page.getByRole('button', { name:
+   'Change email' })).toBeVisible()` before the `toBeHidden()`. The verified-email
+   "Change email" control renders only once the fetch settles
+   (`!emailLoading && emailStatus && hasEmail && verified`), so its visibility
+   proves `emailLoading` flipped false; the subsequent `toBeHidden()` then genuinely
+   requires `hasPassword:true` (a State-B regression that left `hasPassword:false`
+   would render the section visible and fail the assertion).
+
+2. **Corrected comment.** Now describes the real mechanism — the section is hidden
+   while `emailLoading` is true and becomes discriminating only AFTER the fetch
+   settles, at which point `hasPassword:true` keeps it hidden. Anchored on the
+   `x-if` binding expression and the `emailLoading` state name (no line number,
+   SHA, or task slug), replacing the prior comment's inverted "pre-fetch
+   (still-visible) state" claim.
+
+Verification: all 4 tests in `settings-orcid-factor.spec.js` green against the
+orcid-stub test stack (`test-db-up` → `test-up`; dev routing restored after).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
