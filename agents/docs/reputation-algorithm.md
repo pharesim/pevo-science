@@ -293,6 +293,12 @@ decay(age_months) =
 }
 ```
 
+### Read-side signer gate (load-bearing invariant)
+
+`loadReputationWeights` (`backend/src/reputation.ts`) selects the latest `update_weights` payload gated on the signing authority: BOTH the existence probe and the latest-op read require `cj.required_posting_auths ? config.hiveAdminAccount` (singular admin, mirroring the `accreditation` / WoT / consent-op readers). This is mandatory, not optional: a `custom_json` read selected on `custom_id` + `action` alone is an authentication bypass, because any Hive account can broadcast any `custom_id`. The write side (`hive.ts` `broadcastCustomJson`) signs `update_weights` with `required_posting_auths: [config.hiveAdminAccount]`, and Hive consensus admits an op only if every named posting-auth actually signed, so a forged `required_posting_auths:[admin]` never reaches HAF. A non-admin `update_weights` therefore returns from neither query, and weights stay at `DEFAULT_REPUTATION_WEIGHTS` / the last admin-signed value — never at attacker-chosen weights.
+
+Accepted values are additionally sanitized by `sanitizeReputationWeights` (pure, exported): each known weight is accepted only if a finite number (non-numeric / NaN / ±Infinity / missing / unknown-shaped / non-plain-object inputs fall back to the default via the spread over `DEFAULT_REPUTATION_WEIGHTS`); `decay_floor` and `self_citation_discount` clamp to `[0, 1]`, `decay_rate` and `decay_grace_months` clamp to `>= 0`. `cycle_blocks` is clamped `> 0` downstream in `reputation-batch.ts`.
+
 ---
 
 ## Canonical SQL Query
