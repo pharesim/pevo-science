@@ -103,3 +103,13 @@ The 2026-05-11 framing above is now itself stale, and the underlying rollout has
 **[TODO Architect]** Re-scope the multi-author consent-layer rollout: (1) decide whether to file a task to wire `computeVouchedAuthors` into `resolveContinuationChain`'s read path (the "Phase 2 consent layer" the orphaned primitives were built for), (2) scope the migration-day flag, and (3) sequence this endpoint + `ui-multi-author-consent-affordances` into that cutover bundle. Until that sequencing exists, this task stays blocked. The primitives and this endpoint's data shape are ready whenever the bundle is scheduled.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+### Block-note refresh 2026-06-09 (architect — endpoint + read-path wiring now scoped; flag-day premise obsolete; task SUPERSEDED)
+
+The 2026-05-28 `[TODO Architect]` re-scope is resolved by the consented-authorship ratification (architect + user, 2026-06-09):
+
+- **The endpoint is owned by `backend-consented-set-read-surfaces` U5** (`GET /api/me/authorships/pending`). Build it there, once — this is the "don't build it twice" resolution. That task generalizes the Route-2-only "vouched" shape sketched above to the settled **two routes**: Route-2 anchored slots awaiting `author_accept` AND Route-3 name-only slots awaiting `claim`/`approve`. The canonical response shape is the read-surfaces task's (a claimer's pending Route-2 + Route-3 slots); it supersedes the Route-2-only `pending[]` shape above.
+- **The orphaned read-path wiring is scoped** by `backend-implement-consented-authorship-model` (U1's shared `consentedAuthorsCteBody`, consumed by the cycle AND the read surfaces; U4 the paper-detail badge). The 2026-05-28 item (1) — "wire `computeVouchedAuthors` into the read path" — is that task's core.
+- **The flag-day / migration-day premise is obsolete.** The decided model is **go-forward, no flag-day** (nothing live uses the consent ops; ARCH.md § 2 "Migration→Rollout"). Item (2) "migration-day flag" and the "migration-day data prep" acceptance here no longer apply — no co-author is demoted on a cutover, because there is no cutover.
+
+**Recommendation: this task is superseded.** Its unique substance — the endpoint and the read-path consent wiring — is absorbed by the two tasks above; its remaining acceptance (migration-day flag / data prep) is obsolete; real-time notifications were always out of scope. Nothing actionable remains. Suggest `git rm`-ing this file once the user confirms (architect did not auto-delete an architect-owned blocked task). Until then it stays in `blocked/` as a pointer to the two successor tasks.
