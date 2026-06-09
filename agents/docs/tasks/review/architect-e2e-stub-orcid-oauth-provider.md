@@ -4,6 +4,34 @@
 **Created:** 2026-06-09 (architect, clause-(c) follow-up from the `ui-settings-orcid-factor-e2e` review)
 **Priority:** P3
 
+## Landed (architect, 2026-06-09)
+
+Decisions taken (confirmed with the user): scope = `fresh_auth`/`set_password`
+only; stub = hand-written Node script; fidelity = backend-only-real (browser
+authorize hop fulfilled in-page by Playwright, not by the stub).
+
+Shipped in `docker-compose.test.override.yml`: an `orcid-stub` sidecar
+(node:20-alpine, ~20-line inline `POST /oauth/token` server reflecting the form
+`code` back as the response `orcid` field) plus the backend `ORCID_BASE_URL=
+http://orcid-stub:8099` / `ORCID_CLIENT_ID` / `ORCID_CLIENT_SECRET` env block and
+a `depends_on`. The merged compose config validates and the inline server was
+exercised standalone (token-exchange reflection + 404 fallback) before commit.
+
+Backend handoff resolved with NO code change: `config.orcidBaseUrl` /
+`orcidClientId` / `orcidClientSecret` are already env-overridable
+(`backend/src/config.ts`), and the callback's token exchange + ORCID-iD match +
+proof mint all run for the `fresh_auth` path without touching the hardcoded
+`pub.orcid.org` works URL (that URL is reached only by `signup`/`accredit`,
+which were declared out of scope). If real signup/accredit round-trips are
+wanted later, file a `backend-` task to make `orcid.ts`'s works-fetch base
+env-overridable.
+
+UI handoff filed: `ui-orcid-stub-real-roundtrip-unfixme` carries the spec
+un-fixme work and the end-to-end green criterion (acceptance items below that
+require driving/greening a spec are tracked there, since the architect cannot
+edit `frontend/`). The architect-owned deliverable — stub stood up, reachable,
+config confirmed env-overridable, handoff filed — is complete.
+
 ## Problem
 
 Three ORCID E2E specs cannot exercise their real-backend round-trip because the local/E2E stack
