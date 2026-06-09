@@ -3,8 +3,8 @@
 # without touching the internet.
 #
 # Applied on top of docker-compose.yml. Postgres, Redis, and IPFS stay
-# shared with the dev stack. Mailpit is an E2E-only sidecar. The backend
-# container is recreated (compose detects the env-var change), so:
+# shared with the dev stack. Mailpit and orcid-stub are E2E-only sidecars. The
+# backend container is recreated (compose detects the env-var change), so:
 #
 #   ./deploy.sh test-up   — reconfigures backend to pevo_app_test + Mailpit
 #   ./deploy.sh up        — restores backend to pevo_app (dev routing)
@@ -15,6 +15,16 @@
 # INSTITUTIONAL_EMAIL_DOMAINS=.test lets reserved RFC 2606 `.test` addresses
 # (e.g. e2e+signup@pevo.test) pass the signup accreditation gate without
 # needing a real institutional domain or ORCID round-trip.
+#
+# The orcid-stub sidecar lets the REAL backend /api/orcid/callback complete a
+# genuine OAuth token exchange in E2E without reaching the live ORCID service.
+# ORCID_BASE_URL points the backend at the stub over the compose network only;
+# specs intercept the browser-followed /oauth/authorize hop in-page (Playwright
+# route fulfil) and drive the chosen authorization `code`. The stub reflects
+# that `code` back as the token response's `orcid` field, so the spec controls
+# which per-run iD the callback binds against (it seeds accounts.orcid to the
+# same value). This covers the fresh_auth/set_password modes; signup/accredit
+# additionally hit a hardcoded pub.orcid.org works URL and are out of scope.
 
 services:
   backend:
@@ -23,6 +33,12 @@ services:
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       INSTITUTIONAL_EMAIL_DOMAINS: ".test"
+      # Point the real ORCID client at the in-network stub. Both client id and
+      # secret must be non-empty or /api/orcid/callback short-circuits with
+      # "ORCID integration is not configured"; the stub ignores their values.
+      ORCID_BASE_URL: http://orcid-stub:8099
+      ORCID_CLIENT_ID: e2e-stub-client
+      ORCID_CLIENT_SECRET: e2e-stub-secret
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,6 +47,8 @@ services:
       ipfs:
         condition: service_healthy
       mailpit:
+        condition: service_started
+      orcid-stub:
         condition: service_started
 
   mailpit:
@@ -42,6 +60,48 @@ services:
       - "1025"
     ports:
       - "127.0.0.1:8025:8025"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  # Stub ORCID OAuth token endpoint (E2E only). Reachable from the backend
+  # over the compose network as http://orcid-stub:8099; no host port is
+  # published because no browser navigates here (specs fulfil the authorize
+  # hop in-page). POST /oauth/token reflects the form `code` back as the
+  # response `orcid` field plus a fixed name + access_token, matching the
+  # bespoke shape the backend parses (orcid required, name/access_token
+  # optional). The script uses string concatenation, not template literals,
+  # so it carries no `$` for compose variable-interpolation to touch.
+  orcid-stub:
+    image: node:20-alpine
+    restart: unless-stopped
+    expose:
+      - "8099"
+    command:
+      - node
+      - -e
+      - |
+        const http = require('http');
+        const PORT = 8099;
+        http.createServer((req, res) => {
+          if (req.method === 'POST' && req.url.startsWith('/oauth/token')) {
+            let body = '';
+            req.on('data', (c) => { body += c; });
+            req.on('end', () => {
+              const code = new URLSearchParams(body).get('code') || '';
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                orcid: code,
+                name: 'E2E Stub Scientist',
+                access_token: 'e2e-stub-access-token',
+              }));
+            });
+            return;
+          }
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'not_found' }));
+        }).listen(PORT, () => console.log('orcid-stub listening on ' + PORT));
     deploy:
       resources:
         limits:
