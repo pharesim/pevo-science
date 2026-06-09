@@ -173,3 +173,11 @@ handleEmailDelete`; see "1 failed"; file a hold block before reading further.
   — same actor and moment (architect at review intake), adjacent duty: verify spec
   compliance at HEAD rather than only reading the diff. This adds a second intake
   check — run the suite — when the completion note makes coverage claims.
+- `agents/docs/solutions/conventions/re-review-intake-green-suite-not-held-item-completion-2026-06-09.md`
+  — successor for held-item completion. Running the suite (this convention)
+  establishes that the claimed green state is real; that successor adds that a real
+  green suite is still not evidence the held items landed. Four held-item classes
+  (type-derivation refactors, structured-log-field renames, add-a-test-for-X items,
+  single-source abstractions met at the type layer only) pass typecheck/lint/tests
+  whether or not they landed and need a per-item diff audit. Do not stop at "run the
+  suite" when the claim is held-item completion.
