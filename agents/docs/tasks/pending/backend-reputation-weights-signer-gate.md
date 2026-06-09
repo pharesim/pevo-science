@@ -66,3 +66,29 @@ Closed the P0 takeover and added value sanitization.
 ## On final archive (architect)
 
 Invoke `/ce-compound` to capture the convention this defect instantiates: a HAF custom_json read gated only on `custom_id` + `action` is an authentication bypass, because any Hive account can broadcast any custom_id; every consumer must additionally gate on the signing authority (`required_posting_auths`), the way the accreditation, WoT, and consent-op readers already do. Deferred until the fix lands and this task archives clean, so the documented solution reflects the verified gate shape.
+
+## Architect review (2026-06-09) — HELD PENDING FIXES (2 items)
+
+`/ce-code-review` (correctness + security + adversarial on Opus; testing, maintainability, project-standards, kieran-typescript, performance on Sonnet; learnings-researcher; ce-agent-native-reviewer skipped per PEvO) on commit 09329790. **The P0 is VERIFIED CLOSED** — correctness, security, AND adversarial each independently confirmed the bypass is shut: the `required_posting_auths ? $admin` gate on BOTH the existence probe and the latest-op read matches the sibling accreditation / WoT / consent gate shape; Hive consensus admits an op only if every named posting-auth actually signed, so a forged `required_posting_auths:[admin]` never reaches HAF; the write side signs with posting auth (matching the read gate's auth type); the existence-probe `LIKE '%update_weights%'` vs read `->>'action'` divergence fails closed to `DEFAULT_REPUTATION_WEIGHTS`, never to attacker-chosen weights; and `sanitizeReputationWeights` degrades safely on every adversarial input (array / string / NaN / ±Infinity / non-object → defaults). Two small items hold; nothing security-relevant.
+
+### Items held (must fix before archive)
+
+1. (P3, kieran-typescript) `sanitizeReputationWeights` array guard: `if (raw === null || typeof raw !== 'object')` admits arrays (`typeof [] === 'object'`), which reach the `as Record<string, unknown>` cast. It returns `{}` in practice (no array index matches a `DEFAULT_REPUTATION_WEIGHTS` key), so no behavior bug — but tighten the contract with `... || Array.isArray(raw)` and add a one-line unit asserting `sanitizeReputationWeights([{ paper: 99 }])` → `{}`.
+2. (P3, maintainability) `decayMultiplierSql` docblock (`hafsql.ts`): the signer-gate edit split a sentence, leaving "…already floors via GREATEST. Sharing one helper" as a dangling clause. Reflow into one self-contained sentence (e.g. "the grace arm returns 1.0 (>= decay_floor, which `sanitizeReputationWeights` clamps to [0, 1] at load time), and the decay arm already floors via GREATEST."). Comment-only.
+
+### Items dismissed at triage (no action)
+
+- (P2, maintainability) Table-driven clamp map so a future domain-bounded weight is not silently left unclamped: preemptive. The current four explicit clamps are correct and the weight set is stable; the additive weights (paper / review / citation / downvote / …) are admin-trusted and bounded by the final `LEAST(100, GREATEST(0, …))` score clamp, so an unclamped finite value cannot escape [0, 100] or be reached by a non-admin. Revisit only when a new domain-bounded `[0,1]` / `>=0` weight is actually added.
+- (P3, testing) Tests pinning negative/zero `cycle_blocks` pass-through and the `decay_floor == 1.0` exact boundary: `cycle_blocks` is intentionally unclamped here (clamped `> 0` downstream in `reputation-batch.ts`) and the clamp boundaries are mechanically trivial; preemptive per the project's dismiss-theoretical-hardening stance.
+- (P3, testing) Carve-out clause (c) companion not named by a specific file: the wiring companion (the reputation lifecycle/batch suites exercising the gated query against real Postgres) exists; naming a specific file is nice-to-have, not required.
+
+### Architect companion actions (deferred to clean archive — NOT implementer work)
+
+- (P2, project-standards) `reputation-algorithm.md` `update_weights` section does not record the signer-gate invariant. Architect-owned doc; the architect will add it when this task re-reviews clean and archives.
+- `/ce-compound` per the "On final archive" note above — the gate pattern is documented, but the specific "missing-from-day-one / applies to existing readers, not just new op types" framing is not yet a named entry, and there is a sibling cluster (`active-vouches-signer-gate`, `revoke-authorship-signer-gate`) of the same defect class. Architect runs it at clean archive.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next review scopes to the fix commit only.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
