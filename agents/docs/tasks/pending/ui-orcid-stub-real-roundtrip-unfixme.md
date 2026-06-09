@@ -211,3 +211,56 @@ Verification: both specs run against the test stack (orcid-stub sidecar) — 9
 passed, 2 skipped (the pub.orcid.org-works fixmes).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-09, round 2) — HELD PENDING FIXES
+
+Round-1's three items all landed in commit 9a1c95b6, and two passed re-review
+clean: the `routeOrcidStubBridge` dedup (item 2) and the `orcid-no-password.spec.js`
+header rewrite (item 3) — `/ce-code-review` (correctness + adversarial on Opus;
+testing/maintainability/project-standards/julik-frontend-races/learnings on Sonnet;
+ce-agent-native skipped per PEvO) verified the dedup is behaviorally neutral and
+the header reintroduces no slug/SHA/line-number anchors. Item 1's fix (the
+post-reload `waitForResponse` gate in the happy-path real-round-trip test in
+`settings-orcid-factor.spec.js`) landed but is incomplete and its explanatory
+comment is factually wrong. One new item:
+
+1. **Post-reload `toBeHidden()` is non-discriminating, and its new comment
+   mis-describes the mechanism.** The "Set a password" section is gated by
+   `x-if="!emailLoading && emailStatus && emailStatus.hasPassword === false"`
+   (settings.js), and the component initializes `emailLoading: true` /
+   `emailStatus: null`. So during the email-fetch window the section is
+   absent/hidden — NOT "pre-fetch (still-visible)" as the new comment claims. The
+   `page.waitForResponse('**/api/settings/email')` resolves on the HTTP response,
+   but Alpine flips `emailLoading=false` a microtask later, so `toBeHidden()` can
+   be satisfied by the loading frame regardless of `hasPassword`. (Round-1's hold
+   premise and this comment both inverted the mechanism: the section is hidden
+   during loading, so the un-gated assertion soft-PASSES — it does not soft-fail.)
+   The round-trip's persistence invariant is still independently caught by the
+   `password_hash` DB-row check and the password-login-200 assertion, so this is
+   not a release blocker — but the assertion as written does not verify what it
+   claims to, and the comment will mislead a future maintainer.
+
+   **Fix (two parts):**
+   - Correct the comment to describe the real mechanism: the section is hidden
+     while `emailLoading` is true and becomes discriminating only AFTER the fetch
+     settles (`emailLoading=false`), at which point `hasPassword:true` is what
+     keeps it hidden. Anchor on the binding expression / the `emailLoading` state
+     name, NOT a line number, SHA, or task slug.
+   - Make the assertion discriminating: gate on the loading state settling before
+     asserting `toBeHidden()` — e.g. await the `x-show="emailLoading"` spinner
+     becoming hidden, or assert a positive post-loading surface — so the assertion
+     actually requires `hasPassword:true` rather than passing on the loading frame.
+
+   **Verify:** re-run the happy-path real-round-trip test against the orcid-stub
+   test stack and confirm it still passes with the strengthened gate.
+
+Dismissed at triage (no action required): two P3s — (a) `waitForResponse` could in
+theory match a pre-reload `GET /api/settings/email` (very low probability, and even
+a mis-match asserts correctly because the pre-reload state is already State B);
+(b) the `orcid-no-password.spec.js` header's "See the docblock above the fixme
+blocks" within-file forward reference (minor staleness only when the fixmes are
+eventually un-fixme'd).
+
+When this lands, `git mv` this file back to `tasks/review/`.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
