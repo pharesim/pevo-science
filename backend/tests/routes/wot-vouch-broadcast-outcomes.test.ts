@@ -162,6 +162,7 @@ const VOUCH_STATUS_FIXTURE = {
   threshold: 3,
   eligible: false,
   vouches: [{ voucher: VOUCHER, relationship: 'colleague', timestamp: '2026-01-01T00:00:00Z' }],
+  accreditation_method: null,
 } satisfies VouchStatus;
 
 beforeEach(() => {

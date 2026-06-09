@@ -248,9 +248,13 @@ router.post('/retract', verifyHiveSignature, wotWriteLimiter, async (req: Reques
   // unverified retraction would let an accredited voucher revoke a victim's WoT
   // accreditation by POSTing here while broadcasting no retract — the admin
   // revoke sticks under latest-action-wins, and the victim's standing on-chain
-  // vouches fire no re-accreditation event, so it does not self-heal. On the
-  // verified path the recount in revokeVoucheeIfBelowThreshold sees the dropped
-  // edge already gone from active_vouches; no per-voucher SQL exclusion is used.
+  // vouches fire no re-accreditation event, so it does not self-heal.
+  //
+  // The poll returns the freshest VouchStatus, and the revoke decision is taken
+  // from THAT SAME snapshot (revokeVoucheeIfBelowThreshold reads the verified
+  // status, not a second independent query). One snapshot means a fresh vouch
+  // cannot land between the verification read and the threshold recount and
+  // straddle HAF's ingestion lag to revoke an at-threshold account.
   const status = await pollForRetraction(vouchee, voucher);
   const retractionVerified = status !== null && !status.vouches.some((v) => v.voucher === voucher);
 
@@ -265,7 +269,7 @@ router.post('/retract', verifyHiveSignature, wotWriteLimiter, async (req: Reques
     });
   }
 
-  const revocation = await revokeVoucheeIfBelowThreshold(vouchee);
+  const revocation = await revokeVoucheeIfBelowThreshold(status);
 
   let message: string;
   switch (revocation.outcome) {
@@ -277,9 +281,6 @@ router.post('/retract', verifyHiveSignature, wotWriteLimiter, async (req: Reques
       break;
     case 'chain_error':
       message = `Retraction processed. The revocation broadcast for ${vouchee} failed.`;
-      break;
-    case 'query_error':
-      message = `Retraction processed, but ${vouchee}'s accreditation could not be re-evaluated because the lookup failed. Please re-attempt.`;
       break;
     case 'skipped':
       message = 'Retraction processed. No revocation needed.';

@@ -140,6 +140,29 @@ export interface VouchStatus {
   threshold: number;
   vouches: VouchInfo[];
   eligible: boolean;
+  /**
+   * The account's OWN active-accreditation method (the most-recent `accredit`
+   * event's `method`: `'wot'`, `'email'`, `'orcid'`, ...), or `null` if the
+   * account is not currently accredited. Carried so the retract path can decide
+   * whether to revoke from the SAME snapshot that verified the retraction — a
+   * WoT-method accreditation that has fallen below threshold is revocable; an
+   * email/ORCID accreditation, or none, is not. A second independent read of
+   * this flag could straddle a re-vouch's HAF-ingestion lag and revoke an
+   * account that is actually at-threshold on-chain.
+   */
+  accreditation_method: string | null;
+}
+
+/**
+ * Whether the retract path should revoke this account's accreditation: it is
+ * accredited via the Web of Trust (`method = 'wot'`) AND has fallen below the
+ * vouch threshold. Derived purely from a single `VouchStatus` snapshot so the
+ * verification and the threshold/method check read one consistent view of HAF.
+ * An account accredited by email/ORCID (or not at all) is never revoked here,
+ * even below threshold — only WoT auto-accreditations track the vouch count.
+ */
+export function shouldRevokeOnRetract(status: VouchStatus): boolean {
+  return status.accreditation_method === 'wot' && !status.eligible;
 }
 
 /**
@@ -163,22 +186,46 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
     try {
       const threshold = await getWotThreshold();
 
+      // One read carries BOTH the account's accredited vouchers AND its own
+      // active-accreditation method: the aggregate produces exactly one row even
+      // when the account has zero accredited vouchers (an aggregate over an empty
+      // set still yields one group), so `self_method` survives the
+      // all-vouches-retracted case that the retract path must revoke on. The
+      // self-method scalar subquery and the vouches aggregate read the same
+      // `active_accreditations` snapshot, so a caller that reuses this status to
+      // decide a revoke (see `shouldRevokeOnRetract`) never straddles a separate
+      // read's HAF-ingestion lag.
+      //
+      // The `JOIN active_accreditations aa ON aa.account = av.voucher` keeps only
+      // accredited vouchers, so `vouches.length` equals the accredited-voucher
+      // recount the cascade discovery query expresses as
+      // `COUNT(DISTINCT av_all.voucher) FILTER (WHERE aa_voucher IS NOT NULL)`;
+      // `active_vouches` carries one row per (voucher, vouchee) edge, so no
+      // DISTINCT is needed here.
       const cte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
-      const result = await pool.query<{ voucher: string; relationship: string; event_timestamp: string }>(
+      const usernameParam = `$${cte.nextIdx}`;
+      const result = await pool.query<{ self_method: string | null; vouches: VouchInfo[] }>(
         `${cte.sql}
-         SELECT av.voucher, av.relationship, av.event_timestamp
+         SELECT
+           (SELECT method FROM active_accreditations WHERE account = ${usernameParam}) AS self_method,
+           COALESCE(
+             json_agg(
+               json_build_object(
+                 'voucher', av.voucher,
+                 'relationship', av.relationship,
+                 'timestamp', av.event_timestamp
+               ) ORDER BY av.event_timestamp ASC
+             ) FILTER (WHERE av.voucher IS NOT NULL),
+             '[]'
+           ) AS vouches
          FROM active_vouches av
          JOIN active_accreditations aa ON aa.account = av.voucher
-         WHERE av.vouchee = $${cte.nextIdx}
-         ORDER BY av.event_timestamp ASC`,
+         WHERE av.vouchee = ${usernameParam}`,
         [...cte.params, username],
       );
 
-      const vouches: VouchInfo[] = result.rows.map((r) => ({
-        voucher: r.voucher,
-        relationship: r.relationship,
-        timestamp: r.event_timestamp,
-      }));
+      const row = result.rows[0];
+      const vouches: VouchInfo[] = row?.vouches ?? [];
 
       return {
         username,
@@ -186,6 +233,7 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
         threshold,
         vouches,
         eligible: vouches.length >= threshold,
+        accreditation_method: row?.self_method ?? null,
       };
     } catch (err) {
       logger.error({ err }, 'Failed to get vouch status');
@@ -510,7 +558,6 @@ export async function cascadeRevocation(
 export type VoucheeRevocationOutcome =
   | { outcome: 'revoked'; txId: string }
   | { outcome: 'skipped' }
-  | { outcome: 'query_error' }
   | { outcome: 'timeout' }
   | { outcome: 'chain_error' };
 
@@ -525,16 +572,17 @@ export type VoucheeRevocationOutcome =
  * cascadeRevocation(voucher) on retract re-evaluated the wrong accounts (the
  * voucher's still-active vouchees) and never the one that actually lost a vouch.
  *
- * PRECONDITION (caller-enforced): the retraction must already be verified to
- * have landed on-chain — i.e. the retracting voucher's vouch edge is genuinely
- * gone from `active_vouches`. The `/retract` route enforces this by polling HAF
- * until the edge disappears before calling here. This function therefore does a
- * plain recount of the vouchee's CURRENT accredited vouchers against the
- * threshold; it does NOT special-case any voucher. An earlier version excluded
- * the retracting voucher unconditionally to be HAF-ingestion-independent, but
- * that let an accredited voucher trigger a revoke by CLAIMING a retraction they
- * never broadcast — the recount must reflect only edges actually gone from the
- * chain (see the route's retraction-verification gate). No recursion: a single
+ * The revoke decision is taken from `status` — the SAME `VouchStatus` snapshot
+ * the route's `pollForRetraction` already returned after verifying the
+ * retracting voucher's edge is gone from `active_vouches`. Reusing that one
+ * snapshot (rather than re-reading via a second discovery query) closes a race:
+ * a fresh vouch landing between the verification read and an independent recount
+ * read could straddle HAF's ~3s ingestion lag and revoke an account that is
+ * actually at-threshold on-chain. `shouldRevokeOnRetract` gates on both the
+ * threshold (`!status.eligible`, where `vouches` are accredited-only) and the
+ * account's own `method = 'wot'` accreditation, so a fabricated retraction
+ * cannot drop a victim (the poll guarantees the edge is genuinely gone first)
+ * and an email/ORCID accreditation is never revoked. No recursion: a single
  * withdrawn edge can drop at most this one vouchee, and revoking a WoT
  * accreditation does not retroactively unwind that account's own outbound
  * vouches (those stand until separately retracted).
@@ -542,50 +590,18 @@ export type VoucheeRevocationOutcome =
  * On a positive result the reputation batch entry is invalidated BEFORE the
  * broadcast — mirroring cascadeRevocation's ambiguous-timeout leak guard so a
  * timed-out-but-landed revocation cannot leave a stale positive score.
- *
- * A failure in the discovery query returns `query_error` (distinct from
- * `skipped`) so the caller can tell "could not determine" apart from "no
- * revocation needed" rather than silently dropping a needed revocation.
  */
 export async function revokeVoucheeIfBelowThreshold(
-  vouchee: string,
+  status: VouchStatus,
 ): Promise<VoucheeRevocationOutcome> {
+  const vouchee = status.username;
+
   if (!config.pevoAdminPostingKey) {
     logger.warn('PEVO_ADMIN_POSTING_KEY not configured — cannot revoke vouchee on retract');
     return { outcome: 'skipped' };
   }
 
-  const pool = getPool();
-  if (!pool) return { outcome: 'skipped' };
-
-  let shouldRevoke = false;
-  try {
-    const threshold = await getWotThreshold();
-
-    const findCte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
-    const voucheeParam = `$${findCte.nextIdx}`;
-    const thresholdParam = `$${findCte.nextIdx + 1}`;
-    const result = await pool.query<{ account: string }>(
-      `${findCte.sql}
-       SELECT aa_target.account
-       FROM active_accreditations aa_target
-       LEFT JOIN active_vouches av_all ON av_all.vouchee = aa_target.account
-       LEFT JOIN active_accreditations aa_voucher ON aa_voucher.account = av_all.voucher
-       WHERE aa_target.account = ${voucheeParam}
-         AND aa_target.method = 'wot'
-       GROUP BY aa_target.account
-       HAVING COUNT(DISTINCT av_all.voucher) FILTER (
-         WHERE aa_voucher.account IS NOT NULL
-       ) < ${thresholdParam}`,
-      [...findCte.params, vouchee, threshold],
-    );
-    shouldRevoke = result.rows.length > 0;
-  } catch (err) {
-    logger.error({ err, vouchee }, 'Vouchee retract re-evaluation query failed');
-    return { outcome: 'query_error' };
-  }
-
-  if (!shouldRevoke) return { outcome: 'skipped' };
+  if (!shouldRevokeOnRetract(status)) return { outcome: 'skipped' };
 
   const payload = buildRevocationPayload(vouchee);
 

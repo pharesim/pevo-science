@@ -1,44 +1,42 @@
 /**
- * Regression coverage for the `POST /api/wot/retract` re-evaluation account.
+ * Regression coverage for the `POST /api/wot/retract` re-evaluation account and
+ * the single-snapshot revoke decision.
  *
- * The bug this file pins: the retract handler used to call
- * `cascadeRevocation(voucher)`, re-evaluating the VOUCHER's still-active
- * vouchees (none of which lost a vouch) and never re-evaluating the VOUCHEE
- * whose vouch was actually withdrawn. The fix routes `/retract` through
- * `revokeVoucheeIfBelowThreshold(vouchee)` behind a signer-accreditation gate, a
- * self-target guard, and an on-chain retraction-verification poll
- * (`pollForRetraction`) so an unverified or fabricated retraction cannot drop a
- * victim below threshold.
+ * Two bugs this file pins:
+ *   1. Wrong account. The retract handler used to call
+ *      `cascadeRevocation(voucher)`, re-evaluating the VOUCHER's still-active
+ *      vouchees (none of which lost a vouch) and never re-evaluating the VOUCHEE
+ *      whose vouch was actually withdrawn. The fix routes `/retract` through
+ *      `revokeVoucheeIfBelowThreshold` against the VOUCHEE behind a
+ *      signer-accreditation gate, a self-target guard, and an on-chain
+ *      retraction-verification poll (`pollForRetraction`).
+ *   2. Two-read race. The revoke decision used to come from a SEPARATE discovery
+ *      query issued after the verification poll, so a fresh vouch landing between
+ *      the two reads could straddle HAF's ingestion lag and revoke an account
+ *      that is at-threshold on-chain. The fix takes the revoke decision from the
+ *      SAME `VouchStatus` snapshot the poll already returned: `getVouchStatus`
+ *      now carries the account's own accreditation method (`self_method`) so
+ *      `shouldRevokeOnRetract(status)` decides from one read.
  *
  * Both layers exercise the REAL `revokeVoucheeIfBelowThreshold`,
- * `getVouchStatus`, `getAccreditedSet`, and `pollForRetraction` (no `wot.js`
- * mock — a single file cannot both mock and not mock the same module, and the
- * real functions are the point of the test):
- *   1. Lib layer — calls `revokeVoucheeIfBelowThreshold` directly against a
- *      mocked HAF pool, asserting the single discovery query re-evaluates the
- *      VOUCHEE (the account bound to `aa_target.account`), the below-threshold
- *      case broadcasts exactly one revoke targeting the vouchee, the
- *      at-threshold case broadcasts nothing, `invalidateOnRevocation` fires
- *      before the broadcast on the timeout-ambiguous path, a discovery-query
- *      throw surfaces as `query_error` (not `skipped`), and the recount no
- *      longer excludes any voucher in SQL.
+ * `shouldRevokeOnRetract`, `getVouchStatus`, `getAccreditedSet`, and
+ * `pollForRetraction` (no `wot.js` mock — a single file cannot both mock and not
+ * mock the same module, and the real functions are the point of the test):
+ *   1. Lib layer — calls `revokeVoucheeIfBelowThreshold` directly with a
+ *      `VouchStatus` snapshot, asserting the WoT-below-threshold case broadcasts
+ *      exactly one revoke targeting the vouchee, the at-threshold and
+ *      non-WoT-method cases broadcast nothing, and `invalidateOnRevocation`
+ *      fires before the broadcast on the timeout-ambiguous path. A separate
+ *      block exercises `getVouchStatus` against a mocked pool to pin that
+ *      `self_method` and the accredited-voucher count come from one read.
  *   2. Route layer — `POST /api/wot/retract` via supertest with the REAL
  *      `verifyHiveSignature` middleware (JWT Bearer short-circuit), driving the
  *      real handler -> real accreditation gate -> real `pollForRetraction` ->
  *      real `revokeVoucheeIfBelowThreshold` through the same mocked HAF pool.
  *      Asserts the handler re-evaluates the VOUCHEE, enforces the 422/403 gates,
- *      refuses to revoke on an unverified retraction, and translates each
- *      revocation outcome into the response shape.
- *
- * Wrong-account pin: the discovery query binds the vouchee as the
- * `aa_target.account = $N` re-evaluation target. The precise signal is that the
- * TARGET account — the placeholder in `aa_target.account = $N` — resolves to the
- * vouchee. The old `cascadeRevocation(voucher)` bug would have re-evaluated the
- * voucher as the target. The recount no longer carries a per-voucher exclusion:
- * the route's `pollForRetraction` verifies the retracting voucher's edge is
- * genuinely gone from `active_vouches` before the recount runs, so an
- * unconditional `av_all.voucher != $voucher` exclusion (which let a fabricated
- * retraction drop a victim) is removed.
+ *      refuses to revoke on an unverified retraction, refuses to revoke when a
+ *      re-vouch keeps the account at threshold in the single read, and
+ *      translates each revocation outcome into the response shape.
  *
  * Carve-out justification (per root CLAUDE.md "Running Tests"):
  *   - Mocks `getPool()` (shared pool helper — enumerated carve-out scope),
@@ -65,6 +63,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import type { VouchStatus } from '../../src/wot.js';
 
 const {
   hafQueryMock,
@@ -118,7 +117,7 @@ vi.mock('../../src/reputation.js', async () => {
   };
 });
 
-const { revokeVoucheeIfBelowThreshold } = await import('../../src/wot.js');
+const { revokeVoucheeIfBelowThreshold, shouldRevokeOnRetract, getVouchStatus } = await import('../../src/wot.js');
 const { BroadcastTimeoutError } = await import('../../src/hive.js');
 const { hafCache } = await import('../../src/cache.js');
 const { config } = await import('../../src/config.js');
@@ -140,69 +139,84 @@ function jwtFor(username: string): string {
 }
 
 /**
+ * Build a `VouchStatus` snapshot for the lib layer. `vouchers` is the vouchee's
+ * accredited-voucher list (count drives `eligible` against threshold 3);
+ * `method` is the vouchee's OWN accreditation method (drives the WoT-only revoke
+ * gate).
+ */
+function statusFor(opts: { vouchers: string[]; method: string | null; threshold?: number }): VouchStatus {
+  const threshold = opts.threshold ?? 3;
+  return {
+    username: VOUCHEE,
+    vouch_count: opts.vouchers.length,
+    threshold,
+    eligible: opts.vouchers.length >= threshold,
+    vouches: opts.vouchers.map((v) => ({
+      voucher: v,
+      relationship: 'colleague',
+      timestamp: '2026-01-01T00:00:00Z',
+    })),
+    accreditation_method: opts.method,
+  };
+}
+
+/**
  * Drive the HAF queries the real retract flow issues against the mocked pool:
- * `getAccreditedSet`'s signer-gate lookup, `pollForRetraction`'s
- * `getVouchStatus` reads, and `revokeVoucheeIfBelowThreshold`'s discovery query.
- * Each query carries a unique marker (`WITH ranked AS`, `SELECT av.voucher`,
- * `FROM active_accreditations aa_target`) so the three branches never overlap.
+ * `getAccreditedSet`'s signer-gate lookup and `getVouchStatus`'s combined
+ * vouchee snapshot (vouches + own accreditation method). The discovery query
+ * the old two-read path issued is GONE — the revoke decision is taken from the
+ * `getVouchStatus` snapshot, so there is no separate `aa_target` recount.
  *
- * - `belowThreshold` controls whether the discovery query returns the vouchee
- *   row (revoke warranted) or no row.
+ * - `voucheeVouches` (default `[]`) is the vouchee's current accredited-voucher
+ *   list seen by `getVouchStatus`. Empty (the retracting voucher absent) means
+ *   the poll verifies the retraction on its first read; including VOUCHER means
+ *   the edge persists and the poll never verifies (unverified retraction).
+ * - `voucheeMethod` (default `'wot'`) is the vouchee's own accreditation method
+ *   in the same snapshot. `'wot'` + below-threshold => revoke warranted.
  * - `accredited` (default true) controls whether the signer passes the
  *   `getAccreditedSet` gate.
- * - `voucheeVouches` (default `[]`) is the vouchee's current voucher list seen
- *   by `pollForRetraction`. Empty (the retracting voucher absent) means the poll
- *   verifies the retraction on its first read; including VOUCHER means the edge
- *   persists and the poll never verifies (unverified retraction).
- * - `discoveryThrows` makes the discovery query reject (drives `query_error`).
- * - `discovery` captures the sql + params of the discovery query so a test can
- *   resolve the `aa_target.account = $N` target and assert it is the VOUCHEE.
+ * - `statusThrows` makes the `getVouchStatus` read reject (HAF down). The real
+ *   `getVouchStatus` swallows this to `null`, which the route fails closed on
+ *   as an unverified retraction.
+ * - `snapshot` captures the params of the `getVouchStatus` query so a test can
+ *   assert the read targets the VOUCHEE.
  */
 function makeHafMock(opts: {
-  belowThreshold: boolean;
-  accredited?: boolean;
   voucheeVouches?: string[];
-  discoveryThrows?: boolean;
-  discovery?: { sql: string | null; params: unknown[] | null };
+  voucheeMethod?: string | null;
+  accredited?: boolean;
+  statusThrows?: boolean;
+  snapshot?: { params: unknown[] | null };
 }) {
   const accredited = opts.accredited ?? true;
   const voucheeVouches = opts.voucheeVouches ?? [];
+  const voucheeMethod = opts.voucheeMethod === undefined ? 'wot' : opts.voucheeMethod;
   return async (sql: string, params: unknown[]) => {
     // getAccreditedSet's batch lookup (the /retract signer-accreditation gate).
     if (sql.includes('WITH ranked AS')) {
       return accredited ? { rows: [{ account: VOUCHER }] } : { rows: [] };
     }
-    // The discovery query is the only one selecting from
-    // `active_accreditations aa_target` — unique to this path.
-    if (sql.includes('FROM active_accreditations aa_target')) {
-      if (opts.discovery) {
-        opts.discovery.sql = sql;
-        opts.discovery.params = params;
-      }
-      if (opts.discoveryThrows) throw new Error('HAF discovery query failed');
-      return opts.belowThreshold ? { rows: [{ account: VOUCHEE }] } : { rows: [] };
-    }
-    // pollForRetraction / GET getVouchStatus — the vouchee's current vouchers.
-    if (sql.includes('SELECT av.voucher')) {
+    // getVouchStatus's combined snapshot — the only query that aggregates the
+    // vouchee's vouchers (`json_agg`) AND selects its own `self_method`.
+    if (sql.includes('json_agg(') && sql.includes('AS self_method')) {
+      if (opts.snapshot) opts.snapshot.params = params;
+      if (opts.statusThrows) throw new Error('HAF status query failed');
       return {
-        rows: voucheeVouches.map((v) => ({
-          voucher: v,
-          relationship: 'colleague',
-          event_timestamp: '2026-01-01T00:00:00Z',
-        })),
+        rows: [
+          {
+            self_method: voucheeMethod,
+            vouches: voucheeVouches.map((v) => ({
+              voucher: v,
+              relationship: 'colleague',
+              timestamp: '2026-01-01T00:00:00Z',
+            })),
+          },
+        ],
       };
     }
     // Threshold loader / fallback.
     return { rows: [] };
   };
-}
-
-/** Resolve the account bound to the discovery query's `aa_target.account = $N`. */
-function targetAccount(discovery: { sql: string | null; params: unknown[] | null }): unknown {
-  expect(discovery.sql, 'discovery query was never issued').not.toBeNull();
-  const m = discovery.sql!.match(/aa_target\.account = \$(\d+)/);
-  expect(m, 'aa_target.account placeholder not found in discovery SQL').not.toBeNull();
-  return discovery.params![Number(m![1]) - 1];
 }
 
 beforeEach(async () => {
@@ -220,60 +234,83 @@ afterEach(() => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Layer 1 — lib-level revokeVoucheeIfBelowThreshold against a mocked pool.
+// Layer 0 — shouldRevokeOnRetract: the single-snapshot revoke predicate.
+// ──────────────────────────────────────────────────────────────────────────
+
+describe('shouldRevokeOnRetract — WoT-method AND below-threshold gate', () => {
+  it('revokes a WoT account that has fallen below threshold', () => {
+    expect(shouldRevokeOnRetract(statusFor({ vouchers: ['carol', 'dave'], method: 'wot' }))).toBe(true);
+  });
+
+  it('does not revoke a WoT account still at/above threshold', () => {
+    expect(shouldRevokeOnRetract(statusFor({ vouchers: ['carol', 'dave', 'erin'], method: 'wot' }))).toBe(false);
+  });
+
+  it('does not revoke an email/ORCID accreditation even below threshold', () => {
+    expect(shouldRevokeOnRetract(statusFor({ vouchers: ['carol'], method: 'email' }))).toBe(false);
+    expect(shouldRevokeOnRetract(statusFor({ vouchers: [], method: 'orcid' }))).toBe(false);
+  });
+
+  it('does not revoke an unaccredited account', () => {
+    expect(shouldRevokeOnRetract(statusFor({ vouchers: [], method: null }))).toBe(false);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Layer 1 — lib-level revokeVoucheeIfBelowThreshold from a status snapshot.
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('revokeVoucheeIfBelowThreshold — retract-time vouchee re-evaluation', () => {
-  it('revokes the VOUCHEE when its remaining vouches fall below threshold', async () => {
-    const discovery = { sql: null as string | null, params: null as unknown[] | null };
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true, discovery }));
+  it('revokes the VOUCHEE when its WoT accreditation has fallen below threshold', async () => {
     broadcastAdminMock.mockResolvedValue({ id: 'tx-revoke-bob' });
 
-    const result = await revokeVoucheeIfBelowThreshold(VOUCHEE);
+    const result = await revokeVoucheeIfBelowThreshold(statusFor({ vouchers: ['carol', 'dave'], method: 'wot' }));
 
     expect(result).toEqual({ outcome: 'revoked', txId: 'tx-revoke-bob' });
 
-    // Exactly one revoke broadcast, and it targets the vouchee.
+    // Exactly one revoke broadcast, and it targets the vouchee (status.username),
+    // never the voucher. This is the core wrong-account regression: the old code
+    // re-evaluated the voucher's still-active vouchees instead.
     expect(broadcastAdminMock).toHaveBeenCalledTimes(1);
     const payload = broadcastAdminMock.mock.calls[0][0] as { action: string; account: string };
     expect(payload.action).toBe('revoke');
     expect(payload.account).toBe(VOUCHEE);
-
-    // The re-evaluation target (the `aa_target.account = $N` account) is the
-    // VOUCHEE, never the voucher. This is the core wrong-account regression:
-    // the old code re-evaluated the voucher's still-active vouchees instead.
-    expect(targetAccount(discovery)).toBe(VOUCHEE);
   });
 
   it('skips (no broadcast) when the vouchee stays at/above threshold', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: false }));
-
-    const result = await revokeVoucheeIfBelowThreshold(VOUCHEE);
+    const result = await revokeVoucheeIfBelowThreshold(
+      statusFor({ vouchers: ['carol', 'dave', 'erin'], method: 'wot' }),
+    );
 
     expect(result).toEqual({ outcome: 'skipped' });
     expect(broadcastAdminMock).not.toHaveBeenCalled();
     expect(invalidateOnRevocationMock).not.toHaveBeenCalled();
   });
 
-  it('issues a SINGLE discovery query, not the multi-step cascade loop', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: false }));
+  it('skips (no broadcast) when the account is accredited by a non-WoT method', async () => {
+    // An email/ORCID accreditation is never revoked on a vouch retract even
+    // below threshold — only WoT auto-accreditations track the vouch count.
+    const result = await revokeVoucheeIfBelowThreshold(statusFor({ vouchers: ['carol'], method: 'email' }));
 
-    await revokeVoucheeIfBelowThreshold(VOUCHEE);
+    expect(result).toEqual({ outcome: 'skipped' });
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
 
-    // One discovery query; the threshold loader is served from getWotThreshold's
-    // getOrSet cache. Critically, the cascade's `SELECT av_target.vouchee` find
-    // query must NEVER fire from this path.
-    const discoveryCalls = hafQueryMock.mock.calls.filter((c) =>
-      String(c[0]).includes('FROM active_accreditations aa_target'));
+  it('issues NO HAF query of its own (decision taken from the passed snapshot)', async () => {
+    await revokeVoucheeIfBelowThreshold(statusFor({ vouchers: ['carol', 'dave', 'erin'], method: 'wot' }));
+
+    // The revoke decision reads the status snapshot, not a second discovery
+    // query. The cascade's `SELECT av_target.vouchee` find query and the old
+    // `FROM active_accreditations aa_target` recount must NEVER fire here.
     const cascadeFindCalls = hafQueryMock.mock.calls.filter((c) =>
       String(c[0]).includes('SELECT av_target.vouchee'));
-    expect(discoveryCalls).toHaveLength(1);
+    const recountCalls = hafQueryMock.mock.calls.filter((c) =>
+      String(c[0]).includes('FROM active_accreditations aa_target'));
     expect(cascadeFindCalls).toHaveLength(0);
+    expect(recountCalls).toHaveLength(0);
   });
 
   it('fires invalidateOnRevocation BEFORE broadcast on the timeout-ambiguous path', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true }));
-
     const order: Array<'invalidate' | 'broadcast'> = [];
     invalidateOnRevocationMock.mockImplementation(async () => {
       order.push('invalidate');
@@ -283,7 +320,7 @@ describe('revokeVoucheeIfBelowThreshold — retract-time vouchee re-evaluation',
       throw new BroadcastTimeoutError(30_000);
     });
 
-    const result = await revokeVoucheeIfBelowThreshold(VOUCHEE);
+    const result = await revokeVoucheeIfBelowThreshold(statusFor({ vouchers: ['carol', 'dave'], method: 'wot' }));
 
     expect(result).toMatchObject({ outcome: 'timeout' });
     expect(invalidateOnRevocationMock).toHaveBeenCalledWith(VOUCHEE);
@@ -293,43 +330,59 @@ describe('revokeVoucheeIfBelowThreshold — retract-time vouchee re-evaluation',
   });
 
   it('returns chain_error (no throw) when the revoke broadcast fails', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true }));
     broadcastAdminMock.mockRejectedValue(new Error('Invalid authority'));
 
-    const result = await revokeVoucheeIfBelowThreshold(VOUCHEE);
+    const result = await revokeVoucheeIfBelowThreshold(statusFor({ vouchers: ['carol', 'dave'], method: 'wot' }));
 
     expect(result).toMatchObject({ outcome: 'chain_error' });
   });
+});
 
-  it('returns query_error (not skipped) when the discovery query throws', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true, discoveryThrows: true }));
+// ──────────────────────────────────────────────────────────────────────────
+// Layer 1b — getVouchStatus carries the account's own accreditation method
+// and the accredited-voucher count from a single read.
+// ──────────────────────────────────────────────────────────────────────────
 
-    const result = await revokeVoucheeIfBelowThreshold(VOUCHEE);
+describe('getVouchStatus — single-read snapshot (vouches + self_method)', () => {
+  it('exposes the accredited-voucher count and the account own method', async () => {
+    const snapshot = { params: null as unknown[] | null };
+    hafQueryMock.mockImplementation(
+      makeHafMock({ voucheeVouches: ['carol', 'dave'], voucheeMethod: 'wot', snapshot }),
+    );
 
-    // A HAF failure must be distinguishable from "no revocation needed" so a
-    // needed revocation is never silently dropped under the 'skipped' label.
-    expect(result).toEqual({ outcome: 'query_error' });
-    expect(broadcastAdminMock).not.toHaveBeenCalled();
-    expect(invalidateOnRevocationMock).not.toHaveBeenCalled();
+    const status = await getVouchStatus(VOUCHEE);
+
+    expect(status).not.toBeNull();
+    expect(status!.vouch_count).toBe(2);
+    expect(status!.accreditation_method).toBe('wot');
+    // The combined snapshot reads for the VOUCHEE.
+    expect(snapshot.params).not.toBeNull();
+    expect(snapshot.params!).toContain(VOUCHEE);
   });
 
-  it('recounts without excluding any voucher in SQL or params', async () => {
-    const discovery = { sql: null as string | null, params: null as unknown[] | null };
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: false, discovery }));
+  it('still carries self_method when the account has zero accredited vouchers', async () => {
+    // The all-vouches-retracted case is exactly the one the retract path must
+    // revoke on: the aggregate over an empty vouches set still yields one row, so
+    // self_method survives. A regression that loses the row (e.g. dropping the
+    // COALESCE/single-group shape) would null the method and never revoke.
+    hafQueryMock.mockImplementation(makeHafMock({ voucheeVouches: [], voucheeMethod: 'wot' }));
 
-    await revokeVoucheeIfBelowThreshold(VOUCHEE);
+    const status = await getVouchStatus(VOUCHEE);
 
-    // The fabricated-retraction griefing fix removes the unconditional
-    // `av_all.voucher != $voucher` exclusion: the route's pollForRetraction
-    // verifies the edge is genuinely gone before the recount runs, so the
-    // recount counts the vouchee's CURRENT accredited vouchers honestly. A
-    // regression re-introducing the exclusion (dropping a still-present voucher)
-    // fails here.
-    expect(discovery.sql).not.toBeNull();
-    expect(discovery.sql!).not.toContain('av_all.voucher !=');
-    expect(discovery.params).not.toBeNull();
-    expect(discovery.params!).toContain(VOUCHEE);
-    expect(discovery.params!).not.toContain(VOUCHER);
+    expect(status).not.toBeNull();
+    expect(status!.vouch_count).toBe(0);
+    expect(status!.eligible).toBe(false);
+    expect(status!.accreditation_method).toBe('wot');
+    expect(shouldRevokeOnRetract(status!)).toBe(true);
+  });
+
+  it('reports a null method for an unaccredited account', async () => {
+    hafQueryMock.mockImplementation(makeHafMock({ voucheeVouches: ['carol'], voucheeMethod: null }));
+
+    const status = await getVouchStatus(VOUCHEE);
+
+    expect(status!.accreditation_method).toBeNull();
+    expect(shouldRevokeOnRetract(status!)).toBe(false);
   });
 });
 
@@ -338,9 +391,13 @@ describe('revokeVoucheeIfBelowThreshold — retract-time vouchee re-evaluation',
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('POST /api/wot/retract — re-evaluates the vouchee, not the voucher', () => {
-  it('re-evaluates the VOUCHEE (discovery target is the vouchee) and revokes it', async () => {
-    const discovery = { sql: null as string | null, params: null as unknown[] | null };
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true, discovery }));
+  it('re-evaluates the VOUCHEE from one snapshot and revokes it', async () => {
+    const snapshot = { params: null as unknown[] | null };
+    // Verified retraction (VOUCHER edge absent) AND vouchee now below threshold,
+    // WoT-accredited => revoke.
+    hafQueryMock.mockImplementation(
+      makeHafMock({ voucheeVouches: ['carol', 'dave'], voucheeMethod: 'wot', snapshot }),
+    );
     broadcastAdminMock.mockResolvedValue({ id: 'tx-revoke-bob' });
 
     const res = await request(app)
@@ -355,18 +412,19 @@ describe('POST /api/wot/retract — re-evaluates the vouchee, not the voucher', 
     expect(res.body.data.message).toContain('was revoked');
 
     // Core regression assertion: the un-vouched VOUCHEE is the re-evaluation
-    // target, NOT the voucher. The old code passed `voucher` to the
-    // re-evaluation, so the discovery target would have been the voucher.
-    expect(targetAccount(discovery)).toBe(VOUCHEE);
-
-    // The single revoke broadcast targets the vouchee, never the voucher.
+    // target. The snapshot read and the revoke broadcast both bind the vouchee,
+    // never the voucher. The old code passed `voucher` to the re-evaluation.
+    expect(snapshot.params).not.toBeNull();
+    expect(snapshot.params!).toContain(VOUCHEE);
     expect(broadcastAdminMock).toHaveBeenCalledTimes(1);
     const payload = broadcastAdminMock.mock.calls[0][0] as { account: string };
     expect(payload.account).toBe(VOUCHEE);
   });
 
   it('returns no revocations and broadcasts nothing when the vouchee stays above threshold', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: false }));
+    hafQueryMock.mockImplementation(
+      makeHafMock({ voucheeVouches: ['carol', 'dave', 'erin'], voucheeMethod: 'wot' }),
+    );
 
     const res = await request(app)
       .post('/api/wot/retract')
@@ -382,6 +440,28 @@ describe('POST /api/wot/retract — re-evaluates the vouchee, not the voucher', 
     expect(broadcastAdminMock).not.toHaveBeenCalled();
   });
 
+  it('does NOT revoke when a re-vouch keeps the account at threshold in the single read', async () => {
+    // Single-snapshot race regression: the verification poll and the threshold
+    // decision read the SAME snapshot. Here the retracting VOUCHER's edge is gone
+    // (retraction verified) but the account is still at threshold via OTHER
+    // vouchers (carol/dave/erin) — e.g. a re-vouch already reflected. One read
+    // means there is no window for a separate recount to see a stale below-
+    // threshold count and fire a wrong revoke.
+    hafQueryMock.mockImplementation(
+      makeHafMock({ voucheeVouches: ['carol', 'dave', 'erin'], voucheeMethod: 'wot' }),
+    );
+
+    const res = await request(app)
+      .post('/api/wot/retract')
+      .set('Authorization', `Bearer ${jwtFor(VOUCHER)}`)
+      .send({ vouchee: VOUCHEE });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.revocation_outcome).toBe('skipped');
+    expect(res.body.data.revocations).toEqual([]);
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
+
   it('returns 400 when `vouchee` is missing', async () => {
     const res = await request(app)
       .post('/api/wot/retract')
@@ -394,7 +474,7 @@ describe('POST /api/wot/retract — re-evaluates the vouchee, not the voucher', 
   });
 
   it('returns 422 when the signer retracts a vouch for themselves', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true }));
+    hafQueryMock.mockImplementation(makeHafMock({ voucheeVouches: ['carol', 'dave'], voucheeMethod: 'wot' }));
 
     const res = await request(app)
       .post('/api/wot/retract')
@@ -407,7 +487,9 @@ describe('POST /api/wot/retract — re-evaluates the vouchee, not the voucher', 
   });
 
   it('returns 403 when the signer is not an accredited researcher', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true, accredited: false }));
+    hafQueryMock.mockImplementation(
+      makeHafMock({ voucheeVouches: ['carol', 'dave'], voucheeMethod: 'wot', accredited: false }),
+    );
 
     const res = await request(app)
       .post('/api/wot/retract')
@@ -421,7 +503,7 @@ describe('POST /api/wot/retract — re-evaluates the vouchee, not the voucher', 
   });
 
   it('maps a revoke-broadcast timeout to revocation_outcome=timeout', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true }));
+    hafQueryMock.mockImplementation(makeHafMock({ voucheeVouches: ['carol', 'dave'], voucheeMethod: 'wot' }));
     broadcastAdminMock.mockRejectedValue(new BroadcastTimeoutError(30_000));
 
     const res = await request(app)
@@ -436,7 +518,7 @@ describe('POST /api/wot/retract — re-evaluates the vouchee, not the voucher', 
   });
 
   it('maps a revoke-broadcast failure to revocation_outcome=chain_error', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true }));
+    hafQueryMock.mockImplementation(makeHafMock({ voucheeVouches: ['carol', 'dave'], voucheeMethod: 'wot' }));
     broadcastAdminMock.mockRejectedValue(new Error('Invalid authority'));
 
     const res = await request(app)
@@ -450,8 +532,12 @@ describe('POST /api/wot/retract — re-evaluates the vouchee, not the voucher', 
     expect(res.body.data.message).toContain('failed');
   });
 
-  it('maps a discovery-query failure to revocation_outcome=query_error', async () => {
-    hafQueryMock.mockImplementation(makeHafMock({ belowThreshold: true, discoveryThrows: true }));
+  it('fails closed (unverified) when the status read throws (HAF down)', async () => {
+    // A HAF failure in the single read surfaces as a null status from
+    // getVouchStatus, which the route treats as an unverified retraction and
+    // refuses to revoke — same fail-closed posture as a never-broadcast retract.
+    // This runs the full poll cap, hence the extended per-test timeout.
+    hafQueryMock.mockImplementation(makeHafMock({ statusThrows: true }));
 
     const res = await request(app)
       .post('/api/wot/retract')
@@ -459,21 +545,19 @@ describe('POST /api/wot/retract — re-evaluates the vouchee, not the voucher', 
       .send({ vouchee: VOUCHEE });
 
     expect(res.status).toBe(200);
-    expect(res.body.data.revocation_outcome).toBe('query_error');
+    expect(res.body.data.revocation_outcome).toBe('unverified');
     expect(res.body.data.revocations).toEqual([]);
     expect(broadcastAdminMock).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it('does NOT revoke when the retraction is unverified (voucher edge still present)', async () => {
     // Griefing regression: the signer is an accredited voucher of the
     // at-threshold vouchee but broadcast NO on-chain retract, so the poll keeps
     // seeing the edge and never verifies. The handler must refuse to revoke.
-    // The old unconditional `av_all.voucher != $voucher` exclusion would have
-    // dropped the victim below threshold and fired an admin revoke here.
     // This exercises the full poll cap (no first-read verification), so it runs
     // a few seconds — hence the extended per-test timeout.
     hafQueryMock.mockImplementation(
-      makeHafMock({ belowThreshold: true, voucheeVouches: [VOUCHER, 'carol', 'dave'] }),
+      makeHafMock({ voucheeVouches: [VOUCHER, 'carol', 'dave'], voucheeMethod: 'wot' }),
     );
 
     const res = await request(app)
