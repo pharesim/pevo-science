@@ -70,7 +70,22 @@ vi.mock('../../src/db.js', () => ({
 
 const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');
+const { config } = await import('../../src/config.js');
+const { buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } = await import('../../src/hafsql.js');
 const app = createApp();
+
+// The reviews handler composes its WITH block from
+//   buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer }))
+// and binds the per-query params after it via an adaptive paramIdx counter:
+//   [...accredCte.params, username, appTag, anonAccount, bridge, limit, offset, ...].
+// So the username slot is accredCte.params.length (0-indexed) and the anonAccount
+// slot is accredCte.params.length + 2. Derive both from the LIVE builder param
+// count rather than a frozen $N table, so a future CTE-shape change shifts the pin
+// in step instead of silently re-staling it (the prior fixed params[3]/params[5]
+// went tautological when the reviews CTE grew from 2 to 7 params).
+const accredParamCount = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: 'probe' })).params.length;
+const USERNAME_SLOT = accredParamCount;
+const ANON_SLOT = accredParamCount + 2;
 
 beforeEach(async () => {
   hafQueryMock.mockReset().mockResolvedValue({ rows: [] });
@@ -141,26 +156,26 @@ describe('GET /api/profile/:username/reviews — SQL-shape gates (accred + paren
     // regardless of what SQL is emitted. The SQL-shape canaries above are
     // the actual gate mutation-kills.
     //
-    // Param positions after round-3 hold #1 param-shape extension:
-    //   $1..$3 = accred CTE params, $4 = username, $5 = appTag,
-    //   $6 = anonAccount, $7 = bridgeAccount, $8 = limit, $9 = offset,
-    //   $10 = accreditedAccounts (votes-sort only).
-    // 0-indexed: params[3] = username, params[5] = anonAccount.
-    // Runtime narrowing replaces an unchecked `as string` cast — the cast
-    // masks param-ordering regressions by silently resolving to `''` via
-    // `??` if the slot ever shifts. Capture the param types in outer-scope
-    // arrays and assert in test scope AFTER the request completes; an
-    // expect-throw inside the mock callback would propagate into the
-    // route's `try { ... } catch { return null; }` block at
-    // `fetchUserReviewsFromHaf` and be swallowed, masking the mutation.
+    // The username / anonAccount slots are derived from the live builder param
+    // count (USERNAME_SLOT / ANON_SLOT above), so this pin tracks the current
+    // buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody{claimer})
+    // composition. We VALUE-pin the slots (not just typeof) so a positional
+    // mis-bind fails red: a shift would land a CTE param / appTag / limit at the
+    // username slot, whose value is not the requested username. Capture the bound
+    // values in outer-scope arrays and assert in test scope AFTER the request — an
+    // expect-throw inside the mock callback would propagate into the route's
+    // `try { ... } catch { return null; }` at fetchUserReviewsFromHaf and be
+    // swallowed, masking the mutation.
+    const REQUESTED_USER = 'unaccredited-spammer';
+    const expectedAnon = config.hiveAnonAccount || '';
     const accreditedAuthors = new Set<string>(); // empty: nobody is accredited
-    const capturedAuthorTypes: string[] = [];
-    const capturedAnonTypes: string[] = [];
+    const capturedAuthors: unknown[] = [];
+    const capturedAnons: unknown[] = [];
     hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
-      const rawAuthor = params?.[3];
-      const rawAnon = params?.[5];
-      capturedAuthorTypes.push(typeof rawAuthor);
-      capturedAnonTypes.push(typeof rawAnon);
+      const rawAuthor = params?.[USERNAME_SLOT];
+      const rawAnon = params?.[ANON_SLOT];
+      capturedAuthors.push(rawAuthor);
+      capturedAnons.push(rawAnon);
       const author = rawAuthor as string;
       const anonAccount = rawAnon as string;
       const admitted = accreditedAuthors.has(author) || (author !== '' && author === anonAccount);
@@ -170,15 +185,14 @@ describe('GET /api/profile/:username/reviews — SQL-shape gates (accred + paren
       // Data query: empty when not admitted.
       return { rows: admitted ? [{ author, permlink: 'r1', body: '', json_metadata: {}, created: '2026-01-01T00:00:00.000Z', parent_author: 'someone', parent_permlink: 'p', paper_title: '', net_votes: 0 }] : [] };
     });
-    const res = await request(app).get('/api/profile/unaccredited-spammer/reviews');
-    // Outer-scope narrowing: every emitted query must have bound a string
-    // at the username + anonAccount slots. A non-string at either slot
-    // signals a param-ordering regression. Asserting here (not inside the
-    // mock) bypasses the route's try/catch swallow so the test fails red
-    // on regression instead of returning the empty envelope from null.
-    expect(capturedAuthorTypes.length).toBeGreaterThan(0);
-    for (const t of capturedAuthorTypes) expect(t).toBe('string');
-    for (const t of capturedAnonTypes) expect(t).toBe('string');
+    const res = await request(app).get(`/api/profile/${REQUESTED_USER}/reviews`);
+    // Outer-scope value pins: every emitted query must have bound the requested
+    // username at USERNAME_SLOT and the anon account at ANON_SLOT. A positional
+    // mis-bind lands a different value there and fails red. Asserting here (not in
+    // the mock) bypasses the route's try/catch swallow.
+    expect(capturedAuthors.length).toBeGreaterThan(0);
+    for (const v of capturedAuthors) expect(v).toBe(REQUESTED_USER);
+    for (const v of capturedAnons) expect(v).toBe(expectedAnon);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
     expect(res.body.data).toEqual([]);

@@ -34,3 +34,13 @@ Restore the canary so a username / anon-account positional mis-bind fails red ag
 - `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md` — the convention this canary implements.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend completion note (2026-06-09)
+
+Restored the param-position canary in `profile-reviews-accred-gate.test.ts` against the current 7-CTE-param call-site shape:
+
+1. **Derived slots.** Added `USERNAME_SLOT`/`ANON_SLOT` computed from the LIVE builder param count — `buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer })).params.length` — so the username slot is `accredCte.params.length` (0-indexed) and the anon slot is `+2`. No rehardcoded literals; a future CTE-shape change shifts the pin in step. The prior fixed `params[3]`/`params[5]` had gone tautological when the reviews CTE grew from 2 to 7 params.
+2. **Value pins, not typeof.** The canary now VALUE-pins the slots (`params[USERNAME_SLOT] === '<requested username>'`, `params[ANON_SLOT] === config.hiveAnonAccount || ''`) instead of the previously-tautological `toBe('string')` (which passed on the wrong slot because `authorshipClaimsCteBody`'s appTag/bridge params are also strings).
+3. **Header slot-map comment** rewritten to anchor on the `buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody{claimer})` composition (no frozen `$N` table; no round/hold ordinals).
+
+Verified non-vacuous: a deliberate local mis-bind (swapping `username` and `config.appTag` in `fetchUserReviewsFromHaf`'s `baseParams`) turned the value pin RED (params[7] held the appTag, not the username); reverted after confirming. `npm run typecheck` + `npm run lint` clean (lone pre-existing `author-supersession.ts` warning untouched); the test green (3 passed).
