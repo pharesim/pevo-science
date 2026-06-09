@@ -819,6 +819,7 @@ export async function computeReputationBatch(
             cj.required_posting_auths ->> 0 AS voter,
             cj.json::jsonb ->> 'author' AS author,
             cj.json::jsonb ->> 'permlink' AS permlink,
+            -- {1,9} bounds the digit count for overflow safety: an unbounded match admits a value that overflows ::int and aborts the whole query (max Hive vote weight is 10000).
             CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
             cj.block_num,
             cj.id AS op_id
@@ -1062,6 +1063,7 @@ export async function computeReputationBatch(
             cj.required_posting_auths ->> 0 AS voter,
             cj.json::jsonb ->> 'author' AS author,
             cj.json::jsonb ->> 'permlink' AS permlink,
+            -- {1,9} bounds the digit count for overflow safety: an unbounded match admits a value that overflows ::int and aborts the whole query (max Hive vote weight is 10000).
             CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
             cj.block_num,
             cj.id AS op_id
@@ -1161,6 +1163,7 @@ export async function computeReputationBatch(
             cj.required_posting_auths ->> 0 AS voter,
             cj.json::jsonb ->> 'permlink' AS permlink,
             cj.json::jsonb ->> 'author' AS author,
+            -- {1,9} bounds the digit count for overflow safety: an unbounded match admits a value that overflows ::int and aborts the whole query (max Hive vote weight is 10000).
             CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
             cj.block_num,
             cj.id AS op_id

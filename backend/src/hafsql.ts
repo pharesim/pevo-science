@@ -772,6 +772,7 @@ export function authorshipClaimsCteBody(
       COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0) AS claimer,
       cj.json::jsonb ->> 'paper_author' AS paper_author,
       cj.json::jsonb ->> 'paper_permlink' AS paper_permlink,
+      -- {1,9} also caps the digit count so a forged oversized author_index can't overflow ::int and abort the query.
       CASE WHEN (cj.json::jsonb ->> 'author_index') ~ '^[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'author_index')::int END AS author_index,
       cj.block_num,
       -- On-chain signer of the op. For approve_authorship this is the
