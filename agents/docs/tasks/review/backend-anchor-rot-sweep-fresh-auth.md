@@ -31,3 +31,9 @@ Replace every `Round-N` / `hold #M` / `round-N` anchor in `backend/src/lib/fresh
 - root `CLAUDE.md` "Comment anchors"; `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-*.md`, `docblock-anchor-stable-symbols-not-line-numbers-*.md`, `convention-enforcing-fix-must-audit-its-own-new-code-*.md`.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend landing note (2026-06-09, commit `edc19a64`)
+
+Swept all `Round-N` / `hold #M` / `round-N` comment anchors from `backend/src/lib/fresh-auth.ts`, re-anchoring each on stable symbols / behavioral descriptions. Also removed line-number anchors and a task-slug citation the sweep surfaced, and corrected two now-stale substantive phrasings. Comment-only; no behavior change. Acceptance grep `grep -nE 'Round-[0-9]|round-[0-9]|hold #' backend/src/lib/fresh-auth.ts` returns nothing (verified against current main). `npm run typecheck` + `npm run lint` clean; `fresh-auth.test.ts` green (53).
+
+Ordering note: landed in the same batch AFTER the credit-ops fix (`89263220`), so the sweep also covers the credit-op code that change added to `fresh-auth.ts`. Review the two together (credit-ops first).
