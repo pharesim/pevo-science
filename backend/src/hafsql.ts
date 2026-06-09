@@ -444,16 +444,15 @@ export function validReviewWhere(opts: {
  * **What this does NOT exclude.** Accepted authorship-claim claimants.
  * A claimer matched by ORCID, or connected to a name-only slot, is
  * absent from `authors[].hive`, so this helper does not drop their
- * self-review. The reputation *cycle* now closes this hole on the score
- * path: both `paper_resolved_votes` and `paper_reviews` in
- * `reputation.ts` reject any `accepted_claims` claimant for the chain
- * post via an `accepted_claims NOT EXISTS` gate. This helper cannot do
- * the same because its DISPLAY callsites (paper-detail reviews, profile,
- * search, stats) do not carry the `authorship_claims` CTE in scope. The
- * residual gap is therefore display-only and moves no computed score: a
- * credited claimer's self-review can still appear in those displayed
- * review lists. Closing it requires threading the claims CTE through
- * each display callsite.
+ * self-review. Both the reputation *cycle* (score path) and the DISPLAY
+ * surfaces close that hole with a separate `accepted_claims NOT EXISTS`
+ * gate: the cycle inlines it in `reputation.ts` (`paper_resolved_votes`,
+ * `paper_reviews`); the display review/vote aggregations compose
+ * {@link excludeClaimedSelfWhere}, which references the `authorship_claims`
+ * CTE the callsite threads in via `authorshipClaimsCteBody`. So a credited
+ * ORCID/name-only claimer's self-review/self-vote is dropped on both paths;
+ * this helper remains responsible only for the chain poster + the
+ * `authors[].hive` named co-author set.
  *
  * **Composition with the paper row.** The helper requires the paper
  * row to be in SQL scope under `paperRowAlias` (with `.author` and
@@ -560,6 +559,55 @@ export function excludeSelfReviewWhere(opts: {
         AND LOWER(TRIM(auth ->> 'hive')) ~ '^[a-z0-9.-]+$'
         AND LOWER(TRIM(auth ->> 'hive')) = ${r}.author
     )
+  )`;
+}
+
+/**
+ * Companion to {@link excludeSelfReviewWhere} that closes the residual
+ * display-side self-dealing gap: a CREDITED authorship-claim claimer (matched by
+ * ORCID, or connected to a name-only slot) is absent from `authors[].hive`, so
+ * `excludeSelfReviewWhere` does not drop their self-review or self-vote on the
+ * chain post they are credited for. This helper emits the same
+ * `accepted_claims NOT EXISTS` gate the reputation cycle uses
+ * (`reputation.ts` `paper_resolved_votes` / `paper_reviews`), so the DISPLAY
+ * review/vote aggregations exclude a credited claimer's self-review/self-vote
+ * exactly as the score path does.
+ *
+ * **Scope requirement.** The caller MUST compose `authorshipClaimsCteBody` into
+ * the query's WITH chain so the `authorship_claims` CTE is in scope; this helper
+ * references it by name and filters `status = 'accepted'` inline (the read
+ * surface keeps the resolved status column rather than a pre-filtered
+ * `accepted_claims` CTE). For multi-paper surfaces (the listing review-agg,
+ * search, stats) compose it unscoped — claim ops are low-cardinality, so the
+ * full materialization is cheap. For single-paper / single-claimer surfaces
+ * (paper-detail, profile) pass the matching `{paperAuthor, paperPermlink}` /
+ * `{claimer}` scope to narrow it.
+ *
+ * @param opts.authorExpr - the review/vote author column (e.g. `'r.author'`,
+ *   `'c.author'`, `'v.voter'`).
+ * @param opts.paperAuthorExpr - the CHAIN post author (e.g. `'c.author'` for a
+ *   listing row, or a bound `$N`).
+ * @param opts.paperPermlinkExpr - the CHAIN post permlink.
+ * @param opts.claimsAlias - alias for the correlated `authorship_claims` row;
+ *   defaults to `'ac'`.
+ *
+ * @example
+ *   // Listing review-agg LATERAL: review row `r`, paper row `c`.
+ *   AND ${excludeClaimedSelfWhere({ authorExpr: 'r.author', paperAuthorExpr: 'c.author', paperPermlinkExpr: 'c.permlink' })}
+ */
+export function excludeClaimedSelfWhere(opts: {
+  authorExpr: string;
+  paperAuthorExpr: string;
+  paperPermlinkExpr: string;
+  claimsAlias?: string;
+}): string {
+  const ac = opts.claimsAlias ?? 'ac';
+  return `NOT EXISTS (
+    SELECT 1 FROM authorship_claims ${ac}
+    WHERE ${ac}.paper_author = ${opts.paperAuthorExpr}
+      AND ${ac}.paper_permlink = ${opts.paperPermlinkExpr}
+      AND ${ac}.claimer = ${opts.authorExpr}
+      AND ${ac}.status = 'accepted'
   )`;
 }
 

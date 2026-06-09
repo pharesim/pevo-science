@@ -6,7 +6,7 @@ import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
-import { T, buildWith, activeAccreditationsCteBody, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, validPevoPaperWhere } from '../hafsql.js';
+import { T, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, validPevoPaperWhere } from '../hafsql.js';
 
 const router = Router();
 
@@ -45,7 +45,10 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
   if (!pool) return null;
 
   try {
-    const accredCte = buildWith(1, activeAccreditationsCteBody);
+    // authorship_claims (unscoped — claim ops are low-cardinality) lets the
+    // single-review fetch 404 a credited claimer's self-review via
+    // excludeClaimedSelfWhere, matching the listing/profile/search/stats surfaces.
+    const accredCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
     // PEvO object-identity gate: a review is only a PEvO review if its author
     // is in `active_accreditations` OR equals `config.hiveAnonAccount`
     // (anon-proxy authoring on behalf of an accredited reviewer). Without
@@ -106,7 +109,8 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
          AND (c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})
          AND ${validReviewWhere({ commentAlias: 'c', appTagParam: `$${appTagIdx}` })}
          AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: `$${appTagIdx}`, bridgeAccountParam: `$${bridgeIdx}`, source: 'all' })}
-         AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: `$${appTagIdx}` })}`,
+         AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: `$${appTagIdx}` })}
+         AND ${excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' })}`,
       [...accredCte.params, author, permlink, config.hiveAnonAccount || '', config.appTag, config.hiveBridgeAccount || ''],
     );
     if (result.rows.length === 0) return null;

@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, buildWith, activeAccreditationsCteBody, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere } from '../hafsql.js';
+import { T, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere } from '../hafsql.js';
 import { getBatchReputationMap } from '../reputation.js';
 import { getAllAccreditedAccounts } from '../accreditation.js';
 
@@ -25,7 +25,7 @@ export async function fetchStatsFromHaf() {
   if (!pool) return null;
 
   try {
-    const cte = buildWith(1, activeAccreditationsCteBody);
+    const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%
     const anon = `$${cte.nextIdx + 2}`; // anonymous review account
@@ -55,6 +55,7 @@ export async function fetchStatsFromHaf() {
         INNER JOIN papers p ON r.parent_author = p.author AND r.parent_permlink = p.permlink
         WHERE ${validReviewWhere({ commentAlias: 'r', appTagParam: at })}
           AND ${excludeSelfReviewWhere({ commentAlias: 'r', paperRowAlias: 'p', appTagParam: at })}
+          AND ${excludeClaimedSelfWhere({ authorExpr: 'r.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' })}
           AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author)
                OR r.author = ${anon})
       )

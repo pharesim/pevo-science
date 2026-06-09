@@ -50,6 +50,7 @@ import {
   validPevoPaperWhere,
   validReviewWhere,
   excludeSelfReviewWhere,
+  excludeClaimedSelfWhere,
 } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 
@@ -93,7 +94,14 @@ async function batchResolveVotes(
   const accreditedParam = `$${pIdx++}`;
   pairParams.push(accreditedArr);
 
-  const [nativeResult, revoteResult] = await Promise.all([
+  // Accepted authorship-claim claimers must not have their self-vote on the paper
+  // they are credited for counted toward the displayed net_votes — mirrors the
+  // reputation cycle's accepted_claims gate and excludeClaimedSelfWhere on the
+  // review surfaces. Claims are low-cardinality, so fetch them unscoped and skip
+  // the matching (paper, voter) pairs in the merge loop below.
+  const claimsCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
+
+  const [nativeResult, revoteResult, claimsResult] = await Promise.all([
     // Batch native votes: latest per voter per paper, accredited only, excluding self-votes
     pool.query(
       `SELECT DISTINCT ON (v.author, v.permlink, v.voter)
@@ -127,7 +135,18 @@ async function batchResolveVotes(
          AND cj.json::jsonb ->> 'action' = 'revote'`,
       [config.appTag],
     ),
+    // Accepted authorship claims (credited claimers per chain post).
+    pool.query(
+      `${claimsCte.sql} SELECT claimer, paper_author, paper_permlink FROM authorship_claims WHERE status = 'accepted'`,
+      claimsCte.params,
+    ),
   ]);
+
+  // (paper_author/paper_permlink::claimer) keys whose self-vote is dropped.
+  const claimedSet = new Set<string>();
+  for (const r of claimsResult.rows) {
+    claimedSet.add(`${r.paper_author}/${r.paper_permlink}::${r.claimer}`);
+  }
 
   // Index native votes: paper_key -> voter -> { weight, block_num }
   const accreditedSet = new Set(accreditedArr);
@@ -175,6 +194,8 @@ async function batchResolveVotes(
     let voterCount = 0;
 
     for (const voter of allVoters) {
+      // Drop a credited claimer's self-vote on the paper they are credited for.
+      if (claimedSet.has(`${key}::${voter}`)) continue;
       const native = nativeVotes.get(voter);
       const revote = revotes.get(voter);
 
@@ -989,8 +1010,12 @@ async function fetchPapersFromHaf(
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const source = req.query.source as string | undefined; // 'native', 'bridge', or omit for both
 
-  // Build CTEs with parameterized appTag
-  const cte = buildWith(1, activeAccreditationsCteBody, retractedPapersCteBody);
+  // Build CTEs with parameterized appTag. authorship_claims (unscoped — claim
+  // ops are low-cardinality) lets the review-agg LATERAL drop a credited
+  // claimer's self-review from the displayed avg_rating / review_count, mirroring
+  // the reputation cycle's accepted_claims gate. active_accreditations is listed
+  // first because authorshipClaimsCteBody's ORCID auto-accept arm references it.
+  const cte = buildWith(1, activeAccreditationsCteBody, retractedPapersCteBody, (idx) => authorshipClaimsCteBody(idx));
   let paramIdx = cte.nextIdx;
   const cteParams: unknown[] = [...cte.params];
 
@@ -1102,6 +1127,7 @@ async function fetchPapersFromHaf(
     WHERE r.parent_author = c.author AND r.parent_permlink = c.permlink
       AND ${validReviewWhere({ commentAlias: 'r', appTagParam })}
       AND ${excludeSelfReviewWhere({ commentAlias: 'r', paperRowAlias: 'c', appTagParam })}
+      AND ${excludeClaimedSelfWhere({ authorExpr: 'r.author', paperAuthorExpr: 'c.author', paperPermlinkExpr: 'c.permlink' })}
       AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author) OR r.author = ${anonParam})
   ) rev_agg ON true`;
 
@@ -3299,18 +3325,36 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       ? [...accreditedArr, config.hiveAnonAccount]
       : accreditedArr;
 
+    // authorship_claims scoped to THIS paper, so excludeClaimedSelfWhere can drop
+    // a credited claimer's self-review (ORCID / name-only slot — absent from
+    // authors[].hive) from the enrichment review list, mirroring the cycle gate.
+    // Param indices for the reviews query derive from this CTE's nextIdx via the
+    // counter below so the prepended CTE params shift them automatically.
+    const detailCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
+    let drIdx = detailCte.nextIdx;
+    const drAuthorIdx = drIdx++;
+    const drPermlinkIdx = drIdx++;
+    const drAppTagIdx = drIdx++;
+    const drAccreditedIdx = drIdx++;
+    const drReviewAuthorsIdx = drIdx++;
+    const drBridgeIdx = drIdx++;
+
     const [voteResult, reviewsResult, versions, claimsResult] = await Promise.all([
-      // Accredited voters (excluding self-votes) — use vote operations to survive payout
+      // Accredited voters (excluding self-votes AND credited-claimer self-votes)
+      // — use vote operations to survive payout. Params (after the detailCte CTE
+      // params): author, permlink, accreditedArr.
       pool.query(
-        `SELECT DISTINCT ON (v.voter) v.voter, v.weight, v.timestamp, v.block_num FROM ${T.voteOps} v
-         WHERE v.author = $1 AND v.permlink = $2
-           AND v.voter = ANY($3::text[])
+        `${detailCte.sql}
+         SELECT DISTINCT ON (v.voter) v.voter, v.weight, v.timestamp, v.block_num FROM ${T.voteOps} v
+         WHERE v.author = $${drAuthorIdx} AND v.permlink = $${drPermlinkIdx}
+           AND v.voter = ANY($${drAuthorIdx + 2}::text[])
            AND v.voter != v.author
+           AND ${excludeClaimedSelfWhere({ authorExpr: 'v.voter', paperAuthorExpr: `$${drAuthorIdx}`, paperPermlinkExpr: `$${drPermlinkIdx}` })}
          -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
          -- v.id is the monotonic HAF op id) per
          -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
          ORDER BY v.voter, v.block_num DESC, v.id DESC`,
-        [author, permlink, accreditedArr],
+        [...detailCte.params, author, permlink, accreditedArr],
       ),
       // Reviews from accredited reviewers (+ anon account) with accredited vote count.
       // $4 = accreditedArr (used for net_votes voter gate), $5 = reviewAuthors
@@ -3331,25 +3375,27 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       // that `fetchPaperFromHaf` applies, so the gate must compose here. See
       // `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md`.
       pool.query(
-        `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
+        `${detailCte.sql}
+         SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
                 (SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int FROM (
                    SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
                    WHERE v.author = c.author AND v.permlink = c.permlink
-                     AND v.voter = ANY($4::text[]) AND v.voter != v.author
+                     AND v.voter = ANY($${drAccreditedIdx}::text[]) AND v.voter != v.author
                    -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
                    -- v.id is the monotonic HAF op id) per
                    -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
                    ORDER BY v.voter, v.block_num DESC, v.id DESC
                  ) lv WHERE lv.weight != 0) AS net_votes
          FROM ${T.comments} c
-         JOIN ${T.comments} p ON p.author = $1 AND p.permlink = $2
-         WHERE c.parent_author = $1 AND c.parent_permlink = $2
-           AND c.author = ANY($5::text[])
-           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
-           AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$6', source: 'all' })}
-           AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$3' })}
+         JOIN ${T.comments} p ON p.author = $${drAuthorIdx} AND p.permlink = $${drPermlinkIdx}
+         WHERE c.parent_author = $${drAuthorIdx} AND c.parent_permlink = $${drPermlinkIdx}
+           AND c.author = ANY($${drReviewAuthorsIdx}::text[])
+           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: `$${drAppTagIdx}` })}
+           AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: `$${drAppTagIdx}`, bridgeAccountParam: `$${drBridgeIdx}`, source: 'all' })}
+           AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: `$${drAppTagIdx}` })}
+           AND ${excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: `$${drAuthorIdx}`, paperPermlinkExpr: `$${drPermlinkIdx}` })}
          ORDER BY c.created DESC`,
-        [author, permlink, config.appTag, accreditedArr, reviewAuthors, config.hiveBridgeAccount || ''],
+        [...detailCte.params, author, permlink, config.appTag, accreditedArr, reviewAuthors, config.hiveBridgeAccount || ''],
       ),
       // Version history (needed for review outdated computation)
       resolveVersionsFromHaf(author, permlink, headAuthorsMemo, signal),

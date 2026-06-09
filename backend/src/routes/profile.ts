@@ -15,7 +15,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
+import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -97,7 +97,9 @@ async function getProfileStats(username: string) {
     // counter adapts. Adopted across the sibling `routes/reviews.ts` SQL
     // builders too — the counter-based shape is the project-wide convention
     // for chained `activeAccreditationsCteBody(N)` consumers.
-    const accredCte = activeAccreditationsCteBody(1);
+    // authorship_claims scoped to this profile user so excludeClaimedSelfWhere can
+    // drop their self-review of a claimed paper from the review_count stat.
+    const accredCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;
     const appTagIdx = paramIdx++;
@@ -110,10 +112,11 @@ async function getProfileStats(username: string) {
     const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: at });
     const paperGate = validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' });
     const selfExclude = excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: at });
+    const claimedExclude = excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' });
     const accredGate = `(c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})`;
 
     const result = await pool.query(
-      `WITH ${accredCte.sql},
+      `${accredCte.sql},
        user_papers AS (
          SELECT c.created
          FROM ${T.comments} c
@@ -132,6 +135,7 @@ async function getProfileStats(username: string) {
            AND ${reviewWhere}
            AND ${paperGate}
            AND ${selfExclude}
+           AND ${claimedExclude}
            AND COALESCE(c.json_metadata -> ${at} ->> 'is_anonymous', 'false') != 'true'
        ),
        citations AS (
@@ -164,7 +168,7 @@ async function getProfileStats(username: string) {
          (SELECT COUNT(*) FROM user_reviews) AS review_count,
          (SELECT COUNT(*) FROM citations) AS citation_count`,
       [
-        ...accredCte.params,                  // $1..$3
+        ...accredCte.params,                  // active_accreditations + authorship_claims CTE params
         username,                             // $usernameIdx
         config.appTag,                        // $appTagIdx
         `${config.appTag}/%`,                 // $appPrefixIdx
@@ -534,11 +538,13 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
   if (!pool) return null;
 
   try {
-    // Param shape: accred CTE consumes $1..$3 (appTag, authorities,
-    // genesis); $4 = username, $5 = appTag (for validReviewWhere /
-    // excludeSelfReviewWhere / validPevoPaperWhere), $6 = hiveAnonAccount,
-    // $7 = hiveBridgeAccount (for validPevoPaperWhere bridge-author pin),
-    // $8 = limit, $9 = offset, $10 = accreditedAccounts (votes-sort only).
+    // Param shape: the active_accreditations + authorship_claims CTEs consume the
+    // leading params; the per-bind counter below (paramIdx++ from
+    // accredCte.nextIdx) then resolves $N for username, appTag, hiveAnonAccount,
+    // hiveBridgeAccount, limit, offset, and (votes-sort only) accreditedAccounts.
+    // The counter is the source of truth; do not hard-cite positions (they shift
+    // whenever a CTE is added — authorship_claims was added for the claimer
+    // self-review display exclusion).
     //
     // The accreditation OR-anon gate is load-bearing here: without it,
     // `/api/profile/<unaccredited>/reviews` surfaces 300-char body
@@ -567,7 +573,10 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md`,
     // the SQL-shape canary in profile-reviews-accred-gate.test.ts pins
     // the resolved param positions so a positional mis-bind fails red.
-    const accredCte = buildWith(1, activeAccreditationsCteBody);
+    // authorship_claims scoped to the profile user (the only review author here),
+    // so excludeClaimedSelfWhere can drop a self-review on a paper this user is a
+    // credited claimer of (ORCID / name-only slot — absent from authors[].hive).
+    const accredCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;
     const appTagIdx = paramIdx++;
@@ -582,6 +591,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: at });
     const paperGate = validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' });
     const selfExclude = excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: at });
+    const claimedExclude = excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' });
     const accredGate = `(c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})`;
 
     const baseParams: unknown[] = [
@@ -600,7 +610,8 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
          AND ${accredGate}
          AND ${reviewWhere}
          AND ${paperGate}
-         AND ${selfExclude}`,
+         AND ${selfExclude}
+         AND ${claimedExclude}`,
       baseParams,
     );
     const total = countResult.rows[0]?.total ?? 0;
@@ -638,6 +649,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
          AND ${reviewWhere}
          AND ${paperGate}
          AND ${selfExclude}
+         AND ${claimedExclude}
        ORDER BY ${orderClause}
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       dataParams,

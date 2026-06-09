@@ -7,7 +7,7 @@ import { parsePageLimit } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere } from '../hafsql.js';
+import { T, activeAccreditationsCteBody, retractedPapersCteBody, authorshipClaimsCteBody, buildWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 import {
   validateSearchQuery,
@@ -160,7 +160,9 @@ async function searchReviewsFromHaf(
   limit: number,
   offset: number,
 ): Promise<{ rows: SearchRow[]; total: number } | null> {
-  const cte = buildWith(1, activeAccreditationsCteBody);
+  // authorship_claims (unscoped — claim ops are low-cardinality) lets the review
+  // search drop a credited claimer's self-review via excludeClaimedSelfWhere.
+  const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
   let paramIdx = cte.nextIdx;
 
   const appTagParam = `$${paramIdx++}`;
@@ -188,6 +190,7 @@ async function searchReviewsFromHaf(
     validPevoPaperWhere({ commentAlias: 'p', appTagParam, bridgeAccountParam, source: 'all' }),
     validReviewWhere({ commentAlias: 'c', appTagParam }),
     excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam }),
+    excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' }),
   ];
 
   // Accreditation gate is unconditional — see lane 4 of
