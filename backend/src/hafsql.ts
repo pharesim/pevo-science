@@ -1011,9 +1011,9 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
  *
  * Self-flooring by construction, so call sites must NOT wrap this in an outer
  * GREATEST(decay_floor, ...): the grace arm returns 1.0 (>= decay_floor, which
- * `sanitizeReputationWeights` clamps to [0, 1] at load time) and the decay arm
- * already floors via GREATEST. Sharing one helper
- * keeps paper/review/citation aging from silently desyncing on a one-site edit.
+ * `sanitizeReputationWeights` clamps to [0, 1] at load time), and the decay arm
+ * already floors via GREATEST. Sharing one helper keeps paper/review/citation
+ * aging from silently desyncing on a one-site edit.
  *
  * @param createdExpr - SQL expression for the contribution's created timestamp
  * @param opts.weightsAlias - alias of the weights row (default 'w')

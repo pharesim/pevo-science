@@ -390,7 +390,7 @@ const WEIGHTS_TTL = 30 * 60_000;
  * `reputation-batch.ts` (the catch-up-loop guard), so it stays unbounded here.
  */
 export function sanitizeReputationWeights(raw: unknown): Partial<ReputationWeights> {
-  if (raw === null || typeof raw !== 'object') return {};
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const input = raw as Record<string, unknown>;
   const out: Partial<ReputationWeights> = {};
   for (const key of Object.keys(DEFAULT_REPUTATION_WEIGHTS) as (keyof ReputationWeights)[]) {

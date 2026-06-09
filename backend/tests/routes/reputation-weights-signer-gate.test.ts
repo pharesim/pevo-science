@@ -152,6 +152,11 @@ describe('sanitizeReputationWeights — value validation and clamping', () => {
     expect(sanitizeReputationWeights(42)).toEqual({});
   });
 
+  it('returns an empty object for array input (typeof object, but not a weights map)', () => {
+    expect(sanitizeReputationWeights([{ paper: 99 }])).toEqual({});
+    expect(sanitizeReputationWeights([])).toEqual({});
+  });
+
   it('passes a full valid payload through with clamps applied', () => {
     const out = sanitizeReputationWeights({
       paper: 30, review: 12, downvote: 3, citation: 4, citation_max: 18,

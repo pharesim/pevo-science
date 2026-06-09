@@ -92,3 +92,11 @@ Invoke `/ce-compound` to capture the convention this defect instantiates: a HAF 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. The mv is the re-review signal; the next review scopes to the fix commit only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-09)
+
+Both held items landed; moving back to `tasks/review/`.
+
+- **Item 1 (array guard).** `sanitizeReputationWeights` now guards `raw === null || typeof raw !== 'object' || Array.isArray(raw)`, so an array (which `typeof` reports as `'object'`) short-circuits to `{}` instead of reaching the `as Record<string, unknown>` cast. New unit in `reputation-weights-signer-gate.test.ts` asserts `sanitizeReputationWeights([{ paper: 99 }])` and `sanitizeReputationWeights([])` both return `{}`.
+- **Item 2 (docblock).** `decayMultiplierSql` docblock reflowed: the self-flooring explanation is one self-contained sentence (comma before "and the decay arm…"), and "Sharing one helper keeps paper/review/citation aging from silently desyncing…" is no longer split mid-clause across the line wrap. Comment-only.
+- Verification: `npm run typecheck` + `npm run lint` clean (the one lint warning is a pre-existing unused-directive in `src/lib/author-supersession.ts`, untouched). `reputation-weights-signer-gate.test.ts` 10/10 green against real Postgres/Redis.
