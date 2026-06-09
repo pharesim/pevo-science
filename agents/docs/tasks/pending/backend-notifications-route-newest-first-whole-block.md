@@ -221,3 +221,14 @@ moved blocked→pending now that this commit's shared-function change has landed
 
 When items 1-4 land, `git mv` this file back to tasks/review/; re-review scopes to the
 commits since this hold.
+
+**Pre-staged `/ce-compound` (fire at clean archive, only after item 1 lands and is verified):**
+The item-1 fix surfaces a reconstruction-resistant lesson worth a learnings refinement —
+a windowed fetch that DROPS a partial boundary block on cap-hit must detect the cap with a
+`cap + 1` probe (`> cap`), not `>= cap`: under `>=`, an exactly-cap *fully-contained* result
+false-drops a COMPLETE block, and under a forward/newest-first cursor that block is never
+recovered (the floor only slides forward, aging it out), so the "graceful deferral" becomes a
+permanent silent skip. Fold this into the existing
+`agents/docs/solutions/architecture-patterns/forward-cursor-feed-newest-first-and-rewind-masks-cap-edge-2026-06-09.md`
+(it owns this surface) via `/ce-compound` / `/ce-compound-refresh` — do NOT create a new doc.
+Skip if item 1 is instead resolved by accepting the residual (then there is no fix to compound).
