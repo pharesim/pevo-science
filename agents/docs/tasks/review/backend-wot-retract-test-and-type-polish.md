@@ -29,3 +29,17 @@ The retract verify+recount collapse (`getVouchStatus` now carries `accreditation
 - `backend/src/wot.ts` (`getVouchStatus` combined SELECT, `VouchStatus`, `shouldRevokeOnRetract`).
 - `agents/docs/solutions/conventions/test-haf-sql-selection-redirect-cte-from-synthetic-values-2026-06-09.md` (item 2 technique).
 - Archived parents in `tasks-archive.md`: `BACKEND-WOT-RETRACT-POLL-RECOUNT-SINGLE-READ`, `BACKEND-WOT-RETRACT-CASCADEREVOCATION-WRONG-ACCOUNT`.
+
+---
+
+## Backend completion note (2026-06-09, commit `e2e562ac`)
+
+All three items landed.
+
+- **Item 1:** the no-second-read pin now drives a BELOW-threshold WoT status so `revokeVoucheeIfBelowThreshold` takes the revoke branch (admin broadcast wired to succeed), asserts `outcome: 'revoked'` plus one broadcast, and asserts no recount/discovery query fires on that branch. The pin is now non-trivial (fails red if a second read is reintroduced).
+- **Item 2:** the inline `getVouchStatus` SELECT was extracted to an exported `vouchStatusSelect(usernameParam)` builder (production SQL byte-identical, single source). New real-pool FROM-redirect test (`wot-vouch-status-select-real-postgres.test.ts`) runs it against a live planner: a zero-accredited-vouchers vouchee returns exactly one row with `self_method` populated and `vouches = []`; the scalar-subquery + bare-aggregate + no-`GROUP BY` shape does not raise; no-op redirect guard. Carve-out clauses documented in the header.
+- **Item 3:** `accreditation_method` narrowed to `AccreditationMethod = 'wot' | 'email' | 'orcid' | 'manual'` (cast once at the SQL read site), making the `=== 'wot'` discriminant compiler-visible; optional sweep done (trimmed the duplicated race-rationale comment, added `'manual'` to the docblock's non-WoT list).
+
+**Verification (main checkout, real Postgres):** typecheck (src+tests) + lint clean; `wot-retract-cascaderevocation.test.ts` plus `wot-vouch-status-select-real-postgres.test.ts` 26/26 green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
