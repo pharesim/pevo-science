@@ -35,10 +35,15 @@ vi.mock('alpinejs', () => ({
 
 import { withSettingsFreshAuth } from '../../src/lib/settings-fresh-auth.js';
 
-// FRESH_AUTH_REQUIRED errors carry { status, details: { reason } }; other coded
-// errors (DUPLICATE, UNAUTHORIZED) just carry a code.
-const codedError = (code, status, reason) =>
-  Object.assign(new Error(code), { code, status, details: reason ? { reason } : undefined });
+// Mirrors the real `ApiRequestError` shape (api.js): a `code` plus optional
+// `details`, and crucially NO `status` field. The orchestrator's 401-retry gate
+// keys on `details.reason` (the `FRESH_AUTH_REQUIRED` code already establishes
+// the 401 class) — never on a `status` field. Fabricating `status` here would
+// mask a regression that reintroduces a `status`-based gate (which would be dead
+// against production's real shape). FRESH_AUTH_REQUIRED carries details.reason;
+// other coded errors (DUPLICATE, UNAUTHORIZED) carry just a code.
+const codedError = (code, reason) =>
+  Object.assign(new Error(code), { code, details: reason ? { reason } : undefined });
 
 const LIGHT = { custody: 'light', username: 'alice', hasPassword: true };
 const LIGHT_NOPW = { custody: 'light', username: 'alice', hasPassword: false };
@@ -132,7 +137,7 @@ describe('withSettingsFreshAuth', () => {
 
   it('a 401 missing/expired proof re-mints and retries the action once', async () => {
     run
-      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 401, 'expired'))
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
       .mockResolvedValueOnce({ ok: 1 });
     mockMintSettingsActionProof.mockResolvedValueOnce('proof-1').mockResolvedValueOnce('proof-2');
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
@@ -145,14 +150,14 @@ describe('withSettingsFreshAuth', () => {
   });
 
   it('a 403 target_mismatch surfaces freshAuthFailed without retrying', async () => {
-    run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 403, 'target_mismatch'));
+    run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 'target_mismatch'));
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ freshAuthFailed: true });
     expect(run).toHaveBeenCalledTimes(1);
   });
 
   it('a 401 wrong_mechanism is not re-mintable and surfaces freshAuthFailed', async () => {
-    run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 401, 'wrong_mechanism'));
+    run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 'wrong_mechanism'));
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ freshAuthFailed: true });
     expect(run).toHaveBeenCalledTimes(1);
@@ -160,15 +165,87 @@ describe('withSettingsFreshAuth', () => {
 
   it('a second fresh-auth rejection on the retry surfaces freshAuthFailed', async () => {
     run
-      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 401, 'missing'))
-      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 403, 'target_mismatch'));
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'missing'))
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'target_mismatch'));
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ freshAuthFailed: true });
     expect(run).toHaveBeenCalledTimes(2);
   });
 
   it('propagates a non-fresh-auth error (e.g. DUPLICATE) to the caller', async () => {
-    run.mockRejectedValue(codedError('DUPLICATE', 409));
+    run.mockRejectedValue(codedError('DUPLICATE'));
     await expect(withSettingsFreshAuth('change_email', LIGHT, run)).rejects.toMatchObject({ code: 'DUPLICATE' });
+  });
+
+  // ─── Second password-mint failure maps to freshAuthFailed, never escapes ──
+
+  it('a second wrong password surfaces freshAuthFailed (no escape to the action error)', async () => {
+    mockMintSettingsActionProof
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'));
+    reauthRequest.mockResolvedValueOnce('wrong1').mockResolvedValueOnce('wrong2');
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ freshAuthFailed: true });
+    expect(reauthRequest).toHaveBeenCalledTimes(2);
+    // The action never ran — the mint failed before it.
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a transport error on the second password mint surfaces freshAuthFailed (not the action error)', async () => {
+    mockMintSettingsActionProof
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockRejectedValueOnce(new Error('Failed to fetch'));
+    reauthRequest.mockResolvedValueOnce('wrong').mockResolvedValueOnce('retry');
+    const out = await withSettingsFreshAuth('delete_account', LIGHT, run);
+    expect(out).toEqual({ freshAuthFailed: true });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  // ─── Action coverage across set_password / delete_account, not just change_email ──
+
+  it('passwordless delete_account routes to the ORCID factor (redirect)', async () => {
+    const out = await withSettingsFreshAuth('delete_account', LIGHT_NOPW, run);
+    expect(out).toEqual({ redirect: true });
+    expect(mockBeginOrcid).toHaveBeenCalledWith('delete_account');
+    expect(reauthRequest).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a 401 expired proof on delete_account re-mints and retries once', async () => {
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockResolvedValueOnce({ ok: 1 });
+    mockMintSettingsActionProof.mockResolvedValueOnce('proof-1').mockResolvedValueOnce('proof-2');
+    const out = await withSettingsFreshAuth('delete_account', LIGHT, run);
+    expect(out).toEqual({ ok: { ok: 1 } });
+    expect(run).toHaveBeenNthCalledWith(1, 'proof-1');
+    expect(run).toHaveBeenNthCalledWith(2, 'proof-2');
+    expect(mockMintSettingsActionProof).toHaveBeenNthCalledWith(1, 'delete_account', 'hunter2');
+    expect(mockMintSettingsActionProof).toHaveBeenNthCalledWith(2, 'delete_account', 'hunter2');
+  });
+
+  it('a 403 target_mismatch on set_password (cached ORCID proof) surfaces freshAuthFailed', async () => {
+    // set_password is ORCID-only; its action runs post-redirect off a cached
+    // consent-op proof. A 403 binding violation there must surface the generic
+    // re-auth failure, never a silent re-redirect.
+    mockGetCachedConsentOpProof.mockReturnValue('cached-orcid-proof');
+    run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 'target_mismatch'));
+    const out = await withSettingsFreshAuth('set_password', LIGHT_NOPW, run);
+    expect(out).toEqual({ freshAuthFailed: true });
+    expect(run).toHaveBeenCalledWith('cached-orcid-proof');
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
+  });
+
+  it('an ORCID-factor 401-on-arrival is terminal, not a second redirect (re-OAuth-loop guard)', async () => {
+    // Passwordless account back from an ORCID round-trip whose cached proof
+    // expired before the action fired (dawdled near the 5-minute TTL). The
+    // retry must NOT re-run beginSettingsActionOrcidFreshAuth (a full-page OAuth
+    // redirect → re-OAuth loop); it surfaces a terminal freshAuthFailed.
+    mockGetCachedConsentOpProof.mockReturnValue('stale-cached-proof');
+    run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+    const out = await withSettingsFreshAuth('change_email', LIGHT_NOPW, run);
+    expect(out).toEqual({ freshAuthFailed: true });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
   });
 });

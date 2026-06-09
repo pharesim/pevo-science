@@ -267,7 +267,9 @@ export async function beginSettingsActionOrcidFreshAuth(action) {
   }
 
   // Validate the redirect host before navigating — open-redirect defense
-  // shared with mintNonConsentProof and settings.js handleOrcidLink.
+  // shared with mintNonConsentProof and settings.js handleOrcidLink. Uses the
+  // shared ORCID_REDIRECT_HOSTS allowlist, not an inline literal, so this call
+  // site cannot drift from the session-auth flow's host policy.
   let target;
   try {
     target = new URL(data.redirect_url);
@@ -276,7 +278,7 @@ export async function beginSettingsActionOrcidFreshAuth(action) {
     clearReturnPath();
     throw new Error('Invalid ORCID redirect URL');
   }
-  if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
+  if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
     sessionStorage.removeItem('pevo_orcid_mode');
     clearReturnPath();
     throw new Error('Invalid ORCID redirect URL');

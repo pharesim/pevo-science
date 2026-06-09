@@ -38,6 +38,13 @@ import {
 // caller surfaces them the same way (no error toast).
 const CANCELLED = Symbol('settings_fresh_auth_cancelled');
 
+// Sentinel: re-auth could not be completed (a second wrong password, or a
+// transport error minting the proof). Distinct from CANCELLED (user dismissed
+// the modal → abort silently): the caller surfaces a generic re-auth error
+// (`settings.reauthFailed`) rather than letting the mint failure escape as the
+// action's own generic message.
+const MINT_FAILED = Symbol('settings_fresh_auth_mint_failed');
+
 // 401 consume-failure reasons that mean "the proof was absent or no longer
 // usable" — re-mint and retry once. Mirrors the reason set
 // `broadcastWithFreshAuth` retries on. `wrong_mechanism` is deliberately
@@ -56,8 +63,12 @@ function passwordPromptMessage() {
 }
 
 // Password-factor mint: prompt via the global reauth modal, then mint. A wrong
-// password (401 UNAUTHORIZED at the mint route) re-prompts once before giving
-// up. Returns the proof string or CANCELLED.
+// password (401 UNAUTHORIZED at the mint route) re-prompts once. Returns the
+// proof string, CANCELLED (modal dismissed at either prompt), or MINT_FAILED (a
+// second wrong password, or any transport error on the retry mint — re-auth is
+// spent). The second attempt is wrapped so neither a repeat UNAUTHORIZED nor a
+// transport error escapes the orchestrator and mis-surfaces as the action's own
+// generic error instead of `settings.reauthFailed`.
 async function mintViaPassword(action) {
   const modal = Alpine.store('reauthModal');
   const message = passwordPromptMessage();
@@ -68,27 +79,43 @@ async function mintViaPassword(action) {
   try {
     return await mintSettingsActionProof(action, password);
   } catch (err) {
-    if (err?.code === 'UNAUTHORIZED') {
-      password = await modal.request({ message });
-      if (password === null || password === undefined) return CANCELLED;
-      return mintSettingsActionProof(action, password);
+    // A non-auth error on the first attempt (transport, 503) propagates as an
+    // unexpected failure; only a wrong password (UNAUTHORIZED) re-prompts.
+    if (err?.code !== 'UNAUTHORIZED') throw err;
+
+    password = await modal.request({ message });
+    if (password === null || password === undefined) return CANCELLED;
+    try {
+      return await mintSettingsActionProof(action, password);
+    } catch {
+      // Last re-prompt spent: a second auth failure, or any transport error on
+      // the retry mint, means re-auth could not be completed. Surface the
+      // generic re-auth failure rather than letting it escape.
+      return MINT_FAILED;
     }
-    throw err;
   }
 }
 
+// The PASSWORD factor applies when the account has a password AND the action is
+// not `set_password` (whose target account is passwordless by definition, so
+// ORCID-only). Every other case uses the ORCID factor. Centralized so the
+// initial mint (`resolveProof`) and the 401-retry gate (`withSettingsFreshAuth`)
+// cannot drift on this predicate.
+function usesPasswordFactor(action, hasPassword) {
+  return action !== 'set_password' && hasPassword;
+}
+
 // Resolve a fresh-auth proof for `action` on a light account. Returns the proof
-// string, FRESH_AUTH_REDIRECT_PENDING (ORCID round-trip started), or CANCELLED
-// (password modal dismissed). Factor selection: a freshly-returned ORCID proof
-// in the consent-op cache wins; otherwise the password factor when the account
-// has a password AND the action is not `set_password` (passwordless by
-// definition, so ORCID-only); otherwise the ORCID factor.
+// string, FRESH_AUTH_REDIRECT_PENDING (ORCID round-trip started), CANCELLED
+// (password modal dismissed), or MINT_FAILED (password re-auth exhausted).
+// Factor selection: a freshly-returned ORCID proof in the consent-op cache
+// wins; otherwise the password factor when `usesPasswordFactor` holds;
+// otherwise the ORCID factor.
 async function resolveProof(action, { username, hasPassword }) {
   const cached = getCachedConsentOpProof(action, username, '');
   if (cached) return cached;
 
-  const usePassword = action !== 'set_password' && hasPassword;
-  if (usePassword) {
+  if (usesPasswordFactor(action, hasPassword)) {
     return mintViaPassword(action);
   }
   return beginSettingsActionOrcidFreshAuth(action);
@@ -102,8 +129,10 @@ async function resolveProof(action, { username, hasPassword }) {
  *   { ok: <apiResult> }       request succeeded
  *   { redirect: true }        ORCID round-trip in flight; abort cleanly
  *   { cancelled: true }       user dismissed the password modal; abort cleanly
- *   { freshAuthFailed: true } re-auth rejected (403 binding violation, wrong
- *                             mechanism, or a second 401); show a generic error
+ *   { freshAuthFailed: true } re-auth rejected or could not be completed (403
+ *                             binding violation, wrong mechanism, a second wrong
+ *                             password, or an expired ORCID-factor proof on
+ *                             arrival); show a generic error
  *
  * Non-fresh-auth errors (DUPLICATE, validation, transport, etc.) propagate to
  * the caller, which keeps the existing per-action error handling.
@@ -122,6 +151,7 @@ export async function withSettingsFreshAuth(action, ctx, run) {
   const proof = await resolveProof(action, ctx);
   if (proof === FRESH_AUTH_REDIRECT_PENDING) return { redirect: true };
   if (proof === CANCELLED) return { cancelled: true };
+  if (proof === MINT_FAILED) return { freshAuthFailed: true };
 
   try {
     const ok = await run(proof);
@@ -137,11 +167,24 @@ export async function withSettingsFreshAuth(action, ctx, run) {
     // any retry must mint a fresh one. Drop the cache first.
     clearCachedConsentOpProof();
 
-    // 401 missing/expired/malformed → re-mint and retry once.
-    if (err.status === 401 && REMINTABLE_REASONS.includes(err.details?.reason)) {
-      const retry = await resolveProof(action, ctx);
-      if (retry === FRESH_AUTH_REDIRECT_PENDING) return { redirect: true };
+    // Re-mintable reasons (missing/expired/malformed) → mint a fresh proof and
+    // retry the action once. The `err.code === 'FRESH_AUTH_REQUIRED'` check
+    // above already establishes the 401 class; `ApiRequestError` (api.js) carries
+    // no `status` field, only `code`/`details`, so the reason discriminator alone
+    // gates the retry. `wrong_mechanism` (minted factor not registered on the
+    // account) and the 403 username/target/kind mismatches are not fixable by
+    // re-minting the same factor — they fall through to freshAuthFailed.
+    const remintable = REMINTABLE_REASONS.includes(err.details?.reason);
+
+    // Only the PASSWORD factor can retry inline. The ORCID factor would have to
+    // re-run beginSettingsActionOrcidFreshAuth — a full-page OAuth redirect —
+    // which near the 5-minute proof TTL risks a re-OAuth loop. For ORCID-factor
+    // accounts surface a terminal re-auth failure so the user restarts
+    // deliberately rather than bouncing through ORCID a second time.
+    if (remintable && usesPasswordFactor(action, ctx.hasPassword)) {
+      const retry = await mintViaPassword(action);
       if (retry === CANCELLED) return { cancelled: true };
+      if (retry === MINT_FAILED) return { freshAuthFailed: true };
       try {
         const ok = await run(retry);
         clearCachedConsentOpProof();
@@ -152,8 +195,8 @@ export async function withSettingsFreshAuth(action, ctx, run) {
       }
     }
 
-    // 401 wrong_mechanism, or 403 username/target/kind mismatch → not fixable by
-    // re-minting the same factor; surface a generic re-auth failure.
+    // 401 wrong_mechanism, 403 username/target/kind mismatch, or an ORCID-factor
+    // proof we decline to re-mint inline → surface a generic re-auth failure.
     return { freshAuthFailed: true };
   }
 }
