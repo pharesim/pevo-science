@@ -43,3 +43,41 @@ Whole-block delivery is the likely choice (keeps the integer cursor, contained t
 - `frontend/src/notifications.js` (poll loop cursor rewind).
 - `agents/docs/solutions/architecture-patterns/cursor-agnostic-cache-must-dominate-result-set-2026-06-05.md` (the starvation-fix design this stall is the residual tail of).
 - Origin: archived task `ui-notifications-block-cursor-boundary-rewind` (review 2026-06-08).
+
+---
+
+## DECISION (2026-06-09) — unified root-cause fix; whole-block delivery + newest-first fetch
+
+Scope was widened from the single-block stall to the shared `fetchNotificationsFromHaf` fetch-ordering / `has_more` contract, because adversarial design verification (workflow `wf_182b09cb-09d`) and prior-art tracing showed the narrow framing was both insufficient and dangerous:
+
+- **The narrow "drop the SPA rewind + whole-block delivery at the response-limit edge" plan is strictly worse than the status quo.** The SPA `latest_block - 1` rewind is load-bearing at the *fetch-cap* edge (1000), not just the response-`limit` edge (50). The batch is `ORDER BY block_num ASC LIMIT 1000` (OLDEST 1000 events) with no tie-breaker, so the cap cuts through a block at the batch's newest tail. Dropping the rewind lets the SPA advance past a cap-truncated block → permanent silent skip + multi-day stall. The real residual trigger is "total in-window events > 1000" (normal for an active author), not "one block > 1000 events."
+- **Root cause = oldest-first fetch.** A "what's new" feed must fetch newest-first; oldest-first starves any account with >1000 in-window events.
+- **Two sibling tasks depend on this decision:** `backend-notifications-cache-key-since-block-miss` (PARKED) documents the route ">CAP window starvation" and asked whoever scopes the redesign to fold it in; `backend-notifications-digest-window-cursor` (BLOCKED, P1 re-send cascade) is explicitly blocked on this task settling "the fetch-ordering + has_more contract for both consumers."
+
+User decisions (2026-06-09): **unified root-cause scope** + **newest-first route fetch**.
+
+### The settled contract for the shared `fetchNotificationsFromHaf`
+
+- Add a deterministic same-block tie-breaker (HAF op `id`, the convention the sibling `backend-window-cte-deterministic-tiebreaker` task established for 10 sites but excluded this query) so the cap cut is reproducible.
+- Add a `direction` parameter (`'asc' | 'desc'`); always return ascending events.
+- Drop the partial boundary block when the cap was hit, so neither consumer is ever handed a cap-truncated block. `batch.has_more` = cap was hit.
+- **Route** consumes `'desc'` (newest-first) + whole-block delivery in `applySinceBlockFilter`; `has_more = filtered.length > delivered.length` (do NOT OR-in `batch.has_more`); client always advances to `latest_block` (rewind removed). Eliminates both the single-block stall and the >CAP starvation; bell-feed history for >cap-events-behind accounts is bounded to the newest `cap` (digest covers the rest).
+- **Digest** consumes `'asc'` (oldest-first) + advances `last_digest_block` to the highest delivered block each non-empty run (the partial-block drop makes every delivered block whole, killing the re-send cascade). Does NOT switch to newest-first.
+- Cursor stays an integer Hive block number end-to-end.
+
+### Rejected
+
+- **Composite cursor `(block_num, intra_block_index)`** — the only complete fix for a single block exceeding the fetch cap, but it breaks the integer-cursor contract across the API, the SPA localStorage cursor, and the digest `last_digest_block` BIGINT column, and requires an intra-block paging fetch architecture conflicting with the wide-floor cross-window dedup. Its unique trigger (>1000 valid distinct-account events in one 3s block targeting one account) is effectively unreachable at accredited single-instance beta scale. Documented as the escalation path; raising `NOTIFICATION_WINDOW_FETCH_CAP` is the cheap interim knob (LIMIT bounds rows returned, not scanned).
+- **Raise `limit` for the boundary block only** — a weaker, still-cappable form of whole-block delivery; subsumed.
+
+### Deploy constraint
+
+Backend-first or atomic; never frontend-first (a no-rewind client against the old splitting backend silently loses events on every limit-boundary-split block). SPA bundle is served from `backend/public`, so swap both and restart the backend together.
+
+### Deliverables (this decision)
+
+- `agents/docs/api-contracts/notifications.md` — `has_more` / `latest_block` / window bullets updated to the new contract (whole-block delivery, always-advance, newest-N window).
+- `backend-notifications-route-newest-first-whole-block` (filed in `pending/`) — the route + shared `fetchNotificationsFromHaf` refactor + regression tests.
+- `ui-notifications-drop-rewind-and-block-cap` (filed in `pending/`) — drop the rewind + reconcile `MAX_EVENTS` / `seenBlock`.
+- `backend-notifications-digest-window-cursor` — `[BLOCKED by Architect]` cause resolved; block re-characterized and kept in `blocked/` gated on the route task landing the shared-function signature change (per the layered-dependency rule), with the settled digest advance contract recorded inline.
+- `backend-notifications-route-comment-stale-rewind` (in `review/`) — flagged SUPERSEDED (its docblock describes the rewind this decision removes).
