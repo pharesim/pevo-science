@@ -251,7 +251,7 @@ When the vouchee has not yet reached the threshold, the message format is `"Vouc
 
 ### POST /api/wot/retract
 
-Notify the backend that a `retract_vouch` custom_json has been broadcast. The backend checks for cascading revocations — if a WoT-accredited researcher drops below the threshold, their accreditation is revoked, and this cascades to anyone they vouched for.
+Notify the backend that a `retract_vouch` custom_json has been broadcast. The backend first verifies the retraction has landed on-chain (it polls HAF until the signer's vouch edge to the vouchee has disappeared from `active_vouches`), then re-evaluates the VOUCHEE that lost the vouch: if the vouchee was WoT-accredited and now sits below the threshold, its accreditation is revoked. The re-evaluation is non-recursive (a single withdrawn edge can drop at most that one vouchee, and revoking it does not unwind that account's own outbound vouches). On-chain verification is what prevents an accredited voucher from revoking a victim by claiming a retraction they never broadcast. The frontend must first broadcast the `retract_vouch` custom_json via Hive Keychain, then call this endpoint.
 
 **Headers:** `X-Hive-Username`, `X-Hive-Signature`
 
@@ -267,11 +267,24 @@ Notify the backend that a `retract_vouch` custom_json has been broadcast. The ba
 
 ```json
 {
-  "message": "Retraction processed. No cascading revocations needed.",
+  "message": "Retraction processed. No revocation needed.",
+  "revocation_outcome": "skipped",
   "revocations": [],
-  "vouch_status": { "...VouchStatus object..." }
+  "vouch_status": { "...VouchStatus object, or null when HAF is unavailable..." }
 }
 ```
 
+`revocation_outcome` is one of:
+- `revoked`: the vouchee fell below threshold and its accreditation was revoked. `revocations` carries the revocation transaction ID.
+- `skipped`: the retraction was verified on-chain but the vouchee still meets the threshold, so no revocation was needed.
+- `unverified`: the retraction is not yet reflected on-chain (HAF ingestion lag, HAF unavailable, or no retract was broadcast). Fail-closed: nothing was evaluated and no revocation was issued.
+- `query_error`: the re-evaluation lookup failed, so the threshold could not be determined. The caller should re-attempt.
+- `timeout`: the revocation broadcast timed out and its on-chain outcome is ambiguous. Check on-chain status before re-attempting.
+- `chain_error`: the revocation broadcast failed.
+
+`revocations` carries the revocation transaction ID only for the `revoked` outcome; it is `[]` for every other outcome. `vouch_status` may be `null` in the `unverified` arm when HAF is unavailable.
+
 **Errors:**
-- `BAD_REQUEST` — missing `vouchee`
+- `BAD_REQUEST` (400): missing `vouchee`
+- `VALIDATION_ERROR` (422): the signer is the same as the vouchee (cannot retract a vouch for yourself)
+- `FORBIDDEN` (403): the signer is not an accredited researcher
