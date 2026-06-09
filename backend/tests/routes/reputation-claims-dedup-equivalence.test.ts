@@ -1,11 +1,11 @@
 /**
- * Byte-identical regression for the claim-resolution dedup
- * (backend-reputation-claims-cte-dedup): the reputation cycle's accepted_claims
- * used to be an inline copy of `authorshipClaimsCteBody`; it now COMPOSES the
- * shared builder and projects `accepted_claims` as `status = 'accepted'`. This
- * test proves the refactor preserved the accepted set: a representative seed run
- * through BOTH the frozen pre-refactor inline resolution AND the new shared
- * builder yields the SAME (claimer, paper_author, paper_permlink) accepted set.
+ * Byte-identical regression for the claim-resolution dedup: the reputation
+ * cycle's accepted_claims used to be an inline copy of `authorshipClaimsCteBody`;
+ * it now COMPOSES the shared builder and projects `accepted_claims` as
+ * `status = 'accepted'`. This test proves the refactor preserved the accepted
+ * set: a representative seed run through BOTH the frozen pre-refactor inline
+ * resolution AND the new shared builder yields the SAME
+ * (claimer, paper_author, paper_permlink) accepted set.
  *
  * The OLD block below is a FROZEN snapshot of the pre-refactor inline
  * `claim_events` + `accepted_claims` resolution (placeholders remapped to the
@@ -59,6 +59,14 @@ const cjRows = [
   // S5 revoke-reject: frank claims slot 0 (hive match) on bob/p-hive2, bob revokes later.
   { id: 7, json: { action: 'claim_authorship', paper_author: 'bob', paper_permlink: 'p-hive2', author_index: 0 }, auths: ['frank'], block: 104 },
   { id: 8, json: { action: 'revoke_authorship', claimer: 'frank', paper_author: 'bob', paper_permlink: 'p-hive2' }, auths: ['bob'], block: 204 },
+  // S6 forged-revoke-reject: grace claims slot 0 (hive match) on bob/p-forge; a
+  // stranger (mallory — not the post author, bridge, admin, or claimer) broadcasts
+  // a revoke naming grace's claim. The revoke signer gate rejects the forged op,
+  // so grace STAYS accepted. This is the one gate the equivalence proof exists to
+  // protect: stripping the signer gate from either copy would let the forged
+  // revoke void grace, dropping her from the accepted set and turning this red.
+  { id: 9, json: { action: 'claim_authorship', paper_author: 'bob', paper_permlink: 'p-forge', author_index: 0 }, auths: ['grace'], block: 105 },
+  { id: 10, json: { action: 'revoke_authorship', claimer: 'grace', paper_author: 'bob', paper_permlink: 'p-forge' }, auths: ['mallory'], block: 205 },
 ];
 
 const paperRows = [
@@ -66,10 +74,11 @@ const paperRows = [
   { author: 'bob', permlink: 'p-orcid', meta: { [AT]: { type: 'paper', authors: [{ orcid: '0000-0002-1111-2222' }] } } },
   { author: 'bob', permlink: 'p-hive', meta: { [AT]: { type: 'paper', authors: [{ hive: 'erin' }] } } },
   { author: 'bob', permlink: 'p-hive2', meta: { [AT]: { type: 'paper', authors: [{ hive: 'frank' }] } } },
+  { author: 'bob', permlink: 'p-forge', meta: { [AT]: { type: 'paper', authors: [{ hive: 'grace' }] } } },
 ];
 
 const accredRows = [{ account: 'dave', orcid: '0000-0002-1111-2222' }];
-const CLAIMERS = ['alice', 'carol', 'dave', 'erin', 'frank'];
+const CLAIMERS = ['alice', 'carol', 'dave', 'erin', 'frank', 'grace'];
 
 // Synthetic prelude (no params — values inlined/dollar-quoted). Shared by both
 // the old and new resolution queries.
@@ -191,6 +200,9 @@ describe('reputation claims dedup — old inline vs new shared builder (byte-ide
       { claimer: 'alice', paper_author: 'bob', paper_permlink: 'p-approve' },
       { claimer: 'dave', paper_author: 'bob', paper_permlink: 'p-orcid' },
       { claimer: 'erin', paper_author: 'bob', paper_permlink: 'p-hive' },
+      // grace stays accepted: the forged revoke (S6, signed by a stranger) is
+      // rejected by the revoke signer gate, so the hive-match accept survives.
+      { claimer: 'grace', paper_author: 'bob', paper_permlink: 'p-forge' },
     ]);
 
     // The new builder reproduces the frozen inline accepted set exactly...

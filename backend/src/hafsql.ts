@@ -816,9 +816,10 @@ export function authorshipClaimsCteBody(
             -- signed by the post author, the bridge account, the admin
             -- account, or the claimer themselves. Without it any Hive account
             -- could broadcast a forged revoke naming a victim's claim and
-            -- silently strip it from the read surface. Mirrors reputation.ts
-            -- accepted_claims so cycle and read surfaces void claims
-            -- identically.
+            -- silently strip it from the read surface. This builder is the
+            -- single source of accepted_claims (the reputation cycle and the
+            -- read surfaces both consume it), so claims void identically across
+            -- them.
             AND rv.approver IN (rv.paper_author, $${bridgeIdx}, $${adminIdx}, rv.claimer)
             AND rv.block_num > COALESCE((
               SELECT MAX(ap.block_num) FROM approvals ap
@@ -836,8 +837,9 @@ export function authorshipClaimsCteBody(
             AND ap.block_num > cb.block_num
             -- approve_authorship signer gate: a self-signed approve (signer =
             -- claimer) is not a valid trust grant; only the post author or
-            -- bridge can approve a co-author claim. Mirrors reputation.ts
-            -- accepted_claims. The self-asserted ap.paper_author read here is
+            -- bridge can approve a co-author claim. This builder is the single
+            -- source of accepted_claims shared by the reputation cycle and the
+            -- read surfaces. The self-asserted ap.paper_author read here is
             -- harmless even though the ap.approver IN (ap.paper_author, ...)
             -- gate references it: the approval is correlated to cb (a REAL
             -- claim_authorship op via claims_base) and cb.paper_author is validated
@@ -851,8 +853,8 @@ export function authorshipClaimsCteBody(
           -- List-final gate (per the Claim / Approve Authorship schemas in
           -- hive-schemas.md): approval binds the
           -- claimer to a slot NAMED AT POSTING; author_index must resolve to an
-          -- existing authors[] object entry. Mirrors reputation.ts accepted_claims
-          -- so the cycle and read surfaces accept identically; without it an
+          -- existing authors[] object entry. The cycle and read surfaces accept
+          -- identically because they share this one builder; without it an
           -- unlisted claimer (author_index null or past the end of authors[])
           -- could be approved into co-author status that was never on the paper.
           SELECT 1 FROM ${T.comments} c
