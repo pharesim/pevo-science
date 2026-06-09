@@ -319,20 +319,33 @@ export async function broadcastWotAccreditation(vouchee: string): Promise<WotAcc
  * The `JOIN active_accreditations aa_target ... aa_target.method = 'wot'` clause
  * folds the per-vouchee accreditation check into the discovery; the
  * COUNT/FILTER aggregate folds the per-vouchee recount. Only accredited voucher
- * rows contribute to the count, mirroring the recount query's accredited-only
- * join semantics.
+ * rows contribute to the count (the `aa_voucher.account IS NOT NULL` guard) — the
+ * same accredited-only counting `getVouchStatus` expresses with its INNER
+ * `JOIN active_accreditations aa ON aa.account = av.voucher`.
  *
  * The `av_all`/`aa_voucher` joins are LEFT (not INNER) with a NULL-skipping
- * HAVING, mirroring `revokeVoucheeIfBelowThreshold`. A vouchee whose only
- * accredited, non-revoked voucher is the revoked account, so that removing it
- * drops the remaining accredited-voucher count to zero, still forms a GROUP
- * (the LEFT JOIN keeps the av_target row even when no surviving voucher
- * matches) and is selected, since 0 < threshold. INNER joins would silently
- * drop that cascade-terminal vouchee (zero remaining accredited vouchers ->
- * no joined rows -> no group), the exact account the cascade mechanism exists
- * to catch. The FILTER's `aa_voucher.account IS NOT NULL` guard skips the
- * LEFT-JOIN NULL row so it does not count toward the survivor total;
+ * HAVING. A vouchee whose only accredited, non-revoked voucher is the revoked
+ * account, so that removing it drops the remaining accredited-voucher count to
+ * zero, still forms a GROUP (the LEFT JOIN keeps the av_target row even when no
+ * surviving voucher matches) and is selected, since 0 < threshold. INNER joins
+ * would silently drop that cascade-terminal vouchee (zero remaining accredited
+ * vouchers -> no joined rows -> no group), the exact account the cascade
+ * mechanism exists to catch. The FILTER's `aa_voucher.account IS NOT NULL` guard
+ * skips the LEFT-JOIN NULL row so it does not count toward the survivor total;
  * COUNT(DISTINCT ...) collapses duplicate voucher rows.
+ *
+ * DIVERGENCE from the retract-path recount (do NOT assume they share a HAVING):
+ * this FILTER carries an extra `av_all.voucher != <revoked>` conjunct that
+ * excludes the revoked root from the survivor count, because a `revoke`
+ * cascade is triggered when the root's OWN accreditation is revoked while its
+ * vouch edges may still stand in `active_vouches` — the SQL must subtract that
+ * now-unaccredited voucher itself. The retract path takes the opposite shape:
+ * it has no per-voucher exclusion at all. There the route's `pollForRetraction`
+ * first verifies the retracting edge is already GONE from `active_vouches`, so
+ * `getVouchStatus` counts the vouchee's CURRENT accredited vouchers honestly and
+ * `shouldRevokeOnRetract` compares that count to the threshold in JS. Excluding
+ * nobody is what makes a fabricated retraction (a voucher claiming a withdrawal
+ * they never broadcast) unable to drop a victim below threshold.
  *
  * @param revokedParam - `$N` placeholder bound to the revoked account (used in
  *   both the WHERE filter and the recount FILTER's exclusion).
