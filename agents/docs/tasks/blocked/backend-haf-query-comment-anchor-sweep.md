@@ -98,3 +98,27 @@ SRF guards are byte-identical; `imageSrfGuardExpr` in `lib/ipfs-shared.ts` is th
 precedent, but the citations guard needs a second `appTagParam` argument (a $N
 placeholder threaded through the appTag index) and that param must NOT be
 identifier-validated like the alias.
+
+## Additional pre-existing anchor-rot sites surfaced 2026-06-09 (architect, profile-cluster review)
+
+The `/ce-code-review` of the `profile.ts` accreditation-state-read cluster
+(`buildwith-adoption`, `canary-stale-param-slots`, `tiebreaker-sweep`) incidentally
+surfaced two pre-existing rot-class comment anchors. They were NOT introduced by
+those commits and are recorded here against the anchor-rot sweep effort (user
+elected "note for the existing sweep", not a dedicated task):
+
+- `backend/src/routes/papers.ts` — `// Per task hold-block item 4d.` (inside
+  `fetchPaperDetailFromHaf`, near the continuation-chain resolve). Task-slug + hold-item
+  ordinal; re-anchor on the behavior ("resolve the continuation chain once up-front to
+  avoid duplicate fetchHeadAuthorizedAuthors / chain-walk queries").
+- `backend/tests/routes/profile-reviews-accred-gate.test.ts` — the file header
+  (the un-edited block, roughly the first ~50 lines) carries `round-1 hold #2` /
+  `round-3 hold #1` ordinals. The body's slot-map comment was already de-rotted by
+  the canary task; only the header remains.
+
+These sit OUTSIDE this task's original three-file scope (`reputation.ts`,
+`notification-queries.ts`, `lib/ipfs-shared.ts`). Sweep them here only if the
+re-enumeration at unblock widens to cover these files; otherwise fold them into the
+next general anchor-rot sweep that touches `routes/papers.ts` / the route test tree.
+Re-verify they still exist (and have not already been cleaned by in-flight work)
+before editing.
