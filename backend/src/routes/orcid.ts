@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
 import { z } from 'zod';
 import { config } from '../config.js';
-import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
+import { broadcastAdminCustomJson, BroadcastTimeoutError } from '../hive.js';
 import {
   handleBroadcastError,
   handleBroadcastErrorAmbiguous,
@@ -175,8 +175,9 @@ const HAF_INDEXING_LAG_CEILING_SECONDS = 120;
 // See the derivation chain above for why aliasing is correct rather than
 // coincidence.
 const ORCID_BINDING_CACHE_TTL = HAF_INDEXING_LAG_CEILING_SECONDS;
-// SETNX lock TTL sits above the 30s wall-clock bound enforced by
-// broadcastJsonWithTimeout (see backend/src/hive.ts) so a legitimately slow
+// SETNX lock TTL sits above the 30s wall-clock bound enforced on the admin
+// broadcast (broadcastAdminCustomJson delegates to broadcastJsonWithTimeout;
+// see backend/src/hive.ts) so a legitimately slow
 // broadcast does not lose its lock mid-flight. dhive itself does not enforce
 // a per-request broadcast timeout — our helper does. The nonce-owned Lua-CAS
 // release (see releaseBindingLock) closes the lock-stomp window even if the
@@ -908,13 +909,19 @@ async function handleAccredit(
       timestamp: new Date().toISOString(),
     };
 
-    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
+    // Admin-key validation parse, deliberately OUTSIDE the inner try: a
+    // malformed-key throw must escape fn synchronously to
+    // withOrcidBindingLock's acquired/unavailable-branch catch (504
+    // ambiguous-outcome envelope + lock release) rather than land in the
+    // inner catch as a 502 BROADCAST_FAILED. broadcastAdminCustomJson
+    // re-parses the key internally; the parse result is discarded here.
+    // The helper's AdminKeyNotConfiguredError (unset key) is unreachable on
+    // this path: the pre-lock guard above already returns 500 when
+    // config.pevoAdminPostingKey is unset.
+    PrivateKey.fromString(config.pevoAdminPostingKey);
     let result;
     try {
-      result = await broadcastJsonWithTimeout(
-        { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
-        key,
-      );
+      result = await broadcastAdminCustomJson(customJsonPayload);
     } catch (err) {
       if (err instanceof BroadcastTimeoutError) {
         // Option A.1 lock-TTL extension. The extend-or-log helper MUST run
@@ -1109,13 +1116,13 @@ async function handleLink(
       timestamp: new Date().toISOString(),
     };
 
-    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
+    // Admin-key validation parse outside the inner try — see handleAccredit
+    // counterpart for the failure-shape rationale (synchronous escape to the
+    // wrapper's 504 ambiguous-outcome catch + lock release).
+    PrivateKey.fromString(config.pevoAdminPostingKey);
     let result;
     try {
-      result = await broadcastJsonWithTimeout(
-        { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
-        key,
-      );
+      result = await broadcastAdminCustomJson(customJsonPayload);
     } catch (err) {
       if (err instanceof BroadcastTimeoutError) {
         // See handleAccredit counterpart for the full rationale (Option A.1
@@ -1349,8 +1356,9 @@ type BindingLockState =
 // orcid_id (different usernames) can both pass the empty-binding check, both
 // broadcast, and both write their own cache entries. The lock is claimed
 // BEFORE broadcast; the loser gets 409. EX=35s bounds the hold — above the
-// 30s wall-clock timeout enforced by broadcastJsonWithTimeout (see hive.ts)
-// so a legitimately slow broadcast does not lose its lock mid-flight.
+// 30s wall-clock timeout enforced on the admin broadcast
+// (broadcastAdminCustomJson delegates to broadcastJsonWithTimeout; see
+// hive.ts) so a legitimately slow broadcast does not lose its lock mid-flight.
 //
 // Lock value is a per-acquisition random nonce (NOT the username) so the
 // nonce-owned Lua-CAS release in releaseBindingLock distinguishes holders.

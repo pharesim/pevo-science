@@ -153,6 +153,16 @@ vi.mock('../../src/hive.js', () => ({
   },
   broadcastJsonWithTimeout: (...args: unknown[]) =>
     (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
+  // The admin-broadcast envelope helper now backs the handleAccredit /
+  // handleLink attestation broadcasts; route it through the same
+  // `broadcastJsonMock` so staged results/rejections and call-count
+  // assertions carry over unchanged from the pre-helper wiring.
+  broadcastAdminCustomJson: (payload: Record<string, unknown>, timeoutMs?: number) =>
+    (broadcastJsonMock as (...a: unknown[]) => unknown)(
+      { required_auths: [], required_posting_auths: [], json: JSON.stringify(payload) },
+      undefined,
+      timeoutMs,
+    ),
   BroadcastTimeoutError: MockBroadcastTimeoutError,
   DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
@@ -1343,8 +1353,8 @@ describe.each([
           .set('Authorization', `Bearer ${jwtFor('alice')}`)
           .send({ code: 'fake', state });
 
-        // The narrow try/catch around broadcastJsonWithTimeout maps the
-        // non-timeout chain-rejection into 502 BROADCAST_FAILED (retriable=false).
+        // The narrow try/catch around the broadcastAdminCustomJson call maps
+        // the non-timeout chain-rejection into 502 BROADCAST_FAILED (retriable=false).
         // The finally in withOrcidBindingLock runs on its way out, releasing
         // the lock under the nonce CAS.
         expect(res.status).toBe(502);
@@ -1398,8 +1408,9 @@ describe.each([
       installLockModeMocks();
 
       // Force a SYNC throw inside fn BEFORE the broadcast. PrivateKey.fromString
-      // is the canonical site (called inside fn at orcid.ts:495 / :577 right
-      // before broadcastJsonWithTimeout, and OUTSIDE any inner try/catch in fn).
+      // is the canonical site: handleAccredit/handleLink run an admin-key
+      // validation parse inside fn right before the broadcastAdminCustomJson
+      // call, OUTSIDE any inner try/catch in fn.
       // Mirrors the existing 'unavailable'-branch PrivateKey spec; the only
       // difference is that lock SETNX is NOT mocked to throw, so the wrapper
       // takes the 'acquired' branch.
@@ -1460,7 +1471,7 @@ describe.each([
   // seedAccreditationBonus) throws. handleAccredit/handleLink wrap the
   // cascade in a try/catch with currentStep tracking and re-throw as
   // PostBroadcastWriteError(txId, postErr, currentStep). The throw escapes
-  // fn's inner try/catch (which only wraps broadcastJsonWithTimeout) and
+  // fn's inner try/catch (which only wraps the broadcastAdminCustomJson call) and
   // reaches the wrapper's acquired-branch outer catch, which routes through
   // handleBroadcastErrorAmbiguous → handleBroadcastError; the
   // PostBroadcastWriteError discrimination check fires FIRST and emits 502
@@ -1633,8 +1644,8 @@ describe.each([
   );
 
   // BE-ORCID-BROADCAST-ABORT-TIMEOUT — route-level timeout discrimination.
-  // When broadcastJsonWithTimeout raises BroadcastTimeoutError, the handler
-  // must return 504 BROADCAST_TIMEOUT with the canonical ambiguous-outcome
+  // When the broadcastAdminCustomJson call rejects with BroadcastTimeoutError,
+  // the handler must return 504 BROADCAST_TIMEOUT with the canonical ambiguous-outcome
   // envelope AND must NOT write the orcid_binding cache entry (the broadcast
   // outcome is uncertain).
   //
@@ -2495,9 +2506,10 @@ describe.each([
         return origSet(...args);
       });
       // Force a throw that ESCAPES fn's inner try/catch (which only wraps
-      // broadcastJsonWithTimeout). PrivateKey.fromString is called inside fn
-      // before the broadcast and outside any guard. A bad WIF here would
-      // throw before the inner try runs, propagating to the wrapper's new
+      // the broadcastAdminCustomJson call). PrivateKey.fromString backs the
+      // handlers' admin-key validation parse, run inside fn before the
+      // broadcast and outside any guard. A bad WIF here would throw before
+      // the inner try runs, propagating to the wrapper's new
       // forceAmbiguousOutcome catch on the unavailable branch.
       const pkSpy = vi.spyOn(PrivateKey, 'fromString').mockImplementation(() => {
         throw new Error('simulated PrivateKey.fromString failure (escapes fn inner catch)');
@@ -2577,11 +2589,10 @@ describe.each([
   // branch must route through the wrapper's outer catch and emit the 504
   // ambiguous-outcome envelope. The existing PrivateKey-throw spec above
   // exercises a *pre-broadcast* throw that escapes fn's inner try/catch
-  // entirely; this spec exercises a throw that ENTERS the inner catch (from
-  // broadcastJsonWithTimeout itself) and is re-thrown by the
-  // `if (lockState === 'unavailable') throw err;` discriminator at
-  // orcid.ts:570 (handleAccredit) / :700 (handleLink), so the wrapper's outer
-  // catch handles it.
+  // entirely; this spec exercises a throw that ENTERS the inner catch (a
+  // rejection from the broadcastAdminCustomJson call itself) and is re-thrown
+  // by the `if (lockState === 'unavailable') throw err;` discriminator in
+  // handleAccredit/handleLink, so the wrapper's outer catch handles it.
   //
   // Mutation kill (architect-required): removing the
   // `if (lockState === 'unavailable') throw err;` line routes the non-timeout
@@ -2616,11 +2627,11 @@ describe.each([
         return origSet(...args);
       });
       // Force a NON-TIMEOUT broadcast rejection so fn's inner try/catch
-      // catches it (broadcastJsonWithTimeout is wrapped by the inner try),
-      // skips the BroadcastTimeoutError branch (line 528 / 681), and reaches
-      // the lockState discriminator (line 570 / 700) which re-throws on
-      // 'unavailable'. The wrapper's outer catch then emits the 504
-      // ambiguous-outcome envelope via handleBroadcastErrorAmbiguous.
+      // catches it (the broadcastAdminCustomJson call is wrapped by the inner
+      // try), skips the BroadcastTimeoutError branch, and reaches the
+      // lockState discriminator, which re-throws on 'unavailable'. The
+      // wrapper's outer catch then emits the 504 ambiguous-outcome envelope
+      // via handleBroadcastErrorAmbiguous.
       broadcastJsonMock.mockRejectedValueOnce(new Error('synthetic non-timeout broadcast failure (rpc reject)'));
       // Silence the structured error logged by handleBroadcastErrorAmbiguous on
       // the non-timer ambiguous-outcome path — keeps test output clean.
