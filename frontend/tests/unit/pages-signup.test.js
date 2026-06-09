@@ -347,6 +347,26 @@ describe('signupPage', () => {
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       warnSpy.mockRestore();
     });
+
+    // A non-allowlisted redirect_url host throws before navigating, routing
+    // through the same sanitized error path the start-failure case uses.
+    it('rejects a non-allowlisted redirect host without navigating', async () => {
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://evil.example.com/phish' });
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '' } });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+
+      await comp.handleOrcidVerify();
+
+      expect(window.location.href).toBe(''); // never navigated
+      expect(comp.error).toBe('signup.orcidStartFailed');
+      expect(comp.orcidLoading).toBe(false);
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+      const warned = warnSpy.mock.calls.find((c) => c[0] === '[signup orcid verify]');
+      expect(warned).toBeDefined();
+      expect(warned[1].message).toBe('Invalid ORCID redirect URL');
+      warnSpy.mockRestore();
+    });
   });
 
   describe('handleOrcidSignup', () => {
@@ -368,6 +388,26 @@ describe('signupPage', () => {
       expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
+    });
+
+    // A non-allowlisted redirect_url host throws before navigating, routing
+    // through the same sanitized error path the start-failure case uses.
+    it('rejects a non-allowlisted redirect host without navigating', async () => {
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://evil.example.com/phish' });
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '' } });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+
+      await comp.handleOrcidSignup();
+
+      expect(window.location.href).toBe(''); // never navigated
+      expect(comp.error).toBe('signup.orcidStartFailed');
+      expect(comp.orcidLoading).toBe(false);
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+      const warned = warnSpy.mock.calls.find((c) => c[0] === '[signup orcid start]');
+      expect(warned).toBeDefined();
+      expect(warned[1].message).toBe('Invalid ORCID redirect URL');
       warnSpy.mockRestore();
     });
   });

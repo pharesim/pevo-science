@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { recoverWithSeedPhrase, recoverWithOrcid, fetchAccreditationStatus, startOrcid } from '../api.js';
+import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
 import { validateMnemonic, deriveAllKeys } from '../hive-keys.js';
 import { isPasswordValid } from '../password-policy.js';
 
@@ -246,6 +247,12 @@ export function initRecoverPage() {
 
       try {
         const data = await startOrcid('signup');
+        // Open-redirect defense: reject any redirect_url whose host is not on the
+        // shared allowlist before navigating (mirrors settings.js handleOrcidLink).
+        const target = new URL(data.redirect_url);
+        if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
+          throw new Error('Invalid ORCID redirect URL');
+        }
         window.location.href = data.redirect_url;
       } catch (err) {
         this.orcidLoading = false;

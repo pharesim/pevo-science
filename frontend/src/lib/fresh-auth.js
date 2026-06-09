@@ -34,11 +34,13 @@ const RETURN_PATH_KEY = 'pevo_fresh_auth_return_to';
 export const FRESH_AUTH_REDIRECT_PENDING = null;
 
 // Allowed ORCID OAuth redirect hosts. Validated before every `window.location`
-// assignment to a backend-supplied `redirect_url` (open-redirect defense),
-// shared by the session-auth and settings-action ORCID mint flows below and by
-// the page-level ORCID link/accreditation flows (pages/settings.js,
-// pages/accreditation.js) so every redirect-host check uses one allowlist.
-export const ORCID_REDIRECT_HOSTS = ['orcid.org', 'sandbox.orcid.org'];
+// assignment to a backend-supplied `redirect_url` (open-redirect defense).
+// Shared by EVERY ORCID redirect flow: the session-auth and settings-action
+// mint flows below, and the page-level start flows (login, signup, recover,
+// settings ORCID-link, accreditation), so every redirect-host check uses this
+// one allowlist. Frozen so a consumer cannot mutate the shared policy
+// (`.includes()` is unaffected by the freeze).
+export const ORCID_REDIRECT_HOSTS = Object.freeze(['orcid.org', 'sandbox.orcid.org']);
 
 function getCachedSessionProof() {
   try {

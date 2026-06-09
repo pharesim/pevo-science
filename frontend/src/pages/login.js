@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { loginWithPassword, resendVerification, startOrcid } from '../api.js';
+import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { RESUME_MARKER } from './signup-verify.js';
 
@@ -235,6 +236,12 @@ export function initLoginPage() {
       try {
         const data = await startOrcid('login');
         if (!this._mounted) return;
+        // Open-redirect defense: reject any redirect_url whose host is not on the
+        // shared allowlist before navigating (mirrors settings.js handleOrcidLink).
+        const target = new URL(data.redirect_url);
+        if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
+          throw new Error('Invalid ORCID redirect URL');
+        }
         window.location.href = data.redirect_url;
       } catch (err) {
         if (!this._mounted) return;
