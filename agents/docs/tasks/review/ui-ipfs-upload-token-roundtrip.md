@@ -391,3 +391,18 @@ When the prefix is dropped, `git mv` this file back to `tasks/review/` for a qui
 re-review scoped to the new commit.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09, round 3, commit e859beaf on main)
+
+Round-3 hold item 1 (the only held item) landed: the `Fix 4:` ordinal prefix is
+dropped from the comment above the `ensureCredential` transient-status-fetch
+fallthrough test in `frontend/tests/unit/lib-ipfs-upload.test.js`. Only the
+prefix was removed; the behavioral sentence ("ensureCredential must not dead-end
+a valid password-holder when the account-status fetch fails transiently...")
+remains as the stable anchor. No slug / SHA / line-number substitute introduced.
+A grep for `Fix [0-9]:` in the file returns nothing.
+
+Comment-only change; `tests/unit/lib-ipfs-upload.test.js` green (17 pass). No
+production code touched.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
