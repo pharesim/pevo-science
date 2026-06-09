@@ -48,3 +48,42 @@ backend agent before changing route code — UI does not edit `backend/`).
 - Parent: `ui-orcid-stub-real-roundtrip-unfixme` (the fresh_auth/set_password half).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## [BLOCKED by Backend] (2026-06-09, UI)
+
+Verified the open question in "What this needs": the ORCID works-count fetch
+host is **hardcoded**, not env-configurable. `countExternalWorks` in
+`backend/src/routes/orcid.ts` issues the works fetch with the host baked into
+the template literal: `fetchWithOrcidTimeout(\`https://pub.orcid.org/v3.0/${orcidId}/works\`)`.
+`config.orcidBaseUrl` (`ORCID_BASE_URL`, default `https://orcid.org`) controls
+ONLY the OAuth host (`/oauth/authorize`, `/oauth/token`); it does not touch the
+`pub.orcid.org` works API. So no compose-only wiring can redirect the works
+fetch in-network, and a host-alias hack would also fail TLS (the URL is
+`https://`). The fetch is server-side, so a Playwright `page.route` mock cannot
+intercept it either. There is no UI-only path.
+
+**What Backend must provide (the seam):** a config-driven works-API base, e.g.
+`config.orcidApiBaseUrl` from a new `ORCID_API_BASE_URL` env (default
+`https://pub.orcid.org`), and rebuild the URL in `countExternalWorks` from it
+(`\`${config.orcidApiBaseUrl}/v3.0/${orcidId}/works\``). This is `backend/`
+zone — UI cannot edit it.
+
+**Layered downstream dependency (Architect zone) — re-check before returning to
+pending/:** once the seam lands, `docker-compose.test.override.yml` (architect-
+owned per `.githooks/commit-msg`) needs a second E2E sidecar serving the works
+endpoint (`GET /v3.0/:orcidId/works`) returning a payload with at least
+`ORCID_MIN_WORKS` externally-sourced works (a `group[]` whose
+`work-summary[].source.source-orcid.path` differs from the profile orcid),
+plus `ORCID_API_BASE_URL: http://<works-stub-host>:<port>` wired onto the
+backend service. The existing `orcid-stub` only serves `/oauth/token` and
+reflects the `code` back as the orcid iD; mirror that pattern. Whoever resolves
+the Backend seam should re-tag this `[BLOCKED by Architect]` for the compose
+stub rather than moving straight to pending/ (the seam alone does not unblock
+the UI spec work).
+
+**Then UI proceeds:** replace the two `test.fixme` blocks in
+`frontend/tests/e2e/orcid-no-password.spec.js` with real bodies driving signup
+(`password: null` -> `accounts.password_hash IS NULL` -> password login 403
+`NO_PASSWORD_SET` -> ORCID login OK) and recover (`new_password: null` ->
+`password_hash` unchanged), seeding the per-run `code`/orcid iD to satisfy the
+works stub the same way `settings-orcid-factor.spec.js` drives the OAuth stub.
