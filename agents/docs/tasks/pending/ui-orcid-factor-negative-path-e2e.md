@@ -57,3 +57,36 @@ Verification: `settings-orcid-factor.spec.js` runs 4/4 green against the test
 stack (the three happy-path/seam tests + this negative-path test).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES
+
+`/ce-code-review` (correctness + adversarial + testing) surfaced one finding on
+the negative-path test, raised independently by all three reviewers:
+
+1. **The 403 assertion is not regression-proof — it cannot prove WHICH 403 fired.**
+   The test asserts only `cbResp.status() === 403` and `cbBody.error.code ===
+   'FORBIDDEN'`. But `/api/orcid/callback` has TWO exits that emit exactly that
+   envelope:
+   - the caller-mismatch guard ("Callback caller does not match initiator"),
+     reachable because `fresh_auth` is an authenticated mode; and
+   - the registered-factor equality guard ("The ORCID you authenticated with is
+     not linked to this account."), which is the §6.5 invariant #2 path this test
+     exists to cover.
+
+   Today's construction (callback caller == /start initiator == NEG_USERNAME)
+   routes deterministically to the factor guard, so the test is correct against
+   current code. But the assertion can't prove it: a future regression that
+   decoupled the two username derivations would 403 via the caller guard, and the
+   test would stay green while invariant #2 went silently unexercised — precisely
+   the false-pass this task was created to prevent.
+
+   **Fix:** after the `error.code` assertion, also assert the distinguishing
+   error message — that `error.message` equals the factor guard's message ("The
+   ORCID you authenticated with is not linked to this account."). A caller-guard
+   403 then fails the test instead of passing it. Anchor on the message text, not
+   on a backend line number.
+
+   **Verify:** re-run the mismatch test against the test stack and confirm it
+   still 403s green with the message assertion added.
+
+When this lands, `git mv` this file back to `tasks/review/`.
