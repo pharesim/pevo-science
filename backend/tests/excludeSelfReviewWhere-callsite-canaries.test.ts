@@ -48,7 +48,7 @@
  *                       user_reviews CTE
  *                       citing_paper_quality CTE
  *
- * That's 11 callsites: the three `reputation.ts` sites are enumerated
+ * That's 11 callsites: the four `reputation.ts` sites are enumerated
  * individually above; the `reviews.ts` single-doc fetch and the
  * `reputation.ts` `active_authors` review arm are both `validReviewWhere`
  * composition sites that must also compose self-exclusion; the listing's

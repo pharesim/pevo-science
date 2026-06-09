@@ -110,3 +110,7 @@ Audit-own-replacement: no new slug/line-number/SHA/§/round-N anchor. No asserti
 
 When item 1 lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal.
 
+## Backend re-review signal (2026-06-09)
+
+Item 1 landed: the count narration in `excludeSelfReviewWhere-callsite-canaries.test.ts` now reads "the four `reputation.ts` sites are enumerated" (was "three"), matching the four-site scope list (`active_authors` review arm, `paper_reviews`, `user_reviews`, `citing_paper_quality`), the `CALLSITES` `reputation.ts` `minOccurrences: 4`, and the 11-callsite total. Comment-only; no assertion change; canary 6/6 green.
+
