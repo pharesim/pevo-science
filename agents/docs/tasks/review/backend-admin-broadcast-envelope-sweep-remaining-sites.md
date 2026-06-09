@@ -38,3 +38,19 @@ To migrate orcid safely: validate/parse the admin key OUTSIDE the inner `try` be
 - `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` (grep both directions to confirm the migration is exhaustive).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend completion + re-review signal (2026-06-09, commit `abaf65a5`)
+
+Landed the three straightforward sites; **split orcid** into its own task per this task's "split orcid into its own task" provision.
+
+- **`papers.ts` retraction:** now calls `broadcastAdminCustomJson(payload)`; the existing `if (!config.pevoAdminPostingKey) → 500` pre-guard stays, so `AdminKeyNotConfiguredError` is unreachable. Dropped the now-unused `PrivateKey` import (grep: 0 `PrivateKey` refs remain in the file).
+- **`accreditation.ts` verify:** now calls `broadcastAdminCustomJson(customJsonPayload)`; pre-guarded at the route head (`if (!config.pevoAdminPostingKey) → deleteToken + 500`). Dropped the unused `PrivateKey` import; updated the two comments that named `broadcastJsonWithTimeout` → `broadcastAdminCustomJson`.
+- **`signup-verify.ts` `broadcastAccreditationAndSeed`:** now calls `broadcastAdminCustomJson(...)`; the top-level `if (!config.pevoAdminPostingKey)` skip-guard is preserved (broadcast SKIPPED, no thrown `AdminKeyNotConfiguredError` on the unset-key path — acceptance #3). `PrivateKey` import kept (still used for posting-key auth at the upgrade-proof site).
+- **`hive.ts` docblock (acceptance #4):** reworded the `AdminKeyNotConfiguredError` class docblock — the throw is now a LIVE failure mode reachable from any non-pre-guarded adopter (replaced the closed, now-stale caller enumeration with the contract: pre-guard at the call site whenever the unset-key path needs a response shape more specific than the generic 502).
+- **Acceptance #1 (partial → deferred remainder):** no `required_posting_auths: [config.hiveAdminAccount]` inline construction remains in `papers.ts` / `accreditation.ts` / `signup-verify.ts`. The two orcid sites (`handleAccredit`, `handleLink`) still construct it inline — **deliberately deferred** to `backend-admin-broadcast-orcid-sites` (the envelope literal will live only in `hive.ts` once that lands). Documented here per acceptance #1's "deliberately-exempt orcid path (documented if so)".
+
+**Tests:** added `broadcastAdminCustomJson` to the 10 affected suites' `hive.js` mock factories (retract, retract-rate-limit-skip-failed, accreditation, accreditation-idempotency, signup-verify + the 5 signup-verify-* variants), routing through each suite's existing `broadcastJsonMock` so staged results/rejections and the `findAccreditOp` `.json`-payload inspection carry over unchanged.
+
+**Verification:** `npm run typecheck` (src + tests) + `npm run lint` clean (one pre-existing unrelated `author-supersession.ts` warning). All migrated-route suites green EXCEPT **two PRE-EXISTING failures** in `accreditation.test.ts` — the per-token broadcast-attempts-cap concurrency tests ("504 timeout outcomes DECREMENT the counter" + "concurrent retries claim slots atomically"). **Confirmed pre-existing: both fail identically on a clean tree (this change stashed)**, so they are NOT introduced by this migration (surfaced, not fixed — out of scope; likely the documented full-suite concurrency/load flakiness).
+
+**Re-review scope:** commit `abaf65a5` only. orcid migration tracked separately in `backend-admin-broadcast-orcid-sites` (`pending/`).
