@@ -342,3 +342,52 @@ landing together). Not E2E-run (architect's prior round: E2E not required for
 archive).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-09, round 3) — HELD PENDING FIX (1 item)
+
+Re-reviewed commit `17dff0c3` (the 3 round-2 hold tests + the `destroy()` queue
+reset) via `/ce-code-review` scoped to that commit only (6 personas:
+correctness on Opus; testing/maintainability/project-standards/frontend-races/learnings
+on Sonnet; ce-agent-native skipped per PEvO).
+
+**All 3 required round-2 tests landed and VERIFY as genuine mutation-killers.**
+correctness, testing, and frontend-races each independently traced that reverting
+any one production fix turns its test RED: (1) the editor queue test pins FIFO /
+strict one-at-a-time via an intermediate `toHaveBeenCalledTimes(1)` and the
+re-entrancy guard / mid-drain-break assertions; (2) the `repromptUsed` test asserts
+reauth is requested EXACTLY twice and that `dispose()` re-arms it; (3) the Fix-4
+fallthrough test uses a raw `TypeError` to actively guard the bare catch. Errors are
+built via the real `ApiRequestError` (`code`, not `status`) per the
+test-fabricated-error-shape convention. The learnings researcher's microtask-FIFO
+false-pass concern was checked and cleared. Security posture unchanged (no new
+production auth surface in this commit). All 3 changed test files green on HEAD.
+
+**HELD PENDING FIX:**
+
+1. **(P3) New anchor rot: a coordination-label prefix on a test comment.** The
+   comment above the `ensureCredential` transient-status-fetch fallthrough test in
+   `frontend/tests/unit/lib-ipfs-upload.test.js` opens with a `Fix 4:` hold-item
+   ordinal. That ordinal is round-2-hold coordination state with no stable referent
+   once this task archives, so it violates the comment-anchor convention. This is the
+   exact failure mode `convention-enforcing-fix-must-audit-its-own-new-code` warns
+   about (the commit that ADDS anchor-clean tests introduced a fresh coordination
+   label). Flagged by correctness, maintainability, and project-standards (3
+   reviewers; frontend-races dissented on the grounds that the behavioral text follows
+   it). Fix: drop the ordinal prefix only; the behavioral sentence that follows it is
+   already a stable anchor and stays. Do not substitute a task slug, SHA, or line
+   number.
+
+**Reviewed and dismissed (no action):**
+- The optional-P3 `destroy()` queue/flag reset has no DIRECT unit test (sub-test 1c
+  models the effect via `editor = null` rather than calling `destroy()`). This was
+  explicitly optional / non-blocking in the round-2 hold; the 3 REQUIRED tests all
+  landed and verify. Not held.
+- The deliberately-NOT-taken P3 (narrowing the `ensureCredential` catch to
+  `instanceof ApiRequestError`) is correctly left bare — `fetch` surfaces network /
+  timeout failures as raw `TypeError` / `DOMException` that escape `request()`
+  unwrapped, so narrowing would re-break Fix 4. Accepted as-is.
+
+When the prefix is dropped, `git mv` this file back to `tasks/review/` for a quick
+re-review scoped to the new commit.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
