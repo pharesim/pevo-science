@@ -93,3 +93,15 @@ All new microcopy (the accept button label, resign confirmation modal, migration
 - `backend-notification-infra-for-consent-ops.md` — the `/api/me/authorships/pending` endpoint is what the migration-day banner enumerates; without it, acceptance criterion #4 has no data source.
 
 Without these, the UI surface has no working backend to broadcast consent ops through and no list of affected papers to render in the migration banner. Move back to `pending/` once both backend tasks archive (or once Phase 2 lands and the notification endpoint at minimum exposes the pending-authorships list).
+
+## Architect coordination note 2026-06-09 — endpoint owner moved; migration premise obsolete; re-scope needed
+
+The consented-authorship model was ratified (architect + user, 2026-06-09) and folded into tasks. Several references in this file are now stale. Flagging here rather than rewriting the body, because this task needs a proper re-scope before the UI agent picks it up:
+
+- **Endpoint owner moved.** `backend-notification-infra-for-consent-ops` was superseded and **removed** 2026-06-09. The `/api/me/authorships/pending` endpoint — this file's criterion #4 data source, the "Out of scope" item, the dependency, and the cross-references all point at it — is now owned by **`backend-consented-set-read-surfaces`** (which also delivers the paper-detail consented badge). Repoint all five references there.
+- **Migration-day premise is obsolete.** The decided model is **go-forward, no flag-day** (nothing live uses the consent ops). Goal #4 and acceptance #4 (the one-time migration banner) no longer apply — no existing co-author is demoted on a cutover. Drop the banner; keep the steady-state affordances.
+- **Terminology:** "vouched" → "consented" throughout (the ratified rename; sense-3 only).
+- **Two routes, not one.** This file covers only Route 2 (`author_accept`/`author_resign`). The settled model also has **Route 3 (name-only)**: a claimer's `claim_authorship` affordance and the paper author's `approve_authorship` affordance. Add both.
+- **Stale block reason.** The `[BLOCKED by Backend]` note names `backend-coauthor-trust-model` (since archived) and `backend-notification-infra-for-consent-ops` (now removed) as "still in `pending/`". The real backend dependency is now **`backend-implement-consented-authorship-model`** (read-path consent wiring) + **`backend-consented-set-read-surfaces`** (endpoint + badge). Re-base the block on those.
+
+Recommend a re-scope pass on this task (likely including a vouched→consented title/slug update) when the backend consent work nears landing. Left in `blocked/` pending that re-scope.
