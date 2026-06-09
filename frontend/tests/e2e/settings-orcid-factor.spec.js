@@ -70,7 +70,14 @@ let TEST_USERNAME;
 let TEST_EMAIL;
 let TEST_ORCID;
 
-async function seedStateCAccount(pool) {
+// Identifiers for the registered-factor-mismatch describe (§6.5 invariant #2).
+// Separate from the happy-path account: that account is mutated to State B by
+// the real set_password, while this one must stay State C for the 403 path.
+let NEG_USERNAME;
+let NEG_EMAIL;
+let NEG_ORCID;
+
+async function seedStateCAccount(pool, ids = {}) {
   // State C: passwordless (password_hash NULL) + orcid SET, light account,
   // verify_token NULL => active with a verified email and ORCID as its ONLY
   // registered re-auth factor. GET /api/settings/email then reports
@@ -79,7 +86,12 @@ async function seedStateCAccount(pool) {
   // NULL and orcid NULL is no enumerated state (no registered factor), and the
   // real set-password route 403s ORCID_REQUIRED before the proof gate. Mirrors
   // settings.spec.js seedLightAccount minus the argon2 hash (the null-hash
-  // State-C path is the whole point).
+  // State-C path is the whole point). `ids` defaults to the happy-path describe's
+  // module identifiers; the mismatch describe passes its own so the two never
+  // share a row (each seeds + mutates an isolated account).
+  const email = ids.email ?? TEST_EMAIL;
+  const username = ids.username ?? TEST_USERNAME;
+  const orcid = ids.orcid ?? TEST_ORCID;
   await pool.query(
     `INSERT INTO accounts (email, username, password_hash, orcid, full_name, institution, field, custody, verify_token)
      VALUES ($1, $2, NULL, $3, $4, 'Test Institution', 'Test Science', 'light', NULL)
@@ -92,18 +104,18 @@ async function seedStateCAccount(pool) {
        pending_email = NULL,
        pending_email_token = NULL,
        pending_email_expires_at = NULL`,
-    [TEST_EMAIL, TEST_USERNAME, TEST_ORCID, 'E2E ORCID-Factor Tester'],
+    [email, username, orcid, 'E2E ORCID-Factor Tester'],
   );
 }
 
 // Drop a light-custody session into localStorage before the app boots so the
 // auth store treats the user as logged in (the Bearer path of
 // verifyHiveSignature), matching settings.spec.js seedLightSession.
-async function seedSession(page) {
-  const { token, expiresAt } = mintSessionJwt(TEST_USERNAME, { custody: 'light' });
+async function seedSession(page, username = TEST_USERNAME) {
+  const { token, expiresAt } = mintSessionJwt(username, { custody: 'light' });
   const session = {
     token,
-    username: TEST_USERNAME,
+    username,
     expiresAt,
     isAccredited: false,
     accreditation: null,
@@ -405,6 +417,110 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
       data: { email_or_username: TEST_EMAIL, password: NEW_PASSWORD },
     });
     expect(loginResp.status()).toBe(200);
+  });
+});
+
+// §6.5 invariant #2 (registered-factor equality). The happy-path test above
+// cannot catch a regression that trusts the stub-reflected ORCID iD without
+// comparing it to accounts.orcid: because the stub reflects the submitted `code`
+// straight back as the token `orcid`, a happy-path run where code == seeded iD
+// passes whether or not the backend checks the equality. Only a MISMATCH case
+// (seed iD A, drive code B != A) actually exercises handleFreshAuth's
+// `accountOrcid !== orcidId -> 403`. Isolated describe + account: the happy-path
+// account is mutated to State B by its real set_password, while this one must
+// stay State C for the 403 path.
+test.describe('settings — ORCID-factor set_password registered-factor mismatch (State C)', () => {
+  let pool;
+
+  test.beforeAll(async ({}, testInfo) => {
+    const now = Date.now();
+    const suffix = `${now.toString(36).slice(-6)}r${testInfo.retry}`;
+    NEG_USERNAME = `e2e-orcidneg-${suffix}`;
+    NEG_EMAIL = `e2e+orcidneg-${suffix}@pevo.test`;
+    // Seeded iD A. Same partial-UNIQUE(orcid) constraint as the happy-path
+    // account, so it must be per-run-unique. The leading '1' keeps it clear of
+    // both the happy-path derivation and the fixed mismatch iD B below.
+    const orcidDigits = `1${now}${testInfo.retry}`.padStart(16, '0').slice(-16);
+    NEG_ORCID = orcidDigits.replace(/(\d{4})(\d{4})(\d{4})(\d{4})/, '$1-$2-$3-$4');
+    pool = openAppPool();
+    await seedStateCAccount(pool, { email: NEG_EMAIL, username: NEG_USERNAME, orcid: NEG_ORCID });
+  });
+
+  test.afterAll(async () => {
+    if (pool) await pool.end();
+  });
+
+  test('a callback ORCID iD that does not match accounts.orcid is rejected 403 and mints no proof', async ({ page, baseURL }) => {
+    page.on('dialog', (dialog) => {
+      throw new Error(`Unexpected dialog: ${dialog.type()} "${dialog.message()}"`);
+    });
+
+    // Mismatch iD B that the stub reflects back as the callback `orcid`. MUST be
+    // ORCID-iD format so it clears the ORCID_RE gate and reaches the equality
+    // check (a malformed value 400s at the format gate and would pass this test
+    // for the wrong reason), and MUST differ from the seeded NEG_ORCID (A) so the
+    // equality fails. 0000-0002-1825-0097 is a canonical valid-format test iD.
+    const MISMATCH_ORCID = '0000-0002-1825-0097';
+    expect(MISMATCH_ORCID).not.toBe(NEG_ORCID);
+
+    await seedSession(page, NEG_USERNAME);
+    await page.context().clearCookies();
+
+    // Same redirect-host bridge as the happy-path test: pass /start through to the
+    // real backend (real Redis state), rewrite only the redirect_url host to
+    // orcid.org so the SPA open-redirect guard passes and the authorize hop fires.
+    await page.route('**/api/orcid/start', async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const real = new URL(body.data.redirect_url);
+      body.data.redirect_url = `https://orcid.org${real.pathname}${real.search}`;
+      await route.fulfill({
+        status: response.status(),
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    // Fulfil the authorize hop with code = B. The backend exchanges it against the
+    // stub, which reflects B back as `orcid`; B clears ORCID_RE but != accounts.orcid
+    // (A), so handleFreshAuth returns 403 and mints nothing.
+    await page.route('**/oauth/authorize*', async (route) => {
+      const state = new URL(route.request().url()).searchParams.get('state');
+      await route.fulfill({
+        status: 302,
+        headers: { location: `${baseURL}/orcid/callback?code=${MISMATCH_ORCID}&state=${state}` },
+      });
+    });
+
+    await page.goto('/settings');
+    await page.waitForSelector('[x-data="settingsPage"]');
+    await expect(page.getByTestId('set-password-section')).toBeVisible();
+
+    await page.getByTestId('set-password-input').fill(NEW_PASSWORD);
+    await page.getByTestId('set-password-confirm-input').fill(NEW_PASSWORD);
+
+    const callbackResponse = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/orcid/callback') && resp.request().method() === 'POST',
+    );
+    await page.getByTestId('set-password-submit').click();
+    const cbResp = await callbackResponse;
+
+    // The registered-factor equality check rejects an OAuth round-trip for an iD
+    // not bound to the account.
+    expect(cbResp.status()).toBe(403);
+    const cbBody = await cbResp.json();
+    expect(cbBody?.error?.code).toBe('FORBIDDEN');
+
+    // No proof was minted: the consent-op cache stays empty and the action never
+    // completes (password_hash remains NULL).
+    const cached = await page.evaluate((key) => window.sessionStorage.getItem(key), CONSENT_OP_KEY);
+    expect(cached).toBeNull();
+
+    const row = await pool.query(
+      'SELECT password_hash FROM accounts WHERE username = $1',
+      [NEG_USERNAME],
+    );
+    expect(row.rows[0]?.password_hash).toBeNull();
   });
 });
 
