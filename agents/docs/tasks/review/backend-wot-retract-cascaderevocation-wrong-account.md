@@ -110,3 +110,11 @@ When the docblock fix lands, `git mv` this file back to `tasks/review/`. Do not 
 - Two preemptive test-hardening gaps (a route-level null-HAF unverified test; message-text assertions on the timeout/chain_error arms): dismissed as theoretical-only.
 
 **Architect-side (DONE, not a hold):** the contract `agents/docs/api-contracts/accreditation.md` `POST /api/wot/retract` was rewritten to document the `revocation_outcome` enum (including `unverified` / `query_error`), the 403/422 errors, the nullable `vouch_status`, and the corrected non-recursive semantics. The frontend coordination gap (the SPA ignores `revocation_outcome` and shows a success message for the fail-closed `unverified` arm) is routed to new UI task `ui-wot-retract-outcome-messaging`.
+
+## Backend re-review signal (2026-06-09, commit `54d503ab`)
+
+The single round-4 hold item (the stale "mirroring" docblock on `cascadeDiscoverySelect`) landed in commit `54d503ab`. The docblock no longer claims it "mirrors" `revokeVoucheeIfBelowThreshold`; it now names the shared LEFT-join + NULL-skip structure AND the divergence — `cascadeDiscoverySelect`'s FILTER excludes the revoked root (`av_all.voucher != <revoked>`) because a revoke cascade fires when the root's own accreditation is revoked while its edges may still stand, whereas the retract path has no per-voucher exclusion and no longer recounts inside `revokeVoucheeIfBelowThreshold` at all (it counts via `getVouchStatus`'s snapshot, gated by `shouldRevokeOnRetract`, after `pollForRetraction` confirms the edge is gone). Anchored on stable symbols only — no slug / round / SHA / line-number citations in the docblock itself.
+
+Coupled change (same batch): `backend-wot-retract-poll-recount-single-read` landed in commit `0c2e624c` and is WHY the recount mechanism changed (separate discovery query → single `getVouchStatus` snapshot) and why the docblock above describes that path. That task also removed the `query_error` variant from `VoucheeRevocationOutcome`; its [TODO Architect] note flags the resulting `accreditation.md` enum change (the contract documents `query_error`, which is now unreachable). Review the two tasks together.
+
+Verification: `npm run typecheck` + `npm run lint` clean (one pre-existing unrelated lint warning); wot suites green against current main.
