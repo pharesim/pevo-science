@@ -22,7 +22,7 @@ The consent model has no read surfaces: no `consented` flag on paper-detail auth
 - **Tests:** consented co-author → `consented: true`; claimed-but-not-consented → `consented: false`; single-author paper → root broadcaster `consented: true`, no consent query fired (short-circuit); bridge paper → bridge account consented, hive-less credits `consented: false`, short-circuit; HAF down on a multi-author paper → 503 (NOT a degraded root-only badge); a consent op at block N reflected by block N+1 (volatile drop); `?version=N` and single-post branches carry the same annotation.
 
 ## U5 — `GET /api/me/authorships/pending`
-- **Coordinate with `backend-notification-infra-for-consent-ops` (blocked, architect-owned):** that task also names this endpoint. **Architect decision (2026-06-09): build it here, once.** The notification-infra task consumes/references this shape rather than rebuilding it — one endpoint, one shape. (Architect to annotate the blocked task to point at this surface.)
+- **This task is THE owner of the endpoint.** The prior `backend-notification-infra-for-consent-ops` task (which scoped a `/api/me/authorships/pending` endpoint around the now-obsolete flag-day model and a Route-2-only shape) was superseded by this task and removed 2026-06-09. Build the endpoint here, once, in the two-route shape below.
 - A claimer-scoped discovery surface: name-only slots awaiting the user's `claim`/approval (Route 3) and anchored slots awaiting the user's `author_accept` (Route 2).
 - `backend/src/routes/me.ts` mounted `app.use('/api/me', …)` (or add to `profile.ts`, already mounted and already imports the claimer-scoped builder), auth via `verifyHiveSignature` (the user proving they are `username` — real middleware, this surface IS auth-focused).
 - Reuse `authorshipClaimsCteBody(idx, { claimer: username })` selecting `status='pending'` for Route-3 pending claims; add the Route-2 "anchored slots where you're eligible but haven't accepted" query (slots whose `hive` == you or `orcid` == your attested ORCID across papers you're named on, minus papers you've already accepted/resigned). Fail-closed → 503.
@@ -42,6 +42,5 @@ The consent model has no read surfaces: no `consented` flag on paper-detail auth
 
 ## Cross-references
 - `backend-implement-consented-authorship-model` (U1 shared CTE — hard dependency).
-- `backend-notification-infra-for-consent-ops` (blocked — endpoint coordination).
 - `ui-multi-author-consent-affordances` (blocked — the UI that consumes these surfaces).
 - `backend/src/routes/papers.ts` (paper-detail annotation), `backend/src/app.ts` (route mount), `backend/src/hafsql.ts` (`authorshipClaimsCteBody`), `backend/src/lib/cache` (`getOrSet` volatile tier), `backend/src/block-watcher.ts` (`clearVolatile`).
