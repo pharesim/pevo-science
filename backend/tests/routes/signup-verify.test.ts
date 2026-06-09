@@ -703,6 +703,14 @@ function findAccreditOp(): { evidence_hash: string; account: string } {
 
 const EVIDENCE_RUN_ID = Date.now();
 const EVIDENCE_SUFFIX = (EVIDENCE_RUN_ID % 100000).toString(36).padStart(4, '0').slice(-6);
+// Sentinel argon2 hash: makes each evidence fixture a reachable email-path
+// signup-pending row (the email signup flow always stores a password hash; a
+// confirmed row with NEITHER password_hash NOR orcid carries no identity
+// anchor and is not a reachable account state). The evidence_hash preimage
+// (email:username:suffix) is independent of password_hash, so the pins are
+// unaffected.
+const EVIDENCE_PASSWORD_HASH =
+  '$argon2id$v=19$m=65536,t=3,p=4$aaaaaaaaaaaaaaaaaaaaaa$bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 describe.skipIf(!dbReachable)('/confirm accreditation evidence_hash uses the signup domain suffix', () => {
   const username = `evcfm${EVIDENCE_SUFFIX}`;
@@ -715,14 +723,16 @@ describe.skipIf(!dbReachable)('/confirm accreditation evidence_hash uses the sig
     const pool = getAppPool()!;
     await cleanupByUsername(username);
     await cleanupByEmail(email);
-    // Fresh /confirm row: known non-null email so the evidence-hash preimage
-    // is fully test-controlled. binding hash mirrors the /signup cookie so the
+    // Reachable email-path signup-pending row: email set, sentinel password
+    // hash set, no ORCID, username/custody unset, verify_token already
+    // 'confirmed:'. The known non-null email keeps the evidence-hash preimage
+    // fully test-controlled; binding hash mirrors the /signup cookie so the
     // session-binding check passes; the same cookie is forwarded below.
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await pool.query(
       `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at, signup_binding_hash)
-       VALUES ($1, NULL, 'Evidence Confirm', 'MIT', 'physics', NULL, $2, $3, $4)`,
-      [email, confirmedToken, expiresAt, binding.hash],
+       VALUES ($1, $5, 'Evidence Confirm', 'MIT', 'physics', NULL, $2, $3, $4)`,
+      [email, confirmedToken, expiresAt, binding.hash, EVIDENCE_PASSWORD_HASH],
     );
   });
 
@@ -788,13 +798,15 @@ describe.skipIf(!dbReachable)('/link accreditation evidence_hash uses the link d
     const pool = getAppPool()!;
     await cleanupByUsername(username);
     await cleanupByEmail(email);
-    // Fresh /link row: known non-null email, username still NULL (so the
-    // route's `WHERE username = $1` existence check finds no collision).
+    // Reachable email-path signup-pending row: email set, sentinel password
+    // hash set, no ORCID, verify_token already 'confirmed:', username still
+    // NULL (so the route's `WHERE username = $1` existence check finds no
+    // collision).
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await pool.query(
       `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at, signup_binding_hash)
-       VALUES ($1, NULL, 'Evidence Link', 'MIT', 'physics', NULL, $2, $3, $4)`,
-      [email, confirmedToken, expiresAt, binding.hash],
+       VALUES ($1, $5, 'Evidence Link', 'MIT', 'physics', NULL, $2, $3, $4)`,
+      [email, confirmedToken, expiresAt, binding.hash, EVIDENCE_PASSWORD_HASH],
     );
   });
 

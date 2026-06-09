@@ -77,3 +77,13 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
    **Fix:** seed a sentinel (non-NULL) `password_hash` in both new F1 fixtures, making each a reachable email-path signup-pending row (email set, password set, no ORCID, username/custody unset, `verify_token = 'confirmed:'`). The `evidence_hash` pins stay green — the hash is `sha256(email:username:suffix)`, independent of `password_hash`. Name the seeded state in the fixture comment by its dimension description (email-path signup-pending, password set, no ORCID) — NOT a `§ N.M` section anchor, per the comment-anchor convention.
 
 When the fix lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal (the next pass scopes to the fix commit only).
+
+## Backend re-review signal (2026-06-09, same commit as this move)
+
+Held item 1 landed. Both F1 evidence-hash fixtures in `signup-verify.test.ts` now seed a sentinel (non-NULL) `password_hash` via a shared `EVIDENCE_PASSWORD_HASH` const (same argon2-sentinel idiom the suite's timing-guard describe already uses), making each a reachable email-path signup-pending row: email set, password set, no ORCID, username/custody unset, `verify_token = 'confirmed:'`. Fixture comments name the state by dimension description (no `§` anchor). The const's doc comment records why (a confirmed row with neither `password_hash` nor `orcid` carries no identity anchor and is unreachable) and that the `evidence_hash` preimage (`email:username:suffix`) is independent of `password_hash`, so the pins are unaffected.
+
+The triage-dismissed boilerplate item (collapsing `EVIDENCE_RUN_ID`/`EVIDENCE_SUFFIX` onto the module pair) was left as-is per the dismissal.
+
+Verification: typecheck (src+tests) clean; lint 0 errors (1 pre-existing warning in `lib/author-supersession.ts`, untouched); `signup-verify.test.ts` 14/14 green against real Postgres/Redis.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
