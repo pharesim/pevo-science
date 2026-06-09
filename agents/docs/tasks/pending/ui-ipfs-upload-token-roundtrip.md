@@ -235,3 +235,61 @@ parent `1150c50a` is an ancestor of main and cherry-picked to b469a935 with zero
 conflicts (the two concurrent `ui(notifications)` commits touched disjoint files).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-09, round 2) — 5 prior fixes VERIFIED; HELD PENDING TESTS
+
+Re-reviewed commit `b469a935` via `/ce-code-review` (9 personas; correctness/security/adversarial
+on the session model). **All 5 fixes held on the prior round landed and verify.** Security is clean —
+§6.5 invariant #1 holds (the JWT upload path always carries the `ipfs_upload` proof; the backend
+re-verifies State C at mint time; the password never logs/leaks). The editor queue's re-entrancy,
+FIFO ordering, per-file error isolation, and late-drop guard are correct; the `repromptUsed` bound and
+the Fix-4 fallthrough are functionally sound; Fix 5 is anchor-clean. No P0/P1, no auth bypass.
+
+**Cross-surface contention (your OPEN question) — RESOLVED: editor-local serialization satisfies
+Fix 2.** The within-editor queue fixes the targeted multi-image-cancel bug. The cross-surface case (an
+editor inline-image drain racing a publish/edit page batch on the singleton `reauthModal`) is
+pre-existing — the prior concurrent `forEach` was strictly worse — and both the adversarial and
+frontend-races reviewers agree the editor-local fix is sufficient for what Fix 2 targeted. Do NOT build
+the global gate here; it is filed as a separate follow-up: `ui-reauth-modal-global-upload-gate`
+(in `tasks/pending/`).
+
+**HELD PENDING FIXES — add the 3 missing behavior tests.** Each fix shipped with no direct unit test;
+reverting any one ships the suite green. These are this task's own deliverables, not preemptive
+hardening.
+
+1. **(P2) Queue-serialization test** (`editor.js` `_queueImageUploads`/`_drainImageUploadQueue`).
+   Assert: N files in one enqueue → N sequential `_handleImageUpload` invocations in FIFO order; the
+   `_imageUploadDraining` guard prevents a concurrent second drain; setting `this.editor = null`
+   mid-drain stops iteration and resets the draining flag. Use the existing `editor.test.js`
+   prototype-stub technique.
+2. **(P2) `repromptUsed`-bound test** (`lib/ipfs-upload.js`). Assert: a first `UNAUTHORIZED`
+   re-prompts once and retries; a second `UNAUTHORIZED` rethrows WITHOUT a third prompt (reauth
+   requested exactly twice); `dispose()` resets `repromptUsed` so a fresh session re-prompts again.
+   Construct the error via the real `ApiRequestError` shape (`code`, not `status`) per the
+   test-fabricated-error-shape convention — not a hand-rolled `{ code: 'UNAUTHORIZED' }`.
+3. **(P2) Fix-4 fallthrough test** (`lib/ipfs-upload.js` `ensureCredential`). Assert: when
+   `fetchEmailStatus()` THROWS (transient), the session falls through to the password prompt and
+   succeeds (does NOT dead-end); an explicit `hasPassword === false` still blocks with
+   `UPLOAD_REAUTH_UNAVAILABLE`.
+
+**Optional P3s — fold in while you are in these files (NOT blocking):**
+- `editor.js` `destroy()` does not clear `_imageUploadQueue` or reset `_imageUploadDraining`. Nil live
+  impact today (no PevoEditor re-mount path) but the `synchronous-flag-before-await-idempotency-guard`
+  convention wants the teardown reset. One-line defensive add.
+- `lib/ipfs-upload.js` Fix-4 `catch {}` is bare; it also swallows programming errors (e.g. a `TypeError`
+  in `fetchEmailStatus`). Functionally safe (bounded by `repromptUsed`, backend-authoritative). If
+  touched, narrow it to not swallow non-`ApiRequestError` throws — do NOT add a log line (PEvO
+  minimal-logging stance).
+
+**Reviewed and dismissed (no action):** the "`isUploading` flicker" three reviewers raised —
+`isUploading` is write-only (no reader/binding), so the cluster is inert; the real per-file
+`imgBtn.textContent` toggle is pre-existing `_handleImageUpload` behavior and acceptable for sequential
+uploads. Pre-existing anchor rot in `pages-edit.test.js` (a SHA describe-header anchor and task-slug
+describe headers) and the missing clause-(a) mock-justification comment are out of scope (fix
+opportunistically only). The clause-(c) real-path-companion question is settled by the prior round's
+"E2E not required for archive" decision.
+
+When the 3 tests land, `git mv` this file back to `tasks/review/` for a quick re-review scoped to the
+new commit.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
