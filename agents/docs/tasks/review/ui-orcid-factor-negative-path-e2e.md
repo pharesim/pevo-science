@@ -30,3 +30,30 @@ Add a negative-path E2E case (in `settings-orcid-factor.spec.js` or a sibling OR
 - `ui-orcid-stub-real-roundtrip-unfixme` — the happy-path sibling task; land that first, since this builds on the same harness and seeding helpers.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI completion note (2026-06-09, commit 80c0b8de on main)
+
+Landed in `settings-orcid-factor.spec.js` as a new isolated describe
+("settings — ORCID-factor set_password registered-factor mismatch (State C)")
+with one test: seeds `accounts.orcid = A` (per-run-unique, valid format), drives
+the set_password ORCID factor through the same redirect-host bridge +
+authorize-fulfil harness as the happy path, but fulfils the authorize hop with
+`code = B` where `B = 0000-0002-1825-0097` (a distinct, canonical valid-format iD;
+the test asserts `B !== A`). The real `/api/orcid/callback` returns **403
+FORBIDDEN** (`error.code === 'FORBIDDEN'`) at handleFreshAuth's `accountOrcid !==
+orcidId` check, and the test confirms no proof was minted — the consent-op cache
+is null and `accounts.password_hash` stays NULL.
+
+Both gotchas from the task were honored: B is ORCID-iD-format so it clears
+`ORCID_RE` and reaches the equality check (not a 400 format path), and the
+`**/oauth/authorize*` route is registered before the submit that triggers the
+navigation.
+
+Isolation: this account is separate from the happy-path account (which the real
+set_password mutates to State B). `seedStateCAccount` and `seedSession` were
+parametrized so the two describes never share a row.
+
+Verification: `settings-orcid-factor.spec.js` runs 4/4 green against the test
+stack (the three happy-path/seam tests + this negative-path test).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
