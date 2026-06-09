@@ -149,7 +149,10 @@ test.describe('signup — ORCID branch never persists password', () => {
     const signupResponsePromise = page.waitForResponse(
       (resp) => resp.url().endsWith('/api/auth/signup'),
     );
-    await page.locator('form button[type="submit"]').click();
+    // Scope to the page root: the global reauth modal (index.html) also renders a
+    // form with a submit button, so a bare `form button[type="submit"]` is
+    // ambiguous under Playwright strict mode.
+    await page.locator('[x-data="signupPage"] form button[type="submit"]').click();
     await signupResponsePromise;
 
     // SEC-004: the submit sent password: null alongside the ORCID token.
@@ -203,8 +206,9 @@ test.describe('signup — ORCID branch never persists password', () => {
 
     await page.goto('/signup');
 
-    // Submit the form to flip to the submitted: true branch.
-    await page.locator('form button[type="submit"]').click();
+    // Submit the form to flip to the submitted: true branch. Page-root-scoped to
+    // avoid the global reauth modal's submit button (strict-mode ambiguity).
+    await page.locator('[x-data="signupPage"] form button[type="submit"]').click();
 
     // The "Check your email" surface is now visible; assert the Resend
     // button is hidden on this branch.
@@ -340,7 +344,9 @@ test.describe('recover — ORCID branch never persists password', () => {
     const recoverResponsePromise = page.waitForResponse(
       (resp) => resp.url().endsWith('/api/auth/recover'),
     );
-    await page.locator('form button[type="submit"]').click();
+    // Page-root-scoped to avoid the global reauth modal's submit button
+    // (strict-mode ambiguity).
+    await page.locator('[x-data="recoverPage"] form button[type="submit"]').click();
     await recoverResponsePromise;
 
     expect(capturedRecover).toEqual({
