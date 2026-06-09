@@ -2,8 +2,9 @@
  * UI-SETTINGS-ORCID-FACTOR-E2E — the ORCID-factor settings critical-action
  * round-trip, end-to-end against the test-mode stack.
  *
- * The settings-action fresh-auth flow (ui-settings-action-fresh-auth-proof-challenge)
- * wired two factors: PASSWORD and ORCID. settings.spec.js already drives the
+ * The settings-action fresh-auth flow (the `withSettingsFreshAuth` wrapper in
+ * settings-fresh-auth.js) wires two factors: PASSWORD and ORCID. settings.spec.js
+ * already drives the
  * PASSWORD factor (change-email reauth modal) against the real backend. This
  * spec covers the ORCID factor for `set_password` — the ONLY factor for a
  * passwordless (State-C) account, which has no password to base a proof on.
@@ -52,7 +53,9 @@ import { openAppPool } from './fixtures/db.js';
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
 // Far-future ISO-8601 so getCachedConsentOpProof's TTL check treats the stubbed
-// proof as live (the parent task pins the ISO-string shape, not an epoch int).
+// proof as live. cacheConsentOpProof stores expiresAt as an ISO-8601 string and
+// getCachedConsentOpProof parses it with new Date() for the TTL check, so the
+// stub must be an ISO string, not an epoch int.
 const STUB_EXPIRES_AT = '2099-01-01T00:00:00.000Z';
 const STUB_PROOF = 'stub-fresh-auth-proof-orcid-factor';
 const NEW_PASSWORD = 'OrcidFactorPass1';
@@ -61,29 +64,35 @@ const CONSENT_OP_KEY = 'pevo_fresh_auth_consent_op_proof';
 // Populated in beforeAll from (Date.now, testInfo.retry). Playwright re-runs
 // beforeAll on retries but does NOT re-evaluate module scope, so deriving the
 // identity strings there (with testInfo.retry) keeps retries off a colliding
-// UNIQUE(email)/UNIQUE(username) row left by the failed attempt.
+// UNIQUE(email)/UNIQUE(username)/partial-UNIQUE(orcid) row left by a failed attempt.
 let RUN_SUFFIX;
 let TEST_USERNAME;
 let TEST_EMAIL;
+let TEST_ORCID;
 
 async function seedStateCAccount(pool) {
-  // State C: passwordless (password_hash NULL), light account, verify_token NULL
-  // => active with a verified email. GET /api/settings/email then reports
-  // hasPassword:false, so the SPA renders the "Set a password" section whose
-  // only fresh-auth factor is ORCID. Mirrors settings.spec.js seedLightAccount,
-  // minus the argon2 hash (the whole point is the null-hash State-C path).
+  // State C: passwordless (password_hash NULL) + orcid SET, light account,
+  // verify_token NULL => active with a verified email and ORCID as its ONLY
+  // registered re-auth factor. GET /api/settings/email then reports
+  // hasPassword:false, so the SPA renders the "Set a password" section whose only
+  // fresh-auth factor is ORCID. orcid MUST be set: a row with both password_hash
+  // NULL and orcid NULL is no enumerated state (no registered factor), and the
+  // real set-password route 403s ORCID_REQUIRED before the proof gate. Mirrors
+  // settings.spec.js seedLightAccount minus the argon2 hash (the null-hash
+  // State-C path is the whole point).
   await pool.query(
-    `INSERT INTO accounts (email, username, password_hash, full_name, institution, field, custody, verify_token)
-     VALUES ($1, $2, NULL, $3, 'Test Institution', 'Test Science', 'light', NULL)
+    `INSERT INTO accounts (email, username, password_hash, orcid, full_name, institution, field, custody, verify_token)
+     VALUES ($1, $2, NULL, $3, $4, 'Test Institution', 'Test Science', 'light', NULL)
      ON CONFLICT (email) DO UPDATE SET
        username = EXCLUDED.username,
        password_hash = NULL,
+       orcid = EXCLUDED.orcid,
        custody = 'light',
        verify_token = NULL,
        pending_email = NULL,
        pending_email_token = NULL,
        pending_email_expires_at = NULL`,
-    [TEST_EMAIL, TEST_USERNAME, 'E2E ORCID-Factor Tester'],
+    [TEST_EMAIL, TEST_USERNAME, TEST_ORCID, 'E2E ORCID-Factor Tester'],
   );
 }
 
@@ -110,9 +119,18 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
   let pool;
 
   test.beforeAll(async ({}, testInfo) => {
-    RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}r${testInfo.retry}`;
+    const now = Date.now();
+    RUN_SUFFIX = `${now.toString(36).slice(-6)}r${testInfo.retry}`;
     TEST_USERNAME = `e2e-orcidfactor-${RUN_SUFFIX}`;
     TEST_EMAIL = `e2e+orcidfactor-${RUN_SUFFIX}@pevo.test`;
+    // Synthetic 16-digit ORCID iD in the standard 4-4-4-4 grouping. State C
+    // requires orcid SET; accounts.orcid carries a partial UNIQUE index
+    // (WHERE orcid IS NOT NULL) and every run/retry inserts a fresh row, so the
+    // iD must be per-run-unique like email/username or a second run collides on
+    // the index. Derived from (now, retry); the value is opaque (no checksum
+    // validation on the column) and never sent through a real ORCID exchange.
+    const orcidDigits = `${now}${testInfo.retry}`.padStart(16, '0').slice(-16);
+    TEST_ORCID = orcidDigits.replace(/(\d{4})(\d{4})(\d{4})(\d{4})/, '$1-$2-$3-$4');
     pool = openAppPool();
     await seedStateCAccount(pool);
   });

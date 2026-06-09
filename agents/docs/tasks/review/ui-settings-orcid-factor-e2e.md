@@ -152,3 +152,29 @@ When fixes 1–3 land, `git mv` this file back to `tasks/review/` for re-review 
 commit.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09)
+
+All three held fixes landed in the same commit that moves this file back to `tasks/review/`.
+
+1. **(P2) State-C seed corrected.** `seedStateCAccount` now sets `orcid`: added to the INSERT
+   column list + VALUES (bind param) and to `ON CONFLICT (email) DO UPDATE SET orcid =
+   EXCLUDED.orcid`. The seeded row is now a genuine State C (`password_hash NULL`, `orcid SET`,
+   `custody 'light'`, `verify_token NULL`) per ARCHITECTURE.md §6.1, so the `test.fixme`
+   real-backend companion will not 403 `ORCID_REQUIRED` before the proof gate when un-fixme'd. The
+   synthetic 16-digit ORCID iD is derived per-run from `(Date.now, retry)` in `beforeAll`, matching
+   the existing email/username scheme, so it stays unique against `accounts.orcid`'s partial UNIQUE
+   index across runs/retries.
+
+2. **(P2) Header slug anchor dropped.** The file-header sentence now anchors on the
+   `withSettingsFreshAuth` wrapper in `settings-fresh-auth.js` instead of the parent task slug.
+
+3. **(P3) `STUB_EXPIRES_AT` comment re-anchored.** It now cites the production symbols
+   (`cacheConsentOpProof` stores `expiresAt` as an ISO-8601 string; `getCachedConsentOpProof`
+   parses it with `new Date()` for the TTL check) instead of the "parent task pins" redirect.
+
+Verified: full test-mode dance (`deploy.sh restart` → `test-db-up` → `test-up` → playwright →
+`up`) — `2 passed, 1 skipped` (the documented stub-provider fixme), same green as the pre-hold
+run, confirming the State-C seed change did not regress the two real tests.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
