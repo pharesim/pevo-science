@@ -35,8 +35,10 @@ export const FRESH_AUTH_REDIRECT_PENDING = null;
 
 // Allowed ORCID OAuth redirect hosts. Validated before every `window.location`
 // assignment to a backend-supplied `redirect_url` (open-redirect defense),
-// shared by the session-auth and settings-action ORCID mint flows below.
-const ORCID_REDIRECT_HOSTS = ['orcid.org', 'sandbox.orcid.org'];
+// shared by the session-auth and settings-action ORCID mint flows below and by
+// the page-level ORCID link/accreditation flows (pages/settings.js,
+// pages/accreditation.js) so every redirect-host check uses one allowlist.
+export const ORCID_REDIRECT_HOSTS = ['orcid.org', 'sandbox.orcid.org'];
 
 function getCachedSessionProof() {
   try {

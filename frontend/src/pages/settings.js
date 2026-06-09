@@ -6,6 +6,7 @@ import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, loadDhive, vali
 import { isPasswordValid } from '../password-policy.js';
 import { getAppTag } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
 
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
@@ -685,7 +686,7 @@ export function initSettingsPage() {
       try {
         const data = await startOrcid('link');
         const target = new URL(data.redirect_url);
-        if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
+        if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
           throw new Error('Invalid ORCID redirect URL');
         }
         window.location.href = data.redirect_url;

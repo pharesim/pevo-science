@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { requestAccreditation, startOrcid, searchAccounts } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
 
 const template = `
       <div x-data="accreditationPage" class="container-narrow py-8">
@@ -311,7 +312,7 @@ export function initAccreditationPage() {
         const data = await startOrcid('accredit');
         if (!this._mounted) return;
         const target = new URL(data.redirect_url);
-        if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
+        if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
           throw new Error('Invalid ORCID redirect URL');
         }
         window.location.href = data.redirect_url;
