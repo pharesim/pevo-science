@@ -30,10 +30,13 @@ Sign and broadcast Hive operations for light accounts. Only `comment`, `vote`, a
 }
 ```
 
-`fresh_auth_proof` is REQUIRED on every call. The proof binding semantics differ based on the bundle contents:
+`fresh_auth_proof` is REQUIRED on every call. The proof binding semantics differ based on the bundle contents (a "gated op" is a consent op OR a name-only-route credit op):
 
 - **Bundles containing a consent op** (`author_accept` or `author_resign`) require a **consent-op-kind** proof bound to the specific `(action, root_author, root_permlink)` triple of the consent op. The backend rejects session-kind proofs on this surface with 403 `FRESH_AUTH_REQUIRED` `details.reason: "kind_mismatch"`. Mint via `POST /api/custody/fresh-auth` (password mechanism) or `POST /api/orcid/start { mode: "fresh_auth" }` (ORCID mechanism).
-- **Non-consent bundles** (vote, comment, non-consent `custom_json`) accept EITHER a session-kind proof OR a consent_op-kind proof (cross-kind accept: a consent_op-kind proof is strictly more proof and is admitted on this surface). Session-kind proofs are mintable via `POST /api/orcid/start { mode: "session_auth" }` (ORCID mechanism, available to State B/C accounts with a linked ORCID).
+- **Bundles containing a credit op** (`claim_authorship`, `approve_authorship`, `revoke_authorship`) likewise require a **credit-op-kind** proof bound to the specific op target: `claim_authorship` and `approve_authorship` bind `(action, paper_author, paper_permlink, author_index)`; `revoke_authorship` binds `(action, paper_author, paper_permlink)` (it carries no `author_index` on the wire). The `approve_authorship` and `revoke_authorship` targets additionally bind `claimer` (the subject co-author the op credits or strips), enforcement-pending per the note below. Session-kind proofs are rejected with `details.reason: "kind_mismatch"`. Mint via the same two endpoints, passing the credit-op `action` plus `paper_author` / `paper_permlink` / `author_index` / `claimer` as applicable.
+- **Non-consent, non-credit bundles** (vote, comment, `revote` `custom_json`) accept EITHER a session-kind proof OR a gated-op-kind proof (cross-kind accept: a gated-op-kind proof is strictly more proof and is admitted on this surface). Session-kind proofs are mintable via `POST /api/orcid/start { mode: "session_auth" }` (ORCID mechanism, available to State B/C accounts with a linked ORCID).
+
+> **Credit-op `claimer`-binding is enforcement-pending.** The gate is live and binds the paper plus slot today; folding `claimer` into the bound target for `approve_authorship` / `revoke_authorship` (so a minted proof cannot be redirected to a different co-author) is tracked by the held `backend-authorship-credit-ops-fresh-auth` task. Integrators should expect `claimer` to become part of the credit-op target.
 
 The proof is single-use and consumed atomically before the broadcast attempt.
 
@@ -56,7 +59,7 @@ The proof is single-use and consumed atomically before the broadcast attempt.
 - The `author` (for comments), `voter` (for votes), or `required_posting_auths` (for custom_json) must match the JWT subject.
 - For comments, `json_metadata.app` must start with the configured app tag.
 - For `custom_json`, the `id` must match the app tag. Permitted `action` values: `revote`, `claim_authorship`, `approve_authorship`, `revoke_authorship`, `author_accept`, `author_resign`. All other actions return 403.
-- A bundle MAY contain at most one consent op (`author_accept` or `author_resign`). Bundles with two or more consent ops return 400 `MULTIPLE_CONSENT_OPS`. Submit each consent op in its own request with its own `fresh_auth_proof`.
+- A bundle MAY contain at most one gated op — a consent op (`author_accept`, `author_resign`) or a credit op (`claim_authorship`, `approve_authorship`, `revoke_authorship`). Bundles with two or more gated ops (in any combination) return 400 `MULTIPLE_CONSENT_OPS`. Submit each gated op in its own request with its own `fresh_auth_proof`.
 
 **Rate limit:** 30 requests per account per minute.
 
@@ -64,10 +67,10 @@ The proof is single-use and consumed atomically before the broadcast attempt.
 - `NOT_FOUND` — custodial account not found
 - `FORBIDDEN` — operation not in allowlist, author/voter mismatch, or account already upgraded to self-custody
 - `VALIDATION_ERROR` — malformed operations or missing app tag
-- `MULTIPLE_CONSENT_OPS` (400) — bundle contains more than one consent op. Submit each consent op in its own request.
+- `MULTIPLE_CONSENT_OPS` (400) — bundle contains more than one gated op (consent or credit, in any combination). Submit each gated op in its own request.
 - `FRESH_AUTH_REQUIRED` (401|403) — the `fresh_auth_proof` is missing, expired, malformed, bound to a different user, bound to a different consent target, or of the wrong kind for this surface. Status is discriminated by `details.reason`:
   - `details.reason: "username_mismatch"` → **403 FORBIDDEN** (user-binding violation; token was issued for a different account). Returned on both consent and non-consent surfaces.
-  - `details.reason: "target_mismatch"` → **403 FORBIDDEN** (per-op target-binding violation; token was issued for a different `(action, root_author, root_permlink)` triple than the consent op in the bundle). The fresh-auth proof binds at issuance time to the specific consent op the user authorized; reusing it for a different action or paper is rejected. Consent-surface only (the non-consent surface does not perform target binding).
+  - `details.reason: "target_mismatch"` → **403 FORBIDDEN** (per-op target-binding violation; token was issued for a different target than the gated op in the bundle). For consent ops the target is `(action, root_author, root_permlink)`; for credit ops it is `(action, paper_author, paper_permlink[, author_index][, claimer])` per the binding rules above. The fresh-auth proof binds at issuance time to the specific gated op the user authorized; reusing it for a different action, paper, slot, or subject is rejected. Gated-surface only (the non-consent/non-credit surface does not perform target binding).
   - `details.reason: "kind_mismatch"` → **403 FORBIDDEN** (kind-binding violation; a session-kind proof was submitted on the consent-op surface). Session-kind proofs are scoped to non-consent broadcasts only; the consent surface requires a consent_op-kind proof bound to the per-op target. Consent-surface only.
   - `details.reason: "missing" | "expired" | "malformed"` → **401 UNAUTHORIZED** (no valid proof present). Returned on both consent and non-consent surfaces.
   - `details.reason` is a closed enum: `"missing" | "expired" | "username_mismatch" | "target_mismatch" | "kind_mismatch" | "malformed"`. Adding a new value is a wire contract change; document here before shipping. Consumers MUST branch on `details.reason` to render distinct UX, not on the message string.
@@ -92,7 +95,7 @@ Mint a fresh-auth proof via password re-verification. Light-account-only. The si
 ```json
 {
   "password": "SecurePass123",
-  "action": "author_accept" | "author_resign" | "change_email" | "delete_account",
+  "action": "author_accept" | "author_resign" | "claim_authorship" | "approve_authorship" | "revoke_authorship" | "change_email" | "delete_account",
   "root_author": "<hive-account>",
   "root_permlink": "<paper-permlink>"
 }
@@ -101,6 +104,7 @@ Mint a fresh-auth proof via password re-verification. Light-account-only. The si
 `password` and `action` are always REQUIRED. The remaining body fields are conditional on the action category:
 
 - **Consent-op actions (`author_accept`, `author_resign`):** `root_author` and `root_permlink` are REQUIRED. The `(action, root_author, root_permlink)` triple is the per-op target the proof binds to; the consent op submitted on a subsequent `POST /api/custody/broadcast` MUST match this triple exactly or the broadcast returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "target_mismatch"`. `action` is validated as a closed enum; `root_author` and `root_permlink` are validated as non-empty strings. Any missing or malformed field returns 400 `VALIDATION_ERROR`.
+- **Credit-op actions (`claim_authorship`, `approve_authorship`, `revoke_authorship`):** carry `paper_author` and `paper_permlink` (the paper the op cites) in place of `root_author` / `root_permlink`. `claim_authorship` and `approve_authorship` additionally REQUIRE a non-negative-integer `author_index` (the name-only slot); `revoke_authorship` carries no `author_index`. `approve_authorship` and `revoke_authorship` carry `claimer` (the subject co-author); `claimer`-binding into the proof target is enforcement-pending (see the broadcast section's note). The bound target is the proof's per-op target the same way the consent-op triple is; a credit op submitted on a subsequent `POST /api/custody/broadcast` MUST match it or the broadcast returns 403 `target_mismatch`. Missing/malformed fields (including a non-integer or negative `author_index`) return 400 `VALIDATION_ERROR`.
 - **Non-broadcast actions (`change_email`, `delete_account`):** `root_author` and `root_permlink` are IGNORED if present. The backend synthesizes the target as `(action, <authenticated username>, '')`. Empty `root_permlink` is collision-free against consent-op targets at the hash layer because consent ops require a non-empty `root_permlink`. The `change_email` proof is consumed at the JWT path of `POST /api/settings/email`; the `delete_account` proof at the JWT path of `DELETE /api/settings/email` (see [settings.md](settings.md)); neither is consumed at `POST /api/custody/broadcast`. Both are non-broadcast critical actions per ARCHITECTURE.md § 6.5 invariant #1: `change_email` rotates the address that receives password-reset tokens (an auth-adjacent factor); `delete_account` is the one-way right-to-erasure exit per § 6.3. State A and State B accounts (`password_hash IS NOT NULL`) mint via this route. State C (passwordless ORCID-only) accounts have no password mechanism and MUST mint via `POST /api/orcid/start { mode: "fresh_auth", action: "<action>" }` instead.
 
 The `set_password` action is NOT minted via this route, because `set_password` transitions State C → State B (the user has no password yet by definition) so a password-mechanism proof is structurally inapplicable. `set_password` proofs are minted only via `POST /api/orcid/start { mode: "fresh_auth", action: "set_password" }`.
@@ -122,7 +126,7 @@ The `set_password` action is NOT minted via this route, because `set_password` t
 **Errors:**
 - `UNAUTHORIZED` (401) — missing JWT, account not found, or password mismatch. The "no password set" case (e.g., ORCID-only account with `password_hash IS NULL`) returns the same shape to avoid becoming a password-existence oracle.
 - `FORBIDDEN` (403) — account has been upgraded to self-custody. Self-custody users sign consent ops via Hive Keychain and do not use this endpoint.
-- `VALIDATION_ERROR` (400) — missing `password`, missing or invalid `action` (must be one of `"author_accept"`, `"author_resign"`, `"change_email"`, `"delete_account"`), or, for consent-op actions only, missing or empty `root_author` / `root_permlink`. The `change_email` and `delete_account` actions do not require `root_author` or `root_permlink`.
+- `VALIDATION_ERROR` (400) — missing `password`, missing or invalid `action` (must be one of `"author_accept"`, `"author_resign"`, `"claim_authorship"`, `"approve_authorship"`, `"revoke_authorship"`, `"change_email"`, `"delete_account"`), or a missing/malformed target field for the action category: consent-op actions require non-empty `root_author` / `root_permlink`; credit-op actions require non-empty `paper_author` / `paper_permlink` plus (for `claim_authorship` / `approve_authorship`) a non-negative-integer `author_index`. The `change_email` and `delete_account` actions require no target fields.
 - `INTERNAL_ERROR` (500) — argon2 verification failure or unexpected error.
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
 

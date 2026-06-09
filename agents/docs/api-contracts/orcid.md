@@ -21,7 +21,7 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 ```json
 {
   "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth" | "session_auth",
-  "action": "author_accept" | "author_resign" | "set_password" | "change_email" | "delete_account",
+  "action": "author_accept" | "author_resign" | "claim_authorship" | "approve_authorship" | "revoke_authorship" | "set_password" | "change_email" | "delete_account",
   "root_author": "<hive-account>",
   "root_permlink": "<paper-permlink>"
 }
@@ -33,12 +33,13 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 | `login` | No | Sign in via ORCID |
 | `accredit` | Yes (JWT) | Get accredited via ORCID |
 | `link` | Yes (JWT) | Link/update ORCID on existing accreditation |
-| `fresh_auth` | Yes (JWT) | Mint a per-op (consent_op-kind) fresh-auth proof via a fresh OAuth round-trip. Sibling to `POST /api/custody/fresh-auth` (password path). Bound to a specific `(action, root_author, root_permlink)` target. The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
+| `fresh_auth` | Yes (JWT) | Mint a per-op (consent_op-kind or credit-op-kind) fresh-auth proof via a fresh OAuth round-trip. Sibling to `POST /api/custody/fresh-auth` (password path). Bound to a specific target: consent ops bind `(action, root_author, root_permlink)`; credit ops bind `(action, paper_author, paper_permlink[, author_index][, claimer])` (see the action-category semantics below). The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
 | `session_auth` | Yes (JWT) | Mint a target-less (session-kind) fresh-auth proof via a fresh OAuth round-trip. Used by State C (passwordless ORCID-only) accounts — and State B accounts — to authorize non-consent broadcasts (vote, comment, non-consent `custom_json`). The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
 
 `action`, `root_author`, and `root_permlink` semantics by `mode === "fresh_auth"` action category:
 
 - **Consent-op actions (`author_accept`, `author_resign`):** `action`, `root_author`, and `root_permlink` are all REQUIRED. The three fields form the per-op target the issued proof binds to; the consent op submitted on a subsequent `POST /api/custody/broadcast` MUST match the triple exactly or the broadcast returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "target_mismatch"`. Any missing or malformed field returns 400 `VALIDATION_ERROR`.
+- **Credit-op actions (`claim_authorship`, `approve_authorship`, `revoke_authorship`):** `action` is REQUIRED and carries `paper_author` / `paper_permlink` (in place of `root_author` / `root_permlink`); `claim_authorship` and `approve_authorship` additionally require a non-negative-integer `author_index`, and `approve_authorship` / `revoke_authorship` carry `claimer` (the subject co-author). These form the per-op target the issued proof binds to; the credit op on a subsequent `POST /api/custody/broadcast` MUST match it or the broadcast returns 403 `target_mismatch`. Missing/malformed fields return 400 `VALIDATION_ERROR`. `claimer`-binding into the target for `approve`/`revoke` is enforcement-pending (held `backend-authorship-credit-ops-fresh-auth`); see [custody.md](custody.md).
 - **Non-broadcast actions (`set_password`, `change_email`, `delete_account`):** `action` is REQUIRED; `root_author` and `root_permlink` are IGNORED if present. The backend synthesizes the target as `(action, <authenticated username>, '')`, so `root_author` defaults to the JWT subject and `root_permlink` to the empty string. Empty `root_permlink` is what makes these targets collision-free against consent-op targets at the hash layer (consent ops require non-empty `root_permlink` by the validation rule above). `set_password` proofs are consumed at `POST /api/settings/set-password`; `change_email` proofs at the JWT path of `POST /api/settings/email`; `delete_account` proofs at the JWT path of `DELETE /api/settings/email`. All three mint paths are live: State C (passwordless ORCID-only) accounts use this ORCID route; State A/B accounts may instead use the password sibling at `POST /api/custody/fresh-auth` (except `set_password`, which is ORCID-only by definition).
 
 In all modes other than `fresh_auth`, the three fields are IGNORED. Session-kind proofs minted via `session_auth` do NOT carry a target and are admitted only on the non-consent broadcast surface; submitting one to a consent-op bundle returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "kind_mismatch"`.
@@ -51,14 +52,14 @@ In all modes other than `fresh_auth`, the three fields are IGNORED. Session-kind
   "username": "...",
   "timestamp": 1234567890,
   "fresh_auth_target": {
-    "action": "author_accept" | "author_resign" | "set_password" | "change_email" | "delete_account",
+    "action": "author_accept" | "author_resign" | "claim_authorship" | "approve_authorship" | "revoke_authorship" | "set_password" | "change_email" | "delete_account",
     "root_author": "<hive-account>",
     "root_permlink": "<paper-permlink>"
   }
 }
 ```
 
-`username` is present only for authenticated modes (`accredit`, `link`, `fresh_auth`, `session_auth`), read from the JWT. `fresh_auth_target` is present only when `mode === "fresh_auth"` (target-bound issuance); session_auth is target-less by design so the field is absent. The `/callback` handler reads `fresh_auth_target` back from the state map for fresh_auth and passes it to `consumeFreshAuthToken` so the issued proof binds to the same target the user authorized at `/start`. State carries the target across the OAuth round-trip; the SPA does not re-submit it on `/callback`. The backend echoes the target triple (`action`, `root_author`, `root_permlink`) in the `fresh_auth` response body so the SPA can cache the issued proof keyed on its actual binding (see Response shape below).
+`username` is present only for authenticated modes (`accredit`, `link`, `fresh_auth`, `session_auth`), read from the JWT. `fresh_auth_target` is present only when `mode === "fresh_auth"` (target-bound issuance); session_auth is target-less by design so the field is absent. The `/callback` handler reads `fresh_auth_target` back from the state map for fresh_auth and passes it to `consumeFreshAuthToken` so the issued proof binds to the same target the user authorized at `/start`. State carries the target across the OAuth round-trip; the SPA does not re-submit it on `/callback`. The backend echoes the target (`action`, `root_author` / `paper_author`, `root_permlink` / `paper_permlink`, and for credit ops `author_index` and `claimer`) in the `fresh_auth` response body so the SPA can cache the issued proof keyed on its actual binding (see Response shape below). Echo of the credit-op `author_index` / `claimer` fields is enforcement-pending (held `backend-authorship-credit-ops-fresh-auth`); until it lands the SPA cannot distinguish per-slot credit-op proofs for the same paper.
 
 **Response `data`:**
 
@@ -219,15 +220,15 @@ No `custom_json` broadcast on this mode. No min works check.
   "fresh_auth_proof": "<single-use token>",
   "expires_at": "2026-05-06T12:05:00.000Z",
   "mechanism": "orcid",
-  "action": "author_accept" | "author_resign" | "set_password" | "change_email" | "delete_account",
+  "action": "author_accept" | "author_resign" | "claim_authorship" | "approve_authorship" | "revoke_authorship" | "set_password" | "change_email" | "delete_account",
   "root_author": "<hive-account>",
   "root_permlink": "<paper-permlink>"
 }
 ```
 
-`fresh_auth_proof` is a single-use bearer token bound to the JWT subject. TTL is 5 minutes. Where to submit it depends on the action category: consent-op proofs (`author_accept`, `author_resign`) go in the `fresh_auth_proof` field of a subsequent `POST /api/custody/broadcast` request containing the matching consent op (see [custody.md](custody.md)); non-broadcast proofs go in the request body of the matching settings endpoint (`set_password` → `POST /api/settings/set-password`; `change_email` → JWT path of `POST /api/settings/email`; `delete_account` → JWT path of `DELETE /api/settings/email`, see [settings.md](settings.md)).
+`fresh_auth_proof` is a single-use bearer token bound to the JWT subject. TTL is 5 minutes. Where to submit it depends on the action category: consent-op proofs (`author_accept`, `author_resign`) and credit-op proofs (`claim_authorship`, `approve_authorship`, `revoke_authorship`) go in the `fresh_auth_proof` field of a subsequent `POST /api/custody/broadcast` request containing the matching gated op (see [custody.md](custody.md)); non-broadcast proofs go in the request body of the matching settings endpoint (`set_password` → `POST /api/settings/set-password`; `change_email` → JWT path of `POST /api/settings/email`; `delete_account` → JWT path of `DELETE /api/settings/email`, see [settings.md](settings.md)).
 
-`action`, `root_author`, and `root_permlink` are the per-op target binding the proof was issued against, echoed from the Redis state's `fresh_auth_target` written at `/start`. The SPA caches the issued proof keyed on this triple so the consume-time lookup matches the proof's actual binding. For non-broadcast actions (`set_password`, `change_email`, `delete_account`), `root_author` is the authenticated username and `root_permlink` is the empty string (no paper is involved). For consent ops (`author_accept`, `author_resign`), both are derived from the paper the user is authorizing.
+`action`, `root_author`, and `root_permlink` are the per-op target binding the proof was issued against, echoed from the Redis state's `fresh_auth_target` written at `/start`. The SPA caches the issued proof keyed on this target so the consume-time lookup matches the proof's actual binding. For non-broadcast actions (`set_password`, `change_email`, `delete_account`), `root_author` is the authenticated username and `root_permlink` is the empty string (no paper is involved). For consent ops (`author_accept`, `author_resign`), both are derived from the paper the user is authorizing. For credit ops (`claim_authorship`, `approve_authorship`, `revoke_authorship`), the paper fields carry `paper_author` / `paper_permlink`, and the target also includes `author_index` (claim/approve) and `claimer` (approve/revoke); echo of those credit-op-specific fields is enforcement-pending (held `backend-authorship-credit-ops-fresh-auth`), so until it lands the SPA cannot key its cache per-slot for the same paper.
 
 **Errors specific to `fresh_auth`:**
 - `BAD_REQUEST` (400) — invalid ORCID iD format returned by the OAuth round-trip, OR the `fresh_auth_target` is missing from the Redis state map at `/callback`. The latter is a defensive closed-default rejection: `/start` enforces target presence on entry, so an absent `fresh_auth_target` at `/callback` indicates a corrupt state entry rather than a normal client flow. Message: `"fresh_auth state is missing the per-op target binding"`.
