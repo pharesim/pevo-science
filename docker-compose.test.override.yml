@@ -71,8 +71,11 @@ services:
   # hop in-page). POST /oauth/token reflects the form `code` back as the
   # response `orcid` field plus a fixed name + access_token, matching the
   # bespoke shape the backend parses (orcid required, name/access_token
-  # optional). The script uses string concatenation, not template literals,
-  # so it carries no `$` for compose variable-interpolation to touch.
+  # optional). The reflected `code` IS the bound ORCID iD: a spec must send a
+  # `code` that is ORCID-iD-format and equal to the seeded accounts.orcid, or
+  # the real callback rejects it (the backend tests it against ORCID_RE before
+  # any mode handler runs). The script uses string concatenation, not template
+  # literals, so it carries no `$` for compose variable-interpolation to touch.
   orcid-stub:
     image: node:20-alpine
     restart: unless-stopped
@@ -85,6 +88,7 @@ services:
         const http = require('http');
         const PORT = 8099;
         http.createServer((req, res) => {
+          req.on('error', () => {}); // swallow client RSTs so a mid-body abort can't crash the stub
           if (req.method === 'POST' && req.url.startsWith('/oauth/token')) {
             let body = '';
             req.on('data', (c) => { body += c; });
