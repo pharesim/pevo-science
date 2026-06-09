@@ -80,9 +80,9 @@ describe('reputation cycle — composes the shared claims builder (approve signe
 
     // The approve signer gate appears once in the revoke-override MAX(approve_block)
     // subquery and once in the accepted-status EXISTS arm — both emitted by the
-    // builder with bridge bound at $23 (authorshipClaimsCteBody(21) → bridgeIdx 23).
+    // builder with bridge bound at $22 (authorshipClaimsCteBody(21) → bridgeIdx 22).
     // Requiring TWO occurrences catches a removal from either arm.
-    const matches = cycleSql!.match(/ap\.approver IN \(ap\.paper_author, \$23\)/g) ?? [];
+    const matches = cycleSql!.match(/ap\.approver IN \(ap\.paper_author, \$22\)/g) ?? [];
     expect(matches).toHaveLength(2);
   });
 });

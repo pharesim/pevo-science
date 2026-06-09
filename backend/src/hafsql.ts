@@ -82,37 +82,6 @@ export const T = {
  */
 export const CHAIN_ORCID_BTRIM_CHARSET = " \\t\\n\\r\\x0B\\f";
 
-/**
- * SQL boolean fragment for the authorship-claim ORCID auto-accept arms:
- * byte-equality of a broadcaster-controlled chain author ORCID against an
- * accreditation-attested ORCID, after BTRIM-stripping ONLY the chain side
- * with `CHAIN_ORCID_BTRIM_CHARSET` (ASCII C-whitespace). The attested side is
- * canonical (sourced from the authority-gated `active_accreditations`), so it
- * stays raw.
- *
- * Single source for the two production auto-accept arms — the read-surface
- * `authorshipClaimsCteBody` and the reputation cycle's
- * `computeReputationBatch.accepted_claims` — so they cannot drift on
- * whitespace normalization. The reputation-cycle canary builds its predicate
- * from this same helper, so a production-side change to the match shape
- * (e.g. dropping the BTRIM wrapper back to a raw `=`) turns the test red.
- *
- * Callers supply the surrounding `IS NOT NULL` / `!= ''` guards; this returns
- * only the equality conjunct.
- */
-export function chainOrcidAutoAcceptMatchSql(opts: {
-  /** SQL expr for the comment's json_metadata column (e.g. `c.json_metadata`). */
-  metadataExpr: string;
-  /** SQL placeholder holding the appTag key (e.g. `$3`). */
-  appTagParam: string;
-  /** SQL expr for the author index into authors[] (e.g. `ce.author_index` or `0`). */
-  authorIndexExpr: string;
-  /** SQL expr for the attested ORCID, canonical and untrimmed (e.g. `aa.orcid`). */
-  attestedOrcidExpr: string;
-}): string {
-  return `BTRIM(${opts.metadataExpr} -> ${opts.appTagParam} -> 'authors' -> ${opts.authorIndexExpr} ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') = ${opts.attestedOrcidExpr}`;
-}
-
 // ─── Common CTEs ──────────────────────────────────────────────────
 
 /**
@@ -692,14 +661,36 @@ export type AuthorshipClaimsScope =
   | { paperAuthor: string; paperPermlink: string };
 
 /**
- * CTE body for authorship claims. Computes claim status (accepted/pending/revoked)
- * for each (claimer, paper_author, paper_permlink) combination.
+ * CTE body for authorship claims — Route 3 of the consent model (name-only
+ * slots). Computes claim status (accepted/pending/revoked) for each
+ * (claimer, paper_author, paper_permlink) combination.
  *
- * Auto-accept conditions:
- * - Claimer's verified ORCID matches authors[author_index].orcid in paper metadata
- * - authors[author_index].hive matches the claimer's username
+ * A claim is accepted ONLY via an explicit `approve_authorship` signed by
+ * the post author or bridge account, AND only when `author_index` resolves
+ * to a NAME-ONLY slot (neither a `hive` nor an `orcid` anchor) in the
+ * paper's cumulative-chain author union. There is NO metadata auto-accept:
+ * an anchored slot establishes who may consent through Route 2
+ * (`author_accept`, resolved by `consentedAuthorsCteBody`), never credit on
+ * its own, and never credit through this route.
  *
- * Requires `active_accreditations` CTE to be in scope.
+ * `author_index` resolves against the canonical continuation chain's
+ * display-ordered cumulative author union (the Claim Authorship schema in
+ * hive-schemas.md defines the author list as the cumulative union across
+ * the chain), NOT the root post's current `authors[]` alone — a name-only
+ * co-author first credited in a continuation revision is claimable. The
+ * builder embeds its own `claims_`-prefixed `consentChainCteBody` backbone
+ * seeded from `claims_base`'s paper keys, so the walk cost is bounded by
+ * claim cardinality and the names cannot collide with a composing query's
+ * unprefixed Route-2 backbone. MUST be composed under `WITH RECURSIVE`
+ * (`buildRecursiveWith`). The chain walk also supplies the paper-identity
+ * validation the root-only metadata probe used to provide: slots exist only
+ * for real PEvO root posts that passed `validPevoPaperWhere` + root-post
+ * checks, so a claim citing a fabricated paper resolves no slot and stays
+ * pending.
+ *
+ * No `active_accreditations` dependency remains (it backed the removed
+ * ORCID auto-accept arm); composing queries that still include it do so for
+ * their own accreditation gates.
  *
  * Claimer derivation:
  *   COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0)
@@ -732,8 +723,8 @@ export function authorshipClaimsCteBody(
   // approve is only valid when signed by the post author or the bridge account.
   // bridgeIdx binds config.hiveBridgeAccount for that IN-list; scope params
   // follow it.
-  const bridgeIdx = p + 2;
-  let scopeIdx = p + 3;
+  const bridgeIdx = p + 1;
+  let scopeIdx = p + 2;
   let scopeFilter = '';
   const scopeParams: unknown[] = [];
   if (scope) {
@@ -764,6 +755,10 @@ export function authorshipClaimsCteBody(
   // adminIdx binds config.hiveAdminAccount for that IN-list. Appended AFTER the
   // scope params so the bridge and scope param indices stay fixed.
   const adminIdx = scopeIdx;
+  // Internal chain backbone: claims_-prefixed so it cannot collide with a
+  // composing query's unprefixed Route-2 backbone; seeded from claims_base
+  // so the recursive walk only covers papers someone actually claimed.
+  const chain = consentChainCteBody(adminIdx + 1, { rootsFromCte: 'claims_base' }, { namePrefix: 'claims_' });
   return {
     sql: `
   claim_events AS (
@@ -788,6 +783,7 @@ export function authorshipClaimsCteBody(
     FROM claim_events
     WHERE action = 'claim_authorship'
   ),
+${chain.sql},
   approvals AS (
     SELECT claimer, paper_author, paper_permlink, block_num, approver
     FROM claim_events
@@ -842,88 +838,40 @@ export function authorshipClaimsCteBody(
             -- read surfaces. The self-asserted ap.paper_author read here is
             -- harmless even though the ap.approver IN (ap.paper_author, ...)
             -- gate references it: the approval is correlated to cb (a REAL
-            -- claim_authorship op via claims_base) and cb.paper_author is validated
-            -- as a real root post by the list-final EXISTS below, so ap.paper_author
-            -- must equal that validated value, making the signer the genuine post
-            -- author. (The notification claim_approved/claim_revoked arms lacked
-            -- this claim-base correlation and so needed an explicit
-            -- claimer-to-recipient gate to close the same self-referential vector.)
+            -- claim_authorship op via claims_base) and cb.paper_author is
+            -- validated as a real PEvO root post by the chain-slot gate below
+            -- (claims_display_slots rows exist only for walked roots that
+            -- passed the paper-identity checks), so ap.paper_author must equal
+            -- that validated value, making the signer the genuine post author.
+            -- (The notification claim_approved/claim_revoked arms lacked this
+            -- claim-base correlation and so needed an explicit
+            -- claimer-to-recipient gate to close the same self-referential
+            -- vector.)
             AND ap.approver IN (ap.paper_author, $${bridgeIdx})
         ) AND EXISTS (
-          -- List-final gate (per the Claim / Approve Authorship schemas in
-          -- hive-schemas.md): approval binds the
-          -- claimer to a slot NAMED AT POSTING; author_index must resolve to an
-          -- existing authors[] object entry. The cycle and read surfaces accept
-          -- identically because they share this one builder; without it an
-          -- unlisted claimer (author_index null or past the end of authors[])
-          -- could be approved into co-author status that was never on the paper.
-          SELECT 1 FROM ${T.comments} c
-          WHERE c.author = cb.paper_author
-            AND c.permlink = cb.paper_permlink
-            AND c.parent_author = ''
-            AND jsonb_typeof(c.json_metadata -> $${p + 1} -> 'authors' -> cb.author_index) = 'object'
-        ) THEN 'accepted'
-        WHEN cb.author_index IS NOT NULL AND EXISTS (
-          -- ORCID auto-accept arm: the broadcaster-controlled chain ORCID
-          -- claim is compared against the on-chain accredited ORCID after
-          -- normalizing both sides for ASCII C-whitespace padding. The
-          -- BTRIM charset matches \`authorsWithSupersessionSelect\`'s
-          -- supersession projection and the JS-side
-          -- \`computeSupersession\`'s \`chainOrcid.trim()\` so the four
-          -- surfaces (list/detail SQL, chain JS, profile JS) agree on
-          -- whitespace-padded claims. Drift between this site and the
-          -- supersession projection would reintroduce the cross-site
-          -- split — both sites MUST reference the same
-          -- \`CHAIN_ORCID_BTRIM_CHARSET\` constant.
-          SELECT 1 FROM ${T.comments} c
-          JOIN active_accreditations aa ON aa.account = cb.claimer
-          WHERE c.author = cb.paper_author
-            AND c.permlink = cb.paper_permlink
-            AND c.parent_author = ''
-            AND (
-              (c.json_metadata -> $${p + 1} -> 'authors' -> cb.author_index ->> 'orcid') IS NOT NULL
-              AND aa.orcid IS NOT NULL
-              AND aa.orcid != ''
-              AND ${chainOrcidAutoAcceptMatchSql({ metadataExpr: 'c.json_metadata', appTagParam: `$${p + 1}`, authorIndexExpr: 'cb.author_index', attestedOrcidExpr: 'aa.orcid' })}
-            )
-        ) THEN 'accepted'
-        WHEN cb.author_index IS NOT NULL AND EXISTS (
-          -- Hive-username auto-accept arm: canonicalize the broadcaster-
-          -- controlled authors[i].hive via LOWER(TRIM(...)) plus the
-          -- Hive-account charset regex (mirrors normalizeHiveAccount and
-          -- the SQL-side guard in authorsWithSupersessionSelect) before
-          -- byte-equality against cb.claimer. The claimer is a chain-
-          -- validated lowercase Hive account name; an uppercase mid-case
-          -- entry in pevo.authors would otherwise leave a legitimate
-          -- co-author's claim pending indefinitely.
-          --
-          -- Structural-safety note on the missing jsonb_typeof(...) guard:
-          -- this arm uses a direct integer subscript (-> cb.author_index)
-          -- into the authors array, NOT jsonb_array_elements(...) like
-          -- the sibling cascade-fail defenses. The integer-subscript form
-          -- is intrinsically fail-soft against malformed shapes: on a
-          -- non-array parent, -> N returns NULL; ->> 'hive' on NULL
-          -- returns NULL; LOWER(TRIM(NULL)) = NULL; the equality conjunct
-          -- evaluates NULL (not TRUE), the EXISTS row is rejected, and
-          -- the claim stays pending. There is no array iteration to guard,
-          -- so an explicit jsonb_typeof(...) check would be redundant.
-          -- A parity-driven refactor that adds the guard here is harmless;
-          -- one that erases the LOWER(TRIM(...)) canonicalization (citing
-          -- the missing guard as justification) is the failure mode to
-          -- defend against.
-          SELECT 1 FROM ${T.comments} c
-          WHERE c.author = cb.paper_author
-            AND c.permlink = cb.paper_permlink
-            AND c.parent_author = ''
-            AND LOWER(TRIM(c.json_metadata -> $${p + 1} -> 'authors' -> cb.author_index ->> 'hive')) ~ '^[a-z0-9.-]+$'
-            AND LOWER(TRIM(c.json_metadata -> $${p + 1} -> 'authors' -> cb.author_index ->> 'hive')) = cb.claimer
+          -- List-final + name-only gate (per the Claim / Approve Authorship
+          -- schemas in hive-schemas.md): approval binds the claimer to a slot
+          -- NAMED in the paper's cumulative-chain author union; author_index
+          -- must resolve to an existing slot in display order. Only a
+          -- NAME-ONLY slot (no hive, no orcid anchor) is claimable through
+          -- this route — anchored slots register consent via author_accept
+          -- (Route 2), and there is no metadata auto-accept. The cycle and
+          -- read surfaces accept identically because they share this one
+          -- builder; without the gate an unlisted claimer (author_index null
+          -- or past the end of the union) could be approved into co-author
+          -- status that was never on the paper.
+          SELECT 1 FROM claims_display_slots ds
+          WHERE ds.root_author = cb.paper_author
+            AND ds.root_permlink = cb.paper_permlink
+            AND ds.author_index = cb.author_index
+            AND ds.slot_key LIKE 'name:%'
         ) THEN 'accepted'
         ELSE 'pending'
       END AS status
     FROM claims_base cb
   )`,
-    params: [config.appTag, config.appTag, config.hiveBridgeAccount, ...scopeParams, config.hiveAdminAccount],
-    nextIdx: adminIdx + 1,
+    params: [config.appTag, config.hiveBridgeAccount, ...scopeParams, config.hiveAdminAccount, ...chain.params],
+    nextIdx: chain.nextIdx,
   };
 }
 
@@ -933,11 +881,32 @@ export function authorshipClaimsCteBody(
  * Scope for `consentChainCteBody`. `{ paperAuthor, paperPermlink }` seeds the
  * recursive walk at one root (read surfaces); `{ roots: 'all' }` seeds it at
  * every PEvO root post (`continues` absent) for corpus-wide resolution (the
- * reputation cycle).
+ * reputation cycle); `{ rootsFromCte }` seeds it at the `(paper_author,
+ * paper_permlink)` pairs an EARLIER CTE in the same WITH block emits
+ * (`authorshipClaimsCteBody` seeds from `claims_base`, bounding the walk by
+ * claim cardinality instead of corpus size).
  */
 export type ConsentChainScope =
   | { paperAuthor: string; paperPermlink: string }
-  | { roots: 'all' };
+  | { roots: 'all' }
+  | { rootsFromCte: string };
+
+/**
+ * The CTE names `consentChainCteBody` emits, longest-first so the
+ * prefix-rewrite regex's alternation cannot match a shorter name inside a
+ * longer one (`display_slots` inside `display_slot_occurrences`).
+ */
+const CONSENT_CHAIN_CTE_NAMES = [
+  'display_slot_occurrences',
+  'ops_slot_occurrences',
+  'chain_node_created',
+  'claimed_hive_slots',
+  'claimed_orcid_slots',
+  'ranked_children',
+  'canonical_chain',
+  'display_slots',
+  'chain_tree',
+] as const;
 
 /**
  * SQL expression for one post's contribution to the walk's cumulative
@@ -1016,8 +985,18 @@ function hiveContributionSql(alias: string, appTagParam: string, bridgeParam: st
  * admissible post is visited once, so the cost is linear in the number of
  * PEvO continuation posts. No `block_num` floor on any `custom_json` or
  * comment scan (BitmapAnd avoidance — see `activeAccreditationsCteBody`).
+ *
+ * @param opts.namePrefix - rewrites every emitted CTE name (and its internal
+ *   references) with the prefix, so two chain backbones with different
+ *   scopes can coexist in one WITH block (`authorshipClaimsCteBody` embeds
+ *   a `claims_`-prefixed copy seeded from `claims_base`, while a composing
+ *   query may also carry the unprefixed Route-2 backbone).
  */
-export function consentChainCteBody(startIdx = 1, scope: ConsentChainScope): SqlFragment {
+export function consentChainCteBody(
+  startIdx = 1,
+  scope: ConsentChainScope,
+  opts?: { namePrefix?: string },
+): SqlFragment {
   const p = startIdx; // $p = appTag, $p+1 = bridge account
   const tag = `$${p}`;
   const bridge = `$${p + 1}`;
@@ -1025,11 +1004,12 @@ export function consentChainCteBody(startIdx = 1, scope: ConsentChainScope): Sql
   const scopeParams: unknown[] = perPaper ? [scope.paperAuthor, scope.paperPermlink] : [];
   const seedFilter = perPaper
     ? `AND c.author = $${p + 2} AND c.permlink = $${p + 3}`
-    : `AND (c.json_metadata -> ${tag} -> 'continues') IS NULL`;
+    : 'rootsFromCte' in scope
+      ? `AND (c.author, c.permlink) IN (SELECT DISTINCT paper_author, paper_permlink FROM ${scope.rootsFromCte})`
+      : `AND (c.json_metadata -> ${tag} -> 'continues') IS NULL`;
   const nextIdx = perPaper ? p + 4 : p + 2;
   const contrib = (alias: string) => hiveContributionSql(alias, tag, bridge);
-  return {
-    sql: `
+  const body = `
   chain_tree AS (
     SELECT
       c.author AS root_author, c.permlink AS root_permlink,
@@ -1134,7 +1114,13 @@ export function consentChainCteBody(startIdx = 1, scope: ConsentChainScope): Sql
     FROM ops_slot_occurrences
     WHERE BTRIM(COALESCE(entry ->> 'orcid', ''), E'${CHAIN_ORCID_BTRIM_CHARSET}') != ''
     GROUP BY 1, 2, 3
-  )`,
+  )`;
+  const prefix = opts?.namePrefix;
+  const sql = prefix
+    ? body.replace(new RegExp(`\\b(${CONSENT_CHAIN_CTE_NAMES.join('|')})\\b`, 'g'), `${prefix}$1`)
+    : body;
+  return {
+    sql,
     params: [config.appTag, config.hiveBridgeAccount, ...scopeParams],
     nextIdx,
   };

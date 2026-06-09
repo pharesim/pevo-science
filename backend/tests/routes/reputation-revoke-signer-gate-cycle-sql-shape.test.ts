@@ -91,12 +91,12 @@ describe('reputation cycle — composes the shared claims builder (revoke signer
     );
 
     // The revoke signer gate now lives in the builder's revoked-status arm and is
-    // emitted into the cycle SQL with the builder's allocation: bridge $23, admin
-    // $25 (authorshipClaimsCteBody(21) → bridgeIdx 23, adminIdx 25). The builder's
+    // emitted into the cycle SQL with the builder's allocation: bridge $22, admin
+    // $24 (authorshipClaimsCteBody(21) → bridgeIdx 22, adminIdx 24). The builder's
     // param positions are independently pinned by hafsql.test.ts; here we assert
     // the gate survived the merge into the cycle's emitted SQL.
     const matches =
-      cycleSql!.match(/rv\.approver IN \(rv\.paper_author, \$23, \$25, rv\.claimer\)/g) ?? [];
+      cycleSql!.match(/rv\.approver IN \(rv\.paper_author, \$22, \$24, rv\.claimer\)/g) ?? [];
     expect(matches).toHaveLength(1);
   });
 });

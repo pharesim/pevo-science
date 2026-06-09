@@ -14,7 +14,7 @@ import { getRequiredBridgePostingKey } from '../startup-checks.js';
 import {
   activeAccreditationsCteBody,
   authorshipClaimsCteBody,
-  buildWith,
+  buildRecursiveWith,
 } from '../hafsql.js';
 
 const router = Router({ mergeParams: true });
@@ -41,7 +41,7 @@ async function fetchClaimsFromHaf(paperAuthor: string, paperPermlink: string) {
   if (!pool) return null;
 
   try {
-    const cte = buildWith(1,
+    const cte = buildRecursiveWith(1,
       activeAccreditationsCteBody,
       (idx) => authorshipClaimsCteBody(idx, { paperAuthor, paperPermlink }),
     );
@@ -85,7 +85,7 @@ async function isApprovedCoAuthor(
   if (!pool) return false;
 
   try {
-    const cte = buildWith(1,
+    const cte = buildRecursiveWith(1,
       activeAccreditationsCteBody,
       (idx) => authorshipClaimsCteBody(idx, { paperAuthor, paperPermlink }),
     );

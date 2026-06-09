@@ -151,11 +151,19 @@ describe('co-author claim credit — source-level shape pin', () => {
 describe('co-author claim credit — read-surface (hafsql.ts) parity pin', () => {
   const hafsqlSource = readFileSync(resolve(PROJECT_ROOT, 'src/hafsql.ts'), 'utf-8');
 
-  it('authorshipClaimsCteBody approvals arm gates on a resolvable named slot', () => {
+  it('authorshipClaimsCteBody approvals arm gates on a resolvable name-only chain slot', () => {
+    // The list-final gate resolves author_index against the cumulative-chain
+    // display union (claims_display_slots), and only a name-only slot (no
+    // hive/orcid anchor) is claimable through Route 3. Both conjuncts live in
+    // the shared builder, so the cycle and read surfaces accept identically.
     expect(
       hafsqlSource,
-      'the read-surface approvals arm must mirror the cycle: author_index must resolve to an existing authors[] object entry',
-    ).toContain(`-> 'authors' -> cb.author_index) = 'object'`);
+      'the approvals arm must resolve author_index against the chain display slots',
+    ).toContain('AND ds.author_index = cb.author_index');
+    expect(
+      hafsqlSource,
+      'the approvals arm must gate on the slot being name-only (anchored slots are Route-2-only)',
+    ).toContain(`AND ds.slot_key LIKE 'name:%'`);
   });
 });
 

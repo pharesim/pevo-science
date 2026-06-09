@@ -61,12 +61,18 @@ async function resolveClaimStatus(
 ): Promise<string | null> {
   const accredFrag = activeAccreditationsCteBody(1);
   const claimsFrag = authorshipClaimsCteBody(accredFrag.nextIdx);
-  // Redirect both HAF view references: custom_json → synthetic ops, comments →
-  // the synthetic paper post below. The post is needed because the approval arm
-  // now resolves author_index to an existing authors[] slot (list-final gate);
-  // T.comments appears multiple times in claimsBody, so split/join replaces all.
+  // Redirect the HAF view references: custom_json → synthetic ops, comments →
+  // the synthetic paper post below, operation_comment_view → a synthetic
+  // creation op. The post is needed because the approval arm resolves
+  // author_index to a name-only slot in the cumulative-chain union, whose
+  // recursive walk reads the comments relation (root validity + slots) and
+  // the comment-ops relation (creation-order ranking); each view literal
+  // appears multiple times, so split/join replaces all.
   const accredBody = accredFrag.sql.split(T.customJson).join('synthetic_cj');
-  const claimsBody = claimsFrag.sql.split(T.customJson).join('synthetic_cj').split(T.comments).join('synthetic_comments');
+  const claimsBody = claimsFrag.sql
+    .split(T.customJson).join('synthetic_cj')
+    .split(T.commentOps).join('synthetic_comment_ops')
+    .split(T.comments).join('synthetic_comments');
 
   const base: unknown[] = [...accredFrag.params, ...claimsFrag.params];
 
@@ -79,35 +85,39 @@ async function resolveClaimStatus(
     opParams.push(op.id, config.appTag, JSON.stringify(op.json), JSON.stringify([op.signer]), op.block);
   });
 
-  // The synthetic victim/p1 post names a single name-only authors[] slot at
-  // index 0 (no hive, no orcid). The claim's author_index = 0 resolves to it, so
-  // the approval arm's list-final slot gate is satisfied; the absence of hive/
-  // orcid keeps the auto-accept arms silent so status is driven solely by the
-  // approval and revocation arms under test.
+  // The synthetic victim/p1 post is a valid PEvO paper (type 'paper' — the
+  // chain walk's validity gate would otherwise reject the root and resolve no
+  // slots) naming a single name-only authors[] slot at index 0 (no hive, no
+  // orcid). The claim's author_index = 0 resolves to it in display order, so
+  // the approval arm's list-final + name-only gate is satisfied and status is
+  // driven solely by the approval and revocation arms under test.
   const metaParamIdx = base.length + ops.length * 5 + 1;
-  const metaJson = JSON.stringify({ [config.appTag]: { authors: [{ name: 'X' }] } });
+  const metaJson = JSON.stringify({ [config.appTag]: { type: 'paper', authors: [{ name: 'X' }] } });
 
   const sql = `
-    WITH synthetic_cj(id, custom_id, json, required_posting_auths, block_num) AS (
+    WITH RECURSIVE synthetic_cj(id, custom_id, json, required_posting_auths, block_num) AS (
       VALUES ${valuesRows.join(', ')}
     ),
-    synthetic_comments(author, permlink, parent_author, json_metadata) AS (
-      VALUES ('victim'::text, 'p1'::text, ''::text, $${metaParamIdx}::jsonb)
+    synthetic_comments(author, permlink, parent_author, parent_permlink, json_metadata) AS (
+      VALUES ('victim'::text, 'p1'::text, ''::text, $${metaParamIdx}::text, $${metaParamIdx + 1}::jsonb)
+    ),
+    synthetic_comment_ops(author, permlink, block_num, id, json_metadata) AS (
+      VALUES ('victim'::text, 'p1'::text, 90::int, 900::bigint, $${metaParamIdx + 1}::jsonb)
     ),
     ${accredBody},
     ${claimsBody}
     SELECT status FROM authorship_claims
     WHERE claimer = 'claimant' AND paper_author = 'victim' AND paper_permlink = 'p1'
   `;
-  const res = await pool.query(sql, [...base, ...opParams, metaJson]);
+  const res = await pool.query(sql, [...base, ...opParams, config.appTag, metaJson]);
   return res.rows.length > 0 ? (res.rows[0].status as string) : null;
 }
 
 // author_index = 0 resolves to the name-only slot on the synthetic post, so the
-// approval arm's list-final slot gate is satisfied. The slot carries no hive/
-// orcid, so the ORCID/hive auto-accept arms (which additionally require a match
-// against authors[0]) never fire — status is then driven solely by the approval
-// and revocation arms under test.
+// approval arm's list-final + name-only gate is satisfied. The slot carries no
+// hive/orcid anchor (an anchored slot would fail the name-only constraint and
+// be Route-2-only) — status is then driven solely by the approval and
+// revocation arms under test.
 const claim: SyntheticOp = {
   id: 1,
   json: { action: 'claim_authorship', paper_author: 'victim', paper_permlink: 'p1', author_index: 0 },

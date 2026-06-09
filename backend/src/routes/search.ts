@@ -7,7 +7,7 @@ import { parsePageLimit } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCteBody, retractedPapersCteBody, authorshipClaimsCteBody, buildWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere } from '../hafsql.js';
+import { T, activeAccreditationsCteBody, retractedPapersCteBody, authorshipClaimsCteBody, buildWith, buildRecursiveWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 import {
   validateSearchQuery,
@@ -162,7 +162,7 @@ async function searchReviewsFromHaf(
 ): Promise<{ rows: SearchRow[]; total: number } | null> {
   // authorship_claims (unscoped — claim ops are low-cardinality) lets the review
   // search drop a credited claimer's self-review via excludeClaimedSelfWhere.
-  const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
+  const cte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
   let paramIdx = cte.nextIdx;
 
   const appTagParam = `$${paramIdx++}`;

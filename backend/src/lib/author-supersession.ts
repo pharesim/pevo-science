@@ -54,7 +54,7 @@ export function trimAsciiSpace(s: string): string {
  * tab, form feed) from a string. Matches PostgreSQL's
  * `BTRIM(text, E' \t\n\r\x0B\f')` semantics exactly — the same charset
  * the SQL-side `authorsWithSupersessionSelect` projection and the
- * `authorshipClaimsCteBody` ORCID auto-accept arm reference via
+ * consented-authorship chain CTEs' orcid-slot normalization reference via
  * `CHAIN_ORCID_BTRIM_CHARSET` in `hafsql.ts`. Used at JS sites that
  * compare a chain-supplied ORCID claim against a chain-validated ORCID
  * (e.g. the server-override + audit emission path in `papers.ts`).

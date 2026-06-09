@@ -45,7 +45,7 @@ import {
   authorshipClaimsCteBody,
   authorsWithSupersessionSelect,
   retractedPapersCteBody,
-  buildWith,
+  buildWith, buildRecursiveWith,
   validPevoPaperWhere,
   validReviewWhere,
   excludeSelfReviewWhere,
@@ -102,7 +102,7 @@ export async function batchResolveVotes(
   // reputation cycle's accepted_claims gate and excludeClaimedSelfWhere on the
   // review surfaces. Claims are low-cardinality, so fetch them unscoped and skip
   // the matching (paper, voter) pairs in the merge loop below.
-  const claimsCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
+  const claimsCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
 
   const [nativeResult, revoteResult, claimsResult] = await Promise.all([
     // Batch native votes: latest per voter per paper, accredited only, excluding self-votes
@@ -1019,7 +1019,7 @@ async function fetchPapersFromHaf(
   // claimer's self-review from the displayed avg_rating / review_count, mirroring
   // the reputation cycle's accepted_claims gate. active_accreditations is listed
   // first because authorshipClaimsCteBody's ORCID auto-accept arm references it.
-  const cte = buildWith(1, activeAccreditationsCteBody, retractedPapersCteBody, (idx) => authorshipClaimsCteBody(idx));
+  const cte = buildRecursiveWith(1, activeAccreditationsCteBody, retractedPapersCteBody, (idx) => authorshipClaimsCteBody(idx));
   let paramIdx = cte.nextIdx;
   const cteParams: unknown[] = [...cte.params];
 
@@ -3355,7 +3355,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     // authors[].hive) from the enrichment review list, mirroring the cycle gate.
     // Param indices for the reviews query derive from this CTE's nextIdx via the
     // counter below so the prepended CTE params shift them automatically.
-    const detailCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
+    const detailCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
     let drIdx = detailCte.nextIdx;
     const drAuthorIdx = drIdx++;
     const drPermlinkIdx = drIdx++;
@@ -3431,7 +3431,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       resolveVersionsFromHaf(author, permlink, headAuthorsMemo, signal),
       // Authorship claims
       (async () => {
-        const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
+        const cte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
         return pool.query<ClaimsRow>(
           `${cte.sql}
            SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at

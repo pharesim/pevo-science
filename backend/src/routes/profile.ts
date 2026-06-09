@@ -15,7 +15,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
+import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -102,7 +102,7 @@ async function getProfileStats(username: string) {
     // for chained `activeAccreditationsCteBody(N)` consumers.
     // authorship_claims scoped to this profile user so excludeClaimedSelfWhere can
     // drop their self-review of a claimed paper from the review_count stat.
-    const accredCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
+    const accredCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;
     const appTagIdx = paramIdx++;
@@ -270,7 +270,7 @@ async function fetchUserPapersFromHaf(
   // 200 with empty rows for both shapes — clients had no signal to retry.
   try {
     // Build CTEs for authorship claims to include claimed papers
-    const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
+    const cte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
 
     // Base filter for PEvO papers (non-continuation)
     const paperFilter = `parent_author = '' AND parent_permlink = $${cte.nextIdx}
@@ -579,7 +579,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // authorship_claims scoped to the profile user (the only review author here),
     // so excludeClaimedSelfWhere can drop a self-review on a paper this user is a
     // credited claimer of (ORCID / name-only slot — absent from authors[].hive).
-    const accredCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
+    const accredCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;
     const appTagIdx = paramIdx++;

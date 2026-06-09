@@ -1,24 +1,26 @@
 /**
- * Behavioral regression for the authority gate on the reputation cycle's
- * co-author ORCID auto-accept arm (the `accepted_claims` CTE in
- * `reputation.ts`).
+ * Behavioral regression for the authority gate on the attested-ORCID anchor
+ * of the Route-2 consented-set resolution (the `consent_signer_eligibility`
+ * join in `consentedAuthorsCteBody`).
  *
- * The arm auto-accepts a co-author's authorship claim when a paper lists an
- * ORCID at the claimed author_index that matches the claimer's
- * accreditation-attested ORCID. The attested ORCID is now sourced from
+ * An orcid-anchored slot makes an account ELIGIBLE to consent (via
+ * `author_accept`) only when the slot's ORCID matches the account's
+ * accreditation-attested ORCID. The attested ORCID is sourced from
  * `active_accreditations` (composed via `activeAccreditationsCteBody`), whose
  * `accred_ranked` CTE gates on
  * `required_posting_auths ?| accreditationAuthorities` — i.e. an
  * `accredit`/`revoke` op is only trusted when signed by an accreditation
- * authority, never by the broadcaster's own posting key.
+ * authority, never by the broadcaster's own posting key. (There is no
+ * metadata auto-accept anymore; the anchor gates ELIGIBILITY, and the
+ * explicit accept op confers consent.)
  *
  * Exploit this closes: an already-accredited attacker reads a victim paper's
  * public on-chain ORCID V, self-broadcasts an `accredit` op (signed with
  * their OWN posting auth, not an authority) setting their attested ORCID to
- * V, then claims authorship at the matching author_index. Pre-gate, the
- * self-attested V drove the auto-accept and the attacker accrued co-author
- * reputation credit on a paper they did not author, every cycle. The gate
- * drops the self-signed attestation so the claim no longer auto-accepts.
+ * V, then broadcasts `author_accept` for the paper. Without the gate, the
+ * self-attested V would anchor the attacker to the slot and their accept
+ * would accrue co-author credit on a paper they did not author, every cycle.
+ * The gate drops the self-signed attestation so the accept stays inert.
  *
  * **Carve-out clause-(c) justification:** synthetic-VALUES against real
  * Postgres (the `${T.customJson}` view reference in the production
@@ -32,17 +34,17 @@
  *   (b) `verifyHiveSignature` is NOT mocked — this is a SQL-level computation
  *       test, not a route test. Real Postgres evaluates the `?|` authority
  *       gate; only the rowset is synthetic.
- *   (c) Real-path companion: the admin-authority `?` gate on
- *       `retractedPapersCteBody` is exercised the same way in
- *       `hafsql.test.ts`, and the accreditation membership the cycle's
- *       `$2` accredited set depends on flows through the same
- *       `activeAccreditationsCteBody` gate against real HAF in the broader
- *       reputation/accreditation suites. The risk class pinned here is the
- *       co-author ORCID auto-accept arm trusting only authority-signed
- *       attestations.
+ *   (c) Real-path companion: the full Route-2 resolution (production
+ *       `consentChainCteBody` + `consentedAuthorsCteBody` stack) runs on a
+ *       real planner in `consented-authors-cte-real-postgres.test.ts`,
+ *       including the self-signed-attestation attacker scenario; the
+ *       admin-authority `?` gate on `retractedPapersCteBody` is exercised
+ *       the same way in `hafsql.test.ts`. The risk class pinned here is the
+ *       eligibility join trusting only authority-signed attestations.
  *
  * The test runs the production `activeAccreditationsCteBody` fragment (only
- * its HAF-view reference is redirected to the synthetic CTE), so reverting
+ * its HAF-view reference is redirected to the synthetic CTE) under a mirror
+ * of `consent_signer_eligibility`'s attested-ORCID join, so reverting
  * the `required_posting_auths ?|` gate turns the attacker assertion red.
  */
 import { describe, it, expect } from 'vitest';
@@ -50,17 +52,18 @@ import { getPool, isHafConfigured } from '../../src/db.js';
 import { T, CHAIN_ORCID_BTRIM_CHARSET, activeAccreditationsCteBody } from '../../src/hafsql.js';
 import { config } from '../../src/config.js';
 
-describe('reputation ORCID auto-accept arm — accreditation authority gate (synthetic-VALUES)', () => {
+describe('Route-2 attested-ORCID anchor — accreditation authority gate (synthetic-VALUES)', () => {
   it.skipIf(!isHafConfigured())(
-    'a self-signed (non-authority) accredit op does NOT drive auto-accept; an authority-signed one does',
+    'a self-signed (non-authority) accredit op does NOT anchor eligibility; an authority-signed one does',
     { timeout: 30_000 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) return ctx.skip(true, 'no pool available');
 
-      // The ORCID the victim paper publicly lists at author_index 0. Both the
-      // attacker and the legit co-author self-report this as their attested
-      // ORCID; only the authority-signed attestation should be trusted.
+      // The ORCID the victim paper publicly lists on an authors[] slot. Both
+      // the attacker and the legit co-author self-report this as their
+      // attested ORCID; only the authority-signed attestation should anchor
+      // Route-2 eligibility.
       const V = '0000-0001-1234-5678';
       // Deterministic test authority, independent of the deployment's
       // configured ACCREDITATION_AUTHORITIES. The production fragment's `?|`
@@ -97,31 +100,34 @@ describe('reputation ORCID auto-accept arm — accreditation authority gate (syn
         ),
         ${redirected}
         SELECT EXISTS (
+          -- Mirror of consent_signer_eligibility's attested-ORCID join: the
+          -- slot's BTRIM-normalized orcid must equal the account's
+          -- authority-attested orcid for the account to be Route-2 eligible.
           SELECT 1 FROM synthetic_paper c
           JOIN active_accreditations aa ON aa.account = $17
           WHERE c.author = 'victim' AND c.permlink = 'p1' AND c.parent_author = ''
             AND aa.orcid IS NOT NULL AND aa.orcid != ''
             AND BTRIM(c.json_metadata -> $1 -> 'authors' -> 0 ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') = aa.orcid
-        ) AS accepted
+        ) AS eligible
       `;
 
       // Attacker self-attested V with their own posting auth → dropped by the
-      // `?|` authority gate → not in active_accreditations → claim NOT
-      // auto-accepted. Reverting the gate would admit the self-signed op and
-      // flip this to true.
+      // `?|` authority gate → not in active_accreditations → NOT eligible to
+      // anchor the slot. Reverting the gate would admit the self-signed op
+      // and flip this to true.
       const attacker = await pool.query(sql, [...params, 'attacker']);
       expect(
-        attacker.rows[0].accepted,
-        'a self-signed (non-authority) accredit op must NOT drive auto-accept',
+        attacker.rows[0].eligible,
+        'a self-signed (non-authority) accredit op must NOT anchor Route-2 eligibility',
       ).toBe(false);
 
       // Legit co-author attested V via an authority-signed op → admitted →
-      // claim auto-accepts (control: the gate does not over-reject genuine
+      // eligible to consent (control: the gate does not over-reject genuine
       // authority attestations).
       const legit = await pool.query(sql, [...params, 'legit']);
       expect(
-        legit.rows[0].accepted,
-        'an authority-signed accredit op must still drive auto-accept',
+        legit.rows[0].eligible,
+        'an authority-signed accredit op must still anchor Route-2 eligibility',
       ).toBe(true);
     },
   );

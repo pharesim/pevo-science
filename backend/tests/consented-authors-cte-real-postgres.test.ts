@@ -46,6 +46,7 @@ import { config } from '../src/config.js';
 import {
   T,
   activeAccreditationsCteBody,
+  authorshipClaimsCteBody,
   consentChainCteBody,
   consentedAuthorsCteBody,
   buildRecursiveWith,
@@ -122,8 +123,22 @@ const CUSTOM_JSONS = [
   cjOp('revoke_authorship', 'attacker', { claimer: 'carol', paper_author: 'alice', paper_permlink: 'p1' }, 510, 208),
   // Forged accept by an account no slot anchors → inert.
   cjOp('author_accept', 'attacker', { root_author: 'alice', root_permlink: 'p1' }, 520, 209),
+  // Self-signed (non-authority) attestation attack: imposter self-attests
+  // carol's slot ORCID and accepts. The authority gate drops the
+  // attestation, so the accept anchors nothing → NOT consented.
+  cjOp('accredit', 'imposter', { account: 'imposter', orcid: CAROL_ORCID }, 55, 104),
+  cjOp('author_accept', 'imposter', { root_author: 'alice', root_permlink: 'p1' }, 530, 212),
   // greta resigns her own root paper → Route-1 demotion.
   cjOp('author_resign', 'greta', { root_author: 'greta', root_permlink: 'p4' }, 700, 211),
+  // Route 3: davesacct claims the name-only "Dave D" slot (display index 3)
+  // and alice approves → accepted.
+  cjOp('claim_authorship', 'davesacct', { paper_author: 'alice', paper_permlink: 'p1', author_index: 3 }, 600, 220),
+  cjOp('approve_authorship', 'alice', { claimer: 'davesacct', paper_author: 'alice', paper_permlink: 'p1', author_index: 3 }, 610, 221),
+  // Route-3 rejection on an ANCHORED slot: sneaky claims display index 1
+  // (bob's hive-anchored slot) and alice approves — the name-only gate
+  // keeps it pending (anchored slots consent via Route 2 only).
+  cjOp('claim_authorship', 'sneaky', { paper_author: 'alice', paper_permlink: 'p1', author_index: 1 }, 620, 222),
+  cjOp('approve_authorship', 'alice', { claimer: 'sneaky', paper_author: 'alice', paper_permlink: 'p1', author_index: 1 }, 630, 223),
 ];
 
 /**
@@ -291,6 +306,43 @@ describe.skipIf(!pool)('consentedAuthorsCteBody — Route 1/2 resolution (real P
     expect(rows).toEqual([
       { root_author: 'alice', root_permlink: 'p1', account: 'carol' },
       { root_author: 'alice', root_permlink: 'p1', account: 'zara' },
+    ]);
+  });
+});
+
+describe.skipIf(!pool)('authorshipClaimsCteBody — Route 3 over the chain union (real Postgres)', () => {
+  async function claimStatuses() {
+    const cte = buildRecursiveWith(1, (idx) =>
+      authorshipClaimsCteBody(idx, { paperAuthor: 'alice', paperPermlink: 'p1' }));
+    let sql = cte.sql;
+    sql = sql.split(T.comments).join('syn_comments');
+    sql = sql.split(T.commentOps).join('syn_comment_ops');
+    sql = sql.split(T.customJson).join('syn_cj');
+    expect(sql).not.toContain('hafsql.');
+    const result = await client!.query(
+      `${sql} SELECT claimer, status FROM authorship_claims ORDER BY claimer`,
+      cte.params,
+    );
+    return result.rows as Array<{ claimer: string; status: string }>;
+  }
+
+  it('accepts a name-only claim + author approval; rejects a claim on an anchored slot', async () => {
+    const rows = await claimStatuses();
+    // The exact-set assertion is ALSO the `isApprovedCoAuthor` (claims.ts)
+    // authority pin: the accepted set contains ONLY explicit name-only
+    // claim+approve rows. Anchored co-authors (bob's hive slot, carol's
+    // attested-ORCID accept) have NO authorship_claims row, so they carry no
+    // bridge co-sign authority — a deliberate behavior change from the
+    // removed auto-accept arms, under which an ORCID/hive match alone
+    // granted it.
+    expect(rows).toEqual([
+      // davesacct claimed the name-only "Dave D" slot at display index 3 and
+      // alice approved → accepted.
+      { claimer: 'davesacct', status: 'accepted' },
+      // sneaky claimed bob's hive-anchored slot at display index 1; even with
+      // alice's approval the name-only gate keeps it pending (anchored slots
+      // are Route-2-only; there is no metadata auto-accept either).
+      { claimer: 'sneaky', status: 'pending' },
     ]);
   });
 });

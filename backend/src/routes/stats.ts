@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere } from '../hafsql.js';
+import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere } from '../hafsql.js';
 import { getBatchReputationMap } from '../reputation.js';
 import { getAllAccreditedAccounts } from '../accreditation.js';
 
@@ -25,7 +25,7 @@ export async function fetchStatsFromHaf() {
   if (!pool) return null;
 
   try {
-    const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
+    const cte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%
     const anon = `$${cte.nextIdx + 2}`; // anonymous review account

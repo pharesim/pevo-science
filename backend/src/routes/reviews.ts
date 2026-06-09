@@ -6,7 +6,7 @@ import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
-import { T, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, validPevoPaperWhere } from '../hafsql.js';
+import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, validPevoPaperWhere } from '../hafsql.js';
 
 const router = Router();
 
@@ -48,7 +48,7 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     // authorship_claims (unscoped — claim ops are low-cardinality) lets the
     // single-review fetch 404 a credited claimer's self-review via
     // excludeClaimedSelfWhere, matching the listing/profile/search/stats surfaces.
-    const accredCte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
+    const accredCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
     // PEvO object-identity gate: a review is only a PEvO review if its author
     // is in `active_accreditations` OR equals `config.hiveAnonAccount`
     // (anon-proxy authoring on behalf of an accredited reviewer). Without

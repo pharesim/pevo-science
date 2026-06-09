@@ -12,7 +12,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, activeAccreditationsCteBody, authorshipClaimsCteBody, decayMultiplierSql } from './hafsql.js';
+import { T, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, activeAccreditationsCteBody, authorshipClaimsCteBody, consentChainCteBody, consentedAuthorsCteBody, decayMultiplierSql } from './hafsql.js';
 
 // ─── Batch key helpers ──────────────────────────────────────────
 
@@ -506,16 +506,19 @@ export async function startReputationWeightsCache(): Promise<void> {
  *       profile.ts / reviews.ts).
  * $19 = config.appTag, $20 = config.accreditationAuthorities — the
  *       authority-gated active_accreditations CTE (composed via
- *       activeAccreditationsCteBody) backing the co-author ORCID auto-accept
- *       arm in the shared claims builder; only authority-signed accredit/revoke
- *       ops are trusted.
- * $21-$25 = the shared `authorshipClaimsCteBody` allocation (appTag, appTag,
- *       bridge, claimers[] scope, admin), composed after active_accreditations.
- *       The cycle's accepted_claims is now the `status = 'accepted'` projection
- *       of that builder's authorship_claims CTE instead of an inline copy, so the
- *       revoke/approve signer gates (admin re-bound at $25 per hive-schemas.md
- *       §2.11) and the ORCID/hive auto-accept arms live in one place shared with
- *       the read surfaces.
+ *       activeAccreditationsCteBody) backing the Route-2 attested-ORCID
+ *       anchor in the shared consented-set resolution; only authority-signed
+ *       accredit/revoke ops are trusted.
+ * $21+ = the shared `authorshipClaimsCteBody` allocation (appTag, bridge,
+ *       claimers[] scope, admin, then the builder's internal claims_-prefixed
+ *       chain backbone binds appTag + bridge), composed after
+ *       active_accreditations. The cycle's accepted_claims is the
+ *       `status = 'accepted'` projection of that builder's authorship_claims
+ *       CTE instead of an inline copy, so the revoke/approve signer gates and
+ *       the chain-aware name-only list-final gate live in one place shared
+ *       with the read surfaces. There is NO metadata auto-accept arm:
+ *       anchored slots earn credit only through Route-2 `author_accept`
+ *       (the consented-set), name-only slots only through claim + approve.
  *
  * The same FOUR review CTEs also compose `excludeSelfReviewWhere` so
  * paper-authors and named co-authors reviewing their own paper are
@@ -593,15 +596,24 @@ export async function computeReputationBatch(
 
     // Shared authorship-claims resolution: the cycle consumes the SAME builder as
     // the read surfaces instead of an inline copy. Scoped to the target users
-    // ({claimers}); allocates $21-$25 (appTag, appTag, bridge, claimers, admin) in
-    // the slots after the cycle's hand-numbered $1-$20 block. $21 — formerly a
-    // standalone admin bind for the inline revoke gate — is reclaimed by the
-    // builder, which re-binds the admin signer at $25; no existing $1-$20
-    // placeholder shifts. The builder's authorship_claims CTE is projected to
-    // accepted_claims (status='accepted') in the WITH chain below; it MUST be
-    // composed after activeAccreditationsCteBody(19) (its ORCID arm joins
-    // active_accreditations).
+    // ({claimers}); allocates $21+ (appTag, bridge, claimers, admin, then the
+    // builder's internal claims_-prefixed chain backbone binds appTag + bridge)
+    // in the slots after the cycle's hand-numbered $1-$20 block; no existing
+    // $1-$20 placeholder shifts. The builder's authorship_claims CTE is
+    // projected to accepted_claims (status='accepted') in the WITH chain below.
+    // The builder embeds recursive CTEs, so the outer query MUST say
+    // WITH RECURSIVE.
     const claimsCte = authorshipClaimsCteBody(21, { claimers: usernames });
+    // Route-2 consented-set resolution (the shared consentChainCteBody /
+    // consentedAuthorsCteBody stack the read surfaces also consume). The
+    // chain walk is seeded from `consent_seed` — the papers referenced by
+    // consent-relevant ops involving the target users (accept/resign signed
+    // by them, revokes naming them) — so the recursive walk is bounded by
+    // the batch's consent activity, not corpus size. The {signers} scope
+    // narrows the resolved accounts to the batch, mirroring the {claimers}
+    // scope on the claims builder.
+    const chainCte = consentChainCteBody(claimsCte.nextIdx, { rootsFromCte: 'consent_seed' });
+    const consentedCte = consentedAuthorsCteBody(chainCte.nextIdx, { signers: usernames });
 
     const result = await queryWithStatementTimeout<{
       username: string;
@@ -613,7 +625,7 @@ export async function computeReputationBatch(
     }>(
       pool,
       BATCH_QUERY_TIMEOUT_MS,
-      `WITH
+      `WITH RECURSIVE
 
       -- Cast weight parameters once
       w AS (SELECT
@@ -712,41 +724,70 @@ export async function computeReputationBatch(
         LEFT JOIN active_authors aa ON aa.author = a.voter
       ),
 
-      -- ═══ AUTHORSHIP CLAIMS (for co-author credit) ═══
-      -- Authority-gated accreditation source for the co-author ORCID
-      -- auto-accept arm below. accred_ranked applies the
+      -- ═══ AUTHORSHIP CONSENT (for co-author credit) ═══
+      -- Authority-gated accreditation source for the Route-2 attested-ORCID
+      -- anchor below. accred_ranked applies the
       -- required_posting_auths ?| accreditationAuthorities gate, so only an
       -- accredit/revoke op signed by an accreditation authority is trusted; a
       -- self-signed op (the broadcaster's own posting auth) never enters
-      -- active_accreditations. This is the same gated source the read-surface
-      -- authorshipClaimsCteBody ORCID arm joins, so the cycle and the read
-      -- surfaces agree on which ORCID attestations are valid. Sourcing the
-      -- auto-accept ORCID here (rather than re-reading raw accredit ops)
-      -- removes the divergence class entirely; a revoke clears the account
-      -- from active_accreditations so a prior attestation stops matching.
+      -- active_accreditations. This is the same gated source the shared
+      -- consentedAuthorsCteBody eligibility join reads, so the cycle and the
+      -- read surfaces agree on which ORCID attestations are valid; a revoke
+      -- clears the account from active_accreditations so a prior attestation
+      -- stops anchoring.
       ${activeAccreditationsCteBody(19).sql},
-      -- Shared claims resolution: the cycle composes the SAME builder the read
-      -- surfaces use (papers/profile/search/stats) instead of an inline copy that
-      -- mirrored it line-for-line. The builder emits claim_events / claims_base /
-      -- approvals / revocations / authorship_claims, scoped to the target-user
-      -- claimers via the {claimers} variant. It MUST follow active_accreditations
-      -- (the builder's ORCID arm joins it). The revoke / approve signer gates,
-      -- list-final slot gate, and ORCID-trim / hive-match auto-accept arms all
-      -- live in the builder now — pinned by the read-surface tests
-      -- (authorship-*-signer-gate, hafsql.test.ts) so the cycle and read surfaces
-      -- can no longer drift.
+      -- Shared Route-3 claims resolution: the cycle composes the SAME builder
+      -- the read surfaces use (papers/profile/search/stats) instead of an
+      -- inline copy. The builder emits claim_events / claims_base / its
+      -- claims_-prefixed chain backbone / approvals / revocations /
+      -- authorship_claims, scoped to the target-user claimers via the
+      -- {claimers} variant. The revoke / approve signer gates and the
+      -- chain-aware name-only list-final gate live in the builder — pinned by
+      -- the read-surface tests (authorship-*-signer-gate, hafsql.test.ts) so
+      -- the cycle and read surfaces cannot drift. There is NO metadata
+      -- auto-accept arm: anchored slots earn credit only through the Route-2
+      -- consented-set below.
       ${claimsCte.sql},
-      -- accepted_claims is the thin status='accepted' projection of the builder's
-      -- authorship_claims CTE — byte-identical to the prior inline resolution:
-      -- status='accepted' ⟺ NOT revoked AND (approval+list-final OR ORCID OR
-      -- hive). SELECT DISTINCT collapses to the (claimer, paper_author,
-      -- paper_permlink) key user_papers and the self-dealing NOT EXISTS gates
-      -- join on.
+      -- accepted_claims is the thin status='accepted' projection of the
+      -- builder's authorship_claims CTE: status='accepted' ⟺ NOT revoked AND
+      -- explicit approval AND author_index resolves to a name-only slot in
+      -- the cumulative-chain union. SELECT DISTINCT collapses to the
+      -- (claimer, paper_author, paper_permlink) key user_papers and the
+      -- self-dealing NOT EXISTS gates join on.
       accepted_claims AS (
         SELECT DISTINCT claimer, paper_author, paper_permlink
         FROM authorship_claims
         WHERE status = 'accepted'
       ),
+      -- Seed for the Route-2 chain walk: every paper cited by a consent op
+      -- involving a target user (accept/resign they signed, or a revoke
+      -- naming them). Papers with no batch-relevant consent activity never
+      -- enter the walk, so its cost tracks consent-op volume, not corpus
+      -- size. Native root credit does NOT depend on this seed (the native
+      -- user_papers arm below credits the broadcaster directly); the seed
+      -- only needs to cover papers where a Route-2 accept or a demotion
+      -- could change the credited set.
+      consent_seed AS (
+        SELECT DISTINCT cj.json::jsonb ->> 'root_author' AS paper_author,
+               cj.json::jsonb ->> 'root_permlink' AS paper_permlink
+        FROM ${T.customJson} cj
+        WHERE cj.custom_id = $3
+          AND cj.json::jsonb ->> 'action' IN ('author_accept', 'author_resign')
+          AND cj.required_posting_auths ->> 0 = ANY($1::text[])
+        UNION
+        SELECT DISTINCT cj.json::jsonb ->> 'paper_author',
+               cj.json::jsonb ->> 'paper_permlink'
+        FROM ${T.customJson} cj
+        WHERE cj.custom_id = $3
+          AND cj.json::jsonb ->> 'action' = 'revoke_authorship'
+          AND cj.json::jsonb ->> 'claimer' = ANY($1::text[])
+      ),
+      -- Route-2 consented-set: the unprefixed shared chain backbone over the
+      -- seeded papers, then consented_authors (root broadcaster + anchored
+      -- author_accept, resign/revoke demotions, latest-op-wins). Composed
+      -- after active_accreditations (the orcid-anchor eligibility joins it).
+      ${chainCte.sql},
+      ${consentedCte.sql},
 
       -- ═══ PAPERS ═══
       -- Each row carries two identities: author is the credit recipient (the
@@ -763,7 +804,12 @@ export async function computeReputationBatch(
       -- chain post's permlink); only the author identity diverges, but both
       -- chain columns are projected for symmetric, self-evident joins.
       user_papers AS (
-        -- Papers authored by user (native only — see validPevoPaperWhere 'native' arm)
+        -- Papers authored by user (native only — see validPevoPaperWhere 'native'
+        -- arm). Route 1 of the consent model: the root broadcaster is implicitly
+        -- consented by the post signature. The NOT EXISTS demotion guard honors
+        -- a later author_resign / revoke naming the broadcaster themself
+        -- (route2_latest only carries rows for batch-seeded papers, so papers
+        -- with no consent activity pass the guard without touching the walk).
         SELECT c.author, c.permlink, c.created, c.json_metadata,
                c.author AS chain_author, c.permlink AS chain_permlink
         FROM ${T.comments} c
@@ -772,12 +818,18 @@ export async function computeReputationBatch(
           AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$17', source: 'native' })}
           AND c.json_metadata ->> 'app' LIKE $4
           AND (c.json_metadata -> $3 -> 'continues') IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM route2_latest rl
+            WHERE rl.root_author = c.author AND rl.root_permlink = c.permlink
+              AND rl.account = c.author AND rl.rn = 1 AND rl.action != 'author_accept'
+          )
         UNION ALL
-        -- Papers claimed by user (co-author credit) — bridge_paper claims allowed
-        -- but only when authored by config.hiveBridgeAccount; spoofed bridge_paper
-        -- can't grant unearned co-author credit. Credit recipient is the claimer;
-        -- the chain identity stays the original post (ac.paper_author/permlink =
-        -- c.author/permlink via the join).
+        -- Papers claimed by user (Route 3 — name-only claim + approve) —
+        -- bridge_paper claims allowed but only when authored by
+        -- config.hiveBridgeAccount; spoofed bridge_paper can't grant unearned
+        -- co-author credit. Credit recipient is the claimer; the chain identity
+        -- stays the original post (ac.paper_author/permlink = c.author/permlink
+        -- via the join).
         SELECT ac.claimer AS author, c.permlink, c.created, c.json_metadata,
                c.author AS chain_author, c.permlink AS chain_permlink
         FROM accepted_claims ac
@@ -787,6 +839,32 @@ export async function computeReputationBatch(
           AND c.json_metadata ->> 'app' LIKE $4
           AND (c.json_metadata -> $3 -> 'continues') IS NULL
           AND ac.claimer != c.author  -- avoid double-counting
+        UNION ALL
+        -- Papers consented by user (Route 2 — author_accept on a slot anchored
+        -- by their hive handle or attested ORCID; demotions already resolved
+        -- inside consented_authors). Same shape as the claims arm: credit
+        -- recipient is the consented account, chain identity stays the
+        -- original post. The root broadcaster's own row is excluded — their
+        -- credit flows through the native arm (avoid double-counting).
+        SELECT ca.account AS author, c.permlink, c.created, c.json_metadata,
+               c.author AS chain_author, c.permlink AS chain_permlink
+        FROM consented_authors ca
+        JOIN ${T.comments} c ON c.author = ca.root_author AND c.permlink = ca.root_permlink
+        WHERE c.parent_author = '' AND c.parent_permlink = $3
+          AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$17', source: 'all' })}
+          AND c.json_metadata ->> 'app' LIKE $4
+          AND (c.json_metadata -> $3 -> 'continues') IS NULL
+          AND ca.account != c.author  -- avoid double-counting vs the native arm
+          AND NOT EXISTS (
+            -- avoid double-counting vs the claims arm: an account credited via
+            -- BOTH routes on one paper must contribute exactly one
+            -- user_papers row (totals SUMs per row; two rows would double the
+            -- paper's score for that recipient)
+            SELECT 1 FROM accepted_claims ac2
+            WHERE ac2.paper_author = ca.root_author
+              AND ac2.paper_permlink = ca.root_permlink
+              AND ac2.claimer = ca.account
+          )
       ),
 
       -- Distinct on-chain papers credited to at least one target user (via the
@@ -920,19 +998,25 @@ export async function computeReputationBatch(
               AND LOWER(TRIM(a ->> 'hive')) = plv.voter
           )
           AND NOT EXISTS (
-            -- Claimer self-vote exclusion (list-final self-dealing close): a
-            -- credited claimer of THIS chain post must not upvote it to inflate
-            -- their own co-author reputation. The authors[].hive exclusion above
-            -- misses claimers connected via ORCID match or a name-only slot —
-            -- their hive is absent from the raw on-chain authors[] — so without
-            -- this gate an ORCID/name-only claimer self-votes into their own
-            -- credit once the chain-identity rekey makes claimed papers score.
-            -- accepted_claims is the authoritative credited-claimer set for the
+            -- Credited self-vote exclusion (self-dealing close): a credited
+            -- co-author of THIS chain post — Route-3 claimer OR Route-2
+            -- consented — must not upvote it to inflate their own co-author
+            -- reputation. The authors[].hive exclusion above misses accounts
+            -- connected via ORCID match or a name-only slot — their hive is
+            -- absent from the raw on-chain authors[] — so without this gate
+            -- such a credited account self-votes into their own credit.
+            -- accepted_claims ∪ consented_authors is the credited set for the
             -- post (plv.author/plv.permlink are the chain post coords).
             SELECT 1 FROM accepted_claims ac
             WHERE ac.paper_author = plv.author
               AND ac.paper_permlink = plv.permlink
               AND ac.claimer = plv.voter
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM consented_authors ca
+            WHERE ca.root_author = plv.author
+              AND ca.root_permlink = plv.permlink
+              AND ca.account = plv.voter
           )
       ),
 
@@ -972,17 +1056,23 @@ export async function computeReputationBatch(
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
           AND ${excludeSelfReviewWhere({ paperRowAlias: 'cp', appTagParam: '$3' })}
           AND NOT EXISTS (
-            -- Claimer self-review exclusion (list-final self-dealing close):
-            -- mirror of the paper_resolved_votes claimer gate. excludeSelfReviewWhere
-            -- above rejects the chain poster + authors[].hive members; a claimer
-            -- connected via ORCID or a name-only slot is in neither set, so without
-            -- this an ORCID/name-only claimer could 5/5/5/5 self-review the paper
-            -- they are credited for and drive pr.quality toward the max multiplier
-            -- on their own co-author score.
+            -- Credited self-review exclusion (self-dealing close): mirror of
+            -- the paper_resolved_votes credited gate. excludeSelfReviewWhere
+            -- above rejects the chain poster + authors[].hive members; an
+            -- account credited via an ORCID-anchored accept or a name-only
+            -- claim is in neither set, so without this a credited co-author
+            -- could 5/5/5/5 self-review the paper they are credited for and
+            -- drive pr.quality toward the max multiplier on their own score.
             SELECT 1 FROM accepted_claims ac
             WHERE ac.paper_author = cp.author
               AND ac.paper_permlink = cp.permlink
               AND ac.claimer = c.author
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM consented_authors ca
+            WHERE ca.root_author = cp.author
+              AND ca.root_permlink = cp.permlink
+              AND ca.account = c.author
           )
           AND (c.author = ANY($2::text[]) OR c.author = $18)
         GROUP BY cp.author, cp.permlink
@@ -1339,11 +1429,16 @@ export async function computeReputationBatch(
                                           //  never matches)
         config.appTag,                    // $19 (active_accreditations custom_id)
         config.accreditationAuthorities,  // $20 (required_posting_auths ?| authority gate)
-        // $21-$25: shared authorshipClaimsCteBody allocation (appTag, appTag,
-        // bridge, claimers[], admin) — see the claimsCte capture above. The
-        // builder re-binds the admin signer (its revoke gate) at $25, replacing
-        // the cycle's former standalone $21 admin bind.
+        // $21+: shared authorshipClaimsCteBody allocation (appTag, bridge,
+        // claimers[], admin, internal chain backbone appTag + bridge), then
+        // the Route-2 consentChainCteBody (appTag, bridge) and
+        // consentedAuthorsCteBody (appTag, bridge, admin, signers[])
+        // allocations — see the claimsCte / chainCte / consentedCte captures
+        // above. Spread order MUST match the capture order since each
+        // fragment numbers its placeholders from the previous nextIdx.
         ...claimsCte.params,
+        ...chainCte.params,
+        ...consentedCte.params,
       ],
     );
 

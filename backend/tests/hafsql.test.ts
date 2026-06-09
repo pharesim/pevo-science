@@ -6,6 +6,7 @@ import {
   authorshipClaimsCteBody,
   authorsWithSupersessionSelect,
   buildWith,
+  buildRecursiveWith,
   retractedPapersCteBody,
   validPevoPaperWhere,
   validReviewWhere,
@@ -74,7 +75,7 @@ describe('authorshipClaimsCteBody scope', () => {
         return;
       }
 
-      const unscoped = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
+      const unscoped = buildRecursiveWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
       const unscopedRows = (await queryWithRetry(pool, 
         `${unscoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         unscoped.params,
@@ -88,7 +89,7 @@ describe('authorshipClaimsCteBody scope', () => {
 
       const expected = unscopedRows.filter((r) => r.claimer === sampleClaimer);
 
-      const scoped = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: sampleClaimer }));
+      const scoped = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: sampleClaimer }));
       const scopedRows = (await queryWithRetry(pool, 
         `${scoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         scoped.params,
@@ -108,7 +109,7 @@ describe('authorshipClaimsCteBody scope', () => {
         return;
       }
 
-      const unscoped = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
+      const unscoped = buildRecursiveWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
       const unscopedRows = (await queryWithRetry(pool,
         `${unscoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         unscoped.params,
@@ -127,7 +128,7 @@ describe('authorshipClaimsCteBody scope', () => {
       const claimers = [sampleClaimer];
       const expected = unscopedRows.filter((r) => claimers.includes(r.claimer as string));
 
-      const scoped = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimers }));
+      const scoped = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimers }));
       const scopedRows = (await queryWithRetry(pool,
         `${scoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         scoped.params,
@@ -147,7 +148,7 @@ describe('authorshipClaimsCteBody scope', () => {
         return;
       }
 
-      const unscoped = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
+      const unscoped = buildRecursiveWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
       const unscopedRows = (await queryWithRetry(pool, 
         `${unscoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         unscoped.params,
@@ -165,7 +166,7 @@ describe('authorshipClaimsCteBody scope', () => {
         (r) => r.paper_author === paperAuthor && r.paper_permlink === paperPermlink,
       );
 
-      const scoped = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor, paperPermlink }));
+      const scoped = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor, paperPermlink }));
       const scopedRows = (await queryWithRetry(pool, 
         `${scoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         scoped.params,
@@ -183,49 +184,55 @@ describe('authorshipClaimsCteBody scope', () => {
  * wrong value).
  */
 describe('authorshipClaimsCteBody param arithmetic', () => {
-  // Base params: [appTag, appTag, hiveBridgeAccount, ...scope, hiveAdminAccount].
-  // The bridge account backs the §2.10 approve signer gate; the admin account
-  // (appended LAST, after any scope params, so the bridge/scope indices stay
-  // fixed) backs the §2.11 revoke signer gate in the revoked arm. The inert
-  // genesis-block floor was dropped, so the base carries no genesisBlock bind.
-  it('unscoped: bridge + admin around an empty scope, nextIdx advances by 4', () => {
+  // Base params: [appTag, hiveBridgeAccount, ...scope, hiveAdminAccount,
+  // appTag, hiveBridgeAccount]. The bridge account backs the approve signer
+  // gate; the admin account (appended after any scope params, so the
+  // bridge/scope indices stay fixed) backs the revoke signer gate in the
+  // revoked arm; the trailing appTag + bridge pair belongs to the builder's
+  // internal claims_-prefixed chain backbone (consentChainCteBody seeded
+  // from claims_base — the rootsFromCte variant binds no extra params). The
+  // inert genesis-block floor was dropped, so the base carries no
+  // genesisBlock bind.
+  it('unscoped: bridge + admin around an empty scope + chain pair, nextIdx advances by 5', () => {
     const frag = authorshipClaimsCteBody(5);
-    // $5/$6 appTag, $7 bridge, $8 admin → four $N consumed, nextIdx 9.
-    expect(frag.params).toHaveLength(4);
-    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
-    expect(frag.params[3]).toBe(config.hiveAdminAccount);
-    expect(frag.nextIdx).toBe(9);
-  });
-
-  it('claimer scope inserts 1 param between bridge and admin, nextIdx advances by 5', () => {
-    const frag = authorshipClaimsCteBody(5, { claimer: 'alice' });
+    // $5 appTag, $6 bridge, $7 admin, $8/$9 chain appTag + bridge → nextIdx 10.
     expect(frag.params).toHaveLength(5);
-    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
-    expect(frag.params[3]).toBe('alice');
-    expect(frag.params[4]).toBe(config.hiveAdminAccount);
+    expect(frag.params[1]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[2]).toBe(config.hiveAdminAccount);
+    expect(frag.params[3]).toBe(config.appTag);
+    expect(frag.params[4]).toBe(config.hiveBridgeAccount);
     expect(frag.nextIdx).toBe(10);
   });
 
-  it('claimers (array) scope inserts 1 array param between bridge and admin, nextIdx advances by 5', () => {
+  it('claimer scope inserts 1 param between bridge and admin, nextIdx advances by 6', () => {
+    const frag = authorshipClaimsCteBody(5, { claimer: 'alice' });
+    expect(frag.params).toHaveLength(6);
+    expect(frag.params[1]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[2]).toBe('alice');
+    expect(frag.params[3]).toBe(config.hiveAdminAccount);
+    expect(frag.nextIdx).toBe(11);
+  });
+
+  it('claimers (array) scope inserts 1 array param between bridge and admin, nextIdx advances by 6', () => {
     const frag = authorshipClaimsCteBody(5, { claimers: ['alice', 'bob'] });
     // Same single-param-slot arithmetic as the claimer scope, but the bound value
     // is the text[] array (consumed by `= ANY($N::text[])`). The reputation cycle
-    // depends on this slot landing between bridge ($7) and admin ($9).
-    expect(frag.params).toHaveLength(5);
-    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
-    expect(frag.params[3]).toEqual(['alice', 'bob']);
-    expect(frag.params[4]).toBe(config.hiveAdminAccount);
-    expect(frag.nextIdx).toBe(10);
+    // depends on this slot landing between bridge ($6) and admin ($8).
+    expect(frag.params).toHaveLength(6);
+    expect(frag.params[1]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[2]).toEqual(['alice', 'bob']);
+    expect(frag.params[3]).toBe(config.hiveAdminAccount);
+    expect(frag.nextIdx).toBe(11);
   });
 
-  it('paper scope inserts 2 params between bridge and admin, nextIdx advances by 6', () => {
+  it('paper scope inserts 2 params between bridge and admin, nextIdx advances by 7', () => {
     const frag = authorshipClaimsCteBody(5, { paperAuthor: 'bob', paperPermlink: 'p-1' });
-    expect(frag.params).toHaveLength(6);
-    expect(frag.params[2]).toBe(config.hiveBridgeAccount);
-    expect(frag.params[3]).toBe('bob');
-    expect(frag.params[4]).toBe('p-1');
-    expect(frag.params[5]).toBe(config.hiveAdminAccount);
-    expect(frag.nextIdx).toBe(11);
+    expect(frag.params).toHaveLength(7);
+    expect(frag.params[1]).toBe(config.hiveBridgeAccount);
+    expect(frag.params[2]).toBe('bob');
+    expect(frag.params[3]).toBe('p-1');
+    expect(frag.params[4]).toBe(config.hiveAdminAccount);
+    expect(frag.nextIdx).toBe(12);
   });
 });
 
@@ -768,64 +775,48 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
 });
 
 /**
- * Hive-username auto-accept arm of `authorshipClaimsCteBody` — broadcaster-
- * controlled `authors[i].hive` must be canonicalized via LOWER(TRIM(...))
- * plus the Hive-account charset regex before byte-equality against the
- * chain-validated lowercase `cb.claimer`. Without normalization, a
- * mid-case entry (`{hive: 'Alice'}`) leaves a legitimate co-author's claim
- * pending; with normalization, the claim auto-accepts as the spec intends.
- *
- * Synthetic-VALUES approach mirrors the `paper_resolved_votes` test below:
- * the production CTE chains many tables (`active_accreditations`, the
- * comments table, the claim-events custom_json projection); rebuilding the
- * full chain with seeded data per shape per test is impractical. The
- * assertion shape (admit/reject against the auto-accept arm) is exactly
- * what the test-mock carve-out clause-(c) is for. The real-path companion
- * is the sibling helper-output canary (`authorshipClaimsCteBody hive-
- * username auto-accept SQL-shape canary`) that calls the production helper
- * and asserts the post-fix predicate substrings appear in its emitted SQL;
- * deeper integrated coverage would require seeded HAF fixtures, which are
- * not yet available.
+ * Inversion canary: `authorshipClaimsCteBody` must emit NO metadata
+ * auto-accept arm. The consent model confers credit only through an
+ * explicit act — Route 3's approve gated on a NAME-ONLY chain slot here, or
+ * Route 2's `author_accept` (resolved by `consentedAuthorsCteBody`, not this
+ * builder). A regression that reintroduces a hive byte-equality arm or an
+ * `active_accreditations` ORCID-match arm into the status CASE turns this
+ * red.
  */
-/**
- * Helper-output canary for the hive-username auto-accept arm. Calls the
- * production helper and asserts that both canonicalization conjuncts —
- * `LOWER(TRIM(... ->> 'hive')) ~ '^[a-z0-9.-]+$'` (charset guard) and
- * `LOWER(TRIM(...)) = cb.claimer` (equality after normalization) — appear
- * in the emitted SQL. A targeted revert that drops either conjunct from
- * the helper turns this canary red, providing the real-path coverage
- * companion the synthetic-VALUES behavioral test below references.
- */
-describe('authorshipClaimsCteBody hive-username auto-accept SQL-shape canary', () => {
-  it('emits LOWER(TRIM(...)) charset-regex and equality conjuncts at the auto-accept arm', () => {
+describe('authorshipClaimsCteBody — no metadata auto-accept (inversion canary)', () => {
+  it('emits no hive/ORCID auto-accept arm; acceptance is the single approval arm gated on a name-only chain slot', () => {
     const frag = authorshipClaimsCteBody(1);
-    // Charset guard conjunct on the broadcaster-controlled hive value.
-    expect(frag.sql).toMatch(
-      /LOWER\(TRIM\(c\.json_metadata -> \$2 -> 'authors' -> cb\.author_index ->> 'hive'\)\) ~ '\^\[a-z0-9\.-\]\+\$'/,
-    );
-    // Equality conjunct after the same canonicalization, against the
-    // chain-validated lowercase `cb.claimer`.
-    expect(frag.sql).toMatch(
-      /LOWER\(TRIM\(c\.json_metadata -> \$2 -> 'authors' -> cb\.author_index ->> 'hive'\)\) = cb\.claimer/,
-    );
+    // The hive byte-equality auto-accept conjunct must be GONE.
+    expect(frag.sql).not.toMatch(/->> 'hive'\)\) = cb\.claimer/);
+    // The ORCID attestation join that backed the auto-accept arm must be
+    // GONE (the builder no longer reads active_accreditations at all).
+    expect(frag.sql).not.toContain('active_accreditations');
+    // Exactly ONE path to 'accepted': the explicit-approval arm…
+    expect(frag.sql.match(/THEN 'accepted'/g) ?? []).toHaveLength(1);
+    // …gated on the cumulative-chain union slot being name-only.
+    expect(frag.sql).toContain('claims_display_slots');
+    expect(frag.sql).toContain("ds.slot_key LIKE 'name:%'");
   });
 });
 
-describe('authorshipClaimsCteBody hive-username auto-accept normalization (real Postgres, synthetic rows)', () => {
-  it('canonicalizes broadcast pevo.authors[i].hive before matching claimer', { timeout: 30_000 }, async (ctx) => {
+describe('chain-slot hive normalization (real Postgres, synthetic rows)', () => {
+  it('canonicalizes broadcast pevo.authors[i].hive before keying slots', { timeout: 30_000 }, async (ctx) => {
     const pool = getPool();
     if (!pool) {
       ctx.skip('no pool available');
       return;
     }
 
-    // Mirror the auto-accept EXISTS arm. Two synthetic shapes:
-    //   (1) broadcaster posted `{hive: 'Alice'}` (uppercase) — claimer
+    // Mirror the hive-slot normalization shape shared by the consent chain
+    // CTEs (`hiveContributionSql` admit-set, `claimed_hive_slots`, and the
+    // display slot keys): LOWER(TRIM(...)) plus the Hive-account charset
+    // regex. Three synthetic shapes:
+    //   (1) broadcaster posted `{hive: 'Alice'}` (uppercase) — account
     //       'alice' SHOULD match post-normalization.
     //   (2) broadcaster posted `{hive: ' carol-padded '}` (ASCII-space
-    //       padded) — claimer 'carol-padded' SHOULD match post-trim.
+    //       padded) — account 'carol-padded' SHOULD match post-trim.
     //   (3) broadcaster posted `{hive: 'al;ice'}` (off-charset) — no
-    //       claimer should match (regex guard rejects).
+    //       account should match (regex guard rejects).
     const scenarios = [
       { label: 'uppercase_match', claimer: 'alice', authorsJson: JSON.stringify([{ hive: 'Alice' }]) },
       { label: 'whitespace_padded_match', claimer: 'carol-padded', authorsJson: JSON.stringify([{ hive: ' carol-padded ' }]) },
@@ -833,9 +824,9 @@ describe('authorshipClaimsCteBody hive-username auto-accept normalization (real 
     ];
 
     for (const sc of scenarios) {
-      // Mirror the auto-accept arm's predicate shape (without the full CTE
-      // surrounding it). The fragment is the textual core of the post-fix
-      // arm: LOWER(TRIM(... ->> 'hive')) regex + equality.
+      // Mirror the normalization predicate shape (without the full CTE
+      // surrounding it). The fragment is the textual core shared by the
+      // chain-slot sites: LOWER(TRIM(... ->> 'hive')) regex + equality.
       const sql = `
         SELECT EXISTS (
           SELECT 1 FROM jsonb_array_elements($1::jsonb) elem
