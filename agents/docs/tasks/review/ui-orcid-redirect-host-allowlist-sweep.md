@@ -45,3 +45,23 @@ Export `ORCID_REDIRECT_HOSTS` from `frontend/src/lib/fresh-auth.js` and replace 
   `beginSettingsActionOrcidFreshAuth`).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI implementation note (2026-06-09, commit 997716db on main)
+
+`ORCID_REDIRECT_HOSTS` is now `export`ed from `frontend/src/lib/fresh-auth.js`
+(its docblock notes it is shared by the page-level link/accreditation flows too).
+The two remaining inline `['orcid.org', 'sandbox.orcid.org']` open-redirect
+allowlists are replaced with the imported constant:
+- `frontend/src/pages/settings.js` `handleOrcidLink` (the ORCID account-link flow).
+- `frontend/src/pages/accreditation.js` (the accreditation ORCID flow).
+
+Each file gains `import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';`.
+
+**Acceptance met.** A grep for `'sandbox.orcid.org'` across `frontend/src/` now
+returns only the constant definition in `lib/fresh-auth.js` (no inline production
+hits). No behavior change (same two hosts). Affected unit tests green
+(`pages-settings.test.js`, `pages-accreditation.test.js`, `pages-accreditation-verify.test.js`,
+`lib-settings-fresh-auth.test.js`, `lib-fresh-auth-settings-orcid.test.js`, `fresh-auth-401-retry.test.js`);
+production build green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
