@@ -83,7 +83,7 @@ vi.mock('../../src/db.js', () => ({
 
 const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');
-const { NOTIFICATION_WINDOW_FETCH_CAP } = await import('../../src/notification-queries.js');
+const { NOTIFICATION_WINDOW_FETCH_CAP, fetchNotificationsFromHaf } = await import('../../src/notification-queries.js');
 const app = createApp();
 
 // Controlled window batch the mocked notification query returns. Each row is a
@@ -134,6 +134,14 @@ function descCapPlusOne(hi: number): Array<Record<string, unknown>> {
   return Array.from({ length: NOTIFICATION_WINDOW_FETCH_CAP + 1 }, (_, i) => reviewRow(hi - i));
 }
 
+// cap+1 rows in ASC (oldest-first) order — simulates the digest's 'asc' fetch
+// returning ONE probe row beyond the cap at the NEWEST end. Blocks run `lo` up to
+// `lo + cap` (cap + 1 distinct blocks); the shared fetch slices the probe at the
+// truncated (newest) end.
+function ascCapPlusOne(lo: number): Array<Record<string, unknown>> {
+  return Array.from({ length: NOTIFICATION_WINDOW_FETCH_CAP + 1 }, (_, i) => reviewRow(lo + i));
+}
+
 beforeEach(async () => {
   windowRows = [];
   notificationQueryCalls = 0;
@@ -172,8 +180,8 @@ describe('GET /api/notifications — window-batch cursor + has_more', () => {
     // +1 truncation probe (cap + 1), decoupled from the response limit (2). If a
     // refactor re-couples the fetch LIMIT to the response limit, the cached batch
     // shrinks to a `limit`-sized slice and the starvation bug returns; if the +1
-    // probe is dropped, the exactly-cap false-drop bug (item 1) returns. Pin the
-    // exact value so either regression fails red.
+    // probe is dropped, the exactly-cap false-drop bug returns. Pin the exact value
+    // so either regression fails red.
     expect(lastNotificationParams[2]).toBe(NOTIFICATION_WINDOW_FETCH_CAP + 1);
   });
 
@@ -237,7 +245,7 @@ describe('GET /api/notifications — window-batch cursor + has_more', () => {
     expect(res.body.data.has_more).toBe(false);
   });
 
-  it('an EXACTLY-cap window drops nothing — the complete boundary block is delivered (item-1 fix)', async () => {
+  it('an EXACTLY-cap window drops nothing — the complete boundary block is delivered', async () => {
     // Exactly `cap` events, all complete blocks: the +1 probe row does NOT
     // materialize (only `cap` rows exist), so capHit is false and the boundary
     // (oldest) block is NOT dropped. The pre-fix `>= cap` over a plain `LIMIT cap`
@@ -304,19 +312,56 @@ describe('GET /api/notifications — window-batch cursor + has_more', () => {
     expect(res.body.data.latest_block).toBe(1001);  // newest delivered; cursor advances
   });
 
-  it('drops the whole cap-truncation boundary block (never ends mid-block)', async () => {
-    // Genuine >cap window (cap+1 rows, newest-first, distinct blocks 1..(cap+1)).
-    // Block 1 is the probe (sliced at the truncated/oldest end); block 2 is the
-    // boundary block the cap cut through, dropped WHOLE so the batch never ends
-    // mid-block. No event of block 1 or 2 reaches the response; the lowest
-    // delivered block is a complete one.
+  it('drops the PARTIAL cap-truncation boundary block (cut inside a block → never ends mid-block)', async () => {
+    // Genuine >cap window where the cap cut falls INSIDE a block: the newest cap-1
+    // blocks are distinct single-event blocks (cap+1 .. 3), and the OLDEST block (2)
+    // carries TWO events straddling the cut — one kept, one the +1 probe. Because
+    // the probe shares block 2 with the last kept row, block 2 is partial and is
+    // dropped WHOLE so the batch never ends mid-block.
+    windowRows = [
+      ...Array.from({ length: NOTIFICATION_WINDOW_FETCH_CAP - 1 }, (_, i) => reviewRow(NOTIFICATION_WINDOW_FETCH_CAP + 1 - i)),
+      reviewRowAt(2, 0),
+      reviewRowAt(2, 1),
+    ];
+    const res = await poll(0, 50);
+    expect(res.status).toBe(200);
+    const blocks = res.body.data.events.map((e: { block_num: number }) => e.block_num);
+    expect(blocks).not.toContain(2);        // partial truncation boundary, dropped whole
+    expect(Math.min(...blocks)).toBe(3);    // lowest delivered block is complete
+  });
+
+  it('keeps the COMPLETE edge-aligned boundary block (cut falls between blocks → no over-drop)', async () => {
+    // cap+1 DISTINCT single-event blocks (cap+1 .. 1): the cap cut falls BETWEEN
+    // blocks — the probe (block 1) is a different block than the oldest kept (block
+    // 2) — so block 2 is COMPLETE and must be KEPT. Over-dropping it would lose a
+    // whole block a forward newest-first cursor never recovers. Mutation-kill: the
+    // pre-fix unconditional boundary-drop yields Math.min === 3.
     windowRows = descCapPlusOne(NOTIFICATION_WINDOW_FETCH_CAP + 1);
     const res = await poll(0, 50);
     expect(res.status).toBe(200);
     const blocks = res.body.data.events.map((e: { block_num: number }) => e.block_num);
-    expect(blocks).not.toContain(1);        // probe, sliced before the boundary-drop
-    expect(blocks).not.toContain(2);        // truncation boundary, dropped whole
-    expect(Math.min(...blocks)).toBe(3);    // lowest delivered block is complete
+    expect(blocks).not.toContain(1);     // block 1 is the +1 probe, sliced at the truncated end
+    expect(blocks).toContain(2);         // block 2 is COMPLETE (edge-aligned) → kept, not over-dropped
+    expect(Math.min(...blocks)).toBe(2);
+    expect(res.body.data.has_more).toBe(true);  // older complete blocks remain → cursor advances forward
+  });
+
+  it("keeps the COMPLETE newest boundary block on the digest's 'asc' fetch (edge-aligned, no over-drop)", async () => {
+    // The shared fetchNotificationsFromHaf is consumed by the digest with
+    // direction='asc' (oldest-first). With cap+1 distinct blocks the cut falls
+    // between blocks at the NEWEST end, so the newest KEPT block is complete and
+    // must be retained — over-dropping it permanently skips a block once the digest
+    // floor slides past (the 'asc' floor only moves forward). Driven directly on the
+    // shared function since the route only fetches 'desc'. Mutation-kill: the pre-fix
+    // unconditional boundary-drop yields Math.max === cap - 1.
+    windowRows = ascCapPlusOne(1);  // blocks 1 .. (cap+1) ascending
+    const batch = await fetchNotificationsFromHaf('pevo.admin', 0, NOTIFICATION_WINDOW_FETCH_CAP, 'asc');
+    expect(batch).not.toBeNull();
+    const blocks = batch!.events.map((e) => e.block_num);
+    expect(blocks).not.toContain(NOTIFICATION_WINDOW_FETCH_CAP + 1);  // newest block is the +1 probe, sliced
+    expect(blocks).toContain(NOTIFICATION_WINDOW_FETCH_CAP);          // newest KEPT block is complete → kept
+    expect(Math.max(...blocks)).toBe(NOTIFICATION_WINDOW_FETCH_CAP);
+    expect(batch!.has_more).toBe(true);
   });
 
   it('single block exceeding the cap empties the batch (documented residual deferral)', async () => {

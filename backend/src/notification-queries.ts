@@ -128,8 +128,10 @@ export const NOTIFICATION_WINDOW_BLOCKS = 100_000;
 // `limit`. fetchNotificationsFromHaf orders by the caller's `direction` and
 // LIMITs to this cap plus a +1 truncation probe, so the batch holds at most the
 // newest (route, 'desc') or oldest (digest, 'asc') `cap` events above the floor.
-// Only when the probe row materializes (a genuine >cap window) is the partial
-// boundary block dropped whole, so no consumer ever sees a cap-truncated block.
+// Only when the probe row materializes (a genuine >cap window) AND the cut fell
+// inside a block (the probe shares the last-kept row's block) is that partial
+// boundary block dropped whole, so no consumer ever sees a cap-truncated block;
+// an edge-aligned cut (probe in a different block) keeps the complete block.
 // Callers apply their cursor in-app over this wider batch. See the route's
 // applySinceBlockFilter and the digest's drain logic.
 export const NOTIFICATION_WINDOW_FETCH_CAP = 1000;
@@ -172,10 +174,13 @@ export function filterEventsAfter(events: NotificationEvent[], sinceBlock: numbe
  * `haf_operations` PK (`<view>.id`, the views expose no intra-block index), so
  * the cap cut is reproducible. Truncation is detected with a `cap + 1` probe
  * fetch: only when the (cap+1)th row exists is the window genuinely larger than
- * the cap (`capHit`). On `capHit` the boundary block at the truncated end (the
- * OLDEST block for 'desc', the NEWEST for 'asc') may be partial, so it is dropped
- * whole — no consumer is ever handed a cap-truncated block. An exactly-cap,
- * fully-contained window drops nothing. `has_more` reflects `capHit`.
+ * the cap (`capHit`). On `capHit` the truncated-end block (the OLDEST block for
+ * 'desc', the NEWEST for 'asc') is dropped whole ONLY when the cut fell inside a
+ * block — i.e. the probe row shares the last-kept row's block, making that block
+ * partial. An edge-aligned cut (the probe sits in a different block) leaves the
+ * truncated-end block COMPLETE and keeps it, so a complete boundary block is never
+ * over-dropped and no consumer is ever handed a cap-truncated block. An
+ * exactly-cap, fully-contained window drops nothing. `has_more` reflects `capHit`.
  *
  * Residual: the single-block-exceeds-cap case can empty the batch. For 'desc'
  * (SPA) the dropped oldest block is NOT recovered by a forward floor-slide (the
@@ -926,16 +931,25 @@ export async function fetchNotificationsFromHaf(
 
     let delivered = events;
     if (capHit && events.length > 0) {
-      // On a genuine >cap truncation the boundary block at the truncated end — the
-      // OLDEST block for 'desc' (newest-first), the NEWEST block for 'asc'
-      // (oldest-first) — may be partial, so drop that whole block: a cap-truncated
-      // partial block is never exposed. In the single-block-exceeds-cap case this
-      // empties the batch (documented residual: the block surfaces once the floor
-      // slides to contain it).
-      const boundaryBlock = direction === 'desc'
-        ? events[0].block_num
-        : events[events.length - 1].block_num;
-      delivered = events.filter((e) => e.block_num !== boundaryBlock);
+      // On a genuine >cap truncation the cut falls at the rows[cap-1]/rows[cap]
+      // boundary (the fetch is ordered (block_num, op_id) `dir`). Drop the
+      // truncated-end block ONLY when the cut fell INSIDE a block — i.e. the probe
+      // row (rows[cap], the first dropped row) shares the block of the last kept row
+      // (rows[cap-1]): that block is partial, and a cap-truncated partial block must
+      // never be exposed. When the cut is block-edge-aligned (the probe is in a
+      // different block) the truncated-end block is COMPLETE — keep it, or a
+      // forward cursor would never recover it (the 'desc'/SPA floor only slides
+      // forward; the 'asc'/digest floor would age it out permanently). In the
+      // single-block-exceeds-cap case the partial-drop empties the batch (documented
+      // residual: the block surfaces once the floor slides to contain it).
+      const probeBlock = Number((result.rows[cap] as Record<string, unknown>).block_num);
+      const lastKeptBlock = Number((result.rows[cap - 1] as Record<string, unknown>).block_num);
+      if (probeBlock === lastKeptBlock) {
+        const boundaryBlock = direction === 'desc'
+          ? events[0].block_num
+          : events[events.length - 1].block_num;
+        delivered = events.filter((e) => e.block_num !== boundaryBlock);
+      }
     }
 
     const latestBlock = delivered.length > 0

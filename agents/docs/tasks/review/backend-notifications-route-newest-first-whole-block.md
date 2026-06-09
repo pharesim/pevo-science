@@ -140,9 +140,12 @@ new backend. The paired UI task is `ui-notifications-drop-rewind-and-block-cap`.
 
 After this change the only case the integer-cursor design cannot deliver atomically is a single Hive block
 whose recipient-relevant events cannot be wholly contained within one `cap`-event window: either (a) one block
-has more than `cap` (1,000) events, or (b) the block sits at the cap-truncation boundary of a genuine >cap
-window (the `cap + 1` probe distinguishes this from an exactly-cap fully-contained window, which drops nothing).
-The partial-block drop defers the block rather than splitting it, but the recovery path differs by direction.
+has more than `cap` (1,000) events, or (b) the cap cut falls INSIDE a block at the truncated end of a genuine
+>cap window. Two checks guard this: the `cap + 1` probe distinguishes a genuine >cap window from an exactly-cap
+fully-contained window (which drops nothing), AND comparing the probe row's block to the last-kept row's block
+distinguishes a cut that fell inside a block (the boundary block is partial, dropped whole) from an edge-aligned
+cut between blocks (the boundary block is complete, KEPT, never over-dropped). Only the partial-block case defers
+a block; it defers rather than splits it, but the recovery path differs by direction.
 For the digest (`'asc'`, oldest-first) the dropped NEWEST block resurfaces on the next drain once the window
 floor slides forward to contain it. For the SPA bell feed (`'desc'`, newest-first) the dropped OLDEST block is
 NOT recovered by a forward floor-slide — the floor only moves forward, aging it out; the SPA recovers it only
@@ -347,3 +350,10 @@ create a new doc.
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`; re-review scopes to the
 commits since this hold.
+
+## Backend re-review signal (2026-06-09) — round-3 hold items 1-2 landed
+
+1. **(P3) Cap-edge over-drop of a COMPLETE boundary block fixed.** `fetchNotificationsFromHaf` now gates the boundary-drop on whether the cap cut fell INSIDE a block: when `capHit`, it compares `probeBlock = result.rows[cap].block_num` to `lastKeptBlock = result.rows[cap-1].block_num` and drops the truncated-end block ONLY when they are equal (partial block). An edge-aligned cut (probe in a different block) keeps the complete boundary block, so a forward `'desc'` cursor / the `'asc'` digest no longer permanently loses a complete block. `has_more = capHit` stays correct in both sub-cases. Corrected the `fetchNotificationsFromHaf` docblock, the `NOTIFICATION_WINDOW_FETCH_CAP` constant comment, and the Residual section to the precise invariant ("a >cap window drops the truncated-end block only when the cut fell inside a block; an edge-aligned cut drops nothing"). Regression coverage in `notifications-window-cursor.test.ts`: the existing boundary-drop test was rewritten to a genuine PARTIAL cut (oldest block split across the cap, dropped whole); a new edge-aligned `'desc'` test asserts the complete oldest block is KEPT (`Math.min === 2`, mutation-kills the pre-fix `Math.min === 3`); a new edge-aligned `'asc'` test drives `fetchNotificationsFromHaf` directly and asserts the newest kept block is retained (`Math.max === cap`).
+2. **(P3) Hold-item ordinals removed from test source.** Dropped `(item-1 fix)` from the exactly-cap test title and `(item 1)` from the cap-LIMIT pin comment; audited the rest of the changed lines (no `item`/`round`/`hold` ordinals remain).
+
+Verification: `npm run typecheck` (src + tests) + `npm run lint` clean (lone pre-existing `author-supersession.ts` warning untouched); `notifications-window-cursor.test.ts` (16) + `digest-window-cursor.test.ts` (5) green.
