@@ -77,11 +77,15 @@ function maybeThrowInjectedFinalizeFailure(authToken: string): void {
  * the `PostBroadcastWriteError` severity classification, or the seed step lands
  * at one site instead of two. Mirrors `orcid.ts` handleAccredit / handleLink.
  *
- * The single `routeFlavor` discriminator (plus the named fields below) carries
- * every confirm-vs-link difference: the on-chain account name, the row whose
- * profile fields populate the `accredit` op, the evidence-hash domain suffix,
- * the log/error `routeLabel`, the recovery-hint copy, and the `isResume` gate
- * that decides whether to HAF-probe before broadcasting.
+ * The single `routeFlavor` discriminator carries every confirm-vs-link
+ * difference. The evidence-hash domain suffix, the log/error `routeLabel`, and
+ * the recovery-hint copy are pure functions of `routeFlavor`, so they are
+ * derived from it inside `broadcastAccreditationAndSeed` (via
+ * `ROUTE_FLAVOR_DERIVATION`) rather than passed alongside it — a mismatched
+ * (routeFlavor, suffix/label/hint) pair is therefore unrepresentable. The caller
+ * supplies only the genuinely per-call fields: the on-chain account name, the
+ * row whose profile fields populate the `accredit` op, and the `isResume` /
+ * `resumeStuck` gates that decide whether to HAF-probe before broadcasting.
  */
 interface BroadcastAccreditationOpts {
   res: Response;
@@ -97,12 +101,6 @@ interface BroadcastAccreditationOpts {
     field: string;
     orcid: string | null;
   };
-  /** Domain-separation suffix in the evidence hash ('signup' or 'link'). */
-  evidenceSuffix: string;
-  /** Log/error prefix, e.g. 'signup_verify.confirm'. */
-  routeLabel: string;
-  /** User-facing retry instruction appended to the broadcast error copy. */
-  recoveryHint: string;
   /**
    * True on a resume path (stuck-recovery, or the /confirm chain-exists
    * crash-resume). Gates the HAF probe-before-rebroadcast: a prior attempt's
@@ -114,6 +112,35 @@ interface BroadcastAccreditationOpts {
   /** Stuck-recovery discriminator surfaced on the structured log context. */
   resumeStuck: boolean;
 }
+
+/**
+ * Per-`routeFlavor` derivations for `broadcastAccreditationAndSeed`: the three
+ * values that are pure functions of the discriminator. Keying them off
+ * `routeFlavor` (rather than accepting them as separate opts) is what makes a
+ * mismatched pair — e.g. a `confirm` flavor with the `link` evidence suffix,
+ * which would silently produce a wrong on-chain `evidence_hash` — unrepresentable.
+ * Mirrors `postBroadcastSuccessCopy`'s derive-from-`routeFlavor` precedent.
+ *   - `evidenceSuffix` domain-separates the SHA-256 evidence hash.
+ *   - `routeLabel` prefixes the structured log/error context.
+ *   - `recoveryHint` is the user-facing retry instruction appended to broadcast errors.
+ */
+const ROUTE_FLAVOR_DERIVATION: Record<
+  'confirm' | 'link',
+  { evidenceSuffix: string; routeLabel: string; recoveryHint: string }
+> = {
+  confirm: {
+    evidenceSuffix: 'signup',
+    routeLabel: 'signup_verify.confirm',
+    recoveryHint:
+      'You may retry POST /api/auth/confirm with the same auth_token, username, and keys to recover this session.',
+  },
+  link: {
+    evidenceSuffix: 'link',
+    routeLabel: 'signup_verify.link',
+    recoveryHint:
+      'You may retry POST /api/auth/link with the same auth_token and signed request to recover this session.',
+  },
+};
 
 /**
  * Run the accreditation broadcast + reputation seed for a finalized signup row.
@@ -131,7 +158,8 @@ interface BroadcastAccreditationOpts {
 async function broadcastAccreditationAndSeed(
   opts: BroadcastAccreditationOpts,
 ): Promise<'ok' | 'handled'> {
-  const { res, routeFlavor, username, account, evidenceSuffix, routeLabel, recoveryHint, isResume, resumeStuck } = opts;
+  const { res, routeFlavor, username, account, isResume, resumeStuck } = opts;
+  const { evidenceSuffix, routeLabel, recoveryHint } = ROUTE_FLAVOR_DERIVATION[routeFlavor];
 
   // No admin posting key configured: accreditation broadcast is skipped
   // silently (matches the prior `if (config.pevoAdminPostingKey)` guard) and
@@ -793,10 +821,6 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
       routeFlavor: 'confirm',
       username: normalizedUsername,
       account: confirmedAccount,
-      evidenceSuffix: 'signup',
-      routeLabel: 'signup_verify.confirm',
-      recoveryHint:
-        'You may retry POST /api/auth/confirm with the same auth_token, username, and keys to recover this session.',
       isResume,
       resumeStuck,
     });
@@ -996,10 +1020,6 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       routeFlavor: 'link',
       username: hiveUsername,
       account: linkedAccount,
-      evidenceSuffix: 'link',
-      routeLabel: 'signup_verify.link',
-      recoveryHint:
-        'You may retry POST /api/auth/link with the same auth_token and signed request to recover this session.',
       isResume: resumeStuck,
       resumeStuck,
     });

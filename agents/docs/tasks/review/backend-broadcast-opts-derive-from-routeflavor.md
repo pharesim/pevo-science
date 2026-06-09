@@ -45,3 +45,11 @@ Map to encode:
 - Parent (archived) task `backend-signup-verify-activation-scaffold-extraction` — the extraction this hardens.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend completion note (2026-06-09)
+
+Removed `evidenceSuffix`, `routeLabel`, and `recoveryHint` from `BroadcastAccreditationOpts`; they are now derived from `routeFlavor` via a single module-level `ROUTE_FLAVOR_DERIVATION` lookup (`Record<'confirm' | 'link', { evidenceSuffix; routeLabel; recoveryHint }>`) read once inside `broadcastAccreditationAndSeed`. The two call sites (`/confirm`, `/link`) now pass only `res`, `routeFlavor`, `username`, `account`, `isResume`, `resumeStuck`; a mismatched (routeFlavor, suffix/label/hint) pair is unrepresentable. The map values are byte-identical to the prior inline literals — evidence hash, log/error labels, and the 502 recovery copy are unchanged. No flag-arg added: it is a single discriminator-keyed lookup, mirroring the `postBroadcastSuccessCopy` precedent. Interface docblock updated to describe the derivation; anchors are on stable symbols (no slug/line/SHA).
+
+**Verification:** `npm run typecheck` (src + tests) + `npm run lint` clean (the lone lint warning is a pre-existing unused-directive in `lib/author-supersession.ts`, untouched). signup-verify suites green — `signup-verify.test.ts` + `signup-verify-postbroadcast-severity` + `-activation-recovery` + `-stuck-recovery` + `-concurrent-activation` + `-session-binding` + `-resume-argon-error-translation` (47 tests), including the evidence-hash and 502-recovery-copy regression nets.
+
+**Out of scope (left per task):** the dismissed extraction-review findings (`'ok' | 'handled'` exhaustiveness, the `account` inline-type drift, the `onError` prose contract) and the `${account.email}` null→`'null'` evidence-hash behavior for ORCID-only signups.
