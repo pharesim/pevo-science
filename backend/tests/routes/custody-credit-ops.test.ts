@@ -95,6 +95,7 @@ const { config } = await import('../../src/config.js');
 const {
   _resetFreshAuthMemStoreForTests,
   issueFreshAuthToken,
+  issueSessionFreshAuthToken,
   creditOpFreshAuthTarget,
 } = await import('../../src/lib/fresh-auth.js');
 const { clearRateLimitKeys } = await import('../support/redis-helpers.js');
@@ -504,6 +505,72 @@ describe.skipIf(!dbReachable)('custody name-only credit-op + per-target fresh-au
           operations: [approveOp(ALICE, 'bob', 'paper-1', 3)],
         });
       expect(followup.status).toBe(200);
+    });
+
+    it('revoke_authorship op missing claimer → 400 VALIDATION_ERROR (no downgrade to session path, no proof consumed)', async () => {
+      // Mirror of the approve-missing-claimer case for the revoke op (whose
+      // target binds claimer and NO author_index): omitting the bound `claimer`
+      // must reject with 400 BEFORE consume, never fall through to the
+      // target-less session-proof path.
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        creditOpFreshAuthTarget({ action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'someclaimer' }),
+      );
+      const revokeNoClaimer = [
+        'custom_json',
+        {
+          required_auths: [],
+          required_posting_auths: [ALICE],
+          id: config.appTag,
+          json: JSON.stringify({
+            action: 'revoke_authorship',
+            paper_author: 'bob',
+            paper_permlink: 'paper-1',
+            reason: 'unauthorized',
+          }),
+        },
+      ];
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({ fresh_auth_proof: issued.token, operations: [revokeNoClaimer] });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+
+      // Proof was NOT consumed by the malformed rejection: a follow-up
+      // well-formed revoke with the same token + matching target still lands.
+      const followup = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: issued.token,
+          operations: [revokeOp(ALICE, 'bob', 'paper-1')],
+        });
+      expect(followup.status).toBe(200);
+    });
+
+    it('session-kind proof on a credit-op broadcast → 403 FRESH_AUTH_REQUIRED kind_mismatch', async () => {
+      // A session-kind proof (target-less) must NOT authorize a per-op-bound
+      // credit op. The consent-op consume side rejects a session-kind entry with
+      // `kind_mismatch` BEFORE the target-hash check, so a stolen session proof
+      // cannot stand in for the per-target binding a credit op requires. The
+      // reverse (a credit/consent proof on a non-gated broadcast) IS accepted —
+      // see consumeSessionFreshAuthToken's cross-kind accept — but not this
+      // strict direction.
+      const sessionProof = await issueSessionFreshAuthToken(ALICE, 'password');
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: sessionProof.token,
+          operations: [claimOp(ALICE, 'bob', 'paper-1', 2)],
+        });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(res.body.error.details?.reason).toBe('kind_mismatch');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
     });
 
     it('claim_authorship op missing author_index → 400 VALIDATION_ERROR (no downgrade to session path)', async () => {

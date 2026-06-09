@@ -3848,11 +3848,27 @@ describe('orcid.ts structured-log shape coverage (round-2 hold-fix — Item 3 pa
 // § 2.9–§ 2.11). /start does only JWT auth + body validation + state stash for
 // these modes (no DB query, no OAuth round-trip), so the cases are deterministic
 // without reaching ORCID. verifyHiveSignature / the auth middleware chain run
-// real (the JWT auth gate is exercised, not mocked). When Redis is configured
-// the stashed target is read back and its fields asserted; otherwise the
-// in-memory state map is authoritative and not test-readable, so those cases
-// assert the validation status only.
+// real (the JWT auth gate is exercised, not mocked). /start stashes the per-op
+// target in Redis only when Redis is reachable; the binding-assert cases read it
+// back, so they are gated on the probe below (`it.skipIf`) — on a no-Redis run
+// they SHOW AS SKIPPED rather than vacuously passing on an unread target. The
+// pure validation-status cases (400 / 401) need no stash read and always run.
 // ─────────────────────────────────────────────────────────────────────────
+// Redis-reachability probe for the binding-assert cases. A 5s per-command
+// timeout (redis.ts REDIS_COMMAND_TIMEOUT_MS) bounds the ping if Redis is
+// configured-but-down; an unconfigured deployment returns a null client.
+let freshAuthStashRedisReachable = false;
+{
+  const probe = getRedis();
+  if (probe) {
+    try {
+      await probe.ping();
+      freshAuthStashRedisReachable = true;
+    } catch {
+      freshAuthStashRedisReachable = false;
+    }
+  }
+}
 describe('POST /api/orcid/start { mode: fresh_auth } — credit ops', () => {
   async function startCreditOp(body: Record<string, unknown>) {
     return request(app)
@@ -3870,7 +3886,7 @@ describe('POST /api/orcid/start { mode: fresh_auth } — credit ops', () => {
     return parsed.fresh_auth_target ?? null;
   }
 
-  it('claim_authorship with author_index → 200; stashed target binds the slot, no claimer', async () => {
+  it.skipIf(!freshAuthStashRedisReachable)('claim_authorship with author_index → 200; stashed target binds the slot, no claimer', async () => {
     const res = await startCreditOp({
       action: 'claim_authorship',
       paper_author: 'bob',
@@ -3880,13 +3896,12 @@ describe('POST /api/orcid/start { mode: fresh_auth } — credit ops', () => {
     expect(res.status).toBe(200);
     const state = new URL(res.body.data.redirect_url).searchParams.get('state')!;
     const target = await readStashedTarget(state);
-    if (target) {
-      expect(target.action).toBe('claim_authorship');
-      expect(target.root_author).toBe('bob');
-      expect(target.root_permlink).toBe('paper-1');
-      expect(target.author_index).toBe(2);
-      expect(target.claimer).toBeUndefined();
-    }
+    expect(target).not.toBeNull();
+    expect(target!.action).toBe('claim_authorship');
+    expect(target!.root_author).toBe('bob');
+    expect(target!.root_permlink).toBe('paper-1');
+    expect(target!.author_index).toBe(2);
+    expect(target!.claimer).toBeUndefined();
   });
 
   it('claim_authorship missing author_index → 400 VALIDATION_ERROR', async () => {
@@ -3899,7 +3914,7 @@ describe('POST /api/orcid/start { mode: fresh_auth } — credit ops', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
-  it('approve_authorship with author_index + claimer → 200; stashed target binds the claimer', async () => {
+  it.skipIf(!freshAuthStashRedisReachable)('approve_authorship with author_index + claimer → 200; stashed target binds the claimer', async () => {
     const res = await startCreditOp({
       action: 'approve_authorship',
       paper_author: 'bob',
@@ -3910,11 +3925,10 @@ describe('POST /api/orcid/start { mode: fresh_auth } — credit ops', () => {
     expect(res.status).toBe(200);
     const state = new URL(res.body.data.redirect_url).searchParams.get('state')!;
     const target = await readStashedTarget(state);
-    if (target) {
-      expect(target.action).toBe('approve_authorship');
-      expect(target.author_index).toBe(2);
-      expect(target.claimer).toBe('carol');
-    }
+    expect(target).not.toBeNull();
+    expect(target!.action).toBe('approve_authorship');
+    expect(target!.author_index).toBe(2);
+    expect(target!.claimer).toBe('carol');
   });
 
   it('approve_authorship missing claimer → 400 VALIDATION_ERROR', async () => {
@@ -3928,7 +3942,7 @@ describe('POST /api/orcid/start { mode: fresh_auth } — credit ops', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
-  it('revoke_authorship with claimer (no author_index) → 200; stashed target binds the claimer', async () => {
+  it.skipIf(!freshAuthStashRedisReachable)('revoke_authorship with claimer (no author_index) → 200; stashed target binds the claimer', async () => {
     const res = await startCreditOp({
       action: 'revoke_authorship',
       paper_author: 'bob',
@@ -3938,11 +3952,10 @@ describe('POST /api/orcid/start { mode: fresh_auth } — credit ops', () => {
     expect(res.status).toBe(200);
     const state = new URL(res.body.data.redirect_url).searchParams.get('state')!;
     const target = await readStashedTarget(state);
-    if (target) {
-      expect(target.action).toBe('revoke_authorship');
-      expect(target.claimer).toBe('carol');
-      expect(target.author_index).toBeUndefined();
-    }
+    expect(target).not.toBeNull();
+    expect(target!.action).toBe('revoke_authorship');
+    expect(target!.claimer).toBe('carol');
+    expect(target!.author_index).toBeUndefined();
   });
 
   it('revoke_authorship missing claimer → 400 VALIDATION_ERROR', async () => {

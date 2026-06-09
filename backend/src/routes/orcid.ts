@@ -29,12 +29,12 @@ import {
   changeEmailFreshAuthTarget,
   creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
+  extractCreditOpFields,
   ipfsUploadFreshAuthTarget,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
   setPasswordFreshAuthTarget,
   type FreshAuthTarget,
-  type FreshAuthTargetAction,
 } from '../lib/fresh-auth.js';
 
 // Per-route Zod body schema for POST /api/orcid/callback
@@ -372,10 +372,6 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
       action,
       root_author: rootAuthor,
       root_permlink: rootPermlink,
-      paper_author: paperAuthor,
-      paper_permlink: paperPermlink,
-      author_index: authorIndex,
-      claimer,
     } = startParsed.data;
     if (action === 'set_password' || action === 'change_email' || action === 'delete_account' || action === 'ipfs_upload') {
       // Non-broadcast actions bind the target to the authenticated
@@ -424,62 +420,28 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
       }
       freshAuthTarget = {
-        action: action as FreshAuthTargetAction,
+        action,
         root_author: rootAuthor,
         root_permlink: rootPermlink,
       };
     } else if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
-      // Name-only-route credit ops. The ORCID-mechanism issuance side serves
-      // state C (ORCID-only, no password) and state B accounts. The target
-      // binds (action, paper_author, paper_permlink) plus op-specific fields:
-      // author_index for claim/approve and `claimer` for approve/revoke.
-      // `revoke_authorship` carries no author_index on the wire
-      // (`hive-schemas.md` § 2.11); the Zod schema admits author_index as an
-      // optional non-negative integer, so a present-but-invalid index is
-      // already rejected at the parse layer. Binding `claimer` on approve/revoke
-      // stops a proof being redirected to a different co-author.
-      if (typeof paperAuthor !== 'string' || paperAuthor.length === 0) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'paper_author is required');
+      // Name-only-route credit ops (ORCID-mechanism issuance side; serves
+      // state C ORCID-only + state B accounts). Field normalization (trim +
+      // length cap) and the per-op required-field rules (author_index for
+      // claim/approve, claimer for approve/revoke; `hive-schemas.md`
+      // § 2.9–§ 2.11) live in the shared `extractCreditOpFields`, the same
+      // validator the password issuance path and the broadcast consume side
+      // read through. Routing this path through it closes the prior asymmetry
+      // where ORCID validated with bare typeof/length checks (no trim, no cap),
+      // letting uncapped values flow into the Redis state and hashing a value
+      // the consume side would later reject as a self-inflicted
+      // `target_mismatch`. Binding `claimer` on approve/revoke stops a minted
+      // proof being redirected to a different co-author.
+      const extraction = extractCreditOpFields(action, startParsed.data as Record<string, unknown>);
+      if (!extraction.ok) {
+        return sendError(res, 400, 'VALIDATION_ERROR', `${extraction.field} is missing or invalid`);
       }
-      if (typeof paperPermlink !== 'string' || paperPermlink.length === 0) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'paper_permlink is required');
-      }
-      if (action === 'claim_authorship') {
-        if (typeof authorIndex !== 'number') {
-          return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
-        }
-        freshAuthTarget = creditOpFreshAuthTarget({
-          action,
-          paperAuthor,
-          paperPermlink,
-          authorIndex,
-        });
-      } else if (action === 'approve_authorship') {
-        if (typeof authorIndex !== 'number') {
-          return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
-        }
-        if (typeof claimer !== 'string' || claimer.length === 0) {
-          return sendError(res, 400, 'VALIDATION_ERROR', 'claimer is required');
-        }
-        freshAuthTarget = creditOpFreshAuthTarget({
-          action,
-          paperAuthor,
-          paperPermlink,
-          authorIndex,
-          claimer,
-        });
-      } else {
-        // revoke_authorship: binds claimer, no author_index on the wire.
-        if (typeof claimer !== 'string' || claimer.length === 0) {
-          return sendError(res, 400, 'VALIDATION_ERROR', 'claimer is required');
-        }
-        freshAuthTarget = creditOpFreshAuthTarget({
-          action,
-          paperAuthor,
-          paperPermlink,
-          claimer,
-        });
-      }
+      freshAuthTarget = creditOpFreshAuthTarget(extraction.fields);
     } else {
       return sendError(
         res,

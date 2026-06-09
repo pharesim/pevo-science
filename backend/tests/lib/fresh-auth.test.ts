@@ -74,6 +74,9 @@ import {
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
   creditOpFreshAuthTarget,
+  extractCreditOpFields,
+  isConsentOpAction,
+  isCreditOpAction,
   isFreshAuthMechanism,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
@@ -144,6 +147,33 @@ describe('CONSENT_OP_ACTIONS — wire predicate', () => {
     expect(CONSENT_OP_ACTIONS.has('vote')).toBe(false);
     expect(CONSENT_OP_ACTIONS.has('claim_authorship')).toBe(false);
     expect(CONSENT_OP_ACTIONS.has('approve_authorship')).toBe(false);
+  });
+});
+
+describe('isConsentOpAction / isCreditOpAction — narrowing guards', () => {
+  // These guards replace the unsound `action as ConsentOpAction` /
+  // `action as CreditOpAction` casts at the route layer. They delegate to the
+  // tuple-derived Sets, so the Set and the narrowed union cannot diverge.
+  it('isConsentOpAction admits only the consent ops', () => {
+    expect(isConsentOpAction('author_accept')).toBe(true);
+    expect(isConsentOpAction('author_resign')).toBe(true);
+    expect(isConsentOpAction('claim_authorship')).toBe(false);
+    expect(isConsentOpAction('vote')).toBe(false);
+  });
+  it('isCreditOpAction admits only the credit ops', () => {
+    expect(isCreditOpAction('claim_authorship')).toBe(true);
+    expect(isCreditOpAction('approve_authorship')).toBe(true);
+    expect(isCreditOpAction('revoke_authorship')).toBe(true);
+    expect(isCreditOpAction('author_accept')).toBe(false);
+    expect(isCreditOpAction('vote')).toBe(false);
+  });
+  it('the two predicate domains are disjoint', () => {
+    for (const a of ['author_accept', 'author_resign']) {
+      expect(isConsentOpAction(a) && isCreditOpAction(a)).toBe(false);
+    }
+    for (const a of ['claim_authorship', 'approve_authorship', 'revoke_authorship']) {
+      expect(isConsentOpAction(a) && isCreditOpAction(a)).toBe(false);
+    }
   });
 });
 
@@ -276,6 +306,104 @@ describe('CREDIT_OP_ACTIONS — wire predicate', () => {
     expect(CREDIT_OP_ACTIONS.has('author_accept')).toBe(false);
     expect(CREDIT_OP_ACTIONS.has('author_resign')).toBe(false);
     expect(CREDIT_OP_ACTIONS.has('vote')).toBe(false);
+  });
+});
+
+describe('extractCreditOpFields — single-source field normalization', () => {
+  // This is the one validator every credit-op hash site reads through (both
+  // fresh-auth issuance paths + the broadcast consume scan). Its trim + cap
+  // behavior is what makes issuance and consume normalize a value identically
+  // before hashing — the property that prevents a self-inflicted
+  // `target_mismatch` and keeps uncapped input out of the stored target.
+  it('claim: extracts paper fields + author_index, no claimer', () => {
+    const r = extractCreditOpFields('claim_authorship', {
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+      author_index: 2,
+    });
+    expect(r).toEqual({
+      ok: true,
+      fields: { action: 'claim_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 2 },
+    });
+  });
+
+  it('approve: requires + binds claimer alongside author_index', () => {
+    const r = extractCreditOpFields('approve_authorship', {
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+      author_index: 3,
+      claimer: 'carol',
+    });
+    expect(r).toEqual({
+      ok: true,
+      fields: { action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 3, claimer: 'carol' },
+    });
+  });
+
+  it('revoke: binds claimer, ignores author_index (none on the wire)', () => {
+    const r = extractCreditOpFields('revoke_authorship', {
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+      claimer: 'carol',
+    });
+    expect(r).toEqual({
+      ok: true,
+      fields: { action: 'revoke_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', claimer: 'carol' },
+    });
+  });
+
+  it('trims surrounding whitespace so issuance and consume hash the same bytes', () => {
+    const padded = extractCreditOpFields('approve_authorship', {
+      paper_author: '  bob  ',
+      paper_permlink: ' paper-1 ',
+      author_index: 1,
+      claimer: '\tcarol\n',
+    });
+    expect(padded.ok).toBe(true);
+    if (padded.ok) {
+      expect(padded.fields.paperAuthor).toBe('bob');
+      expect(padded.fields.paperPermlink).toBe('paper-1');
+      // narrow to the approve variant that carries claimer
+      if (padded.fields.action === 'approve_authorship') {
+        expect(padded.fields.claimer).toBe('carol');
+      }
+    }
+    // The trimmed extraction hashes identically to one built from clean input —
+    // the property that closes the padded-field self-inflicted target_mismatch.
+    const cleanTarget = creditOpFreshAuthTarget({
+      action: 'approve_authorship', paperAuthor: 'bob', paperPermlink: 'paper-1', authorIndex: 1, claimer: 'carol',
+    });
+    if (padded.ok) {
+      expect(computeFreshAuthTargetHash(creditOpFreshAuthTarget(padded.fields)))
+        .toBe(computeFreshAuthTargetHash(cleanTarget));
+    }
+  });
+
+  it('rejects an over-cap paper_author (64-char ceiling) with field=paper_author', () => {
+    const r = extractCreditOpFields('claim_authorship', {
+      paper_author: 'a'.repeat(65),
+      paper_permlink: 'paper-1',
+      author_index: 0,
+    });
+    expect(r).toEqual({ ok: false, field: 'paper_author' });
+  });
+
+  it('names the first missing/ill-typed field (claimer on approve)', () => {
+    const r = extractCreditOpFields('approve_authorship', {
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+      author_index: 3,
+    });
+    expect(r).toEqual({ ok: false, field: 'claimer' });
+  });
+
+  it('rejects a non-integer author_index with field=author_index', () => {
+    const r = extractCreditOpFields('claim_authorship', {
+      paper_author: 'bob',
+      paper_permlink: 'paper-1',
+      author_index: 1.5,
+    });
+    expect(r).toEqual({ ok: false, field: 'author_index' });
   });
 });
 

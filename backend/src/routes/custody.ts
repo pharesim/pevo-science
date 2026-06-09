@@ -18,21 +18,22 @@ import { burnSentinel } from './auth.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError, makeLogBroadcastAttempt } from '../lib/broadcast-error.js';
 import {
-  CONSENT_OP_ACTIONS,
-  CREDIT_OP_ACTIONS,
   changeEmailFreshAuthTarget,
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
   creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
+  extractCreditOpFields,
   ipfsUploadFreshAuthTarget,
+  isConsentOpAction,
+  isCreditOpAction,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
+  type ConsentOpAction,
   type CreditOpAction,
   type FreshAuthMechanism,
   type FreshAuthTarget,
-  type FreshAuthTargetAction,
 } from '../lib/fresh-auth.js';
 import { sha256HexDigest } from '../lib/log-pii.js';
 import {
@@ -303,22 +304,14 @@ function readRequiredString(payload: object, field: string): { ok: true; value: 
   return { ok: true, value: raw };
 }
 
-/** Read a required non-negative-integer field from a custom_json payload.
- *  Mirrors the `author_index` validity check used at the issuance routes so the
- *  three sites cannot diverge on what counts as a valid slot index. */
-function readNonNegativeInt(payload: object, field: string): { ok: true; value: number } | { ok: false } {
-  const raw = (payload as Record<string, unknown>)[field];
-  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return { ok: false };
-  return { ok: true, value: raw };
-}
-
 /** Extract the per-op fresh-auth target from a single consent op payload
  *  (`author_accept` / `author_resign`). Returns `{ ok: false, field }` when the
  *  payload omits or malforms a required field so the caller rejects the
- *  broadcast with a 400 (closing the downgrade-to-session-proof path). The
- *  `action` is already known to be in `CONSENT_OP_ACTIONS` at the call site, so
- *  the cast onto `FreshAuthTargetAction` is sound. */
-function consentOpTarget(action: string, payload: object): TargetExtraction {
+ *  broadcast with a 400 (closing the downgrade-to-session-proof path). `action`
+ *  is typed `ConsentOpAction` — the caller narrows it via `isConsentOpAction`,
+ *  so it is assignable to the target's `FreshAuthTargetAction` field directly,
+ *  with no cast. */
+function consentOpTarget(action: ConsentOpAction, payload: object): TargetExtraction {
   const rootAuthor = readRequiredString(payload, 'root_author');
   if (!rootAuthor.ok) return { ok: false, field: 'root_author' };
   const rootPermlink = readRequiredString(payload, 'root_permlink');
@@ -326,7 +319,7 @@ function consentOpTarget(action: string, payload: object): TargetExtraction {
   return {
     ok: true,
     target: {
-      action: action as FreshAuthTargetAction,
+      action,
       root_author: rootAuthor.value,
       root_permlink: rootPermlink.value,
     },
@@ -335,63 +328,20 @@ function consentOpTarget(action: string, payload: object): TargetExtraction {
 
 /** Extract the per-op fresh-auth target from a single name-only-route credit
  *  op payload (`claim_authorship` / `approve_authorship` / `revoke_authorship`).
- *  The wire fields are `paper_author` / `paper_permlink` (mapped onto the
- *  target's `root_author` / `root_permlink` hash slots), plus op-specific
- *  fields: `author_index` for claim/approve and `claimer` for approve/revoke
- *  (`agents/docs/hive-schemas.md` § 2.9–§ 2.11). Returns `{ ok: false, field }`
- *  when a required field is missing or ill-typed so the caller rejects the
- *  broadcast with a 400 — NOT a silent fall-through to the target-less session
- *  path, which would let an attacker strip the per-op binding (especially the
- *  `claimer` binding on approve/revoke) by omitting a field. The target is built
- *  through `creditOpFreshAuthTarget` so the consume side and the issuance routes
- *  share one encoding. */
+ *  Field normalization (trim + length cap) and per-op branch exhaustiveness
+ *  live in the shared `extractCreditOpFields` (`lib/fresh-auth.ts`), which both
+ *  fresh-auth issuance paths read through as well — so the value hashed here at
+ *  consume is normalized IDENTICALLY to the value hashed at issuance (no
+ *  self-inflicted `target_mismatch` from a whitespace-padded field), and a 4th
+ *  `CreditOpAction` cannot silently route to a wrong target hash. Returns
+ *  `{ ok: false, field }` on a missing/ill-typed required field so the caller
+ *  rejects with a 400 — NOT a silent fall-through to the target-less session
+ *  path, which would strip the per-op binding (especially the `claimer` binding
+ *  on approve/revoke) by omitting a field. */
 function creditOpTarget(action: CreditOpAction, payload: object): TargetExtraction {
-  const paperAuthor = readRequiredString(payload, 'paper_author');
-  if (!paperAuthor.ok) return { ok: false, field: 'paper_author' };
-  const paperPermlink = readRequiredString(payload, 'paper_permlink');
-  if (!paperPermlink.ok) return { ok: false, field: 'paper_permlink' };
-
-  if (action === 'claim_authorship') {
-    const authorIndex = readNonNegativeInt(payload, 'author_index');
-    if (!authorIndex.ok) return { ok: false, field: 'author_index' };
-    return {
-      ok: true,
-      target: creditOpFreshAuthTarget({
-        action,
-        paperAuthor: paperAuthor.value,
-        paperPermlink: paperPermlink.value,
-        authorIndex: authorIndex.value,
-      }),
-    };
-  }
-  if (action === 'approve_authorship') {
-    const authorIndex = readNonNegativeInt(payload, 'author_index');
-    if (!authorIndex.ok) return { ok: false, field: 'author_index' };
-    const claimer = readRequiredString(payload, 'claimer');
-    if (!claimer.ok) return { ok: false, field: 'claimer' };
-    return {
-      ok: true,
-      target: creditOpFreshAuthTarget({
-        action,
-        paperAuthor: paperAuthor.value,
-        paperPermlink: paperPermlink.value,
-        authorIndex: authorIndex.value,
-        claimer: claimer.value,
-      }),
-    };
-  }
-  // revoke_authorship: binds claimer, no author_index on the wire.
-  const claimer = readRequiredString(payload, 'claimer');
-  if (!claimer.ok) return { ok: false, field: 'claimer' };
-  return {
-    ok: true,
-    target: creditOpFreshAuthTarget({
-      action,
-      paperAuthor: paperAuthor.value,
-      paperPermlink: paperPermlink.value,
-      claimer: claimer.value,
-    }),
-  };
+  const extraction = extractCreditOpFields(action, payload as Record<string, unknown>);
+  if (!extraction.ok) return { ok: false, field: extraction.field };
+  return { ok: true, target: creditOpFreshAuthTarget(extraction.fields) };
 }
 
 /** Scan the operations bundle for fresh-auth-gated ops: the anchored-route
@@ -434,10 +384,10 @@ function findGatedOpsInBundle(operations: unknown[]): GatedOpScan {
     if (typeof action !== 'string') continue;
 
     let extraction: TargetExtraction;
-    if (CONSENT_OP_ACTIONS.has(action)) {
+    if (isConsentOpAction(action)) {
       extraction = consentOpTarget(action, payload);
-    } else if (CREDIT_OP_ACTIONS.has(action)) {
-      extraction = creditOpTarget(action as CreditOpAction, payload);
+    } else if (isCreditOpAction(action)) {
+      extraction = creditOpTarget(action, payload);
     } else {
       continue;
     }
@@ -658,11 +608,11 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
           event: 'custody.broadcast.fresh_auth_rejected',
           route: 'custody.broadcast',
           username,
-          consent_action: gatedAction,
-          consent_root_author: expectedTarget.root_author,
-          consent_root_permlink: expectedTarget.root_permlink,
-          consent_author_index: expectedTarget.author_index ?? null,
-          consent_claimer: expectedTarget.claimer ?? null,
+          gated_action: gatedAction,
+          gated_root_author: expectedTarget.root_author,
+          gated_root_permlink: expectedTarget.root_permlink,
+          gated_author_index: expectedTarget.author_index ?? null,
+          gated_claimer: expectedTarget.claimer ?? null,
           reason: result.reason,
         },
         'custody.broadcast rejected — fresh-auth proof invalid',
@@ -700,7 +650,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
           event: 'custody.broadcast.fresh_auth_rejected',
           route: 'custody.broadcast',
           username,
-          consent_action: null,
+          gated_action: null,
           reason: result.reason,
         },
         'custody.broadcast rejected — fresh-auth proof invalid (non-consent path)',
@@ -948,7 +898,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       logBroadcastAttempt('success', {
         tx_id: result.id,
         block_num: result.block_num,
-        consent_action: gatedAction,
+        gated_action: gatedAction,
         auth_mechanism: freshAuthMechanism,
       });
 
@@ -1057,54 +1007,21 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
       root_permlink: rootPermlinkResult.value,
     };
   } else if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
-    // Name-only-route credit ops. The proof binds to (action, paper_author,
-    // paper_permlink) plus op-specific fields: author_index for claim/approve
-    // and `claimer` for approve/revoke. paper_author / paper_permlink / claimer
-    // are identifier slugs (trim=true); author_index is a non-negative integer.
-    // Binding `claimer` on approve/revoke stops a proof being redirected to a
-    // different co-author (`hive-schemas.md` § 2.10 / § 2.11). The target is
-    // built through `creditOpFreshAuthTarget` so this issuance path and the
-    // broadcast consume path share one encoding.
-    const paperAuthorResult = requireStringField(body, 'paper_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
-    if (!paperAuthorResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperAuthorResult.error);
-    const paperPermlinkResult = requireStringField(body, 'paper_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
-    if (!paperPermlinkResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperPermlinkResult.error);
-    if (action === 'claim_authorship') {
-      const rawIndex = body.author_index;
-      if (typeof rawIndex !== 'number' || !Number.isInteger(rawIndex) || rawIndex < 0) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
-      }
-      target = creditOpFreshAuthTarget({
-        action,
-        paperAuthor: paperAuthorResult.value,
-        paperPermlink: paperPermlinkResult.value,
-        authorIndex: rawIndex,
-      });
-    } else if (action === 'approve_authorship') {
-      const rawIndex = body.author_index;
-      if (typeof rawIndex !== 'number' || !Number.isInteger(rawIndex) || rawIndex < 0) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'author_index must be a non-negative integer');
-      }
-      const claimerResult = requireStringField(body, 'claimer', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
-      if (!claimerResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', claimerResult.error);
-      target = creditOpFreshAuthTarget({
-        action,
-        paperAuthor: paperAuthorResult.value,
-        paperPermlink: paperPermlinkResult.value,
-        authorIndex: rawIndex,
-        claimer: claimerResult.value,
-      });
-    } else {
-      // revoke_authorship: binds claimer, no author_index on the wire.
-      const claimerResult = requireStringField(body, 'claimer', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
-      if (!claimerResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', claimerResult.error);
-      target = creditOpFreshAuthTarget({
-        action,
-        paperAuthor: paperAuthorResult.value,
-        paperPermlink: paperPermlinkResult.value,
-        claimer: claimerResult.value,
-      });
+    // Name-only-route credit ops. Field normalization (trim + length cap) and
+    // the per-op required-field rules (author_index for claim/approve, claimer
+    // for approve/revoke; `hive-schemas.md` § 2.9–§ 2.11) live in the shared
+    // `extractCreditOpFields`, the same validator the broadcast consume side
+    // reads through — so this issuance path normalizes the fields IDENTICALLY
+    // to consume before hashing (no self-inflicted `target_mismatch` on a
+    // whitespace-padded field), and an uncapped value never flows into the
+    // stored target. The pre-limiter `validateFreshAuthBodyShape` already
+    // surfaced field-specific 400s for malformed bodies; this handler-side
+    // re-read is the defense-in-depth that builds the actual target.
+    const extraction = extractCreditOpFields(action, body);
+    if (!extraction.ok) {
+      return sendError(res, 400, 'VALIDATION_ERROR', `${extraction.field} is missing or invalid`);
     }
+    target = creditOpFreshAuthTarget(extraction.fields);
   } else {
     return sendError(
       res,

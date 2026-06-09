@@ -747,9 +747,10 @@ export type MakeLogBroadcastAttemptOpts = {
  * the message is just human readability).
  *
  * The returned closure accepts `extra?` for per-call payloads (tx_id and
- * block_num on success; freshAuthMechanism/consent_action on the custody
- * consent-op path). `extra` spreads BEFORE `outcome` + `event:` so the
- * helper's source-of-truth values win.
+ * block_num on success; freshAuthMechanism/gated_action on the custody
+ * gated-op path — anchored consent ops + name-only credit ops). `extra`
+ * spreads BEFORE `outcome` + `event:` so the helper's source-of-truth values
+ * win.
  *
  * `loggerInstance` is parameterized for unit-test injection — the default
  * binds to the module-scope `logger` re-exported from `../logger.js`.

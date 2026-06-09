@@ -652,9 +652,9 @@ describe('BE-LOG-SHAPE-CONVERGENCE — custody.ts structured-log emissions (Item
           event: 'custody.broadcast.fresh_auth_rejected',
           route: 'custody.broadcast',
           username: USERNAME,
-          consent_action: 'author_accept',
-          consent_root_author: 'someroot',
-          consent_root_permlink: 'somepermlink-v1',
+          gated_action: 'author_accept',
+          gated_root_author: 'someroot',
+          gated_root_permlink: 'somepermlink-v1',
           reason: 'missing',
         }),
       );

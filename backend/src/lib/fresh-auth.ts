@@ -62,6 +62,17 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { logger } from '../logger.js';
+import { requireStringField } from './body-record.js';
+import { HIVE_PERMLINK_MAX_LEN } from './hive-permlink.js';
+
+/** Single source of truth for the anchored-route consent-op action set. The
+ *  runtime Set (`CONSENT_OP_ACTIONS`) AND the compile-time union
+ *  (`ConsentOpAction`) both derive from this one `as const` tuple, so a member
+ *  added here lands in both at once — a new action can never be present in the
+ *  Set but absent from the union (the divergence that an `as ConsentOpAction`
+ *  cast at a call site would silently route through, ungated/mis-targeted). */
+const CONSENT_OP_ACTION_TUPLE = ['author_accept', 'author_resign'] as const;
+export type ConsentOpAction = (typeof CONSENT_OP_ACTION_TUPLE)[number];
 
 /** Set of `custom_json` payload actions that require a fresh-auth proof.
  *  Holds ONLY the anchored-route consent ops. The name-only-route credit ops
@@ -69,16 +80,23 @@ import { logger } from '../logger.js';
  *  members — they have a distinct payload shape (`paper_author` /
  *  `paper_permlink` / `author_index`, not `root_author` / `root_permlink`)
  *  and live in `CREDIT_OP_ACTIONS` below. Both sets feed the same broadcast
- *  fresh-auth gate but via separate field-extraction paths. */
-export const CONSENT_OP_ACTIONS: ReadonlySet<string> = new Set([
-  'author_accept',
-  'author_resign',
-]);
+ *  fresh-auth gate but via separate field-extraction paths. Typed
+ *  `ReadonlySet<string>` (not `ReadonlySet<ConsentOpAction>`) so a raw wire
+ *  `action: string` can be membership-tested without a nominal-element cast;
+ *  the narrowing to `ConsentOpAction` is what `isConsentOpAction` provides. */
+export const CONSENT_OP_ACTIONS: ReadonlySet<string> = new Set(CONSENT_OP_ACTION_TUPLE);
 
-/** Set of `custom_json` payload actions for the name-only-route credit ops
- *  that require a per-target fresh-auth proof on custody broadcast. These are
- *  reputation-weighty, identity-binding ops (they mint or revoke authorship
- *  credit), so a stolen JWT alone must not be able to broadcast them per
+/** Narrows a raw wire `action` string to `ConsentOpAction` via Set membership.
+ *  Lets the gated-op scan drop the unsound `action as ConsentOpAction` cast at
+ *  the call site — the narrowing is validated by the runtime `.has`. */
+export function isConsentOpAction(action: string): action is ConsentOpAction {
+  return CONSENT_OP_ACTIONS.has(action);
+}
+
+/** Single source of truth for the name-only-route credit-op action set, same
+ *  Set+union derivation as the consent tuple above. These are reputation-
+ *  weighty, identity-binding ops (they mint or revoke authorship credit), so a
+ *  stolen JWT alone must not be able to broadcast them per
  *  `agents/docs/ARCHITECTURE.md` § 6.5 invariant #1. Their target binds
  *  `(action, paper_author, paper_permlink)` plus the op-specific fields the
  *  wire carries (`agents/docs/hive-schemas.md` § 2.9–§ 2.11):
@@ -91,11 +109,27 @@ export const CONSENT_OP_ACTIONS: ReadonlySet<string> = new Set([
  *  to credit or strip a DIFFERENT co-author. Kept separate from
  *  `CONSENT_OP_ACTIONS` because the consent ops and credit ops use different
  *  payload field names. */
-export const CREDIT_OP_ACTIONS: ReadonlySet<string> = new Set([
-  'claim_authorship',
-  'approve_authorship',
-  'revoke_authorship',
-]);
+const CREDIT_OP_ACTION_TUPLE = ['claim_authorship', 'approve_authorship', 'revoke_authorship'] as const;
+
+/** Action subset for the name-only-route credit ops, derived from
+ *  {@link CREDIT_OP_ACTION_TUPLE} so the union and the Set cannot diverge.
+ *  The target-builder (`creditOpFreshAuthTarget`), the shared field validator
+ *  (`extractCreditOpFields`), and the route-layer scan all type their `action`
+ *  param to this union so a 4th member added to the tuple becomes a compile
+ *  error at the unhandled branch rather than an ungated/mis-targeted op. */
+export type CreditOpAction = (typeof CREDIT_OP_ACTION_TUPLE)[number];
+
+/** Set of `custom_json` payload actions for the name-only-route credit ops
+ *  that require a per-target fresh-auth proof on custody broadcast. Typed
+ *  `ReadonlySet<string>` for the same raw-`action` membership-test ergonomics
+ *  as `CONSENT_OP_ACTIONS`; `isCreditOpAction` does the narrowing. */
+export const CREDIT_OP_ACTIONS: ReadonlySet<string> = new Set(CREDIT_OP_ACTION_TUPLE);
+
+/** Narrows a raw wire `action` string to `CreditOpAction` via Set membership.
+ *  Lets the gated-op scan drop the unsound `action as CreditOpAction` cast. */
+export function isCreditOpAction(action: string): action is CreditOpAction {
+  return CREDIT_OP_ACTIONS.has(action);
+}
 
 export type FreshAuthMechanism = 'password' | 'orcid';
 
@@ -154,11 +188,8 @@ export type FreshAuthMechanism = 'password' | 'orcid';
  *  that stops a proof minted for one action (e.g. `change_email`) being
  *  replayed against another (e.g. `delete_account`). */
 export type FreshAuthTargetAction =
-  | 'author_accept'
-  | 'author_resign'
-  | 'claim_authorship'
-  | 'approve_authorship'
-  | 'revoke_authorship'
+  | ConsentOpAction
+  | CreditOpAction
   | 'set_password'
   | 'change_email'
   | 'delete_account'
@@ -270,12 +301,15 @@ interface StoredEntry {
 
 /**
  * Compute the per-op target hash. The bind is over a length-prefixed encoding
- * of the target triple:
+ * of the per-op target fields: the base three (`action`, `root_author`,
+ * `root_permlink`) present for every action, plus — for the name-only-route
+ * credit ops — the optional `author_index` and/or `claimer`, appended only
+ * when present (see the optional-field section below). The base-three core is:
  *
  *   `<len(action)>|<action>|<len(root_author)>|<root_author>|<len(root_permlink)>|<root_permlink>`
  *
  * Length-prefixing is collision-free for arbitrary string content: any
- * two distinct triples produce distinct encodings even if individual
+ * two distinct field sequences produce distinct encodings even if individual
  * field values share substrings or contain the '|' separator. A naive
  * pipe-only delimiter (`a|b|c`) collides for `(a='x|y', b='c')` vs
  * `(a='x', b='y|c')`. Hive permlinks today are restricted to lowercase
@@ -384,12 +418,6 @@ export function ipfsUploadFreshAuthTarget(username: string): FreshAuthTarget {
   return { action: 'ipfs_upload', root_author: username, root_permlink: '' };
 }
 
-/** Action subset for the name-only-route credit ops that bind a per-op
- *  fresh-auth target on custody broadcast. Mirrors `CREDIT_OP_ACTIONS` at the
- *  type level so the target-builder and the route layer agree on the closed
- *  set. */
-export type CreditOpAction = 'claim_authorship' | 'approve_authorship' | 'revoke_authorship';
-
 /** Per-op field shape for the three name-only-route credit ops, expressed so
  *  the type system pins which wire fields each op carries (`hive-schemas.md`
  *  § 2.9–§ 2.11):
@@ -445,6 +473,111 @@ export function creditOpFreshAuthTarget(fields: CreditOpTargetFields): FreshAuth
     root_permlink: fields.paperPermlink,
     claimer: fields.claimer,
   };
+}
+
+/** Length cap for the Hive-account-name fields a credit op carries
+ *  (`paper_author`, `claimer`). Hive account names are at most 16 chars; 64 is
+ *  a conservative ceiling that absorbs the route body-parser limit without ever
+ *  materializing oversized attacker input into the stored target hash. Shared
+ *  across every credit-op field read so issuance and consume cannot diverge on
+ *  the cap. */
+const CREDIT_OP_ACCOUNT_MAX_LEN = 64;
+
+/** Discriminated result of normalizing a credit op's wire fields from a source
+ *  record. The `ok` arm carries the typed {@link CreditOpTargetFields} ready
+ *  for `creditOpFreshAuthTarget`; the failure arm names the missing or
+ *  ill-typed field so the route can reject with a 400 that points at it. */
+export type CreditOpFieldExtraction =
+  | { ok: true; fields: CreditOpTargetFields }
+  | { ok: false; field: string };
+
+/** Non-negative-integer reader for the numeric `author_index` wire field.
+ *  Separate from {@link requireStringField} because the index is a number on
+ *  the wire, not a string. */
+function readCreditOpAuthorIndex(
+  source: Record<string, unknown>,
+): { ok: true; value: number } | { ok: false } {
+  const raw = source.author_index;
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return { ok: false };
+  return { ok: true, value: raw };
+}
+
+/** Normalize + validate the wire fields of a name-only-route credit op from a
+ *  source record (a request body, the ORCID `/start` Zod data, or a parsed
+ *  on-chain `custom_json` payload). This is the SINGLE source of truth for
+ *  credit-op field normalization: every site that hashes a credit-op target —
+ *  both fresh-auth issuance paths and the broadcast consume scan — reads its
+ *  fields through here, applying IDENTICAL trim + length-cap rules. Identical
+ *  normalization is load-bearing: a whitespace-padded `paper_author` (or any
+ *  identifier) MUST reduce to the same bytes at issuance and consume, or the
+ *  proof self-inflicts a `target_mismatch` 403; and an uncapped value must
+ *  never flow into the stored target. `paper_author` / `claimer` cap at
+ *  {@link CREDIT_OP_ACCOUNT_MAX_LEN}, `paper_permlink` at
+ *  {@link HIVE_PERMLINK_MAX_LEN}; `author_index` is a non-negative integer.
+ *  The wire field names (`paper_author` / `paper_permlink` / `author_index` /
+ *  `claimer`) are shared by all three sources (`agents/docs/hive-schemas.md`
+ *  § 2.9–§ 2.11).
+ *
+ *  Exhaustiveness: each `CreditOpAction` member is handled in its own branch
+ *  and the trailing `never` assignment makes a 4th member added to
+ *  {@link CREDIT_OP_ACTION_TUPLE} a compile error here — it cannot silently
+ *  fall into the revoke branch and produce a structurally wrong target hash. */
+export function extractCreditOpFields(
+  action: CreditOpAction,
+  source: Record<string, unknown>,
+): CreditOpFieldExtraction {
+  const paperAuthor = requireStringField(source, 'paper_author', CREDIT_OP_ACCOUNT_MAX_LEN, undefined, { trim: true });
+  if (!paperAuthor.ok) return { ok: false, field: 'paper_author' };
+  const paperPermlink = requireStringField(source, 'paper_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
+  if (!paperPermlink.ok) return { ok: false, field: 'paper_permlink' };
+
+  if (action === 'claim_authorship') {
+    const authorIndex = readCreditOpAuthorIndex(source);
+    if (!authorIndex.ok) return { ok: false, field: 'author_index' };
+    return {
+      ok: true,
+      fields: {
+        action,
+        paperAuthor: paperAuthor.value,
+        paperPermlink: paperPermlink.value,
+        authorIndex: authorIndex.value,
+      },
+    };
+  }
+  if (action === 'approve_authorship') {
+    const authorIndex = readCreditOpAuthorIndex(source);
+    if (!authorIndex.ok) return { ok: false, field: 'author_index' };
+    const claimer = requireStringField(source, 'claimer', CREDIT_OP_ACCOUNT_MAX_LEN, undefined, { trim: true });
+    if (!claimer.ok) return { ok: false, field: 'claimer' };
+    return {
+      ok: true,
+      fields: {
+        action,
+        paperAuthor: paperAuthor.value,
+        paperPermlink: paperPermlink.value,
+        authorIndex: authorIndex.value,
+        claimer: claimer.value,
+      },
+    };
+  }
+  if (action === 'revoke_authorship') {
+    const claimer = requireStringField(source, 'claimer', CREDIT_OP_ACCOUNT_MAX_LEN, undefined, { trim: true });
+    if (!claimer.ok) return { ok: false, field: 'claimer' };
+    return {
+      ok: true,
+      fields: {
+        action,
+        paperAuthor: paperAuthor.value,
+        paperPermlink: paperPermlink.value,
+        claimer: claimer.value,
+      },
+    };
+  }
+  // Exhaustiveness backstop: every CreditOpAction member is handled above. A
+  // new member added to CREDIT_OP_ACTION_TUPLE without a branch here is a
+  // compile error (it is not assignable to `never`), not a silent wrong-hash.
+  const _exhaustive: never = action;
+  return _exhaustive;
 }
 
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are
