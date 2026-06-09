@@ -1554,6 +1554,12 @@ async function fetchPaperDetailFromHaf(
     // the parallel call is typically free; parallelizing with paperResult
     // / fullVersions / retraction avoids serial latency on cold cache.
     const [paperResult, fullVersions, retraction, accreditedAccountSet, accreditedOrcidsByAccount, accreditationOrcidStatus, accreditedNamesByAccount, authorReputation] = await Promise.all([
+      // Not buildWith: the CTE params bind AFTER the outer author/permlink/bridge
+      // params, and $4 (the appTag) is reused as both the parent_permlink filter and
+      // the authorsWithSupersessionSelect / detailWhere appTag slot. A byte-identical
+      // buildWith adoption (CTE params first) would renumber every $N in detailWhere
+      // and the supersession select; kept manual to preserve the exact param layout
+      // on this hot detail query.
       pool.query(
         `WITH ${detailCte.sql}
          SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,

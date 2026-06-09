@@ -216,6 +216,10 @@ export async function fetchNotificationsFromHaf(
     // forward on the CTE start index so a new bound param in that CTE shifts
     // this in step rather than silently resolving to the wrong placeholder.
     const authoritiesParam = `$${accredStartIdx + 1}`; // accreditationAuthorities — authority gate on the accreditation-update feed
+    // Not buildWith: this WITH chain mixes the activeAccreditationsCteBody
+    // builder's CTE with hand-written inline CTEs (user_bridge_papers, the
+    // notification arms). buildWith composes CTE *builders*, not inline-literal
+    // CTEs, so the manual spelling is required here.
     const result = await pool.query(
       `WITH ${accredCte.sql},
 

@@ -39,3 +39,14 @@ Convert the four manual sites to `buildWith`. Do NOT touch the `WITH RECURSIVE` 
 - The `// $1, $2, $3` inline positional comment in `profile.ts` baseParams (trivial).
 
 **Filed as a separate follow-up (NOT this task's fault):** the `profile-reviews-accred-gate.test.ts` param-slot canary went tautological when a later commit grew the reviews CTE to 7 params — see `backend-profile-reviews-accred-gate-canary-stale-param-slots` in `pending/`.
+
+## Backend re-review signal (2026-06-09) — round-1 hold item 1 landed
+
+Enumerated every remaining `WITH ${` site in `backend/src` and documented each with its reason (the prior completion note documented only `getProfileStats`). `grep -rnE 'WITH \$\{' src --include=*.ts` now returns four matches, none of them a convertible single-CTE non-RECURSIVE site:
+
+- `hafsql.ts` (`WITH ${cteParts.join(', ')}`) — the `buildWith` implementation itself. Not a call site.
+- `notification-queries.ts` (`WITH ${accredCte.sql}, …`) — multi-CTE mixed-inline: the `activeAccreditationsCteBody` builder's CTE is hand-joined with inline-literal CTEs (`user_bridge_papers`, the notification arms). `buildWith` composes CTE *builders*, not inline-literal CTEs, so it cannot express this chain. Excluded; documented inline (same class as `getProfileStats`).
+- `lib/ipfs-shared.ts` (`accred ? WITH ${accred.sql} : ''`) — conditional collapse-to-empty: `buildWith` always emits `WITH …` and cannot express the empty branch. Structural exclusion; documented inline.
+- `routes/papers.ts` (paper-detail query, `WITH ${detailCte.sql}`) — single-CTE but param-ordering: the CTE params bind AFTER the outer author/permlink/bridge params, and `$4` (the appTag) is reused as both the `parent_permlink` filter and the `authorsWithSupersessionSelect` / `detailWhere` appTag slot. A byte-identical `buildWith` adoption (CTE params first) would renumber every `$N` in `detailWhere` and the supersession select. Excluded with the param-ordering reason (the hold's accepted alternative); documented inline; kept manual to preserve the exact param layout on this hot detail query.
+
+Each exclusion carries a durable inline comment anchored on its structural reason, so the next convention sweep neither re-flags nor mis-converts it. Comment-only; no behavior change. `npm run typecheck` + `npm run lint` clean (lone pre-existing `author-supersession.ts` warning untouched).

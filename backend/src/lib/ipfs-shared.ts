@@ -171,6 +171,8 @@ export async function cidReferencedByAppTag(
   // active-accreditations CTE (params $1,$2) and shift the containment params
   // after it. When it is not, the CTE/predicate collapse to empty and the
   // containment params stay at $1..$4 exactly as the cleanup path expects.
+  // Not buildWith: it always emits `WITH …` and cannot express this
+  // collapse-to-empty branch, so the manual spelling is required here.
   const accred = opts.requireAccreditedAuthor ? activeAccreditationsCteBody(1) : null;
   const withClause = accred ? `WITH ${accred.sql}` : '';
   const accredPredicate = accred ? 'AND c.author IN (SELECT account FROM active_accreditations)' : '';
