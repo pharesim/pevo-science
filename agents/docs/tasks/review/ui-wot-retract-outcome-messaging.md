@@ -6,7 +6,7 @@
 
 ## Problem
 
-`POST /api/wot/retract` now returns a `revocation_outcome` discriminator: `revoked`, `skipped`, `unverified`, `query_error`, `timeout`, or `chain_error` (authoritative enum in `agents/docs/api-contracts/accreditation.md`). The SPA's `handleRetract()` in `frontend/src/components/vouch-section.js` reads only `res.data.revocations` and ignores `revocation_outcome`. When the backend fail-closes with `unverified` (the retraction is not yet reflected on-chain: HAF lag, HAF unavailable, or nothing was broadcast) or returns `query_error` (lookup failed), `revocations` is `[]`, so the UI takes the "no revocations" path and shows the generic retract-success message. The user sees SUCCESS for a non-action or a failure.
+`POST /api/wot/retract` now returns a `revocation_outcome` discriminator: `revoked`, `skipped`, `unverified`, `timeout`, or `chain_error` (authoritative enum in `agents/docs/api-contracts/accreditation.md`). The SPA's `handleRetract()` in `frontend/src/components/vouch-section.js` reads only `res.data.revocations` and ignores `revocation_outcome`. When the backend fail-closes with `unverified` (the retraction is not yet confirmed on-chain: HAF lag, HAF unavailable, nothing was broadcast, or the single verify-and-re-evaluation read failed), `revocations` is `[]`, so the UI takes the "no revocations" path and shows the generic retract-success message. The user sees SUCCESS for a non-action or a failure.
 
 ## Goal
 
@@ -16,15 +16,14 @@ Surface the correct user-facing state per `revocation_outcome` so a fail-closed 
 
 In `handleRetract()`, branch on `revocation_outcome`:
 - `revoked` / `skipped`: existing success copy is fine (revocation happened, or no revocation was needed).
-- `unverified`: tell the user the retraction is not yet reflected on-chain and to re-check shortly. This is not an error; the on-chain retract may just be lagging ingestion.
-- `query_error`: tell the user the re-evaluation could not complete and to re-attempt.
+- `unverified`: tell the user the retraction is not yet confirmed on-chain so dependent accreditations were not re-evaluated, and to re-check shortly. This is not an error; the on-chain retract may just be lagging ingestion, or the single verify-and-re-evaluation read failed (both fold into this fail-closed arm).
 - `timeout` / `chain_error`: tell the user the revocation broadcast is in a degraded or failed state and to check on-chain status before re-attempting.
 
 Add i18n keys for the new arms. `vouch_status` may be `null` in the `unverified` arm; guard any read of it.
 
 ## Acceptance
 
-- The `unverified` and `query_error` arms render a distinct, accurate message (not the success copy).
+- The `unverified` arm renders a distinct, accurate message (not the success copy).
 - `null` `vouch_status` is handled without a render error.
 - Copy is emdash-free (PEvO user-facing-text convention).
 
@@ -160,5 +159,41 @@ Required fixes:
 5. **Update this task file's own stale enum references** (the Problem and Suggested approach sections still list `query_error` as a returnable outcome) so the task matches the 5-arm contract.
 
 When the fixes land, `git mv` this file back to `tasks/review/`. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09, commit 1f6c9315 on main)
+
+Addresses the [Architect] `query_error`-removal hold (items 1-5):
+
+1. **Dead `query_error` branch removed** from `handleRetract` (`vouch-section.js`).
+   The outcome chain now starts at `timeout`/`chain_error`; the `unverified` arm and
+   the `else` success arm are unchanged.
+2. **`wot.retractQueryError` removed** from `en.json` + the 15 non-English locale
+   stubs (literal single-line delete, no JSON round-trip, so the prior round's
+   reworded `retractUnverified` and each locale's non-ASCII content stay untouched),
+   and its 15 lines dropped from the `### Added 2026-06-09
+   (UI-WOT-RETRACT-OUTCOME-MESSAGING)` STUBS.md block. i18n parity across all 16
+   locales holds (i18n.test.js green, 31 tests).
+3. **`query_error -> error` unit case removed** from `components-vouch-section.test.js`
+   (suite 20, -1).
+4. **`unverified` copy confirmed unchanged.** The prior round's wording ("submitted
+   but is not yet confirmed on-chain, so dependent accreditations were not
+   re-evaluated. Re-check shortly.") stays accurate for the now-folded
+   read-failure cause: it attributes the state to the unconfirmed retraction and to
+   dependents not being re-evaluated, and does not imply the cause is exclusively
+   ingestion lag. No copy change needed.
+5. **This file's stale enum references updated.** Problem, Suggested approach, and
+   Acceptance now describe the 5-arm contract
+   (`revoked`/`skipped`/`unverified`/`timeout`/`chain_error`); the read-failure cause
+   is folded into the `unverified` description.
+
+Landing note: the worktree worker implemented against a base predating the prior
+round's `retractUnverified` reword, so its commit conflicted on cherry-pick. The
+removal was re-applied directly on current main: the three non-locale files reused
+verbatim from the worker's verified edits, the 16 locales re-derived on the current
+base to preserve the reworded `retractUnverified`. No `query_error` /
+`retractQueryError` token remains anywhere under `frontend/`. Build green;
+vouch-section + i18n parity unit tests green.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
