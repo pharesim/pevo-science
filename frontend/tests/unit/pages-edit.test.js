@@ -24,8 +24,26 @@ vi.mock('../../src/api.js', () => ({
   fetchPaper: vi.fn(),
   fetchPaperEnrichment: vi.fn(),
   invalidatePaperCache: vi.fn(),
-  uploadToIpfs: vi.fn(),
   fetchAccreditations: vi.fn(() => Promise.resolve({ data: [] })),
+}));
+
+// Supplementary-file upload goes through the batch session in
+// lib/ipfs-upload.js (mirrors pages-publish.test.js). edit.js's submit handler
+// drives `createUploadSession().upload(file)` and `dispose()` in a finally;
+// route every upload through one controllable fn and expose dispose so the
+// supplementary-upload test can assert both fired.
+const mockSessionUpload = vi.fn();
+const mockSessionDispose = vi.fn();
+vi.mock('../../src/lib/ipfs-upload.js', () => ({
+  createUploadSession: () => ({
+    upload: (...a) => mockSessionUpload(...a),
+    dispose: (...a) => mockSessionDispose(...a),
+  }),
+  uploadFile: (...a) => mockSessionUpload(...a),
+  describeUploadError: (err) =>
+    err?.code === 'UPLOAD_REAUTH_UNAVAILABLE' ? 'common.uploadReauthRequired'
+      : err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+        : 'common.uploadFailed',
 }));
 
 vi.mock('../../src/signer.js', () => ({
@@ -1546,5 +1564,106 @@ describe('editPage handleSubmit drops duplicate-hive authors on re-broadcast', (
 
     expect(authors.map((a) => a.hive)).toEqual(['alice', 12345]);
     expect(authors.map((a) => a.name)).toEqual(['Alice', 'Numeric']);
+  });
+});
+
+// edit.js's submit handler uploads new supplementary files through ONE batch
+// upload session: createUploadSession() -> upload(sf.file) per file ->
+// dispose() in a finally. The structurally-identical publish.js path is tested
+// in pages-publish.test.js; this covers the edit page so the session wiring is
+// not silently broken (the prior stale `uploadToIpfs` mock gave false green).
+describe('editPage handleSubmit supplementary-file upload session', () => {
+  function basePaper() {
+    return {
+      author: 'alice', permlink: 'p1',
+      head_author: 'alice', head_permlink: 'p1',
+      canonical_author: 'alice', canonical_permlink: 'p1',
+      body: 'old body',
+      json_metadata: JSON.stringify({ pevotest: { version: 1 } }),
+      title: 'Old Title',
+      versions: [{ version_number: 1 }],
+    };
+  }
+
+  function fillForm(comp) {
+    comp._originalBody = '## Abstract\n\nold abstract\n\n---\n\nold body';
+    comp.title = 'New Title';
+    comp.abstract = 'new abstract';
+    comp.body = 'new body';
+    comp.discipline = 'Physics';
+    comp.authorName = 'Alice';
+    comp.authorAffiliation = 'MIT';
+    comp.authorOrcid = '';
+    comp.keywordsText = 'quantum';
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockStores.auth.isConnected = true;
+    mockStores.auth.isAccredited = true;
+    mockStores.auth.username = 'alice';
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    invalidatePaperCache.mockResolvedValue({});
+  });
+
+  it('drives the session: upload() called per file, cid embedded, dispose() runs in finally', async () => {
+    mockSessionUpload.mockResolvedValue({ data: { cid: 'bafycid123' } });
+
+    const comp = createComponent();
+    comp.paper = basePaper();
+    fillForm(comp);
+    const file = new Blob(['x'], { type: 'application/pdf' });
+    comp.supplementaryFiles = [{
+      file,
+      fileName: 'data.pdf',
+      description: 'dataset',
+      cid: null,
+      error: null,
+      uploading: false,
+    }];
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('success');
+    // The session's upload() ran for the one supplementary file.
+    expect(mockSessionUpload).toHaveBeenCalledTimes(1);
+    expect(mockSessionUpload).toHaveBeenCalledWith(file);
+    // dispose() always runs (the finally around the upload loop).
+    expect(mockSessionDispose).toHaveBeenCalledTimes(1);
+    // The returned cid is embedded in the broadcast json_metadata.
+    const commentOp = broadcastOps.mock.calls[0][1][0];
+    const meta = JSON.parse(commentOp[1].json_metadata).pevotest;
+    expect(meta.supplementary_files).toEqual([
+      expect.objectContaining({ cid: 'bafycid123', filename: 'data.pdf' }),
+    ]);
+  });
+
+  it('dispose() still runs in the finally when an upload throws', async () => {
+    mockSessionUpload.mockRejectedValueOnce(new Error('ipfs boom'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const comp = createComponent();
+    comp.paper = basePaper();
+    fillForm(comp);
+    comp.supplementaryFiles = [{
+      file: new Blob(['x'], { type: 'application/pdf' }),
+      fileName: 'data.pdf',
+      description: 'dataset',
+      cid: null,
+      error: null,
+      uploading: false,
+    }];
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('error');
+    expect(mockSessionUpload).toHaveBeenCalledTimes(1);
+    // dispose() runs even on the upload-failure path (wipes the cached password).
+    expect(mockSessionDispose).toHaveBeenCalledTimes(1);
+    // The per-file inline error is the generic localized key, not the raw err.
+    expect(comp.supplementaryFiles[0].error).toBe('common.uploadFailed');
+    expect(broadcastOps).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

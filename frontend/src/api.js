@@ -195,7 +195,9 @@ async function mintPasswordFreshAuthProof(action, password) {
 }
 
 // Mint a fresh-auth proof for the light-account (JWT) upload-token pre-flight,
-// bound to (ipfs_upload, <username>, ''). See `agents/docs/api-contracts/ipfs.md`.
+// bound to (ipfs_upload, <username>, ''). The proof is consumed by the first
+// step of the two-step upload below: `POST /api/ipfs/upload-token` mints a
+// single-use token, then `POST /api/ipfs/upload` carries it in `X-Upload-Token`.
 export function mintIpfsUploadProof(password) {
   return mintPasswordFreshAuthProof('ipfs_upload', password);
 }

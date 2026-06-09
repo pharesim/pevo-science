@@ -39,6 +39,12 @@ export function describeUploadError(err) {
 export function createUploadSession() {
   let password = null;
   let credentialResolved = false;
+  // A password re-prompt costs one modal interaction; bound it to once per
+  // session so a session-JWT expiry or a mid-batch password change (which makes
+  // the mint return UNAUTHORIZED again, with a now-correct password) cannot loop
+  // the user through endless prompts. Once a re-prompt has fired, a further
+  // UNAUTHORIZED rethrows instead of prompting a third time.
+  let repromptUsed = false;
 
   function isLight() {
     return Alpine.store('auth')?.custody === 'light';
@@ -47,11 +53,21 @@ export function createUploadSession() {
   // Resolve the light-account credential exactly once per batch. Blocks State C
   // (passwordless, ORCID-only) before prompting — the backend returns an
   // indistinguishable 401 for wrong-password and no-password, so `hasPassword`
-  // from the account status is the only clean State-C discriminator.
+  // from the account status is the only clean State-C discriminator. A failed
+  // status fetch (transient network error) must NOT dead-end a valid
+  // password-holder: only an explicit `hasPassword === false` blocks; on a
+  // thrown/unknown status we fall through to the prompt, and the backend
+  // re-verifies and 401s a genuine passwordless account at mint time anyway.
   async function ensureCredential() {
     if (credentialResolved) return;
-    const status = await fetchEmailStatus();
-    if (status?.data?.hasPassword === false) {
+    let hasPassword;
+    try {
+      const status = await fetchEmailStatus();
+      hasPassword = status?.data?.hasPassword;
+    } catch {
+      hasPassword = undefined;
+    }
+    if (hasPassword === false) {
       throw new UploadSessionError(
         UPLOAD_REAUTH_UNAVAILABLE,
         'Uploads require a password on this account',
@@ -65,12 +81,16 @@ export function createUploadSession() {
     credentialResolved = true;
   }
 
-  // Mint a single-use proof, re-prompting once if the cached password is wrong.
+  // Mint a single-use proof. On the first UNAUTHORIZED (wrong cached password)
+  // re-prompt once and retry; a subsequent UNAUTHORIZED rethrows rather than
+  // prompting again, so a JWT expiry or a server-side credential change cannot
+  // trigger an unbounded chain of password prompts.
   async function mintProof() {
     try {
       return await mintIpfsUploadProof(password);
     } catch (err) {
-      if (err?.code === 'UNAUTHORIZED') {
+      if (err?.code === 'UNAUTHORIZED' && !repromptUsed) {
+        repromptUsed = true;
         password = null;
         credentialResolved = false;
         await ensureCredential();
@@ -90,7 +110,9 @@ export function createUploadSession() {
       // The single-use token can expire/consume between mint and upload on a
       // slow connection (UNAUTHORIZED at /upload) or the proof can be rejected
       // (FRESH_AUTH_REQUIRED at /upload-token). Mint a fresh proof + token and
-      // retry once; the cached password means no re-prompt.
+      // retry once. The retry mint reuses the cached password and normally needs
+      // no prompt; if it does return UNAUTHORIZED, mintProof re-prompts at most
+      // once per session (the repromptUsed bound above) and otherwise rethrows.
       if (err?.code === 'UNAUTHORIZED' || err?.code === 'FRESH_AUTH_REQUIRED') {
         const retryProof = await mintProof();
         return uploadFileToIpfs(file, { freshAuthProof: retryProof });
@@ -104,6 +126,7 @@ export function createUploadSession() {
     dispose() {
       password = null;
       credentialResolved = false;
+      repromptUsed = false;
     },
   };
 }

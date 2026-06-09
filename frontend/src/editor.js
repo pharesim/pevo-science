@@ -310,6 +310,17 @@ export class PevoEditor {
     this.isFullscreen = false;
     this.isUploading = false;
 
+    // Sequential image-upload queue. Drop/paste/file-select can hand us several
+    // images at once; uploading them concurrently would open one upload session
+    // (and one re-auth modal) per image, and the modal's refuse-while-open guard
+    // resolves every caller after the first to null — cancelling all but the
+    // first image for a light account. We drain the queue one file at a time
+    // through `_handleImageUpload` so a single shared re-auth prompt covers the
+    // whole batch. The drain is fire-and-forget so the ProseMirror handlers stay
+    // synchronous (they must return a boolean).
+    this._imageUploadQueue = [];
+    this._imageUploadDraining = false;
+
     // Modal / popover state
     this._showTablePicker = false;
     this._showLinkPopover = false;
@@ -523,7 +534,7 @@ export class PevoEditor {
     this._els.fileInput.addEventListener('change', (e) => {
       const files = e.target.files;
       if (files) {
-        Array.from(files).filter(isImageFile).forEach((f) => this._handleImageUpload(f));
+        this._queueImageUploads(Array.from(files).filter(isImageFile));
       }
       e.target.value = '';
     });
@@ -627,7 +638,8 @@ export class PevoEditor {
             const imageFiles = Array.from(files).filter(isImageFile);
             if (imageFiles.length > 0) {
               event.preventDefault();
-              imageFiles.forEach((f) => this._handleImageUpload(f));
+              // Fire-and-forget: handler must return a sync boolean for ProseMirror.
+              this._queueImageUploads(imageFiles);
               return true;
             }
           }
@@ -639,7 +651,8 @@ export class PevoEditor {
             const imageFiles = Array.from(files).filter(isImageFile);
             if (imageFiles.length > 0) {
               event.preventDefault();
-              imageFiles.forEach((f) => this._handleImageUpload(f));
+              // Fire-and-forget: handler must return a sync boolean for ProseMirror.
+              this._queueImageUploads(imageFiles);
               return true;
             }
           }
@@ -1145,6 +1158,30 @@ export class PevoEditor {
   }
 
   // --- Image upload ---
+
+  // Enqueue one or more image files for sequential upload. Safe to call from a
+  // synchronous ProseMirror handler (handleDrop/handlePaste): it returns
+  // immediately and the drain runs fire-and-forget. Multiple files share one
+  // re-auth prompt because they pass through `_handleImageUpload` one at a time.
+  _queueImageUploads(files) {
+    for (const f of files) this._imageUploadQueue.push(f);
+    this._drainImageUploadQueue();
+  }
+
+  async _drainImageUploadQueue() {
+    if (this._imageUploadDraining) return;
+    this._imageUploadDraining = true;
+    try {
+      while (this._imageUploadQueue.length > 0) {
+        const file = this._imageUploadQueue.shift();
+        // A late drop after destroy() leaves no editor; stop draining.
+        if (!this.editor) break;
+        await this._handleImageUpload(file);
+      }
+    } finally {
+      this._imageUploadDraining = false;
+    }
+  }
 
   async _handleImageUpload(file) {
     if (!this.editor || !isImageFile(file)) return;
