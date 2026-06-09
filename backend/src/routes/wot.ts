@@ -8,6 +8,8 @@
 import { Router, type Request, type Response } from 'express';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
+import { rateLimit, byAccount } from '../middleware/rateLimit.js';
+import { assertNever } from '../util/assertNever.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getVouchStatus, broadcastWotAccreditation, revokeVoucheeIfBelowThreshold, vouchStatusCacheKey, type VouchStatus } from '../wot.js';
 import { logger } from '../logger.js';
@@ -63,6 +65,44 @@ export async function pollForVouch(
   }
 }
 
+/**
+ * Retract-path counterpart to `pollForVouch`: bust the cached vouch status and
+ * poll HAF until the retracting `voucher`'s edge to `vouchee` has DISAPPEARED
+ * (the retraction is reflected on-chain), or the cap elapses. Returns the
+ * freshest status seen (null if HAF is unavailable; the still-vouched status on
+ * timeout). The caller treats "voucher still present on the final read" as an
+ * unverified retraction and does NOT revoke — acting on an unverified retraction
+ * would let an accredited voucher revoke a victim's accreditation by claiming a
+ * retraction they never broadcast. Same bust-before-read discipline and
+ * injectable cap/interval as `pollForVouch`.
+ */
+export async function pollForRetraction(
+  vouchee: string,
+  voucher: string,
+  opts: { capMs?: number; intervalMs?: number } = {},
+): Promise<VouchStatus | null> {
+  const capMs = opts.capMs ?? VOUCH_POLL_CAP_MS;
+  const intervalMs = opts.intervalMs ?? VOUCH_POLL_INTERVAL_MS;
+  const deadline = Date.now() + capMs;
+
+  let status: VouchStatus | null = null;
+  for (;;) {
+    await hafCache.invalidate(vouchStatusCacheKey(vouchee));
+    status = await getVouchStatus(vouchee);
+    if (status && !status.vouches.some((v) => v.voucher === voucher)) return status;
+    if (Date.now() + intervalMs >= deadline) return status;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+// Per-account write limiter for the vouch/retract endpoints. Both trigger an
+// admin broadcast (auto-accredit / revoke); the app-level mount applies only
+// the byIp read limiter, so this byAccount layer (placed AFTER
+// verifyHiveSignature, which sets req.hiveUsername) bounds how fast one
+// accredited account can drive admin broadcasts — defense-in-depth around the
+// retraction-verification gate.
+const wotWriteLimiter = rateLimit({ name: 'wot-write', windowMs: 60_000, max: 10, keyFn: byAccount });
+
 // ──────────────────────────────────────────────
 // GET /api/wot/:username — vouch status
 // ──────────────────────────────────────────────
@@ -89,7 +129,7 @@ router.get('/:username', async (req: Request, res: Response) => {
 // via Hive Keychain. The backend then checks if the vouchee has reached the
 // WoT threshold and auto-accredits if so.
 
-router.post('/vouch', verifyHiveSignature, async (req: Request, res: Response) => {
+router.post('/vouch', verifyHiveSignature, wotWriteLimiter, async (req: Request, res: Response) => {
   const { vouchee } = req.body;
   const voucher = req.hiveUsername!;
 
@@ -177,7 +217,7 @@ router.post('/vouch', verifyHiveSignature, async (req: Request, res: Response) =
 // POST /api/wot/retract — process a vouch retraction
 // ──────────────────────────────────────────────
 
-router.post('/retract', verifyHiveSignature, async (req: Request, res: Response) => {
+router.post('/retract', verifyHiveSignature, wotWriteLimiter, async (req: Request, res: Response) => {
   const { vouchee } = req.body;
   const voucher = req.hiveUsername!;
 
@@ -185,20 +225,47 @@ router.post('/retract', verifyHiveSignature, async (req: Request, res: Response)
     return sendError(res, 400, 'BAD_REQUEST', 'vouchee is required and must be a valid Hive username');
   }
 
-  // The retract_vouch custom_json has already been broadcast by the frontend.
+  if (voucher === vouchee) {
+    return sendError(res, 422, 'VALIDATION_ERROR', 'Cannot retract a vouch for yourself');
+  }
+
+  // Only accredited researchers participate in the Web of Trust (parity with
+  // /vouch). Gating the signer also narrows who can reach the revocation path.
+  const accreditedSet = await getAccreditedSet([voucher]);
+  if (!accreditedSet.has(voucher)) {
+    return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can retract a vouch');
+  }
+
+  // The retract_vouch custom_json is broadcast by the frontend BEFORE this call.
   // Re-evaluate the VOUCHEE that lost a vouch (NOT the voucher): if it was
   // WoT-accredited and now sits below the threshold, revoke its accreditation.
   // cascadeRevocation is reserved for the case where an account's own
   // accreditation was revoked; calling it with the voucher here re-evaluated
   // the voucher's still-active vouchees and never the one that lost a vouch.
   //
-  // Bust the cached vouch status first so a subsequent read reflects the
-  // dropped vouch; the revocation decision itself excludes the retracting
-  // voucher in SQL and so does not depend on HAF having ingested the retract.
-  await hafCache.invalidate(vouchStatusCacheKey(vouchee));
+  // Verify the retraction actually landed on-chain before honoring it: poll HAF
+  // until the signer's vouch edge to the vouchee disappears. Acting on an
+  // unverified retraction would let an accredited voucher revoke a victim's WoT
+  // accreditation by POSTing here while broadcasting no retract — the admin
+  // revoke sticks under latest-action-wins, and the victim's standing on-chain
+  // vouches fire no re-accreditation event, so it does not self-heal. On the
+  // verified path the recount in revokeVoucheeIfBelowThreshold sees the dropped
+  // edge already gone from active_vouches; no per-voucher SQL exclusion is used.
+  const status = await pollForRetraction(vouchee, voucher);
+  const retractionVerified = status !== null && !status.vouches.some((v) => v.voucher === voucher);
 
-  const revocation = await revokeVoucheeIfBelowThreshold(vouchee, voucher);
-  const status = await getVouchStatus(vouchee);
+  if (!retractionVerified) {
+    // HAF unavailable, ingestion lagged past the poll cap, or the retraction was
+    // never broadcast. Fail closed: do not revoke on an unverified retraction.
+    return sendOk(res, {
+      message: `Retraction received. The withdrawn vouch for ${vouchee} is not yet reflected on-chain, so no revocation was evaluated.`,
+      revocation_outcome: 'unverified',
+      revocations: [],
+      vouch_status: status,
+    });
+  }
+
+  const revocation = await revokeVoucheeIfBelowThreshold(vouchee);
 
   let message: string;
   switch (revocation.outcome) {
@@ -211,8 +278,14 @@ router.post('/retract', verifyHiveSignature, async (req: Request, res: Response)
     case 'chain_error':
       message = `Retraction processed. The revocation broadcast for ${vouchee} failed.`;
       break;
-    default:
+    case 'query_error':
+      message = `Retraction processed, but ${vouchee}'s accreditation could not be re-evaluated because the lookup failed. Please re-attempt.`;
+      break;
+    case 'skipped':
       message = 'Retraction processed. No revocation needed.';
+      break;
+    default:
+      return assertNever(revocation);
   }
 
   sendOk(res, {

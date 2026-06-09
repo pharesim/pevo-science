@@ -90,6 +90,19 @@ vi.mock('../../src/app-db.js', () => ({
   getAppPool: () => ({ query: appQueryMock }),
 }));
 
+// Force the in-memory rate-limit / cache fallback. The /vouch route now carries
+// a per-account `wot-write` limiter; against shared real Redis its bucket would
+// survive between runs and accumulate this file's repeated same-account vouch
+// POSTs across back-to-back runs within the 60s window, eventually 429-ing a
+// later test. A null Redis makes the limiter process-local (fresh per run), so
+// the limiter's presence cannot make these outcome assertions flaky. Mirrors the
+// sibling `tests/routes/wot-retract-cascaderevocation.test.ts`.
+vi.mock('../../src/redis.js', () => ({
+  getRedis: () => null,
+  isRedisAvailable: () => false,
+  disconnectRedis: async () => {},
+}));
+
 // Voucher-accredited gate. Default to a Set containing the voucher so the
 // request passes the gate; individual tests can override.
 vi.mock('../../src/accreditation.js', () => ({

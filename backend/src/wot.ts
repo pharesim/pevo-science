@@ -164,7 +164,7 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
       const threshold = await getWotThreshold();
 
       const cte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
-      const result = await pool.query(
+      const result = await pool.query<{ voucher: string; relationship: string; event_timestamp: string }>(
         `${cte.sql}
          SELECT av.voucher, av.relationship, av.event_timestamp
          FROM active_vouches av
@@ -174,10 +174,10 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
         [...cte.params, username],
       );
 
-      const vouches: VouchInfo[] = result.rows.map((r: Record<string, unknown>) => ({
-        voucher: r.voucher as string,
-        relationship: r.relationship as string,
-        timestamp: r.event_timestamp as string,
+      const vouches: VouchInfo[] = result.rows.map((r) => ({
+        voucher: r.voucher,
+        relationship: r.relationship,
+        timestamp: r.event_timestamp,
       }));
 
       return {
@@ -305,6 +305,22 @@ export function cascadeDiscoverySelect(revokedParam: string, thresholdParam: str
 }
 
 /**
+ * Build the admin `revoke_accreditation` custom_json payload for an account.
+ * Shared by `cascadeRevocation` (accreditation-revocation cascade) and
+ * `revokeVoucheeIfBelowThreshold` (retract path) so the wire shape stays in one
+ * place. `timestamp` is stamped per call, so this MUST be invoked fresh at each
+ * broadcast site rather than hoisted to a constant.
+ */
+function buildRevocationPayload(account: string) {
+  return {
+    action: 'revoke' as const,
+    account,
+    reason: 'WoT threshold no longer met',
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/**
  * Check if revoking a voucher's accreditation should cascade to their vouchees.
  * For each vouchee that drops below the WoT threshold and was WoT-accredited,
  * broadcast a revocation.
@@ -380,12 +396,7 @@ export async function cascadeRevocation(
       }
 
       // Revoke the vouchee's WoT accreditation
-      const payload = {
-        action: 'revoke',
-        account: vouchee,
-        reason: 'WoT threshold no longer met',
-        timestamp: new Date().toISOString(),
-      };
+      const payload = buildRevocationPayload(vouchee);
 
       try {
         // Invalidate the batch entry BEFORE broadcasting. If the broadcast
@@ -499,6 +510,7 @@ export async function cascadeRevocation(
 export type VoucheeRevocationOutcome =
   | { outcome: 'revoked'; txId: string }
   | { outcome: 'skipped' }
+  | { outcome: 'query_error' }
   | { outcome: 'timeout' }
   | { outcome: 'chain_error' };
 
@@ -513,21 +525,30 @@ export type VoucheeRevocationOutcome =
  * cascadeRevocation(voucher) on retract re-evaluated the wrong accounts (the
  * voucher's still-active vouchees) and never the one that actually lost a vouch.
  *
- * A single discovery query returns the vouchee iff it is currently WoT-accredited
- * (method = 'wot') AND, excluding the retracting voucher from its accredited-
- * voucher count, it now sits below the threshold. Excluding the voucher in SQL
- * makes the decision independent of whether HAF has ingested the retract_vouch
- * custom_json yet. No recursion: a single withdrawn edge can drop at most this
- * one vouchee, and revoking a WoT accreditation does not retroactively unwind
- * that account's own outbound vouches (those stand until separately retracted).
+ * PRECONDITION (caller-enforced): the retraction must already be verified to
+ * have landed on-chain — i.e. the retracting voucher's vouch edge is genuinely
+ * gone from `active_vouches`. The `/retract` route enforces this by polling HAF
+ * until the edge disappears before calling here. This function therefore does a
+ * plain recount of the vouchee's CURRENT accredited vouchers against the
+ * threshold; it does NOT special-case any voucher. An earlier version excluded
+ * the retracting voucher unconditionally to be HAF-ingestion-independent, but
+ * that let an accredited voucher trigger a revoke by CLAIMING a retraction they
+ * never broadcast — the recount must reflect only edges actually gone from the
+ * chain (see the route's retraction-verification gate). No recursion: a single
+ * withdrawn edge can drop at most this one vouchee, and revoking a WoT
+ * accreditation does not retroactively unwind that account's own outbound
+ * vouches (those stand until separately retracted).
  *
  * On a positive result the reputation batch entry is invalidated BEFORE the
  * broadcast — mirroring cascadeRevocation's ambiguous-timeout leak guard so a
  * timed-out-but-landed revocation cannot leave a stale positive score.
+ *
+ * A failure in the discovery query returns `query_error` (distinct from
+ * `skipped`) so the caller can tell "could not determine" apart from "no
+ * revocation needed" rather than silently dropping a needed revocation.
  */
 export async function revokeVoucheeIfBelowThreshold(
   vouchee: string,
-  retractingVoucher: string,
 ): Promise<VoucheeRevocationOutcome> {
   if (!config.pevoAdminPostingKey) {
     logger.warn('PEVO_ADMIN_POSTING_KEY not configured — cannot revoke vouchee on retract');
@@ -543,9 +564,8 @@ export async function revokeVoucheeIfBelowThreshold(
 
     const findCte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
     const voucheeParam = `$${findCte.nextIdx}`;
-    const voucherParam = `$${findCte.nextIdx + 1}`;
-    const thresholdParam = `$${findCte.nextIdx + 2}`;
-    const result = await pool.query(
+    const thresholdParam = `$${findCte.nextIdx + 1}`;
+    const result = await pool.query<{ account: string }>(
       `${findCte.sql}
        SELECT aa_target.account
        FROM active_accreditations aa_target
@@ -555,40 +575,35 @@ export async function revokeVoucheeIfBelowThreshold(
          AND aa_target.method = 'wot'
        GROUP BY aa_target.account
        HAVING COUNT(DISTINCT av_all.voucher) FILTER (
-         WHERE aa_voucher.account IS NOT NULL AND av_all.voucher != ${voucherParam}
+         WHERE aa_voucher.account IS NOT NULL
        ) < ${thresholdParam}`,
-      [...findCte.params, vouchee, retractingVoucher, threshold],
+      [...findCte.params, vouchee, threshold],
     );
     shouldRevoke = result.rows.length > 0;
   } catch (err) {
-    logger.error({ err, vouchee, retractingVoucher }, 'Vouchee retract re-evaluation query failed');
-    return { outcome: 'skipped' };
+    logger.error({ err, vouchee }, 'Vouchee retract re-evaluation query failed');
+    return { outcome: 'query_error' };
   }
 
   if (!shouldRevoke) return { outcome: 'skipped' };
 
-  const payload = {
-    action: 'revoke',
-    account: vouchee,
-    reason: 'WoT threshold no longer met',
-    timestamp: new Date().toISOString(),
-  };
+  const payload = buildRevocationPayload(vouchee);
 
   try {
     await invalidateOnRevocation(vouchee);
 
     const txResult = await broadcastAdminCustomJson(payload);
-    logger.info({ vouchee, retractingVoucher, txId: txResult.id }, 'WoT vouchee revocation on retract broadcast');
+    logger.info({ vouchee, txId: txResult.id }, 'WoT vouchee revocation on retract broadcast');
     return { outcome: 'revoked', txId: txResult.id };
   } catch (err) {
     if (err instanceof BroadcastTimeoutError) {
       logger.error(
-        { err, vouchee, retractingVoucher },
+        { err, vouchee },
         'WoT vouchee revocation on retract timed out — outcome ambiguous, manual follow-up required',
       );
       return { outcome: 'timeout' };
     }
-    logger.error({ err, vouchee, retractingVoucher }, 'Failed to broadcast WoT vouchee revocation on retract');
+    logger.error({ err, vouchee }, 'Failed to broadcast WoT vouchee revocation on retract');
     return { outcome: 'chain_error' };
   }
 }
