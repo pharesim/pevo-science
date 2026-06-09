@@ -140,9 +140,16 @@ new backend. The paired UI task is `ui-notifications-drop-rewind-and-block-cap`.
 
 After this change the only case the integer-cursor design cannot deliver atomically is a single Hive block
 whose recipient-relevant events cannot be wholly contained within one `cap`-event window: either (a) one block
-has more than `cap` (1,000) events, or (b) the block sits at the cap-truncation boundary. The partial-block
-drop turns this into graceful deferral (the block surfaces once the window floor slides enough to contain it),
-not a silent skip. Reachability at accredited single-instance beta scale is effectively nil (the only amplifier,
+has more than `cap` (1,000) events, or (b) the block sits at the cap-truncation boundary of a genuine >cap
+window (the `cap + 1` probe distinguishes this from an exactly-cap fully-contained window, which drops nothing).
+The partial-block drop defers the block rather than splitting it, but the recovery path differs by direction.
+For the digest (`'asc'`, oldest-first) the dropped NEWEST block resurfaces on the next drain once the window
+floor slides forward to contain it. For the SPA bell feed (`'desc'`, newest-first) the dropped OLDEST block is
+NOT recovered by a forward floor-slide — the floor only moves forward, aging it out; the SPA recovers it only
+if the account's in-window event count later falls below the cap, and enrolled users get it via the email
+digest regardless. This is a bounded gap for very high-volume accounts on the bell feed (consistent with the
+settled "newest-first; older gaps are digest-covered" decision), not a silent skip of recent activity.
+Reachability at accredited single-instance beta scale is effectively nil (the only amplifier,
 citation-array fan-out, is capped by the paper-existence INNER JOIN at the victim's real paper count). Cheap
 interim knob if per-account per-block volume ever grows: raise `NOTIFICATION_WINDOW_FETCH_CAP` (the SQL `LIMIT`
 bounds rows returned, not rows scanned, so the cost is payload/heap, not query time, under the LIMIT-independent
@@ -232,3 +239,37 @@ permanent silent skip. Fold this into the existing
 `agents/docs/solutions/architecture-patterns/forward-cursor-feed-newest-first-and-rewind-masks-cap-edge-2026-06-09.md`
 (it owns this surface) via `/ce-compound` / `/ce-compound-refresh` — do NOT create a new doc.
 Skip if item 1 is instead resolved by accepting the residual (then there is no fix to compound).
+
+## Backend re-review signal (2026-06-09) — round-2 hold items 1-4 landed
+
+Items landed in commit `e3336dff` (code/tests) + this task-state commit (Residual
+wording). No production behavior changed beyond item 1's correctness fix.
+
+- **Item 1 (capHit false-positive boundary drop).** `fetchNotificationsFromHaf` binds
+  `$3 = cap + 1` and computes `capHit = result.rows.length > cap`, truncating the probe
+  row back to `cap` before the ascending sort + boundary-drop. An exactly-cap
+  fully-contained window now drops nothing; only a genuine >cap window drops the
+  (possibly partial) truncation-boundary block. Function + cap-const docblocks describe
+  the probe; the Residual section's recovery wording is corrected for newest-first (the
+  dropped oldest 'desc' block is NOT recovered by a forward floor-slide — only by the
+  in-window count later falling below cap, or via the digest). Tests: the cap-LIMIT pin
+  asserts `cap + 1`; a new exactly-cap test mutation-kills the false-drop (min block 1,
+  not 2); the three cap-hit tests seed `cap + 1` newest-first rows via a new
+  `descCapPlusOne` helper.
+- **Item 2 (carve-out clause placement).** The MOCK_VERIFY_SIGNATURE bypass
+  acknowledgment (cryptographic verification bypassed + why the route-behavior focus
+  permits it) moved from clause (b) into clause (a) per CLAUDE.md; clause (b) now states
+  only the positive constraint (auth-focused tests run real verify) + the auth.test.ts
+  clause-(c) companion.
+- **Item 3 (digest direction pin).** `digest-window-cursor.test.ts` destructures all four
+  captured args and asserts `direction === 'asc'`.
+- **Item 4 (single-block-exceeds-cap empty-batch).** New mocked-pool case: cap+1 events in
+  ONE block → boundary-drop empties the batch → route returns `events: []`, `latest_block`
+  echoing `since_block`, `has_more: false`.
+
+Verification: typecheck (src + tests) + lint clean; notifications-window-cursor (incl. the
+2 new tests) + digest-window-cursor + notifications.test.ts (real HAF 9/9) + the
+sql-shape / arm-semantics / bridge-author canaries all green.
+
+The pre-staged `/ce-compound` for the cap+1 lesson is left for the architect to fire at
+clean archive per the hold note.
