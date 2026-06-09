@@ -29,3 +29,18 @@ Extend the display-side review/vote exclusion to also drop `accepted_claims` cla
 - `backend/src/hafsql.ts` (`excludeSelfReviewWhere`, `authorshipClaimsCteBody`), `backend/src/routes/papers.ts` (review-agg LATERAL, enrichment review list), plus the profile / search / stats review aggregations.
 - Cycle-side precedent: `backend-co-author-claim-zero-score` (Item 2).
 - **Related:** `backend-implement-consented-authorship-model` — the consented-set migration re-keys credit; align the display exclusion with whichever set ends up authoritative so the two land coherently.
+
+## Backend re-review signal (2026-06-09, commit 328d563d on main)
+
+Closed the display-side gap on all review + vote surfaces; the cycle side was already done.
+
+- New helper `excludeClaimedSelfWhere` (hafsql.ts) emits the `accepted_claims NOT EXISTS` gate (`status = 'accepted'` against the `authorship_claims` CTE), mirroring the cycle's `paper_resolved_votes` / `paper_reviews` gates. Composes the existing claims CTE into the exclusion rather than duplicating the predicate, per the task's preference.
+- **Review surfaces** (avg_rating / review_count / review list): listing review-agg LATERAL + paper-detail enrichment review list (papers.ts), profile reviews-list + profile-stats review_count (profile.ts), review search (search.ts), global stats reviews CTE (stats.ts), single-review fetch (reviews.ts). Each threads `authorshipClaimsCteBody` into its `buildWith` — unscoped on multi-paper surfaces (claims are low-cardinality, so the full materialization is cheap), `{claimer}` / `{paperAuthor,paperPermlink}`-scoped on single-user / single-paper ones.
+- **net_votes display**: `batchResolveVotes` (the authoritative listing value) skips voters who are accepted claimers of the paper; the paper-detail voter query gates `v.voter` via the same helper. The listing `sort=votes` `accreditedVoteCount` is left as the cold-cache pre-sort — the displayed value is the resolved one (now claimer-excluded) and the page is re-sorted by it.
+- `excludeSelfReviewWhere` docblock updated (round-3 H2 follow-up): the gap is now closed on both the cycle and the display paths.
+
+Tests (`tests/routes/display-claimer-self-review-exclusion.test.ts`): a behavioral canary (an accepted ORCID/name-only claimer's self-review is excluded; a third-party review and a PENDING — not-yet-accepted — claimer's review are kept) plus source-shape pins across all review + vote surfaces. `npm run typecheck` + `npm run lint` clean.
+
+Verification (real HAF): `profile-reviews-accred-gate`, `search`, `reviews-real-haf`, and the new canary pass; the lone `papers.test.ts` "supports source filter" timeout in the batched run is load flakiness (passes in isolation). The `stats-profile-parity` failures are pre-existing Redis `MaxRetries` on the reputation-batch path (`getBatchReputationMap`) — provably unrelated, since this change touches only the review-count CTE in stats, not the reputation score.
+
+**Forward-compat with `backend-implement-consented-authorship-model`:** the display gates reference the same `authorship_claims` / `accepted_claims` set that the consented-model migration will re-key, so when that lands the display exclusion follows automatically — the coherence the Related note asked for, with no re-work.
