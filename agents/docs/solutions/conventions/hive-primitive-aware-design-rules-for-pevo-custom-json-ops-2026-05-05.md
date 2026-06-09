@@ -14,6 +14,7 @@ applies_when:
   - "Walking or ordering Hive ops in HAF SQL queries — any ORDER BY that uses block_num without the HAF operation id as a same-block tiebreaker"
   - "Writing a HAF SQL validity rule for a custom_json consent op — must explicitly bind required_posting_auths[0] to the payload subject"
   - "Auditing a custom_json op type that can be pre-broadcast and activate retroactively (name-squatting attack class) without a temporal-ordering rule"
+  - "Auditing an existing PEvO custom_json READER (config / governance / attestation) for a missing required_posting_auths signer gate — a read selected on custom_id + action alone is an authentication bypass (Rule 5 read-side corollary)"
 related_components:
   - hive-custom-json-ops
   - haf-sql-validity-rules
@@ -29,6 +30,7 @@ tags:
   - block-ordering
   - name-squatting
   - account-update
+  - read-side-signer-gate
 ---
 
 # Hive primitive-aware design rules for PEvO custom_json ops
@@ -184,6 +186,12 @@ Sites this applies to (every PEvO `custom_json` type that asserts something abou
 - Any future consent op type
 
 The accreditation op family is the **inverted shape** of this rule, and it is consistent: accreditation is admin-issued, so the signer is the *issuer* (not the subject), and the whitelist filter `cj.required_posting_auths ?| $N::text[]` against `[HIVE_ADMIN_ACCOUNT, ...ACCREDITATION_AUTHORITIES]` (see `backend/src/hafsql.ts`) is the signer-binding equivalent. The general principle: **the signer's role in the op semantics MUST be enforced as a signer-binding predicate, never assumed.**
+
+**Read-side corollary — a reader gated only on `custom_id` + `action` is an authentication bypass (the `update_weights` lesson).** Rule 5 is usually stated for *write-time validity rules*, but it binds reads identically. A HAF query that selects a `custom_json` payload by `custom_id` + `json ->> 'action'` alone, with NO `required_posting_auths` predicate, trusts a value any Hive account can broadcast — `custom_id` is attacker-chooseable, not an authenticator. `loadReputationWeights` (`backend/src/reputation.ts`) shipped exactly this: it read the latest `{action: 'update_weights'}` op gated only on `custom_id = <APP_TAG>`, so any account could broadcast `{action: 'update_weights', weights: {...}}` and seize every reputation weight (paper/review/citation weights, downvote multiplier, decay grace/rate/floor) from the next cache refresh. The fix adds the signer gate to BOTH the cheap existence probe and the latest-op read, bound to the account the write side signs with (`cj.required_posting_auths ? config.hiveAdminAccount`, the singular-admin inverted shape of this rule). It is unforgeable because Hive consensus admits an op only if every named posting-auth actually signed, so a forged `required_posting_auths:[admin]` never reaches HAF.
+
+This defect class is **missing-from-day-one, not a regression** — the gate was simply never added when the reader was first written — so the audit must sweep EVERY existing `custom_json` reader (config / governance / attestation readers like `update_weights`, not only new op designs and not only consent-op validity rules). It travels in a cluster: `reputation-weights-signer-gate`, `active-vouches-signer-gate`, and `revoke-authorship-signer-gate` were all the same defect found in one review era, and the recurrence is itself the signal that the sweep should be systematic. Grep every `cj.custom_id = ` / `json ->> 'action'` selection and confirm a `required_posting_auths` predicate sits next to it, bound to the writer's authority.
+
+**Defense-in-depth pairing.** A signer gate closes WHO can write the op; it does not constrain WHAT a compromised-or-buggy *authorized* writer can set. Pair it with value sanitization at the read boundary: `sanitizeReputationWeights` accepts only finite numbers, clamps domain-bounded fields (`decay_floor` / `self_citation_discount` to `[0, 1]`, `decay_rate` / `decay_grace_months` to `>= 0`), and falls back to defaults on any malformed input (array / NaN / Infinity / non-plain-object). The signer gate alone left the raw payload spread over `DEFAULT_REPUTATION_WEIGHTS` with no validation.
 
 ### 6. Pre-broadcast `custom_json` ops must be rejected if they pre-date their eligibility window.
 
@@ -420,3 +428,4 @@ WHERE cj.custom_id = $1
 - `agents/docs/ARCHITECTURE.md` "Multi-Author Trust Model" section (and "Accreditation (custom_json)" subsection) — the embodying spec. The trust-model section enacts all six rules; the accreditation subsection is the prior-art `required_posting_auths` whitelist pattern (signer-binding via authority list, the inverted-shape sibling of rule 5).
 - `backend/src/hafsql.ts` — `activeAccreditationsCteBody` and `activeVouchesCteBody`. Current call sites for the `?|` whitelist pattern (rule 5 applied to admin-issued ops) and the `(block_num, id)` secondary-key ordering (rule 2, landed at all latest-op-wins sites).
 - `backend/src/routes/papers.ts` `resolveContinuationChain` — the chain-walk consumer of the rules; the pending `backend-coauthor-trust-model` Phase 2 implements the consented-set computation that integrates rules 2, 5, and 6.
+- `agents/docs/reputation-algorithm.md` "`update_weights` custom_json Schema" → "Read-side signer gate (load-bearing invariant)" — the architect-doc statement of the Rule 5 read-side corollary (`loadReputationWeights` gates both queries on `required_posting_auths ? config.hiveAdminAccount`, plus the `sanitizeReputationWeights` value clamps).
