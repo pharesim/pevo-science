@@ -11,23 +11,29 @@
  *       edited paper at exact block numbers at test time. The mocked surfaces are
  *       all inside the carve-out's mock-target scope:
  *         - `fetchNotificationsFromHaf` returns the controlled batch (its real
- *           SQL dedup is pinned separately in notifications-arm-sql-shape.test.ts;
- *           here it stands in for the earliest-wins dedup result so the test can
- *           verify runDigest's in-app cursor + advance logic).
+ *           SQL dedup is pinned separately in
+ *           routes/notifications-arm-sql-shape.test.ts; here it stands in for the
+ *           earliest-wins dedup result so the test can verify runDigest's in-app
+ *           cursor + advance logic). The asc/capHit whole-block-drop contract this
+ *           file's advance logic rests on is pinned directly against
+ *           fetchNotificationsFromHaf in fetch-notifications-asc-whole-block.test.ts.
  *         - `getAppPool` feeds the digest-user rows and captures
  *           updateLastDigestBlock's (username, block) so the cursor advance is
  *           observable.
  *         - `getPool` (truthy stub) + `getGenesisBlock` → 0 (no genesis clamp).
- *         - `getLastBlock` → a fixed head so the wide window floor is deterministic.
+ *         - `getLastBlock` → the simulated chain head (mutable per test) so the wide
+ *           window floor is deterministic and a multi-run test can slide it forward.
  *         - `createSmtpTransporter` captures sendMail so the emailed events are
  *           observable (nodemailer is a third-party boundary).
  *   (b) No auth middleware is exercised by runDigest (it is a scheduled job, not
  *       an HTTP route), so the clause-(b) cryptographic-verification refinement
  *       does not apply here.
  *   (c) Real-path companion: the real wide-floor DISTINCT ON dedup SQL is pinned
- *       against the real query in notifications-arm-sql-shape.test.ts, and the
- *       shared computeNotificationWindowFloor/filterEventsAfter helpers run real
- *       in this test (only fetchNotificationsFromHaf's HAF round-trip is stubbed).
+ *       against the real query in routes/notifications-arm-sql-shape.test.ts, the
+ *       asc/capHit whole-block-drop contract is pinned against the real
+ *       fetchNotificationsFromHaf in fetch-notifications-asc-whole-block.test.ts,
+ *       and the shared computeNotificationWindowFloor/filterEventsAfter helpers run
+ *       real in this test (only fetchNotificationsFromHaf's HAF round-trip is stubbed).
  *
  * Mutation kill: reverting runDigest to fetch against `last_digest_block` (the
  * narrow floor) fails the wide-floor assertion; re-introducing the
@@ -43,6 +49,10 @@ const HEAD = 1_000_000;
 // computeNotificationWindowFloor(HEAD=1_000_000, genesis=0) = HEAD - 100_000.
 const WIDE_FLOOR = HEAD - 100_000;
 
+// Simulated chain head, mutable so a multi-run test can advance it and observe the
+// wide window floor (head - 100k) sliding forward across runs.
+let simulatedHead = HEAD;
+
 const { fetchMock } = vi.hoisted(() => ({
   fetchMock: vi.fn(async (..._args: any[]): Promise<NotificationBatch | null> => null),
 }));
@@ -57,7 +67,7 @@ vi.mock('../src/hafsql.js', async () => {
 });
 vi.mock('../src/block-watcher.js', async () => {
   const actual = await vi.importActual<typeof import('../src/block-watcher.js')>('../src/block-watcher.js');
-  return { ...actual, getLastBlock: () => HEAD };
+  return { ...actual, getLastBlock: () => simulatedHead };
 });
 vi.mock('../src/db.js', () => ({
   getPool: () => ({}),
@@ -122,6 +132,7 @@ beforeEach(() => {
   digestUsers = [];
   updateCalls.length = 0;
   sentMails.length = 0;
+  simulatedHead = HEAD;
   fetchMock.mockReset();
 });
 
@@ -212,17 +223,41 @@ describe('runDigest — wide-floor dedup + advance-to-highest-delivered-block', 
     expect(sentMails[0].text).not.toContain('Paper A'); // run-1 prefix not re-emailed
   });
 
-  it('holds the cursor when the batch is empty (single-block-exceeds-cap deferral)', async () => {
-    // The single-block-exceeds-cap case: fetchNotificationsFromHaf drops the lone
-    // cap-truncated boundary block, returning an empty batch even though chain
-    // events exist. The digest skips (nothing to email) and the cursor holds, so
-    // the block surfaces in a later run once the window floor slides to contain it.
-    // This is the graceful-deferral half of the partial-block-drop contract; it is
-    // what makes advancing-on-every-non-empty-run safe (an undelivered overflow is
-    // never in a "non-empty" batch).
+  it('holds the cursor on an empty batch, and a lone over-cap single block is NEVER delivered (permanent drop, not deferral)', async () => {
+    // The TRUE single-block-exceeds-cap case is a PERMANENT drop, not a graceful
+    // deferral. fetchNotificationsFromHaf drops the lone cap-truncated block whole,
+    // so the digest always sees an EMPTY batch for it. While that block is still in
+    // the wide window the batch reports has_more=true (older below-cap events exist);
+    // once the forward-only floor (head - 100k) ages the block out, the batch reports
+    // has_more=false. In NEITHER case is the block delivered: its event count is
+    // fixed at >cap, so it never falls under the cap on a later run. Drive multiple
+    // runs advancing the simulated head and assert the lone block's content never
+    // emails and the cursor never advances — the empty batch holds the cursor, but
+    // holding is not recovery for this case.
     digestUsers = [{ username: 'dave', email: 'd@x.test', digest_frequency: 'daily', last_digest_block: 905_000 }];
-    fetchMock.mockResolvedValue({ events: [], latest_block: 905_000, has_more: true });
-    const result = await runDigest('daily');
+
+    // The lone over-cap block sits at 910_000. fetchNotificationsFromHaf drops it
+    // whole, so it is NEVER in the returned events. While in-window, has_more=true;
+    // after the floor slides past it, the (still empty) batch reports has_more=false.
+    fetchMock.mockImplementation(async (_account: string, floor: number) => {
+      const overCapBlock = 910_000;
+      const stillInWindow = overCapBlock > floor;
+      return { events: [], latest_block: floor, has_more: stillInWindow };
+    });
+
+    // Run 1: block in-window. Empty batch (block dropped whole), cursor holds.
+    let result = await runDigest('daily');
+    expect(sentMails).toHaveLength(0);
+    expect(updateCalls).toHaveLength(0);
+    expect(result.skipped).toBe(1);
+
+    // Run 2: advance the head far enough that the wide floor (head - 100k) slides
+    // PAST 910_000, aging the lone block out of the window entirely.
+    simulatedHead = 1_020_000; // floor = 920_000 > 910_000 → block is below the floor
+    result = await runDigest('daily');
+
+    // Still never delivered: no email ever carried it, the cursor never advanced
+    // past the original 905_000, and the block is now permanently below the floor.
     expect(sentMails).toHaveLength(0);
     expect(updateCalls).toHaveLength(0);
     expect(result.skipped).toBe(1);

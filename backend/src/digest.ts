@@ -195,6 +195,24 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
   // against `last_digest_block` (the old behavior) deduplicated only above the
   // cursor, so an edit landing after the last digest had no publication row to
   // lose against and re-fired every cycle.
+  //
+  // Residual (defect-1 bound): the wide floor is the chain head minus the window
+  // depth (~100k blocks). An edit of content published OLDER than that floor still
+  // re-fires once, because the publication row has itself aged below the floor —
+  // the per-arm DISTINCT ON then has nothing to collapse the edit against, so the
+  // edit becomes the sole member of its dedup group and surfaces as a fresh line.
+  // Bounded to one re-fire per such edit (the next cycle's cursor is past it) and
+  // only for content older than the window depth, so accepted rather than widening
+  // the scan further.
+  //
+  // Cold-start: when the block-watcher has not yet ticked, getLastBlock() is 0 and
+  // the floor falls back to `genesis - 1` (bounded, see computeNotificationWindowFloor),
+  // so the scan stays narrow. A genesis-wide scan (which could time out and silently
+  // skip every user) requires getGenesisBlock() to ALSO be 0 — i.e. a degraded DB
+  // where the namespace genesis is unknown. We accept that narrow degraded-cold-start
+  // window rather than an early-return guard: with a real genesis the floor is bounded,
+  // and a fresh deploy has no enrolled digest users yet (last_digest_block > 0 is
+  // required by getDigestUsers), so the all-users-skipped scan has no rows to skip.
   const windowFloor = computeNotificationWindowFloor(getLastBlock(), genesis);
 
   for (const user of users) {
@@ -204,8 +222,8 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
         ? genesis - 1
         : user.last_digest_block;
       // Oldest-first drain: the digest covers long offline gaps, so it wants the
-      // OLDEST cap events above the floor and advances its cursor forward as
-      // whole blocks drain (see the advance-only-when-drained logic below).
+      // OLDEST cap events above the floor, then advances the cursor to the highest
+      // delivered block on every non-empty run (see the advance below).
       const batch = await fetchNotificationsFromHaf(user.username, windowFloor, NOTIFICATION_WINDOW_FETCH_CAP, 'asc');
 
       if (!batch) {
@@ -219,6 +237,13 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
         continue;
       }
 
+      // Send/advance is intentionally non-atomic, and the intended failure
+      // direction is duplicate-over-silent-skip: if sendDigestEmail succeeds but
+      // updateLastDigestBlock then throws, the cursor does not advance and the next
+      // run re-emails this same slice. Advancing on every non-empty run (not just
+      // terminal drain) makes that reachable on any run, but a re-sent digest is a
+      // strictly better failure than silently skipping events the recipient never
+      // sees, so no idempotency guard is added.
       await sendDigestEmail(user, newEvents);
 
       // Advance the stored cursor to the highest delivered block on EVERY
@@ -227,10 +252,20 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
       // and advancing past it never skips an undelivered overflow event. Gating
       // the advance on `!batch.has_more` (the prior shape) re-sent the same oldest
       // batch forever for any account with a sustained >cap-event window, because
-      // `has_more` stayed true across cadences while the cursor never moved. The
-      // single-block-exceeds-cap case is handled upstream: the shared function
-      // drops that block, yielding an empty batch here, so the cursor holds and
-      // the block surfaces once the window floor slides to contain it.
+      // `has_more` stayed true across cadences while the cursor never moved.
+      //
+      // Multi-block truncation vs single-block overflow differ here, and only the
+      // first recovers: when the cap cuts across MULTIPLE blocks, the shared
+      // function drops the partial newest block but the cursor still advances to the
+      // highest WHOLE delivered block, so the dropped block resurfaces on the next
+      // run (the cursor has not advanced past it). But a TRUE single-block-exceeds-cap
+      // burst (one Hive block alone holding >cap recipient-relevant events) yields an
+      // EMPTY batch — the shared function drops that lone block, the digest skips, and
+      // the cursor holds. That block is NEVER delivered: its event count is fixed, and
+      // the forward-only window floor eventually ages it below the floor, so it is a
+      // permanent drop, not a deferred one. A >cap single block to one recipient in
+      // one 3s block is effectively unconstructible at PEvO scale, so this is an
+      // accepted residual, not a live data-loss path.
       await updateLastDigestBlock(user.username, newEvents[newEvents.length - 1].block_num);
       sent++;
     } catch (err) {

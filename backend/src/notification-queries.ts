@@ -114,15 +114,12 @@ export interface NotificationBatch {
   has_more: boolean;
 }
 
-// Fixed look-back window for cached/shareable notification computations. The
-// underlying query is computed relative to `chainHead - NOTIFICATION_WINDOW_BLOCKS`
-// (genesis-clamped) rather than a caller cursor, so the dedup runs across a wide
-// window — an edit/revote of content published within the window collapses
-// against its publication row instead of re-firing as a fresh notification — and
-// the SPA result is shareable across polls. ~100k blocks is roughly 3.5 days at
-// Hive's 3s cadence. Shared by the SPA route (routes/notifications.ts) and the
-// email digest (digest.ts) so both consume the batch the same way.
-export const NOTIFICATION_WINDOW_BLOCKS = 100_000;
+// Fixed look-back window depth for the cached/shareable notification computation.
+// Used only by computeNotificationWindowFloor to derive the wide floor
+// (`chainHead - NOTIFICATION_WINDOW_BLOCKS`, genesis-clamped). ~100k blocks is
+// roughly 3.5 days at Hive's 3s cadence. Not exported: both consumers reach the
+// window through computeNotificationWindowFloor, never this raw constant.
+const NOTIFICATION_WINDOW_BLOCKS = 100_000;
 
 // Internal fetch cap for the window batch, deliberately larger than any response
 // `limit`. fetchNotificationsFromHaf orders by the caller's `direction` and
@@ -182,12 +179,22 @@ export function filterEventsAfter(events: NotificationEvent[], sinceBlock: numbe
  * over-dropped and no consumer is ever handed a cap-truncated block. An
  * exactly-cap, fully-contained window drops nothing. `has_more` reflects `capHit`.
  *
- * Residual: the single-block-exceeds-cap case can empty the batch. For 'desc'
- * (SPA) the dropped oldest block is NOT recovered by a forward floor-slide (the
- * floor only moves forward, aging it out); recovery happens only if the
- * in-window count later falls below the cap, or via the email digest for
- * enrolled users. For 'asc' (digest) the dropped newest block resurfaces on the
- * next drain once the floor has slid to contain it.
+ * Residual: distinguish a MULTI-block truncation from a true single-block
+ * overflow; the two recover differently. On a MULTI-block truncation the partial
+ * boundary block is dropped but the rest are delivered whole. For 'asc' (digest)
+ * the dropped block is the NEWEST in the batch and the caller's cursor stops below
+ * it, so the next call re-fetches and delivers it whole (recovered). For 'desc'
+ * (SPA) the dropped block is the OLDEST and the route's cursor only moves FORWARD
+ * (newest-first), so that consumer never re-fetches it; recovery for old activity
+ * is the email digest's job, not the bell feed's.
+ *
+ * A TRUE single-block-exceeds-cap burst (one Hive block alone holding >cap events)
+ * is worse: it empties the batch entirely, and the lone block is NOT recovered in
+ * EITHER direction. The floor only moves forward, so it eventually ages the dropped
+ * block below the floor, and the block's event count is fixed above the cap, so it
+ * never falls under the cap on a later call. It is a permanent drop. A >cap single
+ * block for one recipient in one 3s block is effectively unconstructible at PEvO
+ * scale, so this is an accepted residual.
  */
 export async function fetchNotificationsFromHaf(
   account: string,
@@ -958,8 +965,9 @@ export async function fetchNotificationsFromHaf(
       // different block) the truncated-end block is COMPLETE — keep it, or a
       // forward cursor would never recover it (the 'desc'/SPA floor only slides
       // forward; the 'asc'/digest floor would age it out permanently). In the
-      // single-block-exceeds-cap case the partial-drop empties the batch (documented
-      // residual: the block surfaces once the floor slides to contain it).
+      // single-block-exceeds-cap case the partial-drop empties the batch; that lone
+      // block is then a permanent drop in either direction (see the Residual note in
+      // the docblock above), not recovered by a later floor-slide.
       const probeBlock = Number((result.rows[cap] as Record<string, unknown>).block_num);
       const lastKeptBlock = Number((result.rows[cap - 1] as Record<string, unknown>).block_num);
       if (probeBlock === lastKeptBlock) {
