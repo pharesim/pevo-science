@@ -47,3 +47,43 @@ round-trip, and the action succeeds. Reuse the ORCID test-mode stubbing the othe
 - Origin: `ui-settings-action-fresh-auth-proof-challenge` clause-(c) gap.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI implementation note (2026-06-09)
+
+New spec `frontend/tests/e2e/settings-orcid-factor.spec.js` — 2 real tests + 1
+`test.fixme`. **RAN GREEN against the test-mode stack** (full `deploy.sh restart`
+→ `test-db-up` → `test-up` → playwright → `up`): `2 passed (2.5s)`, 1 skipped
+(the fixme).
+
+**What runs end-to-end (the seam the unit tests mock):**
+1. **`/start` leg.** A passwordless (State-C, `password_hash NULL`) light account
+   opens `/settings`, the real `GET /api/settings/email` returns
+   `hasPassword:false` so the "Set a password" section renders, and submitting it
+   fires `POST /api/orcid/start` with exactly `{ mode: 'fresh_auth', action:
+   'set_password' }` plus a session Bearer — proving `set_password` routes through
+   the ORCID factor.
+2. **Callback dispatch + cache round-trip.** Driving the REAL `/orcid/callback`
+   page with `pevo_orcid_mode='fresh_auth'` set, `orcid-callback.js`
+   `_handleFreshAuth` caches the proof under the exact triple `(set_password,
+   <username>, '')` in `pevo_fresh_auth_consent_op_proof`, navigates back to
+   `/settings`, and the re-submit consumes that cached proof — `POST
+   /api/settings/set-password` carries `fresh_auth_proof: <cached>`. A regression
+   in the `mode==='fresh_auth'` dispatch or the cache-key shape fails here.
+
+**Honest boundary (documented in the spec header + `test.fixme`).** The backend
+`/api/orcid/callback` and `/api/settings/set-password` are network-stubbed, NOT
+hit for real. The acceptance's "action succeeds with a real backend-minted proof"
+is NOT achievable today: ORCID is unconfigured in the local stack (empty
+`ORCID_CLIENT_ID`; no ORCID keys in `frontend/.env.test`), the real callback does
+a live OAuth token exchange against `orcidBaseUrl/oauth/token`, and the E2E
+harness ships **no stub ORCID OAuth provider**. Every existing ORCID E2E spec
+works the same way (`orcid-link.spec.js`, `orcid-no-password.spec.js` stub the
+callback and `test.fixme` their real-backend ORCID assertions). The `test.fixme`
+here documents that closing the real-proof round-trip needs a stub ORCID provider
+added to the harness (a separate, partly-backend/infra task — outside the UI
+zone). Flagging for the architect: the clause-(c) real-path companion is now
+**partial** (frontend dispatch + cache round-trip real; real backend proof
+fixme'd) — decide whether that satisfies the parent task's clause-(c) reference or
+whether the stub-provider infra task should be filed/owned.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
