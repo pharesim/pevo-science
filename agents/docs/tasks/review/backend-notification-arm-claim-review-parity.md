@@ -30,3 +30,15 @@ Decide whether the `new_review` arm (and any sibling review-triggered arm) shoul
 - `backend/src/hafsql.ts` (`authorshipClaimsCteBody`, `excludeClaimedSelfWhere`).
 - Parent: `backend-claimer-self-review-display-callsite-exclusion`.
 - Related: `backend-notifications-claim-approve-revoke-correlation` (the recipient-bound EXISTS pattern for arms 8/9).
+
+## Backend completion note (2026-06-09) — DECIDED: do NOT gate; rationale documented in-code
+
+Audited the review-derived notification arms. The only review-triggered arm is `new_review` (arm 1a native + arm 1b bridge); `new_citation`/`new_reply` are not reviews of the recipient's paper. Arm 1a already gates on accreditation + `validPevoPaperWhere` + `co.author != $1` (the paper author's own self-review is dropped), but a credited claimer (a different Hive account) reviewing the paper they are credited for currently still fires.
+
+**Decision: leave the `new_review` arm ungated for the credited-claimer self-review case, and document the rationale in-code** (acceptance allows "gated or rationale-documented"). Reasoning, recorded as an in-code comment anchored on behavioral semantics (no slug/line/SHA) in the `new_review` arm of `notification-queries.ts`:
+
+- The display review aggregates (`excludeClaimedSelfWhere`) and the reputation score (the cycle's `accepted_claims` NOT EXISTS gate) exclude a credited claimer's self-review because a self-review there would inflate ratings / score. A notification confers NO credit and carries NO display weight, so the self-dealing-inflation risk those exclusions exist to close does not apply to the notification.
+- The `new_review` arm reports raw review-shaped activity on the recipient's paper; surfacing that a credited co-author posted a review is legitimate even though it does not count toward ratings or score.
+- Gating would require composing the recipient-scoped accepted-claims set into the already-complex multi-CTE notification query for a rare case with no integrity benefit.
+
+No behavior change; comment-only. `npm run typecheck` + `npm run lint` clean (lone pre-existing `author-supersession.ts` warning untouched). If the architect prefers cross-surface parity over this rationale, the gate is a recipient-scoped `accepted_claims` NOT EXISTS on `co.author` — flip during review.
