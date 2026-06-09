@@ -34,3 +34,9 @@ Add a real-DB round-trip pin for the ORCID-recovery reissue site, mirroring the 
 - CLAUDE.md "Carve-out for deterministic edge-case coverage" clause (c).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend completion note (2026-06-09)
+
+Added `backend/tests/middleware/verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts`, the ORCID-branch companion to the memo-key round-trip test. Against real app Postgres (no mocked pool) it seeds a reachable `(custody=light, password-unset, ORCID-set, not upgraded)` account, stubs `getRedis`/`isRedisAvailable` to the in-memory fallback (enumerated carve-out) so the recover ORCID branch reads `orcid.js`'s in-memory `orcidVerified` map, seeds a verified-ORCID nonce there, drives a genuine `POST /api/auth/recover` ORCID reissue, reads back `sessions_invalidated_at`, and asserts the reissued JWT's `reissuedAt === stored.getTime()`. A `NOW()`/seconds-rounding regression isolated to the recover.ts ORCID branch turns the decisive assertion red. The same-second survival is pinned deterministically with the control-token pair (one with `reissuedAt === storedMs` survives, one without at the same integer second is revoked), matching the memo-key companion's discrimination shape; real `verifyHiveSignature` + real `jsonwebtoken`, no `MOCK_VERIFY_SIGNATURE`. Skips cleanly when Postgres is unreachable.
+
+Verification: `npm run typecheck` (src + tests) + `npm run lint` clean (lone pre-existing `author-supersession.ts` warning untouched); the new test green against real app Postgres (1 passed).
