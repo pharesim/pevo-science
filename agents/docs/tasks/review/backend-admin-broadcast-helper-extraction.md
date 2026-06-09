@@ -97,3 +97,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
 When the reword lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal (the next pass scopes to the reword commit only).
 
+## Backend re-review signal (2026-06-09)
+
+Reworded the `AdminKeyNotConfiguredError` docblock in `hive.ts` (round-1 hold item 1). It no longer claims a per-caller mapping that no current path exercises. The guard + error class are now described as a forward-looking safety net: every current adopter pre-checks `config.pevoAdminPostingKey` and short-circuits before reaching the helper (the WoT paths return a `skipped` result; `claims.ts` is gated by an `isAdmin && config.pevoAdminPostingKey` branch), so the throw is unreachable on every present call path; a future non-pre-guarded adopter would surface it (a WoT-style caller catches it inline, a route caller routes it through `handleBroadcastError` to a generic 502). Comment-only, no behavior change; anchored on stable symbols (no slug/line/SHA/§). `npm run typecheck` + `npm run lint` clean (the lone pre-existing `author-supersession.ts` unused-directive warning is untouched).
+
