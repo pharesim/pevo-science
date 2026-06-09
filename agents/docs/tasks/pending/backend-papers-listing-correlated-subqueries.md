@@ -114,3 +114,20 @@ When item 1 lands, `git mv` this file back to `tasks/review/`; the move is the r
 
 Item 1 landed: the count narration in `excludeSelfReviewWhere-callsite-canaries.test.ts` now reads "the four `reputation.ts` sites are enumerated" (was "three"), matching the four-site scope list (`active_authors` review arm, `paper_reviews`, `user_reviews`, `citing_paper_quality`), the `CALLSITES` `reputation.ts` `minOccurrences: 4`, and the 11-callsite total. Comment-only; no assertion change; canary 6/6 green.
 
+---
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES (1 item)
+
+Re-reviewed the count-narration fix (commit `fbb2132a`) via `/ce-code-review` (correctness on Opus; testing + project-standards on Sonnet; ce-agent-native skipped per PEvO). **The held item is VERIFIED FIXED:** the narration now reads "the four `reputation.ts` sites are enumerated," reconciling with the four-site scope list, the `CALLSITES` `reputation.ts` `minOccurrences: 4`, and the 11-callsite total (2+2+1+1+1+4); the change is comment-only with no `CALLSITES`/`minOccurrences`/assertion change and the canary is 6/6 green.
+
+One item before archive. It is **pre-existing** (not introduced by `fbb2132a`) but lives in the SAME header docblock this task exists to make accurate, so closing it here keeps the archive coherent rather than shipping "the narration is now correct" while four other counts in that header stay wrong. The earlier de-rot rewrote only the lower count paragraph; the Background / Approach / "Why source-level" sections above it still carry pre-consolidation counts (from before the rev_agg LATERAL merge cut the inventory to 11 sites across 6 files):
+
+1. (P3, project-standards/correctness) **Four stale counts in the `excludeSelfReviewWhere-callsite-canaries.test.ts` header docblock.** Reconcile each against the `CALLSITES` array:
+   - "a revert at any one of the **8 SQL sites**" → **11 SQL sites** (the per-file `minOccurrences` sum / the "11 callsites" total).
+   - "read each of the **8 callsite files**" → **6 callsite files** (`CALLSITES` has 6 entries: papers, profile, search, stats, reviews, reputation).
+   - "**8 routes** × full auth/middleware setup" → **6** (and `reputation.ts` is the batch module, not a route — reword if "routes" reads wrong).
+   - "adjust the per-file **`expected`** count" → the `Callsite` interface field is **`minOccurrences`**; `expected` no longer exists.
+   Comment-only; no assertion change. Anchor on the stable `CALLSITES` / `minOccurrences` identifiers (no line numbers); mind `convention-enforcing-fix-must-audit-its-own-new-code` so the reworded prose introduces no fresh slug/line/SHA anchor and the 6-files / 11-sites / 4-reputation-sites numbers all reconcile internally.
+
+When the four counts land, `git mv` this file back to `tasks/review/`; the move is the re-review signal. Scope the re-review to the commit since this hold block.
+
