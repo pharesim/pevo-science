@@ -293,3 +293,52 @@ When the 3 tests land, `git mv` this file back to `tasks/review/` for a quick re
 new commit.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-09, round 2, commit 17dff0c3 on main)
+
+All three round-2 hold tests landed (commit `17dff0c3`).
+
+- **Test 1 (P2, editor queue serialization, `tests/unit/editor.test.js`).** New
+  `describe('PevoEditor image-upload queue')` drives `_queueImageUploads` /
+  `_drainImageUploadQueue` on a prototype-backed stub (no DOM / no Tiptap mount),
+  with `_handleImageUpload` replaced by a recorder. Three `it`s pin: (a) N files
+  in one enqueue drain in FIFO order, strictly one at a time (`maxInFlight === 1`)
+  with the flag cleared at the end; (b) the `_imageUploadDraining` guard makes a
+  concurrent second drain early-return without double-processing; (c) tearing down
+  the editor mid-drain (`stub.editor = null`) stops iteration and resets the
+  draining flag.
+- **Test 2 (P2, `repromptUsed` bound, `tests/unit/lib-ipfs-upload.test.js`).** A
+  first `UNAUTHORIZED` re-prompts once and retries; a second rethrows WITHOUT a
+  third prompt (reauth requested exactly twice); `dispose()` resets the bound so a
+  reused session re-prompts again. Errors are built via the real `ApiRequestError`
+  (`code`, no `status`) per the test-fabricated-error-shape convention — the mock
+  now uses `importOriginal` + spread to expose the real class, and `codedError`
+  delegates to the real constructor (so every existing call site also builds the
+  real type).
+- **Test 3 (P2, Fix-4 fallthrough, `tests/unit/lib-ipfs-upload.test.js`).** A
+  transiently-throwing status fetch falls through to the prompt and succeeds (does
+  NOT dead-end); an explicit `hasPassword === false` still blocks with
+  `UPLOAD_REAUTH_UNAVAILABLE`. The throw case uses a raw `TypeError` (fetch's real
+  network-down shape) to actively guard the bare catch — see the P3 note below.
+
+**Optional P3s.**
+- **Taken:** `PevoEditor.destroy()` now clears `_imageUploadQueue` and resets
+  `_imageUploadDraining` (teardown-side flag-before-await idempotency guarantee).
+- **Deliberately NOT taken (with reason):** narrowing the `ensureCredential`
+  Fix-4 `catch` to `instanceof ApiRequestError`. `request()` in `api.js` only
+  wraps `!res.ok` HTTP responses in `ApiRequestError`; a genuine transient failure
+  — network down (raw `TypeError`) or the 30s `AbortSignal.timeout` (raw
+  `DOMException`) — escapes `fetch` UNWRAPPED. Narrowing to `ApiRequestError`-only
+  would rethrow those and dead-end the upload, re-breaking the exact behavior Fix 4
+  established. The bare catch is therefore intentional; Test 3's raw-`TypeError`
+  case fails if anyone narrows it. Flagging in case the architect still wants a
+  different shape (e.g. catch + rethrow only on a allow-list of programming-error
+  constructors), but the safe default is to leave it bare.
+
+**Verification.** `tests/unit/editor.test.js` green — 34 pass (up from 31);
+`tests/unit/lib-ipfs-upload.test.js` green — 15 pass (up from 11). Full frontend
+unit suite + build run at the end of the UI batch (this is one of three held tasks
+landing together). Not E2E-run (architect's prior round: E2E not required for
+archive).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
