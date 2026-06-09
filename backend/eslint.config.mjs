@@ -35,6 +35,20 @@
 //   for the planner reasoning and the convention:
 //   agents/docs/solutions/conventions/convention-sweep-syntactic-form-misses-semantic-siblings-2026-05-21.md
 //
+// - pevo/no-accred-state-read-missing-id-tiebreaker (error): regex-based
+//   discipline guard for the `(block_num, id)` deterministic-tiebreaker
+//   convention on accreditation-state reads. Any static SQL literal that
+//   filters on the accredit/revoke action AND orders a latest-wins read by
+//   `block_num DESC` (an `ORDER BY ... LIMIT 1` single-row read, or a
+//   ROW_NUMBER/OVER ranking) must carry the immediate `id DESC` secondary
+//   key. The deployed HAF mirror views omit `trx_in_block`, so the monotonic
+//   op id is the only intra-block key; a dropped tie-breaker resolves
+//   same-block accredit/revoke pairs non-deterministically AND passes the
+//   whole test suite (the live corpus is unlikely to hold a same-block pair
+//   for a test account). See the rule definition below and the conventions:
+//   agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md
+//   agents/docs/solutions/conventions/accreditation-state-read-latest-action-wins-2026-05-15.md
+//
 // Frontend has its own tooling; this config is backend-scoped.
 import path from 'node:path';
 import tseslint from 'typescript-eslint';
@@ -355,11 +369,179 @@ const noCustomIdBlockNumFloorRule = {
   },
 };
 
+// ─── pevo/no-accred-state-read-missing-id-tiebreaker ────────────────────────
+//
+// Accreditation-state reads ("latest accredit/revoke wins") MUST order by
+// `block_num DESC` with the monotonic HAF op id as the IMMEDIATE secondary
+// key (`cj.id DESC` / `id DESC` / `op_id DESC`). The deployed HAF mirror
+// views omit `trx_in_block`, so the op id is the only intra-block key;
+// without it, an accredit/revoke pair landing in the same 3s block resolves
+// non-deterministically, and the whole test suite still passes because the
+// live HAF corpus is unlikely to contain a same-block pair for a test
+// account. This is the `(block_num, id)` deterministic-tiebreaker convention:
+//   agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md (Rule 2)
+//   agents/docs/solutions/conventions/accreditation-state-read-latest-action-wins-2026-05-15.md
+//
+// Detection fingerprint (regex/scanner over the flattened literal, SQL line
+// comments stripped first):
+//   gate:  the literal filters on the accreditation action values — an
+//          `'action' = '...'` / `'action' IN (...)` predicate naming
+//          'accredit' or 'revoke' on one line.
+//   shape: a latest-wins ordering on `block_num DESC`, i.e. either
+//            (a) an `ORDER BY ...` clause that runs into `LIMIT 1` at the
+//                same paren depth (the single-row latest-state read), or
+//            (b) the ordering inside an `OVER (...)` window (the
+//                ROW_NUMBER `rn = 1` ranking).
+//   check: every `block_num DESC` inside such a region must be immediately
+//          followed by `, <alias.>id DESC` (or `op_id DESC`).
+//
+// Deliberately NOT flagged (out of family):
+//   - window-feed delta reads (`block_num > $N` floors): their vote-arm
+//     `ORDER BY ... block_num DESC` clauses sit inside DISTINCT ON
+//     subqueries, so the forward scan exits at the subquery's closing paren
+//     before any LIMIT, and the trailing pagination LIMIT binds a parameter,
+//     not 1;
+//   - aggregates with no ORDER BY (the genesis `MIN(block_num)` read);
+//   - latest-wins reads on other action namespaces (`update_params`,
+//     `update_weights`, `revote`) or keyed on non-action predicates
+//     (idempotency-key probes): the gate requires the accredit/revoke action
+//     filter in the same literal.
+// Runtime-assembled SQL outside `flattenSqlString`'s folded forms is
+// documented evasion handled by code review, same as the floor rule above.
+
+// An action predicate naming the accreditation state values, on one line of
+// SQL: `->> 'action' = 'accredit'`, `->> 'action' IN ('accredit', 'revoke')`,
+// or a ranked-CTE alias form like `action IN ('revoke', 'accredit')`. The
+// `[^)\u0000\n]*` run keeps the match on a single line, inside the current
+// paren group, and short of any interpolation marker, so an unrelated
+// 'accredit' string elsewhere in the literal cannot complete the predicate.
+const ACCRED_STATE_FILTER_RE = /'action'\s*(?:=|IN)\s*\(?[^)\u0000\n]*'(?:accredit|revoke)'/i;
+
+// Strip `--` SQL line comments so comment text (which may contain parens or
+// the word accredit) cannot confuse the gate or the paren-depth scan. Stops
+// at interpolation markers too, so a placeholder inside a comment stays
+// visible as a region boundary.
+function stripSqlLineComments(s) {
+  return s.replace(/--[^\n\u0000]*/g, '');
+}
+
+// True when some `block_num DESC` in the region is NOT immediately followed
+// by the `, id DESC` secondary key (aliased, bare, or the `op_id` projection
+// name used by union CTEs).
+function regionMissingIdTiebreaker(region) {
+  for (const m of region.matchAll(/\b(?:\w+\.)?block_num\s+DESC\b/gi)) {
+    const after = region.slice(m.index + m[0].length);
+    if (!/^\s*,\s*(?:\w+\.)?(?:op_)?id\s+DESC\b/i.test(after)) return true;
+  }
+  return false;
+}
+
+// The balanced-paren body starting just after `openIdx` (the index of the
+// opening paren). Returns null when the parens never balance (literal ends
+// mid-window) — nothing to check in that case.
+function balancedParenBody(s, openIdx) {
+  let depth = 1;
+  for (let i = openIdx + 1; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return s.slice(openIdx + 1, i);
+    }
+  }
+  return null;
+}
+
+// Scan the flattened (comment-stripped) SQL for a latest-wins ordering on
+// `block_num DESC` that lacks the `id DESC` tie-breaker. Two region shapes:
+//
+//   (b) window orderings: every `OVER ( ... )` body (balanced-paren extract;
+//       covers the ROW_NUMBER rn=1 ranking).
+//   (a) LIMIT-1 orderings: from each `ORDER BY`, walk forward tracking paren
+//       depth. The region ends at the first of: a paren closing below the
+//       clause's depth (the ORDER BY belongs to a subquery, e.g. a DISTINCT
+//       ON dedup arm — not a latest-wins state read), a `;`, an interpolation
+//       marker, a `UNION`, or a `LIMIT` at clause depth. Only a `LIMIT 1`
+//       terminator classifies the clause as a latest-wins read; a parameter
+//       or larger LIMIT is pagination and is skipped.
+function hasLatestWinsTiebreakerViolation(flat) {
+  for (const m of flat.matchAll(/\bOVER\s*\(/gi)) {
+    const body = balancedParenBody(flat, m.index + m[0].length - 1);
+    if (body !== null && regionMissingIdTiebreaker(body)) return true;
+  }
+
+  for (const m of flat.matchAll(/\bORDER\s+BY\b/gi)) {
+    const start = m.index + m[0].length;
+    const scanner = /[();\u0000]|\b(?:LIMIT|UNION)\b/gi;
+    scanner.lastIndex = start;
+    let depth = 0;
+    let s;
+    while ((s = scanner.exec(flat)) !== null) {
+      const tok = s[0];
+      if (tok === '(') { depth++; continue; }
+      if (tok === ')') {
+        depth--;
+        if (depth < 0) break;
+        continue;
+      }
+      if (tok === ';' || tok === '\u0000') break;
+      if (tok.toUpperCase() === 'UNION') break;
+      // LIMIT token. One nested below the clause (inside a paren group) is a
+      // subquery's own limit, not this clause's terminator.
+      if (depth !== 0) continue;
+      if (!/^\s+1\b/.test(flat.slice(s.index + tok.length))) break;
+      if (regionMissingIdTiebreaker(flat.slice(start, s.index))) return true;
+      break;
+    }
+  }
+  return false;
+}
+
+const noAccredStateReadMissingIdTiebreakerRule = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description:
+        'Require the same-block `id DESC` tie-breaker on latest-wins accreditation-state reads. A SQL literal filtering on the accredit/revoke action whose latest-wins ordering (`ORDER BY ... block_num DESC` into `LIMIT 1`, or inside an OVER window) lacks the immediate `, id DESC` secondary key resolves same-block accredit/revoke pairs non-deterministically.',
+    },
+    schema: [],
+    messages: {
+      missingTiebreaker:
+        'Accreditation-state read orders by `block_num DESC` without the same-block `id DESC` tie-breaker. The HAF mirror views omit `trx_in_block`, so the monotonic op id is the only intra-block key; write `ORDER BY ... block_num DESC, <alias>.id DESC` per the `(block_num, id)` deterministic-tiebreaker convention. See agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md (Rule 2) and agents/docs/solutions/conventions/accreditation-state-read-latest-action-wins-2026-05-15.md.',
+    },
+  },
+  create(context) {
+    // No file-level allowlist and no expected suppressions: every current
+    // accreditation-state read carries the tie-breaker, so the rule stands
+    // purely as a guard for new code (like the floor rule above).
+    const reported = new WeakSet();
+
+    function check(node) {
+      if (reported.has(node)) return;
+      const flatRaw = flattenSqlString(node);
+      if (flatRaw === null) return;
+      const flat = stripSqlLineComments(flatRaw);
+      if (!ACCRED_STATE_FILTER_RE.test(flat)) return;
+      if (!hasLatestWinsTiebreakerViolation(flat)) return;
+      context.report({ node, messageId: 'missingTiebreaker' });
+      markDescendants(node, reported);
+    }
+
+    return {
+      Literal: check,
+      TemplateLiteral: check,
+      BinaryExpression: check,
+      CallExpression: check,
+    };
+  },
+};
+
 const pevoPlugin = {
   meta: { name: 'pevo', version: '0.0.0' },
   rules: {
     'no-bridge-paper-literal': noBridgePaperLiteralRule,
     'no-custom-id-block-num-floor': noCustomIdBlockNumFloorRule,
+    'no-accred-state-read-missing-id-tiebreaker': noAccredStateReadMissingIdTiebreakerRule,
   },
 };
 
@@ -393,6 +575,7 @@ export default tseslint.config(
       'no-console': 'off',
       'pevo/no-bridge-paper-literal': 'error',
       'pevo/no-custom-id-block-num-floor': 'error',
+      'pevo/no-accred-state-read-missing-id-tiebreaker': 'error',
     },
   },
   {
@@ -448,4 +631,8 @@ export default tseslint.config(
 
 // Exported so unit tests under tests/eslint/ can drive the rules with
 // ESLint's RuleTester directly without re-deriving their shape.
-export { noBridgePaperLiteralRule, noCustomIdBlockNumFloorRule };
+export {
+  noBridgePaperLiteralRule,
+  noCustomIdBlockNumFloorRule,
+  noAccredStateReadMissingIdTiebreakerRule,
+};

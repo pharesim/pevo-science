@@ -40,10 +40,14 @@ import { config } from '../src/config.js';
  * and `getExistingAccreditation`) and `routes/profile.ts`
  * (`getAccreditationFromHaf`) also carry the `block_num DESC, id DESC`
  * tie-breaker. They are inline `pool.query` strings, not exported SQL fragments,
- * so the canary's `toContain` assertion cannot reach them; their determinism is
- * exercised by their own route integration tests against the live HAF corpus.
- * The canary asserts only the exported-fragment sites; a future edit dropping
- * the tie-breaker from an inline read is caught at route-test level, not here.
+ * so the canary's `toContain` assertion cannot reach them. They are instead
+ * guarded structurally by the `pevo/no-accred-state-read-missing-id-tiebreaker`
+ * ESLint rule (backend/eslint.config.mjs), which fails lint on any
+ * accredit/revoke-filtered latest-wins read (`ORDER BY ... block_num DESC`
+ * into `LIMIT 1`, or inside a ROW_NUMBER/OVER window) whose `block_num DESC`
+ * lacks the immediate `id DESC` secondary key. The canary asserts only the
+ * exported-fragment sites; a future edit dropping the tie-breaker from an
+ * inline read turns lint red rather than passing silently.
  */
 
 function runAccredCte(
