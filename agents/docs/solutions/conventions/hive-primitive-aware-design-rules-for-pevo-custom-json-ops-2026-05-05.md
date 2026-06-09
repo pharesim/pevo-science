@@ -2,6 +2,7 @@
 title: "Hive primitive-aware design rules for PEvO custom_json ops — check what the chain already enforces before inventing app-layer machinery"
 description: "Six load-bearing rules for designing PEvO custom_json operations that respect Hive's chain primitive semantics (transaction-size bound, canonical op ordering, native key rotation, single-sided consent ops, signer-subject binding, temporal-ordering of pre-broadcast ops) instead of reinventing or ignoring them."
 date: 2026-05-05
+last_refreshed: 2026-06-09
 category: conventions
 module: backend, architecture
 problem_type: convention
@@ -10,7 +11,7 @@ severity: high
 applies_when:
   - "Designing a new PEvO custom_json op (id = APP_TAG) for accreditation, consent, attestation, rotation, governance, or any non-native action"
   - "Reviewing a proposed app-layer size cap, rate limit, or payload bound that may already be enforced by Hive consensus (notably the ~64KB transaction-size bound)"
-  - "Walking or ordering Hive ops in HAF SQL queries — any ORDER BY that uses block_num without trx_in_block as a tiebreaker"
+  - "Walking or ordering Hive ops in HAF SQL queries — any ORDER BY that uses block_num without the HAF operation id as a same-block tiebreaker"
   - "Writing a HAF SQL validity rule for a custom_json consent op — must explicitly bind required_posting_auths[0] to the payload subject"
   - "Auditing a custom_json op type that can be pre-broadcast and activate retroactively (name-squatting attack class) without a temporal-ordering rule"
 related_components:
@@ -38,7 +39,7 @@ A `/ce-brainstorm` + `/ce-doc-review` pass on the multi-author trust model (now 
 
 The brainstorm started with three multi-sig primitive options (per-paper Hive sub-account, application-layer co-signing with embedded signatures, time-locked veto window). The chosen design — single-sided `author_accept` / `author_resign` `custom_json` ops with explicit per-op validity rules — is the embodying example of the meta-rule. The /ce-doc-review surfaced concrete issues at every design level: a security finding worried about an application-layer attack Hive consensus already prevents (transaction size); a same-block ordering ambiguity in the spec's "highest `block_num` wins" rule; a missing signer-binding rule that would have allowed third-party impersonation; and a name-squatting attack where pre-broadcast ops sit dormant and activate retroactively. All four were Hive-primitive misalignments — over-engineering for one, under-engineering for the others.
 
-This convention is the Hive-primitive-aware extension of the family started by [`pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`](pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md). That doc establishes the gate-predicate rule: every authorization gate must terminate in an identity predicate (`author = <pinned>`, `signer IN <vouched-set>`). This doc generalizes one layer up: when an authorization gate is implemented as a `custom_json` op type, the identity predicate must be the chain signer (`required_posting_auths[0]`), the validity rule must bind that signer to the payload subject, the ordering rule must use `(block_num, trx_in_block)`, and the temporal rule must reject pre-broadcast dormant ops. The two docs are siblings: identity-binding at gate predicates, plus Hive-primitive-aware design at the op-type layer.
+This convention is the Hive-primitive-aware extension of the family started by [`pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`](pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md). That doc establishes the gate-predicate rule: every authorization gate must terminate in an identity predicate (`author = <pinned>`, `signer IN <vouched-set>`). This doc generalizes one layer up: when an authorization gate is implemented as a `custom_json` op type, the identity predicate must be the chain signer (`required_posting_auths[0]`), the validity rule must bind that signer to the payload subject, the ordering rule must use `(block_num, id)` (the HAF operation id; the deployed mirror views do not expose `trx_in_block`), and the temporal rule must reject pre-broadcast dormant ops. The two docs are siblings: identity-binding at gate predicates, plus Hive-primitive-aware design at the op-type layer.
 
 The cost of getting this wrong is twofold. **Over-engineering** — building app-layer checks for what Hive already does (transaction size limits, posting-key revocation via `account_update`). **Under-engineering** — missing app-layer checks Hive does NOT do (signer-to-payload binding, temporal-ordering validity, same-block tie-breaking). Both are recurring traps for agents proposing solutions; this convention forces a Hive-first mental model.
 
@@ -60,11 +61,11 @@ Sites this applies to:
 - `pevo.supplementary_files[]` array of CIDs
 - Any `custom_json` payload PEvO designs
 
-### 2. Use `(block_num, trx_in_block)` for Hive op ordering, not `block_num` alone.
+### 2. Use `(block_num, id)` for Hive op ordering, not `block_num` alone.
 
-Hive blocks are 3 seconds and contain multiple transactions per block. A "latest op wins" rule keyed on `block_num` alone is ambiguous when two ops affecting the same `(subject, scope)` land in the same block. **Always order by `(block_num ASC, trx_in_block ASC)` and pick the highest tuple.**
+Hive blocks are 3 seconds and contain multiple transactions per block. A "latest op wins" rule keyed on `block_num` alone is ambiguous when two ops affecting the same `(subject, scope)` land in the same block. **Always add the HAF operation `id` as the secondary ordering key — `(block_num ASC, id ASC)` — and pick the highest tuple.**
 
-A /ce-doc-review reviewer flagged the brainstorm spec's "highest `block_num` wins" as ambiguous for same-block `author_accept` + `author_resign` ops — both could land in block N from the same compromised key. The deterministic resolution is the tuple; HAF SQL exposes `trx_in_block` on the `operation_custom_json_view` for exactly this purpose.
+A /ce-doc-review reviewer flagged the brainstorm spec's "highest `block_num` wins" as ambiguous for same-block `author_accept` + `author_resign` ops — both could land in block N from the same compromised key. The deterministic resolution is a per-op secondary key. **The deployed HAF mirror views (Mahdiyari's HafSQL node) do NOT expose `trx_in_block`** — `operation_custom_json_view` and `operation_vote_view` project only `id, timestamp, voter`/`account`, `author, weight, permlink, block_num`. Use the operation `id` instead: it is the `haf_operations` primary key, a **single global monotonic sequence shared across every `operation_*` view** (verified against the live node — vote-op and custom_json-op ids interleave within a block and order strictly across blocks, with no nulls). A higher `id` is therefore always the genuinely-later operation, with one load-bearing consequence: **`id` is safe to compare across views in a `UNION`.** A query that unions a native-vote arm (`vo.id`) and a revote-`custom_json` arm (`cj.id`) under one `op_id` and orders by `op_id DESC` resolves a same-block native-vs-revote collision to the truly-latest op, not merely deterministically (e.g. `paper_latest_votes` / `review_latest_votes` / `citing_latest_votes` in `backend/src/reputation.ts`).
 
 Anti-pattern (ambiguous):
 ```sql
@@ -78,7 +79,7 @@ Correct (deterministic):
 ```sql
 ROW_NUMBER() OVER (
   PARTITION BY cj.json::jsonb ->> 'account'
-  ORDER BY cj.block_num DESC, cj.trx_in_block DESC
+  ORDER BY cj.block_num DESC, cj.id DESC
 ) AS rn
 ```
 
@@ -89,7 +90,7 @@ This pattern applies to **every** "latest op wins" computation in PEvO:
 - Late vote ops (`pevo.late_vote` after the 7-day window)
 - Any future `(subject, scope) → latest action` pattern
 
-The existing CTEs in `backend/src/hafsql.ts` (`accred_ranked`, `vouch_ranked`) currently order by `block_num DESC` only and should be extended to add `trx_in_block DESC` as the secondary key the moment two ops in the same block become a realistic concern (compromised-key recovery, automated revoke pipelines, batched migration ops).
+The accreditation/vouch ROW_NUMBER CTEs (`accred_ranked`, `vouch_ranked`), the native-vote `DISTINCT ON` queries, and the reputation union CTEs carry `id DESC` (`op_id DESC` for the unions) as the secondary key. Inlined hand-copies of these shapes are the easy miss: `getAccreditedSet` and the accreditation list endpoint inline the `accred_ranked` ROW_NUMBER pattern and must carry the same tiebreaker, or they drift from the CTE on a same-block accredit/revoke. Audit by grepping `block_num DESC` (and `ROW_NUMBER` / `DISTINCT ON`) for any site missing the secondary `id` / `op_id` key — a syntactic sweep that stops at the canonical CTEs will miss the semantic siblings.
 
 ### 3. Hive-native `account_update` covers posting-key compromise recovery.
 
@@ -233,7 +234,7 @@ When PEvO designs a chain-interaction surface, there are two kinds of mistakes, 
 
 **Over-engineering** — building app-layer checks for what Hive consensus already enforces. The transaction-size example (rule 1) is the canonical instance. A reviewer or agent sees a payload field and worries about unbounded-size DoS, then proposes a length cap, a per-author-per-block rate limit, or a verification round trip — all of which are dead code, because the attack is rejected by Hive consensus before it lands. The same trap exists for posting-key revocation (rule 3): inventing a "PEvO key rotation attestation" parallel to Hive's `account_update` adds an op type, a validity rule, a HAF query, and ongoing maintenance — all to duplicate a primitive consensus already provides for free.
 
-**Under-engineering** — missing app-layer checks Hive does NOT do. Hive does not bind signer to payload (rule 5): `required_posting_auths` is a chain-layer authentication of the broadcaster, but consensus has no opinion about whether the broadcaster is authorized over the *subject* the payload mentions. Hive does not enforce temporal-ordering validity for app-defined ops (rule 6): a `custom_json` is just a key-value blob that consensus accepts under the broadcaster's posting key. Hive does not break same-block ties for app-defined "latest op wins" (rule 2): block ordering is at the block-tuple level, not the operation level, until the consumer keys on `(block_num, trx_in_block)`. And Hive does not provide multi-party joint commitment for app-defined consent (rule 4) — that has to be modeled at the application layer if needed.
+**Under-engineering** — missing app-layer checks Hive does NOT do. Hive does not bind signer to payload (rule 5): `required_posting_auths` is a chain-layer authentication of the broadcaster, but consensus has no opinion about whether the broadcaster is authorized over the *subject* the payload mentions. Hive does not enforce temporal-ordering validity for app-defined ops (rule 6): a `custom_json` is just a key-value blob that consensus accepts under the broadcaster's posting key. Hive does not break same-block ties for app-defined "latest op wins" (rule 2): block ordering is at the block level, not the operation level, until the consumer keys on `(block_num, id)`. And Hive does not provide multi-party joint commitment for app-defined consent (rule 4) — that has to be modeled at the application layer if needed.
 
 The convention forces a Hive-first mental model. **Before designing or proposing a `custom_json` op type, ask: which of these properties does Hive give me for free? Which do I have to add?** Build a checklist against rules 1-6. The PEvO `author_accept` / `author_resign` design embodies the answer for one specific case; future op types should walk the same six rules from scratch, since the answers may differ (e.g., a hypothetical multi-author retract op would NOT be a single-sided consent op per rule 4 — it would need joint commitment).
 
@@ -243,7 +244,7 @@ Apply this convention any time you are working with a Hive chain-interaction sur
 
 - **Designing a new `custom_json` op type** for PEvO (any `id = APP_TAG`). Walk all six rules before the spec is finalized.
 - **Reviewing a security finding** that proposes an application-layer cap, limit, or rate-limiter on chain-derived data. Ask: what does Hive consensus already do here? (Rule 1.)
-- **Implementing "latest op wins per (subject, scope) pair" semantics** in a HAF query. Verify the `ORDER BY` clause uses `(block_num, trx_in_block)`, not `block_num` alone. (Rule 2.)
+- **Implementing "latest op wins per (subject, scope) pair" semantics** in a HAF query. Verify the `ORDER BY` clause uses `(block_num, id)`, not `block_num` alone (the deployed HAF views omit `trx_in_block`; `id` is the global op-id tiebreaker). (Rule 2.)
 - **Specifying compromised-key recovery** for any PEvO consent or attestation flow. Reference `account_update`; do not invent a custom rotation op. (Rule 3.)
 - **Choosing between Hive-native multi-sig sub-accounts and application-layer consent ops** for a new flow. Default to single-sided ops unless the threat model truly requires joint commitment. (Rule 4.)
 - **Writing or reviewing validity rules** for any `custom_json` type. Verify the chain signer is bound to the relevant payload identity field. (Rule 5.)
@@ -276,7 +277,7 @@ After (rely on Hive consensus):
 
 ---
 
-**Rule 2: Use `(block_num, trx_in_block)` for op ordering.**
+**Rule 2: Use `(block_num, id)` for op ordering.**
 
 Before (ambiguous on same-block ties):
 ```sql
@@ -294,7 +295,7 @@ ROW_NUMBER() OVER (
   PARTITION BY cj.json::jsonb ->> 'accepting_author_hive',
                cj.json::jsonb ->> 'root_author',
                cj.json::jsonb ->> 'root_permlink'
-  ORDER BY cj.block_num DESC, cj.trx_in_block DESC
+  ORDER BY cj.block_num DESC, cj.id DESC
 ) AS rn
 ```
 
@@ -411,11 +412,11 @@ WHERE cj.custom_id = $1
 
 - [`pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`](pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md) — sibling convention. That doc is about identity-binding at gate predicates ("every OR-arm in an authorization gate must terminate in an identity predicate"); this doc is the Hive-primitive-aware extension at the op-type layer ("the chain signer is the identity predicate, and the validity rule must bind it to the payload subject"). Read together.
 - [`vouch-three-senses-consented-not-vouched-2026-06-06.md`](vouch-three-senses-consented-not-vouched-2026-06-06.md) — terminology convention. "vouch" carries three distinct PEvO senses (WoT accreditation vouch; object author-vouching; per-paper authorship consent). The `author_accept` / `author_resign` consent status in this doc is **"consented"** (sense 3); "vouch" stays reserved for the WoT ops (`active_vouches`, `vouch` / `retract_vouch`) and the object-identity read-gate.
-- [`../architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md`](../architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md) — adjacent architecture pattern. That doc covers the chain semantics (continuation pointers, head computation, edit pre-fill); this doc covers the underlying Hive primitives those semantics are built on (`custom_json` validity rules, `(block_num, trx_in_block)` ordering, `account_update`-based recovery).
+- [`../architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md`](../architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md) — adjacent architecture pattern. That doc covers the chain semantics (continuation pointers, head computation, edit pre-fill); this doc covers the underlying Hive primitives those semantics are built on (`custom_json` validity rules, `(block_num, id)` ordering, `account_update`-based recovery).
 - [`enumerated-exemption-lists-are-drift-vectors-2026-04-28.md`](enumerated-exemption-lists-are-drift-vectors-2026-04-28.md) — methodology meta-rule. The six rules in this doc are themselves a checklist; future audits should resist the temptation to enumerate "ops that don't need rule N" carve-outs and instead surface drift via grep on the structural predicates (e.g., grep for `cj.required_posting_auths ->> 0` next to every `cj.json::jsonb ->> '<subject_field>'` equality).
 - [`hive-signature-request-binding-shape-2026-04-21.md`](hive-signature-request-binding-shape-2026-04-21.md) — adjacent "principal must be bound to the request, not self-asserted" pattern at the authentication layer. Same family as rule 5, applied to HTTP request binding instead of `custom_json` op binding.
 - [`chain-primitive-proxy-prefer-deletion-2026-04-28.md`](chain-primitive-proxy-prefer-deletion-2026-04-28.md) — sibling rule under PEvO principle #1 ("Hive-native, not Hive-wrapped"); same impulse applied to DB-schema decisions, while this doc applies it to op-semantics decisions.
 - [`chain-write-timeout-ambiguous-outcome-2026-04-22.md`](chain-write-timeout-ambiguous-outcome-2026-04-22.md) — adjacent: relies on the same "Hive has no native idempotency keys" property the rules above explore from the validity-rule side.
 - `agents/docs/ARCHITECTURE.md` "Multi-Author Trust Model" section (and "Accreditation (custom_json)" subsection) — the embodying spec. The trust-model section enacts all six rules; the accreditation subsection is the prior-art `required_posting_auths` whitelist pattern (signer-binding via authority list, the inverted-shape sibling of rule 5).
-- `backend/src/hafsql.ts` — `activeAccreditationsCteBody` and `activeVouchesCteBody`. Current call sites for the `?|` whitelist pattern (rule 5 applied to admin-issued ops) and target sites for the `(block_num, trx_in_block)` ordering upgrade (rule 2).
+- `backend/src/hafsql.ts` — `activeAccreditationsCteBody` and `activeVouchesCteBody`. Current call sites for the `?|` whitelist pattern (rule 5 applied to admin-issued ops) and the `(block_num, id)` secondary-key ordering (rule 2, landed at all latest-op-wins sites).
 - `backend/src/routes/papers.ts` `resolveContinuationChain` — the chain-walk consumer of the rules; the pending `backend-coauthor-trust-model` Phase 2 implements the consented-set computation that integrates rules 2, 5, and 6.
