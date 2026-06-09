@@ -92,7 +92,7 @@ Mint a fresh-auth proof via password re-verification. Light-account-only. The si
 ```json
 {
   "password": "SecurePass123",
-  "action": "author_accept" | "author_resign" | "change_email",
+  "action": "author_accept" | "author_resign" | "change_email" | "delete_account",
   "root_author": "<hive-account>",
   "root_permlink": "<paper-permlink>"
 }
@@ -101,7 +101,7 @@ Mint a fresh-auth proof via password re-verification. Light-account-only. The si
 `password` and `action` are always REQUIRED. The remaining body fields are conditional on the action category:
 
 - **Consent-op actions (`author_accept`, `author_resign`):** `root_author` and `root_permlink` are REQUIRED. The `(action, root_author, root_permlink)` triple is the per-op target the proof binds to; the consent op submitted on a subsequent `POST /api/custody/broadcast` MUST match this triple exactly or the broadcast returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "target_mismatch"`. `action` is validated as a closed enum; `root_author` and `root_permlink` are validated as non-empty strings. Any missing or malformed field returns 400 `VALIDATION_ERROR`.
-- **Non-broadcast action (`change_email`):** `root_author` and `root_permlink` are IGNORED if present. The backend synthesizes the target as `(change_email, <authenticated username>, '')`. Empty `root_permlink` is collision-free against consent-op targets at the hash layer because consent ops require a non-empty `root_permlink`. The issued proof is consumed at the JWT path of `POST /api/settings/email` (see [settings.md](settings.md)), NOT at `POST /api/custody/broadcast`; `change_email` is a non-broadcast critical action (it rotates the address that receives password-reset tokens, an auth-adjacent factor, per ARCHITECTURE.md § 6.5 invariant #1). State A and State B accounts (`password_hash IS NOT NULL`) mint via this route. State C (passwordless ORCID-only) accounts have no password mechanism and MUST mint via `POST /api/orcid/start { mode: "fresh_auth", action: "change_email" }` instead.
+- **Non-broadcast actions (`change_email`, `delete_account`):** `root_author` and `root_permlink` are IGNORED if present. The backend synthesizes the target as `(action, <authenticated username>, '')`. Empty `root_permlink` is collision-free against consent-op targets at the hash layer because consent ops require a non-empty `root_permlink`. The `change_email` proof is consumed at the JWT path of `POST /api/settings/email`; the `delete_account` proof at the JWT path of `DELETE /api/settings/email` (see [settings.md](settings.md)); neither is consumed at `POST /api/custody/broadcast`. Both are non-broadcast critical actions per ARCHITECTURE.md § 6.5 invariant #1: `change_email` rotates the address that receives password-reset tokens (an auth-adjacent factor); `delete_account` is the one-way right-to-erasure exit per § 6.3. State A and State B accounts (`password_hash IS NOT NULL`) mint via this route. State C (passwordless ORCID-only) accounts have no password mechanism and MUST mint via `POST /api/orcid/start { mode: "fresh_auth", action: "<action>" }` instead.
 
 The `set_password` action is NOT minted via this route, because `set_password` transitions State C → State B (the user has no password yet by definition) so a password-mechanism proof is structurally inapplicable. `set_password` proofs are minted only via `POST /api/orcid/start { mode: "fresh_auth", action: "set_password" }`.
 
@@ -122,7 +122,7 @@ The `set_password` action is NOT minted via this route, because `set_password` t
 **Errors:**
 - `UNAUTHORIZED` (401) — missing JWT, account not found, or password mismatch. The "no password set" case (e.g., ORCID-only account with `password_hash IS NULL`) returns the same shape to avoid becoming a password-existence oracle.
 - `FORBIDDEN` (403) — account has been upgraded to self-custody. Self-custody users sign consent ops via Hive Keychain and do not use this endpoint.
-- `VALIDATION_ERROR` (400) — missing `password`, missing or invalid `action` (must be one of `"author_accept"`, `"author_resign"`, `"change_email"`), or, for consent-op actions only, missing or empty `root_author` / `root_permlink`. The `change_email` action does not require `root_author` or `root_permlink`.
+- `VALIDATION_ERROR` (400) — missing `password`, missing or invalid `action` (must be one of `"author_accept"`, `"author_resign"`, `"change_email"`, `"delete_account"`), or, for consent-op actions only, missing or empty `root_author` / `root_permlink`. The `change_email` and `delete_account` actions do not require `root_author` or `root_permlink`.
 - `INTERNAL_ERROR` (500) — argon2 verification failure or unexpected error.
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
 
