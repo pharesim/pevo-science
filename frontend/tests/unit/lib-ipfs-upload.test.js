@@ -197,7 +197,7 @@ describe('createUploadSession', () => {
     expect(reauthRequest).toHaveBeenCalledTimes(4);
   });
 
-  // Fix 4: ensureCredential must not dead-end a valid password-holder when the
+  // ensureCredential must not dead-end a valid password-holder when the
   // account-status fetch fails transiently. Only an explicit hasPassword===false
   // (State C) blocks; a thrown/unknown status falls through to the prompt, and
   // the backend re-verifies at mint time. NOTE: a real transient failure (network
