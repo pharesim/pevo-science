@@ -90,3 +90,25 @@ the negative-path test, raised independently by all three reviewers:
    still 403s green with the message assertion added.
 
 When this lands, `git mv` this file back to `tasks/review/`.
+
+## UI re-review signal (2026-06-09, commit 9a1c95b6 on main)
+
+Hold finding landed. After the `error.code === 'FORBIDDEN'` assertion, the
+mismatch test now also asserts `error.message === 'The ORCID you authenticated
+with is not linked to this account.'` — the registered-factor guard's exact
+message (handleFreshAuth's `accountOrcid !== orcidId` exit). A caller-guard 403
+("Callback caller does not match initiator") now fails the test instead of
+passing it, so a future regression that decoupled the two username derivations
+can no longer leave the registered-factor equality invariant silently
+unexercised. Anchored on the message text, not a backend line number.
+
+Coordinated with the bridge-helper extraction in
+`ui-orcid-stub-real-roundtrip-unfixme` (same commit): the message assertion was
+added after that task's `routeOrcidStubBridge` adoption rewrote the mismatch
+test's redirect-host block, so the two edits to that test did not collide.
+
+Verification: re-ran against the test stack (orcid-stub sidecar) — the mismatch
+test still 403s green with the message assertion added (settings-orcid-factor.spec.js
+ORCID-factor tests 4/4 pass; full two-spec run 9 passed, 2 skipped).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

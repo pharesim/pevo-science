@@ -181,3 +181,33 @@ optionally drop the SEC-004-BE phrasing in favor of a behavioral anchor, but a
 broader slug sweep is not required by this task.
 
 When these land, `git mv` this file back to `tasks/review/`.
+
+## UI re-review signal (2026-06-09, commit 9a1c95b6 on main)
+
+All three hold findings landed:
+
+1. **Post-reload race.** The happy-path test arms `page.waitForResponse` for
+   `GET /api/settings/email` BEFORE `page.reload()` and awaits it before the
+   `toBeHidden()` assertion, closing the Alpine-init-vs-async-email-fetch
+   soft-flake channel.
+2. **Bridge dedup.** Extracted `routeOrcidStubBridge(page, baseURL, code)` at
+   module scope (above the first describe), registering both the
+   `/api/orcid/start` passthrough+host-rewrite and the `**/oauth/authorize*`
+   302-fulfil, with the ~20-line rationale carried once on the helper. Adopted
+   at both call sites — happy-path (`code = TEST_ORCID`) and mismatch
+   (`code = MISMATCH_ORCID`). Sequenced with the negative-path task's
+   message-assertion edit so the two changes to the mismatch test did not
+   collide.
+3. **Header fix.** orcid-no-password.spec.js's top-of-file docblock no longer
+   claims the real-backend assertions are "pending SEC-004-BE / un-fixme once
+   the backend lands." It now states the remaining signup/recover fixmes are
+   blocked on a pub.orcid.org works stub (the token-only orcid-stub serves no
+   works endpoint) and points at the set_password round-trip test in
+   settings-orcid-factor.spec.js. Dropped the SEC-004-BE phrasing in favor of a
+   behavioral anchor; no broader slug sweep (out of scope per the hold's
+   dismissed note).
+
+Verification: both specs run against the test stack (orcid-stub sidecar) — 9
+passed, 2 skipped (the pub.orcid.org-works fixmes).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
