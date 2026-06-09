@@ -223,3 +223,52 @@ corrected in this same review pass.
 
 Re-review acceptance: items 1-5 landed; unit suite green against the real `ApiRequestError`
 shape. `git mv` back to `tasks/review/` when done.
+
+## UI re-review signal (2026-06-09, commit 41509a53)
+
+All five hold items plus the item-5 fold-in landed in 41509a53. Per item:
+
+1. (P1 dead 401 retry) `withSettingsFreshAuth` now gates the re-mint+retry on
+   `REMINTABLE_REASONS.includes(err.details?.reason)`; the always-false
+   `err.status === 401` conjunct is gone (`ApiRequestError` carries no `status` field,
+   only `code`/`details`). The `codedError` test helper no longer fabricates a `status`
+   field, so the suite runs against the real error shape — re-injecting a `status`-based
+   gate fails the retry tests (verified empirically during the adversarial pass).
+2. (ORCID host allowlist) `beginSettingsActionOrcidFreshAuth` now uses the shared
+   `ORCID_REDIRECT_HOSTS` constant instead of an inline `['orcid.org','sandbox.orcid.org']`
+   literal.
+3. (second password mint unwrapped) The retry mint in `mintViaPassword` is wrapped; a
+   second auth failure or any transport error on it maps to a new `MINT_FAILED` sentinel
+   → `{ freshAuthFailed: true }` (surfaces `settings.reauthFailed`), instead of escaping
+   as the action's own generic error. The first-attempt non-UNAUTHORIZED throw is left
+   as-is (out of the flagged scope).
+4. (no direct ORCID test) New `frontend/tests/unit/lib-fresh-auth-settings-orcid.test.js`:
+   allowlisted-host redirect (sets `window.location.href`, returns the pending sentinel),
+   sandbox host accepted, non-allowlisted + unparseable rejection WITHOUT navigating,
+   sessionStorage mode-marker/return-path cleanup when `startOrcid` throws.
+5. (action coverage) Added passwordless `delete_account` → ORCID factor, a 401-reprompt
+   and a transport-fail second-mint on `delete_account`, a 403 on cached `set_password`,
+   and the ORCID-factor 401-on-arrival terminal-`freshAuthFailed` guard (no silent second
+   ORCID redirect — re-OAuth-loop near the 5-minute TTL). Factor selection is centralized
+   in `usesPasswordFactor` so the initial mint and the retry gate cannot drift.
+
+Verify checks confirmed, no change needed: (a) `orcid-callback.js` dispatches
+`pevo_orcid_mode = 'fresh_auth'` into `_handleFreshAuth`, caching the consent-op proof
+keyed `(action, root_author, root_permlink)` = `(action, <username>, '')` for settings
+actions, retrieved by `getCachedConsentOpProof(action, username, '')`; (b) the `fresh_auth`
+callback tests stub `expires_at` as an ISO-8601 string (`'2099-01-01T00:00:00.000Z'`).
+
+Full frontend unit suite green (1426 passed, deterministic across 5/5 repeat runs);
+production build green. An independent 4-lens adversarial verification pass (control-flow,
+auth/§6.5-bypass, error-propagation, test-rigor) found no refutation of the production
+logic; §6.5 invariant #1 holds (no critical action reachable JWT-only with no proof).
+
+Out-of-scope note for triage (NOT fixed here): `settings.js` `handleOrcidLink` and
+`accreditation.js` still use an inline `['orcid.org','sandbox.orcid.org']` literal for
+their own (non-settings-action) ORCID redirect flows. Pre-existing and outside hold item
+#2's scope (which targeted `beginSettingsActionOrcidFreshAuth`). Adopting the shared
+allowlist there would require exporting `ORCID_REDIRECT_HOSTS` from `fresh-auth.js` and
+touching two more files in separate flows — flagging as a possible follow-up, not part of
+this task.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
