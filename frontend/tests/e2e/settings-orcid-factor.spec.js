@@ -127,6 +127,49 @@ async function seedSession(page, username = TEST_USERNAME) {
   return { token };
 }
 
+// Bridge the SPA open-redirect guard and the in-network-only ORCID authorize hop
+// for the real round-trip tests. Registers two routes together; `code` is the
+// only lever a caller varies (seeded iD for the match case, a distinct valid-format
+// iD for the mismatch case):
+//
+//   1. **/api/orcid/start — the real /api/orcid/start builds redirect_url from
+//      config.orcidBaseUrl, which the test stack points at the compose-internal
+//      stub (http://orcid-stub:8099). beginSettingsActionOrcidFreshAuth validates
+//      the redirect host against the ORCID_REDIRECT_HOSTS allowlist (orcid.org /
+//      sandbox.orcid.org) BEFORE navigating, so an orcid-stub host throws before
+//      the browser ever leaves the app. Pass /start through to the REAL backend
+//      (it allocates the real Redis state), then rewrite ONLY the redirect_url
+//      host to orcid.org so the guard passes and the authorize navigation fires.
+//      The real `state` rides through untouched.
+//   2. **/oauth/authorize* — no browser can reach the compose-internal stub, and
+//      the stub serves no /oauth/authorize endpoint by design. Intercept the
+//      authorize navigation, read the real `state` the backend stored in Redis,
+//      and 302 the browser to the real /orcid/callback with the given `code`. The
+//      backend exchanges that code against the stub's /oauth/token, which reflects
+//      it straight back as the `orcid` field, so the callback compares it against
+//      accounts.orcid (match -> mints a proof; mismatch -> 403).
+async function routeOrcidStubBridge(page, baseURL, code) {
+  await page.route('**/api/orcid/start', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const real = new URL(body.data.redirect_url);
+    body.data.redirect_url = `https://orcid.org${real.pathname}${real.search}`;
+    await route.fulfill({
+      status: response.status(),
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
+  });
+
+  await page.route('**/oauth/authorize*', async (route) => {
+    const state = new URL(route.request().url()).searchParams.get('state');
+    await route.fulfill({
+      status: 302,
+      headers: { location: `${baseURL}/orcid/callback?code=${code}&state=${state}` },
+    });
+  });
+}
+
 test.describe('settings — ORCID-factor set_password (State C)', () => {
   let pool;
 
@@ -310,42 +353,10 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
     await seedSession(page);
     await page.context().clearCookies();
 
-    // Bridge the SPA open-redirect guard. The real /api/orcid/start builds
-    // redirect_url from config.orcidBaseUrl, which the test stack points at the
-    // in-network stub (http://orcid-stub:8099). beginSettingsActionOrcidFreshAuth
-    // validates the redirect host against the ORCID_REDIRECT_HOSTS allowlist
-    // (orcid.org / sandbox.orcid.org) before navigating, so an orcid-stub host
-    // throws before the browser ever leaves the app. Pass /start through to the
-    // REAL backend (it allocates the real Redis state), then rewrite ONLY the
-    // redirect_url host to orcid.org so the guard passes and the authorize
-    // navigation actually fires. The real `state` rides through untouched.
-    await page.route('**/api/orcid/start', async (route) => {
-      const response = await route.fetch();
-      const body = await response.json();
-      const real = new URL(body.data.redirect_url);
-      body.data.redirect_url = `https://orcid.org${real.pathname}${real.search}`;
-      await route.fulfill({
-        status: response.status(),
-        contentType: 'application/json',
-        body: JSON.stringify(body),
-      });
-    });
-
-    // In-page fulfil of the ORCID authorize hop. No browser can reach the
-    // compose-internal stub, and the stub serves no /oauth/authorize endpoint by
-    // design. Intercept the authorize navigation, read the real `state` the
-    // backend stored in Redis, and 302 the browser to the real /orcid/callback
-    // with code=<seeded ORCID iD>. The backend then exchanges that code against
-    // the stub's /oauth/token, which reflects it straight back as the `orcid`
-    // field (matching accounts.orcid for this run), so handleFreshAuth mints a
-    // genuine target-bound proof.
-    await page.route('**/oauth/authorize*', async (route) => {
-      const state = new URL(route.request().url()).searchParams.get('state');
-      await route.fulfill({
-        status: 302,
-        headers: { location: `${baseURL}/orcid/callback?code=${TEST_ORCID}&state=${state}` },
-      });
-    });
+    // Bridge the open-redirect guard + in-network authorize hop, driving the
+    // authorize fulfil with code = the seeded ORCID iD so the backend's
+    // accounts.orcid equality passes and handleFreshAuth mints a genuine proof.
+    await routeOrcidStubBridge(page, baseURL, TEST_ORCID);
 
     // /api/orcid/callback and /api/settings/set-password are NOT stubbed here:
     // both run against the real backend so the real proof is minted and consumed.
@@ -407,9 +418,17 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
     expect(row.rows[0]?.password_hash).toBeTruthy();
 
     // The "Set a password" section stops rendering after a reload: GET
-    // /api/settings/email now reports hasPassword:true.
+    // /api/settings/email now reports hasPassword:true. waitForSelector resolves
+    // on Alpine init, not on the async email fetch, so without gating on the
+    // response the visibility assertion can evaluate against the pre-fetch
+    // (still-visible) state on a loaded runner. Arm the waitForResponse before
+    // reload and await it before asserting.
+    const emailAfterReload = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/settings/email') && resp.request().method() === 'GET',
+    );
     await page.reload();
     await page.waitForSelector('[x-data="settingsPage"]');
+    await emailAfterReload;
     await expect(page.getByTestId('set-password-section')).toBeHidden();
 
     // Password login with the new password now succeeds (State B account).
@@ -466,31 +485,11 @@ test.describe('settings — ORCID-factor set_password registered-factor mismatch
     await seedSession(page, NEG_USERNAME);
     await page.context().clearCookies();
 
-    // Same redirect-host bridge as the happy-path test: pass /start through to the
-    // real backend (real Redis state), rewrite only the redirect_url host to
-    // orcid.org so the SPA open-redirect guard passes and the authorize hop fires.
-    await page.route('**/api/orcid/start', async (route) => {
-      const response = await route.fetch();
-      const body = await response.json();
-      const real = new URL(body.data.redirect_url);
-      body.data.redirect_url = `https://orcid.org${real.pathname}${real.search}`;
-      await route.fulfill({
-        status: response.status(),
-        contentType: 'application/json',
-        body: JSON.stringify(body),
-      });
-    });
-
-    // Fulfil the authorize hop with code = B. The backend exchanges it against the
-    // stub, which reflects B back as `orcid`; B clears ORCID_RE but != accounts.orcid
-    // (A), so handleFreshAuth returns 403 and mints nothing.
-    await page.route('**/oauth/authorize*', async (route) => {
-      const state = new URL(route.request().url()).searchParams.get('state');
-      await route.fulfill({
-        status: 302,
-        headers: { location: `${baseURL}/orcid/callback?code=${MISMATCH_ORCID}&state=${state}` },
-      });
-    });
+    // Same redirect-host bridge as the happy-path test, but driven with code = B:
+    // the backend exchanges B against the stub, which reflects it back as `orcid`;
+    // B clears ORCID_RE but != accounts.orcid (A), so handleFreshAuth returns 403
+    // and mints nothing.
+    await routeOrcidStubBridge(page, baseURL, MISMATCH_ORCID);
 
     await page.goto('/settings');
     await page.waitForSelector('[x-data="settingsPage"]');
@@ -510,6 +509,15 @@ test.describe('settings — ORCID-factor set_password registered-factor mismatch
     expect(cbResp.status()).toBe(403);
     const cbBody = await cbResp.json();
     expect(cbBody?.error?.code).toBe('FORBIDDEN');
+
+    // Pin WHICH 403 fired. /api/orcid/callback has a second FORBIDDEN exit — the
+    // caller-mismatch guard ("Callback caller does not match initiator"), reachable
+    // because fresh_auth is an authenticated mode. The message disambiguates: a
+    // caller-guard 403 must FAIL this test, since only the registered-factor guard
+    // (handleFreshAuth's accountOrcid !== orcidId) exercises §6.5 invariant #2. A
+    // regression that decoupled the two username derivations would 403 via the
+    // caller guard and otherwise leave this test green with the invariant untested.
+    expect(cbBody?.error?.message).toBe('The ORCID you authenticated with is not linked to this account.');
 
     // No proof was minted: the consent-op cache stays empty and the action never
     // completes (password_hash remains NULL).

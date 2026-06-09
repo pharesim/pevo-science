@@ -15,11 +15,15 @@
  * taken by `orcid-link.spec.js` (SEC-002-UI) and keeps the assertion
  * deterministic regardless of the backend's own auth state.
  *
- * The assertions that require the real backend (password: null actually
- * being accepted by /api/auth/signup, ORCID login on a null-password
- * account, password login returning 403 NO_PASSWORD_SET, and the
- * /api/settings/set-password endpoint) are marked with `test.fixme`
- * pending SEC-004-BE. Un-fixme them once the backend lands.
+ * Two real-backend assertions below stay `test.fixme`: ORCID *signup* and
+ * *recovery* with a null password. Both drive ORCID signup mode, whose backend
+ * handler fetches a works count from a hardcoded pub.orcid.org URL that the
+ * token-only orcid-stub OAuth sidecar does not serve, so the works-count gate
+ * cannot be satisfied in-network without a second stub for the works API (filed
+ * as a follow-up). The set-password real round-trip this header previously
+ * listed is now driven for real by the set_password round-trip test in
+ * settings-orcid-factor.spec.js (against the orcid-stub) and is not duplicated
+ * here. See the docblock above the fixme blocks for the full rationale.
  */
 
 import { test, expect } from './fixtures/keychain.js';
