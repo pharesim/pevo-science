@@ -205,14 +205,6 @@ describe('vouchSection', () => {
       expect(comp.message).not.toBe('wot.retractSuccess');
     });
 
-    it('query_error outcome renders an error message', async () => {
-      mockNotifyRetractVouch.mockResolvedValue({ data: { revocations: [], revocation_outcome: 'query_error' } });
-      const comp = createComponent({ targetUsername: 'bob' });
-      await comp.handleRetract();
-      expect(comp.step).toBe('error');
-      expect(comp.message).toBe('wot.retractQueryError');
-    });
-
     it('timeout and chain_error outcomes render the degraded message as an error', async () => {
       for (const outcome of ['timeout', 'chain_error']) {
         mockNotifyRetractVouch.mockResolvedValue({ data: { revocations: [], revocation_outcome: outcome } });

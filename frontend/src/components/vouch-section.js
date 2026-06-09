@@ -163,10 +163,7 @@ export function initVouchSection() {
           // success copy: a fail-closed (unverified) or errored cascade must not
           // read as a clean success. revocations is [] on the non-revoked arms.
           const outcome = res.data.revocation_outcome;
-          if (outcome === 'query_error') {
-            this.step = 'error';
-            this.message = this.$t('wot.retractQueryError');
-          } else if (outcome === 'timeout' || outcome === 'chain_error') {
+          if (outcome === 'timeout' || outcome === 'chain_error') {
             this.step = 'error';
             this.message = this.$t('wot.retractRevocationDegraded');
           } else if (outcome === 'unverified') {

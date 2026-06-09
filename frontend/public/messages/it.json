@@ -389,7 +389,6 @@
     "vouchFailed": "Impossibile trasmettere la garanzia",
     "retractFailed": "Impossibile ritirare la garanzia",
     "retractUnverified": "Your vouch retraction was submitted but is not yet confirmed on-chain, so dependent accreditations were not re-evaluated. Re-check shortly.",
-    "retractQueryError": "Vouch retracted, but the dependent-accreditation re-evaluation could not complete. Please re-attempt.",
     "retractRevocationDegraded": "Vouch retracted, but the dependent-accreditation revocation is in a degraded or failed state. Check the on-chain status before re-attempting."
   },
   "comments": {
