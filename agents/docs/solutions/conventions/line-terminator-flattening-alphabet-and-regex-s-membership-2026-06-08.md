@@ -24,11 +24,11 @@ Two recurring traps in this defense surfaced during an architect cluster re-revi
 
 ## Guidance
 
-### Rule 1 — verify `\s`-membership empirically; only NEL (U+0085) is a non-`\s` line terminator
+### Rule 1 — verify `\s`-membership empirically; the widened 10-char set has four non-`\s` members (NEL + FS/GS/RS)
 
 The helpers run an explicit `LINE_TERMINATORS` strip pass and then (in `digest.ts`) a `/\s+/` collapse pass. The docblocks justify why the explicit pass is needed by asserting which line terminators are "not `\s` members in V8." That claim was written WRONG across two consecutive review rounds — and the second wrong version was itself a correction of an earlier overclaim (so the same docblock got the `\s` fact wrong, fixed, then wrong again).
 
-The verified fact (run it, do not reason about it): among the line terminators CR, LF, VT (U+000B), FF (U+000C), NEL (U+0085), LS (U+2028), PS (U+2029), **only NEL (U+0085) is a non-`\s` member.** VT, FF, LS, and PS all match `/\s/` in V8 and would be caught by a downstream `/\s+/` collapse anyway. The explicit `LINE_TERMINATORS` pass earns its keep on NEL (and on getting CR/LF flattened to a space rather than collapsed away). The intuition "LS/PS are exotic, surely not `\s`" is exactly backwards — that is what misled the docblock twice.
+The verified fact (run it, do not reason about it): the current `LINE_TERMINATORS` constant is the 10-codepoint set CR, LF, VT (U+000B), FF (U+000C), FS (U+001C), GS (U+001D), RS (U+001E), NEL (U+0085), LS (U+2028), PS (U+2029). Of those, **four are non-`\s` members: NEL (U+0085) and the C0 separators FS (U+001C), GS (U+001D), RS (U+001E).** The other six — CR, LF, VT, FF, LS, PS — all match `/\s/` in V8 and would be caught by a downstream `/\s+/` collapse anyway. The explicit `LINE_TERMINATORS` pass earns its keep on those four non-`\s` members (and on getting CR/LF flattened to a space rather than collapsed away). The intuition "LS/PS are exotic, surely not `\s`" is exactly backwards (they ARE `\s`); the symmetric intuition "FS/GS/RS look whitespace-ish" is also wrong (they are NOT `\s`). Both directions misled the docblock across rounds, which is why this is checked empirically, never reasoned.
 
 Rule: never state a codepoint's `\s`-membership from intuition in a comment or docblock. Verify with `/\s/.test(String.fromCharCode(cp))` first. The regex catches all seven regardless, so a wrong `\s` claim is a documentation-accuracy defect, not a behavior bug — but it is in the canonical shared-constant docblock, so it misleads every future maintainer who reads it to understand why the explicit pass exists.
 
@@ -60,13 +60,14 @@ The constant is the single source of truth for a security defense consumed by tw
 Empirical check (Node 20) — the authoritative source for any `\s` claim:
 
 ```js
-for (const cp of [0x0b, 0x0c, 0x85, 0x2028, 0x2029]) // VT FF NEL LS PS
+for (const cp of [0x0b, 0x0c, 0x1c, 0x1d, 0x1e, 0x85, 0x2028, 0x2029]) // VT FF FS GS RS NEL LS PS
   console.log(cp.toString(16), /\s/.test(String.fromCharCode(cp)));
-// 0b true  0c true  85 FALSE  2028 true  2029 true   → only NEL (U+0085) is non-\s
+// 0b true  0c true  1c FALSE  1d FALSE  1e FALSE  85 FALSE  2028 true  2029 true
+// → four non-\s members: FS/GS/RS (U+001C-U+001E) and NEL (U+0085)
 ```
 
-Wrong docblock (shipped twice): "NEL (U+0085), LS (U+2028), and PS (U+2029) are NOT `\s` members in V8."
-Correct: "Only NEL (U+0085) is a non-`\s` member; VT/FF/LS/PS match `\s` and would be caught by the `/\s+/` collapse. The explicit pass earns its keep on NEL."
+Wrong docblock (shipped twice): "NEL (U+0085), LS (U+2028), and PS (U+2029) are NOT `\s` members in V8." (LS and PS ARE `\s`.)
+Correct (current 10-char set): "NEL (U+0085) and FS/GS/RS (U+001C-U+001E) are the non-`\s` members; CR/LF/VT/FF/LS/PS match `\s` and would be caught by the `/\s+/` collapse. The explicit pass earns its keep on those four (and on flattening CR/LF to a space)."
 
 RIS forgery payload that a UAX#14-only alphabet permits (FS = U+001C as the record break a `splitlines()`-class importer honors):
 
