@@ -272,3 +272,51 @@ touching two more files in separate flows — flagging as a possible follow-up, 
 this task.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-09, round 2) — 5 held items VERIFIED; HELD for one comment fix
+
+Re-reviewed commit `41509a53` via `/ce-code-review` (9 personas; correctness/security/adversarial on
+the session model). **All 5 held items landed and verify** with strong cross-persona consensus: the
+dead 401 retry is now live and correctly gated on `REMINTABLE_REASONS` (the `err.status === 401`
+conjunct is gone; the test no longer fabricates `status` and fails if a status-gate is reintroduced —
+the `test-fabricated-error-shape-masks-dead-branch` convention is satisfied); `ORCID_REDIRECT_HOSTS` is
+adopted and confirmed in scope; the second password mint is wrapped (`MINT_FAILED` → `freshAuthFailed`,
+handled at both call sites); the new ORCID unit test covers allowlist-reject-without-navigating +
+cleanup; action coverage is extended; `usesPasswordFactor` centralizes factor selection so the initial
+mint and the retry gate cannot drift. **Security is clean** — §6.5 invariant #1 holds (no critical
+action reachable JWT-only without a proof), the per-action target binding can't be bypassed, the cache
+is cleared on every consume, and the password never leaks.
+
+**HELD PENDING FIX — one in-scope item:**
+
+1. **(P2) Correct the false clause-(c) claim in the new test header.**
+   `frontend/tests/unit/lib-fresh-auth-settings-orcid.test.js` (header, the `Clause-c real-path
+   companion` sentence) claims "the settings-action ORCID factor is driven end-to-end against the real
+   backend by the E2E settings spec." It is NOT — `settings.spec.js` drives only the PASSWORD factor;
+   the ORCID-factor settings path (`set_password`, passwordless `change_email`/`delete_account`) has no
+   E2E. Per the test-mock carve-out, clause (c) needs EITHER a real-path companion OR a filed follow-up.
+   Rewrite the sentence to state honestly that the ORCID-factor settings path has no E2E companion yet
+   and that follow-up coverage is tracked — WITHOUT citing a task slug in the comment (the slug lives in
+   the task tree, not the test source, per the comment-anchor convention). The filed follow-up
+   `ui-settings-orcid-factor-e2e` is what formally satisfies the carve-out's clause (c).
+
+**Out-of-scope follow-ups filed (NOT part of this task):**
+- `ui-settings-orcid-factor-e2e` — E2E coverage for the ORCID-factor settings actions; closes the
+  clause-(c) gap above.
+- `ui-orcid-redirect-host-allowlist-sweep` — replace the two remaining inline
+  `['orcid.org','sandbox.orcid.org']` literals in `pages/settings.js` `handleOrcidLink` and
+  `pages/accreditation.js` with the shared `ORCID_REDIRECT_HOSTS` constant (the broader sweep you
+  flagged; hold item #2 from the first round only targeted `beginSettingsActionOrcidFreshAuth`).
+
+**Reviewed and dismissed (no action):** the first-attempt non-`UNAUTHORIZED` password-mint error
+escaping `withSettingsFreshAuth` raw (4 reviewers agree it is acceptable — no proof obtained, the action
+never runs, §6.5-safe; the asymmetry vs the wrapped second mint is cosmetic); the `CANCELLED` sentinel
+comment (it claims "no error toast," which is accurate for both sentinels — the differing outcome shapes
+are a separate matter). **Flagged for separate investigation (not blocking, pre-existing, outside this
+commit's diff):** `orcid-callback.js` `destroy()` removes `pevo_orcid_return_to` while the fresh_auth
+flow writes `pevo_fresh_auth_return_to` — needs a look at the two-key design before deciding if it is a
+bug.
+
+When the comment fix lands, `git mv` this file back to `tasks/review/` for a quick re-review.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
