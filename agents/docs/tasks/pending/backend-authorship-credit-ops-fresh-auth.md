@@ -1,0 +1,75 @@
+# BACKEND-AUTHORSHIP-CREDIT-OPS-FRESH-AUTH — require per-op fresh-auth for claim/approve/revoke_authorship on custody broadcast
+
+**Owner:** backend
+**Created:** 2026-06-05 (from the `architect-reconcile-authorship-claim-vs-vouched-tracks` brainstorm; § 6.4 gap)
+**Priority:** P2 (security-contract gap: reputation-weighty credit ops lack the re-auth the consent ops already require)
+
+## Problem
+
+`ARCHITECTURE.md` § 6.4 requires a per-target fresh-auth proof for `author_accept` / `author_resign` on `POST /api/custody/broadcast` (implemented at `custody.ts`). The equally reputation-weighty, identity-binding **name-only-route credit ops** — `claim_authorship`, `approve_authorship`, `revoke_authorship` — are broadcastable through the same custody endpoint but currently have **no fresh-auth requirement**, so a JWT-only path can mint or revoke authorship credit. This violates § 6.5 invariant #1 (a stolen JWT must not be a one-step takeover vector on a critical action). § 6.4 now carries a row marking this **pending** (added 2026-06-05).
+
+## Goal
+
+Add per-target fresh-auth gating for `claim_authorship` / `approve_authorship` / `revoke_authorship` on custody broadcast, mirroring the `author_accept` / `author_resign` contract. The target binds `op_type` + `paper_author` + `paper_permlink` + `author_index`. Self-custody (Keychain) signers bypass the custody endpoint and the fresh-auth requirement, as today (the requirement is a custody-endpoint guard, not a chain-layer rule).
+
+## Acceptance
+
+- A light-account broadcast of `claim_authorship` / `approve_authorship` / `revoke_authorship` via `POST /api/custody/broadcast` requires and atomically consumes a per-target fresh-auth proof (password or ORCID path) before broadcast; a stolen JWT alone cannot mint these ops (§ 6.5 invariant #1).
+- The proof is target-bound: cross-paper, cross-action, or cross-`author_index` substitution is rejected (`target_mismatch` → 403 `FRESH_AUTH_REQUIRED`).
+- `custody_audit_log` records these ops with the consent-op columns (`auth_mechanism`, `fresh_auth_outcome`, `session_id`, `user_agent`), same as `author_accept` / `author_resign`; the `user_agent` PII-anonymize-on-delete behavior applies.
+- § 6.4's **Pending** marker on the name-only-route credit-ops row is removed once landed (coordinate with architect).
+- `npm run typecheck` + `npm run lint` clean.
+
+## Cross-references
+
+- `agents/docs/ARCHITECTURE.md` § 6.4 (the name-only-route credit-ops row), § 6.5 invariant #1, § 2 "Light-account signing of consent ops".
+- `agents/docs/hive-schemas.md` § 2.9–2.11.
+- `backend/src/routes/custody.ts` (`allowedActions`, fresh-auth target build, `findConsentOpsInBundle`), `backend/src/lib/fresh-auth.ts` (`CONSENT_OP_ACTIONS` / `FreshAuthTargetAction`), `backend/src/custody-audit.ts` (`logCustodyBroadcast`), `backend/src/routes/orcid.ts` (ORCID fresh-auth issuance).
+- **Related:** `backend-implement-consented-authorship-model`, `architect-reconcile-authorship-claim-vs-vouched-tracks`.
+
+## Implementation note (backend, 2026-06-06)
+
+Landed the per-target fresh-auth gate for `claim_authorship` / `approve_authorship` / `revoke_authorship` on `POST /api/custody/broadcast`, mirroring the `author_accept` / `author_resign` contract.
+
+- `backend/src/lib/fresh-auth.ts`: added `CREDIT_OP_ACTIONS` (kept disjoint from `CONSENT_OP_ACTIONS` — the lib-level wire-predicate test pins that the credit ops are NOT in `CONSENT_OP_ACTIONS`, because the two op families use different payload field names), widened `FreshAuthTargetAction` with the three credit actions, added an optional `author_index?: number` to `FreshAuthTarget` folded into `computeFreshAuthTargetHash` (length-prefixed; when absent the encoding is byte-identical to the prior triple form so existing consent-op / non-broadcast-critical proofs are unchanged), and added the `creditOpFreshAuthTarget(action, paperAuthor, paperPermlink, authorIndex)` builder shared by all three call sites.
+- `backend/src/routes/custody.ts`: generalized the bundle scan from consent-only (`findConsentOpsInBundle`) to consent+credit (`findGatedOpsInBundle`), returning the full `FreshAuthTarget` so the consume side computes the bound hash. The credit actions were already in the broadcast `allowedActions` allowlist (they could be broadcast JWT-only before this change); the scan now routes them through the fresh-auth gate. The `/fresh-auth` password issuance path and its body-shape validator now accept the credit actions (claim/approve require a non-negative-integer `author_index`; revoke carries none).
+- `backend/src/routes/orcid.ts`: widened the `mode='fresh_auth'` issuance path (and `StartBodySchema`) to accept the credit actions for state C (ORCID-only) / state B accounts.
+- `custody_audit_log` columns are populated unchanged: `logCustodyBroadcast` already writes `auth_mechanism` / `fresh_auth_outcome` / `session_id` / `user_agent` on every gated broadcast success, so credit ops inherit the consent-op audit shape with no `custody-audit.ts` change. The `user_agent` PII-anonymize-on-delete behavior is unchanged.
+- Tests: `backend/tests/routes/custody-credit-ops.test.ts` (route-level: issuance, broadcast happy path + audit columns, missing/replay/cross-account, and cross-paper / cross-action / cross-`author_index` `target_mismatch`) and additions to `backend/tests/lib/fresh-auth.test.ts` (`CREDIT_OP_ACTIONS` predicate, `author_index` hash binding incl. backward-compat, `creditOpFreshAuthTarget` consume round-trip). typecheck + lint clean.
+
+## [TODO Architect]
+
+1. Remove the **Pending** marker on the name-only-route credit-ops row in `agents/docs/ARCHITECTURE.md` § 6.4 (the gate is now implemented at `custody.ts`). Architect-owned doc; not edited here.
+
+2. `agents/docs/ARCHITECTURE.md` § 6.4 states the credit-ops target binds `op_type + paper_author + paper_permlink + author_index` for ALL THREE ops, but `agents/docs/hive-schemas.md` § 2.11 shows the `revoke_authorship` wire payload carries NO `author_index` (its pinning fields are `claimer` + `paper_author` + `paper_permlink` + `reason`). The implementation resolves this by binding `revoke_authorship` to `(action, paper_author, paper_permlink)` only (no `author_index`) and binding claim/approve to all four. Please reconcile the doc text: either narrow § 6.4's "+ author_index" to claim/approve only and note revoke binds paper+action, OR (if revoke should bind `claimer`) update § 2.11 / the broadcast contract to carry+bind that field and file a follow-up — the current code does not fold `claimer` into the revoke target.
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES (8 items)
+
+First-review `/ce-code-review` on commit `92f4b618` (10-persona fleet: correctness/security/adversarial on Opus; testing/maintainability/project-standards/api-contract/reliability/kieran-typescript on Sonnet; learnings researcher; ce-agent-native skipped per PEvO). **The security core is sound and NOT in question:** the gate closes the stolen-JWT-alone vector (§ 6.5 invariant #1) — minting any credit-op proof requires a password or ORCID round-trip; the proof is consumed atomically (Redis GETDEL + in-process lock) before broadcast and burned on failure; `computeFreshAuthTargetHash`'s length-prefixed encoding is collision-free and byte-identical to the prior triple form when `author_index` is absent (existing consent-op proofs unaffected); op-type aliasing is blocked by the `allowedActions` allowlist; all three credit actions route through the gate. Reliability found no defects. The items below are a target-binding completeness gap, a downgrade-path hardening, doc/test coverage, and two maintainability tightenings.
+
+**Architect-side companion work landed at hold time (do NOT redo):** `ARCHITECTURE.md` § 6.4, `api-contracts/custody.md`, and `api-contracts/orcid.md` were rewritten to specify the correct per-op target binding (claim: `+author_index`; approve: `+author_index +claimer`; revoke: `+claimer`, no `author_index`) and to document the credit-op gate. The § 6.4 "Pending" marker and the § 6.4-vs-§ 2.11 `author_index` mismatch (the two prior `[TODO Architect]` items above) are resolved there. The docs are now the SSoT for the binding the code must reach; item 1 below is the code catching up.
+
+### Items held (must fix before archive)
+
+1. **(P1, security — security + adversarial + correctness corroborated) Bind `claimer` into the credit-op fresh-auth target for `approve_authorship` and `revoke_authorship`.** The target binds `(action, paper_author, paper_permlink, author_index)` but never `claimer` — the field naming the subject co-author. A holder of a minted proof (a compromised SPA, the exact threat the gate exists to defeat) can redirect a revoke proof to strip a *different* legitimate co-author, or an approve proof to bind a different account, because the proof is not bound to the victim identity. The revoke signer gate does not help (the post author is a permitted signer to revoke *any* claimer). Extend `creditOpTarget` to read `payload.claimer` for approve/revoke; fold `claimer` into `FreshAuthTarget` / `creditOpFreshAuthTarget` / `computeFreshAuthTargetHash` as a length-prefixed segment present ONLY for approve/revoke (so claim and consent-op proofs stay byte-identical — preserve the backward-compat property the commit was careful about); accept + require `claimer` on both issuance paths (custody `/fresh-auth` and orcid `mode=fresh_auth`). Per-op binding: claim → `(action, paper_author, paper_permlink, author_index)`; approve → `+claimer`; revoke → `(action, paper_author, paper_permlink, claimer)` with no `author_index`. Add cross-`claimer` `target_mismatch` route tests for approve and revoke.
+
+2. **(P1/P2, correctness/security/adversarial — exploitability disputed, fix undisputed) A gated action with a malformed/missing target must be rejected, not silently downgraded to the session-kind path.** A credit op with a non-integer/missing `author_index` makes `creditOpTarget` return null, so `findGatedOpsInBundle` reports "no gated op" and the broadcast falls through to `consumeSessionFreshAuthToken` — a weaker session-kind proof with no per-target binding. Make `findGatedOpsInBundle` distinguish "gated action present but target malformed" (reject → 400) from "no gated action present" (session path). Validate `author_index` as a non-negative integer inside `creditOpFreshAuthTarget` (or in `computeFreshAuthTargetHash` when present) so the invariant is self-enforcing rather than relying on every call site. Remove the "chain rejection is the backstop" comment — it is false for app-level `custom_json` payload fields.
+
+3. **(P1, testing) Add route-level tests for the ORCID credit-op issuance path.** The new `mode=fresh_auth` credit-op branch in `orcid.ts` (state C/B) has zero route-level coverage — `custody-credit-ops.test.ts` exercises only the password path / calls `issueFreshAuthToken` directly. Cover `POST /api/orcid/start { mode:'fresh_auth' }` for each of claim/approve/revoke: happy path (target stored so the callback mints a bound proof), `author_index` required for claim/approve and absent for revoke, and (with item 1) the `claimer` field for approve/revoke.
+
+4. **(P2, kieran-typescript + maintainability + learnings) Derive `CREDIT_OP_ACTIONS` and the `CreditOpAction` union from one `as const` tuple** so a future 4th credit action cannot land in one without the other (today the `as CreditOpAction` cast hides the mismatch and a new action would route through ungated). Apply the same const-tuple derivation symmetrically to `CONSENT_OP_ACTIONS` (removes the cast in `consentOpTarget`).
+
+5. **(P2, maintainability) Extract one shared credit-op field validator** (`extractCreditOpAuthorIndex` plus `requireStringField` for `paper_author` / `paper_permlink`) used by all credit-op issuance sites. The "claim/approve need a non-negative-integer `author_index`; revoke omits it" rule is hand-written at three sites (`validateFreshAuthBodyShape`, the custody `/fresh-auth` handler, the orcid start handler), and the orcid validator omits the length-cap + trim that custody applies (uncapped values flow into the Redis state). One definition closes both the drift and the cap/trim asymmetry.
+
+6. **(P2, testing) Add a route-level test that a session-kind proof submitted against a credit-op broadcast is rejected 403 `kind_mismatch`** (consent ops have this; credit ops do not — it is also the regression net for item 2's downgrade class).
+
+7. **(P2, adversarial + api-contract) Echo `author_index` (and, with item 1, `claimer`) from `handleFreshAuth`** so the SPA can cache credit-op proofs per slot for the same paper; without it a slot-2 proof overwrites a slot-3 proof and the next broadcast 403s `target_mismatch`. Backend echo only — the matching frontend per-slot cache-key change is tracked as a separate UI task (see Deferred below).
+
+8. **(P3, maintainability) Rename the `consent_*` structured-log fields** (`consent_action` / `consent_root_author` / `consent_root_permlink`) to `gated_*`, matching the commit's own `gatedScan` / `gatedAction` naming — they now also carry credit-op values.
+
+### Deferred / dismissed (no action on this task — recorded so re-review does not re-raise)
+
+- **Filed as a separate UI task** (`ui-credit-op-proof-cache-slot-key`): the frontend per-slot proof-cache key for credit-op broadcasts (the SPA half of item 7). Latent until the SPA wires credit-op broadcasts with `fresh_auth_proof`.
+- **Filed as a separate backend task** (`backend-anchor-rot-sweep-fresh-auth`): the file-wide `fresh-auth.ts` Round-N/hold comment-anchor sweep (~24 anchors). This commit removed several anchors on lines it rewrote; the remaining ones are pre-existing and belong in a dedicated sweep, not this feature task.
+- **Confirmed correct (do not re-litigate):** the absent-`author_index` backward-compat hash encoding; atomic single-use consume + fail-closed-on-Redis-error; the `allowedActions` allowlist; `claim_authorship` correctly omitting `claimer` from its target (the claimer is the signer).
+- **Verified in-progress, not a regression:** the SPA does not yet pass `fresh_auth_proof` on credit-op broadcasts, so light accounts get 401 for credit ops until the SPA is wired — expected co-land state, not introduced by this commit.
