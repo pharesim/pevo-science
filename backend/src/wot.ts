@@ -412,43 +412,39 @@ export async function cascadeRevocation(
           const nested = await cascadeRevocation(vouchee, depth + 1, effectiveDeadline);
           completed.push(...nested);
         } catch (nestedErr) {
-          if (nestedErr instanceof PartialCascadeError) {
-            // Budget blown in the nested cascade. Fold nested progress into our
-            // aggregate and re-throw.
-            completed.push(...nestedErr.completed);
-            pending.push(...nestedErr.pending);
-            // Same-level vouchees after the current index were identified but
-            // never attempted once the nested cascade blew the budget. Fold
-            // them into pending, symmetric with the deadline-check branch's
-            // slice(i). Use slice(i + 1) (not slice(i)) because the vouchee at
-            // i was already broadcast above and is recorded in `completed`.
-            for (const r of result.rows.slice(i + 1)) {
-              pending.push(r.vouchee);
-            }
-            // Dedupe before surfacing: the nested fold (`nestedErr.pending`)
-            // and this same-level slice can both name a vouchee reachable via
-            // two voucher edges (diamond graph), and a broadcast-timeout earlier
-            // in the loop can re-add a row covered by the slice. Order-preserving
-            // Set dedup keeps each account once in the operator follow-up list.
-            throw new PartialCascadeError({
-              completed,
-              pending: [...new Set(pending)],
-              rootRevocation: depth === 0 ? revokedAccount : nestedErr.rootRevocation,
-            });
+          // A nested cascadeRevocation throws ONLY PartialCascadeError: its own
+          // outer catch converts every other failure (a HAF error in the nested
+          // discovery query, a missing admin key, etc.) into `return []` rather
+          // than a throw, so no non-budget error can surface to this catch. A
+          // swallowed nested failure drops that subtree's vouchees from this
+          // result; the recursive call logs the failed account, and an operator
+          // recovers it by re-running the cascade for that logged parent. The
+          // guard below is exhaustive at runtime and also keeps nestedErr typed
+          // for the fold.
+          if (!(nestedErr instanceof PartialCascadeError)) throw nestedErr;
+          // Budget blown in the nested cascade. The current vouchee's broadcast
+          // already landed (it is in `completed`); fold the nested progress into
+          // our aggregate and re-throw.
+          completed.push(...nestedErr.completed);
+          pending.push(...nestedErr.pending);
+          // Same-level vouchees after the current index were identified but
+          // never attempted once the nested cascade blew the budget. Fold
+          // them into pending, symmetric with the deadline-check branch's
+          // slice(i). Use slice(i + 1) (not slice(i)) because the vouchee at
+          // i was already broadcast above and is recorded in `completed`.
+          for (const r of result.rows.slice(i + 1)) {
+            pending.push(r.vouchee);
           }
-          // Non-budget nested failure (e.g. a HAF query error inside the
-          // recursive call). The current vouchee's broadcast already succeeded
-          // and stays in `completed` — do NOT add it to `pending` (that is the
-          // double-count this branch exists to prevent). The nested subtree's
-          // vouchees were never returned, so they cannot be credited here; the
-          // operator's error log carries the failed account for manual
-          // follow-up. Continue to the next same-level sibling: a nested failure
-          // for one vouchee does not invalidate its independent siblings.
-          logger.error(
-            { err: nestedErr, vouchee, rootRevocation: revokedAccount },
-            'Nested cascade revocation failed — current vouchee revoked, nested subtree skipped',
-          );
-          continue;
+          // Dedupe before surfacing: the nested fold (`nestedErr.pending`)
+          // and this same-level slice can both name a vouchee reachable via
+          // two voucher edges (diamond graph), and a broadcast-timeout earlier
+          // in the loop can re-add a row covered by the slice. Order-preserving
+          // Set dedup keeps each account once in the operator follow-up list.
+          throw new PartialCascadeError({
+            completed,
+            pending: [...new Set(pending)],
+            rootRevocation: depth === 0 ? revokedAccount : nestedErr.rootRevocation,
+          });
         }
       } catch (err) {
         if (err instanceof PartialCascadeError) {

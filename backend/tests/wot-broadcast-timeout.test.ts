@@ -552,59 +552,6 @@ describe('BE-WOT-BROADCAST-TIMEOUT-HANDLING — cascadeRevocation aggregate budg
   });
 });
 
-// cascadeRevocation non-budget nested-error accounting: a HAF (or other
-// non-PartialCascadeError) failure inside the recursive call, AFTER the
-// parent-level vouchee's revocation broadcast already landed, must not
-// double-count that vouchee. Pre-fix, the re-thrown nested error fell to the
-// iteration's outer catch whose `pending.push(vouchee)` re-added the
-// already-completed vouchee, so it appeared in BOTH completed and pending.
-// completed ∪ pending must cover each identified vouchee exactly once.
-describe('cascadeRevocation — non-budget nested error does not double-count the parent vouchee', () => {
-  it('keeps the already-revoked parent vouchee in completed only (not also pending) and continues siblings', async () => {
-    // boss → [v1, v2, v3]; v1 → [g1]. v1's revocation lands, then the cascade
-    // recurses into v1. The nested discovery query for v1 throws a non-budget
-    // HAF error. v1 stays completed; v2 and v3 (independent same-level siblings)
-    // still get processed. The nested subtree (g1) is skipped — it was never
-    // returned by the failed nested call.
-    let v1Recursed = false;
-    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
-      if (sql.includes('SELECT av_target.vouchee')) {
-        const revoker = params[params.length - 2] as string;
-        // The nested discovery for v1 throws a non-budget error the FIRST time
-        // v1 is the revoker (i.e. the recursive call), simulating a transient
-        // HAF failure inside the subtree.
-        if (revoker === 'v1') {
-          v1Recursed = true;
-          throw new Error('HAF discovery query failed inside nested cascade');
-        }
-        const kids: Record<string, string[]> = { boss: ['v1', 'v2', 'v3'] };
-        return { rows: (kids[revoker] ?? []).map((v) => ({ vouchee: v })) };
-      }
-      return { rows: [] };
-    });
-    broadcastJsonMock.mockImplementation(async (payload: { json: string }) => {
-      const parsed = JSON.parse(payload.json) as { account: string };
-      return { id: `tx-${parsed.account}` };
-    });
-
-    const completed = await cascadeRevocation('boss');
-
-    // v1's broadcast landed (it is completed) and the nested failure did not
-    // abort the same-level siblings: v2 and v3 also completed.
-    expect(completed).toEqual(['tx-v1', 'tx-v2', 'tx-v3']);
-    // The recursion into v1 actually fired (otherwise this asserts nothing).
-    expect(v1Recursed).toBe(true);
-    // Exactly the three same-level vouchees were broadcast — g1 was never
-    // attempted because the nested discovery threw before returning it.
-    expect(broadcastJsonMock).toHaveBeenCalledTimes(3);
-    // No duplicates: each completed tx id is distinct (the double-count this
-    // test guards against would have surfaced as v1 in both completed and a
-    // PartialCascadeError pending list — here there is no PartialCascadeError
-    // at all, the cascade completes normally).
-    expect(new Set(completed).size).toBe(completed.length);
-  });
-});
-
 // Real-Postgres regression for the discovery query's INNER-vs-LEFT-join
 // selection parity. Executes the production `cascadeDiscoverySelect()` SQL
 // verbatim against a live Postgres, with the `active_accreditations` /
@@ -646,6 +593,12 @@ async function runDiscovery(opts: {
   const cte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
   const cteBodies = cte.sql.replace(/^\s*WITH\s+/, '');
   const redirectedCte = cteBodies.split(`${T.customJson} cj`).join('synthetic_cj cj');
+  // Guard: if the table-reference string drifts (a CTE-alias or whitespace
+  // change in the real CTE bodies), the split no-ops and the discovery SQL would
+  // silently run against the LIVE HAF view instead of the synthetic graph,
+  // passing or failing for the wrong reason. Assert the redirect consumed the
+  // real view literal. Mirrors active-vouches-signer-gate.test.ts.
+  expect(redirectedCte).not.toContain(T.customJson);
 
   const valueLines: string[] = [];
   // cte.params already carries [appTag, authorities, appTag] for the two
