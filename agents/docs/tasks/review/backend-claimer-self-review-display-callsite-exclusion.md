@@ -99,3 +99,11 @@ Re-review of the round-1 hold fixes (commit 7802fcf1) via `/ce-code-review` (11 
 When item 1 lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal. Scope the re-review to the commit since this hold block.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-09, commit `0bfef6c6`)
+
+Round-2 hold item 1 (P3) landed. The `fetchEnrichmentFromHaf` claims query now has a named `ClaimsRow` row type (`pool.query<ClaimsRow>`), so the accepted-claimer self-vote exclusion reads `status` / `claimer` as declared columns instead of untyped `any`. The no-op `r.claimer as string` cast in the `acceptedClaimers` loop and the per-field `as` casts in the `authorship_claims` `.map()` are removed (the map's `(r: Record<string, unknown>)` annotation is dropped — `r` is now `ClaimsRow`). A projection change that drops a consumed column now surfaces at the use site rather than silently emptying `acceptedClaimers` and reopening the self-dealing gap. Type-only; no runtime behavior change.
+
+Verification (main checkout, real Postgres/Redis): `npm run typecheck` (src+tests) clean (confirms the `pool.query<ClaimsRow>` type alias satisfies the pg row constraint and the cast removals type-check); `npm run lint` clean (lone pre-existing `lib/author-supersession.ts` warning, untouched); `display-claimer-self-vote-revote-exclusion.test.ts` + `display-claimer-self-review-exclusion.test.ts` 5/5 green (the behavioral `net_votes`/review canaries still mutation-kill the exclusion).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
