@@ -163,3 +163,61 @@ bounds rows returned, not rows scanned, so the cost is payload/heap, not query t
 - `agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`
   Rule 2 (the `id` tie-breaker convention).
 - Paired UI task: `ui-notifications-drop-rewind-and-block-cap`.
+
+---
+
+## Architect re-review (2026-06-09) — HELD PENDING FIXES
+
+`/ce-code-review` fan-out (correctness + adversarial + security on Opus; performance,
+api-contract, reliability, testing, maintainability, project-standards,
+kieran-typescript on Sonnet; learnings-researcher) on commit `3591fb46`. Verification
+green: typecheck + lint clean, 21/21 tests pass. Implementation matches the settled
+decision and both governing solution docs; the op_id tie-breaker, cross-account
+isolation, SQL-injection surface, and cache-sharing were all probed and refuted as
+risks. Four items block archive:
+
+1. **capHit false-positive boundary-block drop (P2, correctness/Opus).** `capHit =
+   result.rows.length >= cap` with a plain `LIMIT cap` fires at *exactly* cap even when
+   no truncation occurred, dropping a genuinely-complete boundary block. Under 'desc'
+   (SPA) the dropped block is the oldest of the newest-cap set; a forward floor-slide
+   never re-includes it (it ages out), so a far-behind non-digest client permanently
+   loses that block from the bell feed — a silent skip, not the "graceful deferral" the
+   Residual section claims for the 'desc' case. Fix: fetch `cap + 1` (bind $3 = cap + 1)
+   and set `capHit = result.rows.length > cap`; the (cap+1)th row's existence is the
+   genuine truncation signal. Truncate events back to cap before the sort/boundary-drop.
+   Net: an exactly-cap fully-contained batch drops nothing; only a real >cap truncation
+   drops the partial boundary block. Update the "Residual (documented, accepted)" section
+   so its recovery wording is accurate for newest-first (the dropped oldest block is NOT
+   recovered by a forward floor-slide for the SPA; recovery applies only when the
+   in-window count later falls below the cap, or via the digest for enrolled users).
+
+2. **Test mock carve-out clause placement (P2, testing + project-standards) — unmet
+   acceptance criterion.** The MOCK_VERIFY_SIGNATURE acknowledgment sits under carve-out
+   clause (b) in the notifications-window-cursor.test.ts header; CLAUDE.md "Running Tests"
+   and this task's own Spec §3 require it under clause (a). Move the bypass acknowledgment
+   (cryptographic verification is bypassed + why the focus permits it) into clause (a);
+   clause (b) keeps only the positive constraint (auth-focused tests run real verify).
+
+3. **Digest direction='asc' not pinned (P2; five reviewers).** No test asserts the 4th arg
+   passed to fetchNotificationsFromHaf from digest.ts. A silent flip to 'desc' would drain
+   newest-first and skip in-between events for long-offline users with zero failing tests.
+   In digest-window-cursor.test.ts, destructure all four args of the captured call and
+   assert direction === 'asc'.
+
+4. **Single-block-exceeds-cap empty-batch deferral untested (P2).** The documented residual
+   (all cap rows from one block → boundary-drop empties the batch → events:[], latest_block
+   echoes since_block, has_more:false at the route) has no test. Add a mocked-pool case in
+   notifications-window-cursor.test.ts pinning it, encoding the behavior as corrected by
+   item 1.
+
+Triaged-and-dismissed (do NOT action): the maintainability/readability nits (boundary-end
+naming, capHit-empty-branch comment, post-fetch sort comment) — optional polish, dismissed.
+The adversarial "digest cascade re-armed" P1 — pre-existing and correctly deferred to
+backend-notifications-digest-window-cursor, NOT worsened here.
+
+Architect-side actions taken alongside this hold (not implementer work):
+api-contracts/notifications.md `limit` row wording corrected; the digest-window-cursor task
+moved blocked→pending now that this commit's shared-function change has landed.
+
+When items 1-4 land, `git mv` this file back to tasks/review/; re-review scopes to the
+commits since this hold.

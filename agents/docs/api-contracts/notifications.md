@@ -15,7 +15,7 @@ Fetch notification events for the authenticated user since a given Hive block nu
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `since_block` | integer | **required** | Return events after this Hive block number |
-| `limit` | integer | `50` | Max events to return (max 100) |
+| `limit` | integer | `50` | Target page size (max 100). A response may exceed this when one Hive block holds more events than the limit; that block is delivered atomically rather than split. See the `has_more` field. |
 
 **Response `data`:** `NotificationBatch`
 
