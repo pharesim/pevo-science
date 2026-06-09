@@ -1,6 +1,7 @@
 ---
 title: "Forward-cursor feeds must fetch newest-first; a client rewind can mask a fetch-cap skip; co-consumers of one query can need opposite fetch orders"
 date: 2026-06-09
+last_updated: 2026-06-09
 category: architecture-patterns
 module: backend/notifications
 problem_type: architecture_pattern
@@ -35,7 +36,16 @@ This is a DISTINCT axis from the domination doc: that one is about fetch *quanti
 
 ### 2. Before deleting a defensive client-side cursor hack, prove which edge it actually defends — trace EVERY truncation point.
 
-The SPA rewind (`re-poll at latest_block - 1` on `has_more`) was introduced to recover events that the *response `limit`* cut mid-block. But it was also, silently, the only thing preventing a skip at the *internal fetch-cap* edge: the cached batch's `ORDER BY block_num` had no deterministic tie-breaker, so the `LIMIT` could cut THROUGH a block at the batch's truncated tail, leaving `latest_block` partial. The rewind kept the cursor from advancing past that partial block. Removing the rewind without first guaranteeing the batch never exposes a cap-truncated block converts a lossless stall into a PERMANENT silent skip plus a multi-day stall. The lesson: a pagination hack often defends more than one boundary. Enumerate every truncation point (response limit AND internal fetch cap AND any non-deterministic ordering) and prove each is independently safe before simplifying. The safe shape here is to drop the partial boundary block inside the shared fetch (return only whole blocks) AND add a deterministic same-key tie-breaker, so the consumer never sees a cap-truncated block and the cursor can advance unconditionally.
+The SPA rewind (`re-poll at latest_block - 1` on `has_more`) was introduced to recover events that the *response `limit`* cut mid-block. But it was also, silently, the only thing preventing a skip at the *internal fetch-cap* edge: the cached batch's `ORDER BY block_num` had no deterministic tie-breaker, so the `LIMIT` could cut THROUGH a block at the batch's truncated tail, leaving `latest_block` partial. The rewind kept the cursor from advancing past that partial block. Removing the rewind without first guaranteeing the batch never exposes a cap-truncated block converts a lossless stall into a PERMANENT silent skip plus a multi-day stall. The lesson: a pagination hack often defends more than one boundary. Enumerate every truncation point (response limit AND internal fetch cap AND any non-deterministic ordering) and prove each is independently safe before simplifying. The safe shape here is to drop the partial boundary block inside the shared fetch (return only whole blocks) AND add a deterministic same-key tie-breaker, so the consumer never sees a cap-truncated block and the cursor can advance unconditionally — but "drop the partial boundary block" must be done precisely (see the refinement below), or it introduces a fresh silent skip.
+
+### 2a. Dropping the partial cap-boundary block correctly takes TWO tests; the naive form over-drops a COMPLETE block.
+
+"When the cap was hit, drop the rows of the truncated-end block" is the obvious implementation and it is wrong: it over-drops a COMPLETE block whenever the cap cut happens to land on a block edge, and under a forward cursor that falsely-dropped block is NEVER recovered (the floor only slides forward, aging it out) — reintroducing exactly the permanent silent skip the drop was meant to prevent. Two tests are both required:
+
+- **(a) Detect truncation with a `cap + 1` probe fetch and test `> cap`, NOT `>= cap` over a plain `LIMIT cap`.** Under `>=`, an exactly-cap *fully-contained* window false-fires the cap-hit and drops a complete block. Only the existence of the (cap+1)th probe row proves the window is genuinely larger than the cap.
+- **(b) On a genuine cap-hit, drop the truncated-end block ONLY when the cut fell INSIDE a block** — i.e. the probe row (the first dropped row) shares the same sort key (block) as the last kept row, making that boundary block partial. When the cut is block-edge-aligned (the probe sits in a *different* block than the last kept row), the truncated-end block is COMPLETE → keep it.
+
+`has_more` reflects the cap-hit in both sub-cases (the probe still proves more rows exist beyond the delivered set). Net invariant: *a >cap window drops the truncated-end block only when the cap cut fell inside a block; an exactly-cap window and an edge-aligned cut both drop nothing.* The "truncated end" is direction-relative — the OLDEST block for a `desc` (newest-first) fetch, the NEWEST for an `asc` (oldest-first) drain — so the same shared helper is correct for both co-consumers. The one residual the drop cannot save is a single block that alone holds more than `cap` events: dropping it whole empties the batch and that lone block is a permanent drop in either direction (accepted at single-instance scale; see the scale note under "When to Apply").
 
 ### 3. Two consumers of ONE shared query can need OPPOSITE fetch orders.
 
@@ -51,6 +61,7 @@ All three failure modes are silent and self-confirming: the route returns a well
 - Before removing or simplifying a client-side pagination compensation (rewind, skip, retry-at-offset): enumerate every server truncation boundary it might be silently covering.
 - When one fetch helper is consumed by surfaces with different completeness/recency needs: parametrize the fetch order, share only the cursor filter.
 - Whenever an `ORDER BY ... LIMIT` over a wide window can tie on the sort key: add a deterministic monotonic tie-breaker (in PEvO, the HAF op `id`, per [[hive-primitive-aware-design-rules-for-pevo-custom-json-ops]] Rule 2) so the cut is reproducible across cache recomputations.
+- Whenever a windowed fetch drops a partial cap-boundary block to deliver only whole blocks: detect truncation with a `cap + 1` probe (`> cap`, never `>= cap`), and drop the truncated-end block ONLY when the probe shares the last-kept block (a real mid-block cut). Dropping on an exactly-cap or block-edge-aligned cut converts the drop into a fresh permanent silent skip of a COMPLETE block under a forward cursor.
 - Single-instance scale note: a residual that requires an absurd per-block volume (here, more than `cap` recipient-relevant events for one account in one 3s block) is acceptable to document-and-defer rather than fix, because PEvO is single-instance and accredited-only; the only amplifier (a citation-array fan-out) is capped by a paper-existence join at the victim's real paper count. Graceful deferral (the row surfaces once the window floor slides) beats a contract-breaking composite cursor.
 
 ## Examples
@@ -77,9 +88,25 @@ ORDER BY block_num ASC LIMIT 1000 returns 990 older rows + an ARBITRARY 10 of bl
     advances past N -> lossless stall (annoying but no data loss).
   - WITHOUT the rewind, naive "advance to latest_block": cursor moves past N -> N's other 10
     rows (and everything beyond the cap) are skipped PERMANENTLY -> strictly worse.
-  - FIX: shared fetch drops the partial boundary block (return rows with block_num < max when the
-    cap was hit) AND adds `ORDER BY block_num <dir>, id <dir>` -> the consumer never sees a
-    cap-truncated block, so advancing to latest_block is always safe and the rewind is removable.
+  - FIX: shared fetch adds `ORDER BY block_num <dir>, id <dir>` (deterministic cut) AND drops the
+    partial boundary block — but ONLY a genuinely partial one. Fetch `cap + 1` and treat the window
+    as truncated only when row #(cap+1) exists (`> cap`, never `>= cap`); then drop the truncated-end
+    block only when that probe row shares the last-kept row's block (the cut fell INSIDE a block). An
+    exactly-cap window (no probe row) and an edge-aligned cut (probe in a different block) drop
+    nothing -> the consumer never sees a cap-truncated block, no COMPLETE block is ever over-dropped
+    (a falsely-dropped complete block is unrecoverable under a forward cursor), so advancing to
+    latest_block is always safe and the rewind is removable.
+```
+
+The exactly-cap and edge-aligned sub-cases the `cap + 1` probe distinguishes:
+
+```
+ORDER BY block_num <dir> LIMIT cap+1 ; capHit = (rows.length > cap)
+  - exactly cap rows returned (probe absent)         -> capHit=false -> drop nothing (complete window).
+  - cap+1 rows, probe block == last-kept block        -> cut fell INSIDE a block -> drop that whole
+                                                          (partial) truncated-end block.
+  - cap+1 rows, probe block != last-kept block         -> cut is block-edge-aligned -> truncated-end
+                                                          block is COMPLETE -> KEEP it (never over-drop).
 ```
 
 Opposite fetch orders, one shared filter:
