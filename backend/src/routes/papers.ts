@@ -44,6 +44,8 @@ import {
   activeAccreditationsCteBody,
   authorshipClaimsCteBody,
   authorsWithSupersessionSelect,
+  consentChainCteBody,
+  consentedAuthorsCteBody,
   retractedPapersCteBody,
   buildWith, buildRecursiveWith,
   validPevoPaperWhere,
@@ -3156,6 +3158,108 @@ function buildPaperDetail(
   };
 }
 
+// ─── Consented badge (paper detail) ──────────────────────────────
+
+/** TTL upper bound for the per-paper consented-set cache entry. The entry is
+ *  VOLATILE tier (no `stable` flag): `block-watcher.ts` clears volatile
+ *  entries on every detected new block (~3s), so the badge is at most one
+ *  block stale and a consent op landing at block N is reflected by block N+1.
+ *  The TTL only matters in environments without a block watcher (dev without
+ *  HAF). */
+const CONSENTED_SET_TTL_MS = 30_000;
+
+/** Fetch the consented-author set (Routes 1+2 of the consent model) for one
+ *  paper root. Composes the SAME CTE stack the reputation cycle consumes
+ *  (`consentChainCteBody` + `consentedAuthorsCteBody`), so the badge cannot
+ *  drift from cycle credit (single source of truth for credited-set
+ *  membership, per the `consent-ops.ts` module header).
+ *
+ *  Returns the accounts as an array, not a Set: the result round-trips
+ *  through the Redis cache tier as JSON, and a Set serializes to `{}`.
+ *  Returns null when no HAF pool is configured (the caller fails closed;
+ *  `getOrSet` skips caching null) and throws `HafQueryError` on query
+ *  failure (propagates uncached to the route's retriable-503 translation). */
+async function fetchConsentedAccountsForPaper(author: string, permlink: string): Promise<string[] | null> {
+  const pool = getPool();
+  if (!pool) return null;
+  const cte = buildRecursiveWith(
+    1,
+    activeAccreditationsCteBody,
+    (idx) => consentChainCteBody(idx, { paperAuthor: author, paperPermlink: permlink }),
+    (idx) => consentedAuthorsCteBody(idx),
+  );
+  try {
+    const result = await pool.query<{ account: string }>(
+      `${cte.sql}
+       SELECT account FROM consented_authors`,
+      cte.params,
+    );
+    return result.rows.map((r) => String(r.account));
+  } catch (err) {
+    throw new HafQueryError('fetchConsentedAccountsForPaper', { cause: err });
+  }
+}
+
+/** Annotate each paper-detail author entry with the `consented` flag, keyed
+ *  on the entry's normalized `hive` account. Hive-less entries (display-only
+ *  credits, unresolved-ORCID slots) are never consented through this surface.
+ *  Returns a response COPY: the cached detail object is shared across
+ *  requests (the in-memory cache tier stores the live reference) and must
+ *  not be mutated. Runs OUTSIDE the stable paper-detail cache entries so the
+ *  flag stays at-most-one-block stale while the heavyweight detail payload
+ *  keeps its 30-minute stable tier.
+ *
+ *  Short-circuits that skip the consent fetch entirely (bounding the
+ *  fail-closed 503 surface to genuinely multi-author papers):
+ *   - bridge papers: the bridge account is the implicitly-consented Route-1
+ *     root; imported hive-less credits are not consentable on this surface.
+ *   - single-author papers whose sole entry IS the root broadcaster:
+ *     Route-1 implicit consent (broadcasting the paper is the consent act).
+ *     A later self-resign is not reflected until the entry stops being the
+ *     sole-root case; the cycle (which resolves the full demotion stream)
+ *     remains authoritative for credit.
+ *
+ *  Multi-author papers resolve through the volatile-cached consented set.
+ *  Returns null when the set is unavailable (no HAF pool): the caller MUST
+ *  surface 503 — a HAF flap must never silently demote legitimate
+ *  co-authors to claimed-only. */
+async function annotateAuthorsWithConsent(
+  detail: Record<string, unknown>,
+  rootAuthor: string,
+  rootPermlink: string,
+): Promise<Record<string, unknown> | null> {
+  const authors = (Array.isArray(detail.authors) ? detail.authors : []) as PaperAuthor[];
+  if (authors.length === 0) return detail;
+  const meta = (detail.json_metadata && typeof detail.json_metadata === 'object'
+    ? detail.json_metadata
+    : {}) as Record<string, unknown>;
+  const normalizedRoot = normalizeHiveAccount(rootAuthor);
+  const withFlag = (flag: (a: PaperAuthor) => boolean): Record<string, unknown> => ({
+    ...detail,
+    authors: authors.map((a) => ({ ...a, consented: flag(a) })),
+  });
+
+  if (isPevoBridgePaper(meta, rootAuthor)) {
+    const bridge = normalizeHiveAccount(config.hiveBridgeAccount);
+    return withFlag((a) => bridge !== null && normalizeHiveAccount(a.hive) === bridge);
+  }
+  if (authors.length === 1 && normalizedRoot !== null && normalizeHiveAccount(authors[0]?.hive) === normalizedRoot) {
+    return withFlag(() => true);
+  }
+
+  const accounts = await hafCache.getOrSet(
+    `consented-authors:${rootAuthor}:${rootPermlink}`,
+    () => fetchConsentedAccountsForPaper(rootAuthor, rootPermlink),
+    CONSENTED_SET_TTL_MS,
+  );
+  if (!accounts) return null;
+  const consented = new Set(accounts);
+  return withFlag((a) => {
+    const hive = normalizeHiveAccount(a.hive);
+    return hive !== null && consented.has(hive);
+  });
+}
+
 router.get('/:author/:permlink', async (req: Request, res: Response) => {
   let author = req.params.author as string;
   let permlink = req.params.permlink as string;
@@ -3246,7 +3350,17 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
       if (walkerAbort.signal.aborted) {
         return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry', { retriable: true });
       }
-      if (cached) return sendOk(res, cached);
+      if (cached) {
+        // Consent annotation runs per request, outside the stable detail
+        // cache entry, so the badge is at most one block stale. Consent ops
+        // bind the chain root, so the post-canonical-rewrite identifiers are
+        // the correct keys on every branch (incl. ?version=N).
+        const annotated = await annotateAuthorsWithConsent(cached, author, permlink);
+        if (annotated === null) {
+          return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Paper detail temporarily unavailable. Please retry shortly.', { retriable: true });
+        }
+        return sendOk(res, annotated);
+      }
       return sendError(res, 404, 'NOT_FOUND', 'Version not found');
     }
 
@@ -3289,7 +3403,16 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
     if (walkerAbort.signal.aborted) {
       return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry', { retriable: true });
     }
-    if (cached) return sendOk(res, cached);
+    if (cached) {
+      // Same per-request consent annotation as the ?version=N branch above;
+      // covers the single-post, cumulative-chain, and metadata-restored
+      // detail shapes (they share this convergence point).
+      const annotated = await annotateAuthorsWithConsent(cached, author, permlink);
+      if (annotated === null) {
+        return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Paper detail temporarily unavailable. Please retry shortly.', { retriable: true });
+      }
+      return sendOk(res, annotated);
+    }
     sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   } catch (err) {
     if (err instanceof HafQueryError && isRetriableHafError(err)) {
@@ -3734,6 +3857,10 @@ router.post('/:author/:permlink/invalidate', verifyHiveSignature, invalidateLimi
     // prefix flush is the only correct shape. Recompute is cheap and
     // happens lazily on the next listing/profile/detail call per root.
     hafCache.invalidatePrefix('chain-authors:'),
+    // Consented-set entries are root-keyed like chain-authors, so the same
+    // broad prefix flush applies. They are volatile (dropped on every block
+    // tick anyway); this covers environments without a block watcher.
+    hafCache.invalidatePrefix('consented-authors:'),
   ]);
 
   sendOk(res, { message: 'Cache invalidated' });

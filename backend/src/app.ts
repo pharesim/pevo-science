@@ -39,6 +39,7 @@ import blogRouter from './routes/blog.js';
 import accountsRouter from './routes/accounts.js';
 import settingsRouter from './routes/settings.js';
 import claimsRouter from './routes/claims.js';
+import meRouter from './routes/me.js';
 import orcidRouter from './routes/orcid.js';
 import adminRouter from './routes/admin.js';
 
@@ -132,6 +133,7 @@ export function createApp() {
   app.use('/api/reviews', anonymousReviewRouter);
   app.use('/api/reviews', readLimiter, reviewsRouter);
   app.use('/api/profile', readLimiter, profileRouter);
+  app.use('/api/me', readLimiter, meRouter);
   app.use('/api/accreditations', readLimiter, accreditationsRouter);
   app.use('/api/accreditation', accreditationRouter);
   app.use('/api/ipfs', ipfsRouter);

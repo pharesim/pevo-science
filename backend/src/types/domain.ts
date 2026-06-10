@@ -40,6 +40,14 @@ export interface PaperAuthor {
    *  differ. Surfaces the discrepancy audit signal per ARCHITECTURE.md
    *  § 2 "Multi-Author Trust Model". */
   orcid_discrepancy?: boolean;
+  /** `true` IFF the entry's `hive` account is in the paper's consented-author
+   *  set (Routes 1+2 of the consent model: the root broadcaster, or an
+   *  anchored co-author whose latest valid consent op is an `author_accept`).
+   *  Hive-less entries are never consented through this flag. Populated by
+   *  the paper-detail annotation layer only (listing/profile surfaces do not
+   *  carry it); stays type-optional for the same partial-fixture reason as
+   *  the supersession keys above. */
+  consented?: boolean;
 }
 
 export interface Citation {
