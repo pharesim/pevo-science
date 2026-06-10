@@ -20,11 +20,14 @@ import { handleBroadcastError, makeLogBroadcastAttempt } from '../lib/broadcast-
 import {
   changeEmailFreshAuthTarget,
   computeFreshAuthTargetHash,
+  CONSENT_OP_ACCOUNT_MAX_LEN,
+  consentOpFreshAuthTarget,
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
   CREDIT_OP_ACCOUNT_MAX_LEN,
   creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
+  extractConsentOpFields,
   extractCreditOpFields,
   ipfsUploadFreshAuthTarget,
   isConsentOpAction,
@@ -55,7 +58,6 @@ const PASSWORD_MAX_LEN = 4096;
 const DERIVED_PUBKEY_MAX_LEN = 100;
 const SIGNED_PROOF_MAX_LEN = 200;
 const SIGNED_AT_MAX_LEN = 64;
-const ROOT_AUTHOR_MAX_LEN = 64;
 
 const router = Router();
 
@@ -164,8 +166,11 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     return next();
   }
   if (action === 'author_accept' || action === 'author_resign') {
-    // root_author / root_permlink are Hive identifier slugs; trim=true.
-    const rootAuthor = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
+    // root_author / root_permlink are Hive identifier slugs; trim=true. Caps
+    // link to the authoritative constants the shared `extractConsentOpFields`
+    // extractor uses, so this pre-limiter cannot silently drift from the
+    // validator it fronts.
+    const rootAuthor = requireStringField(body, 'root_author', CONSENT_OP_ACCOUNT_MAX_LEN, undefined, { trim: true });
     if (!rootAuthor.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootAuthor.error);
     const rootPermlink = requireStringField(body, 'root_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
     if (!rootPermlink.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootPermlink.error);
@@ -296,35 +301,21 @@ type TargetExtraction =
   | { ok: true; target: FreshAuthTarget }
   | { ok: false; field: string };
 
-/** Read a required non-empty-string field from a custom_json payload. Centralizes
- *  the `typeof === 'string' && length > 0` check the gated-op extractors share so
- *  a future field addition (or a relaxation of the check) lands at one site. */
-function readRequiredString(payload: object, field: string): { ok: true; value: string } | { ok: false } {
-  const raw = (payload as Record<string, unknown>)[field];
-  if (typeof raw !== 'string' || raw.length === 0) return { ok: false };
-  return { ok: true, value: raw };
-}
-
 /** Extract the per-op fresh-auth target from a single consent op payload
- *  (`author_accept` / `author_resign`). Returns `{ ok: false, field }` when the
- *  payload omits or malforms a required field so the caller rejects the
- *  broadcast with a 400 (closing the downgrade-to-session-proof path). `action`
- *  is typed `ConsentOpAction` — the caller narrows it via `isConsentOpAction`,
- *  so it is assignable to the target's `FreshAuthTargetAction` field directly,
- *  with no cast. */
+ *  (`author_accept` / `author_resign`). Field normalization (trim + length cap)
+ *  lives in the shared `extractConsentOpFields` (`lib/fresh-auth.ts`), which
+ *  both fresh-auth issuance paths read through as well — so the value hashed
+ *  here at consume is normalized IDENTICALLY to the value hashed at issuance
+ *  (no self-inflicted `target_mismatch` from a whitespace-padded field, and no
+ *  mechanism asymmetry where the password path trims but the consume side
+ *  hashes raw). Returns `{ ok: false, field }` when the payload omits or
+ *  malforms a required field so the caller rejects the broadcast with a 400
+ *  (closing the downgrade-to-session-proof path). `action` is typed
+ *  `ConsentOpAction` — the caller narrows it via `isConsentOpAction`. */
 function consentOpTarget(action: ConsentOpAction, payload: object): TargetExtraction {
-  const rootAuthor = readRequiredString(payload, 'root_author');
-  if (!rootAuthor.ok) return { ok: false, field: 'root_author' };
-  const rootPermlink = readRequiredString(payload, 'root_permlink');
-  if (!rootPermlink.ok) return { ok: false, field: 'root_permlink' };
-  return {
-    ok: true,
-    target: {
-      action,
-      root_author: rootAuthor.value,
-      root_permlink: rootPermlink.value,
-    },
-  };
+  const extraction = extractConsentOpFields(action, payload as Record<string, unknown>);
+  if (!extraction.ok) return { ok: false, field: extraction.field };
+  return { ok: true, target: consentOpFreshAuthTarget(extraction.fields) };
 }
 
 /** Extract the per-op fresh-auth target from a single name-only-route credit
@@ -997,16 +988,17 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
     // /api/orcid/start { mode: 'fresh_auth', action: 'ipfs_upload' }.
     target = ipfsUploadFreshAuthTarget(username);
   } else if (action === 'author_accept' || action === 'author_resign') {
-    // Identifier slugs — trim=true, matching validateFreshAuthBodyShape.
-    const rootAuthorResult = requireStringField(body, 'root_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
-    if (!rootAuthorResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootAuthorResult.error);
-    const rootPermlinkResult = requireStringField(body, 'root_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
-    if (!rootPermlinkResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', rootPermlinkResult.error);
-    target = {
-      action,
-      root_author: rootAuthorResult.value,
-      root_permlink: rootPermlinkResult.value,
-    };
+    // Anchored-route consent ops. Field normalization (trim + length cap)
+    // lives in the shared `extractConsentOpFields`, the same validator the
+    // ORCID issuance path and the broadcast consume side read through — so
+    // this issuance path normalizes the fields IDENTICALLY to consume before
+    // hashing (no self-inflicted `target_mismatch` on a whitespace-padded
+    // field), and an uncapped value never flows into the stored target.
+    const extraction = extractConsentOpFields(action, body);
+    if (!extraction.ok) {
+      return sendError(res, 400, 'VALIDATION_ERROR', `${extraction.field} is missing or invalid`);
+    }
+    target = consentOpFreshAuthTarget(extraction.fields);
   } else if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
     // Name-only-route credit ops. Field normalization (trim + length cap) and
     // the per-op required-field rules (author_index for claim/approve, claimer

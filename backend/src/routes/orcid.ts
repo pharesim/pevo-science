@@ -27,8 +27,10 @@ import { assertNever } from '../util/assertNever.js';
 import { seedAccreditationBonus } from '../reputation.js';
 import {
   changeEmailFreshAuthTarget,
+  consentOpFreshAuthTarget,
   creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
+  extractConsentOpFields,
   extractCreditOpFields,
   ipfsUploadFreshAuthTarget,
   issueFreshAuthToken,
@@ -369,11 +371,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   // `POST /api/custody/fresh-auth`.
   let freshAuthTarget: FreshAuthTarget | undefined;
   if (mode === 'fresh_auth') {
-    const {
-      action,
-      root_author: rootAuthor,
-      root_permlink: rootPermlink,
-    } = startParsed.data;
+    const { action } = startParsed.data;
     if (action === 'set_password' || action === 'change_email' || action === 'delete_account' || action === 'ipfs_upload') {
       // Non-broadcast actions bind the target to the authenticated
       // username. The invariant "`username` is set when `mode === 'fresh_auth'`"
@@ -414,17 +412,18 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         freshAuthTarget = changeEmailFreshAuthTarget(username);
       }
     } else if (action === 'author_accept' || action === 'author_resign') {
-      if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
+      // Anchored-route consent ops. Field normalization (trim + length cap)
+      // lives in the shared `extractConsentOpFields`, the same validator the
+      // password issuance path and the broadcast consume side read through.
+      // Routing this path through it closes the prior asymmetry where ORCID
+      // validated with bare typeof/length checks (no trim, no cap), letting
+      // uncapped values flow into the Redis state and hashing a value the
+      // consume side would normalize differently.
+      const extraction = extractConsentOpFields(action, startParsed.data as Record<string, unknown>);
+      if (!extraction.ok) {
+        return sendError(res, 400, 'VALIDATION_ERROR', `${extraction.field} is missing or invalid`);
       }
-      if (typeof rootPermlink !== 'string' || rootPermlink.length === 0) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
-      }
-      freshAuthTarget = {
-        action,
-        root_author: rootAuthor,
-        root_permlink: rootPermlink,
-      };
+      freshAuthTarget = consentOpFreshAuthTarget(extraction.fields);
     } else if (action === 'claim_authorship' || action === 'approve_authorship' || action === 'revoke_authorship') {
       // Name-only-route credit ops (ORCID-mechanism issuance side; serves
       // state C ORCID-only + state B accounts). Field normalization (trim +

@@ -584,6 +584,79 @@ export function extractCreditOpFields(
   throw new Error(`extractCreditOpFields: unhandled credit-op action ${String(_exhaustive)}`);
 }
 
+/** Length cap for the Hive-account-name field a consent op carries
+ *  (`root_author`). Same rationale and value as
+ *  {@link CREDIT_OP_ACCOUNT_MAX_LEN}: Hive account names are at most 16 chars;
+ *  64 is a conservative ceiling that absorbs the route body-parser limit
+ *  without materializing oversized attacker input into the stored target hash.
+ *  Kept as a separate constant because the two op families carry deliberately
+ *  distinct wire field names and validation surfaces. Shared across every
+ *  consent-op field read so issuance and consume cannot diverge on the cap. */
+export const CONSENT_OP_ACCOUNT_MAX_LEN = 64;
+
+/** Normalized wire fields of an anchored-route consent op (`author_accept` /
+ *  `author_resign`). Both members carry the same two fields, so unlike
+ *  {@link CreditOpTargetFields} no per-action discrimination is needed. */
+export type ConsentOpTargetFields = {
+  action: ConsentOpAction;
+  rootAuthor: string;
+  rootPermlink: string;
+};
+
+/** Target-binding helper for the anchored-route consent ops. The proof binds
+ *  to `(action, root_author, root_permlink)` — the original triple form, so
+ *  hashes for clean values are byte-identical to targets built inline before
+ *  this helper existed. Both issuance routes and the broadcast consume side
+ *  build the target through this single helper so the two sides cannot
+ *  diverge on the encoding (mirrors {@link creditOpFreshAuthTarget}). */
+export function consentOpFreshAuthTarget(fields: ConsentOpTargetFields): FreshAuthTarget {
+  return {
+    action: fields.action,
+    root_author: fields.rootAuthor,
+    root_permlink: fields.rootPermlink,
+  };
+}
+
+/** Discriminated result of normalizing a consent op's wire fields from a
+ *  source record. The `ok` arm carries the typed {@link ConsentOpTargetFields}
+ *  ready for `consentOpFreshAuthTarget`; the failure arm names the missing or
+ *  ill-typed field so the route can reject with a 400 that points at it. */
+export type ConsentOpFieldExtraction =
+  | { ok: true; fields: ConsentOpTargetFields }
+  | { ok: false; field: string };
+
+/** Normalize + validate the wire fields of an anchored-route consent op from a
+ *  source record (a request body, the ORCID `/start` Zod data, or a parsed
+ *  on-chain `custom_json` payload). This is the SINGLE source of truth for
+ *  consent-op field normalization: every site that hashes a consent-op target —
+ *  both fresh-auth issuance paths and the broadcast consume scan — reads its
+ *  fields through here, applying IDENTICAL trim + length-cap rules. Identical
+ *  normalization is load-bearing for the same reason as
+ *  {@link extractCreditOpFields}: a whitespace-padded `root_author` MUST reduce
+ *  to the same bytes at issuance and consume, or the proof self-inflicts a
+ *  `target_mismatch` 403 that differs by mechanism (the prior asymmetry: the
+ *  custody password path trimmed, the ORCID path and the consume scan did
+ *  not); and an uncapped value must never flow into the stored target.
+ *  `root_author` caps at {@link CONSENT_OP_ACCOUNT_MAX_LEN}, `root_permlink`
+ *  at {@link HIVE_PERMLINK_MAX_LEN}. */
+export function extractConsentOpFields(
+  action: ConsentOpAction,
+  source: Record<string, unknown>,
+): ConsentOpFieldExtraction {
+  const rootAuthor = requireStringField(source, 'root_author', CONSENT_OP_ACCOUNT_MAX_LEN, undefined, { trim: true });
+  if (!rootAuthor.ok) return { ok: false, field: 'root_author' };
+  const rootPermlink = requireStringField(source, 'root_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
+  if (!rootPermlink.ok) return { ok: false, field: 'root_permlink' };
+  return {
+    ok: true,
+    fields: {
+      action,
+      rootAuthor: rootAuthor.value,
+      rootPermlink: rootPermlink.value,
+    },
+  };
+}
+
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are
  *  short-lived and process-local fallback is acceptable when Redis is
  *  unavailable (matches the in-memory `orcidStates` fallback in

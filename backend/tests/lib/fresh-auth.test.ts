@@ -71,9 +71,11 @@ import {
   CREDIT_OP_ACTIONS,
   FRESH_AUTH_TTL_SECONDS,
   computeFreshAuthTargetHash,
+  consentOpFreshAuthTarget,
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
   creditOpFreshAuthTarget,
+  extractConsentOpFields,
   extractCreditOpFields,
   isConsentOpAction,
   isCreditOpAction,
@@ -404,6 +406,75 @@ describe('extractCreditOpFields — single-source field normalization', () => {
       author_index: 1.5,
     });
     expect(r).toEqual({ ok: false, field: 'author_index' });
+  });
+});
+
+describe('extractConsentOpFields — single-source field normalization', () => {
+  // Consent-op mirror of the credit-op extractor above: the one validator
+  // every consent-op hash site reads through (both fresh-auth issuance paths
+  // + the broadcast consume scan). Identical trim + cap at every site is what
+  // prevents a whitespace-padded field from hashing differently between
+  // issuance and consume depending on the mechanism.
+  it('extracts root_author + root_permlink for both consent actions', () => {
+    for (const action of ['author_accept', 'author_resign'] as const) {
+      const r = extractConsentOpFields(action, {
+        root_author: 'alice',
+        root_permlink: 'paper-1',
+      });
+      expect(r).toEqual({
+        ok: true,
+        fields: { action, rootAuthor: 'alice', rootPermlink: 'paper-1' },
+      });
+    }
+  });
+
+  it('trims surrounding whitespace so issuance and consume hash the same bytes', () => {
+    const padded = extractConsentOpFields('author_accept', {
+      root_author: '  alice  ',
+      root_permlink: '\tpaper-1\n',
+    });
+    expect(padded.ok).toBe(true);
+    // The trimmed extraction hashes identically to one built from clean input —
+    // the property that closes the padded-field self-inflicted target_mismatch.
+    const cleanTarget = consentOpFreshAuthTarget({
+      action: 'author_accept', rootAuthor: 'alice', rootPermlink: 'paper-1',
+    });
+    if (padded.ok) {
+      expect(computeFreshAuthTargetHash(consentOpFreshAuthTarget(padded.fields)))
+        .toBe(computeFreshAuthTargetHash(cleanTarget));
+    }
+  });
+
+  it('clean values hash identically to an inline-built target (pre-extractor proofs still consume)', () => {
+    // Backward-compat pin: routes used to build the consent-op target inline
+    // as an object literal. A well-formed (unpadded, in-cap) proof issued
+    // against that shape must keep consuming — i.e. the extractor must not
+    // change hash inputs for clean values.
+    const extracted = extractConsentOpFields('author_accept', {
+      root_author: 'alice',
+      root_permlink: 'paper-1',
+    });
+    expect(extracted.ok).toBe(true);
+    if (extracted.ok) {
+      expect(computeFreshAuthTargetHash(consentOpFreshAuthTarget(extracted.fields)))
+        .toBe(computeFreshAuthTargetHash({ action: 'author_accept', root_author: 'alice', root_permlink: 'paper-1' }));
+    }
+  });
+
+  it('rejects an over-cap root_author (64-char ceiling) with field=root_author', () => {
+    const r = extractConsentOpFields('author_accept', {
+      root_author: 'a'.repeat(65),
+      root_permlink: 'paper-1',
+    });
+    expect(r).toEqual({ ok: false, field: 'root_author' });
+  });
+
+  it('names the first missing/ill-typed field (root_permlink)', () => {
+    const r = extractConsentOpFields('author_resign', {
+      root_author: 'alice',
+      root_permlink: 42,
+    });
+    expect(r).toEqual({ ok: false, field: 'root_permlink' });
   });
 });
 
