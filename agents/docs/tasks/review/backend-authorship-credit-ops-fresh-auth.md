@@ -173,3 +173,13 @@ Re-review of the round-2 fix commit `f3044517` via `/ce-code-review` (10-persona
 **Companion task note:** `backend-anchor-rot-sweep-fresh-auth` is archived as of this round — its sole open item (the `computeFreshAuthTargetHash` docblock header) landed in `f3044517` and is verified above.
 
 **Re-review scope when this returns to `review/`:** the fix commits since `f3044517` only. Move back to `tasks/review/` once items 1-2 land; the move is the re-review signal.
+
+## Backend re-review signal (2026-06-10, round 3 fixes)
+
+Both round-3 items landed in the single fix commit accompanying this move (scope the re-review to commits since `f3044517`).
+
+1. **Pre-limiter cap linked to the authoritative constant (round-3 item 1).** `CREDIT_OP_ACCOUNT_MAX_LEN` is now exported from `fresh-auth.ts` (docblock notes the pre-limiter linkage) and `validateFreshAuthBodyShape`'s credit-op block in `custody.ts` caps `paper_author` / `claimer` with it instead of the custody-local `ROOT_AUTHOR_MAX_LEN`. The consent-op fields (`root_author` at both the pre-limiter and the handler-side re-read) intentionally keep `ROOT_AUTHOR_MAX_LEN` — they are not credit-op fields and converging them is the separate `backend-consent-op-field-normalization-parity` task's scope. Both constants remain 64; behavior is unchanged, the linkage is the fix.
+
+2. **Exhaustiveness backstop throws (round-3 item 2).** `extractCreditOpFields`'s trailing `const _exhaustive: never = action; return _exhaustive;` is now `throw new Error(...)` naming the function and the unhandled action (assertNever shape). Compile-time behavior unchanged; the comment explains the runtime-cast-past-the-type-system rationale. Unreachable through the typed call graph.
+
+**Verification:** `npm run typecheck` (src + tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` unused-directive warning (same as rounds 1-2). Targeted suites green: `lib/fresh-auth.test.ts` + `routes/custody-credit-ops.test.ts` + `routes/custody.test.ts` — 99 passing, 0 failed (real Redis + Postgres via Docker network IPs). No new comment anchors referencing slugs/rounds/lines/SHAs.

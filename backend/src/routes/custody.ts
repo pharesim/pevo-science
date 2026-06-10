@@ -22,6 +22,7 @@ import {
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
+  CREDIT_OP_ACCOUNT_MAX_LEN,
   creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
   extractCreditOpFields,
@@ -180,7 +181,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     // different co-author. The handler-side re-read enforces the same caps;
     // this pre-limiter shape check keeps malformed bodies off the argon2.verify
     // path.
-    const paperAuthor = requireStringField(body, 'paper_author', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
+    const paperAuthor = requireStringField(body, 'paper_author', CREDIT_OP_ACCOUNT_MAX_LEN, undefined, { trim: true });
     if (!paperAuthor.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperAuthor.error);
     const paperPermlink = requireStringField(body, 'paper_permlink', HIVE_PERMLINK_MAX_LEN, undefined, { trim: true });
     if (!paperPermlink.ok) return sendError(res, 400, 'VALIDATION_ERROR', paperPermlink.error);
@@ -191,7 +192,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
       }
     }
     if (action !== 'claim_authorship') {
-      const claimer = requireStringField(body, 'claimer', ROOT_AUTHOR_MAX_LEN, undefined, { trim: true });
+      const claimer = requireStringField(body, 'claimer', CREDIT_OP_ACCOUNT_MAX_LEN, undefined, { trim: true });
       if (!claimer.ok) return sendError(res, 400, 'VALIDATION_ERROR', claimer.error);
     }
     return next();

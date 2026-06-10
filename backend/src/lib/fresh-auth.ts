@@ -480,8 +480,9 @@ export function creditOpFreshAuthTarget(fields: CreditOpTargetFields): FreshAuth
  *  a conservative ceiling that absorbs the route body-parser limit without ever
  *  materializing oversized attacker input into the stored target hash. Shared
  *  across every credit-op field read so issuance and consume cannot diverge on
- *  the cap. */
-const CREDIT_OP_ACCOUNT_MAX_LEN = 64;
+ *  the cap. Exported so the custody pre-limiter's credit-op shape check caps
+ *  with the same authoritative constant as the extractor it fronts. */
+export const CREDIT_OP_ACCOUNT_MAX_LEN = 64;
 
 /** Discriminated result of normalizing a credit op's wire fields from a source
  *  record. The `ok` arm carries the typed {@link CreditOpTargetFields} ready
@@ -576,8 +577,11 @@ export function extractCreditOpFields(
   // Exhaustiveness backstop: every CreditOpAction member is handled above. A
   // new member added to CREDIT_OP_ACTION_TUPLE without a branch here is a
   // compile error (it is not assignable to `never`), not a silent wrong-hash.
+  // The throw covers callers that cast past the type system at runtime: the
+  // impossible branch fails crisply instead of returning the action string
+  // where an extraction record is expected.
   const _exhaustive: never = action;
-  return _exhaustive;
+  throw new Error(`extractCreditOpFields: unhandled credit-op action ${String(_exhaustive)}`);
 }
 
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are
