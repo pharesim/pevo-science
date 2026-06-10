@@ -52,3 +52,19 @@ Both orcid sites (`handleAccredit`, `handleLink`) migrated to `broadcastAdminCus
 Verification: orcid suite 102/102 green vs real Redis/Postgres (incl. all SEC-002-TOCTOU-LOCK specs in both accredit and link modes); typecheck + lint clean. Post-merge combined-tree verification with the concurrently-landed accred-state lint rule (which scans the migrated `orcid.ts`): lint + typecheck clean, 152/152 across orcid + tiebreaker + eslint suites.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-06-10) — HELD PENDING FIXES (1 item)
+
+`/ce-code-review` fan-out on commit `d29f9708` (correctness + security + adversarial on the session model; testing/maintainability/project-standards/reliability/kieran-typescript/learnings on Sonnet; ce-agent-native skipped per PEvO). **The migration is verified CORRECT with zero behavioral change** — correctness, security, project-standards, and reliability each returned zero findings. The validation parse occupies the exact statement position of the removed key construction (inside `withOrcidBindingLock`'s fn, outside the inner try), so the full key-state × lock-state matrix (malformed/unset/valid × acquired/unavailable/timeout) lands in byte-identical envelopes; `BroadcastTimeoutError` crosses the helper boundary with class identity intact (same-module import), so the instanceof discrimination and the lock-TTL-extend + skipRelease path are untouched; the pre-lock 500-guard ordering keeps `AdminKeyNotConfiguredError` unreachable as the in-code comment claims; envelope parity exact; deleting the validation parse is mutation-killed by the SEC-002 specs (spy never fires, broadcast resolves, the 504/not-called/lock assertions all fail). The de-rotted comment anchors are convention-clean with no new rot class introduced. Architect-verified orcid suite 102/102 green vs real Postgres/Redis.
+
+Dismissed at triage: the fabricated mock envelope divergence (cluster-wide dismissal — compensated by the real-helper envelope pin in `hive-broadcast-timeout.test.ts`); a `void` prefix on the discarded validation parse (`no-unused-expressions` is not enabled in `backend/eslint.config.mjs`, and `void` is this codebase's floating-promise idiom, not a sync-discard marker). Pre-existing round/slug anchors in unchanged `orcid.test.ts` lines are out of scope (known rot class, separate sweep territory).
+
+One item before archive (comment-only):
+
+1. **(P3) `orcid.test.ts` header carve-out inventory is stale.** The header's "Only the database pools and broadcast.json are mocked" claim no longer matches the factory, which now also mocks `broadcastAdminCustomJson` (routed through `broadcastJsonMock`). Extend the header's enumerated mock set so the stated set matches the factory contents, per the carve-out clause (a) documentation requirement. The inline factory comment already carries the rationale; only the header enumeration is stale.
+
+When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit only. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
