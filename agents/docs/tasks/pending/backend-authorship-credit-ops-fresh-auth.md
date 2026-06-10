@@ -148,3 +148,28 @@ All five round-2 held items + coverage hardening + the folded docblock landed in
 **Comment anchors:** no slug/round/item/line/SHA citations in the production or test code (the one "Item 6" citation introduced in the kind_mismatch test was caught and reworded to behavioral semantics before commit); pre-existing `§ N.M` doc-section cites left in place per the round-2 dismissal.
 
 **Verification (parent, against current main):** `npm run typecheck` (src + tests) clean; `npm run lint` clean (one pre-existing unrelated `author-supersession.ts` warning, same as the round-1 signal). Targeted suites green: `lib/fresh-auth.test.ts` + `routes/custody-credit-ops.test.ts` (86) and `routes/custody.test.ts` + `routes/orcid.test.ts` (115) — 201 passing, none skipped (Redis reachable, so the ORCID binding asserts ran for real).
+
+## Architect re-review (2026-06-10, round 3) — HELD PENDING FIXES (2 small items)
+
+Re-review of the round-2 fix commit `f3044517` via `/ce-code-review` (10-persona fleet from architect context: correctness/security/adversarial on Opus; testing/maintainability/project-standards/api-contract/reliability/kieran-typescript/learnings on Sonnet; agent-native skipped per PEvO). **All five round-2 held items + the coverage hardening + the folded docblock are VERIFIED LANDED:** the as-const tuple derivation is sound (Set and union derive from the same tuple object; zero unsound casts remain, grep-confirmed); the `never` backstop sits correctly in `extractCreditOpFields` where the branching lives (the implementer's flagged placement choice is ACCEPTED); all three hash sites read through the shared extractor with per-op bindings byte-identical to round 2 for well-formed payloads; the `kind_mismatch` test drives the real `issueSessionFreshAuthToken` → `consumeFreshAuthToken` path and is mutation-killing; the `consent_*` → `gated_*` rename is complete (independently grep-verified by four reviewers); the revoke-side malformed proof-not-consumed test is mutation-sound; the ORCID `/start` binding asserts genuinely skip on a no-Redis run (probe is failure-safe); the `computeFreshAuthTargetHash` docblock header is accurate. Security core re-verified NOT regressed; no new account-state branches; comment anchors on added lines clean; all 13 applicable `agents/docs/solutions/` learnings comply. Two small items before archive:
+
+1. **(P2, maintainability + kieran-typescript) Link the pre-limiter's credit-op cap to the authoritative constant.** `validateFreshAuthBodyShape`'s credit-op block (`custody.ts`) caps `paper_author`/`claimer` with the custody-local `ROOT_AUTHOR_MAX_LEN` while the authoritative `extractCreditOpFields` uses `CREDIT_OP_ACCOUNT_MAX_LEN` (`fresh-auth.ts`) — both 64 today, nothing ties them together. Drift is fail-closed (a 400 fires at a different layer; never a hash divergence), but the pre-limiter silently diverging from the extractor it fronts is the last remnant of the validator-drift class round-2 item 3 closed. Fix: import and use `CREDIT_OP_ACCOUNT_MAX_LEN` in the pre-limiter's credit-op account-field checks.
+
+2. **(P3, reliability) Make the exhaustiveness backstop throw.** `extractCreditOpFields` ends with `const _exhaustive: never = action; return _exhaustive;` — at runtime that returns the action STRING where a `CreditOpFieldExtraction` is expected, so a future caller that casts past the type system would get a garbled 400 naming `field: undefined`. Replace the `return` with a thrown `Error` (assertNever shape) so the impossible branch fails crisply. Compile-time behavior unchanged; unreachable through the current typed call graph.
+
+### Dismissed at triage (recorded so re-review does not re-raise)
+
+- **Padded credit-op payloads now pass the gate and broadcast raw bytes on-chain** (adversarial, corroborated as residual by correctness/security/api-contract): this is the designed consequence of round-2 item 3's identical-trim prescription. No cross-target redirect is constructible (valid Hive identifiers carry no whitespace) and a padded identifier is inert under exact-match indexing — fail-safe. Do NOT add a reject-on-untrimmed gate at consume; that would re-introduce the cross-mechanism asymmetry class item 3 eliminated.
+- **orcid `/start` credit-op 400 message wording** ("is missing or invalid" from the shared extractor vs the route's older "is required"): message strings are not contract surface; the SPA branches on `error.code`; the extractor's wording is the more accurate of the two.
+
+### Filed as a separate task (pre-existing, three reviewers corroborated)
+
+- `backend-consent-op-field-normalization-parity` (`tasks/pending/`): consent ops (`author_accept`/`author_resign`) retain the cross-mechanism trim/cap asymmetry this commit eliminated for credit ops (orcid `/start` consent branch bare-validates; consume hashes raw). Pre-existing; not this task's scope.
+
+### Still deferred to the clean-re-review archive (architect-owned, unchanged)
+
+- `ARCHITECTURE.md` § 6.4 stale "enforcement-pending" caveat removal; `api-contracts/custody.md` + `orcid.md` echo fields (`author_index`/`claimer`) and 400-surface documentation. The api-contract reviewer re-confirmed both stale since the round-1 commit; the architect lands them at archive.
+
+**Companion task note:** `backend-anchor-rot-sweep-fresh-auth` is archived as of this round — its sole open item (the `computeFreshAuthTargetHash` docblock header) landed in `f3044517` and is verified above.
+
+**Re-review scope when this returns to `review/`:** the fix commits since `f3044517` only. Move back to `tasks/review/` once items 1-2 land; the move is the re-review signal.
