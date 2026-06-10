@@ -1,0 +1,61 @@
+# BACKEND-DISPLAY-CLAIMS-CTE-UNSCOPED-COST — unscoped authorshipClaimsCteBody on hot listing/search/stats display paths; per-row LATERAL re-eval + no-catch cascade
+
+**Owner:** backend
+**Created:** 2026-06-09 (architect `/ce-code-review` follow-up from `backend-claimer-self-review-display-callsite-exclusion`; performance + adversarial lenses)
+**Priority:** P2 (latent perf/reliability risk on the live beta. "Claims are low-cardinality" holds today, so this is not a correctness break — but the hot listing path now depends on claim-set cost, and a planner-stats shift or a claim-spam flood could surface it.)
+
+## Problem
+
+`backend-claimer-self-review-display-callsite-exclusion` threaded `authorshipClaimsCteBody` into the display review/vote surfaces to exclude credited-claimer self-reviews/self-votes. On the multi-paper surfaces it is materialized UNSCOPED (full claim set), and on the listing path it is referenced inside a per-row LATERAL via `excludeClaimedSelfWhere`'s `NOT EXISTS`. Two concerns surfaced in review (performance, confidence 75; adversarial cascade, confidence 50):
+
+1. **Per-row LATERAL re-evaluation.** PG12+ inlines single-reference CTEs by default. If the planner inlines `authorship_claims` into the listing's `reviewAggLateral`, the full `claim_events -> claims_base -> approvals -> revocations -> authorship_claims` chain (including correlated EXISTS against `hafsql.comments`) re-runs once per paper row on the page. Each scan is `custom_id`-selective and fast today, but the inlining behavior is unverified.
+2. **No-catch cascade coupling.** The new accepted-claims query sits in a `Promise.all` with no per-query catch, so a claim-cardinality-induced statement_timeout (a flood of cheap pending `claim_authorship` ops bloats the pre-status-filter CTE materialization) would reject the whole listing, not just the exclusion. An accredited attacker can spam pending claims cheaply.
+
+## Goal
+
+Bound the claims-CTE cost on the hot display paths and decouple listing availability from claim cardinality, without weakening the exclusion semantics that the parent task established.
+
+### Suggested approach
+
+- Confirm with EXPLAIN ANALYZE whether PG fences `authorship_claims` above the listing LATERAL or inlines it per-row. If per-row: `AS MATERIALIZED` on the CTE, or restructure `excludeClaimedSelfWhere` as a LEFT JOIN anti-join evaluated once outside the LATERAL.
+- Scope the listing/search/stats claims materialization by the page's paper-key set (bounded by page size) instead of unscoped, OR confirm a single per-page scan is acceptable and pin it.
+- Decouple the accepted-claims query from listing availability: catch/degrade (serve un-excluded but available) rather than reject the whole `Promise.all`, OR document why a claims-query failure should fail the listing.
+- Single-review fetch (`reviews.ts`) should scope `authorshipClaimsCteBody` by `{ claimer: author }` (currently unscoped, and not cached per-review-URL at the hafCache layer).
+
+## Acceptance
+
+- EXPLAIN ANALYZE evidence recorded (inlined-per-row vs fenced-once) for the listing path.
+- The hot listing/search/stats display query cost is bounded by page size, not total claim history (or a documented rationale + pin if a single per-page scan is kept).
+- A claims-query timeout no longer fails the entire listing (degrade, or documented rationale for fail-closed).
+- `reviews.ts` single-review fetch scopes the claims CTE by claimer.
+- Exclusion semantics unchanged (the behavioral canary from the parent task stays green).
+- `npm run typecheck` + `npm run lint` clean; comment anchors on stable symbols.
+
+## Cross-references
+
+- `backend/src/routes/papers.ts` (`fetchPapersFromHaf` listing `reviewAggLateral`; `batchResolveVotes` claims query; `fetchEnrichmentFromHaf`), `search.ts`, `stats.ts`, `reviews.ts`.
+- `backend/src/hafsql.ts` (`authorshipClaimsCteBody`, `excludeClaimedSelfWhere`, `buildWith`).
+- Parent: `backend-claimer-self-review-display-callsite-exclusion`.
+- Related: the BitmapAnd-toxic-floor + statement_timeout-budget learnings under `agents/docs/solutions/`.
+
+## Implementation note (backend, 2026-06-10)
+
+### EXPLAIN ANALYZE evidence (acceptance item 1)
+
+Gathered against the live HAF node (PostgreSQL 17.5) with the production listing SQL reconstructed verbatim from the same exported builders + literal fragments (default page: limit 20, no filters, sort created desc). **Verdict: HYBRID.** The expensive chain underneath `authorship_claims` stays FENCED once per query regardless (the recursive `claims_chain_tree` / `claims_canonical_chain` members cannot be inlined, and `claim_events` / `claims_base` / `approvals` are multi-referenced, so PG12+'s single-reference inlining rule never applies to them) — the per-row LATERAL can never re-run the chain WALK. But the outer single-referenced `authorship_claims` CTE body WAS inlined into the rev_agg LATERAL as a Nested Loop Anti Join whose inner re-scans the materialized `claims_base` tuplestore with the full status-CASE (correlated subplans over claim_events/approvals) per LATERAL rescan, and the planner costs that inlined scan at ~8.37M per rescan (47M total estimate). On the current corpus the claims nodes showed `loops=0` (`never executed`: no qualifying accredited review rows yet; execution 3.4 ms total), so today's measured claims share is 0 — the exposure is structural, materializing as soon as reviews land. An `AS MATERIALIZED` variant produced a fenced `CTE authorship_claims` node with the LATERAL inner reduced to a trivial CTE Scan (estimated 27 vs 8.37M) and no measurable downside (4.0 vs 3.4 ms, noise). Full plans were captured during the session at `/tmp/listing-plan.txt` / `/tmp/listing-plan-materialized.txt` (ephemeral; the verdict above is the durable record).
+
+### Changes landed
+
+1. **`authorship_claims AS MATERIALIZED` in `authorshipClaimsCteBody`** (`hafsql.ts`) — resolves claim status exactly once per query for every consumer; the per-row LATERAL `NOT EXISTS` now reads the fenced result instead of re-evaluating the status CASE per rescan. No-op for the reputation cycle (multi-referenced there, so it was already materialized). Docblock records the rationale; a `hafsql.test.ts` canary pins the keyword (dropping it silently re-opens the per-rescan class); the two reputation cycle-shape pins (`reputation-approve/revoke-signer-gate-cycle-sql-shape.test.ts`) updated to the new opener.
+2. **New `{ papers: Array<{author, permlink}> }` scope variant** on `AuthorshipClaimsScope` (composite IN over bound pairs filtering `claim_events`, so `claims_base` and the embedded chain walk are bounded by the page's paper-key set; empty list emits a well-formed `FALSE` backstop). `batchResolveVotes` (`papers.ts`) now scopes its accepted-claims query by the page's papers instead of unscoped — a flood of cheap pending claims on unrelated papers can no longer inflate the vote batch's materialization. Param-arithmetic + empty-backstop unit tests added; a real-HAF scope-equivalence test (papers variant matches unscoped + JS post-filter, with a decoy pair) mirrors the existing claimer/claimers/paper equivalence pins.
+3. **Decoupled the vote batch from claims availability** (`papers.ts` `batchResolveVotes`): the accepted-claims query now catches, warns, and degrades to an empty claimed-set (votes served un-excluded) instead of rejecting the whole `Promise.all`. Rationale documented at the site: votes are the surface's core data; the claimed-self-vote exclusion is a display-parity refinement whose authoritative enforcement is the reputation cycle, so a claims statement_timeout degrades display parity for one volatile-cache window instead of 503ing the listing. Native-vote / revote failures still fail the batch (without them there is no vote data at all).
+4. **`reviews.ts` single-review fetch scopes the claims CTE by `{ claimer: author }`** — the only claimer `excludeClaimedSelfWhere` ever correlates on that surface — bounding the embedded walk by one account's claim activity per fetch.
+5. **In-statement listing/search/stats claims stay unscoped by design, with the rationale pinned at each site**: the page/result membership is computed inside the same statement (WHERE + ORDER BY + LIMIT), so no paper-key scope can be bound up front; the accepted cost is ONE claims resolution per query (bounded by claim cardinality via the claims_base-seeded walk), now guaranteed by the MATERIALIZED fence. This is the task's "confirm a single per-page scan is acceptable and pin it" arm, chosen on the EXPLAIN evidence above.
+
+### Exclusion semantics unchanged
+
+The parent task's behavioral canaries stay green: `display-claimer-self-review-exclusion` + `display-claimer-self-vote-revote-exclusion` (5/5).
+
+### Verification
+
+`npm run typecheck` (src + tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning. Suites green: `hafsql.test.ts` (40 + 4 data-dependent skips), both reputation cycle-shape pins, both display-exclusion canaries, `me-pending-authorships-real-postgres`, `consented-authors-cte-real-postgres`, `claims`, `listing-count-window-function-shape` (98 passed across 9 files), plus real-HAF `papers.test.ts` / `stats.test.ts` / `profile.test.ts` / all three search suites (94 passed) — the fenced builder executes on live HAF. `reviews.test.ts`: 6 passed + the 2 documented pre-existing SQL-accreditation-gate failures, re-confirmed pre-existing this session by stashing the reviews.ts edit and re-running (same 2 fail on the unmodified file).

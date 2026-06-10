@@ -160,8 +160,11 @@ async function searchReviewsFromHaf(
   limit: number,
   offset: number,
 ): Promise<{ rows: SearchRow[]; total: number } | null> {
-  // authorship_claims (unscoped — claim ops are low-cardinality) lets the review
-  // search drop a credited claimer's self-review via excludeClaimedSelfWhere.
+  // authorship_claims lets the review search drop a credited claimer's
+  // self-review via excludeClaimedSelfWhere. Unscoped by design: the result
+  // set is computed by this same statement, so no key scope can be bound up
+  // front. Accepted cost is one claims resolution per query, pinned by the
+  // builder's MATERIALIZED fence (see authorshipClaimsCteBody's docblock).
   const cte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
   let paramIdx = cte.nextIdx;
 

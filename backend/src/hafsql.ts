@@ -654,11 +654,21 @@ export function validPevoPaperWhere(opts: {
  * shared builder to its target users (`= ANY($N::text[])` over the same COALESCE
  * claimer expression as `claims_base`); it is the dimension that lets the cycle
  * consume this builder instead of hand-rolling an inline accepted_claims copy.
+ *
+ * `papers` is the multi-paper variant for display batch surfaces (the listing's
+ * vote batch resolves one page of papers per call): a composite IN over bound
+ * (paper_author, paper_permlink) pairs, bounding `claims_base` — and therefore
+ * the embedded chain walk — by the page's paper-key set instead of total claim
+ * history, so a flood of cheap pending claims on unrelated papers cannot
+ * inflate the batch's materialization cost. Callers MUST NOT pass an empty
+ * array (an empty page short-circuits before querying); the builder emits a
+ * well-formed `FALSE` filter as the backstop.
  */
 export type AuthorshipClaimsScope =
   | { claimer: string }
   | { claimers: string[] }
-  | { paperAuthor: string; paperPermlink: string };
+  | { paperAuthor: string; paperPermlink: string }
+  | { papers: Array<{ author: string; permlink: string }> };
 
 /**
  * CTE body for authorship claims — Route 3 of the consent model (name-only
@@ -707,12 +717,25 @@ export type AuthorshipClaimsScope =
  * filter below MUST use the identical expression as `claims_base.claimer` so
  * scoped queries see the same row set the unscoped CASE correlates against.
  *
+ * `authorship_claims` is declared `AS MATERIALIZED`: several consumers
+ * reference it from a correlated `NOT EXISTS` inside a per-row LATERAL
+ * (`excludeClaimedSelfWhere` on the listing review-agg and sibling display
+ * surfaces). Without the fence, PG 12+ inlines the single-referenced CTE
+ * into that anti-join, so the status-resolution CASE (with its correlated
+ * subplans over claim_events/approvals) is re-planned and re-costed per
+ * LATERAL rescan — the recursive chain walk underneath stays fenced either
+ * way (recursive + multi-referenced CTEs are never inlined), but the
+ * inlined status layer re-scans the materialized tuplestores per surviving
+ * review row and blows up the planner's cost estimate for the whole
+ * statement. The fence resolves claim status exactly once per query and
+ * makes every downstream reference a trivial CTE scan.
+ *
  * @param startIdx - first available $N parameter index
  * @param scope - optional narrowing filter pushed into `claim_events`. Without
  *   a scope the CTE materializes every claim event in PEvO history. Scoping by
- *   claimer, claimers, or paper key avoids that full scan. The scope key must
- *   match the dimension the caller filters on downstream, since the CASE's EXISTS
- *   subqueries correlate on the same key.
+ *   claimer, claimers, paper key, or paper-key list avoids that full scan. The
+ *   scope key must match the dimension the caller filters on downstream, since
+ *   the CASE's EXISTS subqueries correlate on the same key.
  */
 export function authorshipClaimsCteBody(
   startIdx = 1,
@@ -741,6 +764,26 @@ export function authorshipClaimsCteBody(
       AND COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0) = ANY($${scopeIdx}::text[])`;
       scopeParams.push(scope.claimers);
       scopeIdx += 1;
+    } else if ('papers' in scope) {
+      // Multi-paper scope (display batch surfaces). Composite IN over bound
+      // pairs; claim/approve/revoke ops all carry paper_author/paper_permlink
+      // on the wire, so the one filter keeps every event kind the CASE
+      // correlates on for the in-scope papers. An empty list cannot produce a
+      // valid IN-list; callers short-circuit empty pages, and the FALSE arm
+      // keeps the fragment well-formed as a backstop.
+      if (scope.papers.length === 0) {
+        scopeFilter = `
+      AND FALSE`;
+      } else {
+        const pairs: string[] = [];
+        for (const paper of scope.papers) {
+          pairs.push(`($${scopeIdx}, $${scopeIdx + 1})`);
+          scopeParams.push(paper.author, paper.permlink);
+          scopeIdx += 2;
+        }
+        scopeFilter = `
+      AND (cj.json::jsonb ->> 'paper_author', cj.json::jsonb ->> 'paper_permlink') IN (${pairs.join(', ')})`;
+      }
     } else {
       scopeFilter = `
       AND cj.json::jsonb ->> 'paper_author' = $${scopeIdx}
@@ -794,7 +837,7 @@ ${chain.sql},
     FROM claim_events
     WHERE action = 'revoke_authorship'
   ),
-  authorship_claims AS (
+  authorship_claims AS MATERIALIZED (
     SELECT
       cb.claimer,
       cb.paper_author,

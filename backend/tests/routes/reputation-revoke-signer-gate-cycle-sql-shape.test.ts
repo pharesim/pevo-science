@@ -85,7 +85,7 @@ describe('reputation cycle — composes the shared claims builder (revoke signer
     // inline copy. Pin the composition (the builder's authorship_claims CTE) and
     // the thin status='accepted' projection so a regression that re-inlines the
     // resolution fails red.
-    expect(cycleSql).toContain('authorship_claims AS (');
+    expect(cycleSql).toContain('authorship_claims AS MATERIALIZED (');
     expect(cycleSql).toMatch(
       /accepted_claims AS \(\s*SELECT DISTINCT claimer, paper_author, paper_permlink\s+FROM authorship_claims\s+WHERE status = 'accepted'/,
     );

@@ -73,7 +73,7 @@ describe('reputation cycle — composes the shared claims builder (approve signe
     expect(cycleSql, 'computeReputationBatch must emit the accepted_claims cycle query').toBeDefined();
 
     // Merge landed: the cycle composes authorshipClaimsCteBody, not an inline copy.
-    expect(cycleSql).toContain('authorship_claims AS (');
+    expect(cycleSql).toContain('authorship_claims AS MATERIALIZED (');
     expect(cycleSql).toMatch(
       /accepted_claims AS \(\s*SELECT DISTINCT claimer, paper_author, paper_permlink\s+FROM authorship_claims\s+WHERE status = 'accepted'/,
     );

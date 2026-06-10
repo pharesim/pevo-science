@@ -25,6 +25,10 @@ export async function fetchStatsFromHaf() {
   if (!pool) return null;
 
   try {
+    // authorship_claims unscoped by design: the stats aggregate spans the
+    // whole corpus, so no key scope applies. Accepted cost is one claims
+    // resolution per query, pinned by the builder's MATERIALIZED fence (see
+    // authorshipClaimsCteBody's docblock).
     const cte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%

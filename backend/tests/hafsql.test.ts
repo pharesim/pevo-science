@@ -167,7 +167,51 @@ describe('authorshipClaimsCteBody scope', () => {
       );
 
       const scoped = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor, paperPermlink }));
-      const scopedRows = (await queryWithRetry(pool, 
+      const scopedRows = (await queryWithRetry(pool,
+        `${scoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
+        scoped.params,
+      )).rows;
+
+      expect(scopedRows).toEqual(expected);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'papers (pair list) scope matches unscoped + post-filter',
+    { timeout: 60_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      const unscoped = buildRecursiveWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
+      const unscopedRows = (await queryWithRetry(pool,
+        `${unscoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
+        unscoped.params,
+      )).rows;
+
+      const sample = unscopedRows[0];
+      if (!sample) {
+        ctx.skip('HAF has no authorship_claim events — invariant not exercisable');
+        return;
+      }
+
+      // The display vote batch scopes the shared builder to the page's paper
+      // keys via the {papers} pair-list variant; it must return the same rows
+      // as the unscoped CTE post-filtered to those papers in JS. A decoy pair
+      // that matches no claims rides along to prove pair isolation.
+      const papers = [
+        { author: sample.paper_author as string, permlink: sample.paper_permlink as string },
+        { author: 'no-such-author', permlink: 'no-such-permlink' },
+      ];
+      const expected = unscopedRows.filter(
+        (r) => papers.some((p) => r.paper_author === p.author && r.paper_permlink === p.permlink),
+      );
+
+      const scoped = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { papers }));
+      const scopedRows = (await queryWithRetry(pool,
         `${scoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         scoped.params,
       )).rows;
@@ -233,6 +277,36 @@ describe('authorshipClaimsCteBody param arithmetic', () => {
     expect(frag.params[3]).toBe('p-1');
     expect(frag.params[4]).toBe(config.hiveAdminAccount);
     expect(frag.nextIdx).toBe(12);
+  });
+
+  it('papers (pair list) scope inserts 2 params per paper between bridge and admin', () => {
+    const frag = authorshipClaimsCteBody(5, { papers: [{ author: 'bob', permlink: 'p-1' }, { author: 'eve', permlink: 'p-2' }] });
+    // Composite IN over bound pairs: ($7,$8),($9,$10); admin follows at $11.
+    expect(frag.params).toHaveLength(9);
+    expect(frag.params[1]).toBe(config.hiveBridgeAccount);
+    expect(frag.params.slice(2, 6)).toEqual(['bob', 'p-1', 'eve', 'p-2']);
+    expect(frag.params[6]).toBe(config.hiveAdminAccount);
+    expect(frag.nextIdx).toBe(14);
+    expect(frag.sql).toContain("IN (($7, $8), ($9, $10))");
+  });
+
+  it('papers empty-list backstop emits a FALSE filter and binds no scope params', () => {
+    const frag = authorshipClaimsCteBody(5, { papers: [] });
+    expect(frag.params).toHaveLength(5);
+    expect(frag.params[2]).toBe(config.hiveAdminAccount);
+    expect(frag.nextIdx).toBe(10);
+    expect(frag.sql).toContain('AND FALSE');
+  });
+
+  it('authorship_claims carries the MATERIALIZED fence', () => {
+    // Display surfaces reference authorship_claims from a correlated NOT
+    // EXISTS inside a per-row LATERAL (excludeClaimedSelfWhere). Without the
+    // fence PG inlines the single-referenced CTE there and re-evaluates the
+    // status-resolution CASE per LATERAL rescan; the fence resolves claim
+    // status once per query. Dropping it silently re-opens the per-rescan
+    // re-evaluation class, so the keyword is pinned here.
+    const frag = authorshipClaimsCteBody(1);
+    expect(frag.sql).toContain('authorship_claims AS MATERIALIZED (');
   });
 });
 

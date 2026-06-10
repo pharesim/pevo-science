@@ -45,10 +45,13 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
   if (!pool) return null;
 
   try {
-    // authorship_claims (unscoped — claim ops are low-cardinality) lets the
-    // single-review fetch 404 a credited claimer's self-review via
-    // excludeClaimedSelfWhere, matching the listing/profile/search/stats surfaces.
-    const accredCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
+    // authorship_claims scoped to the review author (the only claimer the
+    // excludeClaimedSelfWhere gate below ever correlates on this surface), so
+    // the embedded chain walk is bounded by that one account's claim activity
+    // instead of materializing the full claim history per single-review
+    // fetch. Lets the fetch 404 a credited claimer's self-review, matching
+    // the listing/profile/search/stats surfaces.
+    const accredCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: author }));
     // PEvO object-identity gate: a review is only a PEvO review if its author
     // is in `active_accreditations` OR equals `config.hiveAnonAccount`
     // (anon-proxy authoring on behalf of an accredited reviewer). Without

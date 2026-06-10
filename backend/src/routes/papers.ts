@@ -102,9 +102,11 @@ export async function batchResolveVotes(
   // Accepted authorship-claim claimers must not have their self-vote on the paper
   // they are credited for counted toward the displayed net_votes — mirrors the
   // reputation cycle's accepted_claims gate and excludeClaimedSelfWhere on the
-  // review surfaces. Claims are low-cardinality, so fetch them unscoped and skip
-  // the matching (paper, voter) pairs in the merge loop below.
-  const claimsCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
+  // review surfaces. Scoped to the page's paper-key set so the claims
+  // materialization (and its embedded chain walk) is bounded by page size,
+  // not total claim history — a flood of cheap pending claims on unrelated
+  // papers cannot inflate this batch's cost.
+  const claimsCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { papers }));
 
   const [nativeResult, revoteResult, claimsResult] = await Promise.all([
     // Batch native votes: latest per voter per paper, accredited only, excluding self-votes
@@ -142,15 +144,24 @@ export async function batchResolveVotes(
       [config.appTag],
     ),
     // Accepted authorship claims (credited claimers per chain post).
+    // Decoupled from listing availability: votes are this surface's core
+    // data, but the claimed-self-vote exclusion is a display-parity refinement
+    // whose authoritative enforcement lives in the reputation cycle. A
+    // transient failure here (e.g. a statement_timeout) degrades to
+    // un-excluded displayed votes for one volatile-cache window instead of
+    // rejecting the whole listing.
     pool.query(
       `${claimsCte.sql} SELECT claimer, paper_author, paper_permlink FROM authorship_claims WHERE status = 'accepted'`,
       claimsCte.params,
-    ),
+    ).catch((err: unknown) => {
+      logger.warn({ err, paper_count: papers.length }, 'batchResolveVotes accepted-claims query failed; serving votes without the claimed-self-vote exclusion');
+      return null;
+    }),
   ]);
 
   // (paper_author/paper_permlink::claimer) keys whose self-vote is dropped.
   const claimedSet = new Set<string>();
-  for (const r of claimsResult.rows) {
+  for (const r of claimsResult?.rows ?? []) {
     claimedSet.add(`${r.paper_author}/${r.paper_permlink}::${r.claimer}`);
   }
 
@@ -1016,11 +1027,17 @@ async function fetchPapersFromHaf(
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const source = req.query.source as string | undefined; // 'native', 'bridge', or omit for both
 
-  // Build CTEs with parameterized appTag. authorship_claims (unscoped — claim
-  // ops are low-cardinality) lets the review-agg LATERAL drop a credited
-  // claimer's self-review from the displayed avg_rating / review_count, mirroring
-  // the reputation cycle's accepted_claims gate. active_accreditations is listed
-  // first because authorshipClaimsCteBody's ORCID auto-accept arm references it.
+  // Build CTEs with parameterized appTag. authorship_claims lets the
+  // review-agg LATERAL drop a credited claimer's self-review from the
+  // displayed avg_rating / review_count, mirroring the reputation cycle's
+  // accepted_claims gate. It stays UNSCOPED here by design: the page's paper
+  // set is computed by this same statement (WHERE + ORDER BY + LIMIT), so no
+  // paper-key scope can be bound up front. The accepted cost is ONE claims
+  // resolution per listing query — the builder's MATERIALIZED fence pins
+  // that (the chain walk underneath is seeded by claims_base, so the cost is
+  // bounded by claim cardinality, and the per-row LATERAL reads the fenced
+  // result instead of re-resolving status per rescan). active_accreditations
+  // is listed first because consumers reference it earlier in the WITH chain.
   const cte = buildRecursiveWith(1, activeAccreditationsCteBody, retractedPapersCteBody, (idx) => authorshipClaimsCteBody(idx));
   let paramIdx = cte.nextIdx;
   const cteParams: unknown[] = [...cte.params];
