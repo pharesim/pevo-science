@@ -394,20 +394,25 @@ describe('reputation computeReputationBatch — bridge-author pin', () => {
     expect(repSql, `expected an active_authors CTE in captured SQL`).toBeDefined();
     if (!repSql) return;
     // The reputation query composes validPevoPaperWhere() at multiple sites
-    // sharing the same alias inside ONE captured SQL string:
-    //   - alias 'c', source 'all': active_authors paper side (line ~374)
-    //   - alias 'c', source 'all': accepted_claims user_papers UNION (line ~494)
-    //   - alias 'p', source 'all': active_authors review-join parent side (~380)
-    //   - alias 'c', source 'native': user_papers native side (~483, no bridge-arm)
+    // sharing the same alias inside ONE captured SQL string. Alias 'c',
+    // source 'all' (bridge arm emitted) appears at SEVEN sites:
+    //   - active_authors paper arm
+    //   - user_papers claims (accepted_claims) arm
+    //   - user_papers consented (consented_authors) arm
+    //   - the claims builder's internal claims_chain_tree backbone
+    //     (base term + recursive term)
+    //   - the Route-2 chain_tree backbone (base term + recursive term)
+    // Alias 'p' ('all') appears once (active_authors review-join parent
+    // side); the user_papers native arm is source 'native' (no bridge arm).
     //
-    // Round-3 hold item 1: a per-site mutation that drops the bridge-author
-    // pin from the accepted_claims arm (line ~494) leaves the active_authors
-    // arm intact. Without `expectedCount`, the old `match()` returned only the
-    // first occurrence and the test passed. Pinning expectedCount forces the
-    // canary to fail red on any per-site mutation. Concrete attack defended:
-    // an attacker with an accepted co-author claim on a spoofed `bridge_paper`
-    // gaining reputation credit via the user_papers UNION.
-    assertBridgeAuthorPin(repSql.sql, repSql.params, { alias: 'c', expectedCount: 2 });
+    // A per-site mutation that drops the bridge-author pin from any one arm
+    // leaves the others intact; without `expectedCount` a single-match
+    // `match()` would pass anyway. Pinning expectedCount forces the canary
+    // red on any per-site mutation. Concrete attack defended: an attacker
+    // with an accepted co-author claim (or a consented accept, or a spoofed
+    // continuation chain) on a spoofed `bridge_paper` gaining reputation
+    // credit via the user_papers UNION or the chain walk's admission gate.
+    assertBridgeAuthorPin(repSql.sql, repSql.params, { alias: 'c', expectedCount: 7 });
     assertBridgeAuthorPin(repSql.sql, repSql.params, { alias: 'p', expectedCount: 1 });
   });
 });
