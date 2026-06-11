@@ -109,3 +109,14 @@ Scoped re-review of commit `20ad9762` via `/ce-code-review` (correctness on the 
 When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit only. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-12, single fix commit on main) — round-3 item landed
+
+1. **NOW()-detection claim split in BOTH roundtrip files** (`verifyHiveSignature-reissuedat-roundtrip.test.ts` and `verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts`), at the file header AND the decisive-assertion comment in each: a seconds-rounding regression in the `recover.ts` reissue embed turns the decisive round-trip assertion red DETERMINISTICALLY; a NOW()-switch (writing `sessions_invalidated_at` via SQL `NOW()` instead of the captured Node `Date`) is caught only PROBABILISTICALLY (a just-captured Node `Date` and the statement's `NOW()` usually share a millisecond bucket on local hardware, and suite retries compound survival), so neither suite is to be relied on as the NOW()-regression detector. No test redesign, per the prescription. Every co-listed "NOW()/seconds-rounding" claim form is gone from both files (grep-verified).
+2. **Advisory rename folded in across both roundtrip files** (sanctioned since the item touches both anyway): `preReset` renamed `controlWithoutReissue` at both occurrences per file (declaration + Bearer-header use), naming the control pair on one axis. The hardening sibling never carried the name and is untouched.
+
+Verification: memo-key roundtrip (1) + ORCID roundtrip (1) green against real app Postgres; hardening sibling (6) green; `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
