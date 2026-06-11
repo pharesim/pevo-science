@@ -3996,3 +3996,52 @@ describe('POST /api/orcid/start { mode: fresh_auth } — credit ops', () => {
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
 });
+
+// POST /api/orcid/start { mode: 'fresh_auth' } — anchored-route consent ops.
+// The ORCID-mechanism issuance side of the consent-op fresh-auth gate. The
+// consent branch reads `root_author` / `root_permlink` through the shared
+// `extractConsentOpFields` (trim + length cap — the same validator the
+// password issuance path and the broadcast consume scan read through), so a
+// missing or over-cap field rejects 400 VALIDATION_ERROR on this mechanism
+// exactly as on the others. These are the failure-arm cases; the happy path
+// (200 + target stash) is exercised wherever `startAuthed('fresh_auth', ...)`
+// runs, since that helper supplies a well-formed consent target. Pure
+// validation cases: no DB query, no Redis stash read, no OAuth round-trip,
+// so they run unconditionally. verifyHiveSignature / the auth middleware
+// chain run real (the JWT auth gate is exercised, not mocked).
+describe('POST /api/orcid/start { mode: fresh_auth } — consent ops', () => {
+  async function startConsentOp(body: Record<string, unknown>) {
+    return request(app)
+      .post('/api/orcid/start')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ mode: 'fresh_auth', ...body });
+  }
+
+  it('author_accept missing root_author → 400 VALIDATION_ERROR', async () => {
+    const res = await startConsentOp({
+      action: 'author_accept',
+      root_permlink: 'paper-1',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('author_accept missing root_permlink → 400 VALIDATION_ERROR', async () => {
+    const res = await startConsentOp({
+      action: 'author_accept',
+      root_author: 'bob',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('author_resign over-cap root_author (65 chars, one past the cap) → 400 VALIDATION_ERROR', async () => {
+    const res = await startConsentOp({
+      action: 'author_resign',
+      root_author: 'a'.repeat(65),
+      root_permlink: 'paper-1',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+});

@@ -65,3 +65,19 @@ First review of commit `a6a278f1` via `/ce-code-review` (8-reviewer fleet from a
 - The `[TODO Architect]` doc note above is DONE — landed with the parent task's archive commit (custody.md + orcid.md consent-op trim/cap/400 notes).
 
 When item 1 lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit only. Do not edit this hold block — the commit diff is the evidence.
+
+---
+
+## Backend re-review signal (2026-06-11, the commit performing this mv)
+
+Hold item 1 landed, test-only: new `POST /api/orcid/start { mode: fresh_auth } — consent ops` describe block in `orcid.test.ts`, placed after the credit-ops sibling it mirrors, covering the consent branch's extraction-failure arm:
+
+- `author_accept` missing `root_author` → 400 `VALIDATION_ERROR`
+- `author_accept` missing `root_permlink` → 400 `VALIDATION_ERROR`
+- `author_resign` over-cap `root_author` (65 chars, the independent literal one past the cap, mirroring the unit-test pin) → 400 `VALIDATION_ERROR`
+
+All three are pure validation cases (no DB query, no Redis stash read, no OAuth round-trip) and run unconditionally — no `skipIf` gate, per the hold item. The over-cap and one missing-field case ride `author_resign`/`author_accept` respectively so both action values pass through the route branch. The block comment documents that the happy path is exercised wherever `startAuthed('fresh_auth', ...)` runs and that `verifyHiveSignature` / the auth middleware chain run real.
+
+Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` unused-directive warning; orcid suite 105/105 green vs real Postgres/Redis (102 pre-existing + the 3 new specs).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
