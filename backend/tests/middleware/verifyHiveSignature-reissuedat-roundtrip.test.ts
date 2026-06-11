@@ -12,15 +12,21 @@
  * recover -> Postgres -> middleware path and would stay green if a future change
  * switched `recover.ts` from a Node `Date` to SQL `NOW()` (microsecond precision)
  * or rounded `reissuedAt` to seconds, silently logging out every user
- * immediately after a password reset. This is the CLAUDE.md test-carve-out
+ * immediately after a password reset. Of those two regressions, this file
+ * catches seconds-rounding deterministically; a NOW()-switch (writing
+ * `sessions_invalidated_at` via SQL `NOW()` instead of the captured Node `Date`)
+ * it catches only probabilistically — a just-captured Node `Date` and the
+ * statement's `NOW()` usually land in the same millisecond bucket (~96% of local
+ * runs, and suite retries compound survival) — so this suite must NOT be relied
+ * on as the NOW()-regression detector. This is the CLAUDE.md test-carve-out
  * clause-(c) real-path companion that pins the actual round-trip.
  *
  * Flow: drive a genuine reissue via POST /api/auth/recover/verify (memo-key
  * phase 2 — purely DB-seeded, no ORCID/Redis nonce), read the stored
  * `sessions_invalidated_at`, decode the reissued JWT, assert
  * `reissuedAt === stored.getTime()`, then present the reissued token to the REAL
- * `verifyHiveSignature` (it SURVIVES, 200) alongside a pre-reset token minted in
- * the same integer second with no `reissuedAt` (it is REVOKED, 401).
+ * `verifyHiveSignature` (it SURVIVES, 200) alongside a control token minted in
+ * the same integer second without `reissuedAt` (it is REVOKED, 401).
  *
  * Test-mock carve-out (per root CLAUDE.md "Running Tests"):
  *   (a) Justification: the app Postgres pool (`getAppPool`) is NOT mocked — the
@@ -146,8 +152,13 @@ describe('verifyHiveSignature — reissuedAt <-> sessions_invalidated_at round-t
       const storedMs = (stored as Date).getTime();
 
       // DECISIVE round-trip assertion: the reissued token's reissuedAt is the
-      // exact millisecond read back from Postgres. A NOW()/seconds-rounding
-      // regression in recover.ts turns this red.
+      // exact millisecond read back from Postgres. A seconds-rounding regression
+      // in recover.ts turns this red deterministically. A NOW()-switch (writing
+      // sessions_invalidated_at via SQL NOW() instead of the captured Node Date)
+      // is caught only probabilistically: a just-captured Node Date and the
+      // statement's NOW() usually land in the same millisecond bucket (~96% of
+      // local runs, and suite retries compound survival), so do NOT rely on this
+      // suite as the NOW()-regression detector.
       const decoded = jwt.decode(reissued) as { reissuedAt?: number; iat?: number } | null;
       expect(decoded?.reissuedAt).toBe(storedMs);
 
@@ -183,13 +194,13 @@ describe('verifyHiveSignature — reissuedAt <-> sessions_invalidated_at round-t
       expect(controlSurvive.status).toBe(200);
       expect(controlSurvive.body.hiveUsername).toBe(username);
 
-      const preReset = jwt.sign(
+      const controlWithoutReissue = jwt.sign(
         { sub: username, custody: 'light', iat: invalidatedSec, exp: 9_999_999_999 },
         config.sessionSecret,
       );
       const revoked = await request(app)
         .post('/probe')
-        .set('Authorization', `Bearer ${preReset}`)
+        .set('Authorization', `Bearer ${controlWithoutReissue}`)
         .send({});
       expect(revoked.status).toBe(401);
       expect(revoked.body.error.code).toBe('SESSION_INVALIDATED');

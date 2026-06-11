@@ -7,9 +7,15 @@
  * Why this exists: `recover.ts` has TWO reissue writers that share the identical
  * Node-`Date` + `reissuedAt` idiom — the memo-key `/recover/verify` path (pinned
  * by the sibling `verifyHiveSignature-reissuedat-roundtrip.test.ts`) and the
- * ORCID-recovery `/recover` branch (pinned HERE). A `NOW()`/seconds-rounding
- * regression isolated to the ORCID branch would NOT turn the memo-key test red,
- * so this drives the ORCID branch's round-trip directly.
+ * ORCID-recovery `/recover` branch (pinned HERE). A regression isolated to the
+ * ORCID branch would NOT turn the memo-key test red, so this drives the ORCID
+ * branch's round-trip directly. A seconds-rounding regression in that branch
+ * turns the decisive assertion red deterministically; a NOW()-switch (writing
+ * `sessions_invalidated_at` via SQL `NOW()` instead of the captured Node `Date`)
+ * is caught only probabilistically — a just-captured Node `Date` and the
+ * statement's `NOW()` usually land in the same millisecond bucket (~96% of local
+ * runs, and suite retries compound survival) — so this suite must NOT be relied
+ * on as the NOW()-regression detector.
  *
  * Test-mock carve-out (per root CLAUDE.md "Running Tests"):
  *   (a) Justification: the app Postgres pool (`getAppPool`) is NOT mocked — the DB
@@ -127,8 +133,13 @@ describe('verifyHiveSignature — reissuedAt <-> sessions_invalidated_at round-t
       const storedMs = (stored as Date).getTime();
 
       // DECISIVE round-trip assertion: the reissued token's reissuedAt is the exact
-      // millisecond read back from Postgres. A NOW()/seconds-rounding regression in
-      // the recover.ts ORCID branch turns this red.
+      // millisecond read back from Postgres. A seconds-rounding regression in the
+      // recover.ts ORCID branch turns this red deterministically. A NOW()-switch
+      // (writing sessions_invalidated_at via SQL NOW() instead of the captured Node
+      // Date) is caught only probabilistically: a just-captured Node Date and the
+      // statement's NOW() usually land in the same millisecond bucket (~96% of
+      // local runs, and suite retries compound survival), so do NOT rely on this
+      // suite as the NOW()-regression detector.
       const decoded = jwt.decode(reissued) as { reissuedAt?: number; iat?: number } | null;
       expect(decoded?.reissuedAt).toBe(storedMs);
 
@@ -159,13 +170,13 @@ describe('verifyHiveSignature — reissuedAt <-> sessions_invalidated_at round-t
       expect(controlSurvive.status).toBe(200);
       expect(controlSurvive.body.hiveUsername).toBe(username);
 
-      const preReset = jwt.sign(
+      const controlWithoutReissue = jwt.sign(
         { sub: username, custody: 'light', iat: invalidatedSec, exp: 9_999_999_999 },
         config.sessionSecret,
       );
       const revoked = await request(app)
         .post('/probe')
-        .set('Authorization', `Bearer ${preReset}`)
+        .set('Authorization', `Bearer ${controlWithoutReissue}`)
         .send({});
       expect(revoked.status).toBe(401);
       expect(revoked.body.error.code).toBe('SESSION_INVALIDATED');
