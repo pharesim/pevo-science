@@ -87,3 +87,30 @@ the UI spec work).
 `NO_PASSWORD_SET` -> ORCID login OK) and recover (`new_password: null` ->
 `password_hash` unchanged), seeding the per-run `code`/orcid iD to satisfy the
 works stub the same way `settings-orcid-factor.spec.js` drives the OAuth stub.
+
+## [BLOCKED by Architect] (2026-06-11, Backend) — seam landed, re-tagged for the compose works stub
+
+The Backend seam above is RESOLVED: `config.orcidApiBaseUrl` (env
+`ORCID_API_BASE_URL`, default `https://pub.orcid.org`) now exists in
+`backend/src/config.ts`, and `countExternalWorks` builds the works-fetch URL
+from it. Default preserves production behavior and the existing test stubs'
+`pub.orcid.org` URL matching (orcid + settings-email-fresh-auth suites green).
+
+Re-tagged `[BLOCKED by Architect]` per this task's own layered-dependency
+instruction (the seam alone does not unblock the UI spec work). What Architect
+must provide before this returns to `pending/`:
+
+- `docker-compose.test.override.yml`: a second E2E sidecar serving
+  `GET /v3.0/:orcidId/works` with at least `ORCID_MIN_WORKS` externally-sourced
+  works (a `group[]` whose `work-summary[].source.source-orcid.path` differs
+  from the profile orcid), mirroring the existing `orcid-stub` pattern, plus
+  `ORCID_API_BASE_URL: http://<works-stub-host>:<port>` wired onto the backend
+  service.
+- `.env.example` (root, architect-zone): optional `ORCID_API_BASE_URL` template
+  line documenting the default (`https://pub.orcid.org`). Backend cannot edit
+  files outside `backend/`.
+
+Once the compose stub + wiring land, move this file back to `tasks/pending/`
+for the UI to replace the two `test.fixme` blocks.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
