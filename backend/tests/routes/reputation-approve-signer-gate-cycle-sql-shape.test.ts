@@ -5,15 +5,16 @@
  * instead of an inline `accepted_claims` copy, so the approve gate lives in the
  * builder and is emitted into the cycle SQL in TWO places: the "accepted" EXISTS
  * arm AND the revoke-override `MAX(approve_block)` subquery — both as
- * `ap.approver IN (ap.paper_author, $23)`, where the builder's allocation at
- * startIdx 21 binds `config.hiveBridgeAccount` at $23.
+ * `ap.approver IN (ap.paper_author, $22)`, where the builder's allocation at
+ * startIdx 21 binds `config.hiveBridgeAccount` at $22.
  *
  * This canary pins, on the cycle's emitted SQL and independently of whether HAF
  * is configured: (1) the cycle composes the builder (authorship_claims + thin
  * accepted_claims projection — re-inlining the resolution fails red), and (2) the
- * approve signer gate survives the merge at BOTH arms with the builder's `$23`
- * bridge param. The builder's param POSITION ($23 = bridge) is pinned
- * structurally by `hafsql.test.ts`; the read-surface approve behavior is pinned
+ * approve signer gate survives the merge at BOTH arms with the builder's
+ * bridge param. The builder's param arithmetic (the startIdx-relative offset
+ * that binds bridge) is pinned structurally by `hafsql.test.ts`'s
+ * `authorshipClaimsCteBody` param-arithmetic suite; the read-surface approve behavior is pinned
  * against real Postgres by `authorship-approve-signer-gate.test.ts`.
  *
  * **Carve-out (per root CLAUDE.md "Running Tests"):** mocks `getPool()` with a
@@ -62,7 +63,7 @@ afterEach(() => {
 });
 
 describe('reputation cycle — composes the shared claims builder (approve signer gate survives)', () => {
-  it('emits authorship_claims + thin accepted_claims, with the approve gate at $23 in BOTH arms', async () => {
+  it('emits authorship_claims + thin accepted_claims, with the approve gate at $22 in BOTH arms', async () => {
     getPoolMock.mockReturnValue(capturingPool as unknown as ReturnType<typeof getPoolMock>);
 
     // cycleEndBlock provided (skips the head-block lookup); prevScores provided
