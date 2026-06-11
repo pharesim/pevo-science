@@ -92,3 +92,15 @@ Dismissed at triage: the "Confirmed STILL UNMOCKED: verifyHiveSignature" phrasin
 When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit only. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-11, the commit performing this mv) — round-3 item landed
+
+Comment-only: the header's mocked-set enumeration now inventories all five vi.mock factories: the database pools (db.js `getPool`, app-db.js `getAppPool`); the hive.js factory's broadcast seams (broadcast.json, `broadcastJsonWithTimeout`, `broadcastAdminCustomJson`, all routed through the one `broadcastJsonMock`) plus its `hiveClient.database.getAccounts` -> `[]` read stub and the `BroadcastTimeoutError` / `DEFAULT_BROADCAST_TIMEOUT_MS` stand-ins; and accreditation.js `getAccreditedSet`, stubbed to an empty accredited set. A closing parenthetical notes the fifth vi.mock (verifyHiveSignature.js) is the delegating wrapper, not a stub, pointing at its own factory note (whose "STILL UNMOCKED" characterization the round-3 triage upheld as behaviorally fair).
+
+Per `convention-enforcing-fix-must-audit-its-own-new-code`, the rewritten sentence was re-verified against the contents of ALL five vi.mock factories before this signal: every export the factories provide (`getPool`, `isHafConfigured`, `closeHafPool`, `getAppPool`, `hiveClient` with `getAccounts` + `broadcast.json`, `broadcastJsonWithTimeout`, `broadcastAdminCustomJson`, `BroadcastTimeoutError`, `DEFAULT_BROADCAST_TIMEOUT_MS`, `getAccreditedSet`, `verifyHiveSignature`) is either named in the enumeration, covered by the database-pools grouping, or covered by the wrapper parenthetical. No spec or factory changes; no new anchor rot (stable symbols only).
+
+Verification: `npm run typecheck` + `npm run lint` clean (known pre-existing `author-supersession.ts` unused-directive warning only); orcid suite 105/105 green vs real Postgres/Redis with the edit in place.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
