@@ -49,6 +49,7 @@ import {
   authorshipClaimsCteBody,
   consentChainCteBody,
   consentedAuthorsCteBody,
+  consentSeedCteBody,
   buildRecursiveWith,
   type ConsentChainScope,
 } from '../src/hafsql.js';
@@ -307,6 +308,54 @@ describe.skipIf(!pool)('consentedAuthorsCteBody — Route 1/2 resolution (real P
       { root_author: 'alice', root_permlink: 'p1', account: 'carol' },
       { root_author: 'alice', root_permlink: 'p1', account: 'zara' },
     ]);
+  });
+
+  it('the display consent_seed composition matches all-roots on consent-active papers; the remainder is Route-1-only', async () => {
+    // The display exclusion surfaces (excludeConsentedSelfWhere consumers)
+    // seed the walk from consent_seed (papers with at least one accept/resign
+    // op) instead of every root. This pins the seed's exclusion-completeness
+    // claim: on consent-active papers the resolution is IDENTICAL to
+    // all-roots, and every all-roots row the seed misses is a Route-1
+    // root-broadcaster row on a paper with no consent ops — exactly the rows
+    // the display poster gates (excludeSelfReviewWhere, voter != author)
+    // already exclude without the consent stack.
+    const seeded = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => consentSeedCteBody(idx),
+      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+      (idx) => consentedAuthorsCteBody(idx),
+    );
+    let sql = seeded.sql;
+    sql = sql.split(T.comments).join('syn_comments');
+    sql = sql.split(T.commentOps).join('syn_comment_ops');
+    sql = sql.split(T.customJson).join('syn_cj');
+    expect(sql).not.toContain('hafsql.');
+    const seededRows = (await client!.query(
+      `${sql}
+       SELECT root_author, root_permlink, account FROM consented_authors
+       ORDER BY root_author, root_permlink, account`,
+      seeded.params,
+    )).rows as Array<{ root_author: string; root_permlink: string; account: string }>;
+
+    // p1 (accept/resign-active) resolves identically to all-roots; p4 is
+    // seeded via greta's resign and resolves empty (Route-1 demotion) — same
+    // as all-roots, which omits it entirely.
+    expect(seededRows).toEqual([
+      { root_author: 'alice', root_permlink: 'p1', account: 'alice' },
+      { root_author: 'alice', root_permlink: 'p1', account: 'carol' },
+      { root_author: 'alice', root_permlink: 'p1', account: 'eve' },
+      { root_author: 'alice', root_permlink: 'p1', account: 'zara' },
+    ]);
+
+    const allRows = await consentedFor({ roots: 'all' });
+    const seededKeys = new Set(seededRows.map((r) => `${r.root_author}/${r.root_permlink}/${r.account}`));
+    const missing = allRows.filter((r) => !seededKeys.has(`${r.root_author}/${r.root_permlink}/${r.account}`));
+    // The only rows the seed misses are Route-1 roots of consent-op-less
+    // papers (b1: the bridge paper, whose sole consented author IS its
+    // poster).
+    expect(missing).toEqual([{ root_author: BRIDGE, root_permlink: 'b1', account: BRIDGE }]);
+    expect(missing.every((r) => r.account === r.root_author)).toBe(true);
   });
 });
 

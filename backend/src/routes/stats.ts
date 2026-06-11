@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere } from '../hafsql.js';
+import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere } from '../hafsql.js';
 import { getBatchReputationMap } from '../reputation.js';
 import { getAllAccreditedAccounts } from '../accreditation.js';
 
@@ -25,11 +25,20 @@ export async function fetchStatsFromHaf() {
   if (!pool) return null;
 
   try {
-    // authorship_claims unscoped by design: the stats aggregate spans the
-    // whole corpus, so no key scope applies. Accepted cost is one claims
-    // resolution per query, pinned by the builder's MATERIALIZED fence (see
-    // authorshipClaimsCteBody's docblock).
-    const cte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
+    // authorship_claims + the consent stack unscoped by design: the stats
+    // aggregate spans the whole corpus, so no key scope applies. Accepted
+    // cost is one resolution of each per query, pinned by the MATERIALIZED
+    // fences (see authorshipClaimsCteBody's and consentedAuthorsCteBody's
+    // docblocks); the consent walk is bounded by consent-op volume via
+    // consent_seed.
+    const cte = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => authorshipClaimsCteBody(idx),
+      (idx) => consentSeedCteBody(idx),
+      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+      (idx) => consentedAuthorsCteBody(idx),
+    );
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%
     const anon = `$${cte.nextIdx + 2}`; // anonymous review account
@@ -60,6 +69,7 @@ export async function fetchStatsFromHaf() {
         WHERE ${validReviewWhere({ commentAlias: 'r', appTagParam: at })}
           AND ${excludeSelfReviewWhere({ commentAlias: 'r', paperRowAlias: 'p', appTagParam: at })}
           AND ${excludeClaimedSelfWhere({ authorExpr: 'r.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' })}
+          AND ${excludeConsentedSelfWhere({ authorExpr: 'r.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' })}
           AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author)
                OR r.author = ${anon})
       )

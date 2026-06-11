@@ -73,8 +73,9 @@ describe('display claimer self-review exclusion — source-level shape pin', () 
   it('the displayed net_votes paths exclude credited-claimer self-votes', () => {
     const papers = surfaceFile('routes/papers.ts');
     // batchResolveVotes (authoritative listing net_votes) skips voters who are
-    // accepted claimers of the paper they voted on.
-    expect(papers, 'batchResolveVotes must skip credited-claimer self-votes').toContain('claimedSet.has(');
+    // credited (accepted claimers or consented authors) for the paper they
+    // voted on.
+    expect(papers, 'batchResolveVotes must skip credited self-votes').toContain('creditedSet.has(');
     expect(papers, 'batchResolveVotes must fetch accepted claims to build the skip set').toContain(
       "FROM authorship_claims WHERE status = 'accepted'",
     );

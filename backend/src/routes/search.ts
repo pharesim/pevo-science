@@ -7,7 +7,7 @@ import { parsePageLimit } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCteBody, retractedPapersCteBody, authorshipClaimsCteBody, buildWith, buildRecursiveWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere } from '../hafsql.js';
+import { T, activeAccreditationsCteBody, retractedPapersCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody, buildWith, buildRecursiveWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 import {
   validateSearchQuery,
@@ -160,12 +160,22 @@ async function searchReviewsFromHaf(
   limit: number,
   offset: number,
 ): Promise<{ rows: SearchRow[]; total: number } | null> {
-  // authorship_claims lets the review search drop a credited claimer's
-  // self-review via excludeClaimedSelfWhere. Unscoped by design: the result
-  // set is computed by this same statement, so no key scope can be bound up
-  // front. Accepted cost is one claims resolution per query, pinned by the
-  // builder's MATERIALIZED fence (see authorshipClaimsCteBody's docblock).
-  const cte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx));
+  // authorship_claims + the consent stack let the review search drop a
+  // credited account's self-review via the excludeClaimedSelfWhere /
+  // excludeConsentedSelfWhere pair. Both unscoped by design: the result set
+  // is computed by this same statement, so no key scope can be bound up
+  // front. Accepted cost is one resolution of each per query, pinned by the
+  // MATERIALIZED fences (see authorshipClaimsCteBody's and
+  // consentedAuthorsCteBody's docblocks); the consent walk is bounded by
+  // consent-op volume via consent_seed.
+  const cte = buildRecursiveWith(
+    1,
+    activeAccreditationsCteBody,
+    (idx) => authorshipClaimsCteBody(idx),
+    (idx) => consentSeedCteBody(idx),
+    (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+    (idx) => consentedAuthorsCteBody(idx),
+  );
   let paramIdx = cte.nextIdx;
 
   const appTagParam = `$${paramIdx++}`;
@@ -194,6 +204,7 @@ async function searchReviewsFromHaf(
     validReviewWhere({ commentAlias: 'c', appTagParam }),
     excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam }),
     excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' }),
+    excludeConsentedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' }),
   ];
 
   // Accreditation gate is unconditional — see lane 4 of

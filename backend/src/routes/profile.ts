@@ -15,7 +15,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
+import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -101,8 +101,18 @@ async function getProfileStats(username: string) {
     // builders too — the counter-based shape is the project-wide convention
     // for chained `activeAccreditationsCteBody(N)` consumers.
     // authorship_claims scoped to this profile user so excludeClaimedSelfWhere can
-    // drop their self-review of a claimed paper from the review_count stat.
-    const accredCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
+    // drop their self-review of a claimed paper from the review_count stat; the
+    // consent stack scoped the same way ({signer}-seeded walk + {signers}-narrowed
+    // resolution) so excludeConsentedSelfWhere drops a Route-2 consented
+    // co-author's self-review too.
+    const accredCte = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => authorshipClaimsCteBody(idx, { claimer: username }),
+      (idx) => consentSeedCteBody(idx, { signer: username }),
+      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+      (idx) => consentedAuthorsCteBody(idx, { signers: [username] }),
+    );
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;
     const appTagIdx = paramIdx++;
@@ -116,6 +126,7 @@ async function getProfileStats(username: string) {
     const paperGate = validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' });
     const selfExclude = excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: at });
     const claimedExclude = excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' });
+    const consentedExclude = excludeConsentedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' });
     const accredGate = `(c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})`;
 
     const result = await pool.query(
@@ -139,6 +150,7 @@ async function getProfileStats(username: string) {
            AND ${paperGate}
            AND ${selfExclude}
            AND ${claimedExclude}
+           AND ${consentedExclude}
            AND COALESCE(c.json_metadata -> ${at} ->> 'is_anonymous', 'false') != 'true'
        ),
        citations AS (
@@ -578,8 +590,18 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // the resolved param positions so a positional mis-bind fails red.
     // authorship_claims scoped to the profile user (the only review author here),
     // so excludeClaimedSelfWhere can drop a self-review on a paper this user is a
-    // credited claimer of (ORCID / name-only slot — absent from authors[].hive).
-    const accredCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
+    // credited claimer of (ORCID / name-only slot — absent from authors[].hive);
+    // the consent stack scoped the same way ({signer}-seeded walk +
+    // {signers}-narrowed resolution) so excludeConsentedSelfWhere drops a
+    // self-review on a paper this user is a Route-2 consented co-author of.
+    const accredCte = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => authorshipClaimsCteBody(idx, { claimer: username }),
+      (idx) => consentSeedCteBody(idx, { signer: username }),
+      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+      (idx) => consentedAuthorsCteBody(idx, { signers: [username] }),
+    );
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;
     const appTagIdx = paramIdx++;
@@ -595,14 +617,15 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     const paperGate = validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' });
     const selfExclude = excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: at });
     const claimedExclude = excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' });
+    const consentedExclude = excludeConsentedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' });
     const accredGate = `(c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})`;
 
     const baseParams: unknown[] = [
-      ...accredCte.params,                    // $1, $2, $3
-      username,                               // $4
-      config.appTag,                          // $5
-      config.hiveAnonAccount || '',           // $6
-      config.hiveBridgeAccount || '',         // $7
+      ...accredCte.params,
+      username,
+      config.appTag,
+      config.hiveAnonAccount || '',
+      config.hiveBridgeAccount || '',
     ];
 
     const countResult = await pool.query(
@@ -614,7 +637,8 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
          AND ${reviewWhere}
          AND ${paperGate}
          AND ${selfExclude}
-         AND ${claimedExclude}`,
+         AND ${claimedExclude}
+         AND ${consentedExclude}`,
       baseParams,
     );
     const total = countResult.rows[0]?.total ?? 0;
@@ -653,6 +677,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
          AND ${paperGate}
          AND ${selfExclude}
          AND ${claimedExclude}
+         AND ${consentedExclude}
        ORDER BY ${orderClause}
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       dataParams,

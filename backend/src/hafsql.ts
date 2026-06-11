@@ -538,9 +538,12 @@ export function excludeSelfReviewWhere(opts: {
  * `excludeSelfReviewWhere` does not drop their self-review or self-vote on the
  * chain post they are credited for. This helper emits the same
  * `accepted_claims NOT EXISTS` gate the reputation cycle uses
- * (`reputation.ts` `paper_resolved_votes` / `paper_reviews`), so the DISPLAY
- * review/vote aggregations exclude a credited claimer's self-review/self-vote
- * exactly as the score path does.
+ * (`reputation.ts` `paper_resolved_votes` / `paper_reviews`). This helper
+ * covers Route 3 only; paired with {@link excludeConsentedSelfWhere} (the
+ * Route-1/2 sibling over `consented_authors`), the DISPLAY review/vote
+ * aggregations exclude credited self-dealing by the same full credited set
+ * (accepted claims ∪ consented authors) as the score path. Compose BOTH
+ * helpers at every display aggregation site.
  *
  * **Scope requirement.** The caller MUST compose `authorshipClaimsCteBody` into
  * the query's WITH chain so the `authorship_claims` CTE is in scope; this helper
@@ -584,6 +587,45 @@ export function excludeClaimedSelfWhere(opts: {
       AND ${ac}.paper_permlink = ${opts.paperPermlinkExpr}
       AND ${ac}.claimer = ${opts.authorExpr}
       AND ${ac}.status = 'accepted'
+  )`;
+}
+
+/**
+ * Route-1/2 sibling of {@link excludeClaimedSelfWhere}: drops a review/vote
+ * row whose author is in the resolved `consented_authors` set for the paper —
+ * the SAME set the reputation cycle's consented self-dealing gates use (the
+ * `NOT EXISTS consented_authors` mirror in `computeReputationBatch`'s
+ * `paper_resolved_votes` / `paper_reviews`). Since the metadata auto-accept
+ * arms were removed, an ORCID- or hive-anchored co-author consents via
+ * `author_accept` and has NO accepted-claims row, so the claims gate alone
+ * leaves their displayed self-review/self-vote counted (cycle-vs-display
+ * drift). Compose BOTH helpers at every display aggregation site.
+ *
+ * **Scope requirement.** The caller MUST compose the consent stack into the
+ * query's WITH chain — `consentChainCteBody` + `consentedAuthorsCteBody`,
+ * after `activeAccreditationsCteBody` (the orcid-anchor eligibility joins
+ * it) — so the `consented_authors` CTE is in scope. Walk-scope choice by
+ * surface shape mirrors the claims precedent:
+ *   - Per-paper surfaces (paper-detail votes/reviews) scope the walk with
+ *     `{paperAuthor, paperPermlink}`.
+ *   - Multi-result surfaces (listing review-agg, search, stats) and
+ *     per-account surfaces (profile, the single-review fetch) seed it from
+ *     `consentSeedCteBody` via `{rootsFromCte: 'consent_seed'}` (unscoped,
+ *     `{signer}`, or `{papers}` per the seed's docblock), bounding the walk
+ *     by consent-op volume rather than corpus size.
+ */
+export function excludeConsentedSelfWhere(opts: {
+  authorExpr: string;
+  paperAuthorExpr: string;
+  paperPermlinkExpr: string;
+  consentedAlias?: string;
+}): string {
+  const ca = opts.consentedAlias ?? 'cca';
+  return `NOT EXISTS (
+    SELECT 1 FROM consented_authors ${ca}
+    WHERE ${ca}.root_author = ${opts.paperAuthorExpr}
+      AND ${ca}.root_permlink = ${opts.paperPermlinkExpr}
+      AND ${ca}.account = ${opts.authorExpr}
   )`;
 }
 
@@ -1218,6 +1260,16 @@ export function consentChainCteBody(
  *     demotable by a later resign/revoke like any consented author) UNION
  *     Route 2 (eligible signers whose latest valid op is an accept).
  *
+ * `consented_authors` is declared `AS MATERIALIZED` for the same reason
+ * `authorship_claims` is (see `authorshipClaimsCteBody`'s docblock): display
+ * surfaces reference it from a correlated `NOT EXISTS` inside a per-row
+ * LATERAL (`excludeConsentedSelfWhere` on the listing review-agg and sibling
+ * surfaces), and without the fence PG 12+ inlines the single-referenced CTE
+ * into that anti-join, re-evaluating the Route-1/2 resolution per LATERAL
+ * rescan. The fence resolves the consented set exactly once per query; the
+ * reputation cycle references it from multiple CTEs and was already
+ * materialized, so the keyword is a no-op there.
+ *
  * @param scope - optional `{ signers }` narrows the resolved accounts to the
  *   given set (the reputation cycle's target users). The chain walk itself is
  *   scoped by `consentChainCteBody`, not here.
@@ -1285,7 +1337,7 @@ export function consentedAuthorsCteBody(
                                  ORDER BY block_num DESC, id DESC) AS rn
     FROM route2_stream
   ),
-  consented_authors AS (
+  consented_authors AS MATERIALIZED (
     SELECT cc.root_author, cc.root_permlink, cc.root_author AS account
     FROM canonical_chain cc
     JOIN ${T.comments} rc ON rc.author = cc.root_author AND rc.permlink = cc.root_permlink
@@ -1304,6 +1356,75 @@ export function consentedAuthorsCteBody(
   )`,
     params: [config.appTag, config.hiveBridgeAccount, config.hiveAdminAccount, ...scopeParams],
     nextIdx: scope ? p + 4 : p + 3,
+  };
+}
+
+/**
+ * CTE body for the display-surface Route-2 walk seed: the distinct root
+ * papers cited by any `author_accept` / `author_resign` op. Feeds
+ * `consentChainCteBody({ rootsFromCte: 'consent_seed' })` so a display
+ * exclusion's chain walk is bounded by consent-op volume, not corpus size.
+ *
+ * Why this seed is exclusion-complete: a paper with NO accept op has no
+ * Route-2 consented member, so its consented set is at most the Route-1 root
+ * broadcaster — whose self-review/self-vote every display surface already
+ * drops via the poster gates (`excludeSelfReviewWhere`, `voter != author`).
+ * Skipping such papers is cycle-parity for the exclusion's purpose, not an
+ * approximation. `revoke_authorship` ops are not in the seed: a revoke only
+ * shrinks the consented set, and a paper reachable only through a revoke has
+ * no accept to demote. Resigns are seeded for symmetry with the reputation
+ * cycle's `consent_seed` (reputation.ts), which seeds the same walk scoped
+ * to its batch's target users.
+ *
+ * @param scope - optional narrowing:
+ *   - `{ signer }` — only ops signed by the account (single-account
+ *     surfaces: profile, the single-review fetch, where the excluded
+ *     reviewer/voter is one known account).
+ *   - `{ papers }` — only ops citing the given root papers (page-bounded
+ *     batch surfaces: the listing vote batch). An empty list emits a
+ *     well-formed `FALSE` filter (empty seed, empty consented set).
+ *   Omit for in-statement multi-result surfaces (listing review-agg, search,
+ *   stats), where result membership is computed in the same statement.
+ */
+export function consentSeedCteBody(
+  startIdx = 1,
+  scope?: { signer: string } | { papers: Array<{ author: string; permlink: string }> },
+): SqlFragment {
+  const p = startIdx; // $p = appTag
+  let nextIdx = p + 1;
+  let scopeFilter = '';
+  const scopeParams: unknown[] = [];
+  if (scope && 'signer' in scope) {
+    scopeFilter = `
+      AND cj.required_posting_auths ->> 0 = $${nextIdx}`;
+    scopeParams.push(scope.signer);
+    nextIdx += 1;
+  } else if (scope && 'papers' in scope) {
+    if (scope.papers.length === 0) {
+      scopeFilter = `
+      AND FALSE`;
+    } else {
+      const pairs: string[] = [];
+      for (const paper of scope.papers) {
+        pairs.push(`($${nextIdx}, $${nextIdx + 1})`);
+        scopeParams.push(paper.author, paper.permlink);
+        nextIdx += 2;
+      }
+      scopeFilter = `
+      AND (cj.json::jsonb ->> 'root_author', cj.json::jsonb ->> 'root_permlink') IN (${pairs.join(', ')})`;
+    }
+  }
+  return {
+    sql: `
+  consent_seed AS (
+    SELECT DISTINCT cj.json::jsonb ->> 'root_author' AS paper_author,
+           cj.json::jsonb ->> 'root_permlink' AS paper_permlink
+    FROM ${T.customJson} cj
+    WHERE cj.custom_id = $${p}
+      AND cj.json::jsonb ->> 'action' IN ('author_accept', 'author_resign')${scopeFilter}
+  )`,
+    params: [config.appTag, ...scopeParams],
+    nextIdx,
   };
 }
 

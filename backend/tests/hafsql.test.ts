@@ -7,6 +7,8 @@ import {
   authorsWithSupersessionSelect,
   buildWith,
   buildRecursiveWith,
+  consentSeedCteBody,
+  consentedAuthorsCteBody,
   retractedPapersCteBody,
   validPevoPaperWhere,
   validReviewWhere,
@@ -307,6 +309,51 @@ describe('authorshipClaimsCteBody param arithmetic', () => {
     // re-evaluation class, so the keyword is pinned here.
     const frag = authorshipClaimsCteBody(1);
     expect(frag.sql).toContain('authorship_claims AS MATERIALIZED (');
+  });
+});
+
+describe('consentSeedCteBody param arithmetic', () => {
+  it('unscoped: one appTag param, nextIdx advances by 1', () => {
+    const frag = consentSeedCteBody(5);
+    expect(frag.params).toEqual([config.appTag]);
+    expect(frag.nextIdx).toBe(6);
+    expect(frag.sql).toContain("IN ('author_accept', 'author_resign')");
+  });
+
+  it('signer scope appends 1 param after appTag, nextIdx advances by 2', () => {
+    const frag = consentSeedCteBody(5, { signer: 'alice' });
+    expect(frag.params).toEqual([config.appTag, 'alice']);
+    expect(frag.nextIdx).toBe(7);
+    expect(frag.sql).toContain("cj.required_posting_auths ->> 0 = $6");
+  });
+
+  it('papers scope appends 2 params per paper, composite IN over root coords', () => {
+    const frag = consentSeedCteBody(5, { papers: [{ author: 'bob', permlink: 'p-1' }, { author: 'eve', permlink: 'p-2' }] });
+    expect(frag.params).toEqual([config.appTag, 'bob', 'p-1', 'eve', 'p-2']);
+    expect(frag.nextIdx).toBe(10);
+    expect(frag.sql).toContain("IN (($6, $7), ($8, $9))");
+  });
+
+  it('papers empty-list backstop emits a FALSE filter and binds no scope params', () => {
+    const frag = consentSeedCteBody(5, { papers: [] });
+    expect(frag.params).toEqual([config.appTag]);
+    expect(frag.nextIdx).toBe(6);
+    expect(frag.sql).toContain('AND FALSE');
+  });
+});
+
+describe('consentedAuthorsCteBody SQL shape', () => {
+  it('consented_authors carries the MATERIALIZED fence', () => {
+    // Display surfaces reference consented_authors from a correlated NOT
+    // EXISTS inside a per-row LATERAL (excludeConsentedSelfWhere on the
+    // listing review-agg). Without the fence PG inlines the single-referenced
+    // CTE there and re-evaluates the Route-1/2 resolution per LATERAL rescan;
+    // the fence resolves the consented set once per query. The reputation
+    // cycle references it from multiple CTEs (already materialized), so the
+    // keyword is a no-op there. Dropping it silently re-opens the per-rescan
+    // class, so it is pinned here, mirroring the authorship_claims pin above.
+    const frag = consentedAuthorsCteBody(1);
+    expect(frag.sql).toContain('consented_authors AS MATERIALIZED (');
   });
 });
 

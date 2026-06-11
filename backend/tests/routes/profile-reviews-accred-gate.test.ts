@@ -71,19 +71,30 @@ vi.mock('../../src/db.js', () => ({
 const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');
 const { config } = await import('../../src/config.js');
-const { buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } = await import('../../src/hafsql.js');
+const { buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody } = await import('../../src/hafsql.js');
 const app = createApp();
 
 // The reviews handler composes its WITH block from
-//   buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer }))
+//   buildRecursiveWith(1, activeAccreditationsCteBody,
+//     authorshipClaimsCteBody{claimer}, consentSeedCteBody{signer},
+//     consentChainCteBody{rootsFromCte}, consentedAuthorsCteBody{signers})
 // and binds the per-query params after it via an adaptive paramIdx counter:
 //   [...accredCte.params, username, appTag, anonAccount, bridge, limit, offset, ...].
 // So the username slot is accredCte.params.length (0-indexed) and the anonAccount
 // slot is accredCte.params.length + 2. Derive both from the LIVE builder param
 // count rather than a frozen $N table, so a future CTE-shape change shifts the pin
 // in step instead of silently re-staling it (the prior fixed params[3]/params[5]
-// went tautological when the reviews CTE grew from 2 to 7 params).
-const accredParamCount = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: 'probe' })).params.length;
+// went tautological when the reviews CTE grew from 2 to 7 params; the same
+// derivation must mirror the route's composition list — it staled again when
+// the consent stack joined the claims builder there).
+const accredParamCount = buildRecursiveWith(
+  1,
+  activeAccreditationsCteBody,
+  (idx) => authorshipClaimsCteBody(idx, { claimer: 'probe' }),
+  (idx) => consentSeedCteBody(idx, { signer: 'probe' }),
+  (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+  (idx) => consentedAuthorsCteBody(idx, { signers: ['probe'] }),
+).params.length;
 const USERNAME_SLOT = accredParamCount;
 const ANON_SLOT = accredParamCount + 2;
 

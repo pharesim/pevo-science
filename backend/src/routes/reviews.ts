@@ -6,7 +6,7 @@ import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
-import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, validPevoPaperWhere } from '../hafsql.js';
+import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, validPevoPaperWhere } from '../hafsql.js';
 
 const router = Router();
 
@@ -49,9 +49,19 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     // excludeClaimedSelfWhere gate below ever correlates on this surface), so
     // the embedded chain walk is bounded by that one account's claim activity
     // instead of materializing the full claim history per single-review
-    // fetch. Lets the fetch 404 a credited claimer's self-review, matching
-    // the listing/profile/search/stats surfaces.
-    const accredCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: author }));
+    // fetch. The consent stack is scoped the same way ({signer}-seeded walk +
+    // {signers}-narrowed resolution) for the excludeConsentedSelfWhere
+    // sibling. Lets the fetch 404 a credited account's self-review (accepted
+    // claimer or Route-2 consented co-author), matching the
+    // listing/profile/search/stats surfaces.
+    const accredCte = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => authorshipClaimsCteBody(idx, { claimer: author }),
+      (idx) => consentSeedCteBody(idx, { signer: author }),
+      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+      (idx) => consentedAuthorsCteBody(idx, { signers: [author] }),
+    );
     // PEvO object-identity gate: a review is only a PEvO review if its author
     // is in `active_accreditations` OR equals `config.hiveAnonAccount`
     // (anon-proxy authoring on behalf of an accredited reviewer). Without
@@ -113,7 +123,8 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
          AND ${validReviewWhere({ commentAlias: 'c', appTagParam: `$${appTagIdx}` })}
          AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: `$${appTagIdx}`, bridgeAccountParam: `$${bridgeIdx}`, source: 'all' })}
          AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: `$${appTagIdx}` })}
-         AND ${excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' })}`,
+         AND ${excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' })}
+         AND ${excludeConsentedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' })}`,
       [...accredCte.params, author, permlink, config.hiveAnonAccount || '', config.appTag, config.hiveBridgeAccount || ''],
     );
     if (result.rows.length === 0) return null;

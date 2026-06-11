@@ -87,7 +87,7 @@ describe('reputation cycle — Route-2 consented credit wiring (SQL shape)', () 
     // claims_-prefixed copy coexist without name collision.
     expect(sql).toContain('chain_tree AS (');
     expect(sql).toContain('claims_chain_tree AS (');
-    expect(sql).toContain('consented_authors AS (');
+    expect(sql).toContain('consented_authors AS MATERIALIZED (');
   });
 
   it('user_papers carries all three credit arms with double-count guards', async () => {

@@ -46,12 +46,14 @@ import {
   authorsWithSupersessionSelect,
   consentChainCteBody,
   consentedAuthorsCteBody,
+  consentSeedCteBody,
   retractedPapersCteBody,
   buildWith, buildRecursiveWith,
   validPevoPaperWhere,
   validReviewWhere,
   excludeSelfReviewWhere,
   excludeClaimedSelfWhere,
+  excludeConsentedSelfWhere,
 } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 
@@ -77,9 +79,10 @@ interface ResolvedVotes {
  * Compute resolved vote counts for a set of papers using parallel native + revote queries.
  * Returns a Map keyed by "author/permlink" with net_votes and vote_strength.
  *
- * Exported so the cross-channel claimer self-vote exclusion (the `claimedSet`
- * skip that must hold across BOTH the native-vote and revote channels) can be
- * exercised directly against a controlled (native + revote + claims) rowset.
+ * Exported so the cross-channel credited self-vote exclusion (the
+ * `creditedSet` skip that must hold across BOTH the native-vote and revote
+ * channels) can be exercised directly against a controlled
+ * (native + revote + credited-set) rowset.
  */
 export async function batchResolveVotes(
   pool: { query: (sql: string, params: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
@@ -99,14 +102,23 @@ export async function batchResolveVotes(
   const accreditedParam = `$${pIdx++}`;
   pairParams.push(accreditedArr);
 
-  // Accepted authorship-claim claimers must not have their self-vote on the paper
-  // they are credited for counted toward the displayed net_votes — mirrors the
-  // reputation cycle's accepted_claims gate and excludeClaimedSelfWhere on the
-  // review surfaces. Scoped to the page's paper-key set so the claims
-  // materialization (and its embedded chain walk) is bounded by page size,
-  // not total claim history — a flood of cheap pending claims on unrelated
-  // papers cannot inflate this batch's cost.
-  const claimsCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { papers }));
+  // Credited accounts (accepted claimers ∪ Route-1/2 consented authors) must
+  // not have their self-vote on the paper they are credited for counted
+  // toward the displayed net_votes — mirrors the reputation cycle's
+  // accepted_claims + consented_authors gates and the
+  // excludeClaimedSelfWhere/excludeConsentedSelfWhere pair on the review
+  // surfaces. Both stacks are scoped to the page's paper-key set so the
+  // materializations (and their embedded chain walks) are bounded by page
+  // size, not total op history — a flood of cheap pending claims or consent
+  // ops on unrelated papers cannot inflate this batch's cost.
+  const claimsCte = buildRecursiveWith(
+    1,
+    activeAccreditationsCteBody,
+    (idx) => authorshipClaimsCteBody(idx, { papers }),
+    (idx) => consentSeedCteBody(idx, { papers }),
+    (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+    (idx) => consentedAuthorsCteBody(idx),
+  );
 
   const [nativeResult, revoteResult, claimsResult] = await Promise.all([
     // Batch native votes: latest per voter per paper, accredited only, excluding self-votes
@@ -143,28 +155,32 @@ export async function batchResolveVotes(
          AND cj.json::jsonb ->> 'action' = 'revote'`,
       [config.appTag],
     ),
-    // Accepted authorship claims (credited claimers per chain post).
-    // Decoupled from listing availability: votes are this surface's core
-    // data, but the claimed-self-vote exclusion is a display-parity refinement
-    // whose authoritative enforcement lives in the reputation cycle. The
-    // worst-case tail here is the HAF pool's connection-level
-    // `SET statement_timeout = 30000` (db.ts), so a claims-side failure costs
-    // at most ~30s before this leg settles and degrades to un-excluded
+    // Credited accounts per chain post: accepted authorship claims UNION the
+    // resolved consented authors (Routes 1/2), one leg for the whole skip
+    // set. Decoupled from listing availability: votes are this surface's
+    // core data, but the credited-self-vote exclusion is a display-parity
+    // refinement whose authoritative enforcement lives in the reputation
+    // cycle. The worst-case tail here is the HAF pool's connection-level
+    // `SET statement_timeout = 30000` (db.ts), so a credited-set failure
+    // costs at most ~30s before this leg settles and degrades to un-excluded
     // displayed votes for one volatile-cache window instead of rejecting the
     // whole listing.
     pool.query(
-      `${claimsCte.sql} SELECT claimer, paper_author, paper_permlink FROM authorship_claims WHERE status = 'accepted'`,
+      `${claimsCte.sql}
+       SELECT claimer, paper_author, paper_permlink FROM authorship_claims WHERE status = 'accepted'
+       UNION
+       SELECT account AS claimer, root_author AS paper_author, root_permlink AS paper_permlink FROM consented_authors`,
       claimsCte.params,
     ).catch((err: unknown) => {
-      logger.warn({ err, paper_count: papers.length }, 'batchResolveVotes accepted-claims query failed; serving votes without the claimed-self-vote exclusion');
+      logger.warn({ err, paper_count: papers.length }, 'batchResolveVotes credited-set query failed; serving votes without the credited-self-vote exclusion');
       return null;
     }),
   ]);
 
-  // (paper_author/paper_permlink::claimer) keys whose self-vote is dropped.
-  const claimedSet = new Set<string>();
+  // (paper_author/paper_permlink::account) keys whose self-vote is dropped.
+  const creditedSet = new Set<string>();
   for (const r of claimsResult?.rows ?? []) {
-    claimedSet.add(`${r.paper_author}/${r.paper_permlink}::${r.claimer}`);
+    creditedSet.add(`${r.paper_author}/${r.paper_permlink}::${r.claimer}`);
   }
 
   // Index native votes: paper_key -> voter -> { weight, block_num }
@@ -213,8 +229,9 @@ export async function batchResolveVotes(
     let voterCount = 0;
 
     for (const voter of allVoters) {
-      // Drop a credited claimer's self-vote on the paper they are credited for.
-      if (claimedSet.has(`${key}::${voter}`)) continue;
+      // Drop a credited account's (accepted claimer or Route-1/2 consented
+      // author) self-vote on the paper they are credited for.
+      if (creditedSet.has(`${key}::${voter}`)) continue;
       const native = nativeVotes.get(voter);
       const revote = revotes.get(voter);
 
@@ -1044,16 +1061,27 @@ async function fetchPapersFromHaf(
 
   // Build CTEs with parameterized appTag. authorship_claims lets the
   // review-agg LATERAL drop a credited claimer's self-review from the
-  // displayed avg_rating / review_count, mirroring the reputation cycle's
-  // accepted_claims gate. It stays UNSCOPED here by design: the page's paper
-  // set is computed by this same statement (WHERE + ORDER BY + LIMIT), so no
-  // paper-key scope can be bound up front. The accepted cost is ONE claims
-  // resolution per listing query — the builder's MATERIALIZED fence pins
-  // that (the chain walk underneath is seeded by claims_base, so the cost is
-  // bounded by claim cardinality, and the per-row LATERAL reads the fenced
-  // result instead of re-resolving status per rescan). active_accreditations
-  // is listed first because consumers reference it earlier in the WITH chain.
-  const cte = buildRecursiveWith(1, activeAccreditationsCteBody, retractedPapersCteBody, (idx) => authorshipClaimsCteBody(idx));
+  // displayed avg_rating / review_count, and the consent stack (consent_seed
+  // → chain walk → consented_authors) does the same for Route-2 consented
+  // co-authors, mirroring the reputation cycle's accepted_claims +
+  // consented_authors gates. Both stay UNSCOPED here by design: the page's
+  // paper set is computed by this same statement (WHERE + ORDER BY + LIMIT),
+  // so no paper-key scope can be bound up front. The accepted cost is ONE
+  // resolution of each per listing query — the MATERIALIZED fences pin that
+  // (the claims walk is seeded by claims_base, the consent walk by
+  // consent_seed, so each is bounded by its op volume, and the per-row
+  // LATERAL reads the fenced results instead of re-resolving per rescan).
+  // active_accreditations is listed first because consumers reference it
+  // earlier in the WITH chain.
+  const cte = buildRecursiveWith(
+    1,
+    activeAccreditationsCteBody,
+    retractedPapersCteBody,
+    (idx) => authorshipClaimsCteBody(idx),
+    (idx) => consentSeedCteBody(idx),
+    (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+    (idx) => consentedAuthorsCteBody(idx),
+  );
   let paramIdx = cte.nextIdx;
   const cteParams: unknown[] = [...cte.params];
 
@@ -1166,6 +1194,7 @@ async function fetchPapersFromHaf(
       AND ${validReviewWhere({ commentAlias: 'r', appTagParam })}
       AND ${excludeSelfReviewWhere({ commentAlias: 'r', paperRowAlias: 'c', appTagParam })}
       AND ${excludeClaimedSelfWhere({ authorExpr: 'r.author', paperAuthorExpr: 'c.author', paperPermlinkExpr: 'c.permlink' })}
+      AND ${excludeConsentedSelfWhere({ authorExpr: 'r.author', paperAuthorExpr: 'c.author', paperPermlinkExpr: 'c.permlink' })}
       AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author) OR r.author = ${anonParam})
   ) rev_agg ON true`;
 
@@ -3509,12 +3538,21 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       ? [...accreditedArr, config.hiveAnonAccount]
       : accreditedArr;
 
-    // authorship_claims scoped to THIS paper, so excludeClaimedSelfWhere can drop
-    // a credited claimer's self-review (ORCID / name-only slot — absent from
-    // authors[].hive) from the enrichment review list, mirroring the cycle gate.
-    // Param indices for the reviews query derive from this CTE's nextIdx via the
-    // counter below so the prepended CTE params shift them automatically.
-    const detailCte = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
+    // authorship_claims + the consent stack scoped to THIS paper, so the
+    // excludeClaimedSelfWhere/excludeConsentedSelfWhere pair can drop a
+    // credited account's self-review and self-vote (an accepted claimer's
+    // ORCID / name-only slot, or a Route-2 consented co-author — both absent
+    // from authors[].hive) from the enrichment lists, mirroring the cycle's
+    // two NOT EXISTS gates. Param indices for the reviews query derive from
+    // this CTE's nextIdx via the counter below so the prepended CTE params
+    // shift them automatically.
+    const detailCte = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }),
+      (idx) => consentChainCteBody(idx, { paperAuthor: author, paperPermlink: permlink }),
+      (idx) => consentedAuthorsCteBody(idx),
+    );
     let drIdx = detailCte.nextIdx;
     const drAuthorIdx = drIdx++;
     const drPermlinkIdx = drIdx++;
@@ -3528,7 +3566,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     // named slot so a future param insertion cannot silently mis-bind it.
     const drVoteAccreditedIdx = drAuthorIdx + 2;
 
-    const [voteResult, reviewsResult, versions, claimsResult] = await Promise.all([
+    const [voteResult, reviewsResult, versions, claimsResult, consentedArr] = await Promise.all([
       // Accredited voters (excluding self-votes AND credited-claimer self-votes)
       // — use vote operations to survive payout. Params (after the detailCte CTE
       // params): author, permlink, accreditedArr.
@@ -3539,6 +3577,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
            AND v.voter = ANY($${drVoteAccreditedIdx}::text[])
            AND v.voter != v.author
            AND ${excludeClaimedSelfWhere({ authorExpr: 'v.voter', paperAuthorExpr: `$${drAuthorIdx}`, paperPermlinkExpr: `$${drPermlinkIdx}` })}
+           AND ${excludeConsentedSelfWhere({ authorExpr: 'v.voter', paperAuthorExpr: `$${drAuthorIdx}`, paperPermlinkExpr: `$${drPermlinkIdx}` })}
          -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
          -- v.id is the monotonic HAF op id) per
          -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
@@ -3583,6 +3622,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
            AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: `$${drAppTagIdx}`, bridgeAccountParam: `$${drBridgeIdx}`, source: 'all' })}
            AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: `$${drAppTagIdx}` })}
            AND ${excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: `$${drAuthorIdx}`, paperPermlinkExpr: `$${drPermlinkIdx}` })}
+           AND ${excludeConsentedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: `$${drAuthorIdx}`, paperPermlinkExpr: `$${drPermlinkIdx}` })}
          ORDER BY c.created DESC`,
         [...detailCte.params, author, permlink, config.appTag, accreditedArr, reviewAuthors, config.hiveBridgeAccount || ''],
       ),
@@ -3601,6 +3641,13 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
           [...cte.params, author, permlink],
         );
       })(),
+      // Resolved consented set (Routes 1/2) for the JS-side revote-channel
+      // skip below — the same per-paper stack the consented badge resolves
+      // (shared volatile cache entry). A pool-null return is impossible on
+      // this path (the enclosing fetcher already holds the pool); a query
+      // failure throws HafQueryError and fails the enrichment like every
+      // other leg of this Promise.all (fail-closed, per-request).
+      fetchConsentedAccountsForPaper(author, permlink),
     ]);
 
     const latestVersion = versions.length > 0 ? versions[versions.length - 1].version_number : 1;
@@ -3695,17 +3742,21 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       };
     });
 
-    // Accepted-claimer self-vote exclusion. A credited claimer (ORCID / name-only
-    // slot, absent from authors[].hive) must not have their self-vote on this paper
-    // counted toward the displayed net_votes. The native vote SQL query already
-    // drops them via excludeClaimedSelfWhere, but the revote custom_json channel is
-    // resolved in JS and carries no SQL gate — so skip accepted claimers in BOTH
-    // vote loops below, mirroring batchResolveVotes' claimedSet skip on the listing
-    // surface. claimsResult is scoped to this paper, so the claimer name is the key.
+    // Credited self-vote exclusion. A credited account — an accepted claimer
+    // (ORCID / name-only slot) or a Route-1/2 consented author, both absent
+    // from or unmatched against authors[].hive — must not have their
+    // self-vote on this paper counted toward the displayed net_votes. The
+    // native vote SQL query already drops them via the
+    // excludeClaimedSelfWhere/excludeConsentedSelfWhere pair, but the revote
+    // custom_json channel is resolved in JS and carries no SQL gate — so skip
+    // credited accounts in BOTH vote loops below, mirroring batchResolveVotes'
+    // creditedSet skip on the listing surface. claimsResult and consentedArr
+    // are scoped to this paper, so the account name is the key.
     const acceptedClaimers = new Set<string>();
     for (const r of claimsResult.rows) {
       if (r.status === 'accepted') acceptedClaimers.add(r.claimer);
     }
+    const consentedAccounts = new Set<string>(consentedArr ?? []);
 
     // Vote resolution: for each voter, pick the signal with the highest block_num
     // across native votes and revote custom_json. Handle weight=0 as retraction.
@@ -3730,9 +3781,10 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     // Process voters with native votes
     for (const r of voteResult.rows) {
       const voter = r.voter as string;
-      // Defense-in-depth: the native SQL already excludes accepted claimers, but
-      // skip here too so the revote-override branch below cannot reintroduce one.
-      if (acceptedClaimers.has(voter)) continue;
+      // Defense-in-depth: the native SQL already excludes credited accounts,
+      // but skip here too so the revote-override branch below cannot
+      // reintroduce one.
+      if (acceptedClaimers.has(voter) || consentedAccounts.has(voter)) continue;
       const nativeWeight = Number(r.weight);
       const nativeBlock = Number(r.block_num);
       processedVoters.add(voter);
@@ -3759,10 +3811,11 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     // Process revote-only voters (no native Hive vote)
     for (const [voter, revote] of revoteMap) {
       if (processedVoters.has(voter)) continue;
-      // Drop a credited claimer's self-revote: the revote channel has no SQL gate,
-      // so without this an accepted claimer's revote inflates the paper-detail
-      // net_votes (the listing path already excludes them via batchResolveVotes).
-      if (acceptedClaimers.has(voter)) continue;
+      // Drop a credited account's self-revote: the revote channel has no SQL
+      // gate, so without this an accepted claimer's or consented co-author's
+      // revote inflates the paper-detail net_votes (the listing path already
+      // excludes them via batchResolveVotes).
+      if (acceptedClaimers.has(voter) || consentedAccounts.has(voter)) continue;
       if (revote.weight === 0) continue;
 
       voters.push({
