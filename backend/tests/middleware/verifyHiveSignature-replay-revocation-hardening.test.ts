@@ -147,7 +147,7 @@ describe('verifyHiveSignature — concurrent-replay TOCTOU (item 1)', () => {
 });
 
 describe('verifyHiveSignature — same-second JWT revocation (item 2)', () => {
-  // .500 places the invalidation mid-second; both tokens below carry the same
+  // .500 places the invalidation mid-second; the tokens below all carry the same
   // integer-second iat, so only the reissuedAt identity match distinguishes them.
   const INVALIDATED_AT_MS = 1_700_000_000_500;
   const INVALIDATED_SEC = Math.floor(INVALIDATED_AT_MS / 1000);
@@ -185,6 +185,21 @@ describe('verifyHiveSignature — same-second JWT revocation (item 2)', () => {
     // a later invalidation — its reissuedAt no longer matches the current stored ms.
     const token = jwt.sign(
       { sub: TEST_USERNAME, custody: 'light', iat: INVALIDATED_SEC, reissuedAt: INVALIDATED_AT_MS - 5_000, exp: FAR_FUTURE_EXP },
+      config.sessionSecret,
+    );
+    const res = await bearerProbe(token);
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('SESSION_INVALIDATED');
+  });
+
+  it('revokes a token whose reissuedAt shares the second but not the exact millisecond', async () => {
+    // Same integer second AND greater than the stored ms: a seconds-grain
+    // weakening of the exemption (floor(reissuedAt/1000) === invalidatedAtSec)
+    // or a >= substitution would wrongly spare this token. The exemption must
+    // match the stored epoch-ms exactly — one millisecond off is not the
+    // reissue identity, so revocation wins.
+    const token = jwt.sign(
+      { sub: TEST_USERNAME, custody: 'light', iat: INVALIDATED_SEC, reissuedAt: INVALIDATED_AT_MS + 1, exp: FAR_FUTURE_EXP },
       config.sessionSecret,
     );
     const res = await bearerProbe(token);

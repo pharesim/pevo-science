@@ -77,3 +77,25 @@ No action sought (advisory, fold in only if touching the file anyway): rename `p
 When both items land, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit(s) only. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-11, the commit performing this mv) — round-2 items 1-2 landed
+
+1. **(P3) ms-strictness pin added to the mocked hardening sibling.** New spec in `verifyHiveSignature-replay-revocation-hardening.test.ts`'s same-second describe block: a token with `iat = INVALIDATED_SEC` and `reissuedAt = INVALIDATED_AT_MS + 1` (same integer second, different ms, also greater-than) must be REVOKED 401 `SESSION_INVALIDATED`. Also corrected the block comment's "both tokens below" to "the tokens below" (the block now holds four tokens; "both" was already stale at three).
+
+2. **(P2) Revert probes performed and attested** (mutate -> run -> red -> restore -> green), per `tests-must-fail-on-mutation-of-code-under-test`:
+   - **Exemption removal:** dropped the `&& payload.reissuedAt !== invalidatedAtMs` clause from the revocation comparison in `verifyHiveSignature`. The roundtrip suite goes red, but fails FIRST at the end-to-end sanity accept (`expected 401 to be 200` at the reissued-token probe) because the real reissue's sign-time iat landed inside the invalidation second. To attest the WITH-control itself, the sanity block was probe-bypassed (commented out for that probe run only, restored with the rest): the WITH-control assertion then went red in its own right (`expected 401 to be 200` at the `controlSurvive` expect). Corroborated deterministically in the hardening sibling: its same-shape "spares the freshly reissued token" spec went red with the 5 other specs green. **Confirmed the specs fail on revert of the `reissuedAt` identity exemption in `verifyHiveSignature`.**
+   - **Seconds-rounding the /recover/verify embed:** `reissuedAt: invalidatedAt.getTime()` -> `Math.floor(invalidatedAt.getTime() / 1000) * 1000` at the `sessionJwt` mint in recover.ts. The decisive round-trip assertion went red (`expected 1781216504000 to be 1781216504755` at `expect(decoded?.reissuedAt).toBe(storedMs)`). **Confirmed the spec fails on revert of the /recover/verify `reissuedAt: invalidatedAt.getTime()` embed.**
+   - **Seconds-grain weakening (new item-1 case):** exemption comparison weakened to `Math.floor((payload.reissuedAt as number) / 1000) !== invalidatedAtSec`. EXACTLY the new case went red (`expected 200 to be 401`) with all 5 pre-existing specs green, confirming the weakening was previously invisible and the new case is its unique killer. **Confirmed the new spec fails on the seconds-grain weakening of the exemption comparison.**
+   - **`>=` substitution (item 1's second target, probed for completeness):** exemption comparison weakened to `!((payload.reissuedAt as number) >= invalidatedAtMs)`. Again exactly the new case red, 5/6 green. **Confirmed the new spec fails on the >= substitution.**
+
+   All mutations restored via `git checkout` after each probe; post-restoration combined run green: hardening 6/6, memo-key roundtrip 1/1, ORCID roundtrip 1/1 (8/8) against real app Postgres.
+
+Advisory rename (`preReset` -> `controlWithoutReissue`) NOT folded in: this round touches only the hardening sibling, not the two roundtrip files carrying `preReset`; rename-both-or-neither is preserved for a round that touches them.
+
+Cross-reference: a NOW()-switch probe performed for the ORCID sibling task found that mutation is NOT reliably caught on local hardware (a just-captured Node `Date` and the statement's `NOW()` share a ms bucket ~96% of runs, and suite retries compound survival), so the in-file "NOW()/seconds-rounding ... turns this red" comments overstate the NOW() half; this file's memo-key claim shares the property. Details and triage flag in that task's signal block.
+
+Verification: `npm run typecheck` + `npm run lint` clean (known pre-existing `author-supersession.ts` unused-directive warning only).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
