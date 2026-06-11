@@ -8,13 +8,13 @@
  *
  * This canary pins, on the cycle's EMITTED SQL and independently of whether HAF
  * is configured:
- *   1. The cycle composes the builder — `authorship_claims AS (` is present and
- *      `accepted_claims` is the thin projection. A regression that re-inlines the
- *      resolution (re-introducing the cycle-vs-read-surface drift this merge
- *      removed) fails red.
+ *   1. The cycle composes the builder — `authorship_claims AS MATERIALIZED (`
+ *      is present and `accepted_claims` is the thin projection. A regression
+ *      that re-inlines the resolution (re-introducing the cycle-vs-read-surface
+ *      drift this merge removed) fails red.
  *   2. The revoke_authorship signer gate survives the merge:
- *      `rv.approver IN (rv.paper_author, $23, $25, rv.claimer)` — the builder's
- *      allocation at startIdx 21 binds bridge at $23 and admin at $25. A revoke
+ *      `rv.approver IN (rv.paper_author, $22, $24, rv.claimer)` — the builder's
+ *      allocation at startIdx 21 binds bridge at $22 and admin at $24. A revoke
  *      voids a claim only when signed by the post author, the bridge account, the
  *      admin account, or the claimer themselves (hive-schemas.md §2.11); the
  *      cycle is where a forged revoke would actually strip co-author credit.

@@ -78,3 +78,18 @@ Recorded residuals (no action this task): a corpus-wide pending-claim flood can 
 When both items land, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commits. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-11, single fix commit on main)
+
+Both hold items landed:
+
+1. **Degrade-path pin** — new describe in `tests/routes/display-claimer-self-vote-revote-exclusion.test.ts` ("claims-leg failure degrades instead of rejecting"), two tests: (a)+(b) a claims-leg rejection resolves the batch with the claimed self-vote PRESENT (net_votes 2 — exclusion degraded, not rejected); (c) a native-vote rejection still rejects the batch (the asymmetry pin). File header extended to name the availability boundary and to cover the per-leg rejection injection under carve-out clause (a).
+2. **Four comment edits** — `excludeClaimedSelfWhere` Scope paragraph rewritten to the landed design (in-statement surfaces unscoped + MATERIALIZED-fence rationale; `{papers}` / `{claimer}` / `{paperAuthor, paperPermlink}` by surface shape; the retired low-cardinality rationale dropped; the "exactly as the score path does" parity sentence untouched); the revoke-gate cycle-shape header now quotes the current `authorship_claims AS MATERIALIZED (` opener; the `batchResolveVotes` degrade catch comment states the worst-case tail (connection-level `SET statement_timeout = 30000` in db.ts, ~30s); the `{papers}` docblock states empty-array safety by construction (FALSE backstop), early return as optimization.
+
+Beyond the named items, same stale-quote class one line below the flagged opener: the revoke-gate header's pin-#2 quote read `$23, $25` while the test's own green assertion requires `$22, $24`; aligned the header quote with the assertion.
+
+Verification: both display-exclusion canaries + both cycle-shape pins 9/9; `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

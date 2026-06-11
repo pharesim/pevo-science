@@ -146,10 +146,12 @@ export async function batchResolveVotes(
     // Accepted authorship claims (credited claimers per chain post).
     // Decoupled from listing availability: votes are this surface's core
     // data, but the claimed-self-vote exclusion is a display-parity refinement
-    // whose authoritative enforcement lives in the reputation cycle. A
-    // transient failure here (e.g. a statement_timeout) degrades to
-    // un-excluded displayed votes for one volatile-cache window instead of
-    // rejecting the whole listing.
+    // whose authoritative enforcement lives in the reputation cycle. The
+    // worst-case tail here is the HAF pool's connection-level
+    // `SET statement_timeout = 30000` (db.ts), so a claims-side failure costs
+    // at most ~30s before this leg settles and degrades to un-excluded
+    // displayed votes for one volatile-cache window instead of rejecting the
+    // whole listing.
     pool.query(
       `${claimsCte.sql} SELECT claimer, paper_author, paper_permlink FROM authorship_claims WHERE status = 'accepted'`,
       claimsCte.params,

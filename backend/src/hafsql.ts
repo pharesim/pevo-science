@@ -546,11 +546,18 @@ export function excludeSelfReviewWhere(opts: {
  * the query's WITH chain so the `authorship_claims` CTE is in scope; this helper
  * references it by name and filters `status = 'accepted'` inline (the read
  * surface keeps the resolved status column rather than a pre-filtered
- * `accepted_claims` CTE). For multi-paper surfaces (the listing review-agg,
- * search, stats) compose it unscoped — claim ops are low-cardinality, so the
- * full materialization is cheap. For single-paper / single-claimer surfaces
- * (paper-detail, profile) pass the matching `{paperAuthor, paperPermlink}` /
- * `{claimer}` scope to narrow it.
+ * `accepted_claims` CTE). Scope choice by surface shape:
+ *   - In-statement multi-result surfaces (the listing review-agg, search,
+ *     stats) compose it UNSCOPED by design: page/result membership is computed
+ *     inside the same statement (WHERE + ORDER BY + LIMIT), so no paper-key
+ *     scope can be bound up front. The accepted cost is ONE claims resolution
+ *     per query, guaranteed by the `AS MATERIALIZED` fence on
+ *     `authorship_claims` (see `authorshipClaimsCteBody`'s docblock).
+ *   - Batch surfaces whose paper-key set is known up front (the listing vote
+ *     batch) pass `{papers}` to bound materialization by the page.
+ *   - Single-claimer surfaces (the single-review fetch, profile) pass
+ *     `{claimer}`; single-paper surfaces (paper-detail) pass
+ *     `{paperAuthor, paperPermlink}`.
  *
  * @param opts.authorExpr - the review/vote author column (e.g. `'r.author'`,
  *   `'c.author'`, `'v.voter'`).
@@ -660,9 +667,11 @@ export function validPevoPaperWhere(opts: {
  * (paper_author, paper_permlink) pairs, bounding `claims_base` — and therefore
  * the embedded chain walk — by the page's paper-key set instead of total claim
  * history, so a flood of cheap pending claims on unrelated papers cannot
- * inflate the batch's materialization cost. Callers MUST NOT pass an empty
- * array (an empty page short-circuits before querying); the builder emits a
- * well-formed `FALSE` filter as the backstop.
+ * inflate the batch's materialization cost. An empty array is safe by
+ * construction — the builder emits a well-formed `FALSE` filter, so the CTE
+ * materializes nothing. Callers may still short-circuit an empty page before
+ * querying (as `batchResolveVotes` does), but that early return is an
+ * optimization, not the safety mechanism.
  */
 export type AuthorshipClaimsScope =
   | { claimer: string }
