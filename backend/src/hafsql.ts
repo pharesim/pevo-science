@@ -1093,15 +1093,19 @@ export function consentChainCteBody(
       AND NOT (c.author || '/' || c.permlink) = ANY(p.visited)
   ),
   chain_node_created AS (
-    SELECT t.*,
-      (SELECT MIN(o.block_num) FROM ${T.commentOps} o
-        WHERE o.author = t.author AND o.permlink = t.permlink) AS created_block,
-      (SELECT MIN(o.id) FROM ${T.commentOps} o
-        WHERE o.author = t.author AND o.permlink = t.permlink
-          AND o.block_num = (SELECT MIN(o2.block_num) FROM ${T.commentOps} o2
-                              WHERE o2.author = t.author AND o2.permlink = t.permlink)
-      ) AS created_id
+    -- One LATERAL first-op probe per chain node (creation block + same-block
+    -- op-id tie-break in a single indexed scan). LEFT JOIN rather than CROSS
+    -- JOIN so a node with no visible op row keeps its NULL annotation (the
+    -- ranked_children ordering is NULLS LAST), matching the correlated-
+    -- subquery shape this replaces.
+    SELECT t.*, fo.block_num AS created_block, fo.id AS created_id
     FROM chain_tree t
+    LEFT JOIN LATERAL (
+      SELECT o.block_num, o.id FROM ${T.commentOps} o
+      WHERE o.author = t.author AND o.permlink = t.permlink
+      ORDER BY o.block_num ASC, o.id ASC
+      LIMIT 1
+    ) fo ON TRUE
   ),
   ranked_children AS (
     SELECT *,

@@ -40,22 +40,32 @@
  * list-final gates layered on top of the original credit fix get their own
  * coverage:
  *
- *   - List-final (hive-schemas.md §2.9/2.10): the explicit-approval arm credits
- *     a claim only when `author_index` resolves to an existing `authors[]` slot.
- *     Pinned at the source level (both `reputation.ts` accepted_claims and the
- *     `hafsql.ts` authorshipClaimsCteBody read surface) and behaviorally by the
- *     "named-slot gate" canary (approval + ORCID arms; unlisted / out-of-range
- *     indexes grant zero credit).
+ *   - List-final (hive-schemas.md §2.9/2.10): the approval arm credits a claim
+ *     only when `author_index` resolves to a NAME-ONLY slot in the cumulative
+ *     chain union. Pinned at the source level and behaviorally by the
+ *     "named-slot gate" describe below, which runs the PRODUCTION
+ *     `authorshipClaimsCteBody` FROM-redirected at a synthetic corpus on real
+ *     Postgres: unlisted / out-of-range indexes and anchored slots grant zero
+ *     credit, and an attested-ORCID match accepts nothing on its own (there
+ *     is no metadata auto-accept; anchored slots consent via Route 2 only).
  *   - Claimer self-dealing: a credited claimer's self-vote / self-review on the
  *     paper they are credited for is excluded (the chain-poster and `authors[].hive`
  *     exclusions miss ORCID- and name-only-slot claimers). Pinned at the source
  *     level and behaviorally by the claimer-self-vote scenario in the vote-chain
  *     canary and the "claimer self-review exclusion (quality path)" canary.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import pg from 'pg';
 import { getPool, isHafConfigured } from '../../src/db.js';
+import { config } from '../../src/config.js';
+import {
+  T,
+  activeAccreditationsCteBody,
+  authorshipClaimsCteBody,
+  buildRecursiveWith,
+} from '../../src/hafsql.js';
 
 const PROJECT_ROOT = resolve(__dirname, '../..');
 
@@ -389,103 +399,114 @@ describe('co-author claim credit — claimer self-review exclusion (quality path
   );
 });
 
-describe('co-author claim credit — accepted_claims named-slot gate (list-final)', () => {
-  it.skipIf(!isHafConfigured())(
-    'an approved claim is credited only when author_index resolves to an existing authors[] slot; ORCID arm is slot-gated too',
-    { timeout: 30_000 },
-    async (ctx) => {
-      const pool = getPool();
-      if (!pool) return ctx.skip(true, 'no pool available');
+// ── Named-slot gate, driven through the PRODUCTION authorshipClaimsCteBody
+//    (FROM-redirected at a synthetic corpus on real Postgres — the same
+//    technique as the consented-authors and pending-authorships real-postgres
+//    suites). Composes activeAccreditationsCteBody + authorshipClaimsCteBody
+//    exactly like the production read surfaces, so the corpus's authority
+//    attestations are genuinely in scope — and provably accept nothing.
+const CLAIMS_DB_URL = process.env.APP_DATABASE_URL;
+const claimsPool = CLAIMS_DB_URL ? new pg.Pool({ connectionString: CLAIMS_DB_URL, max: 1 }) : null;
 
-      // Reconstruct the accepted_claims approval + ORCID arms (the two non-trivial
-      // arms) with the list-final slot gate. The post bob/paper-A names two slots:
-      //   authors[0] = a name-only slot (connected via approval)
-      //   authors[1] = an ORCID slot (auto-accepted when the claimer's accredited
-      //                ORCID matches). The ORCID equality here is simplified — the
-      //                whitespace-canonicalization (chainOrcidAutoAcceptMatchSql)
-      //                is covered by its own tests; this canary pins the arm's
-      //                author_index/slot gating, not the BTRIM charset.
-      // Claims:
-      //   alice  → author_index 0, approved by bob  → ACCEPTED (slot 0 exists)
-      //   frank  → author_index NULL, approved by bob → REJECTED (unlisted)
-      //   grace  → author_index 5, approved by bob   → REJECTED (slot 5 absent)
-      //   hank   → author_index 1, ORCID match        → ACCEPTED (slot 1 exists)
-      //   ivan   → author_index 9, ORCID match        → REJECTED (slot 9 absent)
-      // Mutation-kill: list-final is slot-gated per arm. Drop the explicit-
-      // approval arm's `jsonb_typeof(... -> author_index) = 'object'` gate and
-      // grace (out-of-range approval, slot 5 absent) flips to accepted. Drop the
-      // ORCID arm's author_index anchoring (match the accredited orcid against
-      // any slot instead of `authors -> author_index ->> 'orcid'`) and ivan
-      // (out-of-range ORCID, slot 9 absent) flips to accepted. Either flip turns
-      // the assertions red. frank (author_index NULL) stays rejected regardless:
-      // the `author_index IS NOT NULL` guard, not the slot gate, rejects the
-      // unlisted claim.
-      const sql = `
-        WITH
-        posts(author, permlink, parent_author, json_metadata) AS (
-          VALUES ('bob'::text, 'paper-A'::text, ''::text,
-            '{"pevotest":{"type":"paper","authors":[{"name":"Alice X"},{"orcid":"0000-0002-1111-2222"}]}}'::jsonb)
-        ),
-        active_accreditations(account, orcid) AS (
-          VALUES ('hank'::text, '0000-0002-1111-2222'::text), ('ivan'::text, '0000-0002-1111-2222'::text)
-        ),
-        claim_events(action, claimer, paper_author, paper_permlink, author_index, approver, block_num) AS (
-          VALUES
-            ('claim_authorship'::text,   'alice'::text, 'bob'::text, 'paper-A'::text, 0::int,    'alice'::text, 10),
-            ('approve_authorship'::text, 'alice'::text, 'bob'::text, 'paper-A'::text, 0::int,    'bob'::text,   20),
-            ('claim_authorship'::text,   'frank'::text, 'bob'::text, 'paper-A'::text, NULL::int, 'frank'::text, 10),
-            ('approve_authorship'::text, 'frank'::text, 'bob'::text, 'paper-A'::text, NULL::int, 'bob'::text,   20),
-            ('claim_authorship'::text,   'grace'::text, 'bob'::text, 'paper-A'::text, 5::int,    'grace'::text, 10),
-            ('approve_authorship'::text, 'grace'::text, 'bob'::text, 'paper-A'::text, 5::int,    'bob'::text,   20),
-            ('claim_authorship'::text,   'hank'::text,  'bob'::text, 'paper-A'::text, 1::int,    'hank'::text,  10),
-            ('claim_authorship'::text,   'ivan'::text,  'bob'::text, 'paper-A'::text, 9::int,    'ivan'::text,  10)
-        ),
-        accepted_claims AS (
-          SELECT DISTINCT ce.claimer, ce.paper_author, ce.paper_permlink
-          FROM claim_events ce
-          WHERE ce.action = 'claim_authorship'
-            AND (
-              -- Explicit-approval arm, list-final gated
-              (
-                ce.author_index IS NOT NULL
-                AND EXISTS (
-                  SELECT 1 FROM claim_events ap
-                  WHERE ap.action = 'approve_authorship'
-                    AND ap.claimer = ce.claimer AND ap.paper_author = ce.paper_author
-                    AND ap.paper_permlink = ce.paper_permlink AND ap.block_num > ce.block_num
-                    AND ap.approver IN (ap.paper_author, 'bridge')
-                )
-                AND EXISTS (
-                  SELECT 1 FROM posts c
-                  WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
-                    AND c.parent_author = ''
-                    AND jsonb_typeof(c.json_metadata -> $1 -> 'authors' -> ce.author_index) = 'object'
-                )
-              )
-              -- ORCID auto-accept arm (already requires author_index IS NOT NULL;
-              -- the orcid subscript only resolves on an existing slot, so it is
-              -- inherently slot-gated — ivan's out-of-range index returns NULL)
-              OR (ce.author_index IS NOT NULL AND EXISTS (
-                SELECT 1 FROM posts c
-                JOIN active_accreditations aa ON aa.account = ce.claimer
-                WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
-                  AND c.parent_author = ''
-                  AND aa.orcid IS NOT NULL AND aa.orcid != ''
-                  AND (c.json_metadata -> $1 -> 'authors' -> ce.author_index ->> 'orcid') = aa.orcid
-              ))
-            )
-        )
-        SELECT claimer FROM accepted_claims ORDER BY claimer
-      `;
+describe.skipIf(!claimsPool)('co-author claim credit — authorship_claims named-slot gate (production builder)', () => {
+  let client: pg.PoolClient | null = null;
 
-      const result = await pool.query<{ claimer: string }>(sql, ['pevotest']);
-      const accepted = new Set(result.rows.map((r) => r.claimer));
+  const TAG = config.appTag;
+  const ADMIN = config.hiveAdminAccount;
+  const SLOT_ORCID = '0000-0002-1111-2222';
 
-      expect(accepted.has('alice'), 'approval of a claim resolving to a named slot must be credited').toBe(true);
-      expect(accepted.has('hank'), 'ORCID match on an existing slot must be credited').toBe(true);
-      expect(accepted.has('frank'), 'an author_index=null (unlisted) approval grants no credit').toBe(false);
-      expect(accepted.has('grace'), 'an out-of-range author_index approval grants no credit').toBe(false);
-      expect(accepted.has('ivan'), 'an out-of-range author_index ORCID match grants no credit').toBe(false);
+  // The post bob/paper-A names two slots in its CURRENT metadata:
+  //   authors[0] = {name: 'Alice X'}                — name-only (Route-3 claimable)
+  //   authors[1] = {orcid: SLOT_ORCID, name: ...}   — ORCID-anchored (Route-2 only)
+  const PAPER_META = {
+    app: `${TAG}/1`,
+    [TAG]: {
+      type: 'paper',
+      authors: [{ name: 'Alice X' }, { orcid: SLOT_ORCID, name: 'Hank H' }],
     },
-  );
+  };
+
+  function cjOp(action: string, signer: string, json: Record<string, unknown>, block: number, id: number) {
+    return { required_posting_auths: [signer], json: JSON.stringify({ action, ...json }), block_num: block, id };
+  }
+
+  // Claims over those slots:
+  //   alice → index 0 (name-only), approved by bob   → ACCEPTED
+  //   frank → index omitted (unlisted), approved      → pending (no slot resolves)
+  //   grace → index 5 (out of range), approved        → pending (no slot at 5)
+  //   hank  → index 1 (ORCID-anchored), approved AND
+  //           authority-attested with the slot ORCID  → pending (name-only gate:
+  //           anchored slots consent via Route 2 only)
+  //   ivan  → index 1, attested ORCID matches, NO
+  //           approval                                → pending (the deleted
+  //           ORCID auto-accept arm accepted exactly this configuration with
+  //           no act of consent; its absence keeps ivan pending)
+  const CUSTOM_JSONS = [
+    cjOp('accredit', ADMIN, { account: 'hank', orcid: SLOT_ORCID }, 50, 100),
+    cjOp('accredit', ADMIN, { account: 'ivan', orcid: SLOT_ORCID }, 50, 101),
+    cjOp('claim_authorship', 'alice', { paper_author: 'bob', paper_permlink: 'paper-A', author_index: 0 }, 200, 200),
+    cjOp('approve_authorship', 'bob', { claimer: 'alice', paper_author: 'bob', paper_permlink: 'paper-A', author_index: 0 }, 210, 201),
+    cjOp('claim_authorship', 'frank', { paper_author: 'bob', paper_permlink: 'paper-A' }, 200, 202),
+    cjOp('approve_authorship', 'bob', { claimer: 'frank', paper_author: 'bob', paper_permlink: 'paper-A' }, 210, 203),
+    cjOp('claim_authorship', 'grace', { paper_author: 'bob', paper_permlink: 'paper-A', author_index: 5 }, 200, 204),
+    cjOp('approve_authorship', 'bob', { claimer: 'grace', paper_author: 'bob', paper_permlink: 'paper-A', author_index: 5 }, 210, 205),
+    cjOp('claim_authorship', 'hank', { paper_author: 'bob', paper_permlink: 'paper-A', author_index: 1 }, 200, 206),
+    cjOp('approve_authorship', 'bob', { claimer: 'hank', paper_author: 'bob', paper_permlink: 'paper-A', author_index: 1 }, 210, 207),
+    cjOp('claim_authorship', 'ivan', { paper_author: 'bob', paper_permlink: 'paper-A', author_index: 1 }, 200, 208),
+  ];
+
+  beforeAll(async () => {
+    if (!claimsPool) return;
+    client = await claimsPool.connect();
+    await client.query(`CREATE TEMP TABLE syn_comments (author text, permlink text, parent_author text DEFAULT '', parent_permlink text, json_metadata jsonb)`);
+    await client.query(`CREATE TEMP TABLE syn_comment_ops (author text, permlink text, block_num int, id bigint, json_metadata jsonb)`);
+    await client.query(`CREATE TEMP TABLE syn_cj (custom_id text, required_posting_auths jsonb, json text, block_num int, id bigint)`);
+    await client.query(
+      `INSERT INTO syn_comments (author, permlink, parent_permlink, json_metadata) VALUES ('bob', 'paper-A', $1, $2)`,
+      [TAG, PAPER_META],
+    );
+    await client.query(
+      `INSERT INTO syn_comment_ops VALUES ('bob', 'paper-A', 100, 1000, $1)`,
+      [PAPER_META],
+    );
+    for (const j of CUSTOM_JSONS) {
+      await client.query(`INSERT INTO syn_cj VALUES ($1, $2, $3, $4, $5)`, [TAG, JSON.stringify(j.required_posting_auths), j.json, j.block_num, j.id]);
+    }
+  });
+
+  afterAll(async () => {
+    client?.release();
+    if (claimsPool) await claimsPool.end();
+  });
+
+  it('accepts only a name-only-slot claim + approval; unlisted, out-of-range, anchored, and attested-ORCID-match claims stay pending', { timeout: 30_000 }, async () => {
+    const cte = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => authorshipClaimsCteBody(idx, { paperAuthor: 'bob', paperPermlink: 'paper-A' }),
+    );
+    let sql = cte.sql;
+    sql = sql.split(T.comments).join('syn_comments');
+    sql = sql.split(T.commentOps).join('syn_comment_ops');
+    sql = sql.split(T.customJson).join('syn_cj');
+    expect(sql).not.toContain('hafsql.');
+
+    const result = await client!.query(
+      `${sql} SELECT claimer, status FROM authorship_claims ORDER BY claimer`,
+      cte.params,
+    );
+
+    // Exact-set assertion: ONLY the name-only claim+approve row is accepted.
+    // hank and ivan pin the deleted auto-accept arms as deleted — both carry
+    // an authority-attested ORCID equal to the slot's, which under the old
+    // ORCID arm auto-accepted; the composed-and-populated
+    // active_accreditations CTE accepts neither now.
+    expect(result.rows).toEqual([
+      { claimer: 'alice', status: 'accepted' },
+      { claimer: 'frank', status: 'pending' },
+      { claimer: 'grace', status: 'pending' },
+      { claimer: 'hank', status: 'pending' },
+      { claimer: 'ivan', status: 'pending' },
+    ]);
+  });
 });

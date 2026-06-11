@@ -146,3 +146,18 @@ Dismissed/no-action at triage: `consent_ops_raw` namespace scan (same accepted s
 When the four items land, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commits. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-11, single fix commit on main)
+
+All four hold items landed:
+
+1. **Behavioral cycle-credit test** — new `tests/reputation-consented-credit-cycle-behavioral.test.ts`: captures the REAL cycle SQL `computeReputationBatch` emits (the capturing-pool harness from the cycle-shape pins), FROM-redirects all five HAF view literals at synthetic temp tables, and executes it verbatim on a real planner. Pins both ratified invariants behaviorally: the corpus's only vote lands at block 100 and eve's `author_accept` at block 200, and her `papers` component equals the root broadcaster's full score (retroactivity — a reintroduced vote-window under ANY alias zeroes her score and fails red, the behavioral complement of the structural name-denylist pin); a latest-op resign scores her 0 through the composed scoring output; a re-accept restores the full score; the root broadcaster is unaffected throughout.
+2. **Named-slot-gate describe reworked** — the frozen pre-arm-removal SQL copy (deleted ORCID auto-accept arm + dead `chainOrcidAutoAcceptMatchSql` comment reference) in `tests/routes/reputation-coauthor-claim-credit.test.ts` is replaced by a production-builder FROM-redirect describe: it composes `activeAccreditationsCteBody` + `authorshipClaimsCteBody` exactly as the read surfaces do over a synthetic corpus, with the exact-set assertion accepting ONLY the name-only claim+approve row. Unlisted (omitted `author_index`), out-of-range, anchored-slot-with-approval, and attested-ORCID-match-without-approval all stay pending — the last two are direct inversions of the deleted auto-accept semantics, with the corpus's authority attestations composed and provably accepting nothing. The file-header bullet was updated to match.
+3. **JS-to-SQL twin cross-reference** — `buildCumulativeAuthorsForChain`'s docblock now names `consentChainCteBody` as the SQL twin and enumerates the five invariants that must stay mirrored (cumulative-admission gate, earliest-created canonical-path selection, 50-hop cap, visited-set cycle guard, two-track first-occurrence display-slot ordering as the `author_index` domain). Symbol anchors only.
+4. **`chain_node_created` LATERAL collapse** — the triple-correlated `operation_comment_view` subqueries replaced by one first-op probe per chain node. `LEFT JOIN LATERAL ... ON TRUE` rather than `CROSS JOIN LATERAL` so a node with no visible op row keeps its NULL annotation (`ranked_children` orders `NULLS LAST`) — exactly the prior correlated-subquery semantics in one indexed scan; the site comment records why LEFT.
+
+Verification: consent-stack batch green — consented-authors-cte-real-postgres, me-pending-authorships-real-postgres, hafsql, both cycle-shape pins, coauthor-claim-credit (13), the new behavioral canary, papers-consented-badge, me-authorships-pending, consent-ops: 124 passed / 4 data-dependent skips. Real-HAF `papers.test.ts` (15 passed / 1 skipped) executes the rewritten chain walk live. `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

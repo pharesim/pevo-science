@@ -369,6 +369,19 @@ function hivelessCompositeKey(entry: Record<string, unknown>): string | null {
  * and Hive-less entries interleave in displayed order by first appearance
  * across the chain.
  *
+ * SQL twin: `consentChainCteBody` (`hafsql.ts`) ports this construction —
+ * together with the chain resolution in `resolveContinuationChain` — to a
+ * recursive CTE consumed by the consent stack (reputation cycle, consented
+ * badge, pending-authorships discovery). Five invariants must stay mirrored
+ * between the JS and SQL sides or the displayed `authors[]` and the
+ * credited set drift: the cumulative-admission gate (a continuation is
+ * admitted only if its chain author is in the union built from its own
+ * root-path prefix), the earliest-created canonical-path selection among
+ * admitted siblings, the 50-hop walk cap, the visited-set cycle guard, and
+ * the two-track first-occurrence display-slot ordering (whose dense rank is
+ * the `author_index` resolution domain for name-only claims). A behavior
+ * change on either side must land on both.
+ *
  * @param chainPosts - chain links with their latest reconstructed pevo
  *   metadata, in chain order (root first, head last).
  * @param rootAuthor / rootPermlink - the canonical paper coordinates,
