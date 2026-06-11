@@ -78,3 +78,17 @@ Hold item landed, comment-only: the `orcid.test.ts` header carve-out inventory n
 Verification: `npm run typecheck` + `npm run lint` clean (known pre-existing `author-supersession.ts` unused-directive warning only); orcid suite 102/102 green vs real Postgres/Redis with the edit in place.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-06-11) — HELD PENDING FIXES (1 item)
+
+Scoped re-review of the round-2 fix commit `338eb188` via `/ce-code-review` (correctness on the session model; testing/maintainability/project-standards/learnings on Sonnet; ce-agent-native skipped per PEvO). **The round-2 held item is VERIFIED LANDED and accurate as far as it goes:** the three broadcast seams named in the new header text are genuinely all routed through the one `broadcastJsonMock`, the commit is comment-only, and no anchor rot was introduced. But three reviewers independently (conf 100/100/75) found the refreshed sentence is STILL not a truthful clause (a) inventory. One item before archive (comment-only):
+
+1. **(P2) The "Only the database pools and the broadcast seams (...) are mocked" enumeration omits two mocked surfaces.** The file's vi.mock set is five modules: `db.js`, `app-db.js`, `hive.js`, `accreditation.js`, and the `verifyHiveSignature.js` wrapper (delegates to real by default; fairly covered by the header's "STILL UNMOCKED" lines). The rewritten sentence accounts for the pools and the hive.js broadcast seams but omits: (a) `accreditation.js` — `getAccreditedSet` fully stubbed to `new Set()`, no real delegation; (b) the `hiveClient.database.getAccounts` -> `[]` read stub inside the same hive.js factory the broadcast-seam parenthetical describes. Extend the enumeration so the stated set matches the factory contents (name `getAccreditedSet` and `getAccounts` alongside the broadcast seams; the inline factory comments already carry the rationale). This is the same staleness class as the round-2 item, one layer deeper — the round-2 hold scoped only the `broadcastAdminCustomJson` omission, so this is a new round-3 finding, not a missed instruction. Mind `convention-enforcing-fix-must-audit-its-own-new-code`: before signaling, re-verify the rewritten sentence against ALL five vi.mock factories so the inventory cannot be wrong a third time.
+
+Dismissed at triage: the "Confirmed STILL UNMOCKED: verifyHiveSignature" phrasing being technically contradicted by the delegating wrapper (pre-existing, conf 50; the wrapper runs real by default and the characterization is behaviorally fair).
+
+When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit only. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
