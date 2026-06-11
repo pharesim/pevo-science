@@ -269,19 +269,24 @@ export async function fetchNotificationsFromHaf(
       -- operation_comment_view carries one row per edit (see hive-schemas edit
       -- semantics); earliest-wins makes edits silent.
       --
-      -- A credited authorship claimer (ORCID / name-only slot, absent from
-      -- authors[].hive) reviewing the paper they are credited for IS excluded from
-      -- the display review aggregates (excludeClaimedSelfWhere) and from the
-      -- reputation score (the cycle's accepted_claims NOT EXISTS gate), because a
-      -- self-review there would inflate ratings / score. This new_review arm is
-      -- INTENTIONALLY left ungated for that case: a notification confers no credit
-      -- and carries no display weight, so the self-dealing-inflation risk those
-      -- exclusions close does not apply. The arm reports raw review-shaped activity
-      -- on the recipient's paper, so the author is informed that a credited
-      -- co-author posted a review even though it does not count toward ratings or
-      -- score. (Gating it would compose the recipient-scoped accepted-claims set
-      -- into this multi-CTE query for a rare case with no integrity benefit.) The
-      -- co.author != $1 gate already drops the paper author's own self-review.
+      -- A credited account reviewing the paper they are credited for — an
+      -- accepted authorship claimer (ORCID / name-only slot, absent from
+      -- authors[].hive) or a Route-2 consented co-author (an anchored
+      -- author_accept, which leaves no claims row) — IS excluded from the
+      -- display review aggregates (the excludeClaimedSelfWhere +
+      -- excludeConsentedSelfWhere pair) and from the reputation score (the
+      -- cycle's NOT EXISTS gates over the full credited set: accepted claims
+      -- plus consented authors), because a self-review there would inflate
+      -- ratings / score. This new_review arm is INTENTIONALLY left ungated
+      -- for BOTH credited populations: a notification confers no credit and
+      -- carries no display weight, so the self-dealing-inflation risk those
+      -- exclusions close does not apply. The arm reports raw review-shaped
+      -- activity on the recipient's paper, so the author is informed that a
+      -- credited co-author posted a review even though it does not count
+      -- toward ratings or score. (Gating it would compose the
+      -- recipient-scoped credited-set resolution into this multi-CTE query
+      -- for a rare case with no integrity benefit.) The co.author != $1 gate
+      -- already drops the paper author's own self-review.
       SELECT * FROM (
         SELECT DISTINCT ON (co.author, co.permlink)
           'new_review'::text AS event_type,

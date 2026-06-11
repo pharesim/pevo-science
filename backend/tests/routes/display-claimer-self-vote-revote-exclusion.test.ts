@@ -12,12 +12,15 @@
  * loops also skip accepted claimers. This canary drives a claimer who votes via
  * BOTH channels and asserts the resolved net_votes counts only the third party.
  *
- * It also pins the AVAILABILITY boundary on the listing arm: the accepted-claims
- * leg of `batchResolveVotes` carries a per-leg catch that degrades a claims-side
+ * It also pins the AVAILABILITY boundary on the listing arm: the credited-set
+ * leg of `batchResolveVotes` (ONE query resolving accepted claims UNION
+ * consented authors) carries a per-leg catch that degrades a credited-set-side
  * failure to un-excluded displayed votes (votes are the surface's core data;
  * the exclusion is a display-parity refinement whose authoritative enforcement
  * is the reputation cycle), while a native-vote failure still rejects the batch.
- * Deleting that catch re-couples listing availability to claim-set health; the
+ * Because both exclusion populations resolve in that one query, a leg failure
+ * suspends BOTH (claims AND consented) for the volatile window. Deleting that
+ * catch re-couples listing availability to credited-set health; the
  * degrade-path describe below fails red in that case.
  *
  * **Carve-out (CLAUDE.md "Running Tests"):**
@@ -29,11 +32,11 @@
  *       the detail arm drives the real `/enrichment` route with the shared pool
  *       helper mocked to dispatch synthetic rows by SQL shape. The degrade-path
  *       describe additionally needs a deterministic per-leg query rejection
- *       (claims leg vs native leg), which real HAF cannot provide on demand.
+ *       (credited-set leg vs native leg), which real HAF cannot provide on demand.
  *   (b) `verifyHiveSignature` is NOT mocked — `/enrichment` is a public GET and the
  *       listing arm is a pure function call; neither is auth-focused.
  *   (c) Real-path companion: the SQL `excludeClaimedSelfWhere` gate and the
- *       `batchResolveVotes` claimedSet skip run against real HAF in the papers /
+ *       `batchResolveVotes` creditedSet skip run against real HAF in the papers /
  *       reviews / reputation-lifecycle suites; the cross-channel revote skip the
  *       public corpus cannot deterministically provide is what this pins.
  */
@@ -74,7 +77,7 @@ describe('listing net_votes (batchResolveVotes) — credited-claimer self-vote e
   it('drops a credited claimer who self-votes via BOTH a native vote and a revote', async () => {
     // claimer-orcid is an ACCEPTED claimer of alice/paper-A and self-votes on it
     // via a native vote (block 100) AND a later revote (block 200). thirdparty is
-    // an honest upvoter. The claimedSet skip must drop claimer-orcid regardless of
+    // an honest upvoter. The creditedSet skip must drop claimer-orcid regardless of
     // which channel its signal comes from, so net_votes counts only thirdparty.
     const pool = {
       query: async (sql: string) => {
@@ -87,7 +90,7 @@ describe('listing net_votes (batchResolveVotes) — credited-claimer self-vote e
           ] };
         }
         // native votes (the SQL gate is not actually run under the mock, so we
-        // include the claimer here too — the JS claimedSet skip must still drop it)
+        // include the claimer here too — the JS creditedSet skip must still drop it)
         return { rows: [
           { author: PAPER_AUTHOR, permlink: PAPER_PERMLINK, voter: CLAIMER, weight: 10000, block_num: 100 },
           { author: PAPER_AUTHOR, permlink: PAPER_PERMLINK, voter: THIRDPARTY, weight: 10000, block_num: 100 },
@@ -101,19 +104,21 @@ describe('listing net_votes (batchResolveVotes) — credited-claimer self-vote e
       [CLAIMER, THIRDPARTY],
     );
 
-    // Only the third party counts; without the claimedSet skip the claimer's
+    // Only the third party counts; without the creditedSet skip the claimer's
     // native+revote signals would push net_votes to 2.
     expect(resolved.get(`${PAPER_AUTHOR}/${PAPER_PERMLINK}`)?.net_votes).toBe(1);
   });
 });
 
-describe('listing net_votes (batchResolveVotes) — claims-leg failure degrades instead of rejecting', () => {
-  it('resolves the batch with the claimed self-vote PRESENT when the claims query rejects', async () => {
-    // The claims leg fails (worst case the HAF pool's ~30s connection-level
-    // statement_timeout from db.ts); the batch must still resolve. With no
-    // claims data the claimedSet is empty, so the credited claimer's self-vote
-    // is served alongside the honest vote: availability over display parity
-    // for one volatile-cache window.
+describe('listing net_votes (batchResolveVotes) — credited-set-leg failure degrades instead of rejecting', () => {
+  it('resolves the batch with the claimed self-vote PRESENT when the credited-set query rejects', async () => {
+    // The credited-set leg fails (worst case the HAF pool's ~30s
+    // connection-level statement_timeout from db.ts); the batch must still
+    // resolve. The leg resolves accepted claims UNION consented authors in one
+    // query, so a failure suspends BOTH exclusion populations together: the
+    // creditedSet is empty and the credited claimer's self-vote is served
+    // alongside the honest vote — availability over display parity for one
+    // volatile-cache window.
     const pool = {
       query: async (sql: string) => {
         if (sql.includes('FROM authorship_claims') && sql.includes("status = 'accepted'")) {
@@ -134,14 +139,14 @@ describe('listing net_votes (batchResolveVotes) — claims-leg failure degrades 
     );
 
     // Degraded, not rejected: net_votes counts BOTH voters (the exclusion is
-    // suspended), proving the catch is attached to exactly the claims leg.
+    // suspended), proving the catch is attached to exactly the credited-set leg.
     expect(resolved.get(`${PAPER_AUTHOR}/${PAPER_PERMLINK}`)?.net_votes).toBe(2);
   });
 
   it('still rejects the batch when the NATIVE vote query fails (the asymmetry pin)', async () => {
     // Without native votes there is no vote data at all — a native-leg failure
     // must reject the batch rather than serve a fabricated empty result. This
-    // pins the degrade/fail asymmetry: catch on the claims leg only.
+    // pins the degrade/fail asymmetry: catch on the credited-set leg only.
     const pool = {
       query: async (sql: string) => {
         if (sql.includes('SELECT DISTINCT ON (v.author, v.permlink, v.voter)')) {

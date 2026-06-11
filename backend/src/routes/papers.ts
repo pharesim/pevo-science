@@ -3265,6 +3265,24 @@ async function fetchConsentedAccountsForPaper(author: string, permlink: string):
   }
 }
 
+/** Resolve the per-paper consented set through the shared
+ *  `consented-authors:{author}:{permlink}` VOLATILE cache entry. Both
+ *  consumers — the paper-detail badge (`annotateAuthorsWithConsent`) and the
+ *  enrichment revote-channel skip in `fetchEnrichmentFromHaf` — go through
+ *  this wrapper, so a request on either surface reuses the other's
+ *  resolution for the current block instead of re-firing the HAF query.
+ *  Volatile tier: `block-watcher.ts` drops the entry each block
+ *  (at-most-one-block stale; CONSENTED_SET_TTL_MS backstops a stalled
+ *  watcher). A null (pool-unavailable) result is never cached (`getOrSet`
+ *  null-skip) and a `HafQueryError` propagates uncached. */
+function getConsentedAccountsForPaperCached(author: string, permlink: string): Promise<string[] | null> {
+  return hafCache.getOrSet(
+    `consented-authors:${author}:${permlink}`,
+    () => fetchConsentedAccountsForPaper(author, permlink),
+    CONSENTED_SET_TTL_MS,
+  );
+}
+
 /** Annotate each paper-detail author entry with the `consented` flag, keyed
  *  on the entry's normalized `hive` account. Hive-less entries (display-only
  *  credits, unresolved-ORCID slots) are never consented through this surface.
@@ -3312,11 +3330,7 @@ async function annotateAuthorsWithConsent(
     return withFlag(() => true);
   }
 
-  const accounts = await hafCache.getOrSet(
-    `consented-authors:${rootAuthor}:${rootPermlink}`,
-    () => fetchConsentedAccountsForPaper(rootAuthor, rootPermlink),
-    CONSENTED_SET_TTL_MS,
-  );
+  const accounts = await getConsentedAccountsForPaperCached(rootAuthor, rootPermlink);
   if (!accounts) return null;
   const consented = new Set(accounts);
   return withFlag((a) => {
@@ -3642,12 +3656,14 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
         );
       })(),
       // Resolved consented set (Routes 1/2) for the JS-side revote-channel
-      // skip below — the same per-paper stack the consented badge resolves
-      // (shared volatile cache entry). A pool-null return is impossible on
+      // skip below — resolved through the SAME volatile cache entry the
+      // consented badge uses (`getConsentedAccountsForPaperCached`), so an
+      // enrichment rebuild reuses the badge's per-block resolution instead
+      // of re-firing the HAF query. A pool-null return is impossible on
       // this path (the enclosing fetcher already holds the pool); a query
-      // failure throws HafQueryError and fails the enrichment like every
-      // other leg of this Promise.all (fail-closed, per-request).
-      fetchConsentedAccountsForPaper(author, permlink),
+      // failure throws HafQueryError uncached and fails the enrichment like
+      // every other leg of this Promise.all (fail-closed, per-request).
+      getConsentedAccountsForPaperCached(author, permlink),
     ]);
 
     const latestVersion = versions.length > 0 ? versions[versions.length - 1].version_number : 1;
