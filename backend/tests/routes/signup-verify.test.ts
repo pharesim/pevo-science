@@ -684,10 +684,10 @@ describe.skipIf(!dbReachable)('/link broadcast-rejection on ORCID-only (email=NU
 // `ROUTE_FLAVOR_DERIVATION` — importing the production constant as the expected
 // value would let the shared-constant dedup defeat the pin.
 //
-// `broadcastJsonMock` backs BOTH the `hiveClient.broadcast.json` seam and
-// `broadcastJsonWithTimeout` (see the vi.mock above), so its first call
-// argument is the custom_json payload object the route passes to
-// `broadcastJsonWithTimeout`; `payload.json` is the stringified accredit op.
+// `broadcastJsonMock` backs all three broadcast seams: `hiveClient.broadcast.json`,
+// `broadcastJsonWithTimeout`, and `broadcastAdminCustomJson` (see the vi.mock
+// above). Every seam's first call argument is a custom_json envelope carrying
+// the stringified accredit op in `.json`, so this scan covers them all.
 function findAccreditOp(): { evidence_hash: string; account: string } {
   for (const call of broadcastJsonMock.mock.calls) {
     const [payload] = call as [{ json?: string } | undefined];

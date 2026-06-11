@@ -193,14 +193,11 @@ export async function broadcastSendOperationsWithTimeout(
  * (`config.pevoAdminPostingKey`) is unset. This is a LIVE failure mode of the
  * helper: it checks the key on every call and throws before broadcasting, so
  * the throw is reachable from any adopter that does not pre-guard the key.
- * Adopters handle it two ways:
- *   - A WoT-style caller catches it inline and reports a `skipped` result.
- *   - A route caller pre-guards (or skip-guards) the key and returns its own
- *     response shape on the unset-key path (e.g. 500 "admin posting key not
- *     configured", or skipping the broadcast), OR lets the throw fall into
- *     `handleBroadcastError`, which maps it to a generic 502.
- * Pre-guard at the call site whenever the unset-key path needs a response shape
- * more specific than that generic 502.
+ * Call-site contract: pre-guard `config.pevoAdminPostingKey` whenever the
+ * unset-key path needs a response shape more specific than the generic 502
+ * `handleBroadcastError` maps unrecognized broadcast errors to (the `wot.ts`
+ * pre-guards are the pattern); otherwise let the throw fall through to the
+ * caller's broadcast-error handling.
  */
 export class AdminKeyNotConfiguredError extends Error {
   constructor() {

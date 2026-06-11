@@ -74,3 +74,17 @@ Items before archive (all comment-only):
 When the three items land, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit only. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-11, the commit performing this mv)
+
+All three hold items landed, comment-only:
+
+1. **`hive.ts` `AdminKeyNotConfiguredError` docblock:** dropped the per-adopter enumeration entirely (and the WoT bullet's wrong "catches it inline → skipped" claim with it). The docblock now states only the call-site contract: pre-guard `config.pevoAdminPostingKey` whenever the unset-key path needs a response shape more specific than the generic 502 `handleBroadcastError` maps unrecognized broadcast errors to, citing the `wot.ts` pre-guards as the pattern; otherwise let the throw fall through. Stable symbols only; no slug/round/line/SHA.
+2. **`signup-verify.test.ts` `findAccreditOp` comment:** the seam enumeration now names all three seams backed by `broadcastJsonMock` (`hiveClient.broadcast.json`, `broadcastJsonWithTimeout`, `broadcastAdminCustomJson`) and states the invariant the scan relies on: every seam's first call argument is a custom_json envelope carrying the stringified accredit op in `.json`.
+3. **`signup-verify-session-binding.test.ts` header:** the "only mocks" enumeration now matches the factory contents — broadcast seams listed as `hiveClient.broadcast.json` / `broadcastJsonWithTimeout` / `broadcastAdminCustomJson`, one shared mock backing all three.
+
+Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` unused-directive warning; `signup-verify.test.ts` + `signup-verify-session-binding.test.ts` 23/23 green vs real Postgres/Redis. `hive.ts` change is docblock-only (no behavior).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

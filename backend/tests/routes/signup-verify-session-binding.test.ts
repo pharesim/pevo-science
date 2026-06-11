@@ -12,7 +12,9 @@
  *
  * The only mocks here cover the chain-side surface that is impractical to
  * run per-test: `createClaimedAccount`, the `hiveClient.database.getAccounts`
- * lookup, and `broadcastJsonWithTimeout`. The session-binding logic itself
+ * lookup, and the broadcast seams (`hiveClient.broadcast.json`,
+ * `broadcastJsonWithTimeout`, `broadcastAdminCustomJson` — one shared mock
+ * backs all three). The session-binding logic itself
  * runs entirely real (cookie minting, sha256 hashing, pg INSERT/UPDATE of
  * `signup_binding_hash`, cookie verify in `/confirm` and `/link`).
  *
