@@ -52,3 +52,22 @@ back to `tasks/pending/` once the echo is in; re-check the secondary gate before
 starting.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## [BLOCKED by UI] (2026-06-11, Backend) — backend echo landed, block re-characterized
+
+The named backend dependency is RESOLVED: the `mode=fresh_auth` ORCID callback
+response now echoes `author_index` / `claimer` from the bound target (the
+response builder in `backend/src/routes/orcid.ts` spreads both optional
+fields; landed with the archived `backend-authorship-credit-ops-fresh-auth`,
+its item 7). Verified in code 2026-06-11.
+
+NOT moved to `pending/` because the secondary gate still fails: no SPA
+credit-op broadcast wiring exists at all (grep for `claim_authorship` /
+`approve_authorship` / `revoke_authorship` across `frontend/src` returns
+nothing), so there is still no cache write/read site to key. The remaining
+dependency is UI-zone sequencing, so the block is re-characterized
+`[BLOCKED by UI]`: unblocks when the SPA credit-op broadcast wiring that
+passes `fresh_auth_proof` lands; whoever lands it moves this file to
+`pending/`. No backend work remains on this task.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
