@@ -1,7 +1,7 @@
 ---
 title: "SQL gate-drop or semantic shift requires cross-surface audit beyond the filter clause itself"
 date: 2026-05-12
-last_updated: 2026-06-11
+last_updated: 2026-06-12
 category: conventions
 module: backend/src + agents/docs
 problem_type: convention
@@ -70,7 +70,8 @@ When a semantic-shift lands, run the following audit before closing review. The 
 
 **(f) Cycle↔display parity twins (credited-set membership shifts).** When the semantic shift changes WHO belongs to a credited or excluded *set* — not just which content rows a gate admits — audit every display-side helper whose purpose is to mirror a cycle-side gate. The reputation cycle's self-dealing exclusion gates have display twins (`excludeClaimedSelfWhere`, the claimed-set exclusion inside `batchResolveVotes`) that exist solely for parity with the score path. A membership change applied to the cycle's gates but not to the twins splits cycle credit from displayed aggregates silently: both sides stay individually green because each is internally self-consistent, and nothing red appears until a user compares displayed `avg_rating`/`net_votes` against credited scores.
 
-- **How to detect:** the parity-claiming docblocks are themselves the checklist anchors — grep the display layer for parity language pointing at the cycle (e.g. a docblock claiming the display aggregation excludes "exactly as the score path does"). For each twin found, confirm the set it tests is the SAME set the cycle now uses, not a stale subset; when the cycle's set definition changed in this diff and the twin's docblock claim still reads true, verify rather than trust it. The durable guard is a cycle-vs-display parity test: drive one scenario through both paths and assert agreement, so the next membership shift turns a test red instead of relying on this checklist being run.
+- **How to detect:** the parity-claiming docblocks are themselves the checklist anchors — grep the display layer for parity language pointing at the cycle (e.g. a docblock claiming the display aggregation excludes "exactly as the score path does"). For each twin found, confirm the set it tests is the SAME set the cycle now uses, not a stale subset; when the cycle's set definition changed in this diff and the twin's docblock claim still reads true, verify rather than trust it.
+- **The durable guard depends on how the twin is implemented.** While a display twin is a SEPARATE implementation of the cycle's set, the guard is a literal cycle-vs-display parity test: drive one scenario through both paths and assert agreement, so the next membership shift turns a test red instead of relying on this checklist being run. Once both sides compose a single shared membership builder (the consented-set resolution after the display-exclusion migration: the cycle and every display gate compose `consentedAuthorsCteBody`), membership drift is structurally impossible at the SQL layer and a literal agreement test adds no protection; the satisfied guard form is then (i) the shared-builder single-sourcing itself, (ii) an equivalence pin on any side-specific seed (the display `consent_seed` ≡ all-roots pin), and (iii) per-side behavioral canaries. Re-require the literal parity test only if a side stops composing the shared builder.
 
 ### Copy-pasteable PR checklist
 
@@ -88,7 +89,9 @@ When a semantic-shift lands, run the following audit before closing review. The 
           direction; update contract doc if the semantics changed
 - [ ] (f) Cycle/display parity twins: if the change shifts credited/excluded SET membership,
           grep the display layer for parity-claiming twins of the cycle gate; confirm each
-          tests the cycle's CURRENT set; prefer adding a cycle-vs-display parity test
+          tests the cycle's CURRENT set; guard form: literal cycle-vs-display parity test
+          while the twin is a separate implementation; shared-builder single-sourcing +
+          seed-equivalence pin + per-side canaries once membership is single-sourced
 ```
 
 ## Why This Matters
