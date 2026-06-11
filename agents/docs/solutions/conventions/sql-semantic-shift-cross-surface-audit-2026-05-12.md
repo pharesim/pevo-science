@@ -1,6 +1,7 @@
 ---
 title: "SQL gate-drop or semantic shift requires cross-surface audit beyond the filter clause itself"
 date: 2026-05-12
+last_updated: 2026-06-11
 category: conventions
 module: backend/src + agents/docs
 problem_type: convention
@@ -9,7 +10,7 @@ severity: high
 applies_when:
   - "Dropping or narrowing a SQL predicate that previously acted as a gate (e.g. app-tag filter, accreditation check, status flag)"
   - "Introducing a canonical SQL helper that replaces ad-hoc per-site filters and chooses a canonical semantics that may differ from what each per-site variant had"
-  - "A code-review surfaces findings at sites outside the SQL diff (docs, frontend, notification arms, listing/detail set parity)"
+  - "A code-review surfaces findings at sites outside the SQL diff (docs, frontend, notification arms, listing/detail set parity, cycle/display parity twins)"
   - "Stats counters, API-contract counts, or notification triggers reference the same logical object class affected by the predicate change"
   - "Listing and detail endpoints draw from different queries over the same logical set, and a predicate change to one can create click-through 404s from the other"
 related_components:
@@ -28,7 +29,7 @@ tags:
 
 # SQL semantic-shift requires cross-surface audit beyond the filter clause
 
-> **Companion to** [`pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`](pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md) (identity-gate shape) and [`wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`](wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md) (call-site audit after introducing a helper). Those two cover the SQL clause's correctness and call-site completeness. This doc covers what *else* to audit when the gate's admit/exclude semantics shift: API-contract docs, frontend defaults, notification arm composition, listing↔detail set parity, and downstream counter monotonicity.
+> **Companion to** [`pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`](pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md) (identity-gate shape) and [`wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`](wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md) (call-site audit after introducing a helper). Those two cover the SQL clause's correctness and call-site completeness. This doc covers what *else* to audit when the gate's admit/exclude semantics shift: API-contract docs, frontend defaults, notification arm composition, listing↔detail set parity, downstream counter monotonicity, and cycle↔display parity twins.
 
 ## Context
 
@@ -40,7 +41,7 @@ A `/ce-code-review` pass on the commit surfaced 21 findings across 11 reviewers.
 
 A **SQL semantic-shift change** is any change that alters what the gate admits or excludes beyond a trivial, narrowing filter addition. It includes gate-drop (removing a conjunct), gate-replace (swapping one predicate for another with different semantics), gate-narrow (adding a predicate that tightens the admitted set), and gate-broaden (relaxing a predicate). Typo fixes, parameter-refactors, and alias renames that preserve semantics are not semantic-shift changes and do not trigger this checklist.
 
-When a semantic-shift lands, run the following audit before closing review. The SQL clause is surface (a); the four remaining surfaces are just as load-bearing.
+When a semantic-shift lands, run the following audit before closing review. The SQL clause is surface (a); the five remaining surfaces are just as load-bearing.
 
 ### Cross-surface audit checklist
 
@@ -67,6 +68,10 @@ When a semantic-shift lands, run the following audit before closing review. The 
 
 - **How to detect:** grep `backend/src/routes/stats.ts` for any `COUNT` or `SUM` that uses the changed gate. For each, compute the net expected direction of the shift (malformed rows out, new-app rows in) and check whether the API contract doc for that field notes the semantics change. Flag any field whose description implies monotonicity or a particular universe that no longer holds.
 
+**(f) Cycle↔display parity twins (credited-set membership shifts).** When the semantic shift changes WHO belongs to a credited or excluded *set* — not just which content rows a gate admits — audit every display-side helper whose purpose is to mirror a cycle-side gate. The reputation cycle's self-dealing exclusion gates have display twins (`excludeClaimedSelfWhere`, the claimed-set exclusion inside `batchResolveVotes`) that exist solely for parity with the score path. A membership change applied to the cycle's gates but not to the twins splits cycle credit from displayed aggregates silently: both sides stay individually green because each is internally self-consistent, and nothing red appears until a user compares displayed `avg_rating`/`net_votes` against credited scores.
+
+- **How to detect:** the parity-claiming docblocks are themselves the checklist anchors — grep the display layer for parity language pointing at the cycle (e.g. a docblock claiming the display aggregation excludes "exactly as the score path does"). For each twin found, confirm the set it tests is the SAME set the cycle now uses, not a stale subset; when the cycle's set definition changed in this diff and the twin's docblock claim still reads true, verify rather than trust it. The durable guard is a cycle-vs-display parity test: drive one scenario through both paths and assert agreement, so the next membership shift turns a test red instead of relying on this checklist being run.
+
 ### Copy-pasteable PR checklist
 
 ```
@@ -81,13 +86,18 @@ When a semantic-shift lands, run the following audit before closing review. The 
           the helper also applies the accreditation predicate; verify detail endpoint matches
 - [ ] (e) Stats counters: grep stats.ts for COUNTs using the helper; compute net shift
           direction; update contract doc if the semantics changed
+- [ ] (f) Cycle/display parity twins: if the change shifts credited/excluded SET membership,
+          grep the display layer for parity-claiming twins of the cycle gate; confirm each
+          tests the cycle's CURRENT set; prefer adding a cycle-vs-display parity test
 ```
 
 ## Why This Matters
 
 The five surfaces listed above each failed in the `8be9206` review, producing 21 findings across 11 reviewers. Contract docs at `agents/docs/api-contracts/papers.md`, `misc.md`, `notifications.md`, `hive-schemas.md`, and `reputation-algorithm.md` described gate semantics that the commit had just changed; the CTE fragments at 8 sites in `reputation-algorithm.md` drifted the moment the canonical SQL shifted. The frontend's `|| 0` fallbacks in `paper-detail.js:865-868` became unreachable dead code because the new rating-shape gate guarantees each dimension is present and in range. Notification arm 1a in `notification-queries.ts:147` admitted review-shaped replies to any of the recipient's Hive comments because the `app LIKE` predicate had been the implicit universe restriction; dropping it opened a cross-zone griefing vector. The profile listing at `profile.ts:317-409` returned rows from unaccredited authors because `app LIKE` had been masking the missing accreditation predicate; the detail endpoint at `/api/reviews/:author/:permlink` returned 404 for those same rows, producing a listing↔detail split. Stats counters at `stats.ts` shifted in both directions simultaneously: malformed-rating rows exited, non-PEvO-app rows entered; dashboard consumers treating these as monotonic saw step-changes.
 
-The same class of cross-surface fallout appeared when commit `d92e605` dropped `app LIKE` from discussion comments. That commit preceded this named checklist. `8be9206` reproduced all five surfaces. The pattern is recurring, not one-off: SQL semantic-shift commits are a category of change whose fallout is structurally predictable but invisible to SQL-only review. The three existing conventions in this directory are necessary but not sufficient: they verify the SQL predicate's correctness and call-site completeness, and they require a centralized helper so the rule can be audited by grep. None of them prompt the reviewer to check contract docs, frontend defaults, notification arm scope, listing↔detail symmetry, or stats monotonicity — the surfaces where the fallout accumulated.
+The same class of cross-surface fallout appeared when commit `d92e605` dropped `app LIKE` from discussion comments. That commit preceded this named checklist. `8be9206` reproduced all five surfaces. The pattern is recurring, not one-off: SQL semantic-shift commits are a category of change whose fallout is structurally predictable but invisible to SQL-only review.
+
+Surface (f) was added after the consented-authorship migration (commit `319f0c3c`) demonstrated a recurrence the original five surfaces could not catch: the reputation cycle's self-dealing exclusion gates were generalized from accepted claims to the full consented set, this checklist was consulted during review and PASSED on all five surfaces — and the display parity twins (`excludeClaimedSelfWhere` and the `batchResolveVotes` claimed-set exclusion, both still testing accepted claims only) drifted anyway, because no surface named them. Two independent review lenses caught the drift; the checklist did not. A checklist that gets run and passes while the fallout lands is a checklist with a missing surface, not a process failure. The three existing conventions in this directory are necessary but not sufficient: they verify the SQL predicate's correctness and call-site completeness, and they require a centralized helper so the rule can be audited by grep. None of them prompt the reviewer to check contract docs, frontend defaults, notification arm scope, listing↔detail symmetry, or stats monotonicity — the surfaces where the fallout accumulated.
 
 ## When to Apply
 
@@ -98,6 +108,7 @@ Trigger this audit when:
 - A **centralized helper** is introduced that canonicalizes a predicate previously written per-site: the helper's first commit is a semantic-shift commit because it must choose a canonical semantics that may differ from what each per-site variant had.
 - A gate is **narrowed** in a way that could push rows from "in" to "out" (e.g., adding the rating-shape regex excludes previously admitted malformed rows, which may cause stats counters to drop and frontend rows to disappear from listings).
 - A gate is **broadened** in a way that could pull rows from "out" to "in" (e.g., dropping `app LIKE` admits reviews authored via non-PEvO clients, which may add rows to stats and listings that were previously absent).
+- A change alters **membership of a credited or excluded set** that another surface mirrors (e.g., generalizing the cycle's self-dealing exclusion from accepted claims to the consented set). This triggers surface (f) even when no display-side WHERE clause changed — the display twins drifting is the point.
 
 Do NOT trigger for:
 
