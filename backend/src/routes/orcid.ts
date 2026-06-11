@@ -1854,11 +1854,11 @@ async function getCachedOrcidBinding(orcidId: string): Promise<string | null> {
 }
 
 async function countExternalWorks(orcidId: string, _accessToken?: string): Promise<number> {
-  // Round-5 hold #4: same timed-fetch wrapper as the token-exchange call.
-  // A hang here propagates `OrcidProviderTimeoutError` up through
-  // `handleSignup` / `handleAccredit`, where the outer /callback catch
-  // maps it to a 504 ORCID_PROVIDER_TIMEOUT.
-  const worksRes = await fetchWithOrcidTimeout(`https://pub.orcid.org/v3.0/${orcidId}/works`, {
+  // Same timed-fetch wrapper as the token-exchange call. A hang here
+  // propagates `OrcidProviderTimeoutError` up through `handleSignup` /
+  // `handleAccredit`, where the outer /callback catch maps it to a 504
+  // ORCID_PROVIDER_TIMEOUT.
+  const worksRes = await fetchWithOrcidTimeout(`${config.orcidApiBaseUrl}/v3.0/${orcidId}/works`, {
     headers: { Accept: 'application/json' },
   });
 

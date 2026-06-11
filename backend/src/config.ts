@@ -142,6 +142,11 @@ export const config = {
   // request would emit wall-clock-exceeded and surface a retriable 503.
   hafWalkerWallClockMs: parseHafWalkerBudget(process.env.HAF_WALKER_WALL_CLOCK_MS),
   orcidBaseUrl: process.env.ORCID_BASE_URL || 'https://orcid.org',
+  // Public works-API host (`countExternalWorks`), separate from the OAuth host
+  // above: ORCID serves /oauth/* from orcid.org but the member/works API from
+  // pub.orcid.org. Overridable so an E2E stub can serve the works endpoint
+  // in-network (the fetch is server-side, unreachable by browser-level mocks).
+  orcidApiBaseUrl: process.env.ORCID_API_BASE_URL || 'https://pub.orcid.org',
   accreditationAuthorities: (() => {
     const extra = (process.env.ACCREDITATION_AUTHORITIES || '').split(',').map(s => s.trim()).filter(Boolean);
     return [hiveAdminAccount, ...extra];
