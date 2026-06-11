@@ -1,6 +1,7 @@
 ---
 module: backend
 date: 2026-05-16
+last_updated: 2026-06-12
 problem_type: convention
 component: database
 severity: high
@@ -111,7 +112,7 @@ NOT EXISTS (
 
 Sibling sites in the cycle-cascade class — the `paper_resolved_votes` CTE and the `citing_papers` CTE in `computeReputationBatch` — use the same CASE-WHEN-at-SRF-arg shape. The listing-path helper `authorsWithSupersessionSelect` in `backend/src/hafsql.ts` and the per-user CTEs in `backend/src/routes/profile.ts` + `backend/src/routes/stats.ts` use the same shape with narrower (per-request) blast radius.
 
-The IPFS-path sites on the broadcaster-controlled bare-Hive `json_metadata->'image'` field are also guarded: `cidIsKnown` in `backend/src/routes/ipfs.ts` (the `/ipfs/:cid` gateway CID-in-use check) and `cidReferencedInHaf` in `backend/src/ipfs-cleanup.ts` (the orphan-cleanup CID-reference check). Both interpolate the shared `IMAGE_SRF_GUARD_EXPR` constant from `backend/src/lib/ipfs-shared.ts` at SRF-argument position — a single definition so the guard cannot drift between the two sites — with per-request (gateway) and per-cleanup-run (job) blast radius. A source-level canary in `backend/tests/lib/ipfs-image-srf-guard.test.ts` asserts both live call sites interpolate the guarded constant, so a revert at either site fails red.
+The IPFS-path sites on the broadcaster-controlled bare-Hive `json_metadata->'image'` field are also guarded: `cidIsKnown` in `backend/src/routes/ipfs.ts` (the `/ipfs/:cid` gateway CID-in-use check) and `cidReferencedInHaf` in `backend/src/ipfs-cleanup.ts` (the orphan-cleanup CID-reference check). Both delegate to the shared `cidReferencedByAppTag` query builder in `backend/src/lib/ipfs-shared.ts`, which composes the guard via the parameterized `imageSrfGuardExpr(alias)` helper at SRF-argument position — a single definition so the guard cannot drift between the two consumers — with per-request (gateway) and per-cleanup-run (job) blast radius. A canary in `backend/tests/lib/ipfs-image-srf-guard.test.ts` composes the production `imageSrfGuardExpr` and feeds non-array shapes on a real planner, so a guard regression fails red.
 
 ### Anti-pattern (WHERE-clause guard after LATERAL — fires too late)
 
@@ -135,6 +136,7 @@ To migrate an anti-pattern site:
 
 ## Related
 
+- `agents/docs/solutions/conventions/hold-prescriptions-prescribe-invariants-not-constructs-2026-06-12.md` — the OTHER `CROSS JOIN LATERAL` hazard class: silent row ELIMINATION when the lateral body returns zero rows. This entry covers the crash hazard (SRF on a non-array input); that one shows why a scalar-subquery-to-LATERAL rewrite must use `LEFT JOIN LATERAL ... ON TRUE` when downstream consumers depend on rows surviving with NULL annotations.
 - `agents/docs/solutions/conventions/pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12.md` — sibling: the WHERE-predicate form of "the JSONB type guard looks correct but isn't" (covers `IS NOT NULL` placebo on JSONB paths).
 - `agents/docs/solutions/conventions/pg-bigint-default-stringification-defeats-typeof-cast-guards-2026-05-06.md` — third family member: JS-driver layer where a naive `typeof === 'number'` guard fails on Postgres bigint stringification.
 - `agents/docs/solutions/conventions/sql-semantic-shift-cross-surface-audit-2026-05-12.md` — protocol for auditing sibling sites when a SQL gate semantics changes. Run this when migrating an anti-pattern site so every consumer of the same JSONB field is audited.
