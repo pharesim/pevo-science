@@ -106,8 +106,16 @@ export function composePendingClaimsQuery(claimer: string): { sql: string; param
  *     action. An accept, a resign, or a revoke naming them all clear the
  *     slot from the pending list; an invalid pre-claim accept (Rule 6
  *     name-squat window) does not, because `route2_stream` never admits it.
- *     The user's own root papers are excluded (Route-1 implicit consent). */
-export function composePendingConsentsQuery(username: string): { sql: string; params: unknown[] } {
+ *     The user's own root papers are excluded (Route-1 implicit consent).
+ *
+ *  `namingPostsSeedCap` is a test-injection seam for the seed-truncation
+ *  regression (a tiny cap makes the LIMIT and its newest-first direction
+ *  observable on a small corpus); the production route always composes with
+ *  the default `NAMING_POSTS_SEED_CAP`. */
+export function composePendingConsentsQuery(
+  username: string,
+  namingPostsSeedCap: number = NAMING_POSTS_SEED_CAP,
+): { sql: string; params: unknown[] } {
   const accredCte = activeAccreditationsCteBody(1);
   let paramIdx = accredCte.nextIdx;
   const tagIdx = paramIdx++;
@@ -136,7 +144,7 @@ export function composePendingConsentsQuery(username: string): { sql: string; pa
                    AND BTRIM(e.value ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') IN (SELECT orcid FROM my_attested_orcid)))
       )
     ORDER BY c.created DESC
-    LIMIT ${NAMING_POSTS_SEED_CAP}
+    LIMIT ${namingPostsSeedCap}
   ),
   seed_walk AS (
     SELECT np.author, np.permlink, np.continues, 0 AS hops

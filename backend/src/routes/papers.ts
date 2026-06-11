@@ -1728,8 +1728,8 @@ async function fetchPaperDetailFromHaf(
         // consented dimension is annotated per request by the SQL read path
         // (`fetchConsentedAccountsForPaper` / `annotateAuthorsWithConsent`,
         // composing the same consent stack the reputation cycle uses). The
-        // JS `computeConsentedAuthors` primitive remains unwired into any
-        // read path.
+        // JS `computeConsentedAuthors` primitive (`consent-ops.ts`) is not
+        // imported here; this site uses the SQL-side path exclusively.
         const headMeta = latest.json_metadata;
         if (isPevoAnyPaper(headMeta, latest.post_author)) {
           const rootPevo = safePevoMeta(meta);

@@ -38,6 +38,10 @@
  *     the seed must walk q3c up to the root q3.
  *   Q4 root4/q4 with fork q4c1 (canonical, earliest) / q4c2 (orphaned) —
  *     newbie is named only on the orphaned branch.
+ *   C1-C3 rootc1/c1, rootc2/c2, rootc3/c3 — three roots naming capuser, with
+ *     DISTINCT `created` ages (3/2/1 days old). The seed-cap describe drives
+ *     the composer at a tiny injected cap so the naming-posts LIMIT and its
+ *     newest-first direction are observable on this corpus.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -96,6 +100,19 @@ const CHAIN_OPS = [
   chainOp('root4', 'q4c1', 150, 1500, { type: 'paper', continues: { author: 'root4', permlink: 'q4' }, authors: [{ hive: 'root4' }] }),
   chainOp('root4', 'q4c2', 160, 1600, { type: 'paper', continues: { author: 'root4', permlink: 'q4' }, authors: [{ hive: 'root4' }, { hive: 'newbie', name: 'New B' }] }),
 ];
+
+/** Seed-cap corpus: three roots naming capuser, inserted with explicit
+ *  distinct `created` values (unlike the DEFAULT-now() corpus above) because
+ *  the cap truncates on newest-first `created` order. capuser never acts on
+ *  any of them, so uncapped all three are pending. */
+const CAP_PAPERS = [
+  { author: 'rootc1', permlink: 'c1', age: '3 days' },
+  { author: 'rootc2', permlink: 'c2', age: '2 days' },
+  { author: 'rootc3', permlink: 'c3', age: '1 day' },
+];
+function capPaperMeta(author: string) {
+  return { app: 'pevo/1', [TAG]: { type: 'paper', authors: [{ hive: author }, { hive: 'capuser', name: 'Cap U' }] } };
+}
 
 const CUSTOM_JSONS = [
   // Authority attestation: orcuser carries the orcid-anchor proof for Q1's slot.
@@ -159,8 +176,10 @@ beforeAll(async () => {
   client = await pool.connect();
   // `created` mirrors the real comments view's column (the Route-2 seed's
   // newest-first spam-defense bound orders on it); equal timestamps are fine
-  // here because the corpus is far below the cap and `pending_seed` is a
-  // DISTINCT set.
+  // for the Q1-Q4 corpus because it sits far below the cap and `pending_seed`
+  // is a DISTINCT set. The CAP_PAPERS corpus is the exception: it carries
+  // explicit distinct `created` values because the seed-cap describe asserts
+  // exactly that ordering.
   await client.query(`CREATE TEMP TABLE syn_comments (author text, permlink text, parent_author text DEFAULT '', parent_permlink text, json_metadata jsonb, created timestamptz DEFAULT now())`);
   await client.query(`CREATE TEMP TABLE syn_comment_ops (author text, permlink text, block_num int, id bigint, json_metadata jsonb)`);
   await client.query(`CREATE TEMP TABLE syn_cj (custom_id text, required_posting_auths jsonb, json text, block_num int, id bigint)`);
@@ -172,6 +191,13 @@ beforeAll(async () => {
   }
   for (const j of CUSTOM_JSONS) {
     await client.query(`INSERT INTO syn_cj VALUES ($1, $2, $3, $4, $5)`, [TAG, JSON.stringify(j.required_posting_auths), j.json, j.block_num, j.id]);
+  }
+  for (const [i, p] of CAP_PAPERS.entries()) {
+    await client.query(
+      `INSERT INTO syn_comments (author, permlink, parent_permlink, json_metadata, created) VALUES ($1, $2, $3, $4, now() - $5::interval)`,
+      [p.author, p.permlink, TAG, capPaperMeta(p.author), p.age],
+    );
+    await client.query(`INSERT INTO syn_comment_ops VALUES ($1, $2, $3, $4, $5)`, [p.author, p.permlink, 170 + i * 10, 1700 + i * 100, capPaperMeta(p.author)]);
   }
 });
 
@@ -216,6 +242,40 @@ describe.skipIf(!pool)('composePendingConsentsQuery — Route-2 pending discover
   it('excludes the user\'s own root papers and unanchored accounts', async () => {
     expect(await pendingConsentsFor('root1')).toEqual([]);
     expect(await pendingConsentsFor('attacker')).toEqual([]);
+  });
+});
+
+describe.skipIf(!pool)('composePendingConsentsQuery — naming-posts seed cap (real Postgres)', () => {
+  it('serves every anchoring paper while the cap does not bind (baseline)', async () => {
+    // Default cap: all three CAP_PAPERS anchor capuser and none are acted on.
+    expect(await pendingConsentsFor('capuser')).toEqual([
+      { paper_author: 'rootc1', paper_permlink: 'c1' },
+      { paper_author: 'rootc2', paper_permlink: 'c2' },
+      { paper_author: 'rootc3', paper_permlink: 'c3' },
+    ]);
+  });
+
+  it('truncates the OLDEST naming post out of discovery at a binding cap (newest-first LIMIT)', async () => {
+    // Injected cap 2 over three naming posts with distinct `created` values:
+    // the two newest survive, the oldest (rootc1/c1) falls out — the
+    // truncated-but-served semantics the cap docblock promises. Kills the
+    // LIMIT-deletion mutant (all three would serve) AND the ORDER BY
+    // direction flip (ASC would evict the NEWEST, keeping rootc1/c1).
+    const { sql, params } = redirect(composePendingConsentsQuery('capuser', 2));
+    const result = await client!.query(sql, params);
+    expect(result.rows).toEqual([
+      { paper_author: 'rootc2', paper_permlink: 'c2' },
+      { paper_author: 'rootc3', paper_permlink: 'c3' },
+    ]);
+  });
+});
+
+describe('composePendingConsentsQuery — production seed cap (composition shape)', () => {
+  it('composes the default cap into the naming-posts LIMIT', () => {
+    // The truncation case above injects a tiny cap, so it cannot observe a
+    // silent change to the production default; this pins the default value
+    // as emitted into the seed SQL.
+    expect(composePendingConsentsQuery('anyuser').sql).toContain('LIMIT 500');
   });
 });
 
