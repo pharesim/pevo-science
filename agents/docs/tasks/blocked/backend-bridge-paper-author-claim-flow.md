@@ -39,6 +39,10 @@ Design + implement the verification flow that lets a real original-preprint auth
 
 5. **Bridge papers that are never updated** (per ARCH.md "Bridge papers" subsection: bridge papers are imported once, never updated). The attestation flow needs to operate WITHOUT requiring a continuation broadcast that updates the paper's metadata. The attestation custom_json sits alongside the paper, not inside it.
 
+## [Architect] (2026-06-11) — design input from the consented-authorship review
+
+The `/ce-code-review` security lens on `backend-implement-consented-authorship-model` flagged (confidence 50): the live Route-2 ORCID eligibility arm in `consentedAuthorsCteBody` does not exclude bridge papers, so a bridge-paper `authors[]` slot carrying a source ORCID that matches a live authority-attested accreditation would let that account `author_accept` into credit ahead of this task's verification design. Today no bridge slot ORCID matches an attested account (the real-postgres corpus pins only the no-match case), so this is a design-boundary note, not a live defect. When Phase 1 is brainstormed, decide explicitly whether bridge papers admit direct Route-2 ORCID consent (which would partially obsolete the attestation flow above for ORCID-bearing slots) or remain single-consented-author until the verified claim flow lands; if the latter, the eligibility arm needs a bridge exclusion plus a corpus case where a bridge slot ORCID matches an attested account.
+
 6. **Vouched-set computation extension.** The vouched-set query (Phase 2 of `backend-coauthor-trust-model`) reads `author_accept` ops. It must also read `bridge_author_attestation` ops to map a `hive: null` display credit to a vouched Hive handle, then check for alice's `author_accept`.
 
 ## Acceptance (to be sharpened during Phase 1 brainstorm)
