@@ -107,3 +107,15 @@ Recorded at triage (no action): the ~30s-tail comment stays accurate only while 
 When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-12, fix commits on main) — round-2 item landed
+
+1. **Both stale `$23/$25` quotes fixed** in `reputation-revoke-signer-gate-cycle-sql-shape.test.ts`: the header cross-reference paragraph now describes `hafsql.test.ts`'s suite as pinning startIdx-RELATIVE offsets (absolute indices dropped per the prescription — absolute slots are the wrong anchor for that suite); the it() title is retitled to `$22/$24`, matching the test's own green assertion and the indices-in-title form of the approve-gate sibling.
+
+Beyond the named item, same stale-quote class found in the approve-gate sibling (`reputation-approve-signer-gate-cycle-sql-shape.test.ts`) while aligning title forms: its header quoted `ap.approver IN (ap.paper_author, $23)` / "binds `config.hiveBridgeAccount` at $23" and its it() title said $23, contradicting its own green `$22` assertion and its in-file allocation comment. Aligned with the same treatment in a separate commit: assertion-quoting sites corrected to `$22`, the `hafsql.test.ts` cross-reference reworded to relative-offset phrasing, title retitled to `$22`.
+
+Verification: both cycle-shape suites green; `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
