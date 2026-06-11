@@ -92,8 +92,10 @@ import { PrivateKey } from '@hiveio/dhive';
 // Confirmed STILL UNMOCKED for the new specs (per root CLAUDE.md carve-out):
 // verifyHiveSignature, the rest of the auth middleware chain, the real Redis
 // client (lock/cache keys are observed via live redis.get / redis.set calls
-// in the test body). Only the database pools and broadcast.json are mocked;
-// that scope matches the SEC-002-BE carve-out and does not widen here.
+// in the test body). Only the database pools and the broadcast seams
+// (broadcast.json, broadcastJsonWithTimeout, broadcastAdminCustomJson — all
+// routed through the one broadcastJsonMock) are mocked; that scope matches
+// the SEC-002-BE carve-out and does not widen here.
 // vi.hoisted keeps these references alive across the hoisted vi.mock factories below.
 // MockBroadcastTimeoutError mirrors the real class's constructor signature (timeoutMs
 // property) so handlers discriminating via `err instanceof BroadcastTimeoutError`

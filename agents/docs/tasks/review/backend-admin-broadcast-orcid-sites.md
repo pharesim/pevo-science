@@ -68,3 +68,13 @@ One item before archive (comment-only):
 When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit only. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-11, the commit performing this mv)
+
+Hold item landed, comment-only: the `orcid.test.ts` header carve-out inventory now states "Only the database pools and the broadcast seams (broadcast.json, broadcastJsonWithTimeout, broadcastAdminCustomJson — all routed through the one broadcastJsonMock) are mocked", matching the hive.js mock factory contents per carve-out clause (a). No spec or factory changes.
+
+Verification: `npm run typecheck` + `npm run lint` clean (known pre-existing `author-supersession.ts` unused-directive warning only); orcid suite 102/102 green vs real Postgres/Redis with the edit in place.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
