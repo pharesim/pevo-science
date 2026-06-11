@@ -111,3 +111,17 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 When both items land, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commits. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-12, single fix commit on main) — round-2 items 1-2 landed
+
+1. **Seed-cap truncation coverage.** `composePendingConsentsQuery` now takes `namingPostsSeedCap` (default `NAMING_POSTS_SEED_CAP`), documented as a test-injection seam; the production route composes with the default. New coverage in `me-pending-authorships-real-postgres.test.ts`: a CAP_PAPERS corpus (three roots naming capuser, explicit distinct `created` values at 3/2/1 days old, unlike the DEFAULT-now() main corpus), an uncapped baseline (all three pending), a binding-cap-2 truncation case (the oldest naming post falls out of discovery, the two newest survive — pinning the LIMIT's existence AND its newest-first direction), and a composition-shape pin that the default-composed SQL carries `LIMIT 500` (kills a silent default change, which the injected-cap case cannot observe).
+
+   Mutation probes performed against the committed fix (mutate, run, red, restore via `git checkout`, green), per `tests-must-fail-on-mutation-of-code-under-test`: LIMIT-line deletion turned the truncation case AND the shape pin red (2 failed / 12); `ORDER BY c.created DESC` flipped to `ASC` turned exactly the truncation case red (received rows kept the oldest and dropped the newest); default `500` changed to `5` turned exactly the shape pin red. Post-restoration run: 12/12 green. Confirmed the specs fail on mutation of the naming_posts seed LIMIT, its ORDER BY direction, and the `NAMING_POSTS_SEED_CAP` default.
+
+2. **papers.ts comment reworded to the in-file-verifiable form.** The cumulative-union site now reads: the JS `computeConsentedAuthors` primitive (`consent-ops.ts`) is not imported here; this site uses the SQL-side path exclusively. The codebase-wide "remains unwired into any read path" claim is gone; the membership-only observation about the union is untouched.
+
+Verification: `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning; `me-pending-authorships-real-postgres` (12) + `me-authorships-pending` (6) green.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
