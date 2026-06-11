@@ -88,3 +88,17 @@ Dismissed/no-action at triage: the seed-flood cost compounding (a second fee-les
 When the three items land, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commits. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-12, single fix commit on main)
+
+All three hold items landed:
+
+1. **Enrichment consent fetch routed through the badge's volatile entry** — new `getConsentedAccountsForPaperCached` wrapper in `routes/papers.ts` owns the `consented-authors:{author}:{permlink}` `getOrSet` (volatile tier, `CONSENTED_SET_TTL_MS` backstop); both `annotateAuthorsWithConsent` and the `fetchEnrichmentFromHaf` Promise.all leg now call it, so an enrichment rebuild reuses the badge's per-block resolution instead of re-firing the HAF query. The Promise.all comment now describes the actual shared-entry path; pool-null impossibility and uncached `HafQueryError` propagation are stated in the wrapper docblock.
+2. **`notification-queries.ts` new_review docblock enumeration updated** — the ungated-arm justification now cites the `excludeClaimedSelfWhere` + `excludeConsentedSelfWhere` pair on the display side and the cycle's NOT EXISTS gates over the full credited set (accepted claims plus consented authors), and states explicitly that the intentional-ungated rationale (a notification confers no credit and carries no display weight) covers Route-2 consented co-authors too.
+3. **Degrade describe reworded to the credited-set world** — describe title, it() title, and inline comments now name the credited-set leg and the current `creditedSet` variable, with the added sentence that the leg resolves accepted claims UNION consented authors in one query so a failure suspends BOTH populations together. Same stale-name class fixed in the same file: the header's "accepted-claims leg" paragraph, carve-out (c)'s "claimedSet skip", and the two remaining in-file `claimedSet` comment sites.
+
+Verification: `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning; `display-claimer-self-vote-revote-exclusion` + `display-consented-self-dealing-exclusion` + `papers-consented-badge` 16/16 green (the degrade pin exercises the renamed leg through the real dispatch).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
