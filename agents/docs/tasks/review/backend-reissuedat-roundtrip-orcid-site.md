@@ -52,3 +52,19 @@ No action sought (advisory, fold in only if touching the file anyway): rename `p
 When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit only. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-11, the commit performing this mv) — round-1 item landed (revert-probe attestation)
+
+Probes performed against real app Postgres, per `tests-must-fail-on-mutation-of-code-under-test`:
+
+1. **Seconds-rounding probe — confirmed red.** Mutated the recover.ts ORCID-branch reissue embed (`reissuedAt: invalidatedAt.getTime()` -> `Math.floor(invalidatedAt.getTime() / 1000) * 1000` inside the ORCID branch's `jwt.sign`). The decisive assertion (`expect(decoded?.reissuedAt).toBe(storedMs)`) went red on every attempt including all configured retries (e.g. `expected 1781215997000 to be 1781215997038`). Restored via git checkout; re-run green (1 passed). **Confirmed the spec fails on revert of the ORCID-branch `reissuedAt: invalidatedAt.getTime()` embed.**
+
+2. **NOW()-switch probe — performed, NOT caught; surfaced for triage.** Also mutated the ORCID branch's `sessions_invalidated_at = $3` write to SQL `NOW()` (embed left on the Node `Date`). The suite stayed GREEN: 1/1 with the configured retries, and 6/6 green at `--retry=0`. Mechanism verified by direct measurement against the same Postgres: a just-captured Node `Date` and the statement's `NOW()` land in the SAME millisecond bucket 48/50 times on this hardware (the capture -> statement-start gap is sub-ms and pg truncates TIMESTAMPTZ to ms), so the divergence the decisive assertion needs occurs only ~4% per attempt and the suite's retry x3 compounds survival. Consequence: the in-file comment claim "A NOW()/seconds-rounding regression in the recover.ts ORCID branch turns this red" holds deterministically for seconds-rounding but only probabilistically for a NOW()-switch (detection probability equals the harm probability — both require the write and the embed to land in different ms buckets). The memo-key sibling's equivalent NOW() claim shares the same property. No code or comment changed this round (the hold scoped this round to the attestation); flagging the overstated NOW() half for architect triage.
+
+Advisory rename (`preReset` -> `controlWithoutReissue`) NOT folded in: the only file edit this round would have been the rename itself, and the hold says fold in only if touching the file anyway; the memo-key sibling carries the same advisory (rename both or neither).
+
+Verification: backend source tree clean after probe restoration (probes reverted via `git checkout`); `verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts` green against real app Postgres (1 passed) on the restored tree.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
