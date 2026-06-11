@@ -19,9 +19,9 @@
  *      admin account, or the claimer themselves (hive-schemas.md §2.11); the
  *      cycle is where a forged revoke would actually strip co-author credit.
  *
- * The builder's internal param POSITIONS (that $23/$25 bind bridge/admin) are
- * pinned structurally by `hafsql.test.ts`'s `authorshipClaimsCteBody` param-
- * arithmetic suite; the read-surface revoke behavior is pinned against real
+ * The builder's internal param arithmetic (the startIdx-relative offsets that
+ * bind bridge and admin) is pinned structurally by `hafsql.test.ts`'s
+ * `authorshipClaimsCteBody` param-arithmetic suite; the read-surface revoke behavior is pinned against real
  * Postgres by `authorship-revoke-signer-gate.test.ts`. This file's unique job is
  * the cycle-side composition + gate-survival tripwire.
  *
@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe('reputation cycle — composes the shared claims builder (revoke signer gate survives)', () => {
-  it('emits authorship_claims + thin accepted_claims, with the revoke gate at $23/$25 (builder allocation)', async () => {
+  it('emits authorship_claims + thin accepted_claims, with the revoke gate at $22/$24 (builder allocation)', async () => {
     getPoolMock.mockReturnValue(capturingPool as unknown as ReturnType<typeof getPoolMock>);
 
     // cycleEndBlock provided (skips the head-block lookup); prevScores provided
