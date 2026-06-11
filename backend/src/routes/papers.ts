@@ -1682,8 +1682,12 @@ async function fetchPaperDetailFromHaf(
         // The accept/resign consent layer (read-time consented-status decay)
         // is a separate dimension layered on top of this cumulative union:
         // the union is monotonic membership, consented-status decays under
-        // resign — orthogonal. The `computeConsentedAuthors` primitive exists
-        // but no read path applies it yet (membership-only reconstruction).
+        // resign — orthogonal. The union itself stays membership-only; the
+        // consented dimension is annotated per request by the SQL read path
+        // (`fetchConsentedAccountsForPaper` / `annotateAuthorsWithConsent`,
+        // composing the same consent stack the reputation cycle uses). The
+        // JS `computeConsentedAuthors` primitive remains unwired into any
+        // read path.
         const headMeta = latest.json_metadata;
         if (isPevoAnyPaper(headMeta, latest.post_author)) {
           const rootPevo = safePevoMeta(meta);

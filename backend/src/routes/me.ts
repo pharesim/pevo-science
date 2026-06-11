@@ -16,6 +16,16 @@ import {
 
 const router = Router();
 
+/** Spam-defense bound on the Route-2 pending-consents seed: at most this many
+ *  naming posts (newest-first by post creation) enter `pending_seed`'s up-walk
+ *  per request. Unbounded, any Hive account could cheaply spam-name a victim
+ *  across many posts and push the victim's own pending query into the HAF
+ *  pool's statement_timeout on every request (re-fired each volatile-cache
+ *  drop). Over-cap semantics are truncated-but-served: the seed is a candidate
+ *  superset feeding the authoritative down-walk, not the authoritative record,
+ *  so posts beyond the cap fall out of discovery rather than failing closed. */
+const NAMING_POSTS_SEED_CAP = 500;
+
 /** TTL upper bound for the per-user pending-authorships cache entry. VOLATILE
  *  tier (no `stable` flag): `block-watcher.ts` drops volatile entries on
  *  every detected new block (~3s), so the discovery surface is at most one
@@ -82,7 +92,9 @@ export function composePendingClaimsQuery(claimer: string): { sql: string; param
  *     (append-only ops-union rule: an edit that removed the entry does not
  *     un-anchor it). Anchor normalization matches the chain-walk slot
  *     builders: LOWER + TRIM for hive, `CHAIN_ORCID_BTRIM_CHARSET` btrim for
- *     orcid (sql-trim-vs-js-trim convention).
+ *     orcid (sql-trim-vs-js-trim convention). Bounded to the newest
+ *     `NAMING_POSTS_SEED_CAP` posts as a spam defense (see the constant's
+ *     docblock); over-cap is truncated-but-served, never fail-closed.
  *   - `seed_walk` / `pending_seed` — each naming post walked UP its
  *     `pevo.continues` pointers to the chain root (50-hop cap mirrors the
  *     down-walk; a pointer cycle terminates at the cap and yields no root).
@@ -123,6 +135,8 @@ export function composePendingConsentsQuery(username: string): { sql: string; pa
                OR (BTRIM(COALESCE(e.value ->> 'orcid', ''), E'${CHAIN_ORCID_BTRIM_CHARSET}') != ''
                    AND BTRIM(e.value ->> 'orcid', E'${CHAIN_ORCID_BTRIM_CHARSET}') IN (SELECT orcid FROM my_attested_orcid)))
       )
+    ORDER BY c.created DESC
+    LIMIT ${NAMING_POSTS_SEED_CAP}
   ),
   seed_walk AS (
     SELECT np.author, np.permlink, np.continues, 0 AS hops

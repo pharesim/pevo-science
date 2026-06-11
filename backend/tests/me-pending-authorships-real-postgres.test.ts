@@ -157,7 +157,11 @@ async function pendingClaimsFor(claimer: string) {
 beforeAll(async () => {
   if (!pool) return;
   client = await pool.connect();
-  await client.query(`CREATE TEMP TABLE syn_comments (author text, permlink text, parent_author text DEFAULT '', parent_permlink text, json_metadata jsonb)`);
+  // `created` mirrors the real comments view's column (the Route-2 seed's
+  // newest-first spam-defense bound orders on it); equal timestamps are fine
+  // here because the corpus is far below the cap and `pending_seed` is a
+  // DISTINCT set.
+  await client.query(`CREATE TEMP TABLE syn_comments (author text, permlink text, parent_author text DEFAULT '', parent_permlink text, json_metadata jsonb, created timestamptz DEFAULT now())`);
   await client.query(`CREATE TEMP TABLE syn_comment_ops (author text, permlink text, block_num int, id bigint, json_metadata jsonb)`);
   await client.query(`CREATE TEMP TABLE syn_cj (custom_id text, required_posting_auths jsonb, json text, block_num int, id bigint)`);
   for (const c of COMMENTS) {

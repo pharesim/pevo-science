@@ -84,3 +84,17 @@ Dismissed/no-action at triage: the single-author short-circuit negative boundary
 When the three items land, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commits. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-11, single fix commit on main)
+
+All three hold items landed:
+
+1. **`naming_posts` seed bounded** — `NAMING_POSTS_SEED_CAP = 500` (module constant in `routes/me.ts` with a spam-defense docblock), applied as `ORDER BY c.created DESC LIMIT 500` on the seed CTE. Over-cap semantics documented at the constant and in the composer docblock: truncated-but-served (the seed is a candidate superset feeding the authoritative down-walk), never fail-closed. The real-postgres FROM-redirect corpus (`syn_comments`) gained the `created timestamptz` column the real comments view carries (the redirected relation previously had no column to order on); a corpus comment notes why equal timestamps are fine there.
+2. **Stale comment reworded** (`papers.ts` cumulative-union site) — now distinguishes the wired SQL read path (`fetchConsentedAccountsForPaper` / `annotateAuthorsWithConsent`) from the still-unwired JS `computeConsentedAuthors` primitive; the membership-only observation about the union itself is kept.
+3. **`?version=N` fail-closed guard pinned** — new test in `tests/routes/papers-consented-badge.test.ts`: warms the version cache for a multi-author paper, drops the pool and clears volatile, asserts 503 `SERVICE_UNAVAILABLE` `{retriable: true}` on `?version=1` (the test comment records the mutation it kills: deleting the version branch's annotated-null guard serves 200 with a null payload).
+
+Verification: papers-consented-badge (7), me-authorships-pending (6), me-pending-authorships-real-postgres (9) all green; `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

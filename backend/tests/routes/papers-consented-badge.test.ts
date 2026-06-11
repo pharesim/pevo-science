@@ -227,4 +227,51 @@ describe('GET /api/papers/:author/:permlink — consented author badge', () => {
       ['bob', false],
     ]);
   });
+
+  it('?version=N branch fails closed 503 on HAF down even when the version cache is warm', async () => {
+    // The version branch has its own annotated-null guard, separate from the
+    // base branch's (tested above). Without this pin, deleting that guard
+    // serves 200 with a null payload on a warm version entry (sendOk
+    // serializes null without complaint) instead of the retriable 503.
+    const meta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [
+          { name: 'Alice', hive: 'alice' },
+          { name: 'Bob', hive: 'bob' },
+        ],
+      },
+    };
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM consented_authors')) {
+        return { rows: [{ account: 'alice' }] };
+      }
+      if (sql.includes('ROW_NUMBER() OVER (ORDER BY co.block_num)')) {
+        return {
+          rows: [{
+            version_number: 1,
+            block_num: 100,
+            author: 'alice',
+            permlink: 'versioned-2',
+            title: 'V1',
+            body: 'Abstract\n\n---\n\nBody',
+            created: '2026-06-01T00:00:00Z',
+            json_metadata: meta,
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+    expect((await request(app).get('/api/papers/alice/versioned-2?version=1')).status).toBe(200);
+
+    // New block drops the volatile consented set; HAF goes away. The stable
+    // version entry is still warm, but the badge must not degrade.
+    await hafCache.clearVolatile();
+    getPoolMock.mockReturnValue(null);
+    const res = await request(app).get('/api/papers/alice/versioned-2?version=1');
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    expect(res.body.error.details).toEqual({ retriable: true });
+  });
 });
