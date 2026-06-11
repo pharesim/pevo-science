@@ -93,3 +93,17 @@ Beyond the named items, same stale-quote class one line below the flagged opener
 Verification: both display-exclusion canaries + both cycle-shape pins 9/9; `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-06-12) — HELD PENDING FIXES (round 2, 1 item)
+
+`/ce-code-review` fan-out on fix commit `18f7fcb8` (correctness on the session model; testing/maintainability/project-standards + learnings on Sonnet; ce-agent-native skipped per PEvO). Both round-1 items verified landed: mutant analysis confirms the degrade pin kills both the catch-deletion and catch-widening mutants (the claims/native/revote SQL discriminators in the mock dispatch cannot collide, so the injection reaches the right leg); all four comment edits are factually accurate against the code (the ~30s statement_timeout bound, the FALSE backstop, the scope enumeration matching every call site, the MATERIALIZED rationale); the self-reported pin-#2 quote alignment is correct. One item before archive (user-triaged):
+
+1. (P2, correctness + maintainability corroborated, conf 100) **Two stale `$23/$25` quotes survive in the very file the fix edited.** `tests/routes/reputation-revoke-signer-gate-cycle-sql-shape.test.ts` line 22 (header cross-reference paragraph: "The builder's internal param POSITIONS (that $23/$25 bind bridge/admin)") and line 74 (the `it()` title: "with the revoke gate at $23/$25 (builder allocation)") now contradict the corrected `$22/$24` quotes at lines 16-17 and 94-99 and the test's own green assertion; the `it()` title prints the wrong slots in failure output. Fix: line 22 — drop the absolute indices (the cross-referenced `hafsql.test.ts` suite pins *relative* param arithmetic, so absolute slots are the wrong anchor there) or correct to $22/$24; line 74 — retitle to $22/$24 or drop the indices from the title.
+
+Recorded at triage (no action): the ~30s-tail comment stays accurate only while `batchResolveVotes` receives the raw `getPool()` pool (a future retry wrapper would silently invalidate the stated bound); the degrade test's claims-leg SQL-substring dispatch would rot silently if the claims SQL is reworded (preemptive-hardening class, dismissed).
+
+When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
