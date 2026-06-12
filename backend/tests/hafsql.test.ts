@@ -7,7 +7,9 @@ import {
   authorsWithSupersessionSelect,
   buildWith,
   buildRecursiveWith,
+  consentChainCteBody,
   consentSeedCteBody,
+  consentStackCteBody,
   consentedAuthorsCteBody,
   retractedPapersCteBody,
   validPevoPaperWhere,
@@ -339,6 +341,51 @@ describe('consentSeedCteBody param arithmetic', () => {
     expect(frag.params).toEqual([config.appTag]);
     expect(frag.nextIdx).toBe(6);
     expect(frag.sql).toContain('AND FALSE');
+  });
+});
+
+describe('consentStackCteBody composition equivalence', () => {
+  // The composer's contract is byte-equivalence with the sequential 3-tuple
+  // it replaced at the display call sites: identical SQL through the
+  // buildWith/buildRecursiveWith joiner, identical param order, identical
+  // nextIdx. Each scope shape pins the full composed fragment via the actual
+  // builder pipeline, so a separator or scope-fan-out drift in the composer
+  // fails red here before any SQL-shape canary sees it.
+  it('unscoped: identical to seed → chain(consent_seed) → consented', () => {
+    const viaStack = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => consentStackCteBody(idx));
+    const viaTuple = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => consentSeedCteBody(idx),
+      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+      (idx) => consentedAuthorsCteBody(idx),
+    );
+    expect(viaStack).toEqual(viaTuple);
+  });
+
+  it('signer scope fans out to the seed signer AND the consented {signers} narrowing', () => {
+    const viaStack = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => consentStackCteBody(idx, { signer: 'alice' }));
+    const viaTuple = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => consentSeedCteBody(idx, { signer: 'alice' }),
+      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+      (idx) => consentedAuthorsCteBody(idx, { signers: ['alice'] }),
+    );
+    expect(viaStack).toEqual(viaTuple);
+  });
+
+  it('papers scope reaches the seed only; resolution stays unscoped', () => {
+    const papers = [{ author: 'bob', permlink: 'p-1' }, { author: 'eve', permlink: 'p-2' }];
+    const viaStack = buildRecursiveWith(1, activeAccreditationsCteBody, (idx) => consentStackCteBody(idx, { papers }));
+    const viaTuple = buildRecursiveWith(
+      1,
+      activeAccreditationsCteBody,
+      (idx) => consentSeedCteBody(idx, { papers }),
+      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
+      (idx) => consentedAuthorsCteBody(idx),
+    );
+    expect(viaStack).toEqual(viaTuple);
   });
 });
 

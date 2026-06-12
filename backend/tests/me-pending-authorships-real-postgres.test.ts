@@ -47,8 +47,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { config } from '../src/config.js';
-import { T } from '../src/hafsql.js';
 import { composePendingClaimsQuery, composePendingConsentsQuery } from '../src/routes/me.js';
+import { redirectHafViews } from './support/haf-query.js';
 
 const DB_URL = process.env.APP_DATABASE_URL;
 const pool = DB_URL ? new pg.Pool({ connectionString: DB_URL, max: 1 }) : null;
@@ -145,28 +145,18 @@ const CUSTOM_JSONS = [
   cjOp('claim_authorship', 'otherclaimer', { paper_author: 'root1', paper_permlink: 'q1', author_index: 7, timestamp: 't-330' }, 330, 225),
 ];
 
-/** Redirect every HAF view literal in a composed statement at the synthetic
- *  temp tables. Drift guard: assert every literal was consumed so a builder
- *  alias change cannot silently leave the query pointed at live HAF. */
-function redirect(stmt: { sql: string; params: unknown[] }) {
-  let sql = stmt.sql;
-  sql = sql.split(T.comments).join('syn_comments');
-  sql = sql.split(T.commentOps).join('syn_comment_ops');
-  sql = sql.split(T.customJson).join('syn_cj');
-  expect(sql).not.toContain(T.comments);
-  expect(sql).not.toContain(T.commentOps);
-  expect(sql).not.toContain(T.customJson);
-  return { sql, params: stmt.params };
-}
+/** The view subset this corpus synthesizes (the me.ts composers read
+ *  comments, comment ops, and custom_json only). */
+const REDIRECTS = { comments: 'syn_comments', commentOps: 'syn_comment_ops', customJson: 'syn_cj' } as const;
 
 async function pendingConsentsFor(username: string) {
-  const { sql, params } = redirect(composePendingConsentsQuery(username));
+  const { sql, params } = redirectHafViews(composePendingConsentsQuery(username), REDIRECTS);
   const result = await client!.query(sql, params);
   return result.rows as Array<{ paper_author: string; paper_permlink: string }>;
 }
 
 async function pendingClaimsFor(claimer: string) {
-  const { sql, params } = redirect(composePendingClaimsQuery(claimer));
+  const { sql, params } = redirectHafViews(composePendingClaimsQuery(claimer), REDIRECTS);
   const result = await client!.query(sql, params);
   return result.rows as Array<{ paper_author: string; paper_permlink: string; author_index: number; claimed_at: string }>;
 }
@@ -261,7 +251,7 @@ describe.skipIf(!pool)('composePendingConsentsQuery — naming-posts seed cap (r
     // truncated-but-served semantics the cap docblock promises. Kills the
     // LIMIT-deletion mutant (all three would serve) AND the ORDER BY
     // direction flip (ASC would evict the NEWEST, keeping rootc1/c1).
-    const { sql, params } = redirect(composePendingConsentsQuery('capuser', 2));
+    const { sql, params } = redirectHafViews(composePendingConsentsQuery('capuser', 2), REDIRECTS);
     const result = await client!.query(sql, params);
     expect(result.rows).toEqual([
       { paper_author: 'rootc2', paper_permlink: 'c2' },

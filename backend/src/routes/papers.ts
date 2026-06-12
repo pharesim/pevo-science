@@ -46,7 +46,7 @@ import {
   authorsWithSupersessionSelect,
   consentChainCteBody,
   consentedAuthorsCteBody,
-  consentSeedCteBody,
+  consentStackCteBody,
   retractedPapersCteBody,
   buildWith, buildRecursiveWith,
   validPevoPaperWhere,
@@ -115,9 +115,7 @@ export async function batchResolveVotes(
     1,
     activeAccreditationsCteBody,
     (idx) => authorshipClaimsCteBody(idx, { papers }),
-    (idx) => consentSeedCteBody(idx, { papers }),
-    (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
-    (idx) => consentedAuthorsCteBody(idx),
+    (idx) => consentStackCteBody(idx, { papers }),
   );
 
   const [nativeResult, revoteResult, claimsResult] = await Promise.all([
@@ -1078,9 +1076,7 @@ async function fetchPapersFromHaf(
     activeAccreditationsCteBody,
     retractedPapersCteBody,
     (idx) => authorshipClaimsCteBody(idx),
-    (idx) => consentSeedCteBody(idx),
-    (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
-    (idx) => consentedAuthorsCteBody(idx),
+    (idx) => consentStackCteBody(idx),
   );
   let paramIdx = cte.nextIdx;
   const cteParams: unknown[] = [...cte.params];

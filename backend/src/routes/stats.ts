@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere } from '../hafsql.js';
+import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentStackCteBody, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere } from '../hafsql.js';
 import { getBatchReputationMap } from '../reputation.js';
 import { getAllAccreditedAccounts } from '../accreditation.js';
 
@@ -35,9 +35,7 @@ export async function fetchStatsFromHaf() {
       1,
       activeAccreditationsCteBody,
       (idx) => authorshipClaimsCteBody(idx),
-      (idx) => consentSeedCteBody(idx),
-      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
-      (idx) => consentedAuthorsCteBody(idx),
+      (idx) => consentStackCteBody(idx),
     );
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%

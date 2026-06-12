@@ -6,7 +6,7 @@ import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
-import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, validPevoPaperWhere } from '../hafsql.js';
+import { T, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentStackCteBody, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, validPevoPaperWhere } from '../hafsql.js';
 
 const router = Router();
 
@@ -58,9 +58,7 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
       1,
       activeAccreditationsCteBody,
       (idx) => authorshipClaimsCteBody(idx, { claimer: author }),
-      (idx) => consentSeedCteBody(idx, { signer: author }),
-      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
-      (idx) => consentedAuthorsCteBody(idx, { signers: [author] }),
+      (idx) => consentStackCteBody(idx, { signer: author }),
     );
     // PEvO object-identity gate: a review is only a PEvO review if its author
     // is in `active_accreditations` OR equals `config.hiveAnonAccount`

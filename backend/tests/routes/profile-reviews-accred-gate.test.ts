@@ -71,13 +71,12 @@ vi.mock('../../src/db.js', () => ({
 const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');
 const { config } = await import('../../src/config.js');
-const { buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody } = await import('../../src/hafsql.js');
+const { buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentStackCteBody } = await import('../../src/hafsql.js');
 const app = createApp();
 
 // The reviews handler composes its WITH block from
 //   buildRecursiveWith(1, activeAccreditationsCteBody,
-//     authorshipClaimsCteBody{claimer}, consentSeedCteBody{signer},
-//     consentChainCteBody{rootsFromCte}, consentedAuthorsCteBody{signers})
+//     authorshipClaimsCteBody{claimer}, consentStackCteBody{signer})
 // and binds the per-query params after it via an adaptive paramIdx counter:
 //   [...accredCte.params, username, appTag, anonAccount, bridge, limit, offset, ...].
 // So the username slot is accredCte.params.length (0-indexed) and the anonAccount
@@ -91,9 +90,7 @@ const accredParamCount = buildRecursiveWith(
   1,
   activeAccreditationsCteBody,
   (idx) => authorshipClaimsCteBody(idx, { claimer: 'probe' }),
-  (idx) => consentSeedCteBody(idx, { signer: 'probe' }),
-  (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
-  (idx) => consentedAuthorsCteBody(idx, { signers: ['probe'] }),
+  (idx) => consentStackCteBody(idx, { signer: 'probe' }),
 ).params.length;
 const USERNAME_SLOT = accredParamCount;
 const ANON_SLOT = accredParamCount + 2;

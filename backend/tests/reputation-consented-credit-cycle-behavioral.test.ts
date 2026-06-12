@@ -41,7 +41,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { config } from '../src/config.js';
-import { T } from '../src/hafsql.js';
+import { redirectHafViews } from './support/haf-query.js';
 
 const { getPoolMock } = vi.hoisted(() => ({ getPoolMock: vi.fn() }));
 
@@ -103,18 +103,17 @@ async function captureCycleSql() {
   const cycle = captured.find((c) => c.sql.includes('accepted_claims'));
   if (!cycle) throw new Error('cycle statement not captured');
 
-  let sql = cycle.sql;
-  sql = sql.split(T.comments).join('syn_comments');
-  sql = sql.split(T.commentOps).join('syn_comment_ops');
-  sql = sql.split(T.voteOps).join('syn_vote_ops');
-  sql = sql.split(T.customJson).join('syn_cj');
-  sql = sql.split(T.blocks).join('syn_blocks');
-  // Drift guard per redirected literal (a bare `hafsql.` scan would trip on
-  // SQL comments that mention file names). A view this list misses still
-  // fails loudly at execution: the app database has no hafsql schema.
-  for (const literal of [T.comments, T.commentOps, T.voteOps, T.customJson, T.blocks]) {
-    if (sql.includes(literal)) throw new Error(`unredirected HAF view literal in the cycle SQL: ${literal}`);
-  }
+  // Per-literal drift guard inside the helper (this file deliberately avoids
+  // a bare `hafsql.` scan, which would trip on SQL comments that mention file
+  // names). A view the mapping misses still fails loudly at execution: the
+  // app database has no hafsql schema.
+  const { sql } = redirectHafViews(cycle, {
+    comments: 'syn_comments',
+    commentOps: 'syn_comment_ops',
+    voteOps: 'syn_vote_ops',
+    customJson: 'syn_cj',
+    blocks: 'syn_blocks',
+  });
 
   cycleSql = sql;
   // $2 (accreditedArr) came from getAllAccreditedAccounts via the capturing

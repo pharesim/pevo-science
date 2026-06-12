@@ -61,11 +61,11 @@ import pg from 'pg';
 import { getPool, isHafConfigured } from '../../src/db.js';
 import { config } from '../../src/config.js';
 import {
-  T,
   activeAccreditationsCteBody,
   authorshipClaimsCteBody,
   buildRecursiveWith,
 } from '../../src/hafsql.js';
+import { redirectHafViews } from '../support/haf-query.js';
 
 const PROJECT_ROOT = resolve(__dirname, '../..');
 
@@ -485,10 +485,8 @@ describe.skipIf(!claimsPool)('co-author claim credit — authorship_claims named
       activeAccreditationsCteBody,
       (idx) => authorshipClaimsCteBody(idx, { paperAuthor: 'bob', paperPermlink: 'paper-A' }),
     );
-    let sql = cte.sql;
-    sql = sql.split(T.comments).join('syn_comments');
-    sql = sql.split(T.commentOps).join('syn_comment_ops');
-    sql = sql.split(T.customJson).join('syn_cj');
+    const { sql } = redirectHafViews(cte, { comments: 'syn_comments', commentOps: 'syn_comment_ops', customJson: 'syn_cj' });
+    // Stricter whole-schema guard on top of the helper's per-literal one.
     expect(sql).not.toContain('hafsql.');
 
     const result = await client!.query(

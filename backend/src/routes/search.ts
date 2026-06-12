@@ -7,7 +7,7 @@ import { parsePageLimit } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCteBody, retractedPapersCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody, buildWith, buildRecursiveWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere } from '../hafsql.js';
+import { T, activeAccreditationsCteBody, retractedPapersCteBody, authorshipClaimsCteBody, consentStackCteBody, buildWith, buildRecursiveWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 import {
   validateSearchQuery,
@@ -172,9 +172,7 @@ async function searchReviewsFromHaf(
     1,
     activeAccreditationsCteBody,
     (idx) => authorshipClaimsCteBody(idx),
-    (idx) => consentSeedCteBody(idx),
-    (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
-    (idx) => consentedAuthorsCteBody(idx),
+    (idx) => consentStackCteBody(idx),
   );
   let paramIdx = cte.nextIdx;
 

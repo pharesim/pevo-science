@@ -44,15 +44,15 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { config } from '../src/config.js';
 import {
-  T,
   activeAccreditationsCteBody,
   authorshipClaimsCteBody,
   consentChainCteBody,
   consentedAuthorsCteBody,
-  consentSeedCteBody,
+  consentStackCteBody,
   buildRecursiveWith,
   type ConsentChainScope,
 } from '../src/hafsql.js';
+import { redirectHafViews } from './support/haf-query.js';
 
 const DB_URL = process.env.APP_DATABASE_URL;
 const pool = DB_URL ? new pg.Pool({ connectionString: DB_URL, max: 1 }) : null;
@@ -142,13 +142,14 @@ const CUSTOM_JSONS = [
   cjOp('approve_authorship', 'alice', { claimer: 'sneaky', paper_author: 'alice', paper_permlink: 'p1', author_index: 1 }, 630, 223),
 ];
 
+/** The view subset this corpus synthesizes. */
+const REDIRECTS = { comments: 'syn_comments', commentOps: 'syn_comment_ops', customJson: 'syn_cj' } as const;
+
 /**
  * Compose the production CTE stack for the given scope, redirect every HAF
- * view literal at the synthetic temp tables, and return `{ sql, params }`
- * ready to append a SELECT to. Drift guard: if a view literal stops
- * matching (alias or whitespace change in the real bodies), the redirect
- * would no-op and the query would silently run against live HAF — assert
- * every literal was consumed.
+ * view literal at the synthetic temp tables (per-literal drift guard in
+ * `redirectHafViews`), and return `{ sql, params }` ready to append a
+ * SELECT to.
  */
 function composeRedirected(scope: ConsentChainScope, signers?: string[]) {
   const cte = buildRecursiveWith(
@@ -157,14 +158,7 @@ function composeRedirected(scope: ConsentChainScope, signers?: string[]) {
     (idx) => consentChainCteBody(idx, scope),
     (idx) => consentedAuthorsCteBody(idx, signers ? { signers } : undefined),
   );
-  let sql = cte.sql;
-  sql = sql.split(T.comments).join('syn_comments');
-  sql = sql.split(T.commentOps).join('syn_comment_ops');
-  sql = sql.split(T.customJson).join('syn_cj');
-  expect(sql).not.toContain(T.comments);
-  expect(sql).not.toContain(T.commentOps);
-  expect(sql).not.toContain(T.customJson);
-  return { sql, params: cte.params };
+  return redirectHafViews(cte, REDIRECTS);
 }
 
 async function consentedFor(scope: ConsentChainScope, signers?: string[]) {
@@ -322,14 +316,10 @@ describe.skipIf(!pool)('consentedAuthorsCteBody — Route 1/2 resolution (real P
     const seeded = buildRecursiveWith(
       1,
       activeAccreditationsCteBody,
-      (idx) => consentSeedCteBody(idx),
-      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
-      (idx) => consentedAuthorsCteBody(idx),
+      (idx) => consentStackCteBody(idx),
     );
-    let sql = seeded.sql;
-    sql = sql.split(T.comments).join('syn_comments');
-    sql = sql.split(T.commentOps).join('syn_comment_ops');
-    sql = sql.split(T.customJson).join('syn_cj');
+    const { sql } = redirectHafViews(seeded, REDIRECTS);
+    // Stricter whole-schema guard on top of the helper's per-literal one.
     expect(sql).not.toContain('hafsql.');
     const seededRows = (await client!.query(
       `${sql}
@@ -363,10 +353,8 @@ describe.skipIf(!pool)('authorshipClaimsCteBody — Route 3 over the chain union
   async function claimStatuses() {
     const cte = buildRecursiveWith(1, (idx) =>
       authorshipClaimsCteBody(idx, { paperAuthor: 'alice', paperPermlink: 'p1' }));
-    let sql = cte.sql;
-    sql = sql.split(T.comments).join('syn_comments');
-    sql = sql.split(T.commentOps).join('syn_comment_ops');
-    sql = sql.split(T.customJson).join('syn_cj');
+    const { sql } = redirectHafViews(cte, REDIRECTS);
+    // Stricter whole-schema guard on top of the helper's per-literal one.
     expect(sql).not.toContain('hafsql.');
     const result = await client!.query(
       `${sql} SELECT claimer, status FROM authorship_claims ORDER BY claimer`,

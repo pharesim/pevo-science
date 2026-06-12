@@ -1428,6 +1428,44 @@ export function consentSeedCteBody(
   };
 }
 
+/** Compose the display-surface consent stack — `consentSeedCteBody` →
+ *  `consentChainCteBody({ rootsFromCte: 'consent_seed' })` →
+ *  `consentedAuthorsCteBody` — as ONE builder. Byte-equivalent to listing
+ *  the three builders sequentially in `buildWith`/`buildRecursiveWith`
+ *  (the internal joiner matches the builders' `', '` CTE separator) with
+ *  identical param order and `nextIdx`, so the SQL-shape canaries see no
+ *  emission change; the equivalence is pinned per scope shape in
+ *  `hafsql.test.ts`. Sites with a custom seed CTE (the reputation cycle's
+ *  batch-activity seed, the pending-consents `pending_seed` up-walk)
+ *  compose `consentChainCteBody` + `consentedAuthorsCteBody` directly and
+ *  are not this composer's callers.
+ *
+ *  One scope value fans out to the members that consume it:
+ *   - `{ signer }` — single-account surfaces: seeds from the account's own
+ *     consent ops and narrows the resolved set to that account
+ *     (`{ signers: [signer] }`).
+ *   - `{ papers }` — page-bounded batch surfaces: seeds from the page's
+ *     paper keys, resolution unscoped (an empty list emits the seed's
+ *     FALSE backstop).
+ *   - omitted — in-statement multi-result surfaces (listing/search/stats):
+ *     unscoped seed and resolution, one fenced resolution per query. */
+export function consentStackCteBody(
+  startIdx = 1,
+  scope?: { signer: string } | { papers: Array<{ author: string; permlink: string }> },
+): SqlFragment {
+  const seed = consentSeedCteBody(startIdx, scope);
+  const chain = consentChainCteBody(seed.nextIdx, { rootsFromCte: 'consent_seed' });
+  const consented = consentedAuthorsCteBody(
+    chain.nextIdx,
+    scope && 'signer' in scope ? { signers: [scope.signer] } : undefined,
+  );
+  return {
+    sql: `${seed.sql}, ${chain.sql}, ${consented.sql}`,
+    params: [...seed.params, ...chain.params, ...consented.params],
+    nextIdx: consented.nextIdx,
+  };
+}
+
 // ─── Genesis block ──────────────────────────────────────────────
 
 /**

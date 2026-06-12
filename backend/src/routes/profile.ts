@@ -15,7 +15,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentSeedCteBody, consentChainCteBody, consentedAuthorsCteBody } from '../hafsql.js';
+import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentStackCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -109,9 +109,7 @@ async function getProfileStats(username: string) {
       1,
       activeAccreditationsCteBody,
       (idx) => authorshipClaimsCteBody(idx, { claimer: username }),
-      (idx) => consentSeedCteBody(idx, { signer: username }),
-      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
-      (idx) => consentedAuthorsCteBody(idx, { signers: [username] }),
+      (idx) => consentStackCteBody(idx, { signer: username }),
     );
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;
@@ -598,9 +596,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
       1,
       activeAccreditationsCteBody,
       (idx) => authorshipClaimsCteBody(idx, { claimer: username }),
-      (idx) => consentSeedCteBody(idx, { signer: username }),
-      (idx) => consentChainCteBody(idx, { rootsFromCte: 'consent_seed' }),
-      (idx) => consentedAuthorsCteBody(idx, { signers: [username] }),
+      (idx) => consentStackCteBody(idx, { signer: username }),
     );
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;
