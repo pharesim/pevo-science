@@ -27,3 +27,17 @@ The `orcid.test.ts` header's mocked-set sentence (rewritten under the parent tas
 - Parent: `backend-admin-broadcast-orcid-sites` (archived 2026-06-12; see `agents/docs/tasks-archive.md`).
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Implementation note (backend, 2026-06-12)
+
+All three fix items landed in one comment-only commit:
+
+1. The db.js clause now names all three factory exports: "the database pools (db.js getPool / isHafConfigured -> true / no-op closeHafPool; app-db.js getAppPool)". Sentence structure otherwise kept.
+2. The positional fifth-factory pointer became the name anchor "see the verifyHiveSignature.js vi.mock factory's note".
+3. Set equality re-derived against ALL five factories (not spliced): db.js getPool + isHafConfigured + closeHafPool (now named); app-db.js getAppPool (named, complete); hive.js hiveClient (broadcast.json named under the broadcast seams, database.getAccounts named as the read stub) + broadcastJsonWithTimeout + broadcastAdminCustomJson + BroadcastTimeoutError + DEFAULT_BROADCAST_TIMEOUT_MS (all already named, complete); accreditation.js getAccreditedSet (named, complete); verifyHiveSignature.js explicitly identified as the delegating wrapper, not a stub. Export granularity is now consistent across factories.
+
+No spec or factory changes. `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
