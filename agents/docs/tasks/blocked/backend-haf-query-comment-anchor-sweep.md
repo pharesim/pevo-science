@@ -122,3 +122,12 @@ re-enumeration at unblock widens to cover these files; otherwise fold them into 
 next general anchor-rot sweep that touches `routes/papers.ts` / the route test tree.
 Re-verify they still exist (and have not already been cleaned by in-flight work)
 before editing.
+
+## Additional pre-existing anchor-rot site surfaced 2026-06-12 (architect, redis-keys-scan archive review)
+
+- `backend/tests/routes/reputation-batch-internals.test.ts` — the file header
+  (roughly the first ~18 lines) and the describe near the prev_scores rehydration
+  block carry round/hold ordinals. Pre-existing; NOT introduced by the redis-keys
+  commits (the members-index write-path describe added there is clean). Same
+  treatment as the 2026-06-09 entries above: sweep here only if the unblock
+  re-enumeration widens to the test tree; re-verify before editing.
