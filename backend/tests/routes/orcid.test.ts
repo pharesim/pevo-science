@@ -92,16 +92,17 @@ import { PrivateKey } from '@hiveio/dhive';
 // Confirmed STILL UNMOCKED for the new specs (per root CLAUDE.md carve-out):
 // verifyHiveSignature, the rest of the auth middleware chain, the real Redis
 // client (lock/cache keys are observed via live redis.get / redis.set calls
-// in the test body). The mocked set is: the database pools (db.js getPool,
-// app-db.js getAppPool); the hive.js factory, covering the broadcast seams
-// (broadcast.json, broadcastJsonWithTimeout, broadcastAdminCustomJson — all
-// routed through the one broadcastJsonMock) plus the
-// hiveClient.database.getAccounts -> [] read stub and the
-// BroadcastTimeoutError / DEFAULT_BROADCAST_TIMEOUT_MS stand-ins; and
-// accreditation.js getAccreditedSet, stubbed to an empty accredited set.
-// (The fifth vi.mock, verifyHiveSignature.js, is a delegating wrapper, not a
-// stub — see the note above its factory.) That scope matches the SEC-002-BE
-// carve-out and does not widen here.
+// in the test body). The mocked set is: the database pools (db.js getPool /
+// isHafConfigured -> true / no-op closeHafPool; app-db.js getAppPool); the
+// hive.js factory, covering the broadcast seams (broadcast.json,
+// broadcastJsonWithTimeout, broadcastAdminCustomJson — all routed through
+// the one broadcastJsonMock) plus the hiveClient.database.getAccounts -> []
+// read stub and the BroadcastTimeoutError / DEFAULT_BROADCAST_TIMEOUT_MS
+// stand-ins; and accreditation.js getAccreditedSet, stubbed to an empty
+// accredited set. (The fifth vi.mock, verifyHiveSignature.js, is a
+// delegating wrapper, not a stub — see the verifyHiveSignature.js vi.mock
+// factory's note.) That scope matches the SEC-002-BE carve-out and does not
+// widen here.
 // vi.hoisted keeps these references alive across the hoisted vi.mock factories below.
 // MockBroadcastTimeoutError mirrors the real class's constructor signature (timeoutMs
 // property) so handlers discriminating via `err instanceof BroadcastTimeoutError`
