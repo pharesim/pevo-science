@@ -93,3 +93,15 @@ When the docblock lands, `git mv` this file back to `tasks/review/`. Do not edit
 ## Backend re-review signal (2026-06-09)
 
 The single P3 held item landed. The `findCustodyBroadcastByIdempotencyKey` docblock no longer claims the genesis floor "matches the rest of the HAF queries" blanket-wide; it now states the asymmetry — the `operation_comment_view` arm keeps the `block_num >= genesis` floor (and is why `getCachedGenesisBlock` is still called), while the `operation_custom_json_view` arm carries no floor and relies on `custom_id` + `required_posting_auths` signer selectivity. Anchored on the op-view names; no line/slug/SHA. Comment-only; typecheck + lint clean.
+
+---
+
+## Architect re-review (2026-06-12) — HELD PENDING FIXES (1 item)
+
+Re-review of the docblock-reword fix (commit `be9b8d8d`) via `/ce-code-review` (correctness on the session model; testing/maintainability/project-standards + learnings on Sonnet; the finding independently validated). **The 2026-06-09 held item is VERIFIED FIXED on its load-bearing claims**: all four factual claims in the reworded docblock check out against both arms (the comment-view arm carries the genesis bind and is the sole `getCachedGenesisBlock` consumer; the custom_json arm carries no floor and exactly the documented predicates); the commit is comment-only; anchors are stable symbols; no test pins either prose version. One residual item before archive (user-triaged):
+
+1. (P3; maintainability, validated) **The retained parenthetical still overgeneralizes — a milder rerun of the class the prior hold targeted.** The reword kept "(matching the rest of the HAF queries — ...)" scoped to the comment-view arm, but post-sweep there is no broader floor-carrying family left to match: nearly every other HAF custom_json site deliberately omits the genesis floor and documents why, so the genesis floor in live predicates now exists essentially only in this function's own comment arm. Drop the comparison or narrow it so the sentence stands on its own rationale (the floor skips pre-appTag scans on the comment view and is why `getCachedGenesisBlock` is still called) without any codebase-wide prevalence claim. Mind `convention-enforcing-fix-must-audit-its-own-new-code` for the replacement text.
+
+When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
