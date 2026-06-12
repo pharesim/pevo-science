@@ -43,3 +43,17 @@ All three items landed.
 **Verification (main checkout, real Postgres):** typecheck (src+tests) + lint clean; `wot-retract-cascaderevocation.test.ts` plus `wot-vouch-status-select-real-postgres.test.ts` 26/26 green.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-06-12) — HELD PENDING FIXES (1 item)
+
+`/ce-code-review` fan-out on commit `e2e562ac` (correctness + adversarial on the session model; testing/maintainability/project-standards + learnings on Sonnet; ce-agent-native skipped per PEvO). **All three task items are VERIFIED LANDED and SOUND**: the extracted `vouchStatusSelect` output is byte-identical to the pre-extraction inline SELECT (programmatically reconstructed and compared, whitespace included); the no-second-read pin genuinely reaches the revoke branch (2 vouchers below threshold 3, traced through `revokeVoucheeIfBelowThreshold`) and `expect(hafQueryMock).not.toHaveBeenCalled()` fails red on any reintroduced pool.query read; the FROM-redirect test imports the production builder single-source, rewrites only the two schema-qualified FROM targets, and fires the no-op guard before the behavioral assertions per the convention entry; the literal-union cast degrades safely (an off-union method string falls through `=== 'wot'` to non-revocable, identical to pre-commit) and the members match ARCHITECTURE.md's enumeration exactly; carve-out headers and comment anchors clean. One item before archive (user-triaged):
+
+1. (P2; correctness + maintainability corroborated, conf 100) **`AccreditationMethod` is now declared twice.** `wot.ts` declares its own union while `types/domain.ts` already exports the canonical, member-identical one (consumed by `types/hive.ts`). Two sources of truth: a future fifth method added to one declaration silently diverges from the other, and the wot.ts copy is what the `=== 'wot'` revocation discriminant and the test import see. Single-source it: delete the wot.ts declaration and re-export the domain type (`export type { AccreditationMethod } from './types/domain.js';` keeps the test's existing import path valid). Invariant: one declaration owns the method enumeration.
+
+Dismissed at triage (recorded, no action): the `'manual'` union member having no dedicated non-revoke spec (structurally covered by the `=== 'wot'` predicate); the `usernameParam` bare-string signature hardening (template-literal type); the route-level total-query-count pin and the off-union degradation spec — all below the action bar per the preemptive-hardening posture.
+
+When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
