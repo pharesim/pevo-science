@@ -102,3 +102,17 @@ All three hold items landed:
 Verification: `npm run typecheck` (src+tests) clean; `npm run lint` clean except the known pre-existing `author-supersession.ts` warning; `display-claimer-self-vote-revote-exclusion` + `display-consented-self-dealing-exclusion` + `papers-consented-badge` 16/16 green (the degrade pin exercises the renamed leg through the real dispatch).
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-06-12, round 2) — HELD PENDING FIXES (1 item)
+
+`/ce-code-review` fan-out on commit `04da9eab` (correctness on the session model; performance/reliability/testing/maintainability/project-standards + learnings on Sonnet; ce-agent-native skipped per PEvO). **All three round-1 hold items are VERIFIED LANDED**: the enrichment leg routes through the shared volatile entry via `getConsentedAccountsForPaperCached` and the fail-closed boundary is preserved end-to-end (getOrSet never caches null, never negative-caches, and propagates `HafQueryError` uncached into the Promise.all 503 path — verified against the cache implementation and consistent with the fail-closed/degrade-accepted convention entry); the `new_review` docblock enumeration matches HEAD (display helper pair plus the cycle's credited-set gates; the arm stays intentionally ungated); the degrade describe accurately names the credited-set leg and its single-query union (the test's throw trigger matches the union SQL, so the both-populations-degrade-together claim is true); the test hunk is prose-only and `creditedSet` matches production; carve-out clauses and anchors clean. One item before archive (user-triaged):
+
+1. (P3; correctness + performance corroborated, architect-verified against both route handlers) **The new shared-entry comments overclaim the dedup's reach.** The wrapper docblock and the enrichment Promise.all comment state unconditionally that both surfaces share the SAME volatile cache entry and reuse each other's resolution. The badge path canonicalizes via `findCanonicalRoot` before annotating, but the enrichment route passes raw `req.params` to `fetchEnrichmentFromHaf` — for a continuation-post URL the two surfaces compute different keys and each fires its own HAF query. Behavior is correct (the key always matches the loader args; no cross-contamination) and STAYS; qualify both comments so the claim matches the wiring: reuse holds when both surfaces resolve the same canonical (author, permlink) pair, i.e. root-URL requests; the enrichment surface keys on its caller-supplied pair. (The enrichment route's lack of canonical-root rewriting is pre-existing design, out of scope here.)
+
+Dismissed at triage (recorded, no action): the `it()` title's "claimed self-vote" phrasing (readable as the claimer actor; rename churn not warranted); the cross-surface dedup invariant being test-unpinned and the unreachable enrichment null-path pin (preemptive-hardening posture); the transient single-flight rejection coupling (clears in finally, no negative caching) recorded as an accepted residual.
+
+When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
