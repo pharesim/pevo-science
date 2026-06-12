@@ -160,3 +160,17 @@ The hold's single item (multi-block 'asc' recovery prose overstating recovery ti
 No behavior or assertion change; anchors behavioral/stable-symbol only. Verification: typecheck (src+tests) clean; lint 0 errors (1 pre-existing warning in `lib/author-supersession.ts`, untouched); `digest-window-cursor.test.ts` 5/5 + `fetch-notifications-asc-whole-block.test.ts` 3/3 green; grep confirmed no test pins the old prose.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-06-12) — HELD PENDING FIXES (1 item)
+
+Re-review of the prose-reword fix (commit `b45abb78`) via `/ce-code-review` (correctness on the session model; testing/maintainability/project-standards + learnings on Sonnet; the finding independently validated with the cadence/window arithmetic). **The 2026-06-09 held item is VERIFIED FIXED as prescribed**: both locations describe the deferred floor-slide mechanism, the prohibited framings are absent, the mechanism claims (wide-floor fetch, in-app strict-greater filter, same-batch re-fetch-and-re-drop on an immediately-following call) are all true against the code, the two tellings are consistent, the commit is comment-only, and no test pins either prose version. One item before archive (user-triaged) — and in fairness to the implementer, the prior hold's own implementer note ("recovery always eventually occurs") introduced this imprecision; this hold supersedes it:
+
+1. (P3; correctness, validated) **The corrected prose still asserts recovery unconditionally, and for weekly cadence recovery is impossible.** `NOTIFICATION_WINDOW_BLOCKS` is 100,000 (~3.5 days at 3s blocks); the weekly scheduler's inter-run floor stride is ~201,600 blocks — double the window — so a block dropped at run N is below the floor by run N+1: a permanent drop, never a deferred one. Daily cadence (~28,800-block stride) recovers only when the between-floor-and-block event count falls under the cap before the block ages out; a sustained dense window can keep it truncated to age-out. Reword BOTH locations (the `fetchNotificationsFromHaf` Residual docblock and the `runDigest` cursor-advance comment) so floor-slide recovery is stated as the typical outcome for daily cadence over spread activity, with the weekly-cadence and dense-burst permanent-drop cases stated as bounded accepted residuals, parallel to the existing single-block-exceeds-cap paragraph. Anchor on the constants and mechanism; no slug/round/line/SHA.
+
+Triage note: the underlying structural gap — weekly digests never see roughly half of each week because the window depth (~3.5 days) is shorter than the 7-day cadence — was accepted-and-documented at triage as beta posture; the item-1 reword is where that acceptance gets recorded in code. No separate task filed; revisit if weekly digest usage materializes.
+
+When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
