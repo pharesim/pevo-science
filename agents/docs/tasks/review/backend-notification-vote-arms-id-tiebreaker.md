@@ -32,3 +32,19 @@ Every latest-wins ordering in the notification arms (and any sibling vote latest
 - `agents/docs/solutions/conventions/accreditation-state-read-latest-action-wins-2026-05-15.md` (the sibling family's contract).
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend completion note (2026-06-14)
+
+Audited every `DISTINCT ON` / latest-wins ordering in `notification-queries.ts`.
+
+**Changed (added `v.id DESC` secondary key):** vote arms 2a, 2b, 2c. These are latest-wins (`ORDER BY ... v.block_num DESC`); a same-block vote/revote (or weight toggle) pair carries differing `vote_weight`, so the kept variant was planner-dependent. Added the monotonic op-id key `v.id DESC` to each dedup ORDER BY, mirroring `reputation.ts` `paper_latest_votes`' `op_id DESC` (the vote view exposes its op-id as `id`, projected `v.id AS op_id`). The DISTINCT ON prefix is preserved, so this is order-only: it changes which same-block variant is deterministically kept, not which logical events surface.
+
+**Left key-free with a tie-insensitivity rationale comment:** all earliest-wins arms (reviews 1a/1b, reply 5, citations 6a/6b, claims 8/9). For each, a same-block tie group shares the full dedup key + `block_num`, and every emitted field is derived solely from those keys (plus joins keyed on them), so the kept variant is outcome-invariant. Per the task, keys were not added mechanically where they change nothing. The plain-SELECT arms (3 accreditation_update, 4 new_vouch, 7 claim_pending) have no DISTINCT ON and are out of scope (outer query already orders by `block_num, op_id`).
+
+Updated the SQL-shape pin (`notifications-arm-sql-shape.test.ts` canary #7 + header) to assert the full tie-broken `ORDER BY v.author, v.permlink, v.voter, v.block_num DESC, v.id DESC` so a dropped secondary key fails red.
+
+Implemented in worktree fan-out (worker on a rebased-onto-main base; stale-base detected and corrected before starting), commit cherry-picked to main. Comment anchors on convention names and stable symbols (no slug/round/line/SHA). Verification: `npm run typecheck` (src+tests) + `npm run lint` clean (one pre-existing `author-supersession.ts` warning, untouched); notification + digest suites 9 files / 100 tests green. Re-confirmed by the parent's post-merge full-suite run.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
