@@ -385,8 +385,12 @@ const noCustomIdBlockNumFloorRule = {
 // Detection fingerprint (regex/scanner over the flattened literal, SQL line
 // comments stripped first):
 //   gate:  the literal filters on the accreditation action values — an
-//          `'action' = '...'` / `'action' IN (...)` predicate naming
-//          'accredit' or 'revoke' on one line.
+//          `... = '...'` / `... IN (...)` predicate naming 'accredit' or
+//          'revoke' on one line, where the key is EITHER the quoted jsonb
+//          form `'action'` (e.g. `->> 'action' IN ('accredit', 'revoke')`) OR
+//          the bare ranked-CTE alias form `action` / `ar.action` (e.g.
+//          `WHERE rn = 1 AND action = 'accredit'`). Both spellings gate, so
+//          the matched coverage equals the documented coverage.
 //   shape: a latest-wins ordering on `block_num DESC`, i.e. either
 //            (a) an `ORDER BY ...` clause that runs into `LIMIT 1` at the
 //                same paren depth (the single-row latest-state read), or
@@ -395,6 +399,19 @@ const noCustomIdBlockNumFloorRule = {
 //   check: every `block_num DESC` inside such a region must be immediately
 //          followed by `, <alias.>id DESC` (or `op_id DESC`).
 //
+// Extracted-fragment guard (the rule guards its own sight): if a latest-wins
+// region (an OVER body, or a classified `ORDER BY ... LIMIT 1` clause) contains
+// an interpolation marker — i.e. the ordering or the action filter was lifted
+// into a `${...}` fragment — the rule can no longer SEE the tie-breaker text,
+// so it reports `extractedFragment` rather than silently passing. `${...}`
+// composition is established house style, so this is the most probable real
+// evasion path; the fix is to make the extracted clause a NAMED exported
+// constant pinned by the exported-fragment tie-breaker canary
+// (window-cte-deterministic-tiebreaker), which DOES see fragment text. The
+// gate regex and the ORDER BY scanner both stop at the NUL marker
+// `flattenSqlString` inserts between template quasis, so without this guard an
+// extraction would un-arm both this rule AND the canary at once.
+//
 // Deliberately NOT flagged (out of family):
 //   - window-feed delta reads (`block_num > $N` floors): their vote-arm
 //     `ORDER BY ... block_num DESC` clauses sit inside DISTINCT ON
@@ -402,20 +419,47 @@ const noCustomIdBlockNumFloorRule = {
 //     before any LIMIT, and the trailing pagination LIMIT binds a parameter,
 //     not 1;
 //   - aggregates with no ORDER BY (the genesis `MIN(block_num)` read);
+//   - DISTINCT ON latest-wins reads — a `SELECT DISTINCT ON (account) ...
+//     ORDER BY account, block_num DESC` accreditation-state read (no LIMIT 1,
+//     no OVER) clears both region scans and is NOT classified here. This is a
+//     documented gap, not a verified safe shape: no accreditation-state read
+//     uses DISTINCT ON today (the family uses LIMIT-1 and ROW_NUMBER), so a
+//     shape-harmonizing rewrite to DISTINCT ON would need to carry the
+//     `, id DESC` tie-breaker on its own discipline (or add a third region
+//     classifier here). Recorded so the gap is a decision, not an oversight;
 //   - latest-wins reads on other action namespaces (`update_params`,
 //     `update_weights`, `revote`) or keyed on non-action predicates
 //     (idempotency-key probes): the gate requires the accredit/revoke action
 //     filter in the same literal.
 // Runtime-assembled SQL outside `flattenSqlString`'s folded forms is
 // documented evasion handled by code review, same as the floor rule above.
+//
+// Suppression discipline: the gate is literal-GLOBAL while the shape check is
+// region-LOCAL. A multi-CTE literal that pairs a compliant accred CTE with an
+// unrelated `ORDER BY block_num DESC LIMIT 1` block-watcher read can false-trip
+// on the unrelated region. Do NOT reach for `eslint-disable` in that case: a
+// suppression covering the whole literal would also mask a LATER real
+// tie-breaker drop in the accred region. Instead, SPLIT the mixed literal into
+// separate query strings so each fires (or stays silent) on its own merits. If
+// a suppression is genuinely unavoidable, it MUST name the specific non-accred
+// region it covers so a reviewer can confirm it is not blanketing the accred
+// read.
 
 // An action predicate naming the accreditation state values, on one line of
-// SQL: `->> 'action' = 'accredit'`, `->> 'action' IN ('accredit', 'revoke')`,
-// or a ranked-CTE alias form like `action IN ('revoke', 'accredit')`. The
-// `[^)\u0000\n]*` run keeps the match on a single line, inside the current
-// paren group, and short of any interpolation marker, so an unrelated
+// SQL. Two key spellings gate, so the documented and matched coverage agree:
+//   - the jsonb-extracted key: `->> 'action' = 'accredit'`,
+//     `->> 'action' IN ('accredit', 'revoke')` (the quoted `'action'`);
+//   - the ranked-CTE alias form: `action IN ('revoke', 'accredit')`,
+//     `action = 'accredit'`, `ar.action = 'accredit'` (a bare, optionally
+//     alias-prefixed `action` column projected out of a ranking CTE: the
+//     codebase's `WHERE rn = 1 AND action = 'accredit'` final-filter shape).
+// The bare-alias alternation is `\b(?:\w+\.)?action`; the leading `\b` and
+// the optional `\w+\.` alias prefix keep `action` from matching inside a
+// longer identifier (`transaction`, `my_action`) while accepting `ar.action`.
+// The `[^)\u0000\n]*` run keeps the match on a single line, inside the
+// current paren group, and short of any interpolation marker, so an unrelated
 // 'accredit' string elsewhere in the literal cannot complete the predicate.
-const ACCRED_STATE_FILTER_RE = /'action'\s*(?:=|IN)\s*\(?[^)\u0000\n]*'(?:accredit|revoke)'/i;
+const ACCRED_STATE_FILTER_RE = /(?:'action'|\b(?:\w+\.)?action)\s*(?:=|IN)\s*\(?[^)\u0000\n]*'(?:accredit|revoke)'/i;
 
 // Strip `--` SQL line comments so comment text (which may contain parens or
 // the word accredit) cannot confuse the gate or the paren-depth scan. Stops
@@ -453,21 +497,39 @@ function balancedParenBody(s, openIdx) {
 }
 
 // Scan the flattened (comment-stripped) SQL for a latest-wins ordering on
-// `block_num DESC` that lacks the `id DESC` tie-breaker. Two region shapes:
-//
+// `block_num DESC` and classify it. Returns one of:
+//   - 'missing':   a latest-wins region orders by `block_num DESC` without the
+//                  immediate `id DESC` tie-breaker (a real violation);
+//   - 'extracted': a latest-wins region contains an interpolation marker, i.e.
+//                  the ordering clause (or part of it) was lifted into a
+//                  `${...}` fragment, so the rule can no longer SEE the
+//                  tie-breaker. Extraction must not be silent: an extracted
+//                  fragment leaves the rule's sight and must instead be pinned
+//                  by the exported-fragment tie-breaker canary
+//                  (window-cte-deterministic-tiebreaker), so this turns the
+//                  refactor red until that move is made;
+//   - null:        no latest-wins region, or every region carries the
+//                  tie-breaker in fully-visible (non-extracted) text.
+// Two region shapes:
 //   (b) window orderings: every `OVER ( ... )` body (balanced-paren extract;
 //       covers the ROW_NUMBER rn=1 ranking).
 //   (a) LIMIT-1 orderings: from each `ORDER BY`, walk forward tracking paren
 //       depth. The region ends at the first of: a paren closing below the
 //       clause's depth (the ORDER BY belongs to a subquery, e.g. a DISTINCT
-//       ON dedup arm — not a latest-wins state read), a `;`, an interpolation
-//       marker, a `UNION`, or a `LIMIT` at clause depth. Only a `LIMIT 1`
-//       terminator classifies the clause as a latest-wins read; a parameter
-//       or larger LIMIT is pagination and is skipped.
-function hasLatestWinsTiebreakerViolation(flat) {
+//       ON dedup arm — not a latest-wins state read), a `;`, a `UNION`, or a
+//       `LIMIT` at clause depth. Only a `LIMIT 1` terminator classifies the
+//       clause as a latest-wins read; a parameter or larger LIMIT is
+//       pagination and is skipped. An interpolation marker hit at clause depth
+//       before the terminator does NOT end the region: the scan continues so a
+//       `LIMIT 1` still beyond it classifies the (now extraction-tainted)
+//       region as 'extracted' rather than letting the marker silently disarm
+//       the check.
+function classifyLatestWinsTiebreaker(flat) {
   for (const m of flat.matchAll(/\bOVER\s*\(/gi)) {
     const body = balancedParenBody(flat, m.index + m[0].length - 1);
-    if (body !== null && regionMissingIdTiebreaker(body)) return true;
+    if (body === null) continue;
+    if (body.includes('\u0000')) return 'extracted';
+    if (regionMissingIdTiebreaker(body)) return 'missing';
   }
 
   for (const m of flat.matchAll(/\bORDER\s+BY\b/gi)) {
@@ -475,6 +537,7 @@ function hasLatestWinsTiebreakerViolation(flat) {
     const scanner = /[();\u0000]|\b(?:LIMIT|UNION)\b/gi;
     scanner.lastIndex = start;
     let depth = 0;
+    let sawMarker = false;
     let s;
     while ((s = scanner.exec(flat)) !== null) {
       const tok = s[0];
@@ -484,17 +547,26 @@ function hasLatestWinsTiebreakerViolation(flat) {
         if (depth < 0) break;
         continue;
       }
-      if (tok === ';' || tok === '\u0000') break;
+      if (tok === ';') break;
+      if (tok === '\u0000') {
+        // An interpolation marker inside a paren group belongs to a subquery,
+        // not this clause; only a clause-depth marker taints this region.
+        if (depth === 0) sawMarker = true;
+        continue;
+      }
       if (tok.toUpperCase() === 'UNION') break;
       // LIMIT token. One nested below the clause (inside a paren group) is a
       // subquery's own limit, not this clause's terminator.
       if (depth !== 0) continue;
       if (!/^\s+1\b/.test(flat.slice(s.index + tok.length))) break;
-      if (regionMissingIdTiebreaker(flat.slice(start, s.index))) return true;
+      // Classified as a latest-wins read. If the clause text was tainted by an
+      // extracted fragment, the tie-breaker is no longer in sight.
+      if (sawMarker) return 'extracted';
+      if (regionMissingIdTiebreaker(flat.slice(start, s.index))) return 'missing';
       break;
     }
   }
-  return false;
+  return null;
 }
 
 const noAccredStateReadMissingIdTiebreakerRule = {
@@ -508,6 +580,8 @@ const noAccredStateReadMissingIdTiebreakerRule = {
     messages: {
       missingTiebreaker:
         'Accreditation-state read orders by `block_num DESC` without the same-block `id DESC` tie-breaker. The HAF mirror views omit `trx_in_block`, so the monotonic op id is the only intra-block key; write `ORDER BY ... block_num DESC, <alias>.id DESC` per the `(block_num, id)` deterministic-tiebreaker convention. See agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md (Rule 2) and agents/docs/solutions/conventions/accreditation-state-read-latest-action-wins-2026-05-15.md.',
+      extractedFragment:
+        'Accreditation-state read has an extracted fragment (a `${...}` interpolation) inside its latest-wins ordering region, so this rule can no longer verify the `block_num DESC, id DESC` tie-breaker. An extracted ORDER BY / window clause leaves this rule\'s sight; pin it instead with the exported-fragment tie-breaker canary (window-cte-deterministic-tiebreaker) by making the fragment a named exported constant the canary asserts on. See the `accreditation-state-read-latest-action-wins` convention.',
     },
   },
   create(context) {
@@ -522,8 +596,10 @@ const noAccredStateReadMissingIdTiebreakerRule = {
       if (flatRaw === null) return;
       const flat = stripSqlLineComments(flatRaw);
       if (!ACCRED_STATE_FILTER_RE.test(flat)) return;
-      if (!hasLatestWinsTiebreakerViolation(flat)) return;
-      context.report({ node, messageId: 'missingTiebreaker' });
+      const verdict = classifyLatestWinsTiebreaker(flat);
+      if (verdict === null) return;
+      const messageId = verdict === 'extracted' ? 'extractedFragment' : 'missingTiebreaker';
+      context.report({ node, messageId });
       markDescendants(node, reported);
     }
 
