@@ -35,3 +35,15 @@ The header explains WHY the canary exists and HOW it works without embedding any
 - Archived parent in `tasks-archive.md`: `BACKEND-PAPERS-LISTING-CORRELATED-SUBQUERIES` (rounds 2-5 were all prose-numeral reconciliations).
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend completion note (2026-06-14)
+
+Header de-rotted: the prose no longer restates any count derivable from the `CALLSITES` table. The "11 SQL sites", "6 callsite files", "five route modules", "That's 11 callsites", "the four reputation.ts sites", and "papers.ts contributes 2 (not 3)" numerals are replaced with `CALLSITES`-table references ("a revert at any callsite listed in `CALLSITES`", "read each callsite file listed in `CALLSITES`") and the kept symbol-level explanations (the `validReviewWhere` composition sites; the listing's combined rev_agg LATERAL is why `papers.ts` pins one combined site rather than one per metric). Coordination-state references removed: the "architect's hold-block fix recipe asked for ..." sentence reworded to a behavioral "Runtime SQL inspection via mock-pool was considered and ruled out:" framing, and "(mirrors the architect's hold-block list)" dropped.
+
+Assertions, the `CALLSITES` table, and `minOccurrences` are unchanged; the canary stays green. Comment-only; the replacement prose introduces no fresh slug/line/SHA/round anchor (greppable check clean: no standalone "11", "6 callsite", per-file sum narration, or "hold-block"/architect/round references remain).
+
+Verification: `npm run typecheck` + `npm run lint` clean (one pre-existing `author-supersession.ts` warning, untouched). The canary itself runs in the parent's post-merge full-suite pass.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

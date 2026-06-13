@@ -7,8 +7,8 @@
  * equality between display and reputation paths; the load-bearing canary
  * in `tests/routes/reputation-paper-reviews-self-exclusion-canary.test.ts`
  * tests the AVG/5 inflation. None of these pin that each individual
- * callsite still composes the helper — a revert at any one of the 11 SQL
- * sites would leave the helper-level tests green but reintroduce the
+ * callsite still composes the helper — a revert at any callsite listed in
+ * `CALLSITES` below would leave the helper-level tests green but reintroduce the
  * mutation-class at that callsite (a self-review surfaces on
  * /api/profile/:user/reviews while still being excluded from the reputation
  * paper_reviews CTE, etc.).
@@ -17,15 +17,15 @@
  * `defense-in-depth-canary-must-pin-each-layer-2026-05-07`: each callsite
  * is an independent defense layer; each gets its own canary.
  *
- * **Approach.** A source-level canary: read each of the 6 callsite files
- * and assert that `excludeSelfReviewWhere(` appears at least once. A
+ * **Approach.** A source-level canary: read each callsite file listed in
+ * `CALLSITES` and assert that `excludeSelfReviewWhere(` appears at least once. A
  * mutation that removes the call from any callsite fails this test red.
  *
- * **Why source-level (vs SQL-string runtime inspection).** The architect's
- * hold-block fix recipe asked for runtime SQL inspection via mock-pool.
- * 6 callsite files (five route modules plus the reputation batch module)
- * × full auth/middleware setup × distinct query-param shapes is
- * a large surface; the source-level form catches the same mutation class
+ * **Why source-level (vs SQL-string runtime inspection).** Runtime SQL
+ * inspection via mock-pool was considered and ruled out: each callsite file
+ * (the route modules plus the reputation batch module) × full auth/middleware
+ * setup × distinct query-param shapes is a large surface; the source-level
+ * form catches the same mutation class
  * (any line `AND ${excludeSelfReviewWhere(...)}` removed from the SQL
  * template). The trade-off: a contrived refactor that calls the helper
  * but never interpolates its return into the SQL would pass this canary
@@ -34,7 +34,7 @@
  * SQL template literals). Existing route-level integration tests cover
  * the runtime semantics where they're naturally exercised.
  *
- * **Scope of pinned callsites** (mirrors the architect's hold-block list):
+ * **Scope of pinned callsites:**
  *
  *   - papers.ts:        listing rev_agg LATERAL (review_count + avg_rating,
  *                       one combined accredited-review scan)
@@ -49,12 +49,11 @@
  *                       user_reviews CTE
  *                       citing_paper_quality CTE
  *
- * That's 11 callsites: the four `reputation.ts` sites are enumerated
- * individually above; the `reviews.ts` single-doc fetch and the
- * `reputation.ts` `active_authors` review arm are both `validReviewWhere`
- * composition sites that must also compose self-exclusion; the listing's
- * `review_count` and `avg_rating` share one rev_agg LATERAL, so `papers.ts`
- * contributes 2 (not 3). The notification arms 1a/1b have their own inline
+ * The `reviews.ts` single-doc fetch and the `reputation.ts` `active_authors`
+ * review arm are both `validReviewWhere` composition sites that must also
+ * compose self-exclusion; the listing's `review_count` and `avg_rating` share
+ * one rev_agg LATERAL, so `papers.ts` pins a single combined site there rather
+ * than one per metric. The notification arms 1a/1b have their own inline
  * `co.author != $1` predicate covered separately by
  * `notifications-arm-sql-shape.test.ts`.
  *
