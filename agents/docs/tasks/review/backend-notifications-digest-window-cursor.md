@@ -174,3 +174,15 @@ Triage note: the underlying structural gap — weekly digests never see roughly 
 When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-14)
+
+The single held item landed (comment-only, both locations). The multi-block-truncation recovery prose no longer asserts recovery unconditionally:
+
+- The `fetchNotificationsFromHaf` Residual docblock and the `runDigest` cursor-advance comment now state that floor-slide recovery of a dropped partial block is the TYPICAL outcome at DAILY cadence over spread activity (the ~28,800-block daily stride is well under `NOTIFICATION_WINDOW_BLOCKS` = 100,000 / ~3.5 days, so the block stays in the window for the next few runs), and call out two permanent-drop cases as bounded accepted residuals: WEEKLY cadence (~201,600-block stride, over twice the window, so the block is below the floor by the next run; and a weekly window shorter than its 7-day stride structurally misses ~half of each week regardless), and a sustained-dense window that keeps the block the cap-truncated end until it ages out. Both are stated parallel to the existing single-block-exceeds-cap paragraph and anchored on the block constants and the floor-slide mechanism (no slug/round/line/SHA).
+
+Verification: `npm run typecheck` (src+tests) + `npm run lint` clean (one pre-existing `author-supersession.ts` warning, untouched); no test pins the reworded prose (grep-confirmed). Digest + notification suites covered by the parent's post-merge full-suite run.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

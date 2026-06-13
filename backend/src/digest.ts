@@ -254,23 +254,32 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
       // batch forever for any account with a sustained >cap-event window, because
       // `has_more` stayed true across cadences while the cursor never moved.
       //
-      // Multi-block truncation vs single-block overflow differ here, and only the
-      // first recovers: when the cap cuts across MULTIPLE blocks, the shared
-      // function drops the partial newest block while the cursor advances only to
-      // the highest WHOLE delivered block, below the drop. Recovery is deferred,
-      // not next-run: every run fetches from the wide window floor (not from this
-      // cursor), so the next run re-fetches the same oldest-cap batch, drops the
-      // same partial block again, and filterEventsAfter strips the already-delivered
-      // older blocks. The dropped block is delivered whole only on a later run, once
-      // the forward-sliding floor has aged those delivered older blocks below the
-      // floor and the block is no longer the cap-truncated end. But a TRUE single-block-exceeds-cap
-      // burst (one Hive block alone holding >cap recipient-relevant events) yields an
-      // EMPTY batch — the shared function drops that lone block, the digest skips, and
-      // the cursor holds. That block is NEVER delivered: its event count is fixed, and
-      // the forward-only window floor eventually ages it below the floor, so it is a
-      // permanent drop, not a deferred one. A >cap single block to one recipient in
-      // one 3s block is effectively unconstructible at PEvO scale, so this is an
-      // accepted residual, not a live data-loss path.
+      // Multi-block truncation vs single-block overflow differ here. On a MULTI-block
+      // truncation the shared function drops the partial newest block while the
+      // cursor advances only to the highest WHOLE delivered block, below the drop.
+      // Recovery is deferred, not next-run: every run fetches from the wide window
+      // floor (not from this cursor), so the next run re-fetches the same oldest-cap
+      // batch, drops the same partial block again, and filterEventsAfter strips the
+      // already-delivered older blocks. The dropped block is delivered whole only on
+      // a later run, once the forward-sliding floor has aged those delivered older
+      // blocks below the floor and the block is no longer the cap-truncated end.
+      // That recovery is the typical outcome at DAILY cadence over spread activity:
+      // the ~28,800-block daily stride is well under NOTIFICATION_WINDOW_BLOCKS
+      // (100,000, ~3.5 days), so the dropped block stays in the window for the next
+      // few runs. It does NOT recover in two cases, both accepted as bounded
+      // residuals: WEEKLY cadence has a ~201,600-block stride (over twice the
+      // window), so the block is below the floor by the next run (and a weekly
+      // window shorter than its 7-day stride structurally misses ~half of each week
+      // regardless); and a window that stays dense enough to keep >cap events
+      // between the floor and the block on every run keeps it the cap-truncated end
+      // until it ages out. A TRUE single-block-exceeds-cap burst (one Hive block
+      // alone holding >cap recipient-relevant events) yields an EMPTY batch: the
+      // shared function drops that lone block, the digest skips, and the cursor
+      // holds. That block is NEVER delivered: its event count is fixed, and the
+      // forward-only window floor eventually ages it below the floor, so it is a
+      // permanent drop. A >cap single block to one recipient in one 3s block is
+      // effectively unconstructible at PEvO scale, so this is an accepted residual,
+      // not a live data-loss path.
       await updateLastDigestBlock(user.username, newEvents[newEvents.length - 1].block_num);
       sent++;
     } catch (err) {

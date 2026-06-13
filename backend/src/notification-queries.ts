@@ -188,7 +188,20 @@ export function filterEventsAfter(events: NotificationEvent[], sinceBlock: numbe
  * and drops the same partial block again. The dropped block is delivered whole
  * only once the forward-sliding window floor has aged the already-delivered older
  * blocks below the floor, leaving it as the oldest-kept rows instead of the
- * cap-truncated end. For 'desc' (SPA) the dropped block is the OLDEST and the
+ * cap-truncated end. Whether that ever happens depends on the inter-run floor
+ * stride vs NOTIFICATION_WINDOW_BLOCKS (100,000 blocks, ~3.5 days at 3s blocks).
+ * At DAILY cadence the stride is ~28,800 blocks (well under the window), so the
+ * dropped block stays inside the window for the next few runs and is delivered
+ * once the older blocks age out: the typical outcome for spread activity. Two
+ * cases are permanent drops, accepted as bounded residuals. (1) WEEKLY cadence
+ * has a ~201,600-block stride, over twice the window, so the dropped block is
+ * already below the floor by the next run and is never re-fetched; and more
+ * broadly, a weekly window (~3.5 days) is shorter than its 7-day stride, so
+ * weekly digests structurally never see roughly half of each week regardless.
+ * (2) A window that stays dense enough to keep >cap events between the floor and
+ * the dropped block on every run keeps it the cap-truncated end until it ages
+ * out. Both are accepted beta posture; revisit if weekly digest usage
+ * materializes. For 'desc' (SPA) the dropped block is the OLDEST and the
  * route's cursor only moves FORWARD (newest-first), so that consumer never
  * re-fetches it; recovery for old activity is the email digest's job, not the
  * bell feed's.
