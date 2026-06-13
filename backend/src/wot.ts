@@ -14,6 +14,7 @@ import { seedAccreditationBonus, invalidateOnRevocation } from './reputation.js'
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
 import { T, activeAccreditationsCteBody, activeVouchesCteBody, buildWith } from './hafsql.js';
+import type { AccreditationMethod } from './types/domain.js';
 
 const DEFAULT_WOT_THRESHOLD = 3;
 const MAX_REVOCATION_DEPTH = 20;
@@ -135,14 +136,16 @@ export interface VouchInfo {
 }
 
 /**
- * The closed set of accreditation methods an `accredit` custom_json can carry
- * (mirrors the `method` enum in the accreditation op schema: WoT auto-grant,
- * email-verified, ORCID-verified, manual operator grant). Typed as a literal
- * union (not a bare `string`) so `shouldRevokeOnRetract`'s `=== 'wot'`
- * discriminant is compiler-visible: a future caller comparing against a method
- * that is not in this set becomes a type error rather than a silent always-false.
+ * Re-exported from the canonical declaration in `types/domain.ts` so this module
+ * and its tests keep a stable `./wot.js` import path while a single declaration
+ * owns the method enumeration. The closed set of accreditation methods an
+ * `accredit` custom_json can carry: WoT auto-grant, email-verified,
+ * ORCID-verified, manual operator grant. It is a literal union (not a bare
+ * `string`) so `shouldRevokeOnRetract`'s `=== 'wot'` discriminant is
+ * compiler-visible: a caller comparing against a method outside the set becomes a
+ * type error rather than a silent always-false.
  */
-export type AccreditationMethod = 'wot' | 'email' | 'orcid' | 'manual';
+export type { AccreditationMethod };
 
 export interface VouchStatus {
   username: string;

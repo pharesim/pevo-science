@@ -57,3 +57,13 @@ Dismissed at triage (recorded, no action): the `'manual'` union member having no
 When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-14)
+
+The single held item landed: `AccreditationMethod` is now declared once. `wot.ts` no longer declares its own union — it imports the canonical declaration from `types/domain.ts` and re-exports it (`import type { AccreditationMethod } from './types/domain.js'` plus `export type { AccreditationMethod }`). That keeps the `./wot.js` import path valid for `shouldRevokeOnRetract`'s `=== 'wot'` discriminant, the `VouchStatus.accreditation_method` field, the SQL-read cast in `getVouchStatus`, and the test import in `wot-retract-cascaderevocation.test.ts`. The literal-union rationale moved to the re-export docblock; `types/domain.ts` owns the member enumeration as the single source. A re-export alone has no local binding, so the import-and-re-export pair is required for the in-file uses.
+
+Verification: `npm run typecheck` (src+tests) clean (type-only change); `npm run lint` clean except the pre-existing `author-supersession.ts` warning (untouched). wot suites covered by the parent's post-merge full-suite run.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
