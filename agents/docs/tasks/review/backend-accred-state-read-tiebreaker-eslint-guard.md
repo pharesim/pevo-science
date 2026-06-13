@@ -75,3 +75,21 @@ Dismissed/suppressed at triage (recorded, no action): named-WINDOW (`OVER w` + `
 When the five items land, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commits. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-14, single fix commit on main)
+
+All five hold items landed in one commit (worktree fan-out; stale base detected and rebased onto main before work; commit cherry-picked to main).
+
+1. **Test suite added** — `backend/tests/eslint/no-accred-state-read-missing-id-tiebreaker.test.ts` (RuleTester, mirrors the sibling suites): 10 valid + 7 invalid cases pinning every fire/skip path: both real LIMIT-1 (`getAccreditationFromHaf`) and OVER/ROW_NUMBER (`getAccreditedSet`) shapes with and without the tiebreaker, `op_id`/bare-`id` keys, the genesis `MIN()` no-ORDER-BY shape, `LIMIT $N` pagination, a no-action-filter read, the `stripSqlLineComments` comment shape, and a meta-mutation pair that lints the REAL site literals with the tiebreaker stripped (converting the prior manual+reverted probe into a red test).
+2. **Gate/behavior divergence resolved** — `ACCRED_STATE_FILTER_RE` widened to match the bare ranked-CTE alias form (`action` / `ar.action = 'accredit'`) alongside the quoted jsonb `'action'` key, so documented coverage equals matched coverage. The bare-alias alternation `\b(?:\w+\.)?action` excludes `transaction`/`my_action` and accepts `ar.action`. Probe-verified zero new errors on the combined `src/` tree.
+3. **Fragment-extraction guard** — the scanner became `classifyLatestWinsTiebreaker` returning `'missing'`/`'extracted'`/`null`; a `${...}` interpolation marker inside a latest-wins region (OVER body or a classified `ORDER BY ... LIMIT 1` clause) now reports a distinct `extractedFragment` diagnostic instead of silently disarming. A docstring warning directs extracted clauses to the exported-fragment tiebreaker canary.
+4. **DISTINCT ON gap documented** — recorded in the deliberately-NOT-flagged list as a decided gap, pinned by a valid test that fires if a future classifier change starts flagging it.
+5. **Suppression discipline documented** in the rule docstring (split mixed literals rather than suppress; any suppression must name the non-accred region it covers).
+
+`window-cte-deterministic-tiebreaker.test.ts` left untouched (already names the rule as the inline-read guard). Anchors on convention names and stable symbols; no slug/round/line/SHA introduced.
+
+Verification (combined-tree, post-merge with worker B's notification tiebreaker + the inline polish): `npx eslint src/` 0 errors; `npx eslint src/ --report-unused-disable-directives` only the pre-existing accepted `author-supersession.ts` directive; `npm run typecheck` + `npm run lint` clean; `tests/eslint/` 64/64 green (new file 17). Mutation probes (disable OVER extracted-detection / revert gate widening / disable LIMIT-1 extracted-detection) each broke exactly one corresponding test, confirming non-vacuous coverage.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
