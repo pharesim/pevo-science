@@ -1360,6 +1360,18 @@ export function consentedAuthorsCteBody(
 }
 
 /**
+ * Scope narrowing shared by `consentSeedCteBody` and the `consentStackCteBody`
+ * composer that wraps it. This is the SEED scope, distinct from
+ * `ConsentChainScope` (which scopes the down-walk) and `AuthorshipClaimsScope`.
+ *   - `{ signer }` — single-account surfaces (profile, the single-review fetch).
+ *   - `{ papers }` — page-bounded batch surfaces (the listing vote batch); an
+ *     empty list emits the seed's FALSE backstop.
+ */
+export type ConsentSeedScope =
+  | { signer: string }
+  | { papers: Array<{ author: string; permlink: string }> };
+
+/**
  * CTE body for the display-surface Route-2 walk seed: the distinct root
  * papers cited by any `author_accept` / `author_resign` op. Feeds
  * `consentChainCteBody({ rootsFromCte: 'consent_seed' })` so a display
@@ -1388,7 +1400,7 @@ export function consentedAuthorsCteBody(
  */
 export function consentSeedCteBody(
   startIdx = 1,
-  scope?: { signer: string } | { papers: Array<{ author: string; permlink: string }> },
+  scope?: ConsentSeedScope,
 ): SqlFragment {
   const p = startIdx; // $p = appTag
   let nextIdx = p + 1;
@@ -1435,10 +1447,15 @@ export function consentSeedCteBody(
  *  (the internal joiner matches the builders' `', '` CTE separator) with
  *  identical param order and `nextIdx`, so the SQL-shape canaries see no
  *  emission change; the equivalence is pinned per scope shape in
- *  `hafsql.test.ts`. Sites with a custom seed CTE (the reputation cycle's
- *  batch-activity seed, the pending-consents `pending_seed` up-walk)
- *  compose `consentChainCteBody` + `consentedAuthorsCteBody` directly and
- *  are not this composer's callers.
+ *  `hafsql.test.ts`. Two classes of site are NOT this composer's callers:
+ *  (1) sites with a CUSTOM seed CTE (the reputation cycle's batch-activity
+ *  seed, the pending-consents `pending_seed` up-walk) compose
+ *  `consentChainCteBody` + `consentedAuthorsCteBody` directly on their own
+ *  seed; (2) the per-paper badge/detail sites
+ *  (`fetchConsentedAccountsForPaper` and the per-paper detail chain in
+ *  `papers.ts`) seed `consentChainCteBody({ paperAuthor, paperPermlink })`
+ *  directly with NO `consent_seed` CTE at all, so they are not 3-tuple
+ *  composer sites either.
  *
  *  One scope value fans out to the members that consume it:
  *   - `{ signer }` — single-account surfaces: seeds from the account's own
@@ -1451,7 +1468,7 @@ export function consentSeedCteBody(
  *     unscoped seed and resolution, one fenced resolution per query. */
 export function consentStackCteBody(
   startIdx = 1,
-  scope?: { signer: string } | { papers: Array<{ author: string; permlink: string }> },
+  scope?: ConsentSeedScope,
 ): SqlFragment {
   const seed = consentSeedCteBody(startIdx, scope);
   const chain = consentChainCteBody(seed.nextIdx, { rootsFromCte: 'consent_seed' });

@@ -31,3 +31,17 @@ The `consentStackCteBody` composer review (commit `acad92d9`) came back clean on
 - Parent: `backend-consent-stack-test-infra-dedup` (archived 2026-06-14).
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend completion note (2026-06-14)
+
+Both P3 items landed (type-only + comment, no behavior change).
+
+1. **Named seed-scope type.** Extracted `export type ConsentSeedScope = { signer: string } | { papers: Array<{ author: string; permlink: string }> }` in `hafsql.ts`, declared next to its docblock just above `consentSeedCteBody`, with a docblock distinguishing it from `ConsentChainScope` (down-walk scope) and `AuthorshipClaimsScope`. Both `consentSeedCteBody` and `consentStackCteBody` signatures now reference it; the two hand-synced inline union copies are gone. The union members are identical to the prior inline form, so there is no behavior change.
+
+2. **Completed excluded-sites docblock.** The `consentStackCteBody` docblock now enumerates TWO classes of non-caller: (1) custom-seed-CTE sites (the reputation cycle's batch-activity seed, the pending-consents `pending_seed` up-walk) that compose `consentChainCteBody` + `consentedAuthorsCteBody` on their own seed; and (2) the per-paper badge/detail sites (`fetchConsentedAccountsForPaper` and the per-paper detail chain in `papers.ts`) that seed `consentChainCteBody({ paperAuthor, paperPermlink })` directly with NO `consent_seed` CTE, so they are not 3-tuple composer sites either. Anchored on stable symbols (function/CTE names); no slug/round/line/SHA.
+
+Verification: `npm run typecheck` (src+tests) + `npm run lint` clean (one pre-existing `author-supersession.ts` warning, untouched); `hafsql` suites 52 passed / 4 data-dependent skips green, including the `consentStackCteBody` composition-equivalence pins (the SQL emission is unchanged, as expected for a type-only signature change).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
