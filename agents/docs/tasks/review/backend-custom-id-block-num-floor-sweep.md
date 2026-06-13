@@ -105,3 +105,13 @@ Re-review of the docblock-reword fix (commit `be9b8d8d`) via `/ce-code-review` (
 When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-14)
+
+The single held item landed: the `findCustodyBroadcastByIdempotencyKey` docblock no longer makes a codebase-wide prevalence claim. The "(matching the rest of the HAF queries ...)" parenthetical is gone. The `operation_comment_view` arm's genesis floor now stands on its own rationale (it skips scans before the appTag's first op on that arm, and is the reason `getCachedGenesisBlock` is still called); the `operation_custom_json_view` arm's no-floor rationale is unchanged. Comment-only; anchored on op-view names, no slug/line/SHA introduced.
+
+Verification: `npm run typecheck` + `npm run lint` clean (one pre-existing `author-supersession.ts` warning, untouched).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

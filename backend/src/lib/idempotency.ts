@@ -172,9 +172,9 @@ export function embedIdempotencyKey(
  * AND `json::jsonb ->> 'idempotency_key' = key`.
  *
  * Genesis-block floor is asymmetric across the two arms. The
- * `operation_comment_view` arm keeps the `block_num >= genesis` floor (matching
- * the rest of the HAF queries — scans before the appTag's first op are skipped —
- * and the reason `getCachedGenesisBlock` is still called). The
+ * `operation_comment_view` arm keeps the `block_num >= genesis` floor: it skips
+ * scans before the appTag's first op, and is the reason `getCachedGenesisBlock`
+ * is still called. The
  * `operation_custom_json_view` arm carries no floor: its `custom_id = appTag` +
  * `required_posting_auths ?| [username]` predicates are selective enough on
  * their own that a pre-genesis scan buys nothing, so the floor was dropped from
