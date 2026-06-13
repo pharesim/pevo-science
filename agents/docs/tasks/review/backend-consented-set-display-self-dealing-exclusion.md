@@ -116,3 +116,13 @@ Dismissed at triage (recorded, no action): the `it()` title's "claimed self-vote
 When the item lands, `git mv` this file back to `tasks/review/`; the move is the re-review signal, scoped to the fix commit. Do not edit this hold block — the commit diff is the evidence; the architect updates it at re-review.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-06-14, round 2 item)
+
+The single round-2 held item landed: the shared-entry comments no longer overclaim the dedup's reach. The `getConsentedAccountsForPaperCached` wrapper docblock and the `fetchEnrichmentFromHaf` Promise.all comment now state that cross-surface reuse for the current block holds only when both surfaces resolve the SAME canonical (author, permlink) pair. The badge path canonicalizes via `findCanonicalRoot` before resolving; the enrichment path keys on its caller-supplied pair. On a root-URL request both compute the same key and the second surface reuses the first's resolution; on a continuation-post URL they key differently and each fires its own query. The cache key always matches the loader's args either way, so a miss costs one extra query, never a wrong-paper result. Behavior unchanged (the enrichment route's lack of canonical-root rewriting is pre-existing design, out of scope); comment-only; anchored on stable symbols.
+
+Verification: `npm run typecheck` + `npm run lint` clean (one pre-existing `author-supersession.ts` warning, untouched). The consent/display behavioral suites are covered by the parent's post-merge full-suite run.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

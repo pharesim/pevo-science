@@ -3265,8 +3265,14 @@ async function fetchConsentedAccountsForPaper(author: string, permlink: string):
  *  `consented-authors:{author}:{permlink}` VOLATILE cache entry. Both
  *  consumers — the paper-detail badge (`annotateAuthorsWithConsent`) and the
  *  enrichment revote-channel skip in `fetchEnrichmentFromHaf` — go through
- *  this wrapper, so a request on either surface reuses the other's
- *  resolution for the current block instead of re-firing the HAF query.
+ *  this wrapper. Cross-surface reuse for the current block holds only when both
+ *  resolve the SAME canonical (author, permlink) pair: the badge path
+ *  canonicalizes via `findCanonicalRoot` before resolving, while the enrichment
+ *  path keys on its caller-supplied pair. On a root-URL request both compute the
+ *  same key and the second surface reuses the first's resolution; on a
+ *  continuation-post URL they key differently and each fires its own query. The
+ *  key always matches the loader's args either way, so a miss costs one extra
+ *  query, never a wrong-paper result.
  *  Volatile tier: `block-watcher.ts` drops the entry each block
  *  (at-most-one-block stale; CONSENTED_SET_TTL_MS backstops a stalled
  *  watcher). A null (pool-unavailable) result is never cached (`getOrSet`
@@ -3652,13 +3658,16 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
         );
       })(),
       // Resolved consented set (Routes 1/2) for the JS-side revote-channel
-      // skip below — resolved through the SAME volatile cache entry the
-      // consented badge uses (`getConsentedAccountsForPaperCached`), so an
-      // enrichment rebuild reuses the badge's per-block resolution instead
-      // of re-firing the HAF query. A pool-null return is impossible on
-      // this path (the enclosing fetcher already holds the pool); a query
-      // failure throws HafQueryError uncached and fails the enrichment like
-      // every other leg of this Promise.all (fail-closed, per-request).
+      // skip below — resolved through the shared volatile cache entry keyed by
+      // (author, permlink) (`getConsentedAccountsForPaperCached`). When this
+      // route's caller-supplied pair is the canonical one the badge also
+      // resolves (a root-URL request), the rebuild reuses the badge's per-block
+      // resolution instead of re-firing the HAF query; on a continuation-post
+      // URL it keys on its own pair and resolves independently. A pool-null
+      // return is impossible on this path (the enclosing fetcher already holds
+      // the pool); a query failure throws HafQueryError uncached and fails the
+      // enrichment like every other leg of this Promise.all (fail-closed,
+      // per-request).
       getConsentedAccountsForPaperCached(author, permlink),
     ]);
 
