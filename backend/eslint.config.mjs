@@ -674,6 +674,11 @@ export default tseslint.config(
     //     deterministic empty-index backfill test can isolate it from the shared
     //     production members set. A production importer could silently divert the
     //     index off the real key.
+    //   - reputation-batch `__test_seams` exposes the cycle-swap Lua script (and
+    //     its staging/prod substrings), the batch Redis key constants, and the
+    //     staging/sentinel cleanup helpers (clearStagingKeys,
+    //     clearInProgressSentinels). A production importer could run the
+    //     destructive staging/sentinel cleanup or divert the batch keys.
     files: ['src/**/*.ts'],
     rules: {
       'no-restricted-imports': [
@@ -697,6 +702,12 @@ export default tseslint.config(
               importNames: ['__test_seams'],
               message:
                 'Do not import __test_seams from reputation in production code. It repoints the batch-members index key for a deterministic backfill test. The seam is for tests/ only.',
+            },
+            {
+              group: ['**/reputation-batch', '**/reputation-batch.js'],
+              importNames: ['__test_seams'],
+              message:
+                'Do not import __test_seams from reputation-batch in production code. It exposes the cycle-swap Lua script (and its staging/prod substrings), the batch Redis key constants (staging prefix, last-cycle, in-progress sentinel prefix, batch lock, batch members), and the staging/sentinel cleanup helpers (clearStagingKeys, clearInProgressSentinels). The seam is for tests/ only.',
             },
           ],
         },

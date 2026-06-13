@@ -31,3 +31,15 @@ Mirror the existing `reputation.js` patterns entry in `backend/eslint.config.mjs
 - Archived parent in `tasks-archive.md`: `BACKEND-REDIS-KEYS-SCAN-REPLACEMENT`.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+---
+
+## Backend completion note (2026-06-14)
+
+Added the missing `reputation-batch.js` `__test_seams` guard to `eslint.config.mjs`, mirroring the three sibling seam entries (anonymousReview, signup-verify, reputation). The new `no-restricted-imports` patterns entry scopes to `src/**/*.ts` with `importNames: ['__test_seams']` and `group: ['**/reputation-batch', '**/reputation-batch.js']`. Its message anchors on the seam contents (the cycle-swap Lua script and its staging/prod substrings, the batch Redis key constants, and the `clearStagingKeys`/`clearInProgressSentinels` cleanup helpers), not on task/round state. The seam-enumeration docblock above the rule gained a matching `reputation-batch` bullet.
+
+The `**/reputation` glob does NOT match `reputation-batch` (exact segment, no trailing wildcard), so the new entry is genuinely distinct from the existing reputation entry.
+
+Verification: a probe `import { __test_seams } from './reputation-batch.js'` in a `src/` file fails `npx eslint src/` on exactly that site with the new message; probe reverted. Existing test imports (`tests/routes/stats-profile-parity.test.ts`, `tests/routes/reputation-batch-internals.test.ts`) stay legal (guard scoped to `src/`; `npm run lint` lints `src/` only). `npm run typecheck` + `npm run lint` clean (zero new suppressions; one pre-existing `author-supersession.ts` warning, untouched); `tests/eslint/` 64/64 green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
