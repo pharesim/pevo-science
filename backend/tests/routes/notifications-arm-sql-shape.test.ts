@@ -60,9 +60,10 @@
  *      publication row instead of re-firing per edit. Pinned by key count == 3
  *      and ASC-direction count == 3.
  *   7. Vote arms (2a, 2b, 2c) each dedup via
- *      `DISTINCT ON (v.author, v.permlink, v.voter) ... ORDER BY v.block_num DESC`
- *      (latest-wins), so a weight toggle fires once. Pinned by key count == 3
- *      and DESC-direction count == 3.
+ *      `DISTINCT ON (v.author, v.permlink, v.voter) ... ORDER BY v.block_num DESC,
+ *      v.id DESC` (latest-wins with a same-block op-id tie-breaker), so a weight
+ *      toggle fires once and a same-block vote/revote pair keeps a deterministic
+ *      variant. Pinned by key count == 3 and the full tie-broken ORDER BY count == 3.
  *   8. Vote arms hoist `vote_weight != 0` to the OUTER select (count == 3) and
  *      carry no inner `v.weight != 0` (count == 0), so a vote-then-retract
  *      drops the whole (post, voter) instead of surfacing the prior vote.
@@ -319,14 +320,20 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     expect(earliest).toBe(3);
   });
 
-  it('vote arms (2a, 2b, 2c) dedup via DISTINCT ON (v.author, v.permlink, v.voter), latest-wins', async () => {
+  it('vote arms (2a, 2b, 2c) dedup via DISTINCT ON (v.author, v.permlink, v.voter), latest-wins with v.id same-block tie-breaker', async () => {
     const { sql } = await captureNotificationsSql();
     // One wrapper per vote arm (native paper, bridge paper, review): a
     // (post, voter) pair collapses to the latest vote so a weight toggle fires
     // once. block_num DESC selects the latest op.
     const distinctOn = (sql.match(/SELECT DISTINCT ON \(v\.author, v\.permlink, v\.voter\)/g) ?? []).length;
     expect(distinctOn).toBe(3);
-    const latest = (sql.match(/ORDER BY v\.author, v\.permlink, v\.voter, v\.block_num DESC/g) ?? []).length;
+    // The dedup ORDER BY carries a v.id DESC secondary key after block_num DESC.
+    // A same-block vote/revote (or weight toggle) pair carries differing
+    // vote_weight, so without the monotonic op-id tie-breaker the kept variant is
+    // planner-dependent (the (block_num, id) ordering convention; matches the
+    // reputation paper_latest_votes op_id DESC tie-breaker). Pin the full
+    // tie-broken form so a revert that drops v.id DESC fails red.
+    const latest = (sql.match(/ORDER BY v\.author, v\.permlink, v\.voter, v\.block_num DESC, v\.id DESC/g) ?? []).length;
     expect(latest).toBe(3);
   });
 

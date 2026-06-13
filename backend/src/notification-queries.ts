@@ -268,6 +268,16 @@ export async function fetchNotificationsFromHaf(
       -- reviewer fixing typos does not re-fire new_review on every edit. The raw
       -- operation_comment_view carries one row per edit (see hive-schemas edit
       -- semantics); earliest-wins makes edits silent.
+      -- No id/op_id same-block tie-breaker is added here (unlike the vote arms):
+      -- this is an earliest-wins dedup keyed on (co.author, co.permlink), so a
+      -- same-block tie group shares (author, permlink, block_num), and every
+      -- emitted field (actor=co.author, paper coords=co.parent_*, paper_title
+      -- from the parent-keyed join, event_permlink=co.permlink, timestamp) is
+      -- identical across that group. The kept variant is therefore outcome-
+      -- invariant and the planner's choice cannot change the notification. This
+      -- is the tie-insensitive case the (block_num, id) ordering convention
+      -- (hive-primitive-aware-design-rules-for-pevo-custom-json-ops Rule 2,
+      -- accreditation-state-read-latest-action-wins) does not require a key for.
       --
       -- A credited account reviewing the paper they are credited for — an
       -- accepted authorship claimer (ORCID / name-only slot, absent from
@@ -320,7 +330,10 @@ export async function fetchNotificationsFromHaf(
       UNION ALL
 
       -- 1b. New reviews on your bridge papers
-      -- Same earliest-wins dedup as arm 1a so bridge-paper review edits stay silent.
+      -- Same earliest-wins dedup as arm 1a so bridge-paper review edits stay
+      -- silent, and the same same-block tie-insensitivity (no id key needed):
+      -- the emitted fields are constant across a tie group sharing
+      -- (co.author, co.permlink, block_num). See arm 1a's dedup comment.
       SELECT * FROM (
         SELECT DISTINCT ON (co.author, co.permlink)
           'new_review'::text AS event_type,
@@ -367,11 +380,20 @@ export async function fetchNotificationsFromHaf(
       -- non-PEvO Hive content (blog post, non-paper comment) does NOT surface
       -- as "X endorsed your paper" (arm 1a was hardened against the same class
       -- earlier; arm 2 was missed). v.voter != v.author drops self-votes.
-      -- DISTINCT ON (v.author, v.permlink, v.voter) ORDER BY v.block_num DESC keeps
-      -- only the latest vote per (post, voter), so a weight toggle fires once. The
+      -- DISTINCT ON (v.author, v.permlink, v.voter) ORDER BY v.block_num DESC, v.id DESC
+      -- keeps only the latest vote per (post, voter), so a weight toggle fires once. The
       -- weight != 0 filter is HOISTED to the outer select: if the latest op is a
       -- retract (weight 0), the whole vote is suppressed rather than surfacing the
       -- prior non-zero weight.
+      -- v.id DESC is the same-block tie-breaker: a voter can vote then revote (or
+      -- toggle weight) within one 3s block, and those rows carry differing
+      -- vote_weight, so without the secondary key the kept variant is planner-
+      -- dependent. v.id is the monotonic global haf_operations PK the vote view
+      -- exposes (the views carry no intra-block index), mirroring the op_id DESC
+      -- tie-breaker on the reputation paper_latest_votes DISTINCT ON. Per
+      -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+      -- (the (block_num, id) ordering for any latest-action-wins read) and the
+      -- accreditation-state-read-latest-action-wins sibling-family contract.
       SELECT * FROM (
         SELECT DISTINCT ON (v.author, v.permlink, v.voter)
           'new_vote'::text AS event_type,
@@ -398,14 +420,15 @@ export async function fetchNotificationsFromHaf(
         WHERE v.author = $1
           AND v.block_num > $2
           AND v.voter != v.author
-        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC
+        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC, v.id DESC
       ) AS arm_2a
       WHERE vote_weight != 0
 
       UNION ALL
 
       -- 2b. New accredited votes on your bridge papers
-      -- Same latest-wins dedup + outer weight-hoist as arm 2a, for bridge papers.
+      -- Same latest-wins dedup + outer weight-hoist + v.id DESC same-block
+      -- tie-breaker as arm 2a, for bridge papers.
       SELECT * FROM (
         SELECT DISTINCT ON (v.author, v.permlink, v.voter)
           'new_vote'::text AS event_type,
@@ -429,7 +452,7 @@ export async function fetchNotificationsFromHaf(
         JOIN user_bridge_papers bp ON bp.author = v.author AND bp.permlink = v.permlink
         WHERE v.block_num > $2
           AND v.voter != v.author
-        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC
+        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC, v.id DESC
       ) AS arm_2b
       WHERE vote_weight != 0
 
@@ -439,8 +462,9 @@ export async function fetchNotificationsFromHaf(
       -- A vote on a recipient's review comment must surface as target_type
       -- 'review', not the hardcoded 'paper' the merged arm 2 emitted.
       -- validReviewWhere pins the voted post as a structurally-valid review.
-      -- Same latest-wins dedup + outer weight-hoist as arm 2a, for votes on the
-      -- recipient's reviews (target_type 'review').
+      -- Same latest-wins dedup + outer weight-hoist + v.id DESC same-block
+      -- tie-breaker as arm 2a, for votes on the recipient's reviews
+      -- (target_type 'review').
       SELECT * FROM (
         SELECT DISTINCT ON (v.author, v.permlink, v.voter)
           'new_vote'::text AS event_type,
@@ -467,7 +491,7 @@ export async function fetchNotificationsFromHaf(
         WHERE v.author = $1
           AND v.block_num > $2
           AND v.voter != v.author
-        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC
+        ORDER BY v.author, v.permlink, v.voter, v.block_num DESC, v.id DESC
       ) AS arm_2c
       WHERE vote_weight != 0
 
@@ -534,7 +558,10 @@ export async function fetchNotificationsFromHaf(
       -- editing a reply does not re-fire new_reply on the parent-comment author.
       -- The raw operation_comment_view carries one row per edit (see hive-schemas
       -- edit semantics); earliest-wins makes edits silent. Same dedup shape as
-      -- the sibling comment-derived arms (1a, 1b).
+      -- the sibling comment-derived arms (1a, 1b), including the same same-block
+      -- tie-insensitivity: no id key is needed because the emitted fields are
+      -- constant across a tie group sharing (co.author, co.permlink, block_num).
+      -- See arm 1a's dedup comment.
       SELECT * FROM (
         SELECT DISTINCT ON (co.author, co.permlink)
           'new_reply'::text AS event_type,
@@ -572,6 +599,15 @@ export async function fetchNotificationsFromHaf(
       -- DISTINCT ON the (citing post, cited paper) 4-tuple ORDER BY citing.block_num
       -- ASC: a citation newly introduced in an edit fires once (its first block),
       -- but a citation surviving across edits does not re-fire on every edit.
+      -- No id/op_id same-block tie-breaker is added (unlike the vote arms): this
+      -- earliest-wins dedup keys on the full (citing.author, citing.permlink,
+      -- cited_ref.author, cited_ref.permlink) tuple, so a same-block tie group is
+      -- the same citing post citing the same paper in the same block, and every
+      -- emitted field (actor, cited paper coords, paper_title, citing permlink,
+      -- timestamp) is identical across it. The kept variant is outcome-invariant.
+      -- This is the tie-insensitive case the (block_num, id) ordering convention
+      -- (hive-primitive-aware-design-rules-for-pevo-custom-json-ops Rule 2) does
+      -- not require a key for.
       SELECT * FROM (
         SELECT DISTINCT ON (citing.author, citing.permlink, cited_ref.author, cited_ref.permlink)
           'new_citation'::text AS event_type,
@@ -629,7 +665,10 @@ export async function fetchNotificationsFromHaf(
       UNION ALL
 
       -- 6b. New citations of your bridge papers
-      -- Same (citing post, cited paper) earliest-wins dedup as arm 6a, for bridge papers.
+      -- Same (citing post, cited paper) earliest-wins dedup as arm 6a, for bridge
+      -- papers, including the same same-block tie-insensitivity (no id key needed):
+      -- the emitted fields are constant across a tie group sharing the 4-tuple +
+      -- block_num. See arm 6a's dedup comment.
       SELECT * FROM (
         SELECT DISTINCT ON (citing.author, citing.permlink, cited_ref.author, cited_ref.permlink)
           'new_citation'::text AS event_type,
@@ -707,6 +746,13 @@ export async function fetchNotificationsFromHaf(
       -- DISTINCT ON (paper_author, paper_permlink) ORDER BY cj.block_num ASC
       -- collapses an approve re-broadcast/edit storm to one notification per cited
       -- paper (earliest-wins, matching arms 1a/6a).
+      -- No cj.id same-block tie-breaker is added (unlike the vote arms): the
+      -- emitted fields are the dedup key (paper_author, paper_permlink, both from
+      -- JSON), block_num, and timestamp, with actor hardcoded NULL. Across a
+      -- same-block tie group sharing the dedup key all of those are identical, so
+      -- the kept variant is outcome-invariant. Tie-insensitive per the
+      -- (block_num, id) ordering convention
+      -- (hive-primitive-aware-design-rules-for-pevo-custom-json-ops Rule 2).
       SELECT * FROM (
         SELECT DISTINCT ON (cj.json::jsonb ->> 'paper_author', cj.json::jsonb ->> 'paper_permlink')
           'claim_approved'::text AS event_type,
@@ -777,6 +823,9 @@ export async function fetchNotificationsFromHaf(
       -- DISTINCT ON (paper_author, paper_permlink) ORDER BY cj.block_num ASC
       -- collapses a revoke re-broadcast/edit storm to one notification per cited
       -- paper (earliest-wins, matching arms 1a/6a).
+      -- Same same-block tie-insensitivity as arm 8 (no cj.id key needed): the
+      -- emitted fields are constant across a tie group sharing the dedup key and
+      -- block_num. See arm 8's dedup comment.
       SELECT * FROM (
         SELECT DISTINCT ON (cj.json::jsonb ->> 'paper_author', cj.json::jsonb ->> 'paper_permlink')
           'claim_revoked'::text AS event_type,
