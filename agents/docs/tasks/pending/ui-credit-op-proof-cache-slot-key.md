@@ -168,3 +168,45 @@ same commit). Full frontend unit suite green (1490 passed).
    round-trips as 0, and a triple-only lookup does NOT hit a slot-0 entry).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review #2 (2026-06-14) — HELD PENDING FIXES: per-action echo-guard negative coverage
+
+Both round-1 holds (the per-action echo guard + the slot-0 anchor/positive-hit
+test) are confirmed FIXED — verified in code and via the focused unit run. The
+guard at the per-action credit-field check in `src/pages/orcid-callback.js`
+`_handleFreshAuth` is correct: `claim_authorship`/`approve_authorship` require
+`author_index` a non-negative integer (slot 0 accepted via `Number.isInteger`),
+`approve_authorship`/`revoke_authorship` require `claimer` a non-empty string,
+and a malformed echo returns BEFORE `cacheConsentOpProof` so no partial entry is
+written.
+
+A fresh `/ce-code-review` (9 reviewers; correctness/security/adversarial on the
+session model, ce-agent-native skipped per PEvO) surfaced one in-scope gap on
+this task's own deliverable: the per-action guard is under-tested on two
+branches. The happy paths plus the missing-`claimer` case for approve are
+covered, but two negative branches the guard depends on have no test. A mutation
+of the per-action requirement sets would pass the current suite. Close both in
+`tests/unit/pages-orcid-callback.test.js`:
+
+1. `revoke_authorship` fresh_auth echo with a missing or empty `claimer`
+   (and no `author_index`, since revoke binds claimer only): assert the handler
+   surfaces `status='error'` with `orcid.verificationFailed` AND writes no
+   consent-op proof to sessionStorage. The guard marks revoke as claimer-binding,
+   so this branch fires in production but is unexercised — a regression dropping
+   revoke from the claimer-binding set would slip through.
+
+2. `approve_authorship` fresh_auth echo with a valid `claimer` but a missing or
+   non-integer `author_index`: assert the same error + no-cache outcome. Approve
+   binds BOTH fields; the existing approve tests cover both-present and
+   missing-`claimer` but not missing-`author_index`, so a regression dropping
+   approve from the index-binding set would cache `author_index → null` for an
+   approve op undetected.
+
+Assert the actual error status/key and the ABSENCE of the cache write (parse
+sessionStorage), mirroring the existing per-action positive tests — not just
+"no throw."
+
+When fixed, `git mv` this file back to `tasks/review/`; the move is the
+re-review signal. Do not edit this block.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
