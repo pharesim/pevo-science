@@ -121,8 +121,8 @@ export async function verifyAppDbMigrationsWith(p: Queryable): Promise<void> {
 
   // Sole-guard assertion: the accounts_orcid_unique partial index
   // (007_accounts_orcid_unique.sql) is the ONLY backstop against duplicate-ORCID
-  // account rows — /signup (auth.ts) and updateAccountOrcid (orcid.ts) carry no
-  // application-level uniqueness check. Its schema_migrations row can outlive the
+  // account rows — /signup (auth.ts) and the ORCID-write handlers in routes/orcid.ts
+  // carry no application-level uniqueness check. Its schema_migrations row can outlive the
   // index itself (a hand-run DROP INDEX, a pg_dump/restore that ships table rows
   // but omits or fails the post-data index section, or out-of-order hand-applied
   // migrations), and migration 008 backfills the 007 row unconditionally — so

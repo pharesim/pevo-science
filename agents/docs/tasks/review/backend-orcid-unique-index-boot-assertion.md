@@ -100,3 +100,16 @@ queries, out of scope here); the incidental positive-control coverage of the new
 (genuine, just not explicitly named in a dedicated assertion).
 
 When the fix lands, `git mv` this file back to `tasks/review/` (the move is the re-review signal).
+
+## Backend re-review signal (2026-06-14, working tree)
+
+Hold item 1 (wrong-symbol comment) landed. The sole-guard docblock in
+`verifyAppDbMigrationsWith` (`backend/src/app-db.ts`) no longer cites the
+nonexistent `updateAccountOrcid` symbol; it now reads "/signup (auth.ts) and the
+ORCID-write handlers in routes/orcid.ts carry no application-level uniqueness
+check." Re-anchored on the stable path + behavioral description per the
+stable-symbol convention (confirmed the real write is an inline
+`UPDATE accounts SET orcid` inside a `routes/orcid.ts` handler; no
+`updateAccountOrcid` function exists anywhere). Comment-only; no behavior change,
+no test change. `npm run typecheck` clean; `npm run lint` clean apart from the
+pre-existing unused-eslint-disable in `src/lib/author-supersession.ts` (untouched).
