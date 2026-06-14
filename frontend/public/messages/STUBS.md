@@ -2572,6 +2572,21 @@ pt: signup.orcidInsufficientWorks
 sv: signup.orcidInsufficientWorks
 tr: signup.orcidInsufficientWorks
 zh: signup.orcidInsufficientWorks
+ar: orcid.serviceUnavailable
+cs: orcid.serviceUnavailable
+da: orcid.serviceUnavailable
+de: orcid.serviceUnavailable
+es: orcid.serviceUnavailable
+fa: orcid.serviceUnavailable
+fr: orcid.serviceUnavailable
+he: orcid.serviceUnavailable
+it: orcid.serviceUnavailable
+nl: orcid.serviceUnavailable
+pl: orcid.serviceUnavailable
+pt: orcid.serviceUnavailable
+sv: orcid.serviceUnavailable
+tr: orcid.serviceUnavailable
+zh: orcid.serviceUnavailable
 
 ### Added 2026-06-14 (UI-ORCID-CALLBACK-ERROR-MESSAGE-COVERAGE)
 
@@ -2620,18 +2635,3 @@ pt: orcid.providerTimeoutVerify
 sv: orcid.providerTimeoutVerify
 tr: orcid.providerTimeoutVerify
 zh: orcid.providerTimeoutVerify
-ar: orcid.serviceUnavailable
-cs: orcid.serviceUnavailable
-da: orcid.serviceUnavailable
-de: orcid.serviceUnavailable
-es: orcid.serviceUnavailable
-fa: orcid.serviceUnavailable
-fr: orcid.serviceUnavailable
-he: orcid.serviceUnavailable
-it: orcid.serviceUnavailable
-nl: orcid.serviceUnavailable
-pl: orcid.serviceUnavailable
-pt: orcid.serviceUnavailable
-sv: orcid.serviceUnavailable
-tr: orcid.serviceUnavailable
-zh: orcid.serviceUnavailable

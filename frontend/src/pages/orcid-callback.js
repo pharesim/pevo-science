@@ -227,12 +227,17 @@ export function initOrcidCallbackPage() {
         }
 
         // INTERNAL_ERROR (500/503): ORCID API unreachable, or the backend
-        // service unavailable. A pre-broadcast failure with no chain side-effect,
-        // but the state is consumed downstream of the consume DEL, so a same-code
-        // retry returns 400 — withhold the one-tap retry via the 'timeout'
-        // affordance. Keep the console.warn: unlike an expected VALIDATION_ERROR,
-        // a 5xx is an unexpected server failure worth diagnosing, and the raw
-        // error stays out of the DOM behind the dedicated copy.
+        // service unavailable. A pre-broadcast failure with no chain side-effect.
+        // Per the orcid.md "State consumption semantics", the OAuth state is
+        // consumed only when the throw originates downstream of the consume DEL;
+        // a pre-consume throw (state-read or auth-dispatch) leaves state intact.
+        // The client cannot distinguish the two, so withhold the one-tap retry
+        // via the 'timeout' affordance regardless: a same-code retry on the
+        // consumed case would 400, and the state-preserved case is better served
+        // by a deliberate restart than an immediate re-fire. Keep the
+        // console.warn: unlike an expected VALIDATION_ERROR, a 5xx is an
+        // unexpected server failure worth diagnosing, and the raw error stays out
+        // of the DOM behind the dedicated copy.
         if (err.code === 'INTERNAL_ERROR') {
           console.warn('[orcid callback complete]', err);
           this.errorMessage = this.$t('orcid.serviceUnavailable');

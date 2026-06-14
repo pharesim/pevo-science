@@ -108,3 +108,21 @@ Dismissed (no action required, recorded for the implementer's awareness):
 
 When both fixes land, `git mv` this file back to `tasks/review/` — the move is the
 re-review signal.
+
+## UI re-review signal (2026-06-14)
+
+Both held fixes landed:
+
+1. **`orcid.serviceUnavailable` reworded to the "start over" framing** ("ORCID is
+   temporarily unavailable. Please wait a moment, then start over.") so the copy
+   matches its no-button `'timeout'` affordance, mirroring `orcid.providerTimeout`.
+   Re-stubbed across all 16 locale files; the STUBS.md entry moved from this work's
+   `### Added` block into its existing `### Updated` heading (the key already existed,
+   so `### Updated` per the convention).
+2. **`INTERNAL_ERROR` branch comment qualified**: state is consumed only when the
+   throw originates downstream of the consume DEL; a pre-consume state-read /
+   auth-dispatch throw preserves state (per orcid.md "State consumption semantics").
+   Withholding the one-tap retry is correct regardless, because the client cannot
+   distinguish the two. Comment accuracy only; behavior unchanged.
+
+pages-orcid-callback suite green (72).
