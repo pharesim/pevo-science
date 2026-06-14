@@ -26,6 +26,25 @@
  * settings-orcid-factor.spec.js (against the orcid-stub) and is not duplicated
  * here. See the docblock above the real round-trip describe for the full
  * rationale.
+ *
+ * Mocking justification (project-CLAUDE.md "Carve-out for deterministic
+ * edge-case coverage", clause a) for the two real-backend round-trips: every
+ * HTTP hop stays real (`/api/orcid/start`, `/api/orcid/callback`,
+ * `/api/auth/signup`, `/api/auth/recover`, `/api/auth/login`); the only
+ * substitutions are two non-HTTP edges impractical to drive per-test:
+ *   1. `page.route` stub of the read-only `GET /api/accreditations/<username>`
+ *      status (recover test only). That status is an ORCID-method accreditation
+ *      read from HAF/on-chain `custom_json` attestations — impractical to seed
+ *      per-test — and it only gates which recover method tab is shown, not the
+ *      recover round-trip under test. Same stub the SEC-004 recover test uses.
+ *   2. A direct `UPDATE accounts SET ...` test-DB seed (signup test only) that
+ *      finalizes the activation columns the out-of-scope Hive-account-creation
+ *      step would set, so `handleLogin`'s `username IS NOT NULL` gate resolves
+ *      the just-created account. This is the same direct test-DB mechanism
+ *      settings-orcid-factor.spec.js uses, not a network mock.
+ * Neither hollows the auth path: the assertions verify the real end state via
+ * real DB reads (`password_hash IS NULL`, 403 `NO_PASSWORD_SET`, ORCID login
+ * reaching /papers).
  */
 
 import { test, expect } from './fixtures/keychain.js';
@@ -492,14 +511,15 @@ test.describe('real-backend ORCID null-password round-trips', () => {
     expect((await pwLogin.json())?.error?.code).toBe('NO_PASSWORD_SET');
 
     // ORCID login resolves accounts by `orcid` only when the Hive account exists
-    // (handleLogin: WHERE orcid = $1 AND username IS NOT NULL). The signup POST
-    // above leaves username NULL — it is set by the account-type-choice /
-    // Hive-account-creation step that is out of scope for this spec (covered by
-    // the light-account creation flow). Finalize that one column directly in the
-    // test DB so the real ORCID-login round-trip can resolve the account the
-    // signup just created. This is a direct test-DB write (the mechanism
-    // settings-orcid-factor.spec.js uses to seed/mutate rows), not a mock — every
-    // backend hop below runs for real.
+    // (handleLogin: WHERE orcid = $1 AND username IS NOT NULL). After ORCID
+    // signup the row is not yet activated: `username` is NULL, `custody` is NULL,
+    // and `verify_token` is still `confirmed:<hex>`. Activation (setting all
+    // three: username, custody='light', verify_token=NULL) is the out-of-scope
+    // Hive-account-creation step — this UPDATE mirrors the real activation write
+    // in backend/src/routes/signup-verify.ts so the row reaches a consistent
+    // activated state the real ORCID-login round-trip can resolve. Direct test-DB
+    // seed (the mechanism settings-orcid-factor.spec.js uses to seed/mutate
+    // rows), not a network mock — every backend hop below runs for real.
     await pool.query(
       `UPDATE accounts SET username = $1, custody = 'light', verify_token = NULL WHERE email = $2`,
       [username, email],

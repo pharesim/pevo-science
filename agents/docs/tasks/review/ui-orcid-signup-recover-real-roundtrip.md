@@ -273,3 +273,22 @@ archived-task redirect.
 Both items are comment/header-doc only — no spec-logic change. When they land,
 `git mv` this file back to `tasks/review/`; the move is the re-review signal. Do
 not edit this block.
+
+## UI re-review signal (2026-06-14, working tree)
+
+Both P3 doc fixes landed in `frontend/tests/e2e/orcid-no-password.spec.js`
+(comment/header only, no spec-logic change):
+
+1. Username-finalization shim comment reworded to name all three activation
+   columns it sets (`username`, `custody='light'`, `verify_token=NULL`) and to
+   state it mirrors the real activation write in `signup-verify.ts` — no longer
+   reads as "that one column".
+2. Added a clause-(a) "Mocking justification" block to the file header naming
+   both real-backend-test shims (the `page.route` stub of the read-only
+   `/api/accreditations/<username>` HAF status, and the direct `UPDATE accounts
+   SET ...` test-DB seed), which real path each replaces and why it is
+   impractical, and stating every HTTP hop stays real — mirroring the
+   `settings-orcid-factor.spec.js` precedent.
+
+Verified the spec still parses (`playwright test --list` -> 7 tests). No logic
+changed, so the prior 7/7 real-stack pass holds. Moving back to review/.
