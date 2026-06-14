@@ -181,3 +181,97 @@ or forced a UI rewrite; the new-endpoint topology avoids both.
   latest-wins ordering uses `block_num`), mirroring `activeAccreditationsCteBody`'s
   `event_timestamp`. If the architect wants chain-block-time for display, that is
   an additive block-time join (out of scope here).
+
+## Architect review (2026-06-14) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on the implementer's diff (commits `f51e9820`, `8d3b0fd7`,
+`a026f63f`, `cfa2bfbe`, `a0df4799`) with the full persona fleet (correctness,
+security, adversarial, testing, maintainability, project-standards, performance,
+api-contract, reliability, learnings; `ce-agent-native-reviewer` skipped per
+project policy). The core is sound and architect-verified clean: the
+`active_admins` read fails closed (throws re-thrown, not poison-cached;
+root-from-config survives a HAF outage), the fresh-auth gate is enforced on every
+`/api/admin/*` mutation with JWT-alone rejected (§6.5 invariant #1), proofs are
+single-use GETDEL and target-bound `(action, username)`, the `(block_num DESC,
+id DESC)` tiebreaker and singular `?` signer gate are present, `issued_by` is
+server-set from `req.hiveUsername` (no spoofing), and the lockout guards run
+before broadcast. The real-path companion exercises real `verifyHiveSignature` +
+`requireFreshAdminAuth` (carve-out clause (c) satisfied). Archive is held on the
+following items (all user-triaged 2026-06-14):
+
+1. **(P1) `/roster/grant` lets a super_admin demote a peer super_admin.** The
+   `POST /roster/grant` handler only blocks *granting* `super_admin` to a non-root
+   caller; it never resolves the target's *current* level, so a super_admin can
+   call `grant {account: <existing super_admin>, level: 'admin'}` and demote that
+   peer to `admin` via latest-op-wins. The `POST /roster/revoke` handler correctly
+   reserves super_admin demotion to root (`targetLevel === 'super_admin' &&
+   req.adminLevel !== 'root'`). Fix: in the grant handler, resolve
+   `getAdminLevel(account)` and reject a non-root caller whose grant would lower a
+   current `super_admin`; also reject a self-downgrade, mirroring the revoke
+   handler's no-self-demote guard. No escalation/lockout risk (root stays
+   un-demotable), so P1 not P0, but it contradicts the §6.4 tier matrix. Add a
+   route-level test for the bypass.
+
+2. **(P2) `adminRosterRevokeSchema` requires an unused `level` field.** The
+   revoke handler destructures only `{ account }` and re-resolves the target tier
+   from `getAdminLevel(account)` (chain is SSoT); the schema's `level` is dead
+   input that misleads callers and is an attractor for a future guard on
+   `req.body.level` that would bypass the live-tier check (TOCTOU). Remove `level`
+   from `adminRosterRevokeSchema`. No frontend coordination needed: Zod strips
+   unknown keys, so the console's existing `{account, level}` body still parses.
+
+3. **(P2) Cache not invalidated on broadcast-timeout for retract/authorship.**
+   `/papers/retract`, `/authorship/revoke`, and `/authorship/approve` invalidate
+   their caches (`retracted-papers`, `claims:*`) only on the success path; the
+   `catch`/timeout branch does not. A broadcast that times out but lands leaves the
+   cache stale until TTL. The `/roster/grant|revoke` handlers already bust on the
+   ambiguous timeout (`if (outcome === 'timeout')`); mirror that for the three
+   authority handlers, per the chain-write-timeout-ambiguous convention
+   (`agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`).
+
+4. **(P2) Valid-action error strings hand-copied 3x.** The valid-fresh-auth-action
+   error strings in `routes/custody.ts` (two sites) and `routes/orcid.ts` are flat
+   hand-copies of the action list; the canonical source is the action tuples in
+   `lib/fresh-auth.ts` (`ADMIN_FRESH_AUTH_ACTION_TUPLE` + the consent/credit
+   tuples). Derive the list from the tuples so the forthcoming `admin_sanction`
+   addition (already named in a `fresh-auth.ts` comment) propagates without three
+   manual edits.
+
+5. **(P2) WoT broadcast tests do not assert `issued_by: 'wot'`.** `issued_by` is
+   now required on `RevokeAction` and stamped with the `'wot'` system marker on the
+   WoT accredit/revoke payloads, but `wot-retract-cascaderevocation.test.ts` and
+   `wot-broadcast-timeout.test.ts` assert only `action`/`account` on the captured
+   payload, leaving the marker an uncovered mutation target. Extend the payload
+   assertions to include `issued_by: 'wot'`. NOTE: a sibling task
+   (`backend-revoke-sanction-wot-membership`) is actively rewriting `wot.ts`
+   (removing the revocation cascade for a live-membership model); coordinate so
+   this test fix lands against the final WoT shape rather than the cascade tests
+   that task is removing.
+
+6. **(P2) No test for the root-demotes-super_admin happy path.** The
+   `/roster/revoke` root-only branch has only the 403 negative tested; the positive
+   branch (root successfully demoting a super_admin, asserting the `admin_revoke`
+   payload + `issued_by`) is uncovered. Add it.
+
+**Dismissed (no action):** `getAdminRosterDetailed` has no explicit timeout
+(matches the project-wide pool `statement_timeout` posture); the post-timeout
+`bustAdminRosterCache()` is not `try/catch`-wrapped (currently safe —
+`cache.invalidate` swallows Redis errors — preemptive hardening);
+`activeAdminsCteBody` projects `granted_by`/`granted_at` on the cache path
+(advisory, negligible at scale); the real-path fresh-auth companion is Redis-gated
+via `describe.skipIf` (accepted infra constraint). **Pre-existing (does not gate
+archive):** Redis `del` swallowed mid-bust leaves a stale key to TTL, shared
+across all `hafCache` invalidations.
+
+**Architect doc follow-ups (NOT implementer work; tracked by the architect).**
+The `[TODO Architect]` items above (ARCHITECTURE.md §6.4 critical-action table rows
+for the six admin actions; `api-contracts/*.md` for the `/api/admin/*` endpoints)
+are DEFERRED until these fixes land, so the documented shapes are final — item 2
+removes the revoke `level` field and item 1 changes the grant authorization, both
+of which the contract docs would otherwise capture stale.
+
+Anchor any new code comments on stable symbols (function / route / CTE / schema
+names), not line numbers, task slugs, round numbers, or SHAs, per the
+comment-anchor conventions. When fixed, `git mv` this file back to `tasks/review/`;
+the move is the re-review signal, and the re-review will scope `/ce-code-review` to
+the commits since this hold block.
