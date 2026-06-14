@@ -155,7 +155,16 @@ migrate_db() {
   log "Running database migrations against '$db'..."
   for f in backend/migrations/*.sql; do
     log "  Applying $(basename "$f") to $db..."
-    $COMPOSE exec -T postgres psql -U pevo -d "$db" -v ON_ERROR_STOP=1 -f "/docker-entrypoint-initdb.d/$(basename "$f")"
+    # Propagate failure explicitly instead of relying on set -e: when migrate_db
+    # runs in a conditional context (the restart carve-out's `if ! cmd_migrate`
+    # rollback guard), bash suppresses set -e for the whole call, so a bare
+    # failing psql would let the loop continue and the function still return 0.
+    # An explicit return makes the failure observable to that caller and stops
+    # applying further migrations after the first failure.
+    if ! $COMPOSE exec -T postgres psql -U pevo -d "$db" -v ON_ERROR_STOP=1 -f "/docker-entrypoint-initdb.d/$(basename "$f")"; then
+      err "Migration $(basename "$f") failed against '$db'"
+      return 1
+    fi
   done
   log "Migrations complete for $db"
 }
@@ -313,17 +322,37 @@ unapplied_migrations() {
 # ADD COLUMN ... NOT NULL is matched broadly: one carrying a DEFAULT is in fact
 # safe, but a false-positive carve-out costs only a brief stop while a MISSED
 # destructive migration breaks the still-serving old backend, so the tripwire
-# over-matches by design. NOT matched (documented foot-gun, see ARCHITECTURE.md
-# Migrations): a large-table non-CONCURRENTLY CREATE INDEX or ALTER ... SET NOT
-# NULL can take an ACCESS EXCLUSIVE lock that stalls the old backend even when
-# this grep passes; negligible at beta row counts, prefer CONCURRENTLY at scale.
+# over-matches by design.
+#
+# Each file is NORMALIZED before matching so the tripwire is honest about what it
+# claims to catch: `--` line comments are stripped (a commented-out DROP TABLE no
+# longer forces a needless carve-out) and the file is collapsed to one line so a
+# statement split across newlines is still seen by the pattern's `[^;]*` bridges
+# (which only span within a single grep line; semicolons still bound them, so the
+# collapse never lets a match leak across statements). An UNREADABLE file forces
+# the carve-out rather than being silently treated as expand-only.
+#
+# NOT matched (documented foot-gun, see ARCHITECTURE.md Migrations): a large-table
+# non-CONCURRENTLY CREATE INDEX or ALTER ... SET NOT NULL can take an ACCESS
+# EXCLUSIVE lock that stalls the old backend even when this grep passes; that is
+# an availability cost, not a correctness break, negligible at beta row counts —
+# prefer CONCURRENTLY or force the carve-out at scale.
 destructive_pending_migrations() {
-  local files
+  local files f normalized hits found=""
   files="$(unapplied_migrations)"
   [ -z "$files" ] && return 0
-  printf '%s\n' "$files" | xargs grep -niE \
-    'DROP[[:space:]]+TABLE|DROP[[:space:]]+COLUMN|\bRENAME\b|ALTER[[:space:]]+COLUMN[^;]*TYPE|ADD[[:space:]]+COLUMN[^;]*NOT[[:space:]]+NULL' \
-    2>/dev/null || true
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if ! normalized="$(sed 's/--.*$//' "$f" 2>/dev/null | tr '\n' ' ')"; then
+      found+="$f: unreadable (forcing brief-stop carve-out)"$'\n'
+      continue
+    fi
+    hits="$(printf '%s' "$normalized" | grep -ioE \
+      'DROP[[:space:]]+TABLE|DROP[[:space:]]+COLUMN|\bRENAME\b|ALTER[[:space:]]+COLUMN[^;]*TYPE|ADD[[:space:]]+COLUMN[^;]*NOT[[:space:]]+NULL' \
+      || true)"
+    [ -n "$hits" ] && found+="$f: $(printf '%s' "$hits" | tr '\n' ' ')"$'\n'
+  done <<<"$files"
+  printf '%s' "$found"
 }
 
 # Probe the HOST-side published port (127.0.0.1:3001), not inside the container.
@@ -365,6 +394,11 @@ swap_backend() {
     sleep 2
   done
   warn "New backend did not answer on 127.0.0.1:3001 within 60s — check: ./deploy.sh logs backend"
+  # Surface the failed handover to the caller (and any CI/automation wrapper):
+  # the new backend never answered on the host port, so this is NOT a successful
+  # deploy. Falling off the end would return 0 (the while-loop's exit status) and
+  # mask a dead backend behind a green exit code.
+  return 1
 }
 
 # Rebuild + redeploy with a near-zero-downtime swap. The prior implementation ran
@@ -421,15 +455,33 @@ cmd_restart() {
     warn "Taking the brief-stop carve-out: stopping the backend before migrating."
     $COMPOSE stop backend
     log "Applying migrations against the quiescent database..."
-    cmd_migrate
+    # The backend is already stopped, so a migration failure here would otherwise
+    # abort with 127.0.0.1:3001 having no listener. Restore the OLD backend (its
+    # image is still present — the new one was only built, not yet swapped in)
+    # before aborting, so a failed destructive migrate is no worse than a no-op.
+    if ! cmd_migrate; then
+      err "Migration failed during the brief-stop carve-out — restarting the previous backend."
+      $COMPOSE start backend || warn "Could not restart the previous backend — investigate with ./deploy.sh logs backend"
+      exit 1
+    fi
   else
     log "Unapplied migrations are expand-only (or none) — migrating live, old backend still serving..."
+    # Live path: the old backend was never stopped, so a migration failure leaves
+    # it serving the old code (DB-ahead is tolerated). set -e aborts the restart
+    # here with the prior backend intact; no rollback needed.
     cmd_migrate
   fi
 
-  # 4. Swap only the backend, last.
-  swap_backend
-  cmd_status
+  # 4. Swap only the backend, last. A failed handover (the new backend never
+  #    answers on the host port) must surface as a non-zero exit so an operator
+  #    or CI wrapper sees the broken deploy; cmd_status still runs for visibility.
+  if swap_backend; then
+    cmd_status
+  else
+    cmd_status
+    err "Backend swap did not complete — new backend is not serving on 127.0.0.1:3001. Deploy failed."
+    exit 1
+  fi
 }
 
 cmd_status() {
