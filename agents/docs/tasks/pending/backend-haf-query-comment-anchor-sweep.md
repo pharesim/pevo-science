@@ -131,3 +131,25 @@ before editing.
   commits (the members-index write-path describe added there is clean). Same
   treatment as the 2026-06-09 entries above: sweep here only if the unblock
   re-enumeration widens to the test tree; re-verify before editing.
+
+## [Architect] (2026-06-14) — UNBLOCKED; moved to pending/
+
+The unblock condition above is met. The substantive `backend-reputation-*` and
+`backend-notifications-*` tasks that churn the three target files
+(`reputation.ts`, `reputation-batch.ts`, `notification-queries.ts`) have all
+landed and archived — `tasks/review/` and `tasks/pending/` are both empty, so
+nothing is reshaping those files anymore. The most recent of that batch
+(`backend-notification-vote-arms-id-tiebreaker`, `backend-notifications-digest-window-cursor`,
+`backend-reputation-batch-seam-eslint-guard`) archived 2026-06-14. Per this
+task's own unblock instruction ("the architect, noticing the batch has cleared,
+moves this file back to pending/"), moving it now.
+
+**Mandatory for the implementer (do NOT skip):** the line/anchor snapshot in the
+sections above has drifted across all that churn, and some anchors may already
+have been cleaned by the per-arm comment work folded into the substantive tasks.
+RE-ENUMERATE the live stale anchors from scratch (grep the three files for
+round/hold ordinals, task slugs, line-number and SHA cites) rather than trusting
+the lists above, then sweep whatever remains in one focused commit and extract
+`citationsArrayGuardSql` (the arm 6a/6b SRF guard; `imageSrfGuardExpr` in
+`lib/ipfs-shared.ts` is the precedent, but the citations guard needs a second
+`appTagParam` `$N` argument that must NOT be identifier-validated like the alias).
