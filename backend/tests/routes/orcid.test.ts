@@ -120,9 +120,11 @@ const {
   broadcastJsonMock,
   MockBroadcastTimeoutError,
   verifyHiveSignatureFailureToken,
+  hasUnliftedSanctionMock,
 } = vi.hoisted(() => {
   const _appQueryMock = vi.fn().mockResolvedValue({ rows: [] });
   return {
+    hasUnliftedSanctionMock: vi.fn().mockResolvedValue(false),
     hafQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
     appQueryMock: _appQueryMock,
     getAppPoolMock: vi.fn(() => ({ query: _appQueryMock })),
@@ -179,6 +181,8 @@ vi.mock('../../src/hive.js', () => ({
 // handleAccredit asks whether the caller is already accredited before broadcasting.
 vi.mock('../../src/accreditation.js', () => ({
   getAccreditedSet: vi.fn().mockResolvedValue(new Set()),
+  hasUnliftedSanction: hasUnliftedSanctionMock,
+  SANCTIONED_ACCREDIT_MESSAGE: 'This account is not eligible for accreditation at this time.',
 }));
 
 // NOTE: verifyHiveSignature is wrapped, NOT replaced. The wrapper delegates to
@@ -301,6 +305,7 @@ function installOrcidFetchStub(opts: OrcidStubOpts): void {
 }
 
 beforeEach(async () => {
+  hasUnliftedSanctionMock.mockReset().mockResolvedValue(false);
   hafQueryMock.mockReset().mockResolvedValue({ rows: [] });
   appQueryMock.mockReset().mockResolvedValue({ rows: [] });
   // Reset getAppPoolMock to the default-pool factory between tests so a spec
@@ -722,6 +727,26 @@ describe('POST /api/orcid/callback — insufficient external works (works-gate 4
       expect(broadcastJsonMock).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('POST /api/orcid/callback — ever-sanctioned guard', () => {
+  it('refuses ORCID accreditation for a sanctioned account (403 ACCREDITATION_SANCTIONED, no broadcast)', async () => {
+    // A self-service ORCID accreditation must NOT lift a moderation sanction;
+    // only a deliberate admin accredit lifts it. The guard runs after the
+    // already-accredited check and before the works gate, so it fires regardless
+    // of works count, without leaking the moderation reason.
+    hasUnliftedSanctionMock.mockResolvedValue(true);
+    installOrcidFetchStub({ orcid: '0000-0001-2222-0099', name: 'Alice', works: 10 });
+    const state = await startAuthed('accredit', 'alice');
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('ACCREDITATION_SANCTIONED');
+    expect(res.body.error.message.toLowerCase()).not.toContain('sanction');
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {

@@ -286,6 +286,32 @@ describe('POST /api/wot/vouch — broadcastWotAccreditation tagged-union arms', 
     expect(loggerErrorMock).not.toHaveBeenCalled();
   });
 
+  it('collapses the "sanctioned" arm into the generic skipped-shape WITHOUT disclosing the sanction', async () => {
+    // A sanctioned vouchee at/above threshold returns reason:"sanctioned". The
+    // route deliberately collapses it into the generic skipped response so a
+    // third-party voucher is never told the vouchee is under a moderation
+    // sanction (a privacy leak). The response must be indistinguishable from a
+    // plain not-eligible skip: no accreditation_outcome, no "sanction" wording.
+    broadcastWotAccreditationMock.mockResolvedValueOnce({ ok: false, reason: 'sanctioned' });
+    getVouchStatusMock.mockResolvedValueOnce({
+      ...VOUCH_STATUS_FIXTURE,
+      vouch_count: 3,
+      threshold: 3,
+    });
+
+    const res = await request(app)
+      .post('/api/wot/vouch')
+      .set('Authorization', `Bearer ${jwtFor(VOUCHER)}`)
+      .send({ vouchee: VOUCHEE });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ accredited: false, tx_id: null });
+    expect(res.body.data).not.toHaveProperty('accreditation_outcome');
+    expect(res.body.data.message).toContain('3/3 vouches');
+    expect(res.body.data.message.toLowerCase()).not.toContain('sanction');
+    expect(loggerErrorMock).not.toHaveBeenCalled();
+  });
+
   it('returns 403 FORBIDDEN when the voucher is not accredited (gate at wot.ts:57-60)', async () => {
     // Override the default accredited-set so the voucher is NOT in it. The
     // route should short-circuit at the gate before ever calling

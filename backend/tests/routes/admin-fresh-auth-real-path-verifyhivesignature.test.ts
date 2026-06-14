@@ -180,5 +180,27 @@ describe.skipIf(!redisReachable)(
       expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
       expect(broadcastAdminMock).not.toHaveBeenCalled();
     });
+
+    // ─── admin_sanction fresh-auth tuple member: real-crypto JWT-only negative ──
+    // The signature-path POSITIVE for admin_sanction is covered by risk-class
+    // equivalence: POST /api/admin/accreditation/sanction runs the BYTE-IDENTICAL
+    // verifyHiveSignature -> requireAdminLevel -> validate -> requireFreshAdminAuth
+    // middleware chain already exercised positively above on /roster/grant; only
+    // the action string differs ('admin_sanction'). This negative pins that the
+    // new tuple member is wired so a bare JWT never reaches the sanction broadcast.
+    it('a valid JWT with no fresh_auth_proof is rejected on POST /accreditation/sanction (no broadcast)', async () => {
+      const token = jwt.sign(
+        { sub: ROOT, custody: 'light', iat: Math.floor(Date.now() / 1000) },
+        config.sessionSecret,
+      );
+      const res = await request(app)
+        .post('/api/admin/accreditation/sanction')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ account: 'baduser', reason: 'misconduct' });
+
+      expect([401, 403]).toContain(res.status);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(broadcastAdminMock).not.toHaveBeenCalled();
+    });
   },
 );

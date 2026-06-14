@@ -198,34 +198,49 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
   -- the IS DISTINCT FROM wot form is equivalent for valid data and also treats a
   -- malformed/absent method as a deliberate (non-vouch-derived) authority op
   -- rather than silently dropping it. Only a wot op is vouch-derived.
+  -- Most-recent authority accredit (block_num, op_id) per account. Carries op_id
+  -- so the sanction-lift comparison uses the same (block_num, id) ordering as the
+  -- rest of the CTE rather than block_num alone.
   auth_accredit AS (
-    SELECT account, MAX(block_num) AS auth_block
-    FROM accred_ranked
-    WHERE action = 'accredit' AND method IS DISTINCT FROM 'wot'
-    GROUP BY account
+    SELECT account, block_num AS auth_block, op_id AS auth_id FROM (
+      SELECT account, block_num, op_id,
+        ROW_NUMBER() OVER (PARTITION BY account ORDER BY block_num DESC, op_id DESC) AS rn
+      FROM accred_ranked
+      WHERE action = 'accredit' AND method IS DISTINCT FROM 'wot'
+    ) z WHERE rn = 1
   ),
-  -- Most-recent sanction block per account.
+  -- Most-recent sanction (block_num, op_id) per account.
   sanction_latest AS (
-    SELECT account, MAX(block_num) AS sanction_block
-    FROM accred_ranked
-    WHERE action = 'revoke' AND revoke_type = 'sanction'
-    GROUP BY account
+    SELECT account, block_num AS sanction_block, op_id AS sanction_id FROM (
+      SELECT account, block_num, op_id,
+        ROW_NUMBER() OVER (PARTITION BY account ORDER BY block_num DESC, op_id DESC) AS rn
+      FROM accred_ranked
+      WHERE action = 'revoke' AND revoke_type = 'sanction'
+    ) z WHERE rn = 1
   ),
   -- Op-pinned, not-sanctioned accredited set: latest accredit not overridden by
-  -- a more-recent (or same-block) un-lifted sanction. This is BOTH the WoT
-  -- voucher-eligibility set and the membership base. A same-block sanction/
-  -- re-accredit tie resolves to sanctioned (auth_block must be strictly later).
+  -- a more-recent un-lifted sanction. This is BOTH the WoT voucher-eligibility
+  -- set and the membership base. The sanction-vs-authority-accredit comparison is
+  -- lexicographic on (block_num, op_id), so a same-block tie resolves by the
+  -- monotonic op id (later op wins) consistently with the rest of the CTE.
   accred_pinned AS (
     SELECT la.account, la.researcher_name, la.institution, la.field, la.method, la.orcid, la.event_timestamp, la.op_id, la.block_num
     FROM accred_latest la
     LEFT JOIN sanction_latest s ON s.account = la.account
     LEFT JOIN auth_accredit au ON au.account = la.account
     WHERE la.arn = 1
-      AND (s.sanction_block IS NULL OR (au.auth_block IS NOT NULL AND s.sanction_block < au.auth_block))
+      AND (
+        s.sanction_block IS NULL
+        OR (au.auth_block IS NOT NULL AND (au.auth_block, au.auth_id) > (s.sanction_block, s.sanction_id))
+      )
   ),
   -- Private live vouch graph (distinct names so consumers composing
-  -- activeVouchesCteBody too do not collide on active_vouches).
-  aa_vouch_ranked AS (
+  -- activeVouchesCteBody too do not collide on active_vouches). AS MATERIALIZED
+  -- (like aa_params_latest) fences the planner: it resolves this custom_id-indexed
+  -- scan FIRST rather than risking a nested-loop re-probe per accred_pinned row if
+  -- a data/planner shift later changes the join estimate. Keep MATERIALIZED inline
+  -- in this SQL literal so the no-custom-id-block-num-floor lint canary stays sighted.
+  aa_vouch_ranked AS MATERIALIZED (
     SELECT
       cj.json::jsonb ->> 'action' AS action,
       cj.json::jsonb ->> 'voucher' AS voucher,
@@ -256,9 +271,20 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
   aa_wot_threshold AS (
     SELECT COALESCE(
       (
-        SELECT CASE WHEN v ~ '^[0-9]+$' AND v::int >= 1 THEN v::int ELSE NULL END
+        -- Parity with loadWotThreshold (wot.ts): accept ONLY a JSON number with
+        -- an integer value >= 1. jsonb_typeof gates out string values (JS rejects
+        -- a string "4" via Number.isInteger), and trunc(v)=v rejects non-integer
+        -- numerics like 4.5; an integer-valued 4.0 is accepted as 4 (matching
+        -- JS JSON.parse(4.0) === 4). The nested CASE keeps the v::numeric cast off
+        -- the non-number branch so a string value never raises.
+        SELECT CASE jsonb_typeof(node)
+          WHEN 'number' THEN
+            CASE WHEN v::numeric = trunc(v::numeric) AND v::numeric >= 1 THEN v::numeric::int ELSE NULL END
+          ELSE NULL
+        END
         FROM (
-          SELECT json::jsonb -> 'params' ->> 'min_accreditations_for_wot' AS v
+          SELECT json::jsonb -> 'params' -> 'min_accreditations_for_wot' AS node,
+                 json::jsonb -> 'params' ->> 'min_accreditations_for_wot' AS v
           FROM aa_params_latest
           ORDER BY block_num DESC, id DESC
           LIMIT 1
@@ -369,11 +395,15 @@ export function firstAccreditedAnchorCteBody(startIdx = 1): SqlFragment {
  * in `papers-cumulative-orcid-audit.test.ts` pins this.
  *
  * Why a separate CTE and not an extension of `active_accreditations`:
- * `active_accreditations` is consumed throughout the codebase as a
- * filtered membership view (`WHERE rn = 1 AND action = 'accredit'`).
- * Including revoked rows there would silently widen every consumer's set,
- * including reputation-cycle filters and vote-eligibility gates. The
- * status CTE is additive and only audit emission consumes it.
+ * `active_accreditations` is consumed throughout the codebase as the live
+ * membership set (sanction-aware, legacy-revoke-ignoring, WoT-threshold-gated).
+ * This audit CTE deliberately carries the BROADER ever-accredited population
+ * (both `active` and `revoked` per the most-recent op) so post-revocation
+ * forged-ORCID visibility survives; folding that into the membership view would
+ * silently widen every consumer's set (reputation-cycle filters, vote-eligibility
+ * gates). The status CTE is additive and only audit emission consumes it; it
+ * still reads `accred_ranked.rn` (latest op by block_num, then id), independent
+ * of the membership filter's sanction/threshold logic.
  */
 export function accreditationStatusCteBody(startIdx = 1): SqlFragment {
   return {

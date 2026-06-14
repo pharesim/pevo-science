@@ -49,12 +49,13 @@ import request from 'supertest';
 import { PrivateKey } from '@hiveio/dhive';
 import { signRequestBound } from '../support/sign-request.js';
 
-const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock, seedBonusMock, accreditedSetMock } = vi.hoisted(() => ({
+const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock, seedBonusMock, accreditedSetMock, hasUnliftedSanctionMock } = vi.hoisted(() => ({
   getAccountsMock: vi.fn(),
   broadcastJsonMock: vi.fn(),
   createClaimedAccountMock: vi.fn(),
   seedBonusMock: vi.fn(),
   accreditedSetMock: vi.fn(),
+  hasUnliftedSanctionMock: vi.fn(),
 }));
 
 vi.mock('../../src/hive.js', () => ({
@@ -103,6 +104,7 @@ vi.mock('../../src/accreditation.js', async () => {
   return {
     ...actual,
     getAccreditedSet: accreditedSetMock,
+    hasUnliftedSanction: hasUnliftedSanctionMock,
   };
 });
 
@@ -274,6 +276,7 @@ beforeEach(() => {
   createClaimedAccountMock.mockReset().mockResolvedValue({ block_num: 12345 });
   seedBonusMock.mockReset().mockResolvedValue(undefined);
   accreditedSetMock.mockReset().mockResolvedValue(new Set<string>());
+  hasUnliftedSanctionMock.mockReset().mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -328,6 +331,27 @@ describe.skipIf(!dbReachable)('signup-verify /confirm stuck-account recovery (Op
     // createClaimedAccount must NOT fire on stuck-resume (chain step 1
     // is single-use; replay would raise HAFSQL-side error per AC #3).
     expect(createClaimedAccountMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses the accreditation broadcast for a sanctioned account (403 ACCREDITATION_SANCTIONED, no broadcast)', async (ctx) => {
+    if (!dbReachable) return ctx.skip(true, 'pg unreachable');
+    // A self-service signup-verify must NOT lift a moderation sanction; only a
+    // deliberate admin accredit lifts it. broadcastAccreditationAndSeed refuses
+    // before broadcasting and returns 'handled' (403), without leaking the reason.
+    await seedStuckAccount({ username, email, postingPrivate: keys.posting_private, memoPrivate: keys.memo_private });
+    getAccountsMock.mockImplementation(async (names: string[]) =>
+      names.includes(username) ? [{ name: username, posting: { key_auths: [[keys.posting_public, 1]] } }] : [],
+    );
+    hasUnliftedSanctionMock.mockResolvedValue(true);
+
+    const res = await request(app)
+      .post('/api/auth/confirm')
+      .send({ auth_token: `confirmed:${'a1b2c3d4'.repeat(8)}`, username, keys });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('ACCREDITATION_SANCTIONED');
+    expect(res.body.error.message.toLowerCase()).not.toContain('sanction');
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
   });
 
   it('(b) stuck /confirm → HAF probe finds existing accreditation → 200 + JWT without re-broadcasting', async (ctx) => {

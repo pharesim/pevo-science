@@ -22,9 +22,11 @@ import {
   requireAdminLevel,
   requireFreshAdminAuth,
   getAdminLevel,
+  levelMeets,
   getAdminRosterDetailed,
   bustAdminRosterCache,
 } from '../admin-roster.js';
+import { invalidateOnRevocation } from '../reputation.js';
 import { broadcastAdminCustomJson, broadcastJsonWithTimeout } from '../hive.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 import { hafCache } from '../cache.js';
@@ -328,8 +330,18 @@ router.post(
 // suppresses accreditation regardless of vouch support and is lifted ONLY by a
 // later authority `accredit` (POST /accreditation/grant). This is the only
 // `revoke` the backend broadcasts — a WoT threshold drop is a self-healing
-// live-membership non-event with no op. Membership reflects the sanction on the
-// next volatile-cache refresh (block-watcher tick) once HAF ingests it.
+// live-membership non-event with no op.
+//
+// Membership-cache staleness: getAccreditedSet / getAllAccreditedAccounts read
+// through the `accredited_accounts_all` STABLE cache (10-min TTL). clearVolatile
+// (the block-watcher tick) does NOT flush it, and an immediate invalidate would
+// be ineffective anyway (HAF must ingest the op first). So a sanctioned account
+// can remain in the membership set for up to ~10 min — an accepted tradeoff,
+// symmetric with grant-staleness. Reputation is cleared promptly below.
+//
+// Tier guard (mirrors the /roster/revoke ladder): a base `admin` may sanction
+// non-admins only; the actor cannot sanction itself, the root account, or any
+// account whose admin tier is at or above the actor's own.
 router.post(
   '/accreditation/sanction',
   verifyHiveSignature,
@@ -342,6 +354,16 @@ router.post(
   ) => {
     const actor = req.hiveUsername!;
     const { account, reason } = req.body;
+    if (account === actor) {
+      return sendError(res, 422, 'VALIDATION_ERROR', 'You cannot sanction yourself');
+    }
+    if (account === config.rootAdminAccount) {
+      return sendError(res, 422, 'VALIDATION_ERROR', 'The root account cannot be sanctioned');
+    }
+    const targetLevel = await getAdminLevel(account);
+    if (targetLevel !== null && levelMeets(targetLevel, req.adminLevel!)) {
+      return sendError(res, 403, 'FORBIDDEN', 'You cannot sanction an account whose admin tier is at or above your own');
+    }
     const payload = {
       action: 'revoke',
       type: 'sanction',
@@ -352,6 +374,13 @@ router.post(
     };
     try {
       const result = await broadcastAdminCustomJson(payload);
+      // Clear the sanctioned account's cached reputation so its displayed score
+      // collapses to zero promptly rather than lingering until the next batch
+      // cycle (the batch itself reads live membership). Best-effort: a failure
+      // reconciles at the next cycle.
+      await invalidateOnRevocation(account).catch((invErr) =>
+        logger.warn({ err: invErr, account }, 'sanction reputation invalidate failed; reconciles next batch cycle'),
+      );
       logger.info({ event: 'admin.accreditation.sanction', actor, account, tx_id: result.id }, 'admin accreditation sanction');
       sendOk(res, { message: `Accreditation sanctioned for ${account}`, tx_id: result.id });
     } catch (err) {

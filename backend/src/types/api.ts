@@ -51,6 +51,7 @@ export type ErrorCode =
   | "ORCID_REQUIRED"
   | "SERVICE_UNAVAILABLE"
   | "ACCREDITATION_GATE_UNAVAILABLE"
+  | "ACCREDITATION_SANCTIONED"
   | "INTERNAL_ERROR";
 
 export interface PaginationMeta {

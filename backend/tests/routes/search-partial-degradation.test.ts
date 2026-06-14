@@ -58,6 +58,8 @@ vi.mock('../../src/redis.js', () => ({
 
 vi.mock('../../src/accreditation.js', () => ({
   getAccreditedSet: async (_usernames: string[]) => new Set<string>(),
+  hasUnliftedSanction: async (_account: string) => false,
+  SANCTIONED_ACCREDIT_MESSAGE: 'This account is not eligible for accreditation at this time.',
 }));
 
 const { createApp } = await import('../../src/app.js');

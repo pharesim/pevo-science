@@ -425,6 +425,59 @@ describe('POST /api/admin/accreditation/sanction', () => {
     expect(res.status).toBeLessThan(404);
     expect(broadcastAdminMock).not.toHaveBeenCalled();
   });
+
+  it('422s a self-sanction (no broadcast)', async () => {
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/accreditation/sanction'), ADMIN).send({
+      account: ADMIN,
+      reason: 'x',
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
+
+  it('422s sanctioning the root account (no broadcast)', async () => {
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/accreditation/sanction'), ADMIN).send({
+      account: ROOT,
+      reason: 'x',
+    });
+    expect(res.status).toBe(422);
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
+
+  it('403s a base admin sanctioning a super_admin target (tier at/above the actor)', async () => {
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/accreditation/sanction'), ADMIN).send({
+      account: SUPER,
+      reason: 'x',
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
+
+  it('403s a base admin sanctioning a peer admin target (tier equal to the actor)', async () => {
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/accreditation/sanction'), ADMIN).send({
+      account: ADMIN2,
+      reason: 'x',
+    });
+    expect(res.status).toBe(403);
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
+
+  it('super_admin CAN sanction a base admin target (tier below the actor)', async () => {
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/accreditation/sanction'), SUPER).send({
+      account: ADMIN,
+      reason: 'misconduct',
+    });
+    expect(res.status).toBe(200);
+    expect(broadcastAdminMock).toHaveBeenCalledTimes(1);
+    expect(broadcastAdminMock.mock.calls[0][0]).toMatchObject({ action: 'revoke', type: 'sanction', account: ADMIN });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

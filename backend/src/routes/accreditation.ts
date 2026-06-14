@@ -10,7 +10,7 @@ import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate, accreditationRequestSchema, accreditationVerifySchema, accreditationMetadataEditSchema } from '../validation.js';
 import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
-import { getAccreditedSet, getLatestAccreditOp } from '../accreditation.js';
+import { getAccreditedSet, getLatestAccreditOp, hasUnliftedSanction, SANCTIONED_ACCREDIT_MESSAGE } from '../accreditation.js';
 import { getAppPool } from '../app-db.js';
 import {
   computeFreshAuthTargetHash,
@@ -864,6 +864,27 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
         'Verification temporarily unavailable. Please retry shortly.',
         { retriable: true },
       );
+    }
+
+    // Ever-sanctioned guard. The existing-accreditation gate above returns the
+    // prior tx_id idempotently for a currently-accredited account; reaching here
+    // means the account is NOT currently accredited (latest op is a revoke or
+    // there is no accredit). A self-service /verify must NOT lift a moderation
+    // sanction (only a deliberate admin accredit lifts it), so refuse before the
+    // broadcast-attempt cap claim — a sanctioned account neither broadcasts nor
+    // burns a cap slot. hasUnliftedSanction fails closed (refuse) on a HAF error;
+    // the common HAF-outage case already surfaced as 503 at the gate above.
+    if (await hasUnliftedSanction(pending.hive_username)) {
+      logger.info(
+        {
+          event: 'accreditation.verify.sanctioned_refusal',
+          route: 'accreditation.verify',
+          username: pending.hive_username,
+          email_hash: hashEmailForLogs(pending.email),
+        },
+        'accreditation.verify refused — account has an un-lifted sanction',
+      );
+      return sendError(res, 403, 'ACCREDITATION_SANCTIONED', SANCTIONED_ACCREDIT_MESSAGE);
     }
 
     try {

@@ -18,7 +18,7 @@ import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js'
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs, safeHashEmailForLogs } from '../lib/log-pii.js';
 import { seedAccreditationBonus } from '../reputation.js';
-import { getAccreditedSet } from '../accreditation.js';
+import { getAccreditedSet, hasUnliftedSanction, SANCTIONED_ACCREDIT_MESSAGE } from '../accreditation.js';
 import {
   handleBroadcastError,
   PostBroadcastWriteError,
@@ -166,6 +166,14 @@ async function broadcastAccreditationAndSeed(
   // the caller still finalizes the session.
   if (!config.pevoAdminPostingKey) {
     return 'ok';
+  }
+
+  // Ever-sanctioned guard (fresh AND resume paths). A self-service re-accreditation
+  // must NOT lift a moderation sanction; only a deliberate admin accredit lifts it.
+  // Refuse before broadcasting, without leaking the moderation reason.
+  if (await hasUnliftedSanction(username)) {
+    sendError(res, 403, 'ACCREDITATION_SANCTIONED', SANCTIONED_ACCREDIT_MESSAGE);
+    return 'handled';
   }
 
   const broadcastErrOpts: HandleBroadcastErrorOpts = {

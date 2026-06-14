@@ -26,6 +26,7 @@ import {
   REDIS_KEY_STAGING_PREFIX,
   REDIS_KEY_BATCH_MEMBERS,
   STAGING_SEGMENT,
+  batchKey,
   batchMapToScoreRecord,
   computeReputationBatch,
   getBatchReputationMap,
@@ -390,6 +391,31 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
         [...stagingKeys, sentinelKey, REDIS_KEY_BATCH_MEMBERS],
         [String(cycle), REDIS_KEY_LAST_CYCLE, CYCLE_SWAP_STAGING_SUBSTRING, CYCLE_SWAP_PROD_SUBSTRING],
       );
+
+      // Prune de-accredited members. The swap SADDs this cycle's accredited
+      // accounts but never removes prior cycles' entries, so a member NOT in
+      // this cycle's live accredited set (`scoredUsers`) is sanctioned,
+      // below-threshold WoT, or otherwise no longer accredited. SREM it from the
+      // index and DEL its stale prod score key so its displayed reputation
+      // collapses to zero and the members index stays bounded by the live
+      // accredited set (its stated invariant). A WoT threshold drop has no
+      // op/handler to invalidate on, so this cycle-time prune is its only
+      // cleanup; the sanction path also invalidates immediately. Best-effort: a
+      // failure reconciles at the next cycle (the stale key is harmless until
+      // then — getBatchReputationMap tolerates the brief overlap).
+      try {
+        const currentMembers = await redis.smembers(REDIS_KEY_BATCH_MEMBERS);
+        const stale = currentMembers.filter((m) => !scoredUsers.has(m));
+        if (stale.length > 0) {
+          const prunePipe = redis.pipeline();
+          prunePipe.srem(REDIS_KEY_BATCH_MEMBERS, ...stale);
+          for (const m of stale) prunePipe.del(batchKey(m));
+          await prunePipe.exec();
+          logger.info({ cycle, pruned: stale.length }, 'Pruned de-accredited members from the reputation index');
+        }
+      } catch (pruneErr) {
+        logger.warn({ err: pruneErr, cycle }, 'Reputation members prune failed; reconciles next cycle');
+      }
 
       // Use this cycle's scores as prev scores for the next cycle (score-only
       // for the SQL `prev_scores` jsonb parameter).

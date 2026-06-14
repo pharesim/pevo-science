@@ -827,10 +827,20 @@ async function handleAccredit(
   }
 
   // Check if already accredited
-  const { getAccreditedSet } = await import('../accreditation.js');
+  const { getAccreditedSet, hasUnliftedSanction, SANCTIONED_ACCREDIT_MESSAGE } = await import('../accreditation.js');
   const accreditedSet = await getAccreditedSet([username]);
   if (accreditedSet.has(username)) {
     sendError(res, 422, 'VALIDATION_ERROR', 'Account is already accredited');
+    return;
+  }
+
+  // Ever-sanctioned guard: a self-service ORCID accreditation must NOT lift a
+  // moderation sanction (only a deliberate admin accredit lifts it). A sanctioned
+  // account is absent from getAccreditedSet, so the already-accredited check above
+  // does not catch it; refuse here before the works-count probe and broadcast.
+  if (await hasUnliftedSanction(username)) {
+    logger.info({ username }, 'orcid accreditation refused — account has an un-lifted sanction');
+    sendError(res, 403, 'ACCREDITATION_SANCTIONED', SANCTIONED_ACCREDIT_MESSAGE);
     return;
   }
 

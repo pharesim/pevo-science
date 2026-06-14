@@ -126,6 +126,16 @@ export async function getLatestAccreditOp(account: string): Promise<{
 }
 
 /**
+ * User-facing 403 string for the ever-sanctioned refusal on the self-service
+ * accredit paths (email /verify, ORCID callback, signup-verify). Deliberately
+ * generic: it does NOT leak the moderation reason or even the word "sanction".
+ * Emdash-free per project convention. Only a deliberate admin accredit
+ * (POST /api/admin/accreditation/grant) lifts a sanction.
+ */
+export const SANCTIONED_ACCREDIT_MESSAGE =
+  'This account is not eligible for accreditation at this time. Please contact the platform operators if you believe this is an error.';
+
+/**
  * Whether `account` currently carries an un-lifted sanction (a `type:"sanction"`
  * revoke at or after its most-recent authority-pinned `accredit`, or with no
  * authority accredit at all). A sanction is sticky and lifted ONLY by a later

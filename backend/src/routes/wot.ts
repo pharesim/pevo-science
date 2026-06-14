@@ -204,6 +204,12 @@ router.post('/vouch', verifyHiveSignature, wotWriteLimiter, async (req: Request,
   }
 
   // reason === 'skipped' — not eligible, already accredited, or admin key missing.
+  // reason === 'sanctioned' is DELIBERATELY collapsed into this same generic
+  // response: surfacing it would disclose the vouchee's authority-sanction state
+  // to a third-party voucher (a moderation-privacy leak). The voucher learns only
+  // that the vouch was recorded and the vouchee is not auto-accredited; the
+  // sanction (and its lift, a deliberate admin accredit) is not the voucher's
+  // concern. A test pins this collapse.
   sendOk(res, {
     message: `Vouch recorded. ${vouchee} has ${status?.vouch_count ?? 0}/${status?.threshold ?? 3} vouches.`,
     accredited: false,
