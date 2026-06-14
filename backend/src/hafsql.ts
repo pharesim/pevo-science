@@ -298,6 +298,60 @@ export function retractedPapersCteBody(startIdx = 1): SqlFragment {
   };
 }
 
+// ─── Admin roster CTE ────────────────────────────────────────────
+
+/**
+ * CTE body computing the live admin roster: the current tier (`admin` /
+ * `super_admin`) per account, derived from on-chain `admin_grant` /
+ * `admin_revoke` ops. The roster is chain-derived (no persistent table) —
+ * the direct analogue of `activeAccreditationsCteBody`, latest-op-per-account
+ * wins, and a row is live only if its most recent action is `admin_grant`.
+ *
+ * `root` is NOT represented here — it is bootstrap config (the operator /
+ * `config.rootAdminAccount`), un-grantable and un-revocable on chain.
+ *
+ * Same BitmapAnd avoidance as `activeAccreditationsCteBody` (see its
+ * docstring): `custom_id = $appTag` alone is selective on Mahdi's HAF; do NOT
+ * add a `block_num >= genesis` floor.
+ *
+ * The `required_posting_auths ? $admin` gate is load-bearing and singular:
+ * every legitimate `admin_grant`/`admin_revoke` is signed by
+ * `config.pevoAdminPostingKey` (the single `config.hiveAdminAccount` signer),
+ * so a row whose `required_posting_auths` does not contain that account is a
+ * forgery and must not confer a tier. Singular `?` not `?|` because the
+ * on-chain SIGNER is singular by design (the human admin roster derived here
+ * is a separate authorization layer in front of that single signer; see
+ * CLAUDE.md).
+ *
+ * @param startIdx - first available $N parameter index
+ */
+export function activeAdminsCteBody(startIdx = 1): SqlFragment {
+  const p = startIdx;
+  return {
+    sql: `
+  admin_ranked AS (
+    SELECT
+      cj.json::jsonb ->> 'action' AS action,
+      cj.json::jsonb ->> 'account' AS account,
+      cj.json::jsonb ->> 'level' AS level,
+      -- Same-block tie-breaker: cj.id (monotonic HAF op id; the view has no
+      -- trx_in_block), mirroring activeAccreditationsCteBody.
+      ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC, cj.id DESC) AS rn
+    FROM ${T.customJson} cj
+    WHERE cj.custom_id = $${p}
+      AND cj.json::jsonb ->> 'action' IN ('admin_grant', 'admin_revoke')
+      AND cj.required_posting_auths ? $${p + 1}
+  ),
+  active_admins AS (
+    SELECT account, level
+    FROM admin_ranked
+    WHERE rn = 1 AND action = 'admin_grant'
+  )`,
+    params: [config.appTag, config.hiveAdminAccount],
+    nextIdx: p + 2,
+  };
+}
+
 // ─── PEvO content filters ────────────────────────────────────────
 
 /**

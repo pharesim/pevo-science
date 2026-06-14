@@ -160,6 +160,34 @@ export interface UpdateParamsAction {
   timestamp: string;
 }
 
+// ─── Admin roster ops (human-authorization layer) ────────────────
+//
+// The admin roster is chain-derived (no persistent table): the live tier per
+// account is the latest non-revoked `admin_grant` per account, read via
+// `activeAdminsCteBody` (hafsql.ts) and resolved by `admin-roster.ts`. Both
+// ops are signed by the single `config.hiveAdminAccount` (`pevo.admin`) signer
+// via `broadcastAdminCustomJson` — they do NOT widen the signer; they record
+// WHICH human (`issued_by`) the operator-controlled key acted on behalf of.
+// `level` is the granted/revoked tier; `root` is bootstrap config and is never
+// represented as a grant. Ordering/latest-wins reads from CHAIN BLOCK TIME,
+// not the payload `timestamp` (mirrors the accredit tenure convention).
+export interface AdminGrantAction {
+  action: "admin_grant";
+  account: string;
+  level: "admin" | "super_admin";
+  issued_by: string;
+  timestamp: string;
+}
+
+export interface AdminRevokeAction {
+  action: "admin_revoke";
+  account: string;
+  level: "admin" | "super_admin";
+  reason: string;
+  issued_by: string;
+  timestamp: string;
+}
+
 // ─── Web of Trust (WoT) ──────────────────────────────────────────
 
 export type VouchRelationship = "colleague" | "advisor" | "collaborator";
@@ -238,4 +266,6 @@ export type PevoCustomJsonAction =
   | RetractPaperAction
   | RevoteAction
   | AuthorAcceptAction
-  | AuthorResignAction;
+  | AuthorResignAction
+  | AdminGrantAction
+  | AdminRevokeAction;

@@ -16,6 +16,15 @@ if (!/^[a-z][a-z0-9._-]*$/.test(appTag)) {
 const hiveAdminAccount = process.env.HIVE_ADMIN_ACCOUNT || 'pevo.admin';
 const hiveBridgeAccount = process.env.HIVE_BRIDGE_ACCOUNT || hiveAdminAccount;
 
+// Root admin: the top of the human-authorization tier matrix (can manage
+// super_admins and broadcast update_weights). Root is the operator / on-chain
+// key-holder — bootstrap config, NEVER a chain `admin_grant` row, so it is
+// un-demotable and always resolvable even when HAF is unavailable (the
+// chain-derived admin/super_admin tiers fail closed; root does not). Defaults
+// to the admin signer account; override with PEVO_ROOT_ADMIN only if the human
+// operator account differs from the signer account.
+const rootAdminAccount = process.env.PEVO_ROOT_ADMIN || hiveAdminAccount;
+
 // Bridge posting key: use dedicated key if set, otherwise fall back to admin key
 // when bridge account is the same as admin (avoids entering the same key twice)
 function resolveBridgePostingKey(): string {
@@ -163,6 +172,7 @@ export const config = {
 
   // App identity — configurable so alpha/testing uses different namespace
   hiveAdminAccount,
+  rootAdminAccount,
   hiveAnonAccount: process.env.HIVE_ANON_ACCOUNT || 'pevo.anon',
   hiveBridgeAccount,
   appTag,
