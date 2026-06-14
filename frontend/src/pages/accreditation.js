@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { requestAccreditation, startOrcid, searchAccounts } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { createOrcidRedirectGuard } from '../lib/orcid-redirect-guard.js';
 import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
 
 const template = `
@@ -185,6 +186,7 @@ export function initAccreditationPage() {
     // and the searchColleagues debounce all await multi-second I/O that can
     // resolve after an Alpine.destroyTree().
     ...createTimerGuard(),
+    ...createOrcidRedirectGuard('orcidLoading'),
 
     fullName: '',
     institution: '',
@@ -205,11 +207,21 @@ export function initAccreditationPage() {
 
     navigate(path) { Alpine.store('router').navigate(path); },
 
+    init() {
+      // Reset the ORCID loading flag if the page is restored from bfcache after
+      // a Back from ORCID. handleOrcidVerify navigates away with orcidLoading
+      // still true (it resets only in catch), and init()/destroy() do not re-run
+      // on a bfcache restore, so the verify button would stay frozen on its
+      // "Redirecting to ORCID..." label until a hard reload.
+      this._installOrcidRedirectGuard();
+    },
+
     destroy() {
       // Teardown timers first so _mounted flips to false before any other
       // cleanup touches reactive state. Subsequent async continuations see
       // _mounted === false and short-circuit.
       this._teardownTimers();
+      this._teardownOrcidRedirectGuard();
       if (this.vouchDebounce) {
         clearTimeout(this.vouchDebounce);
         this.vouchDebounce = null;
