@@ -7,7 +7,7 @@ import { sendOk, sendError } from '../response.js';
 import { parseMeta, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
 import { normalizeHiveAccount } from '../lib/author-supersession.js';
 import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAccreditedNamesByAccount, getAllEverAccreditedOrcidsWithStatus } from '../accreditation.js';
-import { resolveChainCumulativeAuthors, type ChainCumulativeAuthorsResult } from './papers.js';
+import { enrichRowsWithChainAuthors } from '../lib/chain-cumulative.js';
 import { getReputationScore, getReputationScores } from '../reputation.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -432,29 +432,16 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
       // budget.
       const enrichmentAbort = new AbortController();
       const enrichmentBudget = setTimeout(() => enrichmentAbort.abort(), config.hafWalkerWallClockMs);
-      const chainAuthorsByKey = new Map<string, ChainCumulativeAuthorsResult>();
+      let chainAuthorsByKey: Awaited<ReturnType<typeof enrichRowsWithChainAuthors>>;
       try {
-        await Promise.all(
-          result.rows.map(async (row) => {
-            const key = `${row.author}/${row.permlink}`;
-            try {
-              const chainResult = await resolveChainCumulativeAuthors(
-                row.author,
-                row.permlink,
-                {
-                  accreditedAccounts: allAccredited,
-                  accreditedOrcids: accreditedOrcidsByAccount,
-                  accreditationOrcidStatus,
-                  accreditedNames: accreditedNamesByAccount,
-                  signal: enrichmentAbort.signal,
-                },
-              );
-              if (chainResult !== null) chainAuthorsByKey.set(key, chainResult);
-            } catch (err) {
-              logger.warn({ err, author: row.author, permlink: row.permlink }, 'profile chain cumulative authors enrichment failed');
-            }
-          }),
-        );
+        chainAuthorsByKey = await enrichRowsWithChainAuthors(result.rows, {
+          accreditedAccounts: allAccredited,
+          accreditedOrcids: accreditedOrcidsByAccount,
+          accreditationOrcidStatus,
+          accreditedNames: accreditedNamesByAccount,
+          signal: enrichmentAbort.signal,
+          logLabel: 'profile chain cumulative authors enrichment failed',
+        });
       } finally {
         clearTimeout(enrichmentBudget);
       }
@@ -467,32 +454,22 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
         // batch map is a perf cache).
         row.author_reputation = authorAccredited ? (batchScores.get(row.author) ?? 0) : 0;
 
-        const chainResult = chainAuthorsByKey.get(`${row.author}/${row.permlink}`);
-        // Mirror the listing surface's gate: take the cumulative result only
-        // when it carries authors, so an empty cumulative array (e.g. a
-        // multi-link chain whose posts carry no valid-hive author entries)
-        // falls back to the head-meta projection instead of serving an empty
-        // authors list. Without the `length > 0` check, profile would diverge
-        // from listing + detail (which both fall back to head-meta), reopening
-        // the cross-surface parity break this surface exists to close.
-        const cumulative =
-          chainResult && chainResult.authors.length > 0 ? chainResult : null;
+        // A map entry means the shared helper produced a usable cumulative-union
+        // takeover (non-null, non-empty, affiliation-stripped). The `length > 0`
+        // gate and the `affiliation` strip live inside `enrichRowsWithChainAuthors`
+        // so listing and profile stay in lockstep; a missing entry (empty
+        // cumulative, single-link fast-path, or HAF unreachable) falls back to
+        // the head-meta projection here, closing the cross-surface parity break
+        // this surface exists to address.
+        const cumulative = chainAuthorsByKey.get(`${row.author}/${row.permlink}`) ?? null;
         if (cumulative !== null) {
           // Cumulative-union takeover: helper output replaces the head-meta
           // projection so dropped chain authors stay visible at the profile
-          // surface. Strip `affiliation` because PaperSummary's contract
-          // excludes that field (it is PaperDetail-only); the head-meta
-          // projection above is already affiliation-free via toPaperSummary's
-          // strip.
-          row.authors = cumulative.authors.map((a) => {
-            const { affiliation: _affiliation, ...rest } = a;
-            return rest;
-          });
+          // surface.
+          row.authors = cumulative.authors;
           row.accredited_authors = cumulative.accredited_authors;
         } else {
-          // No usable cumulative result (helper unreachable: HAF down,
-          // single-link fast-path failed; or an empty cumulative array):
-          // fall back to the head-meta projection.
+          // No usable cumulative result: fall back to the head-meta projection.
           row.accredited_authors = (row.authors || [])
             .map((a) => normalizeHiveAccount(a.hive))
             .filter((hive): hive is string => hive !== null && allAccredited.has(hive));

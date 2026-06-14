@@ -43,7 +43,7 @@
  *       deterministically without depending on corpus state.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { resolveChainCumulativeAuthors } from '../../src/routes/papers.js';
+import { resolveChainCumulativeAuthors } from '../../src/lib/chain-cumulative.js';
 import { authorsWithSupersessionSelect } from '../../src/hafsql.js';
 import { hafCache } from '../../src/cache.js';
 

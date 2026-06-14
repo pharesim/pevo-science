@@ -19,15 +19,18 @@
  * head-meta; non-empty cumulative takes over.
  *
  * **Carve-out (per CLAUDE.md "Running Tests" carve-out clauses (a)/(b)/(c)):**
- *   (a) Justification: producing a non-null empty cumulative against real HAF
- *       requires a sequenced multi-link continuation chain whose every author
- *       entry is unrenderable — a contrived on-chain shape that cannot be
- *       reproduced against the public testnet on demand. The cumulative-union
- *       helper `resolveChainCumulativeAuthors` (a sibling-route export that
- *       walks HAF + Redis per call) is mocked to return the exact empty /
- *       non-empty results the gate must discriminate, so the route-level gate
- *       is exercised without depending on corpus state. `getPool()` is mocked
- *       to stage the one profile row plus the accreditation membership set.
+ *   (a) Justification: producing the empty-vs-populated takeover discrimination
+ *       against real HAF requires a sequenced multi-link continuation chain
+ *       whose every author entry is unrenderable — a contrived on-chain shape
+ *       that cannot be reproduced against the public testnet on demand. The
+ *       shared per-row enrichment helper `enrichRowsWithChainAuthors` (which
+ *       walks HAF + Redis per row and applies the `length > 0` takeover gate
+ *       internally) is mocked to return the exact per-key map the route's
+ *       fallback gate reads — an empty map (no entry, the suppressed-empty
+ *       case) versus a populated map (the takeover case) — so the route-level
+ *       gate is exercised without depending on corpus state. `getPool()` is
+ *       mocked to stage the one profile row plus the accreditation membership
+ *       set.
  *   (b) `verifyHiveSignature` is NOT mocked — `/api/profile/:username/papers`
  *       is a public GET; the MOCK_VERIFY_SIGNATURE fixture is not loaded. No
  *       assertion here depends on cryptographic verification behavior.
@@ -44,10 +47,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 
-const { hafQueryMock, getPoolMock, resolveChainCumulativeAuthorsMock } = vi.hoisted(() => ({
+const { hafQueryMock, getPoolMock, enrichRowsWithChainAuthorsMock } = vi.hoisted(() => ({
   hafQueryMock: vi.fn(async (..._args: unknown[]) => ({ rows: [] as unknown[] })),
   getPoolMock: vi.fn(),
-  resolveChainCumulativeAuthorsMock: vi.fn(),
+  enrichRowsWithChainAuthorsMock: vi.fn(),
 }));
 
 vi.mock('../../src/db.js', async (importOriginal) => {
@@ -60,14 +63,19 @@ vi.mock('../../src/db.js', async (importOriginal) => {
   };
 });
 
-// Mock only the cumulative-union helper export; preserve the rest of the
-// papers route module (router + sibling exports the app wires) via
-// importOriginal so app construction stays real.
-vi.mock('../../src/routes/papers.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/routes/papers.js')>();
+// Mock only the shared per-row enrichment helper export; preserve the rest of
+// the chain-cumulative lib module via importOriginal so unrelated symbols stay
+// real. The profile handler now calls `enrichRowsWithChainAuthors` (which
+// internally calls `resolveChainCumulativeAuthors` via an intra-module ref a
+// partial export-mock of that symbol could not intercept), so the mock injects
+// at the helper boundary the route actually consumes: it returns the per-key
+// `Map<string, ChainCumulativeAuthorsResult>` the route's takeover gate reads —
+// an empty map for the fallback case, a populated map for the takeover case.
+vi.mock('../../src/lib/chain-cumulative.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/lib/chain-cumulative.js')>();
   return {
     ...actual,
-    resolveChainCumulativeAuthors: resolveChainCumulativeAuthorsMock,
+    enrichRowsWithChainAuthors: enrichRowsWithChainAuthorsMock,
   };
 });
 
@@ -82,7 +90,7 @@ beforeEach(async () => {
     query: hafQueryMock,
     connect: async () => ({ query: hafQueryMock, release: () => {} }),
   });
-  resolveChainCumulativeAuthorsMock.mockReset();
+  enrichRowsWithChainAuthorsMock.mockReset();
   await hafCache.clear();
 });
 
@@ -133,13 +141,13 @@ async function stage(headAuthors: Array<Record<string, unknown>>, accreditedAll:
 
 describe('GET /api/profile/:username/papers — empty-cumulative fallback parity', () => {
   it('falls back to head-meta authors when the cumulative result is non-null but empty', async () => {
-    // Head metadata names bob (accredited). The cumulative-union helper
-    // returns a non-null EMPTY result — the multi-link-all-unrenderable case.
-    // The profile gate must mirror the listing surface and route the empty
-    // cumulative back to the head-meta projection, NOT serve an empty
-    // authors list.
+    // Head metadata names bob (accredited). The shared enrichment helper's
+    // `length > 0` takeover gate suppresses the empty cumulative result (the
+    // multi-link-all-unrenderable case), so it returns NO map entry for the
+    // row. The profile handler must then route the missing entry back to the
+    // head-meta projection, NOT serve an empty authors list.
     await stage([{ name: 'Bob', hive: 'bob' }], ['bob']);
-    resolveChainCumulativeAuthorsMock.mockResolvedValue({ authors: [], accredited_authors: [] });
+    enrichRowsWithChainAuthorsMock.mockResolvedValue(new Map());
 
     const res = await request(app).get('/api/profile/alice/papers');
     expect(res.status).toBe(200);
@@ -155,15 +163,20 @@ describe('GET /api/profile/:username/papers — empty-cumulative fallback parity
   it('takes over with the cumulative result when it carries authors', async () => {
     // Companion: a NON-empty cumulative result must take over so the gate's
     // discrimination is pinned on both sides. The helper surfaces a dropped
-    // chain author (carol) the head broadcaster omitted.
+    // chain author (carol) the head broadcaster omitted, returning a populated
+    // map keyed by `author/permlink`.
     await stage([{ name: 'Bob', hive: 'bob' }], ['bob', 'carol']);
-    resolveChainCumulativeAuthorsMock.mockResolvedValue({
-      authors: [
-        { name: 'Bob', hive: 'bob', orcid: null, orcid_verified: null, orcid_discrepancy: false },
-        { name: 'Carol', hive: 'carol', orcid: null, orcid_verified: null, orcid_discrepancy: false },
-      ],
-      accredited_authors: ['bob', 'carol'],
-    });
+    enrichRowsWithChainAuthorsMock.mockResolvedValue(
+      new Map([
+        ['alice/p1', {
+          authors: [
+            { name: 'Bob', hive: 'bob', orcid: null, orcid_verified: null, orcid_discrepancy: false },
+            { name: 'Carol', hive: 'carol', orcid: null, orcid_verified: null, orcid_discrepancy: false },
+          ],
+          accredited_authors: ['bob', 'carol'],
+        }],
+      ]),
+    );
 
     const res = await request(app).get('/api/profile/alice/papers');
     expect(res.status).toBe(200);

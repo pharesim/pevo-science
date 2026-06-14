@@ -187,6 +187,15 @@ export function extractAuthorizedContinuationAuthors(
   return authors;
 }
 
+/** Safely extract the pevo metadata sub-object with runtime validation. */
+export function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
+  const pevo = meta[config.appTag];
+  if (pevo != null && typeof pevo === 'object' && !Array.isArray(pevo)) {
+    return pevo as Record<string, unknown>;
+  }
+  return {};
+}
+
 /**
  * Read a string field from parsed `pevo` metadata, or return `null` if
  * the value isn't a non-empty string.
