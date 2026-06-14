@@ -410,3 +410,29 @@ green (the 3 unhandled rejections are pre-existing in untouched
 `pages-edit.test.js`). Production build OK.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect addendum (2026-06-15) — one recommended item to settle at re-review
+
+Surfaced during the 2026-06-15 `/ce-compound-refresh` of the `frontend-error-sanitization`
+convention (which ran clean otherwise). Tracking it here so it is not lost; it does NOT block
+archive on its own.
+
+- (recommended, non-blocking) **Reconcile `_errorMessage`'s genuine-backend-`err.message`
+  passthrough with the `frontend-error-sanitization` convention.** That convention forbids
+  surfacing raw `err.message` to a DOM-bound field (it prescribes `err.code`-driven localized
+  keys), and its acceptance grep (`= err.message` / `err.message ||`) does NOT catch the
+  `return err.message` form `_errorMessage` uses, so the divergence is invisible to the gate.
+  The item-10 fix landed this cycle (excluding the synthetic `INTERNAL_ERROR` code) removes the
+  clearest leak, but `_errorMessage` still returns genuine backend messages (`NOT_FOUND`,
+  `VALIDATION_ERROR`, `SERVICE_UNAVAILABLE`) to the operator. The security/standards reviewers
+  accepted that as deliberate operator UX (admin-route messages are developer-controlled and
+  render via auto-escaped `x-text`) — but that is the "safe today" reasoning the convention
+  rejects. Resolution is an architect call at re-review: either the convention gains a
+  documented structured-operator-error-passthrough carve-out, or the admin code maps codes to
+  localized keys. Flag and settle; do not silently diverge.
+
+Note: the UI agent has already moved this task back to `review/` with item 10 and the
+case-insensitive self-promote guard landed (the re-review signal above). A re-review of that
+commit is now pending; this addendum item folds into that pass.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
