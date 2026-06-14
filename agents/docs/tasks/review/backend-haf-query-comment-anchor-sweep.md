@@ -153,3 +153,47 @@ the lists above, then sweep whatever remains in one focused commit and extract
 `citationsArrayGuardSql` (the arm 6a/6b SRF guard; `imageSrfGuardExpr` in
 `lib/ipfs-shared.ts` is the precedent, but the citations guard needs a second
 `appTagParam` `$N` argument that must NOT be identifier-validated like the alias).
+
+## Backend completion (2026-06-14) — moved to review/
+
+**Scope decision (user-directed):** this task's Acceptance writes the canary
+against ALL of `backend/src/` ("no `round-\d+ hold` or `^BACKEND-` slug refs in
+`backend/src/`"), which contradicts the Architect's 3-file unblock scoping. A
+fresh re-enumeration found rot in ~33 source files, so the broad canary cannot
+pass on a 3-file sweep. Surfaced the contradiction to the user, who elected the
+**full `backend/src/` sweep** (not the narrow 3-file scope). Done accordingly.
+Test tree (`backend/tests/`) was NOT swept — user scoped to `src/`; the
+pre-existing test-header rot noted in the 2026-06-09 / 2026-06-12 sections above
+(`profile-reviews-accred-gate.test.ts`, `reputation-batch-internals.test.ts`)
+remains for a future tests/ sweep.
+
+**Landed in commit `324ca283`** (one focused commit). 34 src files comment-swept
++ 1 canary test upgraded. Rot classes removed: round/hold ordinals; F-finding /
+`item #N` / `Option A.N` / `acceptance #N` labels; orphan task slugs
+(`BACKEND-*`, `BE-*`, `SEC-*`) and `see task` / `tasks-archive` / dead-`.md`
+redirects; line-number cross-refs (incl. third-party + cross-repo); one commit-SHA
+cite. All re-anchored on stable symbols / behavior; load-bearing WHY docblocks
+preserved. NOT-ROT deliberately kept: timing/latency estimates, block-stride
+quantities, hex encode() example outputs, persistent `solutions/` + `api-contracts/`
+`.md` references.
+
+**Extraction:** `citationsArrayGuardSql(citingAlias, appTagParam)` in
+`notification-queries.ts` (exported, mirrors `imageSrfGuardExpr`; alias
+identifier-validated, `$N` appTag param interpolated verbatim). Replaces the
+verbatim arm 6a/6b SRF guard; emits byte-equivalent SQL. The sibling
+`notification-queries-lateral-guard-canary.test.ts` now composes the production
+builder (drift-proof) and gained a builder + call-site presence canary.
+
+**Verification:** comprehensive rot grep clean (every class + the literal
+acceptance canary); `npm run typecheck` + `npm run lint` clean (0 errors; the one
+remaining lint warning is a pre-existing unused-eslint-disable in
+`lib/author-supersession.ts`, which this task did not touch); citations-guard
+canary (incl. real-Postgres behavioral) + arm-semantics + 11 source-shape canary
+tests green. Every change outside `notification-queries.ts` is provably
+comment-only (`git diff` non-comment-line check returns empty).
+
+**Note for archive:** the adversarial verify pass also confirmed several
+`agents/docs/solutions/conventions/*.md` and `agents/docs/api-contracts/*.md`
+references in source are durable (files exist on disk) and correctly left intact —
+the convention distinguishes those persistent knowledge-store filenames from
+rotting task-slug / round / line anchors.
