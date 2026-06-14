@@ -86,3 +86,44 @@ signup half is gated on this.
   06-11 compose-stub blockers are already resolved (the 06-14 UI note confirms the
   works-stub + `ORCID_API_BASE_URL` are wired); the schema fix is the sole
   remaining blocker.
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES:
+
+`/ce-code-review` (correctness, security, testing, project-standards, api-contract;
+ce-agent-native skipped per PEvO) clean on the substance for commit `460cd989`: the
+`.nullable()` widening is purely additive (null / undefined / empty-string all route to
+the no-password path; no `.min(1)`, so empty-string acceptance is preserved), and a
+`password_hash IS NULL` account CANNOT be password-authenticated — the login and
+resend-verification handlers guard the null/empty hash BEFORE the argon compare, and
+ARCHITECTURE.md § 6.1 State C (passwordless ORCID-only) enumerates the state. api-contract
+clean (`auth.md` already documents `password: null`). Two items hold archive, both in
+backend-owned files:
+
+1. **(P2) Cross-file test-cleanup collision.** The new block's `afterAll` runs
+   `DELETE FROM accounts WHERE orcid LIKE '0000-0003-${suffix}-%' OR email LIKE ...`. The
+   `0000-0003-${last4-of-timestamp}-NNNN` ORCID band is shared by several sibling files
+   (`verifyHiveSignature-reissuedat-orcid-roundtrip`, the `settings-*-fresh-auth` and
+   `settings-set-password` suites), and `vitest.config.ts` runs `maxWorkers: 2`. When a
+   concurrently-scheduled sibling's timestamp last-4 coincides with this block's `suffix`,
+   the wildcard `orcid LIKE` half deletes that sibling's row mid-test (the named sibling
+   cleans only by username, so it does not defend itself). Low probability, but a real
+   cross-file flake. Fix: make the cleanup unable to match a foreign row — scope the orcid
+   arm to the exact three orcids this block seeds (or AND it with the `null_pw_` email
+   prefix) rather than a `-%` wildcard over the shared band.
+
+2. **(P3) `SEC-004` tracking-id in the new source comment.** The new comment labels itself
+   `SEC-004`, which resolves to no durable `solutions/` or `api-contracts/` record (only
+   coordination prefixes in narratives and test titles). Per root `CLAUDE.md` "Comment
+   anchors", tracking-id citations in production code rot. The comment is otherwise fully
+   self-contained — drop the `SEC-004` token and keep the behavioral wording (optionally
+   anchor on "ARCHITECTURE.md § 6.1 State C, passwordless ORCID-only", which is durable).
+   Same rot class held on the sibling `backend-orcid-unique-index-boot-assertion` this batch.
+
+Not blocking (no action): the pre-existing `/api/auth/reset` mailbox-gated password-add
+path; the documented 403-NO_PASSWORD_SET vs 401 disclosure (by design); the commit-message
+"mirrors recover.ts" imprecision (recover uses `.min(1)`, signup deliberately does not).
+
+The downstream `ui-orcid-signup-recover-real-roundtrip` unblock already landed and is not
+regated by these holds — the schema fix itself is correct and deployed; these are
+test-isolation + comment-hygiene fixes only. When they land, `git mv` this file back to
+`tasks/review/` (the move is the re-review signal).
