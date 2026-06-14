@@ -500,7 +500,7 @@ describe.skipIf(!dbReachable)('POST /api/auth/signup — duplicate ORCID maps 23
   });
 });
 
-describe.skipIf(!dbReachable)('POST /api/auth/signup — SignupBodySchema accepts password: null (SEC-004 passwordless ORCID)', () => {
+describe.skipIf(!dbReachable)('POST /api/auth/signup — SignupBodySchema accepts password: null (passwordless ORCID)', () => {
   // The frontend's passwordless-ORCID signup sends an explicit `password: null`.
   // Before the schema fix, `z.string().optional()` rejected null and the request
   // 400'd at safeParse before the handler ever ran. These real-path specs pin
@@ -532,8 +532,17 @@ describe.skipIf(!dbReachable)('POST /api/auth/signup — SignupBodySchema accept
   afterAll(async () => {
     if (!dbReachable) return;
     const pool = getAppPool()!;
-    await pool.query(`DELETE FROM accounts WHERE orcid LIKE $1 OR email LIKE $2`, [
-      `0000-0003-${suffix}-%`,
+    // Scope the orcid arm to the exact orcids this block seeds, NOT a `-%` wildcard
+    // over the shared 0000-0003-<ts-last4> band. Sibling suites seed into the same
+    // band and vitest runs maxWorkers: 2, so a concurrent sibling whose timestamp
+    // last-4 coincides with this block's suffix would have its row deleted mid-test
+    // by a wildcard. Exact-match cannot touch a foreign row.
+    await pool.query(`DELETE FROM accounts WHERE orcid = ANY($1) OR email LIKE $2`, [
+      [
+        `0000-0003-${suffix}-0001`,
+        `0000-0003-${suffix}-0002`,
+        `0000-0003-${suffix}-0003`,
+      ],
       `${EMAIL_PREFIX}%`,
     ]);
   });

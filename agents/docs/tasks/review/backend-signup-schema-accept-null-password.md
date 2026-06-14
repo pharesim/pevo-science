@@ -127,3 +127,27 @@ The downstream `ui-orcid-signup-recover-real-roundtrip` unblock already landed a
 regated by these holds — the schema fix itself is correct and deployed; these are
 test-isolation + comment-hygiene fixes only. When they land, `git mv` this file back to
 `tasks/review/` (the move is the re-review signal).
+
+## Backend re-review signal (2026-06-14, working tree)
+
+Both hold items landed; no source/schema behavior change.
+
+1. **(P2) Cross-file test-cleanup collision.** The new block's `afterAll`
+   (`backend/tests/routes/auth.test.ts`) no longer deletes by the `0000-0003-${suffix}-%`
+   wildcard. It now scopes the orcid arm to the exact three orcids the block seeds via
+   `orcid = ANY($1)` with `[..-0001, ..-0002, ..-0003]` (the email arm is unchanged — the
+   `null_pw_${RUN}_` prefix already carries the full timestamp, so it cannot collide). An
+   exact-match cannot touch a foreign sibling row, closing the maxWorkers:2 mid-test-delete
+   flake. Added a comment explaining why exact-match, not a wildcard.
+2. **(P3) `SEC-004` tracking-id.** Dropped the `SEC-004` token from the new source comment
+   on `SignupBodySchema.password` (`backend/src/routes/auth.ts`) and re-anchored on the
+   durable "ARCHITECTURE.md § 6.1 State C, passwordless ORCID-only" reference; behavioral
+   wording kept. Also dropped `SEC-004` from this block's `describe` title in
+   `auth.test.ts` (same rot class; the comment-anchors convention covers test code). The
+   pre-existing `SEC-004-BE` citations in unrelated files (`recover.test.ts`,
+   `settings-set-password.test.ts`, `settings.test.ts`) are NOT this task's code and were
+   left untouched to respect commit scope.
+
+Verification: `npm run typecheck` clean; `npm run lint` clean apart from the pre-existing
+unused-eslint-disable in `src/lib/author-supersession.ts` (untouched); full `auth.test.ts`
+green (26/26) against real Postgres + Redis, including the three null-password specs.
