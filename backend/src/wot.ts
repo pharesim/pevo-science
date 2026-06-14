@@ -90,17 +90,23 @@ async function loadWotThreshold(): Promise<number> {
     // default. The `custom_id` filter alone is selective (a handful of
     // admin-signed app ops); materializing lets that index scan win. Do NOT add
     // a `block_num >=` floor to narrow further — it flips the planner to a
-    // BitmapAnd against the full view (see the no-custom-id-block-num-floor lint
+    // BitmapAnd against the full view (see the pevo/no-custom-id-block-num-floor lint
     // rule and the activeAccreditationsCteBody docstring).
     const result = await client.query(
       `WITH candidates AS MATERIALIZED (
-         SELECT json, block_num FROM ${T.customJson}
+         SELECT json, block_num, id FROM ${T.customJson}
          WHERE custom_id = $1
            AND json::jsonb ->> 'action' = 'update_params'
            AND required_posting_auths ?| $2::text[]
        )
        SELECT json FROM candidates
-       ORDER BY block_num DESC
+       -- Latest-op-wins tiebreaker per Rule 2 (custom_json design rules,
+       -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md):
+       -- order by (block_num, id), not block_num alone — operation_custom_json_view
+       -- omits trx_in_block, so the monotonic HAF op id breaks same-block ties.
+       -- (Projecting id into the CTE does not weaken the AS MATERIALIZED fence —
+       -- the inner CTE has no ORDER BY/LIMIT, so its plan is unchanged.)
+       ORDER BY block_num DESC, id DESC
        LIMIT 1`,
       [config.appTag, config.accreditationAuthorities],
     );

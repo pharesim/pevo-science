@@ -114,7 +114,7 @@ describe('loadWotThreshold — accreditation-authority signer gate (SQL-shape ca
 });
 
 describe('loadWotThreshold — planner-fence canary (SQL-shape)', () => {
-  it('wraps the row match in an AS MATERIALIZED CTE', async () => {
+  it('wraps the row match in an AS MATERIALIZED CTE and orders by the (block_num, id) tiebreaker', async () => {
     // The candidate match must sit inside an `AS MATERIALIZED` CTE. Without that
     // optimization fence, `ORDER BY block_num DESC LIMIT 1` lets PostgreSQL walk
     // the 100M+-row blocks index backward in a nested loop (block_num is a
@@ -128,6 +128,11 @@ describe('loadWotThreshold — planner-fence canary (SQL-shape)', () => {
     stubSelect([{ json: JSON.stringify({ action: 'update_params', params: { min_accreditations_for_wot: 5 } }) }]);
     await getWotThreshold();
     expect(capturedSql).toMatch(/\bAS\s+MATERIALIZED\b/i);
+    // The outer sort must carry the `id` secondary key per Rule 2 (custom_json
+    // latest-op-wins): operation_custom_json_view omits trx_in_block, so the
+    // monotonic HAF op id breaks same-block ties. A future edit that drops the
+    // tiebreaker back to bare `block_num DESC` fails red here.
+    expect(capturedSql).toMatch(/ORDER\s+BY\s+block_num\s+DESC\s*,\s*id\s+DESC/i);
   });
 });
 

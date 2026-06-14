@@ -201,3 +201,26 @@ rationale vs regression-guard rationale) and the overlap is acceptable.
 When fixed, `git mv` this file back to `tasks/review/`; the move is the
 re-review signal. The re-review will scope `/ce-code-review` to the commits since
 this hold block. Do NOT edit this hold block — the commit diff is the evidence.
+
+## Backend re-review signal (2026-06-14, working tree)
+
+All three hold-block items landed in `loadWotThreshold` (`backend/src/wot.ts`)
+and its SQL-shape canary (`backend/tests/wot-threshold-signer-gate.test.ts`):
+
+1. **Same-block tiebreaker (Rule 2).** The `candidates` CTE now projects `id`
+   alongside `json, block_num`, and the outer sort is `ORDER BY block_num DESC,
+   id DESC LIMIT 1`. Inline comment anchors on "Rule 2" + the custom_json
+   design-rules convention doc (mirrors the `activeAccreditationsCteBody`
+   tiebreaker comment), and notes that projecting `id` does not weaken the
+   `AS MATERIALIZED` fence (the CTE has no inner ORDER BY/LIMIT, so its plan is
+   unchanged).
+2. **Canary extended.** The planner-fence canary now also asserts the captured
+   SQL matches `ORDER BY block_num DESC, id DESC`, so a future edit that drops
+   the tiebreaker fails red the same way a dropped `AS MATERIALIZED` does.
+3. **Cosmetic prefix.** The `no-custom-id-block-num-floor` comment now reads
+   `pevo/no-custom-id-block-num-floor`.
+
+Verified: `npm run typecheck` clean; `npm run lint` clean for `wot.ts` (one
+pre-existing unrelated warning in `author-supersession.ts`); the 7 specs in
+`wot-threshold-signer-gate.test.ts` pass (signer gate + extended planner-fence
+canary + value derivation).
