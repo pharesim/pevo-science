@@ -677,6 +677,53 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
   );
 });
 
+describe('POST /api/orcid/callback — insufficient external works (works-gate 422 + details)', () => {
+  // The works-count rejection branch in handleSignup / handleAccredit is
+  // otherwise unguarded: installOrcidFetchStub defaults works to
+  // config.orcidMinWorks, which clears the gate. These specs drive the count
+  // below the threshold so the 422 + structured details payload
+  // ({ required, have }) the SPA consumes is regression-protected. `have` is
+  // asserted against a per-spec served count distinct from `required` so a
+  // regression that hardcodes either number fails loudly.
+  it(
+    'signup callback below the works threshold → 422 VALIDATION_ERROR with details { required, have }',
+    async () => {
+      const served = config.orcidMinWorks - 1; // one below the gate
+      installOrcidFetchStub({ orcid: '0000-0001-2222-0001', name: 'Bob', works: served });
+      const state = await startUnauthed('signup');
+      const res = await request(app).post('/api/orcid/callback').send({ code: 'fake', state });
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      // Structured numbers the SPA renders instead of a hardcoded "3".
+      expect(res.body.error.details).toEqual({ required: config.orcidMinWorks, have: served });
+      // The dynamic human message is preserved alongside the data.
+      expect(res.body.error.message).toContain(String(config.orcidMinWorks));
+      expect(res.body.error.message).toMatch(/externally-sourced work/i);
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'accredit callback with zero external works → 422 VALIDATION_ERROR with details.have === 0',
+    async () => {
+      // Default hafQueryMock returns no rows, so getAccreditedSet reports alice
+      // un-accredited and the flow reaches the works gate (which precedes the
+      // admin broadcast) rather than short-circuiting at "already accredited".
+      installOrcidFetchStub({ orcid: '0000-0001-2222-0002', name: 'Alice', works: 0 });
+      const state = await startAuthed('accredit', 'alice');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .set('Authorization', `Bearer ${jwtFor('alice')}`)
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.body.error.details).toEqual({ required: config.orcidMinWorks, have: 0 });
+      expect(res.body.error.message).toMatch(/externally-sourced work/i);
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
   // Item 1: state-consume lives inside the outer try/catch. A Redis flap on
   // the stateKey DEL must surface as a clean 500 INTERNAL_ERROR rather than

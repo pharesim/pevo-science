@@ -59,3 +59,53 @@ de-hardcode half on the backend side.
   real failure. Optional follow-up: throw a typed error so the route can map
   ORCID-side outages to a distinct code the UI can message as transient. Lower
   priority than items 1-2.
+
+## Backend implementation note (2026-06-14, working tree)
+
+Items 1, 2, 4 landed. Item 3 (contract) handed to the architect below.
+
+- **Item 1 — structured details.** Both works-gate branches in
+  `backend/src/routes/orcid.ts` (`handleSignup` and `handleAccredit`, the
+  `externalWorksCount < config.orcidMinWorks` branch) now pass a fifth arg to
+  `sendError`: `{ required: config.orcidMinWorks, have: externalWorksCount }`.
+  The two branches were byte-identical, so this was a single `replace_all`. The
+  existing human message string is unchanged. `sendError`
+  (`backend/src/response.ts`) already promotes the 5th arg to `error.details`.
+- **Item 2 — test coverage.** New describe block in
+  `backend/tests/routes/orcid.test.ts` ("insufficient external works
+  (works-gate 422 + details)") with two specs that drive the count below the
+  threshold (the shared `installOrcidFetchStub` previously only ever served
+  `works: config.orcidMinWorks`, so the rejection branch was wholly unguarded):
+  - signup, `works = config.orcidMinWorks - 1`: asserts 422, `VALIDATION_ERROR`,
+    `details` deep-equals `{ required: config.orcidMinWorks, have: served }`, the
+    human message is preserved, and no broadcast fires. `have` is asserted
+    against a served count distinct from `required` so a hardcode of either
+    number fails loudly.
+  - accredit, `works = 0`: asserts 422, `VALIDATION_ERROR`, `details.have === 0`,
+    no broadcast. Confirms the gate precedes the admin broadcast (default mock
+    leaves the account un-accredited, so the flow reaches the works gate rather
+    than short-circuiting at "already accredited").
+  - Full `orcid.test.ts` green (107 passed). `npm run typecheck` + `npm run lint`
+    clean (the lone lint warning is a pre-existing unused-eslint-disable in
+    `src/lib/author-supersession.ts`, untouched here).
+- **Item 4 — env doc.** Already present per the task; no change made.
+
+### [TODO Architect] Item 3 — contract update in `agents/docs/api-contracts/orcid.md`
+
+Backend does not edit architect-owned contract files (categorical, per
+`agents/backend/CLAUDE.md`). The insufficient-works 422 now carries structured
+`details`. The relevant entry is the line reading
+`VALIDATION_ERROR -- ORCID profile has fewer than ORCID_MIN_WORKS works
+(signup/accredit modes only)` in the `/callback` error-codes list. Suggested
+wording (emdash-free for the contract's no-emdash rule):
+
+> `VALIDATION_ERROR` (422) -- ORCID profile has fewer than `ORCID_MIN_WORKS`
+> externally-sourced works (signup and accredit modes only). Carries
+> `details: { required, have }`, where `required` echoes the configured
+> `ORCID_MIN_WORKS` and `have` is the counted external works. The SPA renders
+> these numbers instead of a hardcoded threshold. Consumers MUST access the
+> fields by key name, not position.
+
+The signup-mode step description near "Check `ORCID_MIN_WORKS` (default 3)" and
+the accredit-mode equivalent may also note the `details` payload if the
+architect wants symmetry with the other documented error shapes.

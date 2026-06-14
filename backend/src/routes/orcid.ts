@@ -709,7 +709,8 @@ async function handleSignup(
 
   if (externalWorksCount < config.orcidMinWorks) {
     sendError(res, 422, 'VALIDATION_ERROR',
-      `ORCID profile has ${externalWorksCount} externally-sourced work(s), but at least ${config.orcidMinWorks} are required`);
+      `ORCID profile has ${externalWorksCount} externally-sourced work(s), but at least ${config.orcidMinWorks} are required`,
+      { required: config.orcidMinWorks, have: externalWorksCount });
     return;
   }
 
@@ -818,7 +819,8 @@ async function handleAccredit(
 
   if (externalWorksCount < config.orcidMinWorks) {
     sendError(res, 422, 'VALIDATION_ERROR',
-      `ORCID profile has ${externalWorksCount} externally-sourced work(s), but at least ${config.orcidMinWorks} are required`);
+      `ORCID profile has ${externalWorksCount} externally-sourced work(s), but at least ${config.orcidMinWorks} are required`,
+      { required: config.orcidMinWorks, have: externalWorksCount });
     return;
   }
 
