@@ -328,3 +328,36 @@ swap — but the standing test is the only form that actually prevents recurrenc
 2026-06-12 sections (`orcid.test.ts` `A.1` comments, `profile-reviews-accred-gate.test.ts`,
 `reputation-batch-internals.test.ts` headers) stays for a future `tests/` sweep — user
 scoped this task to `src/`.
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES (round 2 of the sweep, round-3 of review):
+
+`/ce-code-review` on `4c172629` (4 reviewers: project-standards/maintainability/testing/correctness on
+Sonnet; ce-agent-native skipped per PEvO). All 3 round-1 hold items are CLEAN and verified: the 6
+`routes/orcid.ts` `A.1` orphans are re-anchored on behavior (no `Option A.N` reintroduced, grep clean), all
+8 lowercase dead slugs are gone with the WHY prose preserved, every `backend/src/` change is provably
+comment/string-only (correctness confirmed the `hafsql.ts` edit does NOT touch SQL; the 2 orcid operator-log
+strings + the `auth.ts` thrown-error string break no assertion), and the replacement text introduced no new
+rot class. The sweep itself is accepted.
+
+ONE item holds the archive (P3 test-quality on the NEW standing guard; not a rot defect):
+
+1. **(P3, conf 75 — testing) The `no-stale-comment-anchors.test.ts` canary has no planted-positive, so it
+   can silently no-op if a regex is ever corrupted.** The test asserts only `expect(files.length).toBeGreaterThan(20)`
+   (guards a broken file-walker) and `expect(violations).toEqual([])` (asserts no rot). Neither proves the
+   regexes actually FIRE — a future edit that mangles a character class in `SLUG_RE` / `ROUND_HOLD_RE` /
+   `OPTION_LABEL_RE` would leave `violations` empty and the test green while enforcing nothing, defeating
+   the standing guard's entire purpose. The regexes are verified CORRECT today (maintainability + correctness
+   manually confirmed each fires on the known-bad strings), but the test must prove it. Fix: add an `it()`
+   block with planted positives + negatives, matching the `no-bridge-paper-literal.test.ts` RuleTester
+   precedent — assert each regex fires on a known-bad string (e.g. `round-1 hold #6`, `backend-some-task`,
+   `Option A.1`) and does NOT fire on a legitimate token (`ui-button`) or a durable `solutions/`/`api-contracts/`
+   path, and that the durable-path exemption correctly spares a real slug-shaped path.
+
+The 2 pre-existing, out-of-scope anchor-rot sites surfaced during this re-review (`idempotency.ts` line-number
+anchor — from the round-1 `324ca283` sweep; `claims.ts` `SEC-003-BE`, a non-PEvO tracking id) are NOT held
+here — they are filed as a separate follow-up (`backend-anchor-rot-residual-idempotency-claims-sec-id`).
+
+When item 1 lands, `git mv` this file back to `tasks/review/`; round-3 (sweep) re-review scopes to the new
+fix commit only.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
