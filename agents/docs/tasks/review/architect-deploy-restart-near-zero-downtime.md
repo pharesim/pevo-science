@@ -165,3 +165,37 @@ Tier 1 is deploy-infra only: `deploy.sh` (`cmd_restart`, and a small dedicated s
 helper) plus an optional `docker-compose.yml` `stop_grace_period` and an
 `ARCHITECTURE.md` Migrations note — all architect zone. No `backend/` or `frontend/`
 changes.
+
+## Implementation (architect, 2026-06-14)
+
+Landed in `architect(deploy): collapse restart 502 to a backend-only swap`.
+
+- `cmd_restart` rewritten: build backend first (old backend still serving),
+  ensure infra up idempotently, migration safety pre-flight, swap only the
+  backend last via a dedicated `swap_backend` (`up -d --no-deps backend`, no
+  `--remove-orphans`, host-side `/api/health` poll).
+- `docker-compose.yml`: `stop_grace_period: 35s` on backend (> the 30s
+  `setTimeout` force-timeout in `backend/src/index.ts` shutdown).
+- `ARCHITECTURE.md` (Migrations): live-migrate decision rule + ungated
+  lock-hazard foot-gun + few-second-floor note.
+
+**Verification-driven deviation from the task text (intentional, safe):** the
+task said "grep over `backend/migrations/*.sql`". Implemented instead as a grep
+over the **UNAPPLIED** set only (`unapplied_migrations` = disk basenames minus
+`schema_migrations` rows). Reason: `004_drop_account_creation_tokens.sql` carries
+`DROP TABLE IF EXISTS`, so a whole-`*.sql` grep would match on every restart and
+force the brief-stop carve-out unconditionally — defeating the "clean path =>
+live-migrate" acceptance criterion. The unapplied-set filter is conservative on
+uncertainty (missing tracking table / query failure => treat all as unapplied =>
+brief-stop). The `ADD COLUMN ... NOT NULL` tripwire over-matches (ignores the
+safe `DEFAULT` case and matches comment lines) by design — a false-positive
+carve-out costs only a brief stop; a missed destructive migration breaks the
+still-serving old backend.
+
+**Verification done:** `bash -n deploy.sh` clean; `docker compose config`
+validates with `stop_grace_period: 35s`; destructive-grep regex unit-checked
+against all real migrations (matches 004 DROP TABLE + the benign over-matches;
+ignores DROP NOT NULL / COMMENT / CREATE INDEX / nullable ADD / SET NOT NULL) and
+against synthetic destructive shapes (all four caught). Live `./deploy.sh restart`
+NOT run — a sibling was mid-deploy (postgres just recreated, backend absent);
+confirmed the sequence by reading the diff per the acceptance escape hatch.
