@@ -333,3 +333,57 @@ When items 1-5 land, `git mv` this file back to `tasks/review/`; round-3 re-revi
 commit(s) only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-14) — round-2 holds landed in commit `f01e0aa2`
+
+All five round-2 items landed. Each test-effectiveness item was mutation-probe-verified against the
+committed baseline (probe → red → `git checkout` restore), not just asserted green.
+
+**Item 1 — isolate the recency guard (P2).**
+- 1a (`/confirm` stale-row test): the stub was `getAccounts → []`, so the ownership probe failed
+  independently and guard removal stayed green. Changed it to return the VALID authorized account
+  (posting pubkey matches the supplied `posting_private`), so the proof WOULD pass and the 400 is now
+  attributable solely to the recency guard. Comments updated to state the isolation.
+- 1b (`/link` mirror): added a real-`verifyHiveSignature` signed `/link` test. A 2h-stale self-custody
+  row (`custody='self'`, `verify_token` NULL, `upgraded_at` set, `updated_at` aged) + a non-matching
+  `auth_token` asserts 400 + no JWT + no accreditation broadcast + row untouched. The crypto recovery
+  and posting-key match run for real (clause (b)); only the chain `getAccounts` key-lookup is mocked to
+  advertise the public key the real signature is checked against — the middleware itself is never mocked.
+  New `seedStaleSelfCustodyAccount` helper + `signRequestBound` import; file header + carve-out clause (b)
+  updated for the two-route scope.
+- Mutation probe: neutralizing BOTH guards (`AND updated_at > … → AND TRUE`) flips exactly the two
+  stale-row tests red (the `/confirm`-stale and `/link`-stale) while the other 4 stay green. Confirms each
+  test isolates its own route's guard.
+
+**Item 2 — refundStatusCodes surgical-refund test (P2).** Added `refundStatusCodes` coverage to BOTH
+`rateLimit.test.ts` (Redis path, counter-inspection) and `rateLimit-in-memory.test.ts` (deterministic
+always-runs). Each pins: a 409 refunds its slot (contention loser re-admitted) WHILE a 400 consumes its
+slot (next request 429, brute-force intact). Mutation probe: changing `shouldRefund`'s refundCodes branch
+to `res.statusCode >= 400` (treat all 4xx as refundable) flips both new tests red, the other 16 green.
+
+**Item 3 — refundStatusCodes docstring (P2, maintainability).** Chose the reword option (not the
+`writableEnded`-guard option): the `refundCodes` branch is INTENTIONALLY not `writableEnded`-gated — a 409
+that loses lock contention should refund whether or not the response finished flushing — so adding the
+guard would be a behavior change in the wrong direction. Docstring now states the actual mechanism
+(pre-status TCP-abort is excluded only because its default 200 is never in the refund set).
+
+**Item 4 — LOCK_HELD_RETRY_AFTER_SECONDS docstring (P3).** Reworded: 5s is on the order of
+`LOSER_WAIT_BUDGET_MS`, NOT the holder's ~30s broadcast, so a retry often still finds the lock held and
+takes another 409 — harmless because the per-token limiter refunds each 409's slot.
+
+**Item 5 — consensus-rejection backstop caveat (advisory).** Restored to the lock-self-expiry resume
+argument (point 5): a lagging-node `getAccounts` false-negative re-broadcasts `createClaimedAccount` for
+the SAME account name, which Hive consensus rejects without burning a claim token, so the resume is safe
+at the chain layer. **Heads-up (slight scope widen, flagged per the no-self-contradiction convention):**
+point 6 ended with "there is no consensus-as-fallback caveat," which would directly contradict the
+restored point-5 caveat. Reconciled point 6's tail to scope it to the live race (the Redis lock, not
+consensus, is the single-fire guard; a Redis-down acquire fails closed rather than leaning on the
+point-5 backstop). If you'd rather keep point 6 verbatim and phrase point 5 differently, easy to adjust.
+
+**Verification.** `npm run typecheck` + `npm run lint` clean (0 errors; the lone warning is the
+pre-existing unused-eslint-disable in `lib/author-supersession.ts`, untouched). Suites green:
+stuck-recovery (6/6), rateLimit + rateLimit-in-memory (18/18). All three mutation kill-targets confirmed.
+No source logic changed except the two new test files and three docstring rewords; the `/confirm` and
+`/link` recency-guard SQL and `shouldRefund` are byte-unchanged.
+
+`git mv`-ing to `review/`; round-3 re-review scopes to `f01e0aa2`.
