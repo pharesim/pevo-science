@@ -106,3 +106,61 @@ The stale `[BLOCKED by Backend]` (2026-05-05) and the 2026-06-09 coordination no
 5. **Block re-based and cleared.** The real backend dependencies (`backend-implement-consented-authorship-model`, `backend-consented-set-read-surfaces`) are both archived, so the surface has a live backend to broadcast through and a live pending-slots data source. Moving to `pending/` for the UI agent.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+## [BLOCKED by Architect] (2026-06-14, UI) — task premise contradicts a committed authorship-claims surface; re-scope needed
+
+The Problem statement asserts "There is no frontend surface today, so accredited
+users cannot broadcast any consent op, and paper-detail does not display the
+consented-vs-claimed distinction." **That premise is factually wrong** — a live
+authorship-claims surface already exists and maps to the consent model's Route 3:
+
+- **Backend:** `backend/src/routes/claims.ts` — `GET/POST /api/papers/:author/:permlink/claims`,
+  `POST .../claims/:claimer/approve`, `POST .../claims/:claimer/revoke`, over the
+  `authorship_claims` HAF table.
+- **Frontend:** `frontend/src/pages/paper-detail.js` has `handleClaimSlot` /
+  `handleApproveClaim` / `handleRejectClaim`, the `claimStatusForSlot` /
+  `canClaimSlot` / `canManageClaims` / `pendingClaimerForSlot` helpers, and the
+  per-slot **accepted/pending** claim badges + claim/approve/reject buttons
+  (`claims.*` i18n keys). `frontend/src/api.js` has `claimAuthorship` /
+  `approveAuthorshipClaim` / `revokeAuthorshipClaim` / `fetchPaperClaims`.
+- Landed in `c0d90d29` "add ORCID verification and authorship claims". The sibling
+  `ui-credit-op-proof-cache-slot-key` grep missed it because the chain op string
+  (`claim_authorship` etc.) is built backend-side, not in the SPA.
+
+Per the contracts (`custody.md`, `ARCHITECTURE.md` § 2), `claim_authorship` +
+`approve_authorship` ARE Route 3, so the existing surface already implements a
+version of Route 3 — but framed as **accepted/pending claim-status**, not the
+task's **consented-vs-claimed** badge-presence model.
+
+**Genuinely missing vs. the consent model (unbuilt today):**
+- Acceptance #1 — the `consented`-flag-driven badge display (the existing badges
+  are claim-status accepted/pending, a different semantic; `paper.authors[]` is
+  not yet read for a `consented` boolean in the template).
+- Acceptance #2 — Route 2 `author_accept` / `author_resign` (no frontend at all).
+- Acceptance #5 — the `GET /api/me/authorships/pending` discovery surface (not
+  wired in `frontend/src/` at all).
+- Per-slot credit-op proof-cache keying (`fresh-auth.js` caches consent-op proofs
+  on `(action, rootAuthor, rootPermlink)` only — the sibling
+  `ui-credit-op-proof-cache-slot-key` wants `+ author_index + claimer`).
+- i18n + tests for the above.
+
+Backend read surfaces (`consented` flag + `/api/me/authorships/pending`) are live
+per the archived backend tasks; the frontend just doesn't consume them yet.
+
+**What the Architect must reconcile before this returns to `pending/`:**
+1. Is the existing `claims.ts` / claim-badge surface **Route 3 of the consent
+   model** (so the UI task EXTENDS it — keep claim/approve/revoke, add the missing
+   pieces above), or **legacy to replace** (rework the accepted/pending framing
+   into the unified consented-vs-claimed model)?
+2. Clarify the **badge semantics**: how does the existing "accepted" claim badge
+   relate to the new `consented` badge? Is an accepted claim == consented (Route 3),
+   and should the existing accepted/pending UI be folded into the consented-vs-claimed
+   display, or kept distinct?
+3. Update the task's Problem / Goal / Acceptance to reflect what already exists, so
+   the implementer is not building a "from scratch" surface on top of a live one.
+
+Surfaced to the user 2026-06-14; the user directed blocking on the Architect
+rather than guessing an interpretation on a 7-part task whose foundation is
+contradicted. No UI work started.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
