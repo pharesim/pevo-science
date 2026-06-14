@@ -83,4 +83,38 @@ prefix-family pattern (not a narrow per-prefix grep).
 - `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`
 - `agents/docs/solutions/conventions/commit-zone-audit-hook-2026-04-30.md` — the existing `.githooks` precedent.
 
+## Implementation (architect, 2026-06-14)
+
+Landed across `architect(githooks): add comment-anchor pre-commit diff gate (+ test)`
+and `architect(solutions): document the comment-anchor pre-commit diff gate rationale`.
+
+**Design decisions settled:**
+- **Gate shape: DIFF gate** (fails only on lines the staged diff ADDS), not
+  whole-tree-clean. Confirmed empirically necessary: `backend/tests` + `frontend/**`
+  carry ~600 pre-existing accepted anchors, so a whole-tree gate would block every
+  unrelated commit. Whole-tree-clean is **deferred** until those trees are swept.
+- **Placement: `.githooks/pre-commit`** (architect zone), opt-in via the existing
+  `core.hooksPath=.githooks`. **No CI exists** (`.github/workflows` absent), so the
+  CI backstop the task floated is not buildable now; the hook is the gate. A
+  vitest-based check was rejected: it would land in ui/backend zones AND
+  `backend/tests/eslint/no-stale-comment-anchors.test.ts` already IS that vitest
+  canary for `backend/src/`. The hook **complements** it (wider dirs + `BE-/SEC-/JFR-`
+  families, new-rot-only), intentionally overlapping on `backend/src`.
+- **False-positive minefield solved by PREFIX-scoping** the detection (match only
+  known task-slug prefixes), so legit hyphenated-uppercase tokens (`SHA-256`,
+  `AES-GCM`, `CASE-WHEN`, `ISO-8601`, the base58 `HJ-NP` class, `LIMIT-1`, `SET-NX`)
+  never trip it — no per-token allowlist needed.
+- **Deferred classes** (documented, NOT gated, to keep the gate low-noise): the
+  terminal `~<n>` tilde (FP-tuning lives in the canary) and bare `SEC-<n>` /
+  E2E-matrix header IDs (legit stable refs). Only `SEC-<n>-<ALPHA>` slug forms gate.
+- Covers the task's documented past misses: `JFR-001` (1-segment), `bridge.js L66`
+  (`Lnn` form), `See task ITEM N`.
+
+**Acceptance met:** documented gate that fails on newly-added rot across the four
+dirs; `.githooks/tests/test-pre-commit.sh` (mirrors `test-commit-msg.sh`, 26 cases,
+all green); root `CLAUDE.md` "Comment anchors" points at the gate and records the
+diff-gate-now / whole-tree-deferred decision; `/ce-compound` solution doc written
+(`comment-anchor-rot-precommit-diff-gate-2026-06-14.md`). Verified **zero false
+positives** over the current tree (601 detections, all real rot; empty residue).
+
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
