@@ -3,7 +3,7 @@
  * covering the redesign that moves the createClaimedAccount broadcast out of a
  * held pg connection and behind a per-auth_token activation lock.
  *
- * Four properties:
+ * Properties:
  *
  *   (1) Facet-1 crash-resume. A failure between createClaimedAccount landing
  *       and the finalize UPDATE leaves verify_token still set but the Hive
@@ -24,6 +24,22 @@
  *       resumeChainExists-recoverable state; a retry then resumes and finalizes.
  *       Property (1) seeds the post-crash row directly to isolate the resume
  *       branch; this block proves the transition that produces that row state.
+ *   Also: a contended same-token activation that cannot acquire the lock within
+ *       the wait budget gets a retriable 409 LOCK_HELD (not a 500), and the
+ *       200-resume responses OMIT block_num (createResult is null on a resume;
+ *       the fresh-path positive block_num assertion lives in signup-verify.test.ts).
+ *   (5) Retry DURING the accreditation window. The lock is released at the
+ *       single-fire-critical-section boundary (after finalize, before the slow
+ *       accreditation broadcast). A same-token retry in that window must NOT
+ *       re-fire createClaimedAccount and must NOT emit a second meaningful
+ *       accredit broadcast (the resume HAF-probes first). Per the handler's
+ *       best-effort-JWT contract, a resume-path JWT for the same owner is
+ *       intentional, so "no second JWT" is deliberately NOT asserted.
+ *   (6) Lock self-expiry mid-holder. The TTL backstops a CRASHED holder: when
+ *       the lock lapses while the holder's broadcast is still pending, the next
+ *       same-token acquire detects the chain account exists and resumes without
+ *       re-broadcasting createClaimedAccount. Simulated by DELeting the live
+ *       Redis lock key mid-holder (requires real, ready Redis; skipped otherwise).
  *
  * **Carve-out clause-(a)/(c) justification.** Mocks `createClaimedAccount`,
  * `broadcastJsonWithTimeout`, `seedAccreditationBonus`, and `getAccreditedSet`
@@ -107,6 +123,7 @@ vi.mock('../../src/accreditation.js', async () => {
 import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { config } from '../../src/config.js';
+import { getRedis } from '../../src/redis.js';
 import { SIGNUP_BINDING_COOKIE_NAME } from '../../src/signup-session-binding.js';
 import { __test_seams as signupVerifySeams } from '../../src/routes/signup-verify.js';
 
@@ -140,6 +157,28 @@ let dbReachable = false;
 if (dbReachable) {
   const pool = getAppPool()!;
   await pool.query('ALTER TABLE accounts ADD COLUMN IF NOT EXISTS signup_binding_hash BYTEA').catch(() => {});
+}
+
+// Redis must be REAL + ready for the lock-self-expiry test (it DELs the live
+// lock key mid-holder to simulate a TTL lapse). redis.js is NOT mocked in this
+// file, so getRedis() returns the real client; poll briefly for 'ready'.
+let redisReady = false;
+{
+  const redis = getRedis();
+  if (redis) {
+    for (let i = 0; i < 20 && redis.status !== 'ready'; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    redisReady = redis.status === 'ready';
+  }
+}
+
+// Mirror activationLockKey() in src/lib/signup-activation-lock.ts: the lock key
+// is the appTag-prefixed sha256 hex of the auth_token. Anchored on that stable
+// derivation so a TTL-lapse simulation can target the exact live key.
+function activationLockRedisKey(authToken: string): string {
+  const digest = crypto.createHash('sha256').update(authToken).digest('hex');
+  return `${config.appTag}:signup_activation_lock:${digest}`;
 }
 
 function buildKeys(username: string) {
@@ -227,6 +266,10 @@ describe.skipIf(!dbReachable)('/confirm chain-exists crash-resume (Facet 1)', ()
     expect(res.status).toBe(200);
     expect(res.body.data?.token).toBeTruthy();
     expect(res.body.data?.custody).toBe('light');
+    // A resume never creates a new block, so the 200 omits block_num entirely
+    // (createResult stays null on the resume path — returning block_num: 0 would
+    // be a "created in block 0" lie).
+    expect(res.body.data?.block_num).toBeUndefined();
     // No second claim-token burn: createClaimedAccount must NOT fire on resume.
     expect(createClaimedAccountMock).not.toHaveBeenCalled();
     // Accreditation still broadcasts (HAF probe found nothing — the crashed
@@ -403,6 +446,9 @@ describe.skipIf(!dbReachable)('/confirm createClaimedAccount-succeeds-then-final
     expect(retry.status, JSON.stringify(retry.body?.error)).toBe(200);
     expect(retry.body.data?.token).toBeTruthy();
     expect(retry.body.data?.custody).toBe('light');
+    // The retry resumes via resumeChainExists (no new createClaimedAccount), so
+    // createResult stays null and block_num is omitted from the resume 200.
+    expect(retry.body.data?.block_num).toBeUndefined();
 
     // Single-fire preserved across the failure transition: createClaimedAccount
     // fired EXACTLY ONCE total (no second claim-token burn on the resume).
@@ -611,4 +657,218 @@ describe.skipIf(!dbReachable)('/confirm contended same-token activation', () => 
     const holderRes = await holder;
     expect(holderRes.status).toBe(200);
   }, 20_000);
+});
+
+// ─────────────────────────────────────────────────────────────────
+// (5) Retry DURING the accreditation window — best-effort-JWT contract.
+//
+// The activation lock is released at the single-fire-critical-section boundary
+// (after the verify_token-clearing finalize, before the slow accreditation
+// broadcast/seed). A same-token retry arriving in that post-release window must
+// NOT re-fire the irreversible createClaimedAccount and must NOT emit a second
+// meaningful accredit broadcast — the winner already created the account and
+// the resume path HAF-probes before re-broadcasting.
+//
+// Per the /confirm handler's best-effort-JWT contract (the handler issues a JWT
+// on every successful resolution, including the resume path, because a
+// resume-path second JWT for the SAME owner is intentional, not a leak), this
+// test does NOT assert "no second JWT". It asserts the single-fire invariants:
+// one createClaimedAccount, one accredit broadcast, one activated row.
+//
+// Wiring: the WINNER is gated inside seedAccreditationBonus (seedBonusMock) so
+// it has already created the account, cleared verify_token, and released the
+// lock by the time we fire the retry. The retry's by-verify_token lookup misses
+// (winner cleared it) and falls to the stuck-resume (fresh updated_at, custody
+// 'light', posting_key_enc set) — resumeStuck, so NO createClaimedAccount.
+// getAccreditedSet returns the username so the resume's HAF probe skips the
+// re-broadcast. The seed gate only blocks its FIRST invocation (the winner);
+// the retry's seed resolves immediately.
+// ─────────────────────────────────────────────────────────────────
+describe.skipIf(!dbReachable)('/confirm retry during the accreditation window (best-effort JWT)', () => {
+  const username = `arwin${SUFFIX}`;
+  const email = `ar_win_${RUN_ID}@example.com`;
+  const keys = buildKeys(username);
+
+  afterAll(async () => cleanup(username, email));
+
+  it('a same-token retry mid-accreditation does NOT re-fire createClaimedAccount or re-broadcast accreditation; one activated row', async () => {
+    await cleanup(username, email);
+    await clearRateLimitKeys(['signup-confirm', 'signup-confirm-token']);
+
+    const binding = mintBinding();
+    const authToken = `confirmed:${'71'.repeat(32)}`;
+    await seedUnfinalizedRow(email, binding.hash, authToken);
+    const cookie = `${SIGNUP_BINDING_COOKIE_NAME}=${binding.cookieValue}`;
+    const body = { auth_token: authToken, username, keys };
+
+    // The winner's createClaimedAccount materializes the chain account; flip a
+    // flag so getAccounts starts returning it (for the retry's stuck-resume
+    // ownership proof). Before creation, getAccounts returns [] (fresh path).
+    let accountCreated = false;
+    createClaimedAccountMock.mockImplementation(async () => {
+      accountCreated = true;
+      return { block_num: 12345 };
+    });
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      if (accountCreated && names.includes(username)) {
+        return [{ name: username, posting: { key_auths: [[keys.posting_public, 1]] } }];
+      }
+      return [];
+    });
+
+    // The retry resumes (isResume=true) and HAF-probes before re-broadcasting;
+    // returning the username as accredited makes the probe skip the broadcast.
+    accreditedSetMock.mockResolvedValue(new Set([username]));
+
+    // Gate ONLY the winner's seed (first call) so the winner is parked inside
+    // the accreditation cascade — after it created the account, cleared
+    // verify_token, and released the lock — while we fire the retry. Subsequent
+    // seed calls (the retry's) resolve immediately.
+    let releaseSeed!: () => void;
+    const seedGate = new Promise<void>((resolve) => { releaseSeed = resolve; });
+    let seedCalls = 0;
+    seedBonusMock.mockImplementation(async () => {
+      seedCalls += 1;
+      if (seedCalls === 1) await seedGate;
+      return undefined;
+    });
+
+    // Fire the winner; do not await. Wait until it has reached (and parked in)
+    // the gated seed — by then it has created the account, finalized, and
+    // released the lock.
+    const winner = request(app).post('/api/auth/confirm').set('Cookie', cookie).send(body).then((r) => r);
+    const deadline = Date.now() + 8000;
+    while (seedBonusMock.mock.calls.length < 1) {
+      if (Date.now() > deadline) throw new Error('winner did not reach the accreditation seed');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+
+    // Retry: same auth_token + cookie, fired DURING the winner's accreditation
+    // window (winner parked in seed). The lock is free (winner released it).
+    const retry = await request(app).post('/api/auth/confirm').set('Cookie', cookie).send(body);
+
+    // Single-fire across the post-release window: createClaimedAccount fired
+    // exactly once (the winner); the retry resumed via stuck-resume and skipped
+    // the irreversible chain op.
+    expect(createClaimedAccountMock).toHaveBeenCalledTimes(1);
+    // No second meaningful accredit broadcast: the winner broadcast once; the
+    // retry's HAF probe found the accreditation and skipped re-broadcasting.
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+    // The retry resolves (best-effort JWT contract: a resume-path JWT for the
+    // same owner is intentional — we deliberately do NOT assert "no second JWT").
+    expect([200, 409]).toContain(retry.status);
+
+    // Release the winner's seed; it finalizes its 200.
+    releaseSeed();
+    const winnerRes = await winner;
+    expect(winnerRes.status, JSON.stringify(winnerRes.body?.error)).toBe(200);
+
+    // Exactly one activated row for the username.
+    const pool = getAppPool()!;
+    const rows = await pool.query<{ username: string; verify_token: string | null; custody: string }>(
+      'SELECT username, verify_token, custody FROM accounts WHERE username = $1',
+      [username],
+    );
+    expect(rows.rows.length).toBe(1);
+    expect(rows.rows[0].verify_token).toBeNull();
+    expect(rows.rows[0].custody).toBe('light');
+  }, 20_000);
+});
+
+// ─────────────────────────────────────────────────────────────────
+// (6) Lock self-expiry mid-holder → next acquire detects chain-exists, resumes.
+//
+// The lock's TTL is a backstop for a CRASHED holder: if a holder dies after the
+// broadcast lands but before finalize, the lock self-expires and a retry
+// re-acquires, observes via getAccounts that the chain account already exists,
+// and resumes WITHOUT re-broadcasting createClaimedAccount. This test simulates
+// the TTL lapse deterministically by DELeting the live Redis lock key while the
+// holder is still parked inside createClaimedAccount (before its finalize). The
+// retry then acquires the freed lock, finds the holder's row (verify_token still
+// set) AND the chain account (createClaimedAccount already ran, accountCreated
+// flag flipped), takes the resumeChainExists path, and finalizes without a
+// second createClaimedAccount.
+//
+// Real Redis required (the key DEL targets the live lock); skipped when Redis
+// is not ready.
+// ─────────────────────────────────────────────────────────────────
+describe.skipIf(!dbReachable || !redisReady)('/confirm lock self-expiry mid-holder → retry resumes via chain-exists', () => {
+  const username = `arexp${SUFFIX}`;
+  const email = `ar_exp_${RUN_ID}@example.com`;
+  const keys = buildKeys(username);
+
+  afterAll(async () => cleanup(username, email));
+
+  it('when the lock self-expires while the holder broadcast is pending, the retry detects chain-exists and does NOT re-broadcast createClaimedAccount', async () => {
+    await cleanup(username, email);
+    await clearRateLimitKeys(['signup-confirm', 'signup-confirm-token']);
+
+    const binding = mintBinding();
+    const authToken = `confirmed:${'62'.repeat(32)}`;
+    await seedUnfinalizedRow(email, binding.hash, authToken);
+    const cookie = `${SIGNUP_BINDING_COOKIE_NAME}=${binding.cookieValue}`;
+    const body = { auth_token: authToken, username, keys };
+
+    // Holder parks inside createClaimedAccount AFTER flipping accountCreated, so
+    // while it is parked the chain account "exists" for the retry's lookup. The
+    // holder has NOT yet finalized (verify_token still set).
+    let accountCreated = false;
+    let releaseHolder!: () => void;
+    const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    createClaimedAccountMock.mockImplementation(async () => {
+      accountCreated = true;
+      await holderGate;
+      return { block_num: 12345 };
+    });
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      if (accountCreated && names.includes(username)) {
+        return [{ name: username, posting: { key_auths: [[keys.posting_public, 1]] } }];
+      }
+      return [];
+    });
+
+    // Fire the holder; wait until it is parked inside createClaimedAccount.
+    const holder = request(app).post('/api/auth/confirm').set('Cookie', cookie).send(body).then((r) => r);
+    const deadline = Date.now() + 8000;
+    while (createClaimedAccountMock.mock.calls.length < 1) {
+      if (Date.now() > deadline) throw new Error('holder did not reach createClaimedAccount');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+
+    // Simulate the TTL lapse: DEL the live lock key while the holder is still
+    // mid-broadcast. The next same-token acquire (the retry) will SET-NX freely.
+    const redis = getRedis()!;
+    await redis.del(activationLockRedisKey(authToken));
+
+    // Retry: acquires the freed lock, finds the holder's row by verify_token
+    // (finalize hasn't run) AND the chain account via getAccounts →
+    // resumeChainExists → finalizes WITHOUT a second createClaimedAccount.
+    const retry = await request(app).post('/api/auth/confirm').set('Cookie', cookie).send(body);
+
+    expect(retry.status, JSON.stringify(retry.body?.error)).toBe(200);
+    expect(retry.body.data?.token).toBeTruthy();
+    // The resume path created no new block — block_num is omitted.
+    expect(retry.body.data?.block_num).toBeUndefined();
+    // KEY ASSERTION: createClaimedAccount fired exactly once (the holder). The
+    // retry detected chain-exists and resumed without re-broadcasting it.
+    expect(createClaimedAccountMock).toHaveBeenCalledTimes(1);
+
+    // The retry's finalize cleared verify_token; exactly one activated row.
+    const pool = getAppPool()!;
+    const rows = await pool.query<{ verify_token: string | null; custody: string; posting_key_enc: Buffer | null }>(
+      'SELECT verify_token, custody, posting_key_enc FROM accounts WHERE username = $1',
+      [username],
+    );
+    expect(rows.rows.length).toBe(1);
+    expect(rows.rows[0].verify_token).toBeNull();
+    expect(rows.rows[0].custody).toBe('light');
+    expect(rows.rows[0].posting_key_enc).not.toBeNull();
+
+    // Release the holder so it unwinds cleanly (its late finalize is a harmless
+    // by-id re-UPDATE; its lock release is a CAS no-op since the key changed).
+    // Still exactly one createClaimedAccount call.
+    releaseHolder();
+    await holder.catch(() => undefined);
+    expect(createClaimedAccountMock).toHaveBeenCalledTimes(1);
+  }, 25_000);
 });

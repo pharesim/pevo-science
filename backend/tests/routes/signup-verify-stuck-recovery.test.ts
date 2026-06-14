@@ -10,6 +10,11 @@
  *       re-broadcasting.
  *   (c) Stuck /confirm → permanent error class (TypeError from seed) →
  *       recovery surfaces the operator-required code path, no auto-retry.
+ *   (d) Steady-state (stale `updated_at`) finalized row → recovery NOT
+ *       admitted: the STUCK_RECOVERY_WINDOW recency guard rejects a
+ *       long-since-completed account (400, no JWT). Inverse of the
+ *       fresh-row (a)/(b) cases, which seed updated_at = now() and so
+ *       fall inside the window.
  *
  * **Carve-out clause-(a)/(c) justification.** Mocks
  * `broadcastJsonWithTimeout`, `seedAccreditationBonus`, and
@@ -156,6 +161,50 @@ async function seedStuckAccount(opts: {
                $2, 'light', NULL,
                $3, $4, $5, $6,
                NOW() + INTERVAL '24 hours')`,
+    [
+      opts.email,
+      opts.username,
+      postingEnc.ciphertext, postingEnc.iv,
+      memoEnc.ciphertext, memoEnc.iv,
+    ],
+  );
+}
+
+/**
+ * Seed a fully-finalized light-custody row exactly like {@link seedStuckAccount}
+ * but with `updated_at` stamped at a STALE value (default 2h ago), i.e. OUTSIDE
+ * the STUCK_RECOVERY_WINDOW ('1 hour'). This is the steady-state row a long-since
+ * completed signup leaves behind. The stuck-recovery lookup's
+ * `AND updated_at > NOW() - INTERVAL '1 hour'` guard must reject it, so a /confirm
+ * retry against such a row cannot mint a fresh session (the steady-state recovery
+ * bypass the recency guard closes). Mirrors seedStuckAccount's column set; only
+ * updated_at differs.
+ */
+async function seedStaleFinalizedAccount(opts: {
+  username: string;
+  email: string;
+  postingPrivate: string;
+  memoPrivate: string;
+  staleInterval?: string;
+}) {
+  if (!dbReachable) return;
+  const pool = getAppPool()!;
+  await cleanupByUsername(opts.username);
+  await pool.query('DELETE FROM accounts WHERE email = $1', [opts.email]).catch(() => {});
+
+  const postingEnc = encryptKey(opts.username, opts.postingPrivate);
+  const memoEnc = encryptKey(opts.username, opts.memoPrivate);
+
+  await pool.query(
+    `INSERT INTO accounts (
+       email, password_hash, full_name, institution, field,
+       username, custody, verify_token,
+       posting_key_enc, iv_posting, memo_key_enc, iv_memo,
+       expires_at, updated_at
+     ) VALUES ($1, NULL, 'Stale Finalized Test', 'MIT', 'physics',
+               $2, 'light', NULL,
+               $3, $4, $5, $6,
+               NOW() + INTERVAL '24 hours', NOW() - INTERVAL '${opts.staleInterval ?? '2 hours'}')`,
     [
       opts.email,
       opts.username,
@@ -348,5 +397,79 @@ describe.skipIf(!dbReachable)('signup-verify /confirm stuck-account recovery (Op
     expect(res.body.error?.code).toBe('BAD_REQUEST');
     expect(broadcastJsonMock).not.toHaveBeenCalled();
     expect(createClaimedAccountMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Steady-state recovery bypass closed (recency guard).
+//
+// The fresh-row stuck tests above seed a row whose updated_at defaults to now()
+// (inside STUCK_RECOVERY_WINDOW = '1 hour'), so they exercise the recovery-
+// ADMITTED (200) side. This block is the INVERSE: a fully-finalized light-custody
+// row stamped STALE (updated_at = 2h ago) is a steady-state completed account,
+// not a mid-crash one. The stuck-recovery lookup's
+// `AND updated_at > NOW() - INTERVAL '1 hour'` guard must exclude it, so a
+// /confirm retry carrying a (non-matching) auth_token + the owner's keys gets
+// the generic 400 "invalid or expired" reject and NO JWT — an attacker who holds
+// the victim's posting key cannot re-mint a session against a long-since-finalized
+// account through the recovery path.
+//
+// getAccounts is stubbed to [] for this username so the token-not-found ->
+// stuck-lookup branch is the one under test (the stale row is rejected by the
+// window guard before verifyPostingKeyAuthorized would even consult the chain).
+// ─────────────────────────────────────────────────────────────────
+describe.skipIf(!dbReachable)('signup-verify /confirm stale-finalized row is NOT recoverable', () => {
+  const username = `stale${SUFFIX}`;
+  const email = `stale_${RUN_ID}@example.com`;
+  const keys = makeKeys(username);
+
+  afterAll(async () => cleanupByUsername(username));
+
+  it('a fully-finalized light row stamped 2h-stale is rejected (400, no JWT) — recency guard blocks the steady-state recovery bypass', async (ctx) => {
+    if (!dbReachable) return ctx.skip(true, 'pg unreachable');
+    // Steady-state completed account: username + keys + custody='light',
+    // verify_token NULL, but last mutated 2h ago (outside the 1h window).
+    await seedStaleFinalizedAccount({
+      username,
+      email,
+      postingPrivate: keys.posting_private,
+      memoPrivate: keys.memo_private,
+    });
+
+    // Force the token-not-found -> stuck-lookup path: a non-matching auth_token
+    // (no row has this verify_token), and the chain account does NOT exist for
+    // this username, so even if the stuck-lookup matched the ownership probe
+    // would be reachable — but the window guard rejects the row first.
+    getAccountsMock.mockResolvedValue([]);
+
+    const res = await request(app)
+      .post('/api/auth/confirm')
+      .send({
+        auth_token: `confirmed:${'f5'.repeat(32)}`, // no row carries this verify_token
+        username,
+        keys,
+      });
+
+    // Recovery NOT admitted: the stale row falls outside STUCK_RECOVERY_WINDOW,
+    // so the stuck-lookup returns 0 rows and the handler takes the generic
+    // invalid-token reject.
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('BAD_REQUEST');
+    // No session minted for a steady-state account via recovery.
+    expect(res.body.data?.token).toBeFalsy();
+    // No chain ops: neither account creation nor accreditation fired.
+    expect(createClaimedAccountMock).not.toHaveBeenCalled();
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+
+    // The stale row is untouched: still finalized, verify_token still NULL,
+    // not converted into a fresh session-bearing state.
+    const pool = getAppPool()!;
+    const { rows } = await pool.query<{ verify_token: string | null; custody: string }>(
+      'SELECT verify_token, custody FROM accounts WHERE username = $1',
+      [username],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].verify_token).toBeNull();
+    expect(rows[0].custody).toBe('light');
   });
 });

@@ -261,6 +261,12 @@ describe.skipIf(!dbReachable)('ORCID signup + confirm without password (email+OR
       });
     expect(confirmRes.status).toBe(200);
     expect(confirmRes.body.data.username).toBe(username);
+    // Fresh path created a new Hive account, so the 200 reports the creating
+    // block_num (the createClaimedAccount mock returns { block_num: 12345 }).
+    // This is the positive counterpart to the resume-path block_num-omitted
+    // assertions in signup-verify-activation-recovery.test.ts.
+    expect(typeof confirmRes.body.data.block_num).toBe('number');
+    expect(confirmRes.body.data.block_num).toBe(12345);
 
     // Post-confirm: row has username + custody='light', password_hash still null
     const post = await pool.query<{ password_hash: string | null; custody: string | null }>(
