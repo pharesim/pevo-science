@@ -168,6 +168,22 @@ describe('adminPage', () => {
       comp.approveAuthorIndex = '0';
       expect(comp.canSubmitApprove).toBe(true);
     });
+
+    it('canSubmitRetract requires author, permlink, and reason', () => {
+      const comp = createComponent();
+      comp.retractAuthor = 'a'; comp.retractPermlink = 'p'; comp.retractReason = '';
+      expect(comp.canSubmitRetract).toBe(false);
+      comp.retractReason = 'duplicate submission';
+      expect(comp.canSubmitRetract).toBe(true);
+    });
+
+    it('canSubmitRevoke requires author, permlink, and claimer', () => {
+      const comp = createComponent();
+      comp.revokeAuthor = 'a'; comp.revokePermlink = 'p'; comp.revokeClaimer = '';
+      expect(comp.canSubmitRevoke).toBe(false);
+      comp.revokeClaimer = 'mallory';
+      expect(comp.canSubmitRevoke).toBe(true);
+    });
   });
 
   describe('confirm staging', () => {
@@ -198,9 +214,103 @@ describe('adminPage', () => {
       // Execute the staged run closure to confirm the trimmed payload shape.
       await comp.pendingConfirm.run('proof-token');
       expect(mockAdminGrantAccreditation).toHaveBeenCalledWith(
-        { account: 'bob', full_name: 'Bob', institution: 'MIT', field: 'Physics', method: 'admin' },
+        { account: 'bob', full_name: 'Bob', institution: 'MIT', field: 'Physics', method: 'manual' },
         'proof-token',
       );
+    });
+
+    it('requestRetractPaper stages the trimmed payload via its run closure', async () => {
+      mockAdminRetractPaper.mockResolvedValue({ status: 'ok', data: {} });
+      const comp = createComponent();
+      comp.tier = 'admin';
+      comp.retractAuthor = ' alice '; comp.retractPermlink = ' my-paper '; comp.retractReason = ' plagiarism ';
+      comp.requestRetractPaper();
+      expect(comp.pendingConfirm.freshAuthAction).toBe('admin_retract_paper');
+      await comp.pendingConfirm.run('proof-token');
+      expect(mockAdminRetractPaper).toHaveBeenCalledWith(
+        { author: 'alice', permlink: 'my-paper', reason: 'plagiarism' },
+        'proof-token',
+      );
+    });
+
+    it('requestRevokeAuthorship stages the trimmed payload via its run closure', async () => {
+      mockAdminRevokeAuthorship.mockResolvedValue({ status: 'ok', data: {} });
+      const comp = createComponent();
+      comp.tier = 'admin';
+      comp.revokeAuthor = ' alice '; comp.revokePermlink = ' my-paper '; comp.revokeClaimer = ' mallory ';
+      comp.requestRevokeAuthorship();
+      expect(comp.pendingConfirm.freshAuthAction).toBe('admin_revoke_authorship');
+      await comp.pendingConfirm.run('proof-token');
+      expect(mockAdminRevokeAuthorship).toHaveBeenCalledWith(
+        { author: 'alice', permlink: 'my-paper', claimer: 'mallory' },
+        'proof-token',
+      );
+    });
+
+    it('requestApproveAuthorship stages the trimmed payload with a numeric author_index', async () => {
+      mockAdminApproveAuthorship.mockResolvedValue({ status: 'ok', data: {} });
+      const comp = createComponent();
+      comp.tier = 'admin';
+      comp.approveAuthor = ' bridge '; comp.approvePermlink = ' bridged-paper ';
+      comp.approveClaimer = ' carol '; comp.approveAuthorIndex = '2';
+      comp.requestApproveAuthorship();
+      expect(comp.pendingConfirm.freshAuthAction).toBe('admin_approve_authorship');
+      await comp.pendingConfirm.run('proof-token');
+      expect(mockAdminApproveAuthorship).toHaveBeenCalledWith(
+        { author: 'bridge', permlink: 'bridged-paper', claimer: 'carol', author_index: 2 },
+        'proof-token',
+      );
+    });
+
+    it('refuses to stage a second confirm while one is pending or a submit is in flight', () => {
+      const comp = createComponent();
+      comp.tier = 'admin';
+      comp.retractAuthor = 'a'; comp.retractPermlink = 'p'; comp.retractReason = 'r';
+      comp.requestRetractPaper();
+      const first = comp.pendingConfirm;
+      expect(first).toBeTruthy();
+      // A second stage attempt while the first confirm is open is ignored.
+      comp.revokeAuthor = 'a'; comp.revokePermlink = 'p'; comp.revokeClaimer = 'c';
+      comp.requestRevokeAuthorship();
+      expect(comp.pendingConfirm).toBe(first);
+      // ...and while a submit is running.
+      comp.pendingConfirm = null;
+      comp.submitting = true;
+      comp.requestRevokeAuthorship();
+      expect(comp.pendingConfirm).toBeNull();
+    });
+  });
+
+  describe('promote lockout safety', () => {
+    it('refuses to stage a self-promotion and toasts instead', () => {
+      const comp = createComponent();
+      comp.tier = 'super_admin';
+      comp.promoteAccount = 'alice'; // the viewer
+      comp.promoteLevel = 'admin';
+      comp.requestPromote();
+      expect(comp.pendingConfirm).toBeNull();
+      expect(mockToastStore.show).toHaveBeenCalledWith('admin.cannotPromoteSelf', 'error');
+    });
+
+    it('warns with the overwrite summary when the target already holds an equal-or-higher tier', () => {
+      const comp = createComponent();
+      comp.tier = 'root';
+      comp.roster = [{ account: 'bob', level: 'super_admin' }];
+      comp.promoteAccount = 'bob';
+      comp.promoteLevel = 'admin'; // a downgrade-overwrite of bob's super_admin
+      comp.requestPromote();
+      expect(comp.pendingConfirm).toBeTruthy();
+      expect(comp.pendingConfirm.summary).toBe('admin.confirmPromoteOverwrite');
+    });
+
+    it('uses the plain promote summary for a fresh (non-roster) target', () => {
+      const comp = createComponent();
+      comp.tier = 'super_admin';
+      comp.roster = [];
+      comp.promoteAccount = 'newbie';
+      comp.promoteLevel = 'admin';
+      comp.requestPromote();
+      expect(comp.pendingConfirm.summary).toBe('admin.confirmPromote');
     });
   });
 
@@ -247,6 +357,74 @@ describe('adminPage', () => {
       await comp.runConfirmed();
       expect(comp.pendingConfirm).toBeNull();
       expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
+    it('cancelled (password modal dismissed) clears the panel without toast', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ cancelled: true });
+      const comp = createComponent();
+      stagePromote(comp);
+      await comp.runConfirmed();
+      expect(comp.pendingConfirm).toBeNull();
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+      expect(comp.submitting).toBe(false);
+    });
+
+    it('sessionInconsistent (corrupted session) clears the panel without a second toast', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ sessionInconsistent: true });
+      const comp = createComponent();
+      stagePromote(comp);
+      await comp.runConfirmed();
+      expect(comp.pendingConfirm).toBeNull();
+      // The orchestrator already toasted re-login; runConfirmed must not double-toast.
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a structured backend error message instead of a blanket failure', async () => {
+      const apiErr = Object.assign(new Error('Paper is already retracted'), { code: 'VALIDATION_ERROR' });
+      mockPromoteAdmin.mockRejectedValue(apiErr);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      stagePromote(comp);
+      await comp.runConfirmed();
+      expect(comp.actionError).toBe('Paper is already retracted');
+      // Panel stays open so the operator can read why and adjust or cancel.
+      expect(comp.pendingConfirm).toBeTruthy();
+      warnSpy.mockRestore();
+    });
+
+    it('shows an "uncertain" message for an ambiguous broadcast timeout', async () => {
+      const timeout = Object.assign(new Error('Broadcasting the role grant timed out'), {
+        code: 'BROADCAST_TIMEOUT',
+        details: { outcome: 'uncertain' },
+      });
+      mockPromoteAdmin.mockRejectedValue(timeout);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      stagePromote(comp);
+      await comp.runConfirmed();
+      expect(comp.actionError).toBe('admin.broadcastUncertain');
+      warnSpy.mockRestore();
+    });
+
+    it('routes a post-success roster re-read failure to loadError (not swallowed)', async () => {
+      mockPromoteAdmin.mockResolvedValue({ status: 'ok', data: {} });
+      // The post-success reload fails with a structured 503.
+      const reloadErr = Object.assign(new Error('Roster temporarily unavailable. Please retry shortly.'), {
+        code: 'SERVICE_UNAVAILABLE',
+        details: { retriable: true },
+      });
+      mockFetchAdminRoster.mockRejectedValue(reloadErr);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      stagePromote(comp);
+      await comp.runConfirmed();
+      // The action succeeded (toast + panel cleared), but the reload failure is
+      // visible via loadError + Try-again, not silently dropped into actionError.
+      expect(mockToastStore.show).toHaveBeenCalledWith('admin.actionSuccess', 'success');
+      expect(comp.pendingConfirm).toBeNull();
+      expect(comp.loadError).toBe('Roster temporarily unavailable. Please retry shortly.');
+      expect(comp.actionError).toBeNull();
+      warnSpy.mockRestore();
     });
 
     it('sanitizes an action failure: generic message, raw err to console.warn', async () => {

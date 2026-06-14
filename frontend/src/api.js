@@ -783,13 +783,12 @@ export function deleteEmail(confirm, freshAuthProof) {
 // `approveAuthorshipClaim`, `revokeAuthorshipClaim`) above, which the paper's
 // own author/claimant signs via Keychain.
 //
-// CONTRACT PENDING BACKEND: the `/admin/*` endpoint paths/shapes and the
-// per-action fresh-auth action strings below follow the admin-roster backend
-// task's documented design (chain-derived `active_admins` roster, Redis-cached;
-// tier middleware; `issued_by` attribution; `admin_grant`/`admin_revoke` plus
-// the admin-signed authority ops). The backend endpoints do not exist yet —
-// every function here MUST be integration-verified once that task lands, and the
-// backend owns the final shapes (the UI consumes, it does not define them).
+// The `/admin/*` endpoints (chain-derived `active_admins` roster, Redis-cached;
+// tier middleware; `issued_by` attribution; `admin_grant`/`admin_revoke` plus the
+// admin-signed authority ops) are implemented in `backend/src/routes/admin.ts`.
+// The backend owns the final shapes (the UI consumes, it does not define them).
+// Mutations dispatch through `adminMutation` so self-custody admins reach the
+// signature auth path the §6.4 fresh-auth gate requires (see its docblock).
 
 // Read the viewer's admin tier and the current roster. Returns the response
 // envelope's data: { tier: 'admin'|'super_admin'|'root'|null, roster:
@@ -799,25 +798,46 @@ export function fetchAdminRoster() {
   return authenticatedRequest('/admin/roster');
 }
 
+// Dispatch an admin authority mutation on the auth path the backend's
+// `requireFreshAdminAuth` (§6.4) expects for the caller's mechanism:
+//   - Light account (custody 'light'): authenticate with the session JWT and
+//     carry a minted single-use `fresh_auth_proof` in the body (the fresh-auth
+//     orchestrator mints it via the password/ORCID factor and passes it in).
+//   - Self-custody (Keychain): the per-request Hive signature IS the fresh proof
+//     (`hiveAuthMethod === 'signature'`), so SIGN the request and send no body
+//     proof. A self-custody admin also holds a session JWT, but a replayable JWT
+//     is never a valid fresh proof for a critical action, so the request MUST go
+//     out on the signature path or the backend rejects with FRESH_AUTH_REQUIRED.
+//     Mirrors the IPFS upload-token pre-flight's custody split and the
+//     `withSettingsFreshAuth` `custody !== 'light'` branch.
+async function adminMutation(path, body) {
+  const auth = Alpine.store('auth');
+  if (auth?.custody === 'light') {
+    return authenticatedRequest(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  const signed = await signRequest(auth.username, 'POST', `${BASE_URL}${path}`, body);
+  return request(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...signed.headers },
+    body: signed.body,
+  });
+}
+
 // Promote/demote a roster member. The backend re-enforces the tier gate
 // (super_admin manages `admin`; root manages `super_admin`) and broadcasts
 // `admin_grant` / `admin_revoke` with `issued_by` set to the acting admin. JWT
 // path requires a fresh-auth proof bound to (admin_grant_role / admin_revoke_role,
 // <acting-admin>, '').
 export function promoteAdmin(account, level, freshAuthProof) {
-  return authenticatedRequest('/admin/roster/grant', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ account, level, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) }),
-  });
+  return adminMutation('/admin/roster/grant', { account, level, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) });
 }
 
 export function demoteAdmin(account, level, freshAuthProof) {
-  return authenticatedRequest('/admin/roster/revoke', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ account, level, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) }),
-  });
+  return adminMutation('/admin/roster/revoke', { account, level, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) });
 }
 
 // Grant (or re-grant) accreditation: an admin-signed `accredit` op carrying
@@ -825,17 +845,13 @@ export function demoteAdmin(account, level, freshAuthProof) {
 // path requires a fresh-auth proof bound to (admin_grant_accreditation,
 // <acting-admin>, '').
 export function adminGrantAccreditation(values, freshAuthProof) {
-  return authenticatedRequest('/admin/accreditation/grant', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      account: values.account,
-      full_name: values.full_name,
-      institution: values.institution,
-      field: values.field,
-      method: values.method,
-      ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
-    }),
+  return adminMutation('/admin/accreditation/grant', {
+    account: values.account,
+    full_name: values.full_name,
+    institution: values.institution,
+    field: values.field,
+    method: values.method,
+    ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
   });
 }
 
@@ -843,15 +859,11 @@ export function adminGrantAccreditation(values, freshAuthProof) {
 // from the author's own `retractPaper` above. JWT path requires a fresh-auth
 // proof bound to (admin_retract_paper, <acting-admin>, '').
 export function adminRetractPaper(values, freshAuthProof) {
-  return authenticatedRequest('/admin/papers/retract', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      author: values.author,
-      permlink: values.permlink,
-      reason: values.reason,
-      ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
-    }),
+  return adminMutation('/admin/papers/retract', {
+    author: values.author,
+    permlink: values.permlink,
+    reason: values.reason,
+    ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
   });
 }
 
@@ -859,15 +871,11 @@ export function adminRetractPaper(values, freshAuthProof) {
 // `revoke_authorship`). JWT path requires a fresh-auth proof bound to
 // (admin_revoke_authorship, <acting-admin>, '').
 export function adminRevokeAuthorship(values, freshAuthProof) {
-  return authenticatedRequest('/admin/authorship/revoke', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      author: values.author,
-      permlink: values.permlink,
-      claimer: values.claimer,
-      ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
-    }),
+  return adminMutation('/admin/authorship/revoke', {
+    author: values.author,
+    permlink: values.permlink,
+    claimer: values.claimer,
+    ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
   });
 }
 
@@ -875,16 +883,12 @@ export function adminRevokeAuthorship(values, freshAuthProof) {
 // `approve_authorship`). JWT path requires a fresh-auth proof bound to
 // (admin_approve_authorship, <acting-admin>, '').
 export function adminApproveAuthorship(values, freshAuthProof) {
-  return authenticatedRequest('/admin/authorship/approve', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      author: values.author,
-      permlink: values.permlink,
-      claimer: values.claimer,
-      author_index: values.author_index,
-      ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
-    }),
+  return adminMutation('/admin/authorship/approve', {
+    author: values.author,
+    permlink: values.permlink,
+    claimer: values.claimer,
+    author_index: values.author_index,
+    ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
   });
 }
 

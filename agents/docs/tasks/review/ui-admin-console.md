@@ -224,3 +224,63 @@ user-triaged 2026-06-14.)
    the console always using JWT. Confirm this case under the existing integration-verify item.
 
 Fold this into the same re-review cycle as the items above; `git mv` back to `review/` once all land.
+
+## UI re-review signal (2026-06-14) — required fixes landed; item 8 operator-gated
+
+All required fixes landed in the working tree (this commit). Adversarially re-verified
+via a 4-reviewer workflow (correctness 1/2/7, gating 3/5, security 9, tests/i18n 4/6):
+11/11 checks pass, 0 problems.
+
+- **1. method enum.** `requestGrantAccreditation` (`admin.js`) sends `method:'manual'`
+  (in the backend enum `['manual','email','orcid']`); the unit payload-pin assertion was
+  updated to `'manual'`, so a regression re-fails.
+- **2. surface backend rejections.** New `_errorMessage(err, fallbackKey)` wired into both
+  `runConfirmed` and `loadRoster`: shows the structured backend `error.message` when an
+  envelope `code` is present, an "uncertain, verify before retry" message on a 504
+  `details.outcome:'uncertain'`, and the generic localized fallback for unstructured/
+  transport errors (raw error stays in `console.warn`; the sanitization tests still pass).
+- **3. gate while a confirm is staged/in-flight.** `_stageConfirm` early-returns when
+  `submitting || pendingConfirm`; all five authority submit buttons + promote + the demote
+  button carry `:disabled="… || pendingConfirm || submitting"`.
+- **4. post-success re-read failure.** Verified `loadRoster` self-catches and routes a
+  re-read failure to `loadError` (with Try-again); it never throws into the action catch,
+  so the described swallow path was not reachable. Added a regression test pinning that a
+  post-success reload 503 surfaces via `loadError`, not the (invisible) `actionError`.
+- **5. self-downgrade via promote.** `requestPromote` refuses a self-promotion (toast
+  `admin.cannotPromoteSelf`, no stage) and warns with `admin.confirmPromoteOverwrite` when
+  the target already holds an equal-or-higher tier (a grant rewrites their level).
+- **6. tests.** Added staging + exact-payload-pin tests for retract/revoke/approve, the
+  `cancelled` and `sessionInconsistent` `runConfirmed` branches, and `canSubmitRetract`/
+  `canSubmitRevoke`. The payload-pin tests are what catch item 1.
+- **7. dead root guard.** Dropped `member.level !== 'root'` from `canDemoteRow` (root is
+  excluded via `manageableLevels`); the "never demote root" test still passes.
+- **9. self-custody fresh-auth.** New `adminMutation(path, body)` in `api.js` routes
+  `custody==='light'` through `authenticatedRequest` (JWT + body `fresh_auth_proof`) and
+  self-custody through `signRequest` (X-Hive-Signature, no Bearer, no body proof) so the
+  backend sees `hiveAuthMethod==='signature'` and the per-request signature satisfies
+  `requireFreshAdminAuth`. All six mutations route through it; `fetchAdminRoster` stays JWT.
+  Added `api.test.js` dispatch tests (light → Bearer+proof; self → signed, no Bearer).
+
+Recommended: broadcast-timeout "uncertain" message (done via the item-2 helper);
+`canSubmitGrant` stricter-than-contract kept as deliberate operator UX with an in-code note.
+ORCID-factor form-loss across the redirect NOT addressed — left as a follow-up (preserving
+Alpine form state across a full-page OAuth round-trip is out of the lean-console scope).
+
+i18n: 3 new keys (`cannotPromoteSelf`, `confirmPromoteOverwrite`, `broadcastUncertain`)
+added to all 16 locales as English stubs; STUBS.md sweep `### Added 2026-06-14
+(UI-ADMIN-CONSOLE)`. No em-dashes in user-facing strings.
+
+Tests: `pages-admin` 33 green, `api` 46 green, full frontend unit suite 1598 green (the 3
+unhandled rejections are pre-existing in untouched `pages-edit.test.js`). Production build OK.
+
+**Item 8 (integration-verify) — OPERATOR-GATED, deferred.** The deployed backend image
+404s on `/api/admin/roster` (predates the landed routes); a stack rebuild would carry the
+sibling backend agent's uncommitted WIP, and each authority action broadcasts an
+irreversible `custom_json` op to chain via the server-held `pevo.admin` key. A live run also
+requires authenticating AS a roster admin (light JWT or self-custody Keychain), unavailable
+headlessly. Per the user (2026-06-14): do not broadcast on chain from this session. Deferred
+to an operator-driven session on a clean deploy with real admin credentials: real tier gate
+(admin/super_admin/root + null), roster read, promote/demote, each authority broadcast,
+`issued_by` attribution, and the self-custody signature path.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

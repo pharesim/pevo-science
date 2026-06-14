@@ -106,7 +106,8 @@ const template = `
                                x-text="$t('admin.grantedBy', { account: member.granted_by || '?', date: formatDate(member.granted_at) })"></p>
                           </div>
                           <button x-show="canDemoteRow(member)"
-                                  class="text-sm text-pevo-crimson hover:underline shrink-0"
+                                  class="text-sm text-pevo-crimson hover:underline shrink-0 disabled:opacity-50 disabled:no-underline"
+                                  :disabled="pendingConfirm || submitting"
                                   @click="requestDemote(member)"
                                   x-text="$t('admin.demote')"></button>
                         </li>
@@ -127,7 +128,7 @@ const template = `
                           </template>
                         </select>
                         <button type="submit" class="btn-primary text-sm whitespace-nowrap disabled:opacity-50"
-                                :disabled="!promoteAccount.trim()" x-text="$t('admin.promote')"></button>
+                                :disabled="!promoteAccount.trim() || pendingConfirm || submitting" x-text="$t('admin.promote')"></button>
                       </div>
                     </form>
                   </div>
@@ -153,7 +154,7 @@ const template = `
                     <input type="text" x-model="grantField" maxlength="100" :placeholder="$t('admin.fieldPlaceholder')"
                            class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
                     <button type="submit" class="btn-primary text-sm disabled:opacity-50"
-                            :disabled="!canSubmitGrant" x-text="$t('admin.grantAccreditationSubmit')"></button>
+                            :disabled="!canSubmitGrant || pendingConfirm || submitting" x-text="$t('admin.grantAccreditationSubmit')"></button>
                   </form>
 
                   <!-- Sanction (stubbed: payload pending the revoke-sanction op contract) -->
@@ -178,7 +179,7 @@ const template = `
                     <input type="text" x-model="retractReason" :placeholder="$t('admin.reasonPlaceholder')"
                            class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
                     <button type="submit" class="btn-primary text-sm disabled:opacity-50"
-                            :disabled="!canSubmitRetract" x-text="$t('admin.retractSubmit')"></button>
+                            :disabled="!canSubmitRetract || pendingConfirm || submitting" x-text="$t('admin.retractSubmit')"></button>
                   </form>
 
                   <!-- Revoke authorship -->
@@ -196,7 +197,7 @@ const template = `
                            class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
                            autocapitalize="off" spellcheck="false">
                     <button type="submit" class="btn-primary text-sm disabled:opacity-50"
-                            :disabled="!canSubmitRevoke" x-text="$t('admin.revokeAuthorshipSubmit')"></button>
+                            :disabled="!canSubmitRevoke || pendingConfirm || submitting" x-text="$t('admin.revokeAuthorshipSubmit')"></button>
                   </form>
 
                   <!-- Approve bridged-paper author -->
@@ -218,7 +219,7 @@ const template = `
                              class="border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
                     </div>
                     <button type="submit" class="btn-primary text-sm disabled:opacity-50"
-                            :disabled="!canSubmitApprove" x-text="$t('admin.approveAuthorshipSubmit')"></button>
+                            :disabled="!canSubmitApprove || pendingConfirm || submitting" x-text="$t('admin.approveAuthorshipSubmit')"></button>
                   </form>
                 </div>
               </div>
@@ -290,6 +291,11 @@ export function initAdminPage() {
       return [];
     },
 
+    // Deliberately stricter than the backend contract: institution and field are
+    // optional server-side (default ''), but an operator-issued accreditation
+    // should carry complete metadata, so the console requires all four. Only
+    // full_name is required server-side. Relax here if a metadata-light grant is
+    // ever needed.
     get canSubmitGrant() {
       return this.grantAccount.trim().length > 0
         && this.grantName.trim().length > 0
@@ -322,12 +328,11 @@ export function initAdminPage() {
       return level || '';
     },
 
-    // Demotable rows: a level the viewer can manage, never `root` (bootstrap
-    // config, not a row), and never the viewer's own account (no self-lockout
-    // out of the capability they are currently using).
+    // Demotable rows: a level the viewer can manage (so never `root`, which is
+    // bootstrap config and never appears in manageableLevels), and never the
+    // viewer's own account (no self-lockout out of the capability in use).
     canDemoteRow(member) {
       return this.manageableLevels.includes(member.level)
-        && member.level !== 'root'
         && member.account !== this.username;
     },
 
@@ -360,10 +365,12 @@ export function initAdminPage() {
         this.hasPassword = emailRes?.data?.hasPassword === true;
       } catch (err) {
         if (!this._mounted) return;
-        // Sanitization pattern (see settings.handleOrcidLink): generic localized
-        // message to the DOM, raw error only to console.warn.
+        // Sanitization pattern (see settings.handleOrcidLink): raw error only to
+        // console.warn. _errorMessage surfaces a structured backend reason (e.g.
+        // a 503 "Roster temporarily unavailable") and falls back to a generic
+        // localized string for unstructured/transport errors.
         console.warn('[admin roster]', err);
-        this.loadError = this.$t('admin.loadFailed');
+        this.loadError = this._errorMessage(err, 'admin.loadFailed');
       } finally {
         if (this._mounted) this.loading = false;
       }
@@ -375,6 +382,21 @@ export function initAdminPage() {
         username: this.username,
         hasPassword: this.hasPassword,
       };
+    },
+
+    // Map an action/load failure to a user-facing message. A 504 broadcast
+    // timeout is ambiguous (the op may have landed; latest-op-wins makes a
+    // re-broadcast harmless), so tell the operator to verify rather than showing
+    // a definite failure. Structured backend errors carry a user-facing message
+    // (an already-retracted 422, not-in-roster, root-not-demotable, a bad-enum
+    // 400) — surface it so the operator sees WHY, not a blanket "failed". Plain
+    // transport/unexpected errors carry no envelope `code`; fall back to a
+    // generic localized string (their raw .message may leak internals, so only
+    // console.warn sees it).
+    _errorMessage(err, fallbackKey) {
+      if (err?.details?.outcome === 'uncertain') return this.$t('admin.broadcastUncertain');
+      if (typeof err?.code === 'string' && err?.message) return err.message;
+      return this.$t(fallbackKey);
     },
 
     cancelConfirm() {
@@ -390,9 +412,23 @@ export function initAdminPage() {
       const account = this.promoteAccount.trim();
       if (!account) return;
       const level = this.promoteLevel;
+      // Self-lockout guard: the backend does not reject a self-grant, so a
+      // super_admin granting themselves `admin` would silently downgrade out of
+      // the roster controls they are using. Mirror canDemoteRow's self-check.
+      if (account === this.username) {
+        Alpine.store('toast').show(this.$t('admin.cannotPromoteSelf'), 'error');
+        return;
+      }
+      // An admin_grant rewrites the target's level. If they already hold an
+      // equal-or-higher tier, granting this level overwrites it (a silent demote
+      // when lower) — warn in the confirm copy so it is deliberate.
+      const current = this.roster.find((m) => m.account === account)?.level;
+      const isOverwrite = current && TIER_RANK[current] >= TIER_RANK[level];
       this._stageConfirm({
         freshAuthAction: 'admin_grant_role',
-        summary: this.$t('admin.confirmPromote', { account, level: this.tierLabel(level) }),
+        summary: isOverwrite
+          ? this.$t('admin.confirmPromoteOverwrite', { account, level: this.tierLabel(level), current: this.tierLabel(current) })
+          : this.$t('admin.confirmPromote', { account, level: this.tierLabel(level) }),
         run: (proof) => promoteAdmin(account, level, proof),
       });
     },
@@ -413,7 +449,10 @@ export function initAdminPage() {
         full_name: this.grantName.trim(),
         institution: this.grantInstitution.trim(),
         field: this.grantField.trim(),
-        method: 'admin',
+        // `manual` is the admin-issued accreditation method; the backend enum is
+        // ['manual','email','orcid'] (an out-of-enum value 422s before the
+        // handler). 'manual' marks an operator-granted accreditation.
+        method: 'manual',
       };
       this._stageConfirm({
         freshAuthAction: 'admin_grant_accreditation',
@@ -466,6 +505,12 @@ export function initAdminPage() {
     },
 
     _stageConfirm({ freshAuthAction, summary, run }) {
+      // One in-flight mutation at a time: while a confirm is already staged or a
+      // submit is running, ignore new stage requests so a second action cannot
+      // overwrite pendingConfirm out from under the first run() closure. The
+      // form buttons also :disabled on this state; this is the authoritative
+      // backstop behind that UX gate.
+      if (this.submitting || this.pendingConfirm) return;
       this.actionError = null;
       this.pendingConfirm = { freshAuthAction, summary, run };
     },
@@ -504,9 +549,10 @@ export function initAdminPage() {
         await this.loadRoster();
       } catch (err) {
         if (!this._mounted) return;
-        // Sanitization pattern (see settings.handleOrcidLink).
+        // Sanitization pattern (see settings.handleOrcidLink): raw error to
+        // console.warn; _errorMessage surfaces the structured backend reason.
         console.warn('[admin action]', err);
-        this.actionError = this.$t('admin.actionFailed');
+        this.actionError = this._errorMessage(err, 'admin.actionFailed');
       } finally {
         if (this._mounted) this.submitting = false;
       }

@@ -1356,6 +1356,9 @@
     "confirmGrant": "Grant accreditation to @{account}?",
     "confirmRetract": "Retract @{author}/{permlink}?",
     "confirmRevokeAuthorship": "Revoke the authorship claim by @{claimer} on {permlink}?",
-    "confirmApproveAuthorship": "Approve @{claimer} as author on {permlink}?"
+    "confirmApproveAuthorship": "Approve @{claimer} as author on {permlink}?",
+    "cannotPromoteSelf": "You cannot promote yourself.",
+    "confirmPromoteOverwrite": "@{account} already holds {current}. Granting {level} overwrites their current level. Continue?",
+    "broadcastUncertain": "The action timed out and may or may not have completed. Verify on chain before retrying."
   }
 }

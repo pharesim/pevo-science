@@ -43,7 +43,9 @@ import {
   linkExistingAccount,
   mintIpfsUploadProof,
   uploadFileToIpfs,
+  promoteAdmin,
 } from '../../src/api.js';
+import { signRequest } from '../../src/sign-request.js';
 
 // Helper: build a mock Response-like object for fetch.
 function mockJsonResponse(status, body) {
@@ -270,6 +272,50 @@ describe('authenticatedRequest', () => {
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe('/api/notifications?since_block=100&limit=10');
     expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-abc-123' });
+  });
+});
+
+describe('adminMutation custody dispatch (exercised via promoteAdmin)', () => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
+    signRequest.mockClear();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    authStore = null;
+  });
+
+  it('light account: JWT path, body carries the fresh-auth proof, no signature', async () => {
+    authStore = { token: 'jwt-light-1', custody: 'light', username: 'alice' };
+    fetchSpy.mockResolvedValue(mockJsonResponse(200, { status: 'ok', data: {} }));
+
+    await promoteAdmin('bob', 'admin', 'proof-xyz');
+
+    expect(signRequest).not.toHaveBeenCalled();
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/admin/roster/grant');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-light-1' });
+    expect(init.headers['X-Hive-Signature']).toBeUndefined();
+    expect(JSON.parse(init.body)).toEqual({ account: 'bob', level: 'admin', fresh_auth_proof: 'proof-xyz' });
+  });
+
+  it('self-custody: signs the request (no JWT, no body proof) so the backend sees a fresh signature', async () => {
+    authStore = { token: 'jwt-self-1', custody: 'self', username: 'alice' };
+    fetchSpy.mockResolvedValue(mockJsonResponse(200, { status: 'ok', data: {} }));
+
+    await promoteAdmin('bob', 'admin', undefined);
+
+    // Signature path: signRequest is bound to the full /api path and the body
+    // object (no fresh_auth_proof — the per-request signature IS the proof).
+    expect(signRequest).toHaveBeenCalledWith('alice', 'POST', '/api/admin/roster/grant', { account: 'bob', level: 'admin' });
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/admin/roster/grant');
+    expect(init.headers.Authorization).toBeUndefined();
+    expect(init.headers['X-Hive-Signature']).toBe('stub-sig');
+    expect(JSON.parse(init.body)).toEqual({ account: 'bob', level: 'admin' });
   });
 });
 
