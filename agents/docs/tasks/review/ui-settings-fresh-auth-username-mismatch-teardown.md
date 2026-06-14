@@ -116,3 +116,21 @@ and `disconnect()` flips `isConnected` so the `x-if` collapses the authenticated
 settings UI to the sign-in prompt. Working as designed; do not change.
 
 When both items land, `git mv` this file back to `tasks/review/`.
+
+## UI re-review signal (2026-06-14)
+
+Both held items landed in this commit:
+
+1. **Caller-level `sessionInconsistent` coverage** added to `pages-settings.test.js`:
+   - `handleSetPassword` + `{ sessionInconsistent: true }`: asserts the held plaintext
+     (`newPasswordInput` / `newPasswordConfirmInput`) is zeroed, no second toast, and no
+     generic `passwordError` — the required XSS-read-hygiene arm.
+   - `handleEmailDelete` + `{ sessionInconsistent: true }`: asserts a clean early return
+     (no caller-side `disconnect`, no `navigate`, no second toast).
+2. **Stale "both orchestrators" comment** in `fresh-auth.js` `passwordPromptMessage`
+   docblock reworded to name the settings + authorship consent-op surfaces (the two
+   password-factor callers; `broadcastWithFreshAuth` has no password prompt) instead of
+   the stale count.
+
+Suites green: pages-settings (89), lib-settings-fresh-auth, lib-authorship-consent,
+fresh-auth-401-retry (125 total).

@@ -71,8 +71,10 @@ export const FRESH_AUTH_CANCELLED = Symbol('fresh_auth_cancelled');
 export const FRESH_AUTH_MINT_FAILED = Symbol('fresh_auth_mint_failed');
 
 // Default re-auth modal prompt. Lib code cannot use the `$t` magic helper; read
-// the i18n store directly with an English fallback. Shared by both orchestrators
-// so the prompt copy cannot drift between the settings and authorship surfaces.
+// the i18n store directly with an English fallback. Called by the settings and
+// authorship consent-op orchestrators (the two password-factor surfaces;
+// broadcastWithFreshAuth has no password prompt) so the prompt copy cannot drift
+// between them.
 export function passwordPromptMessage() {
   return (
     Alpine.store('i18n')?.messages?.settings?.reauthPasswordPrompt ||

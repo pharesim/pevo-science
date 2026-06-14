@@ -430,6 +430,23 @@ describe('settingsPage', () => {
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
     });
 
+    it('aborts cleanly on a torn-down session (sessionInconsistent): no caller teardown, no second toast', async () => {
+      // The orchestrator already disconnected + toasted; the caller's early
+      // return must not fire the delete success path, re-disconnect, navigate,
+      // or surface the generic delete error.
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ sessionInconsistent: true });
+      const comp = createComponent();
+      comp.emailStatus = { hasEmail: true };
+
+      await comp.handleEmailDelete();
+
+      expect(mockAuthStore.disconnect).not.toHaveBeenCalled();
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+      expect(comp.emailError).toBeNull();
+      expect(comp.deleting).toBe(false);
+    });
+
     it('surfaces the generic re-auth error on freshAuthFailed without tearing down the session', async () => {
       mockWithSettingsFreshAuth.mockResolvedValueOnce({ freshAuthFailed: true });
       const comp = createComponent();
@@ -2371,6 +2388,30 @@ describe('settingsPage', () => {
       expect(comp.newPasswordInput).toBe('');
       expect(comp.emailStatus.hasPassword).toBe(false);
       expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
+    // sessionInconsistent: the orchestrator already tore the corrupted session
+    // down and showed the re-login toast, so the caller must abort cleanly (no
+    // second toast, no generic error) AND still zero the held plaintext password
+    // for XSS-read hygiene, exactly like the ORCID-redirect abort path. This is
+    // the security-adjacent arm of the new sessionInconsistent routing.
+    it('aborts cleanly and wipes the password on a torn-down session (sessionInconsistent)', async () => {
+      mockWithSettingsFreshAuth.mockResolvedValueOnce({ sessionInconsistent: true });
+      const comp = createComponent();
+      comp.emailStatus = { hasEmail: true, hasPassword: false };
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+
+      await comp.handleSetPassword();
+
+      // No SECOND toast from the caller (the orchestrator owns the re-login toast).
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+      // No generic re-auth error: this is a teardown, not a retryable failure.
+      expect(comp.passwordError).toBeNull();
+      // Held plaintext is zeroed even though the session is being torn down.
+      expect(comp.newPasswordInput).toBe('');
+      expect(comp.newPasswordConfirmInput).toBe('');
+      expect(comp.passwordSubmitting).toBe(false);
     });
 
     it('newPasswordsMatch reflects equality of the two inputs', () => {
