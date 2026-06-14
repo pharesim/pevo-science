@@ -127,10 +127,13 @@ interface RateLimitConfig {
    *
    * Refund uses the same deferred DECR (Redis) / splice (in-memory) on
    * `res.on('finish')` + `res.on('close')` as `skipFailedRequests`. When both
-   * options are set, a status matching either gate is refunded. The refund is
-   * gated on `res.writableEnded` so a pre-status TCP-abort (default
-   * `statusCode=200`, never in the refund set) is unaffected here — that case
-   * is `skipFailedRequests`'s concern.
+   * options are set, a status matching either gate is refunded. The
+   * `refundCodes` branch of `shouldRefund` is NOT `writableEnded`-gated: a 409
+   * that loses lock contention should refund whether or not the response
+   * finished flushing (the waiter lost the race either way). A pre-status
+   * TCP-abort is unaffected here only because its default `statusCode` 200 is
+   * never in the refund set — not because of a `writableEnded` check; gating
+   * that pre-status-abort outcome is `skipFailedRequests`'s concern.
    */
   refundStatusCodes?: number[];
 }

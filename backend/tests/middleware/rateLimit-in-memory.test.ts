@@ -202,6 +202,78 @@ describe('rateLimit middleware — in-memory fallback', () => {
     expect(admitted).toBe(true);
   });
 
+  // refundStatusCodes is the surgical counterpart to skipFailedRequests: it
+  // refunds ONLY the listed code (the per-token activation limiter lists [409]
+  // LOCK_HELD) and leaves every other outcome — success AND other 4xx like a
+  // 400 invalid-token attempt — to consume a slot normally. This pins the
+  // `shouldRefund` mutation "treat 400 (or all >= 400) as refundable", which no
+  // skipFailedRequests test catches (skipFailedRequests refunds ALL >= 400, so
+  // it cannot distinguish 409-only from blanket-4xx refund). Runs against the
+  // in-memory path (Redis mocked null at module scope); the Redis-path sibling
+  // in `rateLimit.test.ts` exercises the same shared `shouldRefund` gate under
+  // real infrastructure (carve-out clause (c)).
+  function createRefundCodesApp(name: string, max: number) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      const u = req.headers['x-hive-username'] as string | undefined;
+      if (u) req.hiveUsername = u;
+      next();
+    });
+    app.use(rateLimit({ windowMs: 60_000, max, keyFn: byAccount, name, refundStatusCodes: [409] }));
+    // Per-request status via ?code= so one app exercises both the refunded
+    // (409) and the slot-consuming (400) outcomes against the same bucket.
+    app.get('/test', (req, res) => {
+      const code = Number(req.query.code) || 200;
+      res.status(code).json({ ok: code < 400 });
+    });
+    return app;
+  }
+
+  it('refundStatusCodes refunds 409 (contention loser re-admitted) but 400 consumes its slot', async () => {
+    const limiterName = `inmem-refund-codes-${Date.now()}`;
+    const app = createRefundCodesApp(limiterName, 1);
+    const username = `frank-${Date.now()}`;
+
+    // A 409 LOCK_HELD refunds its slot, so a same-token auto-retry loop is not
+    // charged for the holder's slowness. With max=1, three sequential 409s each
+    // reach the handler (each refunds before the next is admitted) — never a
+    // premature 429. Poll-tolerant: the splice refund lands in the deferred
+    // finish/close callback, so a probe may briefly 429 before the prior
+    // refund lands (a 429 reject consumes no slot, so polling is non-destructive).
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let got = 429;
+      for (let i = 0; i < 20; i++) {
+        const res = await request(app).get('/test?code=409').set('X-Hive-Username', username);
+        got = res.status;
+        if (got === 409) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(got).toBe(409);
+    }
+
+    // A 400 is NOT in the refund set: it consumes the single slot. Poll until
+    // it actually reaches the handler (the last 409's refund may still be
+    // landing), so the assertion proves the 400 ran and consumed, not that it
+    // was rejected.
+    let four00 = 429;
+    for (let i = 0; i < 20; i++) {
+      const res = await request(app).get('/test?code=400').set('X-Hive-Username', username);
+      four00 = res.status;
+      if (four00 === 400) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(four00).toBe(400);
+
+    // The slot the 400 consumed is NOT refunded — a follow-up request 429s.
+    // If `shouldRefund` mutated to treat 400 as refundable, the slot would be
+    // free and this would be 200. The 429 pins 400-consumes-slot (brute-force
+    // protection intact). Settle time first so an (erroneous) refund could land.
+    await new Promise((r) => setTimeout(r, 50));
+    const blocked = await request(app).get('/test?code=200').set('X-Hive-Username', username);
+    expect(blocked.status).toBe(429);
+  });
+
   it('refunds once on finish+close (no double-splice via once-guard)', async () => {
     // Wire the request to both 'finish' AND 'close' (the supertest /
     // express normal-completion path fires both). The once-guard must

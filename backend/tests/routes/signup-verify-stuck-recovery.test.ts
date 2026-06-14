@@ -1,5 +1,5 @@
 /**
- * Stuck-account recovery (Option C) tests for /api/auth/confirm.
+ * Stuck-account recovery (Option C) tests for /api/auth/confirm and /api/auth/link.
  *
  * Covers the recovery scenarios for a user whose first /confirm broadcast
  * failed after the verify_token was already consumed (the stuck state):
@@ -32,6 +32,12 @@
  *       PrivateKey.fromString + PublicKey derivation + Hive account
  *       lookup runs in `verifyPostingKeyAuthorized`; only the Hive
  *       database client is mocked to return a controlled account shape.
+ *       The /link stuck-recovery test DOES drive the real verifyHiveSignature
+ *       middleware with a real `signRequestBound` signature (an auth-focused
+ *       path per clause (b)): the crypto recovery + posting-key match run for
+ *       real; only the chain `getAccounts` posting-key lookup is mocked to
+ *       supply the public key that recovery is checked against. The middleware
+ *       and the signature recovery are never mocked.
  *   (c) Real-path companion: `signup-verify.test.ts` exercises the
  *       happy-path /confirm flow end-to-end against real pg + real Hive
  *       account-creation (with broadcast mocked). The mocked block here
@@ -41,6 +47,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import request from 'supertest';
 import { PrivateKey } from '@hiveio/dhive';
+import { signRequestBound } from '../support/sign-request.js';
 
 const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock, seedBonusMock, accreditedSetMock } = vi.hoisted(() => ({
   getAccountsMock: vi.fn(),
@@ -211,6 +218,37 @@ async function seedStaleFinalizedAccount(opts: {
       postingEnc.ciphertext, postingEnc.iv,
       memoEnc.ciphertext, memoEnc.iv,
     ],
+  );
+}
+
+/**
+ * Seed a fully-finalized SELF-custody row stamped STALE (default 2h ago), i.e.
+ * OUTSIDE the STUCK_RECOVERY_WINDOW. This is the steady-state row a long-since
+ * completed /link leaves: `custody='self'`, `verify_token` NULL, `upgraded_at`
+ * set, no server-held keys (self-custody users hold their own). The /link
+ * stuck-recovery lookup's `AND updated_at > NOW() - INTERVAL '1 hour'` guard
+ * must reject it, so a real-signed /link retry against such a row cannot mint a
+ * fresh session (the steady-state recovery bypass the recency guard closes).
+ */
+async function seedStaleSelfCustodyAccount(opts: {
+  username: string;
+  email: string;
+  staleInterval?: string;
+}) {
+  if (!dbReachable) return;
+  const pool = getAppPool()!;
+  await cleanupByUsername(opts.username);
+  await pool.query('DELETE FROM accounts WHERE email = $1', [opts.email]).catch(() => {});
+
+  await pool.query(
+    `INSERT INTO accounts (
+       email, password_hash, full_name, institution, field,
+       username, custody, verify_token, upgraded_at, signup_binding_hash,
+       expires_at, updated_at
+     ) VALUES ($1, NULL, 'Link Stale Self Test', 'MIT', 'physics',
+               $2, 'self', NULL, NOW() - INTERVAL '${opts.staleInterval ?? '2 hours'}', NULL,
+               NOW() + INTERVAL '24 hours', NOW() - INTERVAL '${opts.staleInterval ?? '2 hours'}')`,
+    [opts.email, opts.username],
   );
 }
 
@@ -414,9 +452,13 @@ describe.skipIf(!dbReachable)('signup-verify /confirm stuck-account recovery (Op
 // the victim's posting key cannot re-mint a session against a long-since-finalized
 // account through the recovery path.
 //
-// getAccounts is stubbed to [] for this username so the token-not-found ->
-// stuck-lookup branch is the one under test (the stale row is rejected by the
-// window guard before verifyPostingKeyAuthorized would even consult the chain).
+// getAccounts is stubbed to return the VALID authorized account for this
+// username, so the posting-key ownership proof WOULD pass if the stuck-lookup
+// reached it. That isolates the recency guard: the 400 is caused SOLELY by the
+// window guard excluding the stale row, NOT by an independent ownership-probe
+// failure. Remove the `AND updated_at > NOW() - INTERVAL '1 hour'` clause and
+// this test flips to 200 (recovery admitted) — the mutation a `getAccounts → []`
+// stub would silently survive.
 // ─────────────────────────────────────────────────────────────────
 describe.skipIf(!dbReachable)('signup-verify /confirm stale-finalized row is NOT recoverable', () => {
   const username = `stale${SUFFIX}`;
@@ -437,10 +479,17 @@ describe.skipIf(!dbReachable)('signup-verify /confirm stale-finalized row is NOT
     });
 
     // Force the token-not-found -> stuck-lookup path: a non-matching auth_token
-    // (no row has this verify_token), and the chain account does NOT exist for
-    // this username, so even if the stuck-lookup matched the ownership probe
-    // would be reachable — but the window guard rejects the row first.
-    getAccountsMock.mockResolvedValue([]);
+    // (no row carries this verify_token). getAccounts returns the VALID account
+    // whose authorized posting key matches the supplied posting_private, so the
+    // ownership proof would PASS if the stuck-lookup reached it. It does not: the
+    // recency guard excludes the 2h-stale row first, so the 400 isolates the
+    // guard (remove the guard and this test goes 200).
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      if (names.includes(username)) {
+        return [{ name: username, posting: { key_auths: [[keys.posting_public, 1]] } }];
+      }
+      return [];
+    });
 
     const res = await request(app)
       .post('/api/auth/confirm')
@@ -471,5 +520,80 @@ describe.skipIf(!dbReachable)('signup-verify /confirm stale-finalized row is NOT
     expect(rows.length).toBe(1);
     expect(rows[0].verify_token).toBeNull();
     expect(rows[0].custody).toBe('light');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// /link mirror: stale-finalized SELF-custody row is NOT recoverable.
+//
+// The /link stuck-recovery lookup (username-keyed, gated on a FRESH Hive
+// signature via `hiveAuthMethod === 'signature'`) carries the SAME recency
+// guard as /confirm: `AND updated_at > NOW() - INTERVAL '1 hour'`. Until now
+// only /confirm had a stale-row exclusion test; the /link guard could be
+// deleted with no test going red. This drives a REAL verifyHiveSignature
+// signed /link (carve-out clause (b): the crypto recovery + key-match run for
+// real; only the chain `getAccounts` posting-key lookup is mocked, supplying
+// the public key the real signature is checked against — the middleware itself
+// is never mocked). A 2h-stale self-custody row plus a non-matching auth_token
+// must take the generic 400, NOT a recovered session: an attacker holding a
+// victim's posting key cannot re-mint a session against a long-since-linked
+// account through the recovery path. Remove the recency guard and this flips
+// to a recovered 200 — that is the mutation it isolates.
+// ─────────────────────────────────────────────────────────────────
+describe.skipIf(!dbReachable)('signup-verify /link stale-finalized self-custody row is NOT recoverable', () => {
+  const username = `lnkstale${SUFFIX}`;
+  const email = `lnkstale_${RUN_ID}@example.com`;
+  // The posting key the real /link signature is signed with; getAccounts is
+  // stubbed to advertise its public half so verifyHiveSignature's recovery
+  // matches and the handler sees hiveAuthMethod='signature'.
+  const postingPrivate = PrivateKey.fromSeed(`${username}-p`);
+  const postingPublic = postingPrivate.createPublic().toString();
+
+  afterAll(async () => cleanupByUsername(username));
+
+  it('a 2h-stale self-custody row is rejected (400, no JWT) under a real signed /link — recency guard blocks the bypass', async (ctx) => {
+    if (!dbReachable) return ctx.skip(true, 'pg unreachable');
+    await seedStaleSelfCustodyAccount({ username, email });
+
+    // verifyHiveSignature fetches the account's posting pubkey via getAccounts.
+    // Return the VALID key so the REAL signature verifies and the handler reaches
+    // the signature-gated stuck branch. The crypto proof is NOT mocked.
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      if (names.includes(username)) {
+        return [{ name: username, posting: { key_auths: [[postingPublic, 1]] } }];
+      }
+      return [];
+    });
+
+    const body = { auth_token: `linkstuck:${'9a'.repeat(32)}` }; // no row carries this verify_token
+    const timestamp = new Date().toISOString();
+    const signature = signRequestBound(postingPrivate, 'POST', '/api/auth/link', body, timestamp);
+
+    const res = await request(app)
+      .post('/api/auth/link')
+      .set('X-Hive-Username', username)
+      .set('X-Hive-Signature', signature)
+      .set('X-Hive-Timestamp', timestamp)
+      .send(body);
+
+    // Recovery NOT admitted: the stale self row falls outside STUCK_RECOVERY_WINDOW,
+    // so the username-keyed stuck-lookup returns 0 rows and the handler takes the
+    // generic 400. The real signature DID verify (else this would be 401), so the
+    // 400 isolates the recency guard, not an auth failure.
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('BAD_REQUEST');
+    expect(res.body.data?.token).toBeFalsy();
+    // No accreditation broadcast — the recovery never proceeded.
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+
+    // The stale row is untouched: still finalized self-custody, verify_token NULL.
+    const pool = getAppPool()!;
+    const { rows } = await pool.query<{ verify_token: string | null; custody: string }>(
+      'SELECT verify_token, custody FROM accounts WHERE username = $1',
+      [username],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].verify_token).toBeNull();
+    expect(rows[0].custody).toBe('self');
   });
 });

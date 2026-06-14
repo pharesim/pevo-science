@@ -48,7 +48,13 @@ import { logger } from '../logger.js';
  *     TTL; a retry then re-acquires, observes via `getAccounts` that the chain
  *     account already exists, and resumes (encrypt + clear verify_token)
  *     WITHOUT re-broadcasting. The chain-existence + key-ownership proof in the
- *     handler is the crash backstop, not the lock.
+ *     handler is the crash backstop, not the lock. If that `getAccounts` read
+ *     hits a lagging node and misses the just-created account, the resume
+ *     re-broadcasts `createClaimedAccount` for the SAME account name — and Hive
+ *     consensus rejects the duplicate account creation, burning no additional
+ *     claim token. So a lagging-node false-negative on resume is safe at the
+ *     chain layer (account creation is idempotent by name), not merely
+ *     improbable.
  *  6. Fail-closed when Redis is unavailable. `createClaimedAccount` burns a
  *     finite claim token — an irreversible write — so this lock does NOT degrade
  *     to a no-lock / in-memory path when Redis is down (unlike idempotent ops
@@ -58,8 +64,11 @@ import { logger } from '../logger.js';
  *     same-token caller would acquire freely and double-broadcast. So when Redis
  *     is unavailable at acquire time, or the `SET` throws after the availability
  *     check, the acquire returns the `'unavailable'` reason and the route maps
- *     it to a retriable 503 rather than proceeding lock-free. The Redis lock IS
- *     the single-fire safety argument; there is no consensus-as-fallback caveat.
+ *     it to a retriable 503 rather than proceeding lock-free. The Redis lock —
+ *     not the consensus-layer duplicate rejection that backstops the resume
+ *     path (point 5) — is the single-fire guard for this live race: a
+ *     Redis-down acquire fails closed rather than leaning on that backstop for
+ *     an irreversible write.
  *
  * The waiter's bounded wait holds NO pg connection (it polls the lock only), so
  * a contended activation does not itself contribute to pool saturation — the
@@ -88,8 +97,12 @@ const LOSER_POLL_INTERVAL_MS = 100;
 
 // Retry-After (seconds) advertised on a 409 LOCK_HELD. A same-token waiter that
 // could not acquire the activation lock within its wait budget backs off this
-// long before retrying, so an auto-retry loop spaces its attempts past a typical
-// holder's broadcast window instead of tight-looping.
+// long before retrying, spacing an auto-retry loop instead of tight-looping.
+// This 5s is on the order of LOSER_WAIT_BUDGET_MS, NOT the holder's ~30s
+// createClaimedAccount broadcast — so a retry will often still find the lock
+// held and take another 409. That is harmless: the per-token limiter refunds
+// each 409's slot (refundStatusCodes), so repeated contention retries do not
+// advance toward the 429 cliff while the holder finishes broadcasting.
 const LOCK_HELD_RETRY_AFTER_SECONDS = 5;
 
 // Hex shape of the per-acquisition nonce. The CAS release compares the stored

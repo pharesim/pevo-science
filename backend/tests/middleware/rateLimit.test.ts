@@ -360,6 +360,66 @@ describe('rateLimit middleware', () => {
     await redis.del(redisKey).catch(() => {});
   });
 
+  // refundStatusCodes (surgical refund) — Redis path. Real-infrastructure
+  // companion to the deterministic in-memory test in `rateLimit-in-memory.test.ts`.
+  // Pins that ONLY the listed code (409 LOCK_HELD) refunds via the shared
+  // `shouldRefund` gate while every other 4xx (400) consumes its slot — the
+  // `shouldRefund` mutation "treat 400 as refundable" stays caught on the Redis
+  // branch too. Inspects the Redis counter directly (like the skipFailedRequests
+  // refund test) rather than racing follow-up requests against the deferred DECR.
+  it('refundStatusCodes refunds a 409 but not a 400 (surgical refund, Redis path)', async () => {
+    const ready = await waitForRedisReady();
+    if (!ready) return;
+    const redis = getRedis()!;
+    const limiterName = `test-refund-codes-${Date.now()}`;
+    const username = `frank-${Date.now()}`;
+    const redisKey = `${config.appTag}:rl:${limiterName}:${username}`;
+    await redis.del(redisKey).catch(() => {});
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      const u = req.headers['x-hive-username'] as string | undefined;
+      if (u) req.hiveUsername = u;
+      next();
+    });
+    app.use(
+      rateLimit({ windowMs: 60_000, max: 1, keyFn: byAccount, name: limiterName, refundStatusCodes: [409] }),
+    );
+    app.get('/test', (req, res) => {
+      const code = Number(req.query.code) || 200;
+      res.status(code).json({ ok: code < 400 });
+    });
+
+    // 409 refunds: the deferred DECR returns the count to 0.
+    const r409 = await request(app).get('/test?code=409').set('X-Hive-Username', username);
+    expect(r409.status).toBe(409);
+    let count = 1;
+    for (let i = 0; i < 20; i++) {
+      const s = await redis.get(redisKey);
+      count = s ? Number(s) : 0;
+      if (count === 0) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(count).toBe(0);
+
+    // 400 is not in the refund set: its INCR (synchronous inside the Lua,
+    // already landed when the request resolved) is NOT decremented. Give any
+    // erroneous deferred refund time to land, then assert the slot stayed.
+    const r400 = await request(app).get('/test?code=400').set('X-Hive-Username', username);
+    expect(r400.status).toBe(400);
+    await new Promise((r) => setTimeout(r, 100));
+    const s400 = await redis.get(redisKey);
+    expect(s400 ? Number(s400) : 0).toBe(1);
+
+    // The consumed slot means the next request 429s — brute-force protection
+    // on genuine non-contention failures stays intact.
+    const blocked = await request(app).get('/test?code=200').set('X-Hive-Username', username);
+    expect(blocked.status).toBe(429);
+
+    await redis.del(redisKey).catch(() => {});
+  });
+
   it('Lua path rejects with 429 on overflow without consuming additional slots (DECR-on-overflow)', async () => {
     const ready = await waitForRedisReady();
     if (!ready) return;
