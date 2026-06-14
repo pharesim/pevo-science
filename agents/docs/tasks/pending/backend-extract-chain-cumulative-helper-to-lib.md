@@ -175,3 +175,25 @@ set to archive).
 architect moves this file `blocked/` → `pending/` upon archiving the last of the five
 (the backend may also move it once it confirms all five are archived and `papers.ts`
 is quiescent). At that point the design is final and pickup needs no further decisions.
+
+## [Architect] (2026-06-14) — UNBLOCKED; coordination gate clear, moved to pending/
+
+All five papers.ts-touching siblings are resolved and out of the active tree:
+`backend-papers-listing-correlated-subqueries` (archived 2026-06-12),
+`backend-citation-count-inverted-cte`, `backend-citation-export-format-escape`,
+`backend-cite-export-pevo-metadata-key-mismatch` (all archived / no longer in
+`tasks/`), and `backend-papers-listing-votes-aggregate-cte` (dropped 2026-06-14 —
+EXPLAIN showed its CTE was a ~3300x regression; see `tasks-archive.md`). The
+working tree is clean, so `papers.ts` / `fetchPapersFromHaf` / the walker bodies
+are quiescent — no in-flight churn to collide with the ~57-ref option-(b) move.
+
+The architect layering decision (option b — move the cumulative helpers AND the
+chain-walker closure into `backend/src/lib/`, with `safePevoMeta` to a neutral
+shared home, signature unchanged) is final; no further architect input is
+needed. Moving to `pending/` for backend to implement per the option-(b) shape
+and the hard invariant (zero `import ... from './papers.js'` for any moved
+symbol; zero lib→route edges), re-pointing the two named tests
+(`papers-cumulative-cross-surface-parity-mocked.test.ts`,
+`profile-papers-empty-cumulative-fallback.test.ts`) to the lib module.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
