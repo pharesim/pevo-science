@@ -117,3 +117,81 @@ Backend deps remain satisfied (`backend-implement-consented-authorship-model`, `
 Separate architect-zone doc-drift surfaced by the mapping (NOT part of this task; tracked by the architect): `papers.md` does not document the paper-detail `authors[].consented` field and still uses stale "vouched" terminology plus a stale `authorship_claims[].status` "auto-accept via ORCID/hive match" description (the auto-accept arms were removed; acceptance now requires an explicit `approve_authorship` + name-only slot); `GET /api/me/authorships/pending` is undocumented in `api-contracts/*.md`.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES
+
+`/ce-code-review` of the delivery commit (10-persona fleet + architect direct
+verification) surfaced findings; the user elected to hold all of them. Findings
+split across this task and the sibling `ui-credit-op-proof-cache-slot-key` by code
+ownership — the items below are this surface's. Re-review scopes to the commits
+landed since this block.
+
+BLOCKER (must be green before archive):
+
+1. RED UNIT SUITE. The Route-3 reconcile renamed `handleRejectClaim` →
+   `handleRevokeClaim` in `src/pages/paper-detail.js`, but
+   `tests/unit/pages-paper-detail.test.js` still calls `comp.handleRejectClaim('bob')`
+   and was not updated (the test file is outside the delivery diff). Verified by
+   running it: `TypeError: comp.handleRejectClaim is not a function`,
+   `Test Files 1 failed`. Rename the `it(...)` title + the call to
+   `handleRevokeClaim` (set `comp.revokeTarget = 'bob'` first; the asserted
+   `claims.rejectFailed` key is still correct). The commit ships a failing test —
+   nothing archives until `npx vitest run` is green.
+
+Should-fix:
+
+2. Double-submit on the consent handlers. `handleClaimSlot`, `handleApproveClaim`,
+   `handleRevokeClaim`, `handleAcceptAuthorship`, `handleResignAuthorship` set
+   `claimLoading = true` only after the first `await`, gating re-entry solely on
+   the reactive `:disabled` binding, which lags a same-tick second click — both
+   clicks enter and broadcast. This is the project's
+   `synchronous-flag-before-await-idempotency-guard` convention. Add
+   `if (this.claimLoading) return;` as the first statement of each handler (the
+   pre-existing claim handlers share the gap; fix all five together).
+
+3. Duplicated password-factor machinery. `mintViaPassword` / `REMINTABLE_REASONS`
+   / `CANCELLED` / `MINT_FAILED` in `lib/authorship-consent.js` are a near-verbatim
+   copy of `lib/settings-fresh-auth.js`; the remintable-reason set and the
+   two-prompt flow can silently drift apart. Export `REMINTABLE_REASONS` from
+   `lib/fresh-auth.js` and extract a shared `mintViaPasswordFactor(mintFn, { message })`
+   both orchestrators call.
+
+4. Comment-anchor durability violations (root CLAUDE.md "Comment anchors": no
+   task-slug / round / acceptance-number citations in production OR test code).
+   Re-anchor on behavior: `src/authorships.js` header
+   ("UI-MULTI-AUTHOR-CONSENT-AFFORDANCES Acceptance #5");
+   `tests/unit/lib-credit.test.js` ("and the task's Acceptance #1 / #7");
+   `tests/e2e/authorship-consent-actions.spec.js` ("Acceptance #2/#3/#7");
+   `tests/e2e/authorship-pending-discovery.spec.js` ("Acceptance #5 / #7"). (The
+   cache-test anchor is on the sibling task's block.)
+
+Minor (fix-along or dismiss at your discretion — re-review will not block on these):
+
+5. `mintViaPassword` second-attempt catch (`lib/authorship-consent.js`) is a bare
+   `} catch { return MINT_FAILED; }` that masks a 503/transport error on the retry
+   mint as a generic re-auth failure. Rethrow non-`UNAUTHORIZED` errors so the
+   caller surfaces the real cause.
+
+6. `username_mismatch` on a consent op is folded into the generic `freshAuthFailed`
+   "try again" outcome, whereas the session-kind sibling `broadcastWithFreshAuth`
+   treats the same 403 as a critical session inconsistency and forces re-login
+   (`auth.disconnect()`). The user retries a corrupted session indefinitely.
+   Special-case `username_mismatch` to tear down the session, matching the sibling.
+
+7. `authorships` store `load()` has no in-flight short-circuit; the generation
+   counter keeps it correct but a `refresh()` during an active load fires a
+   redundant fetch. Add `if (this.isLoading) return;`.
+
+8. `orcid-callback` `destroy()` scrubs `pevo_orcid_return_to` but not the
+   fresh-auth flow's `RETURN_PATH_KEY` (`pevo_fresh_auth_return_to`); benign today
+   (overwritten before the next read) but the comment's stated invariant does not
+   hold. Add `clearReturnPath()` to `destroy()`.
+
+Test gap worth closing alongside: no test asserts the `author_index === 0` POSITIVE
+credit-badge / cache hit (0 is only exercised as an expected miss); a broken
+`0 ?? null` on a real slot-0 paper would slip through.
+
+When fixed, `git mv` this file back to `tasks/review/`; the move is the re-review
+signal. Do not edit this block — the commit diff is the evidence.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

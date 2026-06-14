@@ -105,3 +105,42 @@ from echoed fields; consent-op (triple) path unchanged. The architect reviews
 and archives alongside the parent.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES
+
+`/ce-code-review` of the delivery commit surfaced one substantive item squarely on
+this task (the credit-field echo this cache keys on) plus an anchor cleanup; the
+user elected to hold. The broadcast-wiring and orchestrator findings live on the
+sibling `ui-multi-author-consent-affordances` hold block. Re-review scopes to the
+commits landed since this block.
+
+Should-fix:
+
+1. The `_handleFreshAuth` echo guard in `src/pages/orcid-callback.js` validates
+   only the `(action, root_author, root_permlink)` triple, NOT the `author_index`
+   (claim/approve) and `claimer` (approve/revoke) credit-op fields this task now
+   keys the cache on. The guard's own comment claims it prevents writing
+   `undefined` into a target field and the resulting indefinite re-OAuth — but for
+   a credit op that is exactly what happens if the backend drops a credit-field
+   echo: `cacheConsentOpProof` stores `undefined → null` while the eventual lookup
+   keys on the real index/subject, so the strict match permanently misses and the
+   user re-OAuths in a loop with no error surface. Extend the guard per action:
+   require `author_index` a non-negative integer for
+   `claim_authorship`/`approve_authorship`; require `claimer` a non-empty string
+   for `approve_authorship`/`revoke_authorship`; surface `status='error'` /
+   `orcid.verificationFailed` on a malformed echo, mirroring the triple guard.
+
+Comment-anchor cleanup:
+
+2. `tests/unit/lib-fresh-auth-consent-op-cache.test.js` header cites the task slug
+   ("sibling `ui-credit-op-proof-cache-slot-key` acceptance"); re-anchor on
+   behavior ("slot-keyed proof non-reuse") per root CLAUDE.md "Comment anchors".
+
+Test gap worth closing: the cache suite never asserts the `author_index === 0`
+POSITIVE hit (0 is only exercised as an expected miss); a broken `0 ?? null`
+normalization on a real slot-0 claim/approve proof would slip through.
+
+When fixed, `git mv` this file back to `tasks/review/`; the move is the re-review
+signal. Do not edit this block.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
