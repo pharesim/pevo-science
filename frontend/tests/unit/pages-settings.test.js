@@ -2917,4 +2917,51 @@ describe('settingsPage', () => {
       expect(mockToastStore.show).toHaveBeenCalled();
     });
   });
+
+  // handleOrcidLink sets orcidLinking=true then navigates away, resetting only
+  // in catch. On browser Back the page restores from bfcache (init()/destroy()
+  // do not re-run) and would stay disabled on its "Redirecting..." label. A
+  // persisted pageshow (bfcache restore) must reset the flag. bfcache cannot
+  // be simulated in jsdom, so a listener-recording window stub lets us fire a
+  // synthetic pageshow whose `persisted` we set explicitly. Settings uses the
+  // orcidLinking flag (not orcidLoading).
+  describe('bfcache restore', () => {
+    function stubPageshowWindow() {
+      const listeners = new Map();
+      const win = {
+        ...globalThis.window,
+        addEventListener: vi.fn((type, fn) => {
+          if (!listeners.has(type)) listeners.set(type, new Set());
+          listeners.get(type).add(fn);
+        }),
+        removeEventListener: vi.fn((type, fn) => { listeners.get(type)?.delete(fn); }),
+        fire(type, event) { for (const fn of listeners.get(type) ?? []) fn(event); },
+        count(type) { return listeners.get(type)?.size ?? 0; },
+      };
+      vi.stubGlobal('window', win);
+      return win;
+    }
+
+    it('resets orcidLinking on a persisted pageshow after init()', () => {
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: false } });
+      const win = stubPageshowWindow();
+      const comp = createComponent();
+      comp.init();
+      comp.orcidLinking = true;
+      win.fire('pageshow', { persisted: true });
+      expect(comp.orcidLinking).toBe(false);
+    });
+
+    it('removes the listener on destroy() so a later pageshow does not reset', () => {
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: false } });
+      const win = stubPageshowWindow();
+      const comp = createComponent();
+      comp.init();
+      comp.destroy();
+      expect(win.count('pageshow')).toBe(0);
+      comp.orcidLinking = true;
+      win.fire('pageshow', { persisted: true });
+      expect(comp.orcidLinking).toBe(true);
+    });
+  });
 });

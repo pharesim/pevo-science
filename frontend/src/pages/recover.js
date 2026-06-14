@@ -3,6 +3,7 @@ import { recoverWithSeedPhrase, recoverWithOrcid, fetchAccreditationStatus, star
 import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
 import { validateMnemonic, deriveAllKeys } from '../hive-keys.js';
 import { isPasswordValid } from '../password-policy.js';
+import { createOrcidRedirectGuard } from '../lib/orcid-redirect-guard.js';
 
 const template = `
       <div x-data="recoverPage" class="container-narrow py-8">
@@ -136,6 +137,7 @@ export { template as recoverPageTemplate };
 
 export function initRecoverPage() {
   Alpine.data('recoverPage', () => ({
+    ...createOrcidRedirectGuard('orcidLoading'),
     phase: 'form', // 'form' | 'done'
     method: 'seed', // 'seed' | 'orcid'
 
@@ -176,6 +178,11 @@ export function initRecoverPage() {
     },
 
     init() {
+      // Reset the ORCID loading flag if the page is restored from bfcache
+      // after a Back from ORCID (the success path navigates away with the
+      // flag still true and init()/destroy() do not run on bfcache restore).
+      this._installOrcidRedirectGuard();
+
       // Restore form state after ORCID OAuth redirect.
       // Password fields are deliberately NOT persisted or restored.
       // ORCID-verified recovery skips the password entirely.
@@ -200,6 +207,13 @@ export function initRecoverPage() {
         localStorage.removeItem('pevo_signup_orcid_token');
         localStorage.removeItem('pevo_signup_orcid_id');
       }
+    },
+
+    destroy() {
+      this._teardownOrcidRedirectGuard();
+      // Clear the pending username-availability debounce so it does not fire
+      // on a torn-down component.
+      clearTimeout(this._orcidCheckTimer);
     },
 
     checkOrcidAvailability() {

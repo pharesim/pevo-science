@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { loginWithPassword, resendVerification, startOrcid } from '../api.js';
 import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { createOrcidRedirectGuard } from '../lib/orcid-redirect-guard.js';
 import { RESUME_MARKER } from './signup-verify.js';
 
 const template = `
@@ -115,6 +116,7 @@ export { template as loginPageTemplate };
 export function initLoginPage() {
   Alpine.data('loginPage', () => ({
     ...createTimerGuard(),
+    ...createOrcidRedirectGuard('orcidLoading'),
     emailOrUsername: '',
     password: '',
     isSubmitting: false,
@@ -132,11 +134,19 @@ export function initLoginPage() {
       return this.emailOrUsername.trim() && this.password;
     },
 
+    init() {
+      // Reset the ORCID loading flag if the page is restored from bfcache
+      // after a Back from ORCID (the success path navigates away with the
+      // flag still true and init()/destroy() do not run on bfcache restore).
+      this._installOrcidRedirectGuard();
+    },
+
     destroy() {
       // _teardownTimers flips _mounted so in-flight loginWithPassword /
       // resendVerification / startOrcid continuations bail before touching
       // reactive state.
       this._teardownTimers();
+      this._teardownOrcidRedirectGuard();
     },
 
     async handleSubmit() {

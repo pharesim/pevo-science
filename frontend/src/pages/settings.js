@@ -6,6 +6,7 @@ import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, loadDhive, vali
 import { isPasswordValid } from '../password-policy.js';
 import { getAppTag } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { createOrcidRedirectGuard } from '../lib/orcid-redirect-guard.js';
 import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
 
 // Number of words to re-enter for confirmation
@@ -423,6 +424,8 @@ export function initSettingsPage() {
     // through it) on the singleton auth store, since the singleton has no
     // component boundary to absorb the writes.
     ...createTimerGuard(),
+    // Resets `orcidLinking` on bfcache restore (Back from the ORCID link flow).
+    ...createOrcidRedirectGuard('orcidLinking'),
 
     get isConnected() { return Alpine.store('auth').isConnected; },
     get username() { return Alpine.store('auth').username; },
@@ -562,6 +565,12 @@ export function initSettingsPage() {
     },
 
     init() {
+      // Reset the ORCID linking flag if the page is restored from bfcache
+      // after a Back from the ORCID link flow (the success path navigates
+      // away with the flag still true and init()/destroy() do not run on
+      // bfcache restore).
+      this._installOrcidRedirectGuard();
+
       if (this.isConnected) {
         this.loadEmailStatus();
       }
@@ -670,6 +679,7 @@ export function initSettingsPage() {
         Alpine.store('router').unregisterNavigationGuard(this._navigationGuard);
         this._navigationGuard = null;
       }
+      this._teardownOrcidRedirectGuard();
       this._teardownTimers();
     },
 
