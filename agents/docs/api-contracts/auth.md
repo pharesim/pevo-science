@@ -80,6 +80,7 @@ Username selection and account creation happen later, at the `/api/auth/confirm`
 **Errors:**
 - `VALIDATION_ERROR` — password too weak, or missing required fields
 - `DUPLICATE` — email already registered or pending (fires BEFORE the accreditation gate; duplicate-email 409 is authoritative regardless of whether the domain is institutional)
+- `ORCID_ALREADY_LINKED` (409) -- the supplied `orcid_token`'s ORCID is already bound to another account row (the `accounts_orcid_unique` partial index). Same terminal wire shape as the `/orcid/callback` durable-binding 409 (no `retriable` field, no `Retry-After` header). Previously surfaced as `INTERNAL_ERROR` (500).
 - `ACCREDITATION_NOT_FOUND` — non-institutional email without valid `orcid_token`, on a non-duplicate email. Institution-is-accredited is public knowledge; the fast-return on this path is intentional.
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. Both the duplicate-email burn path and the new-account hash path emit 503 under saturation, so the 503 outcome does not distinguish registration status. See [common.md → Standard Error Codes](common.md) for the cross-route 503 contract and `Retry-After` semantics.
 
