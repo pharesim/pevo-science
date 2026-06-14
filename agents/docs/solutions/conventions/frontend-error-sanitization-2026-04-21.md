@@ -66,6 +66,18 @@ Predictable user-error branches (e.g. `DUPLICATE`, `VALIDATION_ERROR`) should dr
 
 **Password-handler specific:** zero plaintext inputs (`this.newPasswordInput = ''`) **before** `console.warn` fires so the password does not linger in Alpine reactive state while the error is shown, and does not appear inside the logged error object if the backend ever echoes `req.body`. (The backend currently does not, verified for `/api/settings/set-password`, but the local zero is defense-in-depth regardless.)
 
+**Exemption — operator-facing admin console structured-error passthrough (added 2026-06-15):**
+
+The admin console (`frontend/src/pages/admin.js` `_errorMessage`) is permitted to surface an enveloped backend `error.message` directly to its DOM-bound error fields (`actionError`, `loadError`), rather than mapping each `error.code` to a localized key. Three conditions scope the exemption:
+
+1. **Operator-only surface.** The admin console renders only for accounts in the chain-derived admin roster; the audience is a trusted operator, not an end user. The information-disclosure threat model above (over-the-shoulder, screenshot, screen-share) is weaker for a privileged operator already authorized for the action whose error they see.
+2. **The message IS the feature.** Operator moderation needs the specific backend reason ("Account is not in the admin roster", "Paper is already retracted", a bad-enum 400) to act; a generic localized "Action failed" defeats the purpose. This is the explicit requirement that produced `_errorMessage`.
+3. **Backend obligation (load-bearing).** Admin-route (`/api/admin/*`) error messages MUST be static developer-authored operator copy. They must NOT interpolate end-user input, raw DB / library strings, or upstream Hive-node error text into `error.message`. The exemption rests on this; a future admin route that echoes untrusted text into its message breaks it, and that route must map to a localized key instead (or sanitize the message backend-side).
+
+The synthetic `INTERNAL_ERROR` code that `api.js` `request()` mints for non-enveloped responses is explicitly EXCLUDED from the passthrough (`err.code !== 'INTERNAL_ERROR'`): it carries an untranslated transport string, not a backend reason, so it falls through to the localized fallback. Rendering is via `x-text` (auto-escaped), so there is no XSS sink regardless.
+
+The exemption is narrow: it does NOT extend to end-user-facing pages, which keep the code-to-localized-key shape above. The audience distinction (trusted operator vs end user) is the line.
+
 ## Why This Matters
 
 **`console.warn` is safe to log raw errors into today, but the invariant is load-bearing.** PEvO has no error-telemetry sink: no Sentry, Rollbar, Bugsnag, or `navigator.sendBeacon` usage. The only global listener is `frontend/src/error-tracking.js`'s `unhandledrejection` hook, which writes to `console.error` and is not reachable from a caught-and-handled error. A future decision to add telemetry must re-audit every `console.warn('[scope]', err)` call site — the full error object is assumed to be local-only at write time.
@@ -177,6 +189,8 @@ grep -rnE '= err\??\.message|err\??\.message \|\|' frontend/src/
 ```
 
 This catches both literal-assignment forms (`this.x = err.message`, `this.x = err.message || …`) and **optional-chained** forms (`err?.message || …`, `this.x = err?.message`) — the earlier form of this doc specified only the literal shape, which caused `UI-ERR-MESSAGE-SANITIZE-PAPER-DETAIL-SURVIVORS` (2026-04-22): 9 `err?.message || $t(...)` toast/DOM bindings in `paper-detail.js` plus 5 more in sibling pages slipped past the original gate. Zero matches expected across `frontend/src/`, or only semantic-code-branch carve-outs with an inline justification comment (e.g. the `NOT_FOUND` branch in `paper-detail.js` loader).
+
+**Grep gap + the admin-console exemption:** the admin console's `_errorMessage` returns the message via a bare `return err.message` statement, which the grep above does NOT match (it targets the `= err.message` / `err.message ||` forms). So the operator-console passthrough is out of the grep's scope, not a false-clean — it is the sanctioned exemption documented under Guidance, justified by the trusted-operator audience and the backend's static-message obligation. If the grep is ever widened to catch the `return`/`return …` forms, exclude the admin `_errorMessage` site explicitly so the exemption does not read as a violation.
 
 ## Related
 
