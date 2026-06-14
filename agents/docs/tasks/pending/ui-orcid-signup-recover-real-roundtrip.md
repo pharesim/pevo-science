@@ -224,3 +224,52 @@ ORCID login bounces to /papers. Dev routing restored (`./deploy.sh up`). No code
 change in this move — verification only.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES:
+
+`/ce-code-review` on the implementing commit (the real round-trip bodies + the
+`fixtures/orcid.js` extraction) came back strong: the signup and recover
+round-trips are GENUINELY real (every `/api/orcid/start` -> `/orcid/callback` ->
+`/api/auth/signup`|`/recover` -> `/api/auth/login` hop hits the real backend;
+only network-topology bridges + two out-of-scope shims), the assertions verify
+the real end state via real DB reads (`password_hash IS NULL`, 403
+`NO_PASSWORD_SET`, ORCID login -> /papers), the tests have teeth (a regression
+reintroducing password persistence fails the real-DB `toBeNull()` checks), and
+the `fixtures/orcid.js` extraction is behavior-preserving for
+`settings-orcid-factor.spec.js` (byte-identical bridge, three call sites
+unchanged). Two P3 polish items before archive:
+
+1. **Username-finalization shim comment understates the write.** The signup
+   spec's test-DB shim comment says it finalizes "that one column" (username),
+   but the `UPDATE accounts SET ...` actually sets THREE activation columns
+   (`username`, `custody = 'light'`, `verify_token = NULL`). The UPDATE itself is
+   CORRECT — it faithfully mirrors the real activation `UPDATE` in
+   `backend/src/routes/signup-verify.ts` (after ORCID signup the row still has
+   `verify_token = 'confirmed:<hex>'` and `custody` NULL, so both must be
+   finalized for `handleLogin`'s `username IS NOT NULL` gate plus a consistent
+   activated state). Only the comment is misleading. Reword it to name all three
+   out-of-scope activation columns so the extra writes don't read as stray.
+
+2. **Carve-out clause (a) wants the shim justification in the FILE HEADER.** The
+   two real-backend-test shims — the `page.route` stub of the read-only
+   `/api/accreditations/<username>` HAF status, and the direct `UPDATE accounts
+   SET username...` test-DB seed — are documented inline at the call sites but
+   not in the file header. Per root `CLAUDE.md` "Carve-out for deterministic
+   edge-case coverage" clause (a), the justification belongs in the test file
+   header; the sibling `settings-orcid-factor.spec.js` is the project precedent
+   (it carries an explicit clause-a/b/c header block). Lift a short clause-(a)
+   paragraph into this spec's header naming both shims (which real path each
+   replaces and why it is impractical), and stating every HTTP hop stays real.
+   The shims are legitimate and non-hollowing — this is a documentation-location
+   fix, not a re-architecture.
+
+Reviewed-and-dismissed (no action): a `"the SEC-004 recover test"` comment
+reference (confidence 25, gate-suppressed) — it is a within-file behavioral
+pointer that resolves to the in-file `SEC-004 Tester` literals, not an
+archived-task redirect.
+
+Both items are comment/header-doc only — no spec-logic change. When they land,
+`git mv` this file back to `tasks/review/`; the move is the re-review signal. Do
+not edit this block.
