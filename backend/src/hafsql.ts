@@ -1363,7 +1363,7 @@ export function consentedAuthorsCteBody(
       AND (EXISTS (SELECT 1 FROM claimed_hive_slots s
                     WHERE s.root_author = cc.root_author AND s.root_permlink = cc.root_permlink
                       AND s.hive = cc.root_author)
-           OR (rc.json_metadata -> ${tag} ->> 'type' = 'bridge_paper' AND rc.author = ${bridge}))
+           OR ${validPevoPaperWhere({ commentAlias: 'rc', appTagParam: tag, bridgeAccountParam: bridge, source: 'bridge' })})
       AND NOT EXISTS (SELECT 1 FROM route2_latest rl
                        WHERE rl.root_author = cc.root_author AND rl.root_permlink = cc.root_permlink
                          AND rl.account = cc.root_author AND rl.rn = 1 AND rl.action != 'author_accept')
