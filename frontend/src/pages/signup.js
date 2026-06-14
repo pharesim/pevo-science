@@ -25,6 +25,14 @@ const template = `
             <!-- Error -->
             <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
               <p class="text-red-700 text-sm" x-text="error"></p>
+              <!-- Terminal ORCID_ALREADY_LINKED recovery: log into the existing
+                   account or restart OAuth with a different ORCID. No resubmit. -->
+              <template x-if="orcidAlreadyLinked">
+                <div class="mt-3 flex flex-wrap gap-3">
+                  <a :href="$lp('/login')" @click.prevent="navigate('/login')" class="btn-primary inline-block no-underline text-sm" x-text="$t('signup.signIn')"></a>
+                  <button type="button" @click="handleOrcidVerify()" class="btn-secondary text-sm" x-text="$t('signup.orcidVerifyButton')"></button>
+                </div>
+              </template>
             </div>
 
             <form @submit.prevent="handleSubmit" class="space-y-5">
@@ -187,6 +195,12 @@ export function initSignupPage() {
     isResending: false,
     resendSuccess: false,
     orcidLoading: false,
+    // Set when /signup returns 409 ORCID_ALREADY_LINKED. The ORCID is already
+    // bound to another account and the single-use verification nonce is
+    // consumed, so a same-orcid_token resubmit only yields a confusing 422.
+    // Drives the terminal recovery affordance and blocks canSubmit so the user
+    // cannot blindly resubmit.
+    orcidAlreadyLinked: false,
 
     get isConnected() { return Alpine.store('auth').isConnected; },
 
@@ -199,6 +213,9 @@ export function initSignupPage() {
     },
 
     get canSubmit() {
+      // A terminal ORCID_ALREADY_LINKED 409 cannot be resolved by resubmitting
+      // the same orcid_token; force the user through the recovery affordance.
+      if (this.orcidAlreadyLinked) return false;
       const baseFields = this.email && this.fullName && this.field;
       if (!baseFields) return false;
       // ORCID branch: password is optional. User can set one later in Settings.
@@ -252,6 +269,9 @@ export function initSignupPage() {
       if (this.orcidLoading) return;
       this.orcidLoading = true;
       this.error = null;
+      // Restarting OAuth (e.g. to pick a different ORCID) clears any terminal
+      // already-linked state from a prior submit.
+      this.orcidAlreadyLinked = false;
 
       // Save form state before redirecting.
       // Do NOT persist password/passwordConfirm across the ORCID
@@ -320,6 +340,7 @@ export function initSignupPage() {
     clearOrcid() {
       this.orcidToken = '';
       this.orcidId = '';
+      this.orcidAlreadyLinked = false;
     },
 
     async handleSubmit() {
@@ -353,6 +374,16 @@ export function initSignupPage() {
           await this._resolveExistingAccount();
         } else if (err.code === 'VALIDATION_ERROR' && !this.orcidToken) {
           this.error = this.$t('signup.orcidOrInstitutional');
+        } else if (err.code === 'ORCID_ALREADY_LINKED') {
+          // Terminal: the ORCID is bound to another account row and the
+          // single-use verification nonce is already consumed, so resubmitting
+          // the same orcid_token only falls through to a confusing 422. Mirror
+          // the /orcid/callback durable-binding 409 handling: stop, surface a
+          // terminal message, and route the user to log into the existing
+          // account or restart OAuth for a different ORCID. canSubmit blocks a
+          // blind resubmit while this flag is set.
+          this.orcidAlreadyLinked = true;
+          this.error = this.$t('signup.orcidAlreadyLinked');
         } else {
           console.warn('[signup submit]', err);
           this.error = this.$t('signup.submitFailed');

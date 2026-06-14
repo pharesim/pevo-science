@@ -188,6 +188,64 @@ describe('signupPage', () => {
       expect(mockSubmitSignup).not.toHaveBeenCalled();
     });
 
+    it('ORCID_ALREADY_LINKED (terminal 409): sets the already-linked flag and terminal message, does not mark submitted', async () => {
+      mockSubmitSignup.mockRejectedValue({ code: 'ORCID_ALREADY_LINKED' });
+      const comp = createComponent();
+      comp.email = 'x@x.com';
+      comp.fullName = 'A';
+      comp.field = 'C';
+      comp.orcidToken = 'orcid-nonce-dup';
+
+      await comp.handleSubmit();
+
+      expect(comp.orcidAlreadyLinked).toBe(true);
+      expect(comp.error).toBe('signup.orcidAlreadyLinked');
+      expect(comp.submitted).toBe(false);
+      // Must take the terminal branch, not the generic submitFailed fallback.
+      expect(comp.error).not.toBe('signup.submitFailed');
+    });
+
+    it('ORCID_ALREADY_LINKED is terminal: canSubmit is false and a blind resubmit of the same token is blocked', async () => {
+      mockSubmitSignup.mockRejectedValue({ code: 'ORCID_ALREADY_LINKED' });
+      const comp = createComponent();
+      comp.email = 'x@x.com';
+      comp.fullName = 'A';
+      comp.field = 'C';
+      comp.orcidToken = 'orcid-nonce-dup';
+
+      await comp.handleSubmit();
+      expect(mockSubmitSignup).toHaveBeenCalledTimes(1);
+      expect(comp.canSubmit).toBe(false);
+
+      // A second submit must NOT re-POST the consumed token (that yields the
+      // confusing 422); canSubmit gates handleSubmit's entry.
+      await comp.handleSubmit();
+      expect(mockSubmitSignup).toHaveBeenCalledTimes(1);
+    });
+
+    it('restarting ORCID verification clears the terminal already-linked state', async () => {
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth' });
+      const comp = createComponent();
+      comp.orcidAlreadyLinked = true;
+
+      await comp.handleOrcidVerify();
+
+      expect(comp.orcidAlreadyLinked).toBe(false);
+    });
+
+    it('clearOrcid clears the terminal already-linked state and reverts to the password branch', () => {
+      const comp = createComponent();
+      comp.orcidToken = 'orcid-nonce-dup';
+      comp.orcidId = '0000-0000-0000-0001';
+      comp.orcidAlreadyLinked = true;
+
+      comp.clearOrcid();
+
+      expect(comp.orcidAlreadyLinked).toBe(false);
+      expect(comp.orcidToken).toBe('');
+      expect(comp.orcidId).toBe('');
+    });
+
     // Unknown-code failures surface a generic localized message; raw err
     // reaches console.warn.
     it('sanitizes generic failure: generic message to DOM, raw err to console.warn', async () => {

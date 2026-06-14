@@ -906,7 +906,8 @@
     "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
     "orcidStartFailed": "Could not start the ORCID sign-up flow. Please try again. If the problem persists, contact support.",
     "submitFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
-    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support.",
+    "orcidAlreadyLinked": "This ORCID is already linked to a PEvO account. Log in to that account, or verify with a different ORCID."
   },
   "signIn": {
     "title": "התחברות ל-PEvO",

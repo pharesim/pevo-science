@@ -2635,3 +2635,21 @@ pt: orcid.providerTimeoutVerify
 sv: orcid.providerTimeoutVerify
 tr: orcid.providerTimeoutVerify
 zh: orcid.providerTimeoutVerify
+
+### Added 2026-06-14 (UI-SIGNUP-ORCID-ALREADY-LINKED-TERMINAL-409)
+
+ar: signup.orcidAlreadyLinked
+cs: signup.orcidAlreadyLinked
+da: signup.orcidAlreadyLinked
+de: signup.orcidAlreadyLinked
+es: signup.orcidAlreadyLinked
+fa: signup.orcidAlreadyLinked
+fr: signup.orcidAlreadyLinked
+he: signup.orcidAlreadyLinked
+it: signup.orcidAlreadyLinked
+nl: signup.orcidAlreadyLinked
+pl: signup.orcidAlreadyLinked
+pt: signup.orcidAlreadyLinked
+sv: signup.orcidAlreadyLinked
+tr: signup.orcidAlreadyLinked
+zh: signup.orcidAlreadyLinked
