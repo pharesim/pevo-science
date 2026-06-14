@@ -279,6 +279,16 @@ const SESSION_EXPIRY = '24h';
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
+// Recovery window for stuck-account resume. The /confirm + /link stuck-recovery
+// lookup is bounded to rows whose finalize UPDATE landed within this window so a
+// long-since-finalized steady-state row cannot be replayed through recovery (an
+// attacker holding the victim's posting key / a fresh signature could otherwise
+// re-mint a session against a completed account). A crashed activation's row is
+// recoverable for this long; after it, the user re-enters via the password-gated
+// login flow. The finalize UPDATE bumps `accounts.updated_at = NOW()`, so the
+// window measures time since the last activation, not since signup.
+const STUCK_RECOVERY_WINDOW = '1 hour';
+
 // Username format: 3-16 chars, lowercase a-z, 0-9, dots/hyphens not at start/end
 const USERNAME_RE = /^[a-z][a-z0-9.-]{1,14}[a-z0-9]$/;
 const BAD_SEGMENT_RE = /[.-]{2}/;
@@ -364,17 +374,29 @@ function byAuthToken(req: Request): string {
   return `ip:${byIp(req)}`;
 }
 
+// `refundStatusCodes: [409]` refunds the per-token slot on a 409. The motivating
+// case is 409 LOCK_HELD: the slot was consumed by the concurrent activation
+// holder, not the waiter, so charging the waiter for the holder's slowness would
+// push an auto-retry loop into a 429 cliff with a 1h cooldown. The route's other
+// 409 (DUPLICATE — the username/Hive account is already taken) is also refunded
+// since it shares the code, which is benign: Hive account existence is public
+// on-chain data, the limiter is keyed per auth_token (not per probed username),
+// and the legitimate user simply retries with a different name. The brute-force
+// vector this limiter exists to bound — 400 invalid-token spraying against one
+// auth_token value — still consumes a slot on every attempt.
 const confirmTokenLimiter = rateLimit({
   name: 'signup-confirm-token',
   windowMs: 3_600_000,
   max: 5,
   keyFn: byAuthToken,
+  refundStatusCodes: [409],
 });
 const linkTokenLimiter = rateLimit({
   name: 'signup-link-token',
   windowMs: 3_600_000,
   max: 5,
   keyFn: byAuthToken,
+  refundStatusCodes: [409],
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -559,6 +581,20 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/confirm — Create new Hive account with client-provided keys (SF4)
 // Request: { auth_token, username, keys: { owner_public, active_public, posting_public, memo_public, posting_private, memo_private } }
+//
+// Best-effort JWT contract (mirrors /link). The activation lock is released at
+// the single-fire-critical-section boundary (after the verify_token-clearing
+// finalize) and BEFORE the slow accreditation broadcast, so a fast same-token
+// retry arriving during the ~30s accreditation window can acquire the lock, find
+// the row already finalized, take the resume path, and mint a SECOND JWT. That
+// second JWT is intentional, not a defect: it is minted for the SAME owner who
+// already proved ownership on this path (posting-key proof), so it grants nothing
+// new. The properties that DO matter are strictly held — no second
+// createClaimedAccount (the chain-exists check catches it) and no second finite
+// claim-token burn — with the duplicate accreditation bounded by the HAF probe +
+// seedAccreditation SET-NX backstop. Forcing strict single-JWT would require
+// holding the lock across the ~30s accreditation broadcast, re-introducing the
+// pool-saturation this redesign exists to eliminate, so it is deliberately not done.
 // ─────────────────────────────────────────────────────────────
 router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
@@ -646,7 +682,12 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
     // finalize UPDATE (the Facet-1 crash gap this redesign closes). The retry
     // stores keys + clears verify_token WITHOUT re-broadcasting.
     let resumeChainExists = false;
-    let createResult: { block_num: number } = { block_num: 0 };
+    // null until the fresh path actually broadcasts createClaimedAccount. Both
+    // resume paths (resumeChainExists crash-resume + verify_token-NULL stuck-
+    // resume) skip the broadcast, so block_num stays null and is omitted from
+    // the 200 response — a resume never created a new block, and returning
+    // `block_num: 0` would be a "created in block 0" lie.
+    let createResult: { block_num: number } | null = null;
 
     // 1. Look up the pending row by auth token. Plain pooled query — no held
     //    transaction. The activation lock (not a pg lock) gives single-fire, so
@@ -716,7 +757,8 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
          WHERE username = $1
            AND verify_token IS NULL
            AND custody = 'light'
-           AND posting_key_enc IS NOT NULL`,
+           AND posting_key_enc IS NOT NULL
+           AND updated_at > NOW() - INTERVAL '${STUCK_RECOVERY_WINDOW}'`,
         [normalizedUsername],
       );
       if (stuckLookup.rows.length > 0) {
@@ -772,7 +814,7 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
          SET username = $1, custody = 'light', verify_token = NULL,
              posting_key_enc = $2, iv_posting = $3,
              memo_key_enc = $4, iv_memo = $5,
-             signup_binding_hash = NULL
+             signup_binding_hash = NULL, updated_at = NOW()
          WHERE id = $6`,
         [
           normalizedUsername,
@@ -837,7 +879,9 @@ router.post('/confirm', confirmLimiter, confirmTokenLimiter, async (req: Request
       expires_at: expiresAt,
       custody: 'light',
       username: normalizedUsername,
-      block_num: createResult.block_num,
+      // Omit on resume paths (createResult stays null) — no new block was
+      // created, so there is no block_num to report.
+      ...(createResult ? { block_num: createResult.block_num } : {}),
     });
     },
   );
@@ -946,7 +990,8 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
          FROM accounts
          WHERE username = $1
            AND verify_token IS NULL
-           AND custody = 'self'`,
+           AND custody = 'self'
+           AND updated_at > NOW() - INTERVAL '${STUCK_RECOVERY_WINDOW}'`,
         [hiveUsername],
       );
       if (stuckLookup.rows.length > 0) {
@@ -983,7 +1028,7 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       await pool.query(
         `UPDATE accounts
          SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = $2,
-             signup_binding_hash = NULL
+             signup_binding_hash = NULL, updated_at = NOW()
          WHERE id = $3`,
         [hiveUsername, now, account.id],
       );

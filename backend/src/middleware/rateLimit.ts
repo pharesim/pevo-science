@@ -109,6 +109,30 @@ interface RateLimitConfig {
    * or accept the amplification surface explicitly.
    */
   skipFailedRequests?: boolean;
+
+  /**
+   * Refund the slot only for these specific response status codes, leaving
+   * every other outcome (including success and other 4xx/5xx) to consume a
+   * slot normally. This is the surgical counterpart to `skipFailedRequests`,
+   * which refunds ALL `status >= 400`.
+   *
+   * Use it when most failures SHOULD consume a slot (e.g. a per-token
+   * brute-force limiter where a 400 invalid-token attempt must pay) but one
+   * specific retriable status should NOT penalize the caller — e.g. a 409
+   * LOCK_HELD returned because a concurrent holder owns a per-resource lock:
+   * the holder consumed the budget, not the waiter, so double-counting the
+   * waiter pushes an auto-retry loop into a 429 cliff with a full-window
+   * cooldown. Refunding only that code keeps the brute-force penalty on
+   * genuine rejections while letting a contention retry proceed.
+   *
+   * Refund uses the same deferred DECR (Redis) / splice (in-memory) on
+   * `res.on('finish')` + `res.on('close')` as `skipFailedRequests`. When both
+   * options are set, a status matching either gate is refunded. The refund is
+   * gated on `res.writableEnded` so a pre-status TCP-abort (default
+   * `statusCode=200`, never in the refund set) is unaffected here — that case
+   * is `skipFailedRequests`'s concern.
+   */
+  refundStatusCodes?: number[];
 }
 
 /**
@@ -120,6 +144,23 @@ export function rateLimit(config: RateLimitConfig) {
   const memStore = new Map<string, RateLimitEntry>();
   const redisPrefix = `${appConfig.appTag}:rl:${config.name}:`;
   const skipFailed = config.skipFailedRequests === true;
+  const refundCodes = config.refundStatusCodes;
+  // Whether the deferred finish/close listeners are needed at all. With
+  // refundStatusCodes (but not skipFailedRequests) the listeners refund only
+  // the listed codes; with skipFailedRequests they refund every >= 400.
+  const refundEnabled = skipFailed || (refundCodes !== undefined && refundCodes.length > 0);
+
+  // True when the completed response must REFUND its consumed slot. Mirror of
+  // the gate used by both the Redis and in-memory refund closures so the policy
+  // lives in one place:
+  //   - skipFailedRequests refunds any non-clean-success outcome.
+  //   - refundStatusCodes refunds only the listed codes.
+  // A response matching either enabled gate is refunded.
+  const shouldRefund = (res: Response): boolean => {
+    if (refundCodes !== undefined && refundCodes.includes(res.statusCode)) return true;
+    if (skipFailed && !(res.statusCode < 400 && res.writableEnded)) return true;
+    return false;
+  };
 
   const cleanupInterval = setInterval(() => {
     const now = Date.now();
@@ -166,26 +207,23 @@ export function rateLimit(config: RateLimitConfig) {
           res.set('Retry-After', String(retryAfter));
           return sendError(res, 429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
         }
-        if (skipFailed) {
-          // Refund the slot on any non-successful outcome. Register both
-          // 'finish' and 'close' with a once-guard so TCP-abort / client-
-          // disconnect (which fires 'close' but NOT 'finish') is covered.
-          // Without 'close' coverage, an aborted upgrade (max=1/hr) would
-          // permanently consume the legitimate user's slot for the full
-          // hour — exactly the DoS this option is meant to prevent.
-          // The gate `statusCode < 400 && writableEnded` skips the refund
-          // only when the response completed cleanly. A pre-status TCP-
-          // abort (mid-`await` disconnect) leaves `statusCode` at the
-          // Node.js default of 200 and `writableEnded` false; the
-          // `writableEnded` half of the gate is what catches that case.
-          // `getRedis()` is re-resolved inside the callback because a
-          // reconnect cycle between handler entry and deferred-fire would
-          // otherwise capture a stale binding.
+        if (refundEnabled) {
+          // Refund the slot on the policy-matched outcomes (see `shouldRefund`:
+          // skipFailedRequests → any non-clean-success; refundStatusCodes →
+          // only the listed codes). Register both 'finish' and 'close' with a
+          // once-guard so TCP-abort / client-disconnect (which fires 'close'
+          // but NOT 'finish') is covered. Without 'close' coverage, an aborted
+          // skipFailedRequests upgrade (max=1/hr) would permanently consume the
+          // legitimate user's slot for the full hour — exactly the DoS this
+          // option is meant to prevent.
+          // `getRedis()` is re-resolved inside the callback because a reconnect
+          // cycle between handler entry and deferred-fire would otherwise
+          // capture a stale binding.
           let refunded = false;
           const refund = () => {
             if (refunded) return;
             refunded = true;
-            if (res.statusCode < 400 && res.writableEnded) return;
+            if (!shouldRefund(res)) return;
             const r = getRedis();
             if (!r) return;
             void (async () => {
@@ -224,21 +262,18 @@ export function rateLimit(config: RateLimitConfig) {
     entry.timestamps.push(pushedTs);
     memStore.set(key, entry);
 
-    if (skipFailed) {
+    if (refundEnabled) {
       // Same dual-listener once-guard pattern as the Redis path: 'close'
       // covers TCP-abort / client-disconnect; 'finish' covers normal
       // completion. Defensive double-registration with `refunded` flag
       // prevents double-splice when both fire on a clean finish-then-close
-      // sequence. The `statusCode < 400 && writableEnded` gate skips the
-      // refund only when the response completed cleanly; pre-status
-      // TCP-abort (default `statusCode=200`, `writableEnded=false`) flows
-      // to the splice so the slot is returned.
-      // Mirror of the Redis-path refund closure above; keep semantics in sync.
+      // sequence. The refund policy (`shouldRefund`) is shared with the Redis
+      // path so skipFailedRequests / refundStatusCodes behave identically.
       let refunded = false;
       const refund = () => {
         if (refunded) return;
         refunded = true;
-        if (res.statusCode < 400 && res.writableEnded) return;
+        if (!shouldRefund(res)) return;
         const e = memStore.get(key);
         if (!e) return;
         const idx = e.timestamps.indexOf(pushedTs);
