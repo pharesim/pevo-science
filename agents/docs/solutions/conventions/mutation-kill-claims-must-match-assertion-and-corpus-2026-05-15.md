@@ -1,7 +1,7 @@
 ---
 title: Mutation-kill claims in test headers and convention docs must match what the assertion actually catches against the corpus the test sees
 date: 2026-05-15
-last_updated: 2026-05-28
+last_updated: 2026-06-14
 category: conventions
 module: backend
 problem_type: convention
@@ -53,6 +53,17 @@ A recurring special case on the wiring axis: how a canary is *constructed* bound
 3. **Exercise the production call site** (real-path), or assert structurally that production routes through the helper — the only construction that catches a call-site bypass.
 
 A self-contained negative control that hardcodes the pre-fix shape (e.g. a raw `=` predicate written inline in the test) *demonstrates the delta* but reads no production code, so it detects no production mutation at all. So when the claim is "this canary pins the production predicate," name which of the three it actually is, and never claim call-site-bypass coverage from a constant-import, helper-import, or self-contained negative-control test. See the "Helper-import canary" example below.
+
+### Probabilistic detection: a mutation two of whose outputs usually land in the same value bucket
+
+Point 3 of the triple ("is the comparison value held constant under the mutation?") has a probabilistic variant worth its own attention: a mutation can produce a value that is *usually but not always* indistinguishable from the un-mutated value, so the kill is **probabilistic, not deterministic** — and a passing run does not prove the mutation is caught.
+
+The instance that surfaced it: a real-app-Postgres round-trip test asserts a reissued JWT's `reissuedAt` equals `sessions_invalidated_at.getTime()` read back from Postgres. The same assertion is claimed to kill two regressions in the `recover.ts` reissue writer:
+
+- **Seconds-rounding** the embedded value (`floor(ms/1000)*1000`) changes the millisecond on essentially every run — the assertion goes red **deterministically**.
+- **Switching the write from a captured Node `Date` to SQL `NOW()`** is caught only **probabilistically**: the just-captured Node `Date` and the statement's `NOW()` usually land in the **same millisecond bucket** (~96% of local runs), so the round-tripped value matches the embedded value and the mutant survives the assertion most of the time. Suite retries compound the survival.
+
+So "this round-trip test kills a NOW()-switch" is false as an unconditional claim; co-listing "NOW()/seconds-rounding" as equivalent detectors overstates coverage. When a mutation-kill claim covers two regressions that differ in **granularity** (a sub-second precision loss vs a same-instant-different-source swap), verify EACH empirically — do not assume a test that deterministically kills the coarser mutation also kills the finer one. The honest phrasing names which is deterministic and which is probabilistic, and states that the suite must not be relied on as the detector for the probabilistic one. The general rule: any mutation whose two outputs share a quantization bucket (a timestamp truncated to ms, a rounded amount, a hash mod N) is a probabilistic kill at best — pin it with a deterministic fixture (a fixed constant differing in the relevant digit) rather than a live same-instant comparison.
 
 ## Why This Matters
 
