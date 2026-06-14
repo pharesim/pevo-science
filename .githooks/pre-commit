@@ -94,7 +94,7 @@ staged_added() {
     | awk '
       /^\+\+\+ / { f = substr($0, 7);   # strip leading "+++ b/"
                    keep = (f ~ /^(frontend|backend)\/(src|tests)\// &&
-                           f ~ /\.(ts|tsx|js|jsx|mjs|cjs|sql|vue)$/);
+                           f ~ /\.(ts|tsx|js|jsx|mjs|cjs|sql)$/);
                    next }
       /^@@ /     { match($0, /\+[0-9]+/);
                    nl = substr($0, RSTART + 1, RLENGTH - 1) + 0;
@@ -104,13 +104,25 @@ staged_added() {
     '
 }
 
+# Collect the scan output up front so a scan FAILURE fails CLOSED. A bare
+# `done < <(staged_added)` process substitution discards staged_added's exit
+# status, so a broken `git diff` (its stderr suppressed by 2>/dev/null) would
+# yield empty input, zero violations, and a silently-passed commit — a gate that
+# cannot read the staged diff must block the commit, not wave it through.
+scan_out=$(mktemp)
+trap 'rm -f "$scan_out"' EXIT
+if ! staged_added > "$scan_out"; then
+  echo "pre-commit: comment-anchor gate could not read the staged diff; failing closed" >&2
+  exit 1
+fi
+
 violations=()
 while IFS=$'\t' read -r file lineno content; do
   [ -z "$file" ] && continue
   if anchor_violation "$content"; then
     violations+=("$file:$lineno: $content")
   fi
-done < <(staged_added)
+done < "$scan_out"
 
 if [ "${#violations[@]}" -gt 0 ]; then
   {
