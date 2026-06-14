@@ -284,3 +284,80 @@ to an operator-driven session on a clean deploy with real admin credentials: rea
 `issued_by` attribution, and the self-custody signature path.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review #2 (2026-06-14) — items 1-9 verified FIXED; ONE new HELD item
+
+Re-reviewed the held-fix commit via `/ce-code-review` across 10 reviewers (correctness,
+security, adversarial, julik-frontend-races, testing, maintainability, project-standards,
+api-contract, reliability, learnings; `ce-agent-native-reviewer` skipped per root CLAUDE.md).
+
+**Items 1-9 are all genuinely fixed (not papered over).** Highlights independently traced:
+- Item 1: `method:'manual'` is in the backend `z.enum(['manual','email','orcid'])`; the
+  payload-pin test asserts the exact value.
+- Item 3: the double-submit window is closed — `_stageConfirm` early-returns on
+  `submitting||pendingConfirm`, `runConfirmed` sets `submitting=true` synchronously before
+  the first `await`, and all seven interactive surfaces carry the `:disabled` gate.
+- Item 4: `loadRoster` is self-contained (own try/catch); a post-success reload failure
+  routes to `loadError`, never the action catch. Confirmed not reachable as a swallow.
+- Item 9 (security CLEARED): self-custody routes through `request()` with the per-request
+  Hive signature and NO Bearer, so the backend sees `hiveAuthMethod==='signature'` and
+  `requireFreshAdminAuth` is satisfied; light routes JWT + single-use body proof. The
+  signature binds the correct `/api/...` path; `issued_by` is server-set and unspoofable;
+  no XSS sink (all surfaces render via auto-escaped `x-text`). A stolen self-custody JWT
+  alone cannot broadcast.
+- Item 8 remains OPERATOR-GATED/deferred as documented above — not a hold. (The current
+  `/api/admin/roster` 404 is a stale-image artifact: the route is defined, mounted, and
+  committed in HEAD; the running container serves a pre-admin-routes bundle until a clean
+  `./deploy.sh restart`.)
+
+**Required fix (blocks archive):**
+
+10. `_errorMessage` leaks an untranslated transport string instead of its localized
+    fallback. `request()` synthesizes an `ApiRequestError` with `code:'INTERNAL_ERROR'` and
+    `message:"Request failed with status N"` for any non-enveloped response (a bare
+    404/502/proxy error). `_errorMessage`'s structured-error branch
+    (`typeof err?.code === 'string' && err?.message`) then returns that raw English string,
+    contradicting its own docstring promise to fall back to a generic localized string for
+    unstructured/transport errors. Reachable now: while the backend image is stale and
+    `/api/admin/roster` 404s, an admin's first screen shows "Request failed with status 404"
+    rather than `admin.loadFailed`. Fix: exclude the synthetic transport code from the
+    message-surfacing branch (treat `INTERNAL_ERROR` as unstructured so it falls through to
+    the localized fallback), mirroring the `bridge.js` sibling that maps `INTERNAL_ERROR` to
+    a localized key. Add a regression test that rejects with a synthetic `INTERNAL_ERROR`
+    error and asserts the localized fallback (not the raw string) reaches `loadError`/
+    `actionError`. Genuine backend errors carry their real codes (`NOT_FOUND`,
+    `SERVICE_UNAVAILABLE`, …) with real messages, so this only narrows the synthetic
+    fallback case.
+
+**Recommended (non-blocking — fix in this pass or note for follow-up):**
+
+- ORCID-factor proof target-rebind. The light+ORCID minted proof is bound to
+  `(action, acting-admin, '')`, not the specific target. After the OAuth full-page round-trip
+  wipes `pendingConfirm`, an operator who re-stages a DIFFERENT target of the SAME action
+  gets a cache hit and completes against the new payload. Backend re-enforces tier (not an
+  escalation), and ORCID form-loss is already an accepted follow-up — fold the rebind into
+  the deferred item-8 verification.
+- Case-sensitive self-promote guard: `requestPromote`'s `account === this.username` check
+  runs on trimmed-but-not-lowercased free text; typing your own name with capitals bypasses
+  the client guard (backend still rejects — Hive names are lowercase-only). One-char fix
+  (`.toLowerCase()`) if you want it tight.
+
+**Dismissed / informational (no action):**
+
+- `adminMutation` self-custody `auth.username` lacks optional chaining (light branch uses
+  `auth?.custody`) — unreachable behind the `isConnected` template gate.
+- `/admin/roster/revoke` `level` is validated-but-unused (backend derives tier from chain) —
+  no contract break.
+- STUBS.md has two identical `### Added 2026-06-14 (UI-ADMIN-CONSOLE)` headings — not a rule
+  violation; minor translator-confusion note.
+
+Moving to `pending/` for the UI agent. Land item 10 (and optionally the two recommended
+items), then `git mv` back to `review/` (the move is the re-review signal).
+
+(Architect-owned, separate from this task: the solutions entry
+`admin-account-locked-by-hive-create-claimed-account-semantics-2026-05-19.md` named its own
+re-opening trigger — a non-root admin-elevation surface — which this roster work is. The code
+correctly closes the gap via `requireFreshAdminAuth`, so this is solutions-store maintenance
+to handle via `/ce-compound-refresh`, not a code defect.)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
