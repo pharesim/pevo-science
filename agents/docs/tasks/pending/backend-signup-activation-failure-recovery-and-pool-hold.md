@@ -171,3 +171,51 @@ paths; (4) double-accredit/double-JWT-window test (best-effort contract, see Dec
 Architect: resolve A + B (and confirm the back-fill fix), then move this back to `pending/` for
 the implementer to merge `backend-signup-activation-holds-wip` (with the back-fill fix), or
 re-scope the changed items.
+
+## [Architect] (2026-06-14) — DECISIONS A + B RESOLVED + back-fill confirmed; UNBLOCKED to pending/
+
+**Decision A — accept migration `016_accounts_updated_at.sql` (the DB column, NOT a Redis marker).**
+The recency guard's entire job is a *durable* "was this row recently written without
+finalization" signal. A Redis finalize-recency marker is volatile (lost on flush/restart,
+single-instance), so it would make the stuck-vs-steady-state distinction unreliable exactly
+when it matters (post-restart recovery). A migration-added `accounts.updated_at` bumped at every
+`/confirm`+`/link` finalize is the durable, schema-authoritative mechanism (per
+`migrations-sole-schema-authority`), and `updated_at` is a generally-useful column. The hold's
+"no schema change" hint was simply wrong (there is no existing bumped timestamp on `accounts`);
+the implementer correctly took the hold's own named fallback. Accepted. Deploy note: this adds a
+migration, so `./deploy.sh migrate` must run before the next backend start (the boot
+`verifyAppDbMigrations` probe fails on an unrun migration — which is why the WIP was kept off
+`main`).
+
+**Back-fill fix — REQUIRED (confirmed).** Migration `016` must back-fill existing rows to a
+definitively-past value before sealing the column, e.g. `UPDATE accounts SET updated_at =
+created_at` THEN `ALTER ... SET NOT NULL` + `SET DEFAULT now()`. `ADD COLUMN ... NOT NULL DEFAULT
+now()` alone stamps every pre-existing finalized row at migration time, leaving the item-1
+stuck-recovery bypass OPEN for ~1h post-deploy. Land the back-fill with the merge.
+
+**Decision B — accept the best-effort-JWT contract for `/confirm` (match `/link`); do NOT hold the
+lock across accreditation.** The conflict is real and the implementer's reading is correct: a
+single recency marker cannot both *admit* fast retry (required by the stuck-recovery tests) and
+*exclude* it (item-4's "no second JWT"), because there is no durable trace of accreditation
+completion to separate the two. Resolution: a duplicate JWT on a fast same-token retry during the
+~30s accreditation window is **harmless** — it is minted for the *same* authenticated owner (who
+already proved ownership via posting-key / signature on this path), and the properties that
+actually matter are strictly held: **no second `createClaimedAccount`** (chain-exists check) and
+**no second finite-claim-token burn**, with the second `accredit` bounded by the HAF-probe +
+`seedAccreditationBonus` SET-NX backstop. Requiring strict single-JWT would force holding the lock
+across the ~30s accreditation broadcast — which re-introduces the exact long-hold / pool-pressure
+problem (Facet 2) this entire redesign exists to eliminate, so it is self-defeating and rejected.
+The item-4 test as implemented (asserts no 2nd `createClaimedAccount`, no 2nd meaningful
+`accredit`, single activated row; does NOT assert no-2nd-JWT) is correct and accepted. Action for
+the implementer: state `/confirm`'s best-effort-JWT contract explicitly in the handler docblock
+(mirroring `/link`'s documented contract) so a future reader does not mistake the resume-path
+second JWT for a defect.
+
+**Disposition.** All 7 round-1 hold items are implemented at `225d3ebe` on
+`backend-signup-activation-holds-wip`; A + B are now resolved and the back-fill fix is required.
+No re-scope needed. Moving to `pending/` for the implementer to: merge the WIP branch onto main
+WITH the back-fill fix applied to migration `016`, add the `/confirm` best-effort-JWT docblock,
+run `./deploy.sh migrate`-equivalent locally + the `signup-verify-*` suites green, then `git mv`
+to `review/`. The round-2 re-review will scope to the merge commit.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
