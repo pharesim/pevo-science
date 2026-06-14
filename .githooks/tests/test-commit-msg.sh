@@ -102,6 +102,12 @@ run_case "F5b architect stages .dockerignore → accept"     0 "architect: docke
 run_case "F5c architect stages .env.example → accept"      0 "architect: env tmpl"     ".env.example"
 run_case "F5d architect stages deploy.sh → accept"         0 "architect: deploy tweak" "deploy.sh"
 run_case "F5e architect stages LICENSE → accept"           0 "architect: license bump" "LICENSE"
+# docker-compose*.yml family: base + any root-level overlay are architect zone.
+# Guards the generalized regex against a future tightening that drops the base file
+# and against the zone boundary leaking to non-architect agents.
+run_case "F5f architect stages docker-compose.yml → accept"               0 "architect: compose"            "docker-compose.yml"
+run_case "F5g architect stages docker-compose.prod.override.yml → accept" 0 "architect: prod log overlay"   "docker-compose.prod.override.yml"
+run_case "F5h backend stages docker-compose.prod.override.yml → reject"   1 "backend: stray compose"        "docker-compose.prod.override.yml"
 
 echo
 echo "=== F6 set -euo pipefail edge cases ==="

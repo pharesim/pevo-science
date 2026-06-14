@@ -7,9 +7,28 @@
 # undiagnosable a day later (a 2026-06-12 ORCID signup failure could not be
 # investigated two days on). The systemd journal lives on the HOST, independent
 # of container lifecycle, so entries survive `down`/recreate AND image rebuilds.
-# Host-side retention (Storage=persistent, MaxRetentionSec=2week, a SystemMaxUse
-# size cap) is configured in /etc/systemd/journald.conf.d/ on the host — see the
-# deploy runbook. Time-based 14-day pruning is native to journald.
+# Time-based 14-day pruning is native to journald.
+#
+# HOST SETUP (run once on the production host; this overlay alone does NOT give
+# retention — the journal must be made persistent and time-capped). Without
+# Storage=persistent the journal is volatile and is wiped on reboot, so the
+# 14-day goal silently fails. Create the drop-in and restart journald:
+#
+#   sudo mkdir -p /etc/systemd/journald.conf.d
+#   sudo tee /etc/systemd/journald.conf.d/pevo-retention.conf >/dev/null <<'EOF'
+#   [Journal]
+#   Storage=persistent
+#   MaxRetentionSec=2week
+#   SystemMaxUse=1G          # tune to the host's free disk
+#   SystemKeepFree=500M
+#   RateLimitIntervalSec=30s # raise the rate limit so a burst of pino lines is
+#   RateLimitBurst=20000     # not SILENTLY dropped (journald has no fallback cache)
+#   EOF
+#   sudo systemctl restart systemd-journald
+#
+# Verify: `systemd-analyze cat-config systemd/journald.conf` (effective config),
+# `journalctl --disk-usage` (persistent journal exists). To let the deploy user
+# read logs without sudo: `sudo usermod -aG systemd-journal "$USER"` (re-login).
 #
 # SCOPE: backend (the incident surface) + postgres (DB constraint/connection
 # errors, the next-most-useful stream for auth/signup incidents). redis and ipfs

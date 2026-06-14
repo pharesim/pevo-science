@@ -20,8 +20,9 @@ set -euo pipefail
 # `restart` auto-apply docker-compose.prod.override.yml so backend + postgres
 # logs flow to the HOST journal and survive `down`/recreate (json-file logs do
 # NOT — they live in the per-container layer). Host-side 14-day retention is
-# configured in /etc/systemd/journald.conf.d/ (see the deploy runbook). Override
-# detection with PEVO_LOG_DRIVER=journald|json-file (default: auto).
+# configured in /etc/systemd/journald.conf.d/ (the exact drop-in is in the
+# host-setup block of docker-compose.prod.override.yml). Override detection with
+# PEVO_LOG_DRIVER=journald|json-file (default: auto).
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
@@ -67,7 +68,7 @@ check_env() {
 PROD_OVERRIDE_FILE="docker-compose.prod.override.yml"
 # Set by resolve_log_overlay(); threaded into container-CREATING compose calls (up).
 # Empty means "default json-file driver" (base docker-compose.yml only).
-COMPOSE_FILES=""
+LOG_OVERLAY_FLAGS=""
 
 # Decide whether to apply the journald logging overlay. Default 'auto' applies it
 # only when the host exposes a systemd-journal socket (production), because the
@@ -78,19 +79,19 @@ COMPOSE_FILES=""
 resolve_log_overlay() {
   local mode="${PEVO_LOG_DRIVER:-auto}"
   case "$mode" in
-    json-file|none)
-      COMPOSE_FILES=""
+    json-file)
+      LOG_OVERLAY_FLAGS=""
       ;;
     journald)
       if [ ! -f "$PROD_OVERRIDE_FILE" ]; then
         err "PEVO_LOG_DRIVER=journald but $PROD_OVERRIDE_FILE not found"
         exit 1
       fi
-      COMPOSE_FILES="-f docker-compose.yml -f $PROD_OVERRIDE_FILE"
+      LOG_OVERLAY_FLAGS="-f docker-compose.yml -f $PROD_OVERRIDE_FILE"
       ;;
     auto)
       if [ -S /run/systemd/journal/socket ] && [ -f "$PROD_OVERRIDE_FILE" ]; then
-        COMPOSE_FILES="-f docker-compose.yml -f $PROD_OVERRIDE_FILE"
+        LOG_OVERLAY_FLAGS="-f docker-compose.yml -f $PROD_OVERRIDE_FILE"
       fi
       ;;
     *)
@@ -108,13 +109,17 @@ cmd_build() {
 
 cmd_up() {
   check_env
-  if [ -n "$COMPOSE_FILES" ]; then
-    log "Logging: journald overlay active — backend + postgres -> host journal (14-day retention). Force off with PEVO_LOG_DRIVER=json-file."
+  if [ -n "$LOG_OVERLAY_FLAGS" ]; then
+    log "Logging: journald overlay active - backend + postgres -> host systemd journal."
+    warn "  Retention requires host journald config (Storage=persistent + MaxRetentionSec=2week);"
+    warn "  see the host-setup block in docker-compose.prod.override.yml. Without it, logs are"
+    warn "  volatile and the 14-day goal is not met. If containers fail to start (e.g. Docker"
+    warn "  Desktop / WSL where the daemon cannot reach the journal), set PEVO_LOG_DRIVER=json-file."
   fi
   log "Starting services..."
   # --remove-orphans cleans up services introduced by docker-compose.test.override.yml
   # (e.g. mailpit) when switching back from `test-up` to plain `up`.
-  $COMPOSE $COMPOSE_FILES up -d --remove-orphans "$@"
+  $COMPOSE $LOG_OVERLAY_FLAGS up -d --remove-orphans "$@"
   log "Waiting for backend to be healthy..."
   local retries=30
   while [ $retries -gt 0 ]; do
@@ -208,6 +213,11 @@ cmd_test_up() {
     exit 1
   fi
   log "Starting services with backend routed at pevo_app_test..."
+  # E2E pins its compose files explicitly and intentionally OMITS $LOG_OVERLAY_FLAGS:
+  # the test stack stays on the default json-file driver (E2E needs no retention, and
+  # combining the prod journald overlay with the test override is untested). This is the
+  # one container-creating path that does not thread the overlay; PEVO_LOG_DRIVER=journald
+  # is deliberately not honored here.
   $COMPOSE -f docker-compose.yml -f docker-compose.test.override.yml up -d "$@"
   log "Waiting for backend to be healthy..."
   local retries=30
@@ -272,7 +282,12 @@ cmd_logs_history() {
     exit 1
   fi
   log "Journal entries for CONTAINER_TAG=$tag since '$since' (host journal, -o cat):"
-  journalctl CONTAINER_TAG="$tag" --since "$since" --all -o cat
+  if ! journalctl CONTAINER_TAG="$tag" --since "$since" --all -o cat; then
+    err "Could not read the journal (often a permissions error: the deploy user is not in"
+    err "the 'systemd-journal' group). Fix once with: sudo usermod -aG systemd-journal \"\$USER\""
+    err "(then re-login), or run this command with sudo: sudo ./deploy.sh logs-history $tag \"$since\""
+    exit 1
+  fi
 }
 
 cmd_restart() {
@@ -288,10 +303,10 @@ cmd_restart() {
   # than racing against an in-flight migrate.
   check_env
   log "Starting infrastructure services (postgres, redis, ipfs)..."
-  # $COMPOSE_FILES threads the journald overlay (when active) at container CREATE
+  # $LOG_OVERLAY_FLAGS threads the journald overlay (when active) at container CREATE
   # time so postgres comes up on the journald driver. The backend is created via
-  # cmd_up below, which also threads $COMPOSE_FILES.
-  $COMPOSE $COMPOSE_FILES up -d --remove-orphans postgres redis ipfs
+  # cmd_up below, which also threads $LOG_OVERLAY_FLAGS.
+  $COMPOSE $LOG_OVERLAY_FLAGS up -d --remove-orphans postgres redis ipfs
   log "Waiting for postgres to be ready..."
   local retries=30
   while [ $retries -gt 0 ]; do
