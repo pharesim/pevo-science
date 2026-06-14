@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# PEvO comment-anchor diff gate (pre-commit).
+#
+# Fails the commit when a STAGED, NEWLY-ADDED line under frontend/{src,tests} or
+# backend/{src,tests} introduces a comment-anchor-rot token forbidden by root
+# CLAUDE.md "Comment anchors": task-slug citations, round-N / hold-item ordinals,
+# Option X.N labels, source line-number cites, and tasks-archive / acceptance-#
+# redirects. These rot when task files archive and tasks-archive.md trims; anchor
+# on stable symbol names or behavior instead.
+#
+# DIFF gate, not whole-tree: backend/tests and frontend/** carry many accepted
+# pre-existing gray-area IDs, so a whole-tree gate would block every unrelated
+# commit until a full sweep lands. This gate fires only on lines the staged diff
+# ADDS. The whole-tree-clean guarantee for backend/src/ is the standing vitest
+# canary backend/tests/eslint/no-stale-comment-anchors.test.ts; this hook is its
+# complement, extending NEW-rot coverage to the dirs that canary does not scan
+# (backend/tests, frontend/**) and to the wider BE-/SEC-/JFR- shout-form slug
+# families. The two intentionally overlap on backend/src (defense in depth).
+#
+# Why prefix-scoped detection: these trees mix rot slugs with legitimate
+# hyphenated-uppercase tokens (SHA-256, AES-GCM, CASE-WHEN, ISO-8601, the base58
+# HJ-NP class). Matching only the known task-slug PREFIX families — backend / ui /
+# architect case-insensitively with 2+ kebab segments, plus BE / JFR / SEC in the
+# uppercase shout form — sidesteps that allowlist minefield: none of those legit
+# tokens begin with a task-slug prefix.
+#
+# Install (one-time, per clone):  git config core.hooksPath .githooks
+# Skip one commit:                PEVO_ANCHOR_GATE=off git commit ...   (sparingly)
+# Exempt one legitimate line (a regex self-test fixture, an intentional
+#   stack-trace assertion): put the literal token  anchor-allow  in a comment on
+#   that line.
+# `git commit --no-verify` bypasses ALL hooks per githooks(5); per root CLAUDE.md
+#   agents MUST NOT use it without explicit user authorization — prefer
+#   PEVO_ANCHOR_GATE=off or the per-line anchor-allow marker.
+#
+# NOT gated (deferred to manual review / the backend/src canary), so the gate
+# stays low-noise enough to keep enabled:
+#   - the terminal `~<n>` tilde line-approximation — its false-positive tuning
+#     against ~50ms / ~28,800 / ~3.5 days is intricate and lives in the canary.
+#   - bare SEC-<n> security-requirement IDs and E2E coverage-matrix header IDs
+#     (E2E-AUTH-N, READ-N, ...) — legitimate stable references.
+#   - commit SHAs — rare; a `commit <hex>` arm would be the extension point.
+#
+# After editing this hook run:  bash .githooks/tests/test-pre-commit.sh
+
+set -euo pipefail
+
+if [ "${PEVO_ANCHOR_GATE:-on}" = "off" ]; then
+  echo "pre-commit: comment-anchor gate SKIPPED (PEVO_ANCHOR_GATE=off)" >&2
+  exit 0
+fi
+
+readonly ALLOW_MARKER='anchor-allow'
+
+# Classify a single added line's CONTENT. Returns 0 (violation) or 1 (clean or
+# exempt). Uses grep (reliable \b in GNU ERE) over here-strings, one arm at a
+# time, so a match short-circuits to a violation.
+anchor_violation() {
+  local content="$1"
+
+  # Explicit per-line exemption (a legitimate fixture / stack-trace assertion).
+  grep -qF "$ALLOW_MARKER" <<<"$content" && return 1
+
+  # Structural anchors. No durable-path exemption — these forms never appear in
+  # a legitimate solutions/ or api-contracts/ reference.
+  grep -qiE 'round-[0-9]+[[:space:]]+hold|\bhold item[[:space:]]+[0-9]' <<<"$content" && return 0
+  grep -qE '\bOption[[:space:]]+[A-Z]\.[0-9]' <<<"$content" && return 0
+  # Line-number cites: a <file>.<ext>:<n> path, the bare-Lnn form (`bridge.js L66`),
+  # or a `line <n>` / `lines <n>-<n>` reference. (Terminal `~<n>` is intentionally
+  # not gated here — see header.)
+  grep -qiE '\.(ts|tsx|js|jsx|mjs|cjs|sql)(:[0-9]+|[[:space:]]+L[0-9]+)|\blines?[[:space:]]+[0-9]' <<<"$content" && return 0
+  grep -qiE '\btasks-archive\b|\btask acceptance\b|\b(AC|acceptance)[[:space:]]+#[0-9]|\bsee task[[:space:]]+(item\b|#|[a-z0-9]+-)' <<<"$content" && return 0
+
+  # Task-slug citations. A line referencing the persistent knowledge store
+  # (solutions/ or api-contracts/) is the convention's allowed class, so it is
+  # exempt from the slug arm only (the structural arms above still apply).
+  if ! grep -qE '(solutions|api-contracts)/' <<<"$content"; then
+    # backend/ui/architect: case-insensitive, 2+ kebab segments (spares ui-button).
+    grep -qiE '\b(backend|ui|architect)-[a-z0-9]+(-[a-z0-9]+)+(\.md)?' <<<"$content" && return 0
+    # Shout-form families: BE needs 2+ segments (English `to-be-x` safety); JFR is
+    # distinctive enough for 1 segment (catches JFR-001); SEC requires an alpha
+    # trailing segment so bare security-requirement IDs (SEC-001) are spared.
+    grep -qE '\bBE-[A-Z0-9]+(-[A-Z0-9]+)+|\bJFR-[A-Z0-9]+|\bSEC-([A-Z]+-[A-Z]|[0-9]+-[A-Z])' <<<"$content" && return 0
+  fi
+  return 1
+}
+
+# Emit "file<TAB>newlineno<TAB>content" for every ADDED line in the staged diff
+# that falls under the four target dirs and a source extension. New-file line
+# numbers are tracked from the -U0 hunk headers (no context lines to skip).
+staged_added() {
+  git diff --cached -U0 --diff-filter=ACMR -- \
+      frontend/src frontend/tests backend/src backend/tests 2>/dev/null \
+    | awk '
+      /^\+\+\+ / { f = substr($0, 7);   # strip leading "+++ b/"
+                   keep = (f ~ /^(frontend|backend)\/(src|tests)\// &&
+                           f ~ /\.(ts|tsx|js|jsx|mjs|cjs|sql|vue)$/);
+                   next }
+      /^@@ /     { match($0, /\+[0-9]+/);
+                   nl = substr($0, RSTART + 1, RLENGTH - 1) + 0;
+                   next }
+      /^\+/      { if (keep) printf "%s\t%d\t%s\n", f, nl, substr($0, 2);
+                   nl++; next }
+    '
+}
+
+violations=()
+while IFS=$'\t' read -r file lineno content; do
+  [ -z "$file" ] && continue
+  if anchor_violation "$content"; then
+    violations+=("$file:$lineno: $content")
+  fi
+done < <(staged_added)
+
+if [ "${#violations[@]}" -gt 0 ]; then
+  {
+    echo "pre-commit: comment-anchor gate FAILED"
+    echo "  Newly-added lines introduce coordination-state anchors that rot when task"
+    echo "  files archive (root CLAUDE.md \"Comment anchors\"). Anchor on stable symbol"
+    echo "  names or behavior, not task slugs, round/hold ordinals, source line numbers,"
+    echo "  or tasks-archive / acceptance-# redirects (${#violations[@]}):"
+    for v in "${violations[@]}"; do echo "    - $v"; done
+    echo ""
+    echo "  Fix the line, or if it is a legitimate fixture (e.g. a regex self-test) or an"
+    echo "  intentional stack-trace assertion, add the token  anchor-allow  in a comment"
+    echo "  on that line. To skip the whole commit: PEVO_ANCHOR_GATE=off git commit ..."
+    echo "  (Forbidden for agents: --no-verify bypasses ALL hooks; needs user authorization.)"
+  } >&2
+  exit 1
+fi
+exit 0
