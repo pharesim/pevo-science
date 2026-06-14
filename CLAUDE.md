@@ -158,6 +158,10 @@ One short question with options beats a silent guess. Batch related questions in
 
 When scope is too ambiguous for a single clarifying question (e.g. the user brings a broad goal with multiple defensible shapes), invoke `/ce-brainstorm` instead of guessing or peppering the user with a wall of questions.
 
+## Shared Domain Vocabulary
+
+`CONCEPTS.md` (repo root) is the glossary of PEvO's domain vocabulary: the terms that mean something specific in this codebase (Paper, Review, Accreditation, Sanction, Web of Trust, Reputation, light vs self-custody accounts, the singular signer, and so on). Relevant when orienting to the codebase or before discussing domain concepts. It is the shared substrate that tasks, conventions, and `agents/docs/solutions/` entries can cite without redefining terms. The architect maintains it; terms also accrete as `/ce-compound` and `/ce-compound-refresh` process learnings, and direct edits are fine.
+
 ## Documented Solutions
 
 `agents/docs/solutions/` is a shared knowledge store of past problems and conventions, organized by category (e.g. `conventions/`, `runtime-errors/`, `test-failures/`, `performance-issues/`) with YAML frontmatter (`module`, `tags`, `problem_type`, `component`). Entries are written via `/ce-compound` when solving a non-obvious problem whose rationale wouldn't be reconstructable from the code or git history alone. Relevant when implementing or debugging in a documented area — search by component, module, or keyword before investigating from scratch. The architect maintains the categories, format, and any required consolidation via `/ce-compound-refresh`.

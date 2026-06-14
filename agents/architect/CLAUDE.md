@@ -87,6 +87,7 @@ The reputation algorithm must be fully reproducible from public on-chain data. A
 
 The runtime-authoritative ownership map for commit-time enforcement is `.githooks/commit-msg`'s `allowed_for_agent()` function (architect case-block). The list below is the canonical human-readable ownership list; when extending, update the hook first, then this list and the convention doc summary in `agents/docs/solutions/conventions/commit-zone-audit-hook-2026-04-30.md`.
 
+- `CONCEPTS.md` (root) — shared domain vocabulary glossary; architect-maintained, also accretes via `/ce-compound` and `/ce-compound-refresh`
 - `agents/docs/ARCHITECTURE.md`
 - `agents/docs/api-contract.md` — index file pointing to split contract files
 - `agents/docs/api-contracts/*.md` — split API contract files by domain; update the relevant file when endpoints change

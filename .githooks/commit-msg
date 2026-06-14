@@ -137,6 +137,7 @@ allowed_for_agent() {
       [[ "$path" =~ ^agents/docs/ ]]                        && return 0
       [[ "$path" =~ ^agents/[a-z]+/CLAUDE\.md$ ]]           && return 0
       [[ "$path" == "CLAUDE.md" ]]                          && return 0
+      [[ "$path" == "CONCEPTS.md" ]]                        && return 0
       [[ "$path" == "README.md" ]]                          && return 0
       [[ "$path" == "LICENSE" ]]                            && return 0
       [[ "$path" == "Dockerfile" ]]                         && return 0

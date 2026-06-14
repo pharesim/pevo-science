@@ -231,6 +231,8 @@ echo
 echo "=== Other coverage ==="
 run_case "T9 ui stages frontend/ → accept"                 0 "ui: tweak"             "frontend/src/main.js"
 run_case "T11 architect stages root CLAUDE.md → accept"    0 "architect: tweak"      "CLAUDE.md"
+run_case "T11b architect stages CONCEPTS.md → accept"      0 "architect(concepts): seed" "CONCEPTS.md"
+run_case "T11c backend stages CONCEPTS.md → reject"        1 "backend: stray glossary"   "CONCEPTS.md"
 run_case "T12 architect stages backend CLAUDE.md → accept" 0 "architect: per-agent"  "agents/backend/CLAUDE.md"
 run_case "T13 architect stages .githooks → accept"         0 "architect: hook"       ".githooks/commit-msg"
 run_case "T14 architect mv own task → accept"              0 "architect: archive"    "agents/docs/tasks/review/architect-foo.md"
