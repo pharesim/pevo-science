@@ -39,7 +39,7 @@ Every action routes through the backend, which is the only component holding the
 
 ## Dependencies
 
-- **`backend-admin-roster-and-authority-attribution`** (blocking): provides the `admins` roster table, the roster/tier read endpoint, the promotion/demotion endpoints, the backend tier-enforcement middleware, and the `issued_by` attribution field on authority op payloads. This console cannot integration-verify until that lands — but the UI can be built against the documented contract in the interim.
+- **`backend-admin-roster-and-authority-attribution`** (blocking): provides the roster/tier read endpoint (the chain-derived `active_admins` read, Redis-cached — no persistent table), the promotion/demotion endpoints, the backend tier-enforcement middleware, and the `issued_by` attribution field on authority op payloads. This console cannot integration-verify until that lands — but the UI can be built against the documented contract in the interim.
 - **`backend-revoke-sanction-wot-membership`** (blocking for the Sanction action specifically): defines the `type:"sanction"` revoke op and its sticky/self-healing semantics. The Sanction form's confirm copy and behavior must match that contract; do not ship the Sanction action's wording until the discriminator and stickiness rules are final.
 
 If either backend contract is unavailable or ambiguous when this task is picked up, build the non-blocked surfaces (roster view, the authority actions whose ops already exist — retract/revoke-authorship/approve-authorship/accredit) and stub the Sanction action behind a documented TODO rather than guessing the payload shape.

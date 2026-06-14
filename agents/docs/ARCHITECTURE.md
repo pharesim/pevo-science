@@ -784,7 +784,7 @@ PEvO's authority operations (`accredit`, `revoke`, `retract_paper`, `approve_aut
 Two distinct concepts, often confused — keep them apart:
 
 - **`accreditationAuthorities`** (`config.ts`) is the **on-chain signer whitelist**: `[HIVE_ADMIN_ACCOUNT, ...ACCREDITATION_AUTHORITIES]`, used at **read time** to filter which `custom_json` senders' authority ops the backend trusts (see § 2 "Accreditation Authority Whitelist"). In practice this is `pevo.admin` alone. It stays singular — the "admin is singular by design" decision refers to **this signer**, and it is PRESERVED. The backend never signs authority ops with any key other than `config.pevoAdminPostingKey`.
-- **`admins`** (new, this section) is an **app-level human-authorization roster**: the set of Hive accounts a human operator has empowered to *trigger* authority ops. A roster entry confers no signing key and no on-chain authority of its own; it gates the backend endpoints that, after the gate passes, sign with the one `pevo.admin` key.
+- **`admins`** (new, this section) is a **human-authorization roster recorded on-chain** (via `admin_grant`/`admin_revoke` ops) and enforced by the backend: the set of Hive accounts a human operator has empowered to *trigger* authority ops. A roster entry confers no signing key — the admin never signs an authority op; `pevo.admin` does, after the backend gate passes. The roster is derived **live from the chain** (see "Roster derivation" below), not stored in an app database.
 
 So `accreditationAuthorities` answers "whose on-chain signature does a reader trust?" (still: `pevo.admin`). `admins` answers "which human may ask the backend to make `pevo.admin` sign?" These are orthogonal axes; widening the roster does not widen the signer.
 
@@ -826,22 +826,19 @@ Three tiers, strictly ordered: **admin < super-admin < root**.
 
 **Lockout guard.** A super-admin may manage `admin`s but **MUST NOT** promote, demote, or otherwise manage another `super_admin` — only root manages the super-admin tier. Root is un-demotable and cannot be removed via `admin_revoke` (it is config, not a roster row), so the roster can never be emptied of its bootstrap authority and no roster operation can lock the operator out.
 
-### Roster data model
+### Roster derivation
 
-App-level Postgres `admins` table:
+Admin status is **read live from the chain**, not stored in an app database. Promotion/demotion is broadcast as an `admin_grant` / `admin_revoke` authority `custom_json` (signed by `pevo.admin`, `issued_by` the acting super-admin/root), and the current roster is derived from those ops exactly as accreditation membership is derived from `accredit`/`revoke`:
 
-| Column | Notes |
-|---|---|
-| `admin_account` | Hive username |
-| `level` | `'admin'` \| `'super_admin'` (root is **never** a row — it is bootstrap config) |
-| `granted_by` | acting super-admin/root Hive account |
-| `granted_at` | timestamp |
-| `revoked_at` | nullable; set on demotion |
+- An `active_admins` HAF read over `admin_grant` / `admin_revoke` ops, filtered to the `pevo.admin` signer (singular `?` JSONB containment, the same gate as `activeAccreditationsCteBody`), latest-op-per-account wins. Each op carries `account` and `level` (`'admin' | 'super_admin'`); the latest non-revoked grant per account is that account's live level. This is the direct analogue of `active_accreditations`.
+- A short Redis TTL cache (namespaced `${config.appTag}:`, mirroring `getAccreditedSet` / the accreditation `hafCache`) fronts the read so per-request authorization checks do not hit HAF every time. App-initiated grants/revokes **bust the cache key** on success, so a change the backend itself made is visible immediately; an out-of-band chain write converges within one TTL.
 
-Every promotion/demotion is **also** broadcast on-chain as an `admin_grant` / `admin_revoke` authority `custom_json`, signed by `pevo.admin`, with `issued_by` = the acting super-admin/root. **The chain is SSoT**; the `admins` table is a **runtime cache rebuildable from the on-chain `admin_grant`/`admin_revoke` history** (latest op per `admin_account` wins, mirroring the accreditation read model). On a cache/chain divergence, the chain ops are authoritative.
+There is **no persistent Postgres roster table, by design.** A long-lived mirror can drift from the chain (two-write windows, broadcast-timeout ambiguity, out-of-band chain writes, data loss); PEvO already avoids exactly that for accreditation. With a live HAF read the only write is the on-chain broadcast, so nothing can fall out of sync; staleness is bounded to the Redis TTL and self-heals. If neither HAF nor the cache can resolve a level, the authorization check **fails closed** (deny) — the same HAF dependency accreditation already carries.
+
+Root is **bootstrap config**, not an op and not a row (derived from `config.hiveAdminAccount` or a dedicated `PEVO_ROOT_ADMIN` env). It is resolved before the chain read, which is what makes it un-demotable and guarantees the roster can never be locked out.
 
 ### Authorization enforcement
 
-An authority endpoint MUST check the **caller's current roster level** (read from `admins`, backed by chain) against the power matrix **before** the backend signs the op with `pevo.admin`. The roster check is a server-side authorization gate; it is not, and cannot be, enforced at the chain layer (the chain sees only one signer).
+An authority endpoint MUST check the **caller's current roster level** (resolved from the on-chain `admin_grant`/`admin_revoke` ops via the `active_admins` HAF read, Redis-cached) against the power matrix **before** the backend signs the op with `pevo.admin`. The roster check is a server-side authorization gate; it is not, and cannot be, enforced at the chain layer (the chain sees only one signer).
 
 Every admin authority action — accredit, sanction, retract, authorship grant/revoke, roster management, `update_weights`, and the metadata-edit endpoint — is a **critical action** under § 6.4. Per § 6.5 invariant #1, **JWT-only access is a defect**: each requires a **fresh re-auth proof** matching a factor registered on the caller's account, in addition to passing the roster-level check. A stolen admin JWT must not be a one-step path to broadcasting an authority op. The roster level and the re-auth proof are independent gates — both must pass before `broadcastAdminCustomJson` runs.
