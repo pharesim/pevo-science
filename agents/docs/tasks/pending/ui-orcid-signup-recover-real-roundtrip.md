@@ -114,3 +114,35 @@ Once the compose stub + wiring land, move this file back to `tasks/pending/`
 for the UI to replace the two `test.fixme` blocks.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+## [Architect] (2026-06-14) — UNBLOCKED; compose works-stub + env landed, moved to pending/
+
+Both architect-zone prerequisites above are in:
+
+- **`docker-compose.test.override.yml`** gains an `orcid-works-stub` sidecar
+  (node:20-alpine, port 8098, compose-network only) serving
+  `GET /v3.0/<orcidId>/works` with **five externally-sourced works** (each
+  `work-summary[].source.source-orcid.path` is a fixed constant distinct from the
+  requested iD — with a fallback constant if a spec ever seeds that exact value
+  as its profile — so every work counts as external). Five is a margin over
+  `ORCID_MIN_WORKS` (default 3), so any seeded per-run iD clears the gate. The
+  backend service now sets `ORCID_API_BASE_URL: http://orcid-works-stub:8098`
+  and `depends_on` the new sidecar; `countExternalWorks` reads
+  `<ORCID_API_BASE_URL>/v3.0/<orcidId>/works`. Verified: YAML parses, the inline
+  script `node --check`s clean and carries no `$`, and a live request returns a
+  payload `countExternalWorks` counts as 5 (gate PASS), including the
+  profile==constant fallback case; a non-works path 404s.
+- **`.env.example`** documents the optional `ORCID_API_BASE_URL` (default
+  `https://pub.orcid.org`) in the ORCID block.
+
+**UI proceeds:** replace the two `test.fixme` blocks in
+`frontend/tests/e2e/orcid-no-password.spec.js` with real bodies — signup
+(`password: null` -> `accounts.password_hash IS NULL` -> password login 403
+`NO_PASSWORD_SET` -> ORCID login OK) and recover (`new_password: null` ->
+`password_hash` unchanged) — seeding the per-run `code`/orcid iD the same way
+`settings-orcid-factor.spec.js` drives the OAuth stub. The works stub serves any
+iD, so no extra per-run seeding is needed for the works gate; just keep the
+seeded profile iD different from the stub's `source-orcid` constants (it will be
+— those are reserved `0000-0003-0000-000X` values).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

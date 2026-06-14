@@ -24,7 +24,9 @@
 # that `code` back as the token response's `orcid` field, so the spec controls
 # which per-run iD the callback binds against (it seeds accounts.orcid to the
 # same value). This covers the fresh_auth/set_password modes; signup/accredit
-# additionally hit a hardcoded pub.orcid.org works URL and are out of scope.
+# additionally gate on a works-count fetch, now served in-network by the
+# orcid-works-stub sidecar below (ORCID_API_BASE_URL), so those modes are
+# exercisable in E2E too.
 
 services:
   backend:
@@ -39,6 +41,10 @@ services:
       ORCID_BASE_URL: http://orcid-stub:8099
       ORCID_CLIENT_ID: e2e-stub-client
       ORCID_CLIENT_SECRET: e2e-stub-secret
+      # Point the works-count fetch (the signup/accredit gate) at the in-network
+      # works stub instead of pub.orcid.org. countExternalWorks builds the URL as
+      # <ORCID_API_BASE_URL>/v3.0/<orcidId>/works.
+      ORCID_API_BASE_URL: http://orcid-works-stub:8098
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,6 +55,8 @@ services:
       mailpit:
         condition: service_started
       orcid-stub:
+        condition: service_started
+      orcid-works-stub:
         condition: service_started
 
   mailpit:
@@ -106,6 +114,57 @@ services:
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'not_found' }));
         }).listen(PORT, () => console.log('orcid-stub listening on ' + PORT));
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  # Stub ORCID works API (E2E only). The signup/accredit modes gate on
+  # countExternalWorks, which fetches <ORCID_API_BASE_URL>/v3.0/<orcidId>/works
+  # and counts groups whose work-summary source-orcid.path differs from the
+  # profile owner (externally-sourced works; default gate ORCID_MIN_WORKS = 3).
+  # This stub serves GET /v3.0/<orcidId>/works with five externally-sourced
+  # works, so any seeded per-run iD clears the gate. The source-orcid.path is a
+  # fixed constant distinct from the requested iD (with a fallback if a test ever
+  # seeds that exact constant as its profile), so every returned work counts as
+  # external. Reachable from the backend over the compose network as
+  # http://orcid-works-stub:8098; no host port is published (no browser hits it).
+  # The script uses string indexing and concatenation, never template literals or
+  # regex escapes, so it carries no `$` for compose variable-interpolation to
+  # touch.
+  orcid-works-stub:
+    image: node:20-alpine
+    restart: unless-stopped
+    expose:
+      - "8098"
+    command:
+      - node
+      - -e
+      - |
+        const http = require('http');
+        const PORT = 8098;
+        const EXTERNAL_SOURCE = '0000-0003-0000-0001';
+        const PREFIX = '/v3.0/';
+        const SUFFIX = '/works';
+        http.createServer((req, res) => {
+          req.on('error', () => {}); // swallow client RSTs so a mid-body abort can't crash the stub
+          const u = req.url || '';
+          const wIdx = u.indexOf(SUFFIX);
+          if (req.method === 'GET' && u.indexOf(PREFIX) === 0 && wIdx > PREFIX.length) {
+            const profileOrcid = decodeURIComponent(u.slice(PREFIX.length, wIdx));
+            // source-orcid.path must differ from the profile owner to count as external
+            const ext = profileOrcid === EXTERNAL_SOURCE ? '0000-0003-0000-0002' : EXTERNAL_SOURCE;
+            const group = [];
+            for (let i = 0; i < 5; i++) {
+              group.push({ 'work-summary': [{ source: { 'source-orcid': { path: ext } } }] });
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ group: group }));
+            return;
+          }
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'not_found' }));
+        }).listen(PORT, () => console.log('orcid-works-stub listening on ' + PORT));
     deploy:
       resources:
         limits:
