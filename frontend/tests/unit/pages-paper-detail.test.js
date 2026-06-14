@@ -211,8 +211,7 @@ describe('paperDetailPage', () => {
     });
   });
 
-  // UI-COAUTHOR-CONTINUATION-PUBLISHING round-2 item 1: the Edit-affordance
-  // gate at paper-detail.js:296 reads `isOwnPaper && !paper.is_retracted &&
+  // The Edit-affordance gate reads `isOwnPaper && !paper.is_retracted &&
   // !isBridgePaper`. Bridge papers are immutable post-publish per the
   // keystone policy (Hive-side re-publish from source); the SPA edit flow
   // does not apply, so suppressing the affordance for them is load-bearing.

@@ -112,9 +112,9 @@ describe('resetPasswordPage', () => {
       expect(mockRequestPasswordReset).not.toHaveBeenCalled();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: reset-password flows
-    // handle password-adjacent state; raw err.message must not reach the
-    // DOM. Generic localized message to the DOM, raw err to console.warn.
+    // reset-password flows handle password-adjacent state; raw err.message
+    // must not reach the DOM. Generic localized message to the DOM, raw err
+    // to console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('not found hex=deadbeefcafebabe');
       mockRequestPasswordReset.mockRejectedValue(leaky);
@@ -155,9 +155,9 @@ describe('resetPasswordPage', () => {
       expect(mockResetPassword).not.toHaveBeenCalled();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: reset-password flows
-    // handle password-adjacent state; raw err.message must not reach the
-    // DOM. Generic localized message to the DOM, raw err to console.warn.
+    // reset-password flows handle password-adjacent state; raw err.message
+    // must not reach the DOM. Generic localized message to the DOM, raw err
+    // to console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('expired hex=deadbeefcafebabe');
       mockResetPassword.mockRejectedValue(leaky);
@@ -178,10 +178,9 @@ describe('resetPasswordPage', () => {
     });
   });
 
-  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
-  // must not write to component state. A reset request/POST that resolves
-  // after Alpine tears the page down would otherwise flip the success flag
-  // or push an error onto a destroyed scope.
+  // post-destroy() async continuations must not write to component state. A
+  // reset request/POST that resolves after Alpine tears the page down would
+  // otherwise flip the success flag or push an error onto a destroyed scope.
   describe('teardown', () => {
     it('handleRequestReset catch does not set requestError after destroy()', async () => {
       let rejectFn;

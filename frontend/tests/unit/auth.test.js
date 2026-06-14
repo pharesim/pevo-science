@@ -271,8 +271,7 @@ describe('auth store', () => {
     // concurrent-tab logout StorageEvent in the middle of a /recover ORCID
     // flow cannot leak a stale return-path pointer ('recover') into a later
     // orcid-callback resolution on the same tab, which would route the user
-    // to /recover instead of /signup. See task
-    // ui-auth-disconnect-clear-orcid-return-to (architect, 2026-05-17).
+    // to /recover instead of /signup.
     let sessionStorageData;
 
     beforeEach(() => {

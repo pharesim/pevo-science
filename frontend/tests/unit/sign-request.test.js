@@ -43,8 +43,8 @@ describe('signRequest', () => {
   });
 
   it('hashes JSON.stringify({}) for a GET with no body (matches backend body-hash rule)', async () => {
-    // Per SEC-001-FIXUP (archived 2026-04-20): body is serialized as
-    // JSON.stringify(body ?? {}) in ALL cases, including GET.
+    // The body is serialized as JSON.stringify(body ?? {}) in ALL cases,
+    // including GET, to match the backend body-hash rule.
     await signRequest('alice', 'GET', '/api/notifications', undefined);
 
     const [, message] = signMessage.mock.calls[0];

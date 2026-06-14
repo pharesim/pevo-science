@@ -6,7 +6,7 @@
 // hack which mangled initialisms ("ml" -> "Ml") and stopwords ("theory of
 // computation" -> "Theory Of Computation").
 //
-// English-only by design (see task FE-DISCIPLINE-DISPLAY-HARDEN, non-goals).
+// English-only by design (non-goal: non-English casing rules).
 // If/when non-English disciplines surface, revisit via i18n follow-up.
 
 // Stopwords stay lowercase when they are NOT the first word. Kept deliberately

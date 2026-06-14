@@ -36,7 +36,7 @@ import {
 } from './fixtures/auth.js';
 import { installPaperMocks } from './fixtures/paper-mocks.js';
 
-// SEC-002: disable trace/video/screenshot. The spec mints JWTs via
+// Disable trace/video/screenshot. The spec mints JWTs via
 // SESSION_SECRET; retained traces would expose the bearer token.
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
@@ -50,10 +50,10 @@ const APP_TAG = 'pevotest';
 // this constant and the diff-branch invariant survives. Sizing rationale:
 // the ~1.2KB original keeps the diff-match-patch representation of a
 // single-sentence addition far below the ~1.3KB full-body length, so
-// production at edit.js:1063 selects the diff branch
-// (`diffText.length < newPostBody.length`) and `body.startsWith('@@')`
-// holds. Earlier ~100-char bodies fell through to the full-body fallback
-// unconditionally, leaving the diff branch uncovered (round-3 hold).
+// production's diff-branch length gate
+// (`diffText.length < newPostBody.length`) selects the diff branch and
+// `body.startsWith('@@')` holds. Earlier ~100-char bodies fell through to
+// the full-body fallback unconditionally, leaving the diff branch uncovered.
 const ORIG_BODY_PARAGRAPHS =
   '## Introduction\n\nThis paper investigates the foundational characteristics of end-to-end testing infrastructure in distributed scientific publishing systems. We begin by surveying the landscape of automated browser-driven test frameworks, including their respective tradeoffs around determinism, speed, and maintenance overhead.\n\n' +
   '## Methodology\n\nOur approach combines property-based testing with scenario-driven integration coverage. We selected Playwright as the driver due to its strong support for parallel execution and its first-class handling of asynchronous DOM mutations introduced by reactive frameworks such as Alpine.js.\n\n' +
@@ -202,7 +202,7 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
   // bulk of the original content intact is what makes the diff-match-patch
   // representation smaller than the full new body, so production's
   // `diffText.length < newPostBody.length` check selects the diff branch
-  // at edit.js:1063 and `commentBody.body.startsWith('@@')` holds below.
+  // and `commentBody.body.startsWith('@@')` holds below.
   // Wholesale replacement would blow the diff up past the full-body size
   // and silently route the broadcast through the full-body fallback.
   const PREFILLED_ABSTRACT = 'Original abstract text for the E2E edit spec.';
@@ -265,7 +265,7 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
 
   // Diff-broadcast branch: in-place edits broadcast a diff-match-patch
   // text (which starts with `@@` patch headers), not the full body. This
-  // pins the optimization at edit.js:1033-1057; a regression that drops
+  // pins the diff-broadcast optimization; a regression that drops
   // the diff branch (always broadcasting full body) would double every
   // paper-revision chain's Hive footprint.
   expect(commentBody.body.startsWith('@@')).toBe(true);
@@ -275,8 +275,7 @@ test('accredited non-author (not co-author, no claim) cannot reach the edit form
   page,
   request,
 }) => {
-  // Narrow gating (ui-edit-narrow-gating-drop-accredited-fallback,
-  // 2026-05-11): `isAuthorized` no longer falls back to `isAccredited`.
+  // Narrow gating: `isAuthorized` no longer falls back to `isAccredited`.
   // An accredited user who is not the original author, not a named co-
   // author, and has no accepted authorship claim must land on the
   // gating panel, not the edit form. The backend continuation consent-
@@ -341,8 +340,8 @@ test('unaccredited non-author cannot reach the edit form; gating panel and back-
 
   await page.waitForSelector('[x-data="editPage"]');
 
-  // Post-narrow-gating shape (ui-edit-narrow-gating-drop-accredited-
-  // fallback, 2026-05-11):
+  // Post-narrow-gating shape (isAuthorized no longer falls back to
+  // isAccredited; the three valid paths are the only way in):
   //  - "Who can edit this paper?" panel with the three valid paths
   //  - back-to-paper CTA
   //  - NO edit form
@@ -554,8 +553,8 @@ test('accepted-claimer (accredited, not author, not co-author) reaches the edit 
   // All PEvO posts are broadcast with comment_options.percent_hbd: 0 (100% Hive Power
   // payout). Rewards are allowed; the UI doesn't surface them as a value proposition.
   // A regression dropping this op would let the default 50/50 HBD/HP split apply
-  // to continuations. See edit.js:998-1006 (canonical shape) and publish.js:887-895
-  // (publish-side parity).
+  // to continuations. The continuation comment_options shape in edit.js mirrors
+  // the publish-side parity in publish.js.
   expect(commentBody.parent_author).toBe('');
   const meta = JSON.parse(commentBody.json_metadata);
   expect(meta[APP_TAG].version).toBeGreaterThan(1);
@@ -631,8 +630,8 @@ test('no-changes guard blocks the broadcast and surfaces an error step', async (
     const el = document.querySelector('[x-data="editPage"]');
     return window.Alpine?.$data(el)?.errorMessage;
   });
-  // edit.js:1045 sets errorMessage = this.$t('edit.noChanges'), so the
-  // resolved translation lands in the data property (not the key). Test
+  // handleSubmit's no-changes guard sets errorMessage = this.$t('edit.noChanges'),
+  // so the resolved translation lands in the data property (not the key). Test
   // navigates to /en/, so we pin against the en.json string for the key
   // — substring match keeps the assertion robust to en.json copy edits
   // that don't change the user-visible meaning.
@@ -649,7 +648,7 @@ test('non-head edit target (own post no longer chain head) broadcasts full body,
   page,
   request,
 }) => {
-  // edit.js:1051-1055 — when the current user's own post in the chain
+  // When the current user's own post in the chain
   // (userPostInChain) is NOT the chain head, edit.js broadcasts the FULL
   // new body rather than a diff-match-patch text. The previous tests
   // always set head_author/head_permlink equal to paper.author/permlink,

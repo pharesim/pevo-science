@@ -992,7 +992,7 @@ export function initSettingsPage() {
           throw new Error(this.$t('upgrade.invalidOldSeed'));
         }
 
-        // FE-UPGRADE-CLOSURE-WIPE — derive keys + broadcast `account_update`
+        // Closure-wipe: derive keys + broadcast `account_update`
         // inside a narrower-scoped helper so the closure frame that captured
         // the derived private-key material (oldSeed, oldKeys, newSeed,
         // newKeys, newPubKeys, ownerKey) is popped off the call stack
@@ -1277,7 +1277,7 @@ export function initSettingsPage() {
           this.upgradeWarnings.push(this.$t('upgrade.keychainImportFailed'));
         }
       } finally {
-        // FE-UPGRADE-CREDENTIAL-WIPE: zero all sensitive reactive state on
+        // Credential wipe: zero all sensitive reactive state on
         // the happy path (success or partial-keychain-import) before
         // flipping to 'done'. Without this, the old and new 12-word
         // mnemonics sit in Alpine's reactive data indefinitely; any XSS
@@ -1293,7 +1293,7 @@ export function initSettingsPage() {
       }
     },
 
-    // FE-UPGRADE-CLOSURE-WIPE — derive + sign the upgrade proof inside its
+    // Closure-wipe: derive + sign the upgrade proof inside its
     // own frame so the private key never escapes. Returns only scalars
     // (the public key, the hex signature, the ISO timestamp). Used both
     // by `executeUpgrade` immediately after the chain rotation and by
@@ -1303,9 +1303,9 @@ export function initSettingsPage() {
     // backend independently verifies both the signature recovery and the
     // on-chain presence) — see `agents/docs/api-contracts/custody.md`
     // POST /api/custody/upgrade and `backend/src/routes/custody.ts`
-    // `buildCustodyUpgradeChallenge`. Recommended role is `active` per
-    // the task brief: strongest single-key authority that doesn't expose
-    // owner rotation capacity.
+    // `buildCustodyUpgradeChallenge`. Signs with the `active` role: the
+    // strongest single-key authority that doesn't expose owner rotation
+    // capacity.
     async _signUpgradeProof(newSeedPhrase) {
       const dhive = await loadDhive();
       const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
@@ -1356,7 +1356,7 @@ export function initSettingsPage() {
       return res.json();
     },
 
-    // FE-UPGRADE-CLOSURE-WIPE — narrower-scoped key-material handler.
+    // Closure-wipe: narrower-scoped key-material handler.
     //
     // Encapsulates the irreversible step: seed derivation, pubkey
     // derivation, and the `account_update` broadcast. All `const` bindings
@@ -1534,7 +1534,7 @@ export function initSettingsPage() {
     // confirmation step), and the confirmation inputs. Callers that also
     // need to reset phase/error should use `resetUpgrade()` instead.
     //
-    // FE-UPGRADE-CLOSURE-WIPE — this helper zeros REACTIVE (Alpine `this.*`)
+    // Closure-wipe: this helper zeros REACTIVE (Alpine `this.*`)
     // fields only. Closure-captured `const` bindings that held derived key
     // material during the broadcast/import/proof-signing step live inside
     // `_performUpgradeKeyRotation()` / `_performKeychainImport()` /

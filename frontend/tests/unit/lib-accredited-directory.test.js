@@ -19,10 +19,9 @@
 //     flow is exercised at the Playwright E2E layer by
 //     `frontend/tests/e2e/publish.spec.ts` (paper-publish flow), which
 //     hits the real backend and verifies the published `authors[]` row's
-//     ORCID matches the accredited identity. The follow-up task
-//     `agents/docs/tasks/pending/ui-e2e-coauthor-accredited-prefill.md`
-//     extends that coverage with a multi-co-author + accreditation-revoke
-//     scenario to pin the transition-out semantic this file mocks.
+//     ORCID matches the accredited identity. A follow-up multi-co-author +
+//     accreditation-revoke E2E scenario extends that coverage to pin the
+//     transition-out semantic this file mocks.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../src/api.js', () => ({
@@ -149,9 +148,8 @@ describe('loadAccreditedDirectory', () => {
     expect(dir).toEqual({});
   });
 
-  // Held re-review item 8: rejection path must also coalesce concurrent
-  // callers — none of the three concurrent calls should throw; all three
-  // resolve to {}.
+  // The rejection path must also coalesce concurrent callers — none of the
+  // three concurrent calls should throw; all three resolve to {}.
   it('coalesces concurrent calls on rejection (no thrown errors, all resolve to {})', async () => {
     let rejectFn;
     fetchAccreditations.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
@@ -166,10 +164,10 @@ describe('loadAccreditedDirectory', () => {
     warnSpy.mockRestore();
   });
 
-  // Held re-review item 9: a malformed accreditation row (no `orcid` field)
-  // must NOT cause downstream consumers to blank a user-typed ORCID. The
-  // directory still indexes the row by username (so the input still locks),
-  // but the row's orcid is undefined.
+  // A malformed accreditation row (no `orcid` field) must NOT cause
+  // downstream consumers to blank a user-typed ORCID. The directory still
+  // indexes the row by username (so the input still locks), but the row's
+  // orcid is undefined.
   it('keeps rows without an orcid field in the directory (orcid is undefined)', async () => {
     fetchAccreditations.mockResolvedValue({
       data: [

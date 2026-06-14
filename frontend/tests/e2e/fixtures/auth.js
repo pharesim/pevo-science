@@ -89,9 +89,6 @@ export function _resetCachedSessionSecret() {
  * whoever authored .env.test has to paste the value the local dev backend
  * is booted with. Only the process-env override is renamed; the file-based
  * source keeps its natural key.
- *
- * Surfaced by FE-E2E-AUTH-FIXTURE-HARDEN action #3 and tightened by
- * FE-E2E-FIXTURE-CORRECTNESS action #4.
  */
 export function getSessionSecret() {
   if (cachedSecret !== null) return cachedSecret;

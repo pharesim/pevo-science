@@ -26,7 +26,7 @@
  *     it to localStorage via auth.connect()
  *   - A downstream authenticated request succeeds with the issued JWT
  *
- * Race-condition note (RR-01 / JFR-05): the Keychain flow fires the POST
+ * Race-condition note: the Keychain flow fires the POST
  * through several microtask turns (stub sha256 → callback → signRequest →
  * fetch). The `page.route()` mock itself is armed up front and CDP
  * interception is permanent, so the gate below is not about the mock —
@@ -81,8 +81,8 @@ test('login via Keychain challenge issues a session and lands authenticated', as
   // Accreditation status poll fires immediately on connect. Stub it as
   // `is_accredited: true` so _startAccreditationPolling shuts down after the
   // first fetch — a false stub keeps the poll alive and steers the spec into
-  // the pre-existing unhandled-rejection path in `_checkAccreditation`
-  // (tracked as FE-AUTH-ACCRED-POLL-GUARD). The endpoint is public (no auth
+  // the pre-existing unhandled-rejection path in `_checkAccreditation`. The
+  // endpoint is public (no auth
   // header required), so swapping the value doesn't affect the Bearer-path
   // assertion below. `accreditation` is returned as a minimal stub; nothing
   // in the spec inspects its fields.
@@ -137,8 +137,8 @@ test('login via Keychain challenge issues a session and lands authenticated', as
   await page.waitForSelector('#keychain-username-input');
 
   // ─── Sign the challenge and submit ───────────────────────────
-  // Race-gate (RR-01 / JFR-05): the `page.route('**/api/auth/session', ...)`
-  // mock is armed at line 59 and CDP interception is permanent once installed
+  // Race-gate: the `page.route('**/api/auth/session', ...)`
+  // mock is armed before navigation and CDP interception is permanent once installed
   // — it is not what the Promise.all below protects. What the gate actually
   // guarantees is that the `waitForRequest` and `waitForResponse` listeners
   // registered on the next two lines are live in the same microtask turn as
@@ -152,7 +152,7 @@ test('login via Keychain challenge issues a session and lands authenticated', as
   // Scope both predicates to `POST` so they don't match an OPTIONS preflight,
   // an unrelated GET, or any leaked request that happens to share the path.
   // `waitForRequest` was already correctly scoped; mirror it on `waitForResponse`
-  // so the two listeners stay in lock-step (action #2).
+  // so the two listeners stay in lock-step.
   const sessionRequestPromise = page.waitForRequest(
     (req) => req.url().endsWith('/api/auth/session') && req.method() === 'POST',
   );

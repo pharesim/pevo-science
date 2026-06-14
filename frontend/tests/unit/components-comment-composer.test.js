@@ -119,8 +119,8 @@ describe('commentComposer', () => {
     expect(comp.body).toBe('');
   });
 
-  // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
-  // surfaces a generic localized message; raw err reaches console.warn.
+  // Broadcast failure surfaces a generic localized message to the DOM;
+  // the raw err reaches console.warn only (never the user-facing string).
   it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
     const leaky = new Error('Network error hex=deadbeefcafebabe');
     mockBroadcastWithFreshAuth.mockRejectedValue(leaky);
@@ -145,10 +145,10 @@ describe('commentComposer', () => {
     expect(comp.isSubmitting).toBe(false);
   });
 
-  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() catch
-  // continuation must not write to component state. The broadcastOps
-  // promise rejects after destroy(), and handleSubmit's catch sees
-  // _mounted === false and short-circuits before touching `error`.
+  // The post-destroy() catch continuation must not write to component
+  // state. The broadcastOps promise rejects after destroy(), and
+  // handleSubmit's catch sees _mounted === false and short-circuits
+  // before touching `error`.
   it('post-destroy() broadcast rejection does not write to error or isSubmitting', async () => {
     let rejectFn;
     mockBroadcastWithFreshAuth.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));

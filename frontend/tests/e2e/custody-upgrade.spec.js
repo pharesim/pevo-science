@@ -1,5 +1,5 @@
 /**
- * E2E-CRYPTO-2 — Light-to-self-custody upgrade wizard up to key rotation.
+ * Light-to-self-custody upgrade wizard up to key rotation.
  *
  * Drives a light-account session through the `/settings` upgrade wizard from
  * the idle "Begin Upgrade" button all the way to clicking "Upgrade Account",
@@ -40,10 +40,10 @@ import { test, expect } from './fixtures/keychain.js';
 import { mintSessionJwt } from './fixtures/auth.js';
 import { deriveAllKeys, generateMnemonic } from '../../src/hive-keys.js';
 
-// SEC-002: disable trace/video/screenshot. The spec reads the generated
-// mnemonic off Alpine state and fills it into the old-seed textarea, so
-// the DOM and any intercepted request bodies contain plaintext seed words
-// plus the four derived private keys.
+// Disable trace/video/screenshot: this spec handles plaintext seed material.
+// The spec reads the generated mnemonic off Alpine state and fills it into
+// the old-seed textarea, so the DOM and any intercepted request bodies
+// contain plaintext seed words plus the four derived private keys.
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
 const LIGHT_USERNAME = 'e2e-upgrade-user';
@@ -241,9 +241,8 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
   // rotation (old keys ≠ new keys). The Hive node signature check never
   // runs because we stub `condenser_api.broadcast_transaction` above, so
   // the on-chain authority state for LIGHT_USERNAME is irrelevant here.
-  // The password input was removed from the wizard in
-  // ui-custody-upgrade-seed-phrase-derive-flow — the re-auth proof for
-  // /api/custody/upgrade is now a seed-phrase-derived pubkey + signature
+  // The wizard has no password input: the re-auth proof for
+  // /api/custody/upgrade is a seed-phrase-derived pubkey + signature
   // built inside `_signUpgradeProof`, no second user-facing factor.
   const oldMnemonic = generateMnemonic();
   expect(oldMnemonic).not.toBe(testMnemonic);
@@ -387,16 +386,17 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
   );
   expect(addAuthCalls).toEqual([]);
 
-  // ─── FE-UPGRADE-CREDENTIAL-WIPE: Alpine state must be zeroed ─────
+  // ─── Credential wipe: Alpine state must be zeroed ────────────────
   // After a successful upgrade the page transitions to phase='done'.
   // Before that transition, executeUpgrade() calls
   // _clearSensitiveUpgradeState() which zeros the old + new 12-word
   // mnemonics, the confirm inputs, and the re-entered password. Read
   // these fields straight off the Alpine reactive store: an XSS on
   // /settings would use the same API, so this both asserts the wipe
-  // worked and guards the (SEC-002-adjacent) concern that stale
-  // plaintext seed words in Alpine state would leak into any future
-  // trace or screenshot captured on an unrelated post-upgrade failure.
+  // worked and guards the concern (same one that motivates disabling
+  // trace/video/screenshot for this spec) that stale plaintext seed
+  // words in Alpine state would leak into any future trace or
+  // screenshot captured on an unrelated post-upgrade failure.
   await expect
     .poll(
       async () => page.evaluate(() => {

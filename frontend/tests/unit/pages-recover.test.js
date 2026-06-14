@@ -152,8 +152,8 @@ describe('recoverPage', () => {
     });
 
     it('SEC-004: does NOT restore password from legacy drafts', () => {
-      // Regression guard on the SEC-004 fix: even if an older draft
-      // contains password fields, init() must never rehydrate them.
+      // Regression guard: even if an older draft contains password
+      // fields, init() must never rehydrate them.
       localStorageData.pevo_recover_draft = JSON.stringify({
         username: 'bob',
         newEmail: 'b@x.com',
@@ -240,9 +240,8 @@ describe('recoverPage', () => {
       expect(comp.error).toBe('recover.seedPhraseInvalid');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: the seed-phrase
-    // recovery path derives keys from the BIP39 mnemonic. Raw err.message
-    // must not reach the DOM; it goes to console.warn.
+    // The seed-phrase recovery path derives keys from the BIP39 mnemonic.
+    // Raw err.message must not reach the DOM; it goes to console.warn.
     it('sanitizes API failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('fail hex=deadbeefcafebabe');
       mockRecoverWithSeedPhrase.mockRejectedValue(leaky);
@@ -276,7 +275,7 @@ describe('recoverPage', () => {
       comp.newEmail = 'a@x.com';
       // Even if the password fields somehow have values (shouldn't in
       // production. They're hidden on the ORCID branch), they must NOT
-      // be transmitted. Backend SEC-004-BE accepts null and preserves
+      // be transmitted. The backend accepts null and preserves
       // password_hash = NULL.
       comp.newPassword = 'StaleLeaked1x';
       comp.newPasswordConfirm = 'StaleLeaked1x';
@@ -287,8 +286,7 @@ describe('recoverPage', () => {
       expect(comp.phase).toBe('done');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Failure surfaces a generic localized message; raw err reaches console.warn.
     it('sanitizes API failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('boom hex=deadbeefcafebabe');
       mockRecoverWithOrcid.mockRejectedValue(leaky);
@@ -359,8 +357,7 @@ describe('recoverPage', () => {
       expect(mockStartOrcid).not.toHaveBeenCalled();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Failure surfaces a generic localized message; raw err reaches console.warn.
     it('sanitizes failure: clears orcid state, generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('fail hex=deadbeefcafebabe');
       mockStartOrcid.mockRejectedValue(leaky);

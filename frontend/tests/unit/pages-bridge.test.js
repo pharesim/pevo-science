@@ -400,8 +400,9 @@ describe('bridgePage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Error sanitization: failure surfaces a generic localized message to
+    // the DOM; the raw err (which may carry sensitive detail) reaches only
+    // console.warn, never the user-visible errorMessage.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('Server error hex=deadbeefcafebabe');
       const comp = createComponent();
@@ -630,10 +631,9 @@ describe('bridgePage', () => {
     });
   });
 
-  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() catch
-  // continuation must not write to component state. The registerBridgePaper
-  // broadcast rejects after destroy(), and handleRegister's catch sees
-  // _mounted === false and short-circuits before touching `step` or
+  // Post-destroy() catch continuation must not write to component state. The
+  // registerBridgePaper broadcast rejects after destroy(), and handleRegister's
+  // catch sees _mounted === false and short-circuits before touching `step` or
   // `errorMessage`.
   describe('teardown guard', () => {
     it('post-destroy() handleRegister rejection does not write to step or errorMessage', async () => {

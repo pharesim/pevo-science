@@ -53,8 +53,8 @@ describe('searchPage', () => {
     mockStores.router.query = {};
   });
 
-  // Factory-exposure regression guard: the discipline dropdown OPTION at
-  // search.js:56 calls `titleCaseDiscipline(d.display_name)`. Without the
+  // Factory-exposure regression guard: the discipline dropdown OPTION's
+  // x-text calls `titleCaseDiscipline(d.display_name)`. Without the
   // factory-level binding, x-text fires a silent ReferenceError at
   // runtime and the dropdown options render blank.
   describe('factory exposes titleCaseDiscipline', () => {
@@ -339,9 +339,9 @@ describe('searchPage', () => {
     });
 
     it('loadDisciplines stores backend canon_name/display_name rows verbatim', async () => {
-      // Backend dedupes and lowercases server-side per BE-DISCIPLINE-CANONICALIZE;
-      // the frontend no longer does its own lowercasing. canon_name is the URL
-      // value, display_name is the rendered label.
+      // Backend dedupes and lowercases server-side; the frontend no longer
+      // does its own lowercasing. canon_name is the URL value, display_name
+      // is the rendered label.
       const { fetchDisciplines } = await import('../../src/api.js');
       fetchDisciplines.mockResolvedValueOnce({
         data: [
@@ -471,8 +471,8 @@ describe('searchPage', () => {
 
     it('resets disciplinesLoadFailed to false when a subsequent loadDisciplines succeeds', async () => {
       // Seed a stuck-true flag, simulate a later retry whose fetch resolves, and
-      // assert the flag is cleared. Guards against the reset-on-retry trap noted
-      // in FE-LOADDISCIPLINES-OBSERVABILITY architect re-review.
+      // assert the flag is cleared. Guards against the reset-on-retry trap where
+      // disciplinesLoadFailed stays true after a subsequent successful load.
       const { fetchDisciplines } = await import('../../src/api.js');
       fetchDisciplines.mockResolvedValueOnce({
         data: [{ canon_name: 'physics', display_name: 'physics', paper_count: 1 }],
@@ -484,10 +484,9 @@ describe('searchPage', () => {
     });
   });
 
-  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
-  // continuations must not write to component state. A fetch that resolves
-  // (or rejects) after Alpine tears the component down would otherwise
-  // mutate a destroyed reactive scope.
+  // Post-destroy() async continuations must not write to component state. A
+  // fetch that resolves (or rejects) after Alpine tears the component down
+  // would otherwise mutate a destroyed reactive scope.
   describe('teardown', () => {
     it('doSearch catch does not write error/results after destroy()', async () => {
       let rejectFn;
@@ -530,9 +529,9 @@ describe('searchPage', () => {
     });
   });
 
-  // JFR-001: Stacked in-flight doSearch requests (from goToPage / popstate
-  // bypassing the submit-button disable) must not last-arrival-wins-overwrite
-  // the visible results. The fix is cancel-on-new via AbortController at the
+  // Stacked in-flight doSearch requests (from goToPage / popstate bypassing
+  // the submit-button disable) must not last-arrival-wins-overwrite the
+  // visible results. The fix is cancel-on-new via AbortController at the
   // entry point of doSearch.
   describe('cancel-on-new race guard', () => {
     it('out-of-order resolution: page-1 response after page-2 does NOT overwrite page-2 results', async () => {

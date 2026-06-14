@@ -155,21 +155,20 @@ export function initOrcidCallbackPage() {
           return;
         }
 
-        // Per architect decision (Option B, 2026-04-29): same-tick
-        // lock-contention 409 dropped its `retriable: true` discriminator
-        // because the OAuth state token is consumed before lock acquisition,
-        // so any same-`{code, state}` retry returns 400 BAD_REQUEST. Every
-        // ORCID_ALREADY_LINKED 409 is treated as durable; user restarts
-        // OAuth via /recover.
+        // The same-tick lock-contention 409 carries no `retriable: true`
+        // discriminator because the OAuth state token is consumed before lock
+        // acquisition, so any same-`{code, state}` retry returns 400
+        // BAD_REQUEST. Every ORCID_ALREADY_LINKED 409 is treated as durable;
+        // user restarts OAuth via /recover.
         if (err.code === 'ORCID_ALREADY_LINKED') {
           this.errorMessage = this.$t('orcid.alreadyLinkedDurable');
           this.errorAction = 'recover';
           return;
         }
 
-        // Forward-compat for BE-ORCID-BROADCAST-ABORT-TIMEOUT: backend may
-        // emit this code once the 504 envelope lands. Surfacing it now is
-        // safe — the branch is inert until the code appears on the wire.
+        // Forward-compat for the broadcast-abort 504 envelope: the backend may
+        // emit BROADCAST_TIMEOUT once that lands. Surfacing it now is safe — the
+        // branch is inert until the code appears on the wire.
         if (err.code === 'BROADCAST_TIMEOUT') {
           this.errorMessage = this.$t('orcid.broadcastPending');
           this.errorAction = 'settings';

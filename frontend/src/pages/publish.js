@@ -505,16 +505,14 @@ export function initPublishPage() {
       // scheduled before the first dynamic import resolves would re-run
       // createEditor on the same $refs and leak the first instance pair.
       // The flag short-circuits the second call synchronously (before the
-      // await), so only one createEditor pair lands per mount. See
-      // ui-mount-editors-destroyed-guard (round-2 scope broadening).
+      // await), so only one createEditor pair lands per mount.
       if (this._editorsInitialized) return;
       this._editorsInitialized = true;
       const { createEditor } = await import('../editor.js');
       // Teardown-during-init guard. If the component was destroyed while the
       // dynamic import was in flight, $refs are stale and any editor we
       // create now leaks (destroy() already nulled the previous instance
-      // refs, so it won't tear down anything we assign here). See
-      // ui-mount-editors-destroyed-guard.
+      // refs, so it won't tear down anything we assign here).
       if (!this._mounted) {
         // Release the idempotency flag so a legitimate later remount (e.g.
         // live-reload, navigation back to the page) can re-mount editors.

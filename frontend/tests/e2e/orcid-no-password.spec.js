@@ -1,19 +1,18 @@
 /**
- * SEC-004-UI — Password never persists across the ORCID round-trip.
+ * Password never persists across the ORCID round-trip.
  *
- * SEC-004 ships atomically with SEC-004-BE. This spec locks in the UI
- * contract that no password key is ever written to the draft keys in
- * localStorage (`pevo_signup_draft`, `pevo_recover_draft`) when the user
- * clicks "Verify with ORCID", and that the ORCID-branch submit calls
- * `/api/auth/signup` and `/api/auth/recover` with `password: null` /
- * `new_password: null` respectively.
+ * This spec locks in the UI contract that no password key is ever written
+ * to the draft keys in localStorage (`pevo_signup_draft`,
+ * `pevo_recover_draft`) when the user clicks "Verify with ORCID", and that
+ * the ORCID-branch submit calls `/api/auth/signup` and `/api/auth/recover`
+ * with `password: null` / `new_password: null` respectively.
  *
  * The ORCID round-trip itself is simulated in-test: we populate the
  * post-callback state (`pevo_signup_orcid_token`, `pevo_signup_orcid_id`)
  * directly in localStorage so the page enters the "ORCID verified" UI
  * state without a real ORCID OAuth handshake. This is the same approach
- * taken by `orcid-link.spec.js` (SEC-002-UI) and keeps the assertion
- * deterministic regardless of the backend's own auth state.
+ * taken by `orcid-link.spec.js` and keeps the assertion deterministic
+ * regardless of the backend's own auth state.
  *
  * Two real-backend assertions at the bottom drive the ORCID *signup* and
  * *recovery* null-password round-trips end-to-end against the test stack. Both
@@ -75,9 +74,9 @@ test.describe('signup — ORCID branch never persists password', () => {
     await page.locator('input[x-model="fullName"]').fill('SEC-004 Tester');
     await page.locator('input[x-model="institution"]').fill('Test Institution');
     await page.locator('input[x-model="field"]').fill('Test Science');
-    // Critical: fill the password field too. Before SEC-004-UI, this text
-    // would be persisted into localStorage across the round-trip. After
-    // SEC-004-UI, the draft must not contain it.
+    // Critical: fill the password field too. The draft written across the
+    // ORCID round-trip must not contain it — the password must never be
+    // persisted into localStorage on the ORCID branch.
     await page.locator('input[x-model="password"]').fill('LeakedHunter1X');
     await page.locator('input[x-model="passwordConfirm"]').fill('LeakedHunter1X');
 
@@ -104,14 +103,14 @@ test.describe('signup — ORCID branch never persists password', () => {
     expect(draft).toBeTruthy();
     const parsed = JSON.parse(draft);
 
-    // SEC-004: non-sensitive fields present.
+    // Non-sensitive fields present in the draft.
     expect(parsed).toMatchObject({
       email: 'sec004-ui@pevo.test',
       fullName: 'SEC-004 Tester',
       institution: 'Test Institution',
       field: 'Test Science',
     });
-    // SEC-004: password MUST NOT be in the draft.
+    // Password MUST NOT be in the draft.
     expect(parsed).not.toHaveProperty('password');
     expect(parsed).not.toHaveProperty('passwordConfirm');
   });
@@ -140,8 +139,9 @@ test.describe('signup — ORCID branch never persists password', () => {
     );
 
     // Stub /api/auth/signup so the submit is deterministic regardless of
-    // whether SEC-004-BE is deployed. The real-backend 200 path is
-    // covered by the test.fixme at the bottom of this file.
+    // the backend's own auth state. The real-backend 200 path is covered by
+    // the real-backend ORCID null-password round-trips at the bottom of this
+    // file.
     let capturedSignup = null;
     await page.route('**/api/auth/signup', async (route) => {
       capturedSignup = route.request().postDataJSON();
@@ -175,7 +175,7 @@ test.describe('signup — ORCID branch never persists password', () => {
     await page.locator('[x-data="signupPage"] form button[type="submit"]').click();
     await signupResponsePromise;
 
-    // SEC-004: the submit sent password: null alongside the ORCID token.
+    // The submit sent password: null alongside the ORCID token.
     expect(capturedSignup).toEqual({
       email: 'sec004-ui@pevo.test',
       password: null,
@@ -555,7 +555,8 @@ test.describe('real-backend ORCID null-password round-trips', () => {
     // seed per-test, and it is a read-only UI gate, not part of the recover
     // round-trip under test. Stub only that status lookup so the ORCID tab is
     // available; every recover hop below (/api/orcid/start, /api/orcid/callback,
-    // /api/auth/recover) stays fully real. Same stub the SEC-004 recover test uses.
+    // /api/auth/recover) stays fully real. Same accreditation-status stub the
+    // stubbed recover ORCID-branch test above uses.
     await page.route(`**/api/accreditations/${username}`, async (route) => {
       await route.fulfill({
         status: 200,

@@ -11,8 +11,10 @@
  *        and can write to a non-test DB.
  *     2. Silent connection leaks if a test throws before `pool.end()`.
  *
- *   Carved in FE-E2E-AUTH-FIXTURE-HARDEN action #11; the DB-suffix guard also
- *   discharges FE-E2E-TRACE-SECRET-REDACTION action #3.
+ *   Centralising the two helpers behind a shared `_test`-suffix guard closes
+ *   both leaks: every DB access goes through `assertTestDatabase`, so the
+ *   suffix check runs even when global-setup is skipped, and the `finally`
+ *   blocks below guarantee the pool ends on any exit path.
  *
  * API surface: one helper per concern, both enforce the same guard:
  *   - `withAppPool(fn)`  — supply a callback that receives a live `pg.Pool`.

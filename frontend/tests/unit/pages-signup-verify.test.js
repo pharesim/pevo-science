@@ -280,7 +280,7 @@ describe('signupVerifyPage', () => {
       expect(mockAuthStore.custody).toBe('light');
     });
 
-    // FE-SAVESESSION-API-MISUSE-SWEEP: submitCreateAccount used to pass six
+    // submitCreateAccount used to pass six
     // positional args to _saveSession(), which the no-arg implementation
     // silently ignored — the call happened to work only because the store
     // fields were already set on the lines above. Lock in the full pre-save
@@ -329,10 +329,9 @@ describe('signupVerifyPage', () => {
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 
-    // FE-SAVESESSION-API-MISUSE-SWEEP: handle the null-accreditation
-    // default. Backend may omit `accreditation`; the pre-save reset must
-    // coerce it to null (not leave a stale value carried over from a prior
-    // login-as-different-user).
+    // Handle the null-accreditation default. Backend may omit
+    // `accreditation`; the pre-save reset must coerce it to null (not leave a
+    // stale value carried over from a prior login-as-different-user).
     it('coerces missing accreditation to null before _saveSession()', async () => {
       mockConfirmAccount.mockResolvedValue({
         data: { token: 'jwt-create2', username: 'alice', expires_at: '2099-01-01' },
@@ -352,9 +351,9 @@ describe('signupVerifyPage', () => {
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 
-    // UI-AUTH-LOGINFROMRESPONSE-HELPER-ADOPTION: per-site preserve-on-omit
-    // coverage. submitCreateAccount now routes through loginFromResponse()
-    // which enforces the atomic {token, expires_at} pair invariant.
+    // Per-site preserve-on-omit coverage. submitCreateAccount routes through
+    // loginFromResponse(), which enforces the atomic {token, expires_at} pair
+    // invariant.
     it('atomic pair: preserves token + expiresAt when confirmAccount response omits expires_at', async () => {
       mockConfirmAccount.mockResolvedValue({
         data: {
@@ -407,9 +406,8 @@ describe('signupVerifyPage', () => {
       expect(comp.error).toBe('seedPhrase.credentialsRequired');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: submitCreateAccount
-    // derives keys from the BIP39 mnemonic. Raw err.message must not reach
-    // the DOM; it goes to console.warn.
+    // submitCreateAccount derives keys from the BIP39 mnemonic. Raw
+    // err.message must not reach the DOM; it goes to console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn, returns to username phase', async () => {
       const leaky = new Error('creation failed hex=deadbeefcafebabe');
       mockConfirmAccount.mockRejectedValue(leaky);
@@ -450,9 +448,9 @@ describe('signupVerifyPage', () => {
       expect(mockAuthStore.custody).toBe('self');
     });
 
-    // FE-SAVESESSION-API-MISUSE-SWEEP: the link-account path used to pass
-    // six positional args to _saveSession() (silently ignored by the
-    // no-arg implementation). Lock in the full pre-save state-reset.
+    // The link-account path used to pass six positional args to
+    // _saveSession() (silently ignored by the no-arg implementation). Lock in
+    // the full pre-save state-reset.
     it('sets full auth state including expiresAt before calling no-arg _saveSession()', async () => {
       mockLinkExistingAccount.mockResolvedValue({
         data: {
@@ -490,9 +488,9 @@ describe('signupVerifyPage', () => {
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 
-    // UI-AUTH-LOGINFROMRESPONSE-HELPER-ADOPTION: per-site preserve-on-omit
-    // coverage. handleLinkAccount now routes through loginFromResponse()
-    // which enforces the atomic {token, expires_at} pair invariant.
+    // Per-site preserve-on-omit coverage. handleLinkAccount routes through
+    // loginFromResponse(), which enforces the atomic {token, expires_at} pair
+    // invariant.
     it('atomic pair: preserves token + expiresAt when linkExistingAccount response omits expires_at', async () => {
       mockLinkExistingAccount.mockResolvedValue({
         data: {
@@ -540,8 +538,8 @@ describe('signupVerifyPage', () => {
       expect(mockLinkExistingAccount).not.toHaveBeenCalled();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Failure surfaces a generic localized message; raw err reaches
+    // console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       const leaky = new Error('link failed hex=deadbeefcafebabe');
@@ -587,8 +585,8 @@ describe('signupVerifyPage', () => {
       expect(mockResumeSignup).not.toHaveBeenCalled();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Failure surfaces a generic localized message; raw err reaches
+    // console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('bad hex=deadbeefcafebabe');
       mockResumeSignup.mockRejectedValue(leaky);
@@ -608,10 +606,9 @@ describe('signupVerifyPage', () => {
     });
   });
 
-  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
-  // must not write to component state. The create-account path derives keys
-  // from a BIP39 mnemonic and makes a multi-second Hive broadcast; the user
-  // easily navigates away mid-flight.
+  // Post-destroy() async continuations must not write to component state. The
+  // create-account path derives keys from a BIP39 mnemonic and makes a
+  // multi-second Hive broadcast; the user easily navigates away mid-flight.
   describe('teardown', () => {
     it('verifyToken catch does not flip phase to error after destroy()', async () => {
       let rejectFn;

@@ -1,21 +1,20 @@
 /**
- * UI-NON-CONSENT-BROADCAST-FRESH-AUTH-WIRING — non-consent broadcast paths
- * must attach a `fresh_auth_proof` to `/api/custody/broadcast`, and the
- * `/orcid/callback` page must handle the new `session_auth` mode by
- * caching the issued proof in sessionStorage and bouncing the user back to
- * the page that initiated the broadcast.
+ * Non-consent broadcast paths must attach a `fresh_auth_proof` to
+ * `/api/custody/broadcast`, and the `/orcid/callback` page must handle the
+ * `session_auth` mode by caching the issued proof in sessionStorage and
+ * bouncing the user back to the page that initiated the broadcast.
  *
- * Backend commit 84602f8 makes the proof required on every call (consent
- * AND non-consent). Pre-change the SPA's broadcast helper omitted the field
- * entirely, so without this wiring every light-account vote/comment/publish
- * would 401 after the backend deploys.
+ * The backend makes the proof required on every `/api/custody/broadcast`
+ * call (consent AND non-consent). Before this wiring the SPA's broadcast
+ * helper omitted the field entirely, so every light-account
+ * vote/comment/publish would 401 against that requirement.
  *
  * Carve-out clause (a) — this spec stubs the network layer for
  * `/api/orcid/callback` (no real ORCID OAuth handshake possible in
  * Playwright) and seeds a light-account JWT via `mintSessionJwt`. The
- * cryptographic verification of the issued proof itself is exercised in
- * backend integration tests (`backend-custody-broadcast-orcid-fresh-auth`
- * round-1 @ 84602f8 lands the real-path coverage for the consume side).
+ * cryptographic verification of the issued proof itself is exercised by
+ * backend integration tests covering the `/api/custody/broadcast` consume
+ * side against signed requests.
  * Clause (c) companion: the orcid-link / orcid-no-password specs cover the
  * `/api/orcid/start` and `/api/orcid/callback` real-path edges for sibling
  * modes (signup/login/link). This spec layers the session_auth mode atop

@@ -1,6 +1,6 @@
 /**
- * Regression guard for UI-FEED-URL-PAGE: deep-link + back/forward coverage
- * for the /papers pagination state. Asserts the three moving pieces:
+ * Regression guard for deep-link + back/forward coverage of the /papers
+ * pagination state. Asserts the three moving pieces:
  *   - Deep link /papers?page=2&sort=votes seeds state on first mount.
  *   - Clicking a page button pushes `?page=N` and preserves filter params.
  *   - Browser back restores the previous URL and re-drives the feed.

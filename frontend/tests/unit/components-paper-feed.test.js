@@ -50,9 +50,9 @@ describe('paperFeed', () => {
     mockFetchDisciplines.mockResolvedValue({ data: [] });
   });
 
-  // Factory-exposure regression guard: the dropdown OPTION at
-  // paper-feed.js:21 calls `titleCaseDiscipline(d.display_name)`. Without
-  // the factory-level binding, x-text fires a silent ReferenceError at
+  // Factory-exposure regression guard: the discipline dropdown OPTION's
+  // x-text calls `titleCaseDiscipline(d.display_name)`. Without the
+  // factory-level binding, x-text fires a silent ReferenceError at
   // runtime and the dropdown options render blank.
   describe('factory exposes titleCaseDiscipline', () => {
     it('factory().titleCaseDiscipline is identity-equal to the imported helper', () => {
@@ -319,8 +319,8 @@ describe('paperFeed', () => {
 
     it('resets disciplinesLoadFailed to false when a subsequent loadDisciplines succeeds', async () => {
       // Seed a stuck-true flag, simulate a later retry whose fetch resolves, and
-      // assert the flag is cleared. Guards against the reset-on-retry trap noted
-      // in FE-LOADDISCIPLINES-OBSERVABILITY architect re-review.
+      // assert the flag is cleared. Guards against the reset-on-retry trap where
+      // loadDisciplines never clears disciplinesLoadFailed after a recovery.
       mockFetchDisciplines.mockResolvedValue({
         data: [{ canon_name: 'physics', display_name: 'physics', paper_count: 1 }],
       });
@@ -364,9 +364,9 @@ describe('paperFeed', () => {
     });
 
     it('loadDisciplines stores backend canon_name/display_name rows verbatim', async () => {
-      // Backend dedupes and lowercases server-side per BE-DISCIPLINE-CANONICALIZE;
-      // the frontend no longer does its own lowercasing. canon_name is the URL
-      // value, display_name is the rendered label.
+      // Backend dedupes and lowercases canon_name server-side; the frontend no
+      // longer does its own lowercasing. canon_name is the URL value,
+      // display_name is the rendered label.
       mockFetchDisciplines.mockResolvedValue({
         data: [
           { canon_name: 'physics', display_name: 'Physics', paper_count: 5 },
@@ -420,10 +420,9 @@ describe('paperFeed', () => {
     });
   });
 
-  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
-  // continuations must not write to component state. A fetch that resolves
-  // (or rejects) after Alpine tears the component down would otherwise
-  // mutate a destroyed reactive scope.
+  // Post-destroy() async continuations must not write to component state.
+  // A fetch that resolves (or rejects) after Alpine tears the component
+  // down would otherwise mutate a destroyed reactive scope.
   describe('teardown', () => {
     it('loadPapers catch does not write error/papers after destroy()', async () => {
       let rejectFn;
@@ -467,7 +466,7 @@ describe('paperFeed', () => {
     });
   });
 
-  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: concurrent-fetch generation counter.
+  // Concurrent-fetch generation counter.
   // loadPapers() bumps `_loadPapersGen` on entry; any in-flight fetch whose
   // generation no longer matches bails. Without this, a slow first fetch
   // resolving after a newer fetch would overwrite `papers` with stale data,

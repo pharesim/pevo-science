@@ -149,8 +149,8 @@ describe('accreditationPage', () => {
       );
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Failure surfaces a generic localized message to the DOM; the raw err
+    // (which may carry sensitive detail) only reaches console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('Rate limited hex=deadbeefcafebabe');
       const comp = createComponent();
@@ -274,11 +274,10 @@ describe('accreditationPage', () => {
     });
   });
 
-  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() catch
-  // continuations must not write to component state. The requestAccreditation
-  // promise rejects after destroy(), and the handleSubmit catch must see
-  // _mounted === false and short-circuit before touching `step` or
-  // `errorMessage`.
+  // post-destroy() catch continuations must not write to component state. The
+  // requestAccreditation promise rejects after destroy(), and the handleSubmit
+  // catch must see _mounted === false and short-circuit before touching `step`
+  // or `errorMessage`.
   describe('teardown guard', () => {
     it('post-destroy() handleSubmit rejection does not write to step or errorMessage', async () => {
       const comp = createComponent();

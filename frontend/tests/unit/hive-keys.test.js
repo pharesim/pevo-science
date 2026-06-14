@@ -8,10 +8,10 @@ import {
   deriveAllKeys,
 } from '../../src/hive-keys.js';
 
-// FE-SEED-PHRASE-KEYCHAIN-COMPAT (2026-05-16): all derivation in this module
+// Seed-phrase / Keychain compatibility: all derivation in this module
 // uses PrivateKey.fromLogin(account, mnemonic, role) — the same algorithm
 // Hive Keychain's "Add Account by Master Password" flow uses. Mirrors
-// backend/src/seed-phrase.ts. Snapshots below pin the post-migration values.
+// backend/src/seed-phrase.ts. Snapshots below pin the derived values.
 
 describe('generateMnemonic + validateMnemonic', () => {
   it('generateMnemonic returns a 12-word BIP39 mnemonic that validateMnemonic accepts', () => {
@@ -159,7 +159,7 @@ describe('deriveAllKeys (full Hive key pairs)', () => {
     }
   });
 
-  // FE-SEED-PHRASE-KEYCHAIN-COMPAT parity test: assert deriveAllKeys produces
+  // Keychain-compatibility parity test: assert deriveAllKeys produces
   // exactly the WIFs PrivateKey.fromLogin(account, mnemonic, role) would
   // produce when called directly. This is the regression backstop that
   // prevents the algorithm drifting away from Hive Keychain's master-password

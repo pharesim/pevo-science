@@ -181,9 +181,9 @@ describe('contactPage', () => {
     });
   });
 
-  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
-  // must not write to component state. submitContactForm can hang (slow
-  // backend) and the user navigates away mid-flight.
+  // Post-destroy() async continuations must not write to component state.
+  // submitContactForm can hang (slow backend) and the user navigates away
+  // mid-flight.
   describe('teardown', () => {
     it('handleSubmit happy path does not flip step/errorMessage after destroy()', async () => {
       let resolveFn;

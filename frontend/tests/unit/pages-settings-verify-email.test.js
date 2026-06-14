@@ -64,8 +64,8 @@ describe('settingsVerifyEmailPage', () => {
       expect(mockToastStore.show).toHaveBeenCalled();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Error sanitization: failure surfaces a generic localized message;
+    // raw err reaches console.warn only (never the DOM).
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('token expired hex=deadbeefcafebabe');
       mockVerifyEmailToken.mockRejectedValue(leaky);

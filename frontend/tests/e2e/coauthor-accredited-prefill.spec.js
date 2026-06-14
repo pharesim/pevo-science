@@ -104,8 +104,8 @@ async function waitForAccreditedDirectoryLoaded(page, xDataSelector) {
 // The hive input on each co-author row is the only `<input list="...">` in
 // the section, so an indexed `input[list="pevo-accredited-usernames"]`
 // locator uniquely identifies row N's hive input. The adjacent ORCID input
-// follows it as a sibling in the same grid (see publish.js:179-198 /
-// edit.js:198-218).
+// follows it as a sibling in the same grid (the co-author row template in
+// publishPage / editPage).
 function hiveInputForRow(page, rowIdx) {
   return page.locator('input[list="pevo-accredited-usernames"]').nth(rowIdx);
 }
@@ -271,8 +271,8 @@ test('publish broadcast carries accredited co-author ORCID in json_metadata.auth
     },
   );
 
-  // Add accredited co-author B. publish.js filters coAuthors by `ca.name`
-  // before serializing (publish.js:814), so the row must have a name to
+  // Add accredited co-author B. publishPage filters coAuthors by `ca.name`
+  // before serializing the broadcast metadata, so the row must have a name to
   // appear in the broadcast.
   await page.locator('button:has-text("Add Co-Author")').click();
   await page.locator('input[placeholder="Full name"]').last().fill('Co Author B');
@@ -343,8 +343,8 @@ test('edit form: existing co-author with accredited hive stays disabled; new co-
   // Fixture paper authored by A with B already listed as an existing
   // co-author. The "existing" row's ORCID is whatever was published; we
   // assert the input renders disabled regardless of whether B happens to be
-  // accredited today (the existing-authors template at edit.js:188-196
-  // hardcodes `disabled`, independent of isNewCoAuthorAccredited).
+  // accredited today (the existing-authors template hardcodes `disabled`,
+  // independent of isNewCoAuthorAccredited).
   const PERMLINK = `e2e-coauthor-prefill-${Date.now().toString(36)}`;
   const EXISTING_B_ORCID_ON_POST = '0000-9999-9999-9999';
   const paper = {
@@ -404,8 +404,8 @@ test('edit form: existing co-author with accredited hive stays disabled; new co-
 
   // ─── Existing co-author B's ORCID input stays disabled ────────────────
   // The existing-authors block has no `list=` attribute on its hive input
-  // (see edit.js:189-195). We locate by the existing row container's stable
-  // `data-testid="existing-coauthor-row"` (edit.js:180) and verify the
+  // (unlike the new-co-author rows). We locate by the existing row
+  // container's stable `data-testid="existing-coauthor-row"` and verify the
   // ORCID input renders the recorded value and is disabled. Using a
   // dedicated testid (vs. the previous `.opacity-75` class match) keeps the
   // selector durable when supplementary-file rows — which share the

@@ -259,9 +259,9 @@ test('clicking a result card navigates to paper detail', async ({ page }) => {
 });
 
 test('search error renders the error card and clears results', async ({ page }) => {
-  // Mock /api/search to fail so we exercise the doSearch catch block
-  // (search.js:264-270): error is set, results are reset, _pushUrl() is
-  // called. The live route returns 500 only under transient HAF failure,
+  // Mock /api/search to fail so we exercise the doSearch catch block:
+  // error is set, results are reset, _pushUrl() is called. The live
+  // route returns 500 only under transient HAF failure,
   // so a route mock is the deterministic way to cover this path.
   await page.route('**/api/search*', async (route) => {
     await route.fulfill({

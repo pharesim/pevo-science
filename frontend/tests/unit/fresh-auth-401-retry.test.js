@@ -1,7 +1,7 @@
 // Tests for `broadcastWithFreshAuth` error-recovery paths in
 // `frontend/src/lib/fresh-auth.js`.
 //
-// Mocking justification (round-2 hold-block clause-a, project-CLAUDE.md
+// Mocking justification (clause-a of project-CLAUDE.md
 // "Carve-out for deterministic edge-case coverage"):
 // `signer.js#broadcastOps` performs real fetch() against the backend
 // `/api/custody/broadcast` endpoint. Exercising the real path per-test
@@ -219,7 +219,7 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
   });
 
   it('expired cached proof is evicted on read AND triggers re-mint (B1 regression)', async () => {
-    // Regression coverage for the B1 wire-contract fix (epoch-seconds vs
+    // Regression coverage for the expiry wire-contract fix (epoch-seconds vs
     // ISO-8601). With an expired proof in cache, getCachedSessionProof
     // MUST return null AND remove the slot — and broadcastWithFreshAuth
     // MUST mint a fresh one rather than passing the stale token to

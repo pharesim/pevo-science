@@ -296,7 +296,7 @@ describe('voteButtons', () => {
     });
   });
 
-  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: Hive broadcasts can take multiple
+  // Hive broadcasts can take multiple
   // seconds, and a user easily navigates away mid-flight. Post-destroy()
   // writes to voteState / displayVotes / currentWeight / isVoting /
   // selectorOpen on a destroyed reactive scope must not happen.

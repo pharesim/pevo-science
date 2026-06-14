@@ -11,10 +11,9 @@
  * middleware (verifyHiveSignature etc.) is exercised by this file, so
  * clause (b)'s real-middleware requirement does not apply here.
  *
- * Real-path companion (clause c): the deferred E2E test in
- * ui-multi-author-consent-affordances will exercise the live fresh_auth
- * callback against a running backend once the consent-op consumer side
- * lands (per the task file's acceptance §4).
+ * Real-path companion (clause c): a deferred E2E test will exercise the live
+ * fresh_auth callback against a running backend once the consent-op broadcast
+ * consumer side lands.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
@@ -344,9 +343,9 @@ describe('orcidCallbackPage', () => {
       vi.useRealTimers();
     });
 
-    // UI-AUTH-LOGINFROMRESPONSE-HELPER-ADOPTION: per-site preserve-on-omit
-    // coverage. _handleLogin now routes through loginFromResponse() which
-    // enforces the atomic {token, expires_at} pair invariant. The
+    // Per-site preserve-on-omit coverage. _handleLogin routes through
+    // loginFromResponse() which enforces the atomic {token, expires_at}
+    // pair invariant. The
     // explicit `is_accredited: false`/`accreditation: null` overrides
     // still land on the store regardless (those are non-atomic fields).
     it('atomic pair: preserves token + expiresAt when ORCID login response omits expires_at', async () => {
@@ -594,10 +593,9 @@ describe('orcidCallbackPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: generic (non-semantic)
-    // failures surface the generic localized message; raw err reaches
-    // console.warn. NO_ACCOUNT and VALIDATION_ERROR are semantic-code
-    // branches above and render their own code-specific strings.
+    // Generic (non-semantic) failures surface the generic localized message;
+    // raw err reaches console.warn. NO_ACCOUNT and VALIDATION_ERROR are
+    // semantic-code branches above and render their own code-specific strings.
     it('sanitizes generic error: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('Server down hex=deadbeefcafebabe');
       mockCompleteOrcid.mockRejectedValue(leaky);
@@ -810,13 +808,12 @@ describe('orcidCallbackPage', () => {
       expect(mockToastStore.show).not.toHaveBeenCalled();
     });
 
-    // Per architect Option B (2026-04-29): backend dropped `retriable: true`
-    // from the same-tick lock-contention 409 because the OAuth state token
-    // is consumed before lock acquisition (any same-`{code, state}` retry
-    // returns 400). Frontend treats every ORCID_ALREADY_LINKED 409 as
-    // durable; user restarts OAuth via /recover. The previous auto-retry
-    // machinery (countdown, MAX_RETRIES cap, _retryVerify) was removed
-    // wholesale.
+    // The backend dropped `retriable: true` from the same-tick lock-contention
+    // 409 because the OAuth state token is consumed before lock acquisition
+    // (any same-`{code, state}` retry returns 400). Frontend treats every
+    // ORCID_ALREADY_LINKED 409 as durable; user restarts OAuth via /recover.
+    // The previous auto-retry machinery (countdown, MAX_RETRIES cap,
+    // _retryVerify) was removed wholesale.
     it('ORCID_ALREADY_LINKED renders durable message and recover affordance, regardless of details/Retry-After shape', async () => {
       const comp = createComponent();
       const err = new Error('Already linked');
@@ -850,7 +847,7 @@ describe('orcidCallbackPage', () => {
       expect(comp.errorAction).toBe('recover');
     });
 
-    // Forward-compat for BE-ORCID-BROADCAST-ABORT-TIMEOUT 504. Backend may
+    // Forward-compat for the broadcast-abort-timeout 504. Backend may
     // not yet emit this code; the branch is inert until it does.
     it('BROADCAST_TIMEOUT: renders pending message pointing to settings', async () => {
       const comp = createComponent();
@@ -865,7 +862,6 @@ describe('orcidCallbackPage', () => {
       expect(comp.errorAction).toBe('settings');
     });
 
-    // Per backend cascade-rethrow rollout (cluster 2 task 4, commit 09e01e3):
     // POST_BROADCAST_FAILED 502 with details.outcome:'confirmed' means the
     // chain-side bind succeeded; only a downstream cascade write failed. The
     // SPA must NOT route the user through /recover (the ORCID is already
@@ -894,7 +890,7 @@ describe('orcidCallbackPage', () => {
     });
 
     // Mutation guard: the outcome:'confirmed' discriminator is load-bearing
-    // per agents/docs/api-contracts/orcid.md:203. A 502 POST_BROADCAST_FAILED
+    // per agents/docs/api-contracts/orcid.md. A 502 POST_BROADCAST_FAILED
     // without outcome:'confirmed' (legacy/malformed envelope, future variant)
     // must NOT take the success-with-warning path; it falls through to the
     // generic console.warn + verificationFailed path.
@@ -1064,8 +1060,8 @@ describe('orcidCallbackPage', () => {
       expect(sessionStorageData['pevo_fresh_auth_return_to']).toBeUndefined();
       // Navigated back to the page that initiated the flow.
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers/alice/some-paper');
-      // Same success-toast key as session_auth (per task acceptance §5: no new
-      // i18n key — mirror the existing reauth pattern).
+      // Same success-toast key as session_auth: no new i18n key — mirror the
+      // existing reauth pattern.
       expect(mockToastStore.show).toHaveBeenCalledWith('orcid.reauthSuccess', 'success');
     });
 
@@ -1077,8 +1073,8 @@ describe('orcidCallbackPage', () => {
     // string passes and propagates into the cache. The cache write must
     // include the empty string verbatim so the consumer-side strict-equality
     // lookup (which also keys on `root_permlink === ''` for `set_password`)
-    // matches. See backend-settings-set-password-fresh-auth for the issuer
-    // side of this contract.
+    // matches. The backend issuer side of this contract emits the empty-string
+    // root_permlink for the account-level set_password target.
     it('handles fresh_auth set_password action with empty root_permlink: caches target-bound proof including empty permlink, navigates return path, fires success toast', async () => {
       sessionStorageData['pevo_fresh_auth_return_to'] = '/settings';
       const comp = createComponent();

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// TEST-003: prove the frontend's signed message is byte-identical to the string
+// Prove the frontend's signed message is byte-identical to the string
 // the backend verifies, driven from the backend's own helper so drift in either
 // direction breaks this test. The backend helper is the single source of truth;
 // we do NOT re-implement the canonical format here.
@@ -78,8 +78,8 @@ describe('SEC-001 frontend/backend canonical-message equivalence', () => {
   });
 
   it('GET /api/anything with undefined body matches backend helper (hashes {})', async () => {
-    // Per the SEC-001-FIXUP decision (archived 2026-04-20): bodyless requests
-    // still hash JSON.stringify({}) on both sides, no GET-specific branch.
+    // Bodyless requests still hash JSON.stringify({}) on both sides; there is
+    // no GET-specific branch in either the frontend signer or the backend helper.
     const method = 'GET';
     const path = '/api/anything';
 

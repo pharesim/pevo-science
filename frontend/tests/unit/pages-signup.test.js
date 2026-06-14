@@ -188,8 +188,8 @@ describe('signupPage', () => {
       expect(mockSubmitSignup).not.toHaveBeenCalled();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: unknown-code failures
-    // surface a generic localized message; raw err reaches console.warn.
+    // Unknown-code failures surface a generic localized message; raw err
+    // reaches console.warn.
     it('sanitizes generic failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = { message: 'Server error hex=deadbeefcafebabe', code: 'UNKNOWN' };
       mockSubmitSignup.mockRejectedValue(leaky);
@@ -301,10 +301,9 @@ describe('signupPage', () => {
       expect(comp.error).toBe('signup.orcidOrInstitutional');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: with an ORCID token
-    // present, VALIDATION_ERROR falls through to the generic-message +
-    // console.warn sanitization path. Guards against the `&& !orcidToken`
-    // being removed from the branch.
+    // With an ORCID token present, VALIDATION_ERROR falls through to the
+    // generic-message + console.warn sanitization path. Guards against the
+    // `&& !orcidToken` being removed from the branch.
     it('sanitizes VALIDATION_ERROR fall-through with orcidToken: generic to DOM, raw to console.warn', async () => {
       const leaky = Object.assign(new Error('server complained hex=deadbeefcafebabe'), { code: 'VALIDATION_ERROR' });
       mockSubmitSignup.mockRejectedValue(leaky);
@@ -330,8 +329,8 @@ describe('signupPage', () => {
   });
 
   describe('handleOrcidVerify', () => {
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Failure surfaces a generic localized message; raw err reaches
+    // console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('network hex=deadbeefcafebabe');
       mockStartOrcid.mockRejectedValue(leaky);
@@ -370,7 +369,6 @@ describe('signupPage', () => {
   });
 
   describe('handleOrcidSignup', () => {
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND hold item #3:
     // handleOrcidSignup has its own catch block independent from
     // handleOrcidVerify. Both share the signup.orcidStartFailed i18n key
     // but regress independently, so it needs its own invariant test.
@@ -413,8 +411,8 @@ describe('signupPage', () => {
   });
 
   describe('handleResendVerification', () => {
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Failure surfaces a generic localized message; raw err reaches
+    // console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('fail hex=deadbeefcafebabe');
       mockResendVerification.mockRejectedValue(leaky);
@@ -462,9 +460,9 @@ describe('signupPage', () => {
     });
 
     it('SEC-004: does NOT restore password from legacy drafts', () => {
-      // Regression guard on the SEC-004 fix: even if an older draft
-      // contains password fields (e.g., user had an in-flight round-trip
-      // from an older UI), init() must never rehydrate them.
+      // Regression guard: even if an older draft contains password fields
+      // (e.g., user had an in-flight round-trip from an older UI), init()
+      // must never rehydrate them.
       localStorageData.pevo_signup_draft = JSON.stringify({
         email: 'saved@x.com',
         fullName: 'Saved',
@@ -546,10 +544,10 @@ describe('signupPage', () => {
     });
   });
 
-  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
-  // must not write to component state. The DUPLICATE branch is especially
-  // sensitive because it chains `_resolveExistingAccount() → loginWithPassword`
-  // on top of the already-resolved submitSignup catch.
+  // Post-destroy() async continuations must not write to component state.
+  // The DUPLICATE branch is especially sensitive because it chains
+  // `_resolveExistingAccount() → loginWithPassword` on top of the
+  // already-resolved submitSignup catch.
   describe('teardown', () => {
     it('handleSubmit catch does not set error/submitted after destroy()', async () => {
       let rejectFn;

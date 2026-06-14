@@ -414,8 +414,8 @@ describe('publishPage', () => {
       expect(meta.pevotest.document_hash).toBe('abc123');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
-    // surfaces a generic localized message; raw err reaches console.warn.
+    // Broadcast failure surfaces a generic localized message; raw err
+    // reaches console.warn (never leaks into user-facing errorMessage).
     it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('broadcast boom hex=deadbeefcafebabe');
       broadcastOps.mockRejectedValueOnce(leaky);
@@ -432,10 +432,9 @@ describe('publishPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: supplementary-file
-    // upload failure sets the file's sf.error to the generic localized
-    // message and logs the raw err via console.warn. The handler then
-    // throws a separate i18n'd Error for the outer catch to surface.
+    // Supplementary-file upload failure sets the file's sf.error to the
+    // generic localized message and logs the raw err via console.warn. The
+    // handler then throws a separate i18n'd Error for the outer catch to surface.
     it('sanitizes supplementary upload failure: generic message to sf.error, raw err to console.warn', async () => {
       const leaky = new Error('ipfs boom hex=deadbeefcafebabe');
       mockSessionUpload.mockRejectedValueOnce(leaky);
@@ -464,9 +463,9 @@ describe('publishPage', () => {
       warnSpy.mockRestore();
     });
 
-    // UI-SETTIMEOUT-NAVIGATE-TEARDOWN-GUARD-SWEEP: the 1.5s post-success
-    // redirect must be cancelable. If the user navigates away during the
-    // wait, destroy() clears the pending timer and navigate MUST NOT fire.
+    // The post-success redirect timer must be cancelable. If the user
+    // navigates away during the wait, destroy() clears the pending timer
+    // and navigate MUST NOT fire.
     it('destroy() cancels the post-success redirect timer (no navigate after teardown)', async () => {
       vi.useFakeTimers();
       broadcastOps.mockResolvedValue({ tx_id: 'tx' });
@@ -482,10 +481,9 @@ describe('publishPage', () => {
       vi.useRealTimers();
     });
 
-    // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
-    // continuation catches must not write step/errorMessage. A broadcast
-    // that rejects after Alpine tears the component down would otherwise
-    // mutate a destroyed reactive scope.
+    // Post-destroy() async continuation catches must not write
+    // step/errorMessage. A broadcast that rejects after Alpine tears the
+    // component down would otherwise mutate a destroyed reactive scope.
     it('handleSubmit catch does not write step=error / errorMessage after destroy()', async () => {
       let rejectFn;
       broadcastOps.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
@@ -527,10 +525,9 @@ describe('publishPage', () => {
     });
   });
 
-  // Held re-review item 3: page-integration of the ORCID prefill flow.
-  // The lib unit tests pin the helper semantics; these tests pin the
-  // page-state wiring around them (the methods publish.js exposes to its
-  // Alpine template).
+  // Page-integration of the ORCID prefill flow. The lib unit tests pin the
+  // helper semantics; these tests pin the page-state wiring around them (the
+  // methods publish.js exposes to its Alpine template).
   describe('co-author ORCID prefill (page integration)', () => {
     const directory = {
       alice: { username: 'alice', orcid: '0000-0001-1111-1111', name: 'Alice' },
@@ -557,7 +554,7 @@ describe('publishPage', () => {
       expect(comp.isCoAuthorAccredited(0)).toBe(false);
     });
 
-    // ITEM 1: accredited→non-accredited hive transition must clear ORCID.
+    // Accredited→non-accredited hive transition must clear the prefilled ORCID.
     it('updateCoAuthor: accredited→non-accredited hive transition clears prefilled ORCID', () => {
       const comp = createComponent();
       comp.accreditedDirectory = directory;
@@ -581,7 +578,7 @@ describe('publishPage', () => {
       expect(comp.coAuthors[0].orcid).toBe('0000-0002-2222-2222');
     });
 
-    // ITEM 9: accredited but no orcid in record → don't blow away existing value.
+    // Accredited but no orcid in record → don't blow away existing value.
     it('updateCoAuthor: accredited hive with no orcid in directory leaves typed orcid intact', () => {
       const comp = createComponent();
       comp.accreditedDirectory = directory;
@@ -592,7 +589,7 @@ describe('publishPage', () => {
       expect(comp.isCoAuthorAccredited(0)).toBe(true);
     });
 
-    // ITEM 2: reapplication after directory loads must protect user-typed
+    // Reapplication after directory loads must protect user-typed
     // ORCID. Test the `_loadAccreditedDirectory` path by stubbing the lib
     // module's loader.
     it('_loadAccreditedDirectory: reapplication preserves user-typed ORCID', async () => {
@@ -681,7 +678,7 @@ describe('publishPage', () => {
     });
   });
 
-  // UI-MOUNT-EDITORS-DESTROYED-GUARD: _mountEditors awaits a dynamic import
+  // _mountEditors awaits a dynamic import
   // of editor.js. If the component is destroyed (Alpine teardown) between
   // the $nextTick dispatch and the import resolving, $refs are stale and
   // any editor instances created post-await leak (destroy() already nulled

@@ -19,8 +19,8 @@
  *         reads; no `verifyHiveSignature` middleware fires.
  *   - (c) real-path companion: the integrated supersession path
  *         (`active_accreditations` → `authorsWithSupersessionSelect` →
- *         `applyAuthorSupersession`) is covered backend-side by
- *         `backend-papers-canonical-orcid-resolution` integration tests; the
+ *         `applyAuthorSupersession`) is covered backend-side by the
+ *         `/api/papers` canonical-ORCID-resolution integration tests; the
  *         paper-detail E2E sibling spec exercises the helper trio against a
  *         real Alpine render of a four-case lattice.
  */

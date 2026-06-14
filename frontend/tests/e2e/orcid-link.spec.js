@@ -1,18 +1,16 @@
 /**
- * SEC-002-UI — ORCID `/api/orcid/callback` carries caller auth for link/accredit.
+ * ORCID `/api/orcid/callback` carries caller auth for link/accredit.
  *
- * SEC-002 ships atomically with SEC-002-BE (backend auth-gates the callback
- * for `link` and `accredit`). From the UI side the only thing to prove is
- * that `completeOrcid()` routes through `authenticatedRequest` for those
- * two modes, and through the unauthenticated `request()` for `signup` and
- * `login` (kiosk / shared-browser flows must keep working without a
- * session).
+ * The backend auth-gates the callback for `link` and `accredit`. From the UI
+ * side the only thing to prove is that `completeOrcid()` routes through
+ * `authenticatedRequest` for those two modes, and through the unauthenticated
+ * `request()` for `signup` and `login` (kiosk / shared-browser flows must keep
+ * working without a session).
  *
  * We stub `/api/orcid/callback` at the network layer so the assertion is
  * deterministic regardless of the backend's own auth state: captured
- * request headers are the UI contract we want to lock in. Once SEC-002-BE
- * is deployed, the `test.fixme` at the bottom of this file can be
- * un-fixmed to assert the real-backend 403 on a cross-user mismatch.
+ * request headers are the UI contract we want to lock in. The real-backend 403
+ * on a cross-user state mismatch is asserted by the live-backend test below.
  */
 
 import { test, expect } from './fixtures/keychain.js';
@@ -106,7 +104,7 @@ test('signup mode omits Authorization header on callback', async ({ page }) => {
 });
 
 /**
- * Real-backend 403 assertion (SEC-002-BE). Exercises the auth gate against a
+ * Real-backend 403 assertion. Exercises the auth gate against a
  * live backend: victim A calls `/api/orcid/start` to allocate state, then
  * attacker B posts to `/api/orcid/callback` with A's state and B's own
  * signed bearer. The backend must return 403 FORBIDDEN and never broadcast

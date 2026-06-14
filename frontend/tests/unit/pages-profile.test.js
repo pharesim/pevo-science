@@ -278,11 +278,11 @@ describe('profilePage', () => {
     });
   });
 
-  // UI-ERR-MESSAGE-SANITIZE-PAPER-DETAIL-SURVIVORS: the profile.loadProfile
-  // catch block was sanitized in commit 0ee5bfe to bind a generic localized
-  // key instead of err?.message. Mirrors the pages-paper-detail.test.js
-  // pattern: generic i18n key bound to this.error, raw err reaches
-  // console.warn, leak sentinel does NOT surface in the DOM-bound field.
+  // The profile.loadProfile catch block binds a generic localized key
+  // instead of err?.message, so server-internal detail never reaches the
+  // DOM. Mirrors the pages-paper-detail.test.js pattern: generic i18n key
+  // bound to this.error, raw err reaches console.warn, leak sentinel does
+  // NOT surface in the DOM-bound field.
   describe('loadProfile error sanitization', () => {
     let warnSpy;
 

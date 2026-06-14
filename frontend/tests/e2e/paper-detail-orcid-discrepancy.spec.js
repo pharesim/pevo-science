@@ -15,9 +15,10 @@
  *         `verifyHiveSignature` middleware fires on `GET /api/papers/:a/:p`.
  *   - (c) real-path companion: the integrated supersession path
  *         (`active_accreditations` → `authorsWithSupersessionSelect` →
- *         `applyAuthorSupersession`) is covered backend-side by
- *         `backend-papers-canonical-orcid-resolution` integration tests
- *         and the cumulative-union backend spec.
+ *         `applyAuthorSupersession`) is covered backend-side by the
+ *         canonical-ORCID-resolution integration tests and the
+ *         cumulative-union backend spec against real HAF + accreditation
+ *         state.
  */
 
 import { test, expect } from './fixtures/keychain.js';

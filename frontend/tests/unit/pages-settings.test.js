@@ -34,7 +34,7 @@ vi.mock('../../src/keychain.js', () => ({
 }));
 
 // Per-role stub WIFs. Real Hive WIFs are 50 chars (2-char prefix + 48
-// base58). Distinct first chars so the FE-KEYCHAIN-API-MISUSE regression
+// base58). Distinct first chars so the Keychain-import regression
 // test can assert three distinct imports and exclude the owner WIF.
 const STUB_WIFS = {
   owner: '5K' + 'A'.repeat(48),
@@ -44,8 +44,8 @@ const STUB_WIFS = {
 };
 
 vi.mock('../../src/hive-keys.js', () => ({
-  // FE-SEED-PHRASE-KEYCHAIN-COMPAT: deriveHiveKeys is now async and returns
-  // per-role WIFs (not hex seeds) via PrivateKey.fromLogin.
+  // deriveHiveKeys is async and returns per-role WIFs (not hex seeds) via
+  // PrivateKey.fromLogin.
   deriveHiveKeys: vi.fn(async () => ({ ...STUB_WIFS })),
   deriveHivePublicKeys: vi.fn(async () => ({
     owner: 'STM' + 'o'.repeat(50),
@@ -53,13 +53,13 @@ vi.mock('../../src/hive-keys.js', () => ({
     posting: 'STM' + 'p'.repeat(50),
     memo: 'STM' + 'm'.repeat(50),
   })),
-  // Round-4 hold #3: settings.js now reuses the lazy dhive loader exported
-  // from hive-keys.js instead of issuing its own `await import('@hiveio/dhive')`.
-  // The dynamic import here resolves to the dhive mock defined below.
+  // settings.js reuses the lazy dhive loader exported from hive-keys.js
+  // instead of issuing its own `await import('@hiveio/dhive')`. The dynamic
+  // import here resolves to the dhive mock defined below.
   loadDhive: vi.fn(async () => await import('@hiveio/dhive')),
   // BIP39 wrappers (re-exported from hive-keys.js, not from raw @scure/bip39).
-  // FE-UPGRADE-KEY-WRAPPER-ADOPT routed settings.js through hive-keys.js so
-  // a single entropy/wordlist policy applies across callers.
+  // settings.js routes through hive-keys.js so a single entropy/wordlist
+  // policy applies across callers.
   generateMnemonic: vi.fn(() => Array(12).fill('test').join(' ')),
   validateMnemonic: vi.fn(() => true),
 }));
@@ -135,16 +135,15 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { initSettingsPage } from '../../src/pages/settings.js';
-// Imported for round-4 hold #1 regression test which forces the 3rd
-// deriveHiveKeys call (inside _performKeychainImport's pre-loop work)
-// to throw, simulating an unguarded helper-internal failure that the
-// try/finally wrap around _performKeychainImport must absorb.
+// Imported so a regression test can force a deriveHiveKeys call (inside
+// _performKeychainImport's pre-loop work) to throw, simulating an unguarded
+// helper-internal failure that the try/finally wrap around
+// _performKeychainImport must absorb.
 import { deriveHiveKeys } from '../../src/hive-keys.js';
-// Imported so FE-UPGRADE-CLOSURE-WIPE round-1 hold items #2 and #3 can
-// override the per-test Client.broadcast.sendOperations spy: item #2 to
-// force a helper-internal broadcast rejection, item #3 to assert the
-// broadcast-only helper still calls sendOperations when Keychain is
-// uninstalled.
+// Imported so closure-wipe tests can override the per-test
+// Client.broadcast.sendOperations spy: to force a helper-internal broadcast
+// rejection, and to assert the broadcast-only helper still calls
+// sendOperations when Keychain is uninstalled.
 import { Client } from '@hiveio/dhive';
 
 function createComponent() {
@@ -157,10 +156,10 @@ function createComponent() {
 }
 
 // Shared Keychain happy-path stub used across describe blocks. Centralized
-// per UI-RETRY-UPGRADE-BACKEND-TEST-COVERAGE round-1 hold M1 so a future
-// change to the Keychain callback contract (e.g. a second argument) only
-// requires editing one place. The stub is intentionally minimal — every
-// `requestImportKey` call resolves `{success: true}` via queueMicrotask.
+// so a future change to the Keychain callback contract (e.g. a second
+// argument) only requires editing one place. The stub is intentionally
+// minimal — every `requestImportKey` call resolves `{success: true}` via
+// queueMicrotask.
 function stubKeychainImportKeySuccess() {
   vi.stubGlobal('window', {
     ...globalThis.window,
@@ -271,8 +270,8 @@ describe('settingsPage', () => {
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
-    // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: non-DUPLICATE failures must
-    // surface a generic localized message and route raw err to console.warn.
+    // Error-message sanitization: non-DUPLICATE failures must surface a
+    // generic localized message and route raw err to console.warn.
     it('sanitizes generic error: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('server error with hex=deadbeefcafebabe');
       mockSubmitEmail.mockRejectedValue(leaky);
@@ -372,8 +371,8 @@ describe('settingsPage', () => {
       expect(mockDeleteEmail).not.toHaveBeenCalled();
     });
 
-    // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: failure must surface a
-    // generic localized message and route raw err to console.warn.
+    // Error-message sanitization: failure must surface a generic localized
+    // message and route raw err to console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('denied hex=deadbeefcafebabe');
       mockDeleteEmail.mockRejectedValue(leaky);
@@ -458,9 +457,9 @@ describe('settingsPage', () => {
     it('rejects invalid redirect URL', async () => {
       mockStartOrcid.mockResolvedValue({ redirect_url: 'https://evil.com/phish' });
       vi.stubGlobal('window', { ...globalThis.window, location: { href: '' } });
-      // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: the internal throw is no
-      // longer surfaced raw. The DOM sees the generic localized message;
-      // the raw 'Invalid ORCID redirect URL' goes to console.warn.
+      // The internal throw is not surfaced raw. The DOM sees the generic
+      // localized message; the raw 'Invalid ORCID redirect URL' goes to
+      // console.warn.
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
 
@@ -487,8 +486,8 @@ describe('settingsPage', () => {
       expect(mockStartOrcid).not.toHaveBeenCalled();
     });
 
-    // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: failure must surface a
-    // generic localized message and route raw err to console.warn.
+    // Error-message sanitization: failure must surface a generic localized
+    // message and route raw err to console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('boom hex=deadbeefcafebabe');
       mockStartOrcid.mockRejectedValue(leaky);
@@ -519,10 +518,10 @@ describe('settingsPage', () => {
       expect(comp.upgradeError).toBe('upgrade.keychainRequired');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: generateMnemonic()
-    // pulls BIP39 entropy. If it throws with entropy-embedded text on a
-    // future library revision, the raw err.message must not reach the DOM.
-    // Generic localized message to the DOM, raw err to console.warn.
+    // generateMnemonic() pulls BIP39 entropy. If it throws with
+    // entropy-embedded text on a future library revision, the raw err.message
+    // must not reach the DOM. Generic localized message to the DOM, raw err
+    // to console.warn.
     it('sanitizes generateMnemonic failure: generic message to DOM, raw err to console.warn', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       const hiveKeys = await import('../../src/hive-keys.js');
@@ -544,10 +543,9 @@ describe('settingsPage', () => {
     });
   });
 
-  // FE-UPGRADE-CREDENTIAL-WIPE — `executeUpgrade()` must zero all
-  // plaintext-sensitive reactive state (old + new mnemonic, confirm
-  // inputs, re-entered password) before transitioning to the 'done'
-  // phase. Without this, an XSS on /settings can
+  // `executeUpgrade()` must zero all plaintext-sensitive reactive state
+  // (old + new mnemonic, confirm inputs, re-entered password) before
+  // transitioning to the 'done' phase. Without this, an XSS on /settings can
   // `window.Alpine.$data(el).oldSeedPhrase` and lift the 12-word seed
   // out of Alpine's reactive store. Same guard on the error path so a
   // failed broadcast + navigate-away doesn't leak.
@@ -558,9 +556,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
       return comp;
     }
@@ -614,8 +612,7 @@ describe('settingsPage', () => {
       expect(comp.upgradePassword).toBe('');
     });
 
-    // FE-UPGRADE-CREDENTIAL-WIPE re-review finding #1: the error-path
-    // `upgradeError` is x-text'd into the DOM. If `err.message` ever
+    // The error-path `upgradeError` is x-text'd into the DOM. If `err.message` ever
     // embeds key-material (library swap, future error shape, dhive bug),
     // the just-wiped Alpine state is effectively un-wiped via a
     // DOM-visible error string. Fix: surface a generic localized message
@@ -644,10 +641,9 @@ describe('settingsPage', () => {
 
       expect(comp.upgradePhase).toBe('error');
       expect(typeof comp.upgradeError).toBe('string');
-      // Post-broadcast fetch rejection — under FE-CANRETRYUPGRADE-
-      // DISCRIMINATOR-KEY-REFACTOR the catch routes anything caught after
-      // `_performUpgradeKeyRotation` has resolved (broadcastLanded=true) to
-      // `upgrade.partialApplyFailed` instead of the pre-broadcast
+      // Post-broadcast fetch rejection: the catch routes anything caught
+      // after `_performUpgradeKeyRotation` has resolved (broadcastLanded=true)
+      // to `upgrade.partialApplyFailed` instead of the pre-broadcast
       // `upgrade.failed`. The sanitization invariant this test guards is
       // identical for both keys; only the key identity moves.
       expect(comp.upgradeError).toBe('upgrade.partialApplyFailed');
@@ -670,7 +666,7 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // Round-3 hold item #1: regression-class guard against the
+    // Regression-class guard against the
     // `$t('upgrade.partialApplyFailed') || err.message` OR-fallback
     // pattern. Stubs $t to return '' for the specific key (simulating a
     // missing translation in a locale file) and exercises the same leak
@@ -680,9 +676,8 @@ describe('settingsPage', () => {
     // substrings appear in upgradeError → assertion fails.
     //
     // The post-broadcast catch (broadcastLanded=true) reads
-    // `$t('upgrade.partialApplyFailed')` after FE-CANRETRYUPGRADE-
-    // DISCRIMINATOR-KEY-REFACTOR; the simulated missing-translation key
-    // tracks the actual key the catch consults on this path.
+    // `$t('upgrade.partialApplyFailed')`; the simulated missing-translation
+    // key tracks the actual key the catch consults on this path.
     it('does not leak key-material when $t returns empty for upgrade.partialApplyFailed', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       stubKeychainImportKeySuccess();
@@ -711,8 +706,8 @@ describe('settingsPage', () => {
     });
   });
 
-  // FE-UPGRADE-CLOSURE-WIPE — the derivation/broadcast/keychain-import
-  // steps (which capture `oldSeed`, `oldKeys`, `newSeed`, `newKeys`,
+  // The derivation/broadcast/keychain-import steps (which capture `oldSeed`,
+  // `oldKeys`, `newSeed`, `newKeys`,
   // `newPubKeys`, `ownerKey`, per-role `wif`) must live inside a
   // narrower-scoped helper method (`_performUpgradeKeyRotation`) that
   // returns BEFORE `_clearSensitiveUpgradeState()` runs. This way the
@@ -737,9 +732,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
       return comp;
     }
@@ -768,8 +763,8 @@ describe('settingsPage', () => {
       seedUpgradeState(comp);
 
       const events = [];
-      // Round-1 hold item #1: instrument deriveHiveKeys to record WHEN
-      // it's called. A no-op `_performUpgradeKeyRotation` stub passes the
+      // Instrument deriveHiveKeys to record WHEN it's called. A no-op
+      // `_performUpgradeKeyRotation` stub passes the
       // ordering-only assertion (perform:enter < perform:exit < wipe holds
       // trivially around an empty function), so the architect's ordering
       // check alone doesn't enforce that the helper actually contains
@@ -873,8 +868,8 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // Round-1 hold item #2: the existing error-path test above stubs `fetch`
-    // to fail, but `fetch` runs AFTER `_performUpgradeKeyRotation` already
+    // The existing error-path test above stubs `fetch` to fail, but `fetch`
+    // runs AFTER `_performUpgradeKeyRotation` already
     // returned successfully — perform:exit fires on normal helper resolution
     // before any failure, so `exitIdx < wipeIdx` is trivially true by linear
     // control flow. The realistic helper-internal failure mode is the
@@ -938,9 +933,8 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // Round-1 hold item #3: at HEAD the broadcast helper
-    // (`_performUpgradeKeyRotation`) is broadcast-only after the round-3
-    // split — Keychain import lives in the sibling `_performKeychainImport`
+    // The broadcast helper (`_performUpgradeKeyRotation`) is broadcast-only:
+    // Keychain import lives in the sibling `_performKeychainImport`
     // helper. The broadcast is the IRREVERSIBLE step (account_update on
     // chain) and MUST run independent of Keychain availability, otherwise
     // a `!isKeychainInstalled()` precondition would silently skip the
@@ -989,7 +983,7 @@ describe('settingsPage', () => {
     });
   });
 
-  // FE-SAVESESSION-API-MISUSE-SWEEP: executeUpgrade() used to call
+  // executeUpgrade() used to call
   // _saveSession(token, username, null, isAccredited, accreditation, 'self')
   // — the no-arg implementation silently ignored all six args, so the `null`
   // was harmless in practice, BUT the old call-shape advertised an intent
@@ -1007,9 +1001,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
       return comp;
     }
@@ -1173,7 +1167,7 @@ describe('settingsPage', () => {
     });
   });
 
-  // FE-KEYCHAIN-API-MISUSE regression guard. The upgrade flow used to call
+  // Keychain-import regression guard. The upgrade flow used to call
   // `window.hive_keychain.requestAddAccountAuthority(username, rawHexSeed,
   // 'posting', cb)` — wrong API (second arg should be an ACCOUNT NAME) and
   // a private-key seed leak into Keychain's extension logs. Replaced with
@@ -1212,8 +1206,8 @@ describe('settingsPage', () => {
       expect(src).toMatch(/window\.hive_keychain\.requestImportKey\(/);
     });
 
-    // FE-KEYCHAIN-API-MISUSE re-review: the custody upgrade must import
-    // posting + active + memo (NOT owner) into Keychain so the user can
+    // The custody upgrade must import posting + active + memo (NOT owner)
+    // into Keychain so the user can
     // sign every non-owner-auth op after the upgrade. The previous single
     // posting-only import left Keychain unable to sign transfers/power-down
     // (active) or encrypt memos (memo). Assert three sequential
@@ -1241,9 +1235,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
@@ -1265,8 +1259,7 @@ describe('settingsPage', () => {
       }
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-2 hold #2 (mid-loop denial):
-    // After the round-2 reorder, the Keychain import loop runs AFTER the
+    // Mid-loop Keychain denial: the Keychain import loop runs AFTER the
     // irreversible (broadcast + backend cleanup) pair. A user denying the
     // popup mid-loop must NOT wedge the upgrade: backend cleanup has
     // already fired, the loop becomes best-effort, the upgrade completes
@@ -1274,9 +1267,7 @@ describe('settingsPage', () => {
     // warning lands in `upgradeWarnings` for the success-screen surface.
     //
     // Two specs cover the loop's first and second indices to lock in that
-    // a denial at any iteration produces the same best-effort outcome (the
-    // round-1 single-call shape made these distinguishable; the round-2
-    // loop must not regress).
+    // a denial at any iteration produces the same best-effort outcome.
     it('best-effort: keychain denies on call index 1 (active) → done + active warning', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       const importKeyCalls = [];
@@ -1308,9 +1299,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
@@ -1361,9 +1352,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
@@ -1381,19 +1372,18 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-4 hold #1 (P1):
     // The try/catch only wraps requestImportKey inside the per-role loop. The
     // helper's pre-loop work (deriveHiveKeys) is unguarded. A throw from
     // there escapes both the helper and executeUpgrade, leaving chain
     // rotated + backend cleaned up + mnemonic NOT wiped (re-opens the
-    // FE-UPGRADE-CREDENTIAL-WIPE invariant via a different injection point)
+    // credential-wipe invariant via a different injection point)
     // + upgradePhase stuck at 'upgrading' with no recovery UI. Fix: wrap
     // the helper call site in try/catch/finally so wipe + upgradePhase =
     // 'done' run unconditionally and the failure surfaces as a single
-    // fallback warning. After FE-SEED-PHRASE-KEYCHAIN-COMPAT (2026-05-16)
-    // the helper's pre-loop work is just `deriveHiveKeys(newSeedPhrase, account)`
-    // — async, calling PrivateKey.fromLogin internally; the same try/finally
-    // shape absorbs its rejections.
+    // fallback warning. The helper's pre-loop work is just
+    // `deriveHiveKeys(newSeedPhrase, account)` — async, calling
+    // PrivateKey.fromLogin internally; the same try/finally shape absorbs
+    // its rejections.
     it('best-effort: helper throws (deriveHiveKeys rejects pre-loop) → done + fallback warning', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       vi.stubGlobal('window', {
@@ -1413,8 +1403,8 @@ describe('settingsPage', () => {
       // broadcast step) and must succeed so the broadcast lands and backend
       // cleanup fires; call 3 happens inside _signUpgradeProof (also pre-
       // broadcast, must succeed); only call 4 (inside _performKeychainImport's
-      // pre-loop work) must throw — that's the injection point the round-4
-      // fix targets.
+      // pre-loop work) must throw — that's the injection point the
+      // try/finally wrap around _performKeychainImport must absorb.
       let deriveCallCount = 0;
       vi.mocked(deriveHiveKeys).mockImplementation(async () => {
         deriveCallCount += 1;
@@ -1429,9 +1419,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
@@ -1452,7 +1442,6 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-4 hold #3 (P2):
     // memo (idx 2) is the loop's last iteration — structurally distinct
     // from the existing posting/active denial specs. The "loop continued
     // past denial" assertion is vacuous here; what we lock in is that a
@@ -1487,9 +1476,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
@@ -1507,7 +1496,6 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-4 hold #3 (P2):
     // All-three-deny is the maximum failure mode for the best-effort path.
     // Locks in that the success surface still flips to 'done' with 3 distinct
     // role warnings and that backend cleanup fired exactly once (no retry on
@@ -1540,9 +1528,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
@@ -1560,9 +1548,8 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-4 hold #4 (P2):
-    // The whole point of the round-3 reorder is backend cleanup BEFORE the
-    // keychain loop, so a mid-loop denial cannot leave backend with stale
+    // The contract under test is backend cleanup BEFORE the keychain loop,
+    // so a mid-loop denial cannot leave backend with stale
     // encrypted keys for the now-superseded authorities. The existing tests
     // verify both happen but not ORDERING — a refactor swapping (c) and (d)
     // re-introduces the original lockout but passes the existing assertions.
@@ -1596,9 +1583,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
@@ -1611,7 +1598,6 @@ describe('settingsPage', () => {
       expect(fetchSeq).toBeLessThan(firstImportSeq);
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-4 hold #5 (P3):
     // Race: extension was installed at startUpgrade() time (account_update
     // signed successfully, proven by the broadcast step) but disabled by the
     // time _performKeychainImport runs (auto-update, manual toggle,
@@ -1643,9 +1629,9 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
-      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
-      // entered from the default 'idle' phase and would now early-return.
+      // executeUpgrade() phase-guards on 'enter-old' (only legal entry phase,
+      // set by proceedToOldSeed()). Tests that entered from the default 'idle'
+      // phase would otherwise early-return at the guard.
       comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
@@ -1662,7 +1648,6 @@ describe('settingsPage', () => {
       ]);
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-4 hold #6 (P3):
     // executeUpgrade() resets `this.upgradeWarnings = []` on entry so a
     // previous partial run never leaks its messages into a subsequent
     // success screen. No spec invokes executeUpgrade twice on the same
@@ -1697,11 +1682,10 @@ describe('settingsPage', () => {
         comp.newSeedWords = comp.newSeedPhrase.split(' ');
         comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
         comp.upgradePassword = 'light-password';
-        // Round-5 P1 hold: re-establish 'enter-old' before each attempt so
-        // the new phase-guard at the top of executeUpgrade() admits entry.
-        // The wipe + 'done' transition runs at the end of the prior attempt,
-        // so this re-seed mirrors what proceedToOldSeed() would do for a real
-        // second pass.
+        // Re-establish 'enter-old' before each attempt so the phase-guard at
+        // the top of executeUpgrade() admits entry. The wipe + 'done'
+        // transition runs at the end of the prior attempt, so this re-seed
+        // mirrors what proceedToOldSeed() would do for a real second pass.
         comp.upgradePhase = 'enter-old';
       };
 
@@ -1723,8 +1707,7 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-5 hold #1 (P1):
-    // Hung Keychain callback bypasses the round-4 try/finally. The Hive
+    // Hung Keychain callback bypasses the per-role-loop try/finally. The Hive
     // Keychain extension does not guarantee its callback fires if the
     // popup is dismissed via the extension UI, the content script wedges,
     // or the extension is uninstalled mid-flow. Without the Promise.race
@@ -1802,8 +1785,7 @@ describe('settingsPage', () => {
       }
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-5 hold #2 (P1):
-    // No concurrent-invocation guard on executeUpgrade(). The opening
+    // Concurrent-invocation guard on executeUpgrade(). The opening
     // field-presence check is not a phase guard: `upgradePhase =
     // 'upgrading'` is synchronous but Alpine's reactive DOM update that
     // hides the "Upgrade" button is batched, so a double-click inside the
@@ -1866,8 +1848,6 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('done');
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-5 hold #3 (P2) + round-6 hold #1 (P1)
-    // + UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW round-2 hold #6 (P1):
     // Backend-cleanup fetch had no timeout. If the backend hangs after
     // account_update lands on-chain, the flow blocks on `await fetch(...)`
     // until OS-level TCP teardown — minutes for a half-open socket,
@@ -1875,12 +1855,11 @@ describe('settingsPage', () => {
     // upgradePhase is stuck at 'upgrading' and the mnemonic stays in
     // reactive state. AbortSignal.timeout(20_000) bounds the budget; the
     // resulting TimeoutError DOMException routes to upgrade.backendTimeout
-    // and does NOT wipe the mnemonic (round-2 reverted round-6's wipe
-    // decision: the backend may have committed `upgraded_at` before the
-    // abort fired, so the user must sign out and back in to discover
-    // whether the upgrade actually landed — and they may need the phrase
-    // for recovery if it didn't. The error copy directs them to that
-    // recovery path and tells them to keep the phrase safe).
+    // and does NOT wipe the mnemonic: the backend may have committed
+    // `upgraded_at` before the abort fired, so the user must sign out and
+    // back in to discover whether the upgrade actually landed — and they may
+    // need the phrase for recovery if it didn't. The error copy directs them
+    // to that recovery path and tells them to keep the phrase safe.
     it('backend cleanup fetch timeout → upgradeError + phase=error, mnemonic preserved (round-2 hold #6)', async () => {
       vi.useFakeTimers();
       try {
@@ -1925,11 +1904,11 @@ describe('settingsPage', () => {
         expect(comp.upgradePhase).toBe('error');
         // Specific timeout message, not the generic backendFailed/failed.
         expect(comp.upgradeError).toBe('upgrade.backendTimeout');
-        // Round-2 hold #6: mnemonic is preserved on the timeout branch.
-        // The backend may have committed `upgraded_at` before the abort
-        // fired; the user must sign out and back in to discover whether
-        // the upgrade landed, and they may need the phrase for recovery
-        // if it didn't. Wiping closes the only recovery surface.
+        // Mnemonic is preserved on the timeout branch. The backend may have
+        // committed `upgraded_at` before the abort fired; the user must sign
+        // out and back in to discover whether the upgrade landed, and they
+        // may need the phrase for recovery if it didn't. Wiping closes the
+        // only recovery surface.
         expect(comp.newSeedPhrase).toBe(newMnemonic);
         // oldSeedPhrase is also preserved on this branch — the wipe is
         // gated on the same _clearSensitiveUpgradeState() that handles
@@ -1943,8 +1922,8 @@ describe('settingsPage', () => {
       }
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-7 hold #2 (P1): the "Try Again" button
-    // is a dead-end on the backend-timeout sub-case. resetUpgrade() flips
+    // The "Try Again" button is a dead-end on the backend-timeout sub-case.
+    // resetUpgrade() flips
     // phase to 'idle'; the user clicks Start; startUpgrade() generates a
     // NEW mnemonic; user re-enters their original light-account old seed;
     // _performUpgradeKeyRotation signs account_update with old seed-derived
@@ -1959,8 +1938,7 @@ describe('settingsPage', () => {
     // dead-end (drops x-show, inverts the comparison, renames the getter)
     // fails here.
     //
-    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding B): the
-    // comparison is now keyed on `upgradeErrorKey` (a stable i18n key
+    // The comparison is keyed on `upgradeErrorKey` (a stable i18n key
     // discriminator), not on the translated `upgradeError` string. Setting
     // `upgradeErrorKey` directly here documents the contract — the getter
     // consumes the discriminator, not the translation.
@@ -1982,9 +1960,8 @@ describe('settingsPage', () => {
       expect(comp.canRetryUpgrade).toBe(true);
     });
 
-    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding B, acceptance
-    // criterion 2): the getter must be invariant to mid-error-screen
-    // locale switches. The user can flip locales from the header switcher
+    // The getter must be invariant to mid-error-screen locale switches.
+    // The user can flip locales from the header switcher
     // while sitting on the upgrade error screen; `upgradeError` was
     // captured once at error time but `$t` reads live from the i18n store.
     // Comparing translated strings would break the moment any locale ships
@@ -2002,9 +1979,8 @@ describe('settingsPage', () => {
       expect(comp.canRetryUpgrade).toBe(false);
     });
 
-    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding A, acceptance
-    // criterion 3a): post-broadcast `TypeError: Failed to fetch` (network
-    // drop mid-fetch after the chain rotation already landed) must route
+    // Post-broadcast `TypeError: Failed to fetch` (network drop mid-fetch
+    // after the chain rotation already landed) must route
     // to the non-retryable sub-case. Pre-refactor, the catch's generic
     // fall-through routed every non-TimeoutError to `upgrade.failed` and
     // canRetryUpgrade returned true — re-clicking Try Again signed
@@ -2042,8 +2018,7 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding A, acceptance
-    // criterion 3b): backend 500 after rotation must route non-retryable.
+    // Backend 500 after rotation must route non-retryable.
     // The `!res.ok` branch throws an Error which the catch's generic
     // fall-through previously routed to `upgrade.failed` (retriable).
     it('post-broadcast backend 500 routes to non-retryable (partialApplyFailed)', async () => {
@@ -2080,9 +2055,8 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding A, acceptance
-    // criterion 3c): backend 409 ALREADY_UPGRADED after rotation must
-    // route non-retryable. Surfaces when a concurrent flow already wiped
+    // Backend 409 ALREADY_UPGRADED after rotation must route non-retryable.
+    // Surfaces when a concurrent flow already wiped
     // server-side custody — the rotation in the current flow still
     // landed on-chain, so retrying is structurally unavailable. The
     // code routes 409 to its dedicated `upgrade.alreadyUpgraded`
@@ -2123,8 +2097,8 @@ describe('settingsPage', () => {
       warnSpy.mockRestore();
     });
 
-    // UI-UPGRADE-FLOW-MOUNTED-GUARDS: when the user navigates away mid-flow
-    // (Alpine's destroy() flips _mounted=false via _teardownTimers), the
+    // When the user navigates away mid-flow (Alpine's destroy() flips
+    // _mounted=false via _teardownTimers), the
     // Keychain loop must short-circuit so no fresh popups appear on the
     // navigated-away page, no upgradePhase='done' write lands on the
     // orphaned component, and sensitive reactive state is wiped exactly
@@ -2140,10 +2114,10 @@ describe('settingsPage', () => {
       // destroy() (rather than directly flipping _mounted) exercises
       // the integrated production unmount path: destroy() synchronously
       // runs _clearSensitiveUpgradeState() then _teardownTimers()
-      // (which flips _mounted). Round-2 architect hold-block item 1
-      // required this swap so the wipe-once-on-unmount invariant is
-      // pinned end-to-end (a regression reordering or removing the
-      // wipe inside destroy() would now fail this test).
+      // (which flips _mounted). Calling destroy() rather than directly
+      // flipping _mounted pins the wipe-once-on-unmount invariant
+      // end-to-end (a regression reordering or removing the wipe inside
+      // destroy() would now fail this test).
       let compRef = null;
       vi.stubGlobal('window', {
         ...globalThis.window,
@@ -2222,8 +2196,7 @@ describe('settingsPage', () => {
       // Sensitive reactive state cleared via the explicit cleanup signal
       // wired into destroy(). Mirrors the fields _clearSensitiveUpgradeState
       // touches today. (upgradePassword wipe is a separate pre-existing
-      // gap tracked in the original held task's out-of-scope list; not
-      // asserted here.)
+      // gap; not asserted here.)
       expect(comp.oldSeedPhrase).toBe('');
       expect(comp.newSeedPhrase).toBe('');
       expect(comp.newSeedWords).toEqual([]);
@@ -2322,8 +2295,8 @@ describe('settingsPage', () => {
       expect(mockSetPassword).not.toHaveBeenCalled();
     });
 
-    // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: on failure the DOM-bound
-    // passwordError must be a generic localized message (never `err.message`,
+    // Error-message sanitization: on failure the DOM-bound passwordError
+    // must be a generic localized message (never `err.message`,
     // which could embed key/password material on a future error shape) and
     // the raw error must reach console.warn for diagnostics. Plaintext
     // password inputs are still zeroed on the error path.
@@ -2422,16 +2395,15 @@ describe('settingsPage', () => {
     });
   });
 
-  // UI-RETRY-UPGRADE-BACKEND-TEST-COVERAGE: unit coverage for the
-  // post-broadcast 503-retry path. `retryUpgradeBackend()` is reachable
-  // only from the error screen with `upgradeErrorKey ===
-  // 'upgrade.backendUnavailable'`; it re-signs a fresh proof and
-  // re-POSTs the backend cleanup call without re-broadcasting the
+  // Unit coverage for the post-broadcast 503-retry path.
+  // `retryUpgradeBackend()` is reachable only from the error screen with
+  // `upgradeErrorKey === 'upgrade.backendUnavailable'`; it re-signs a fresh
+  // proof and re-POSTs the backend cleanup call without re-broadcasting the
   // (already-landed) chain rotation. `handleRetry()` is the dispatcher
   // that the Try Again button binds to.
   //
-  // Branches enumerated (from frontend/src/pages/settings.js as of
-  // 2026-05-16; line numbers may shift across rounds — search by symbol):
+  // Branches enumerated (search the named symbols in
+  // frontend/src/pages/settings.js):
   //   handleRetry()
   //     H1. upgradeErrorKey === 'upgrade.backendUnavailable' → retryUpgradeBackend()
   //     H2. else → resetUpgrade() (phase → 'idle', state wiped)
@@ -2683,8 +2655,8 @@ describe('settingsPage', () => {
       });
       vi.stubGlobal('fetch', vi.fn(async () => {
         // Simulate the unmount-during-await: flip _mounted=false before
-        // returning the response. The post-await check on line ~960 of
-        // settings.js must observe this and short-circuit.
+        // returning the response. The post-await _mounted check in
+        // retryUpgradeBackend must observe this and short-circuit.
         if (compRef) compRef._mounted = false;
         return {
           ok: true,
@@ -2710,10 +2682,9 @@ describe('settingsPage', () => {
     // 20s budget elapses. Routes to the terminal backendTimeout
     // sub-case (canRetryUpgrade=false): the retry already consumed the
     // user's patience window once; offering another retry on the same
-    // hung backend is dead-end UX. Round-2 #6: state is NOT wiped —
-    // the backend may have committed the upgrade before the abort
-    // fired, so the user must keep newSeedPhrase to recover after
-    // signing out and back in.
+    // hung backend is dead-end UX. State is NOT wiped — the backend may
+    // have committed the upgrade before the abort fired, so the user must
+    // keep newSeedPhrase to recover after signing out and back in.
     it('retryUpgradeBackend: TimeoutError → backendTimeout terminal sub-case, mnemonic preserved', async () => {
       stubBareWindow();
       const timeoutErr = new Error('signal timed out');
@@ -2731,16 +2702,15 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('error');
       expect(comp.upgradeErrorKey).toBe('upgrade.backendTimeout');
       expect(comp.upgradeError).toBe('upgrade.backendTimeout');
-      // Round-2 #6 contract: ambiguous-outcome timeout preserves the
-      // mnemonic so the user can complete recovery after sign-out.
+      // Ambiguous-outcome timeout preserves the mnemonic so the user can
+      // complete recovery after sign-out.
       expect(comp.newSeedPhrase).toBe(preservedSeed);
       warnSpy.mockRestore();
     });
 
     // R7 sibling: AbortError (older runtimes / dhive-side abort surface
     // the same condition under a different DOMException name). Same
-    // routing as TimeoutError; same round-2 #6 preserve-mnemonic
-    // contract.
+    // routing as TimeoutError; same preserve-mnemonic contract.
     it('retryUpgradeBackend: AbortError → backendTimeout terminal sub-case, mnemonic preserved', async () => {
       stubBareWindow();
       const abortErr = new Error('aborted');

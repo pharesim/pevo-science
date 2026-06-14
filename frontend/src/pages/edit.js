@@ -552,8 +552,8 @@ export function initEditPage() {
 
     async loadPaperData() {
       // In-flight guard against double-click Retry races. The Retry
-      // button at edit.js:50 re-invokes loadPaperData(); without this
-      // guard a slow network plus rapid retries would race two fetches,
+      // button on the load-error card re-invokes loadPaperData(); without
+      // this guard a slow network plus rapid retries would race two fetches,
       // and the slower-resolving one would overwrite _originalBody /
       // this.paper, corrupting the diff base for the next native edit.
       // The existing stale-key guard below protects against route
@@ -744,8 +744,7 @@ export function initEditPage() {
       // Teardown-during-init guard. If the component was destroyed while the
       // dynamic import was in flight, $refs are stale and any editor we
       // create now leaks (destroy() already nulled the previous instance
-      // refs, so it won't tear down anything we assign here). See
-      // ui-mount-editors-destroyed-guard.
+      // refs, so it won't tear down anything we assign here).
       if (!this._mounted) {
         // Release the idempotency flag so a legitimate later remount (e.g.
         // live-reload, navigation back to the page) can re-mount editors.

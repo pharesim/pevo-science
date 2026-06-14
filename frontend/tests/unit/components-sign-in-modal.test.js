@@ -175,8 +175,8 @@ describe('signInModal', () => {
       expect(comp.mode).toBe('unverified');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: unknown-code failures
-    // surface a generic localized message; raw err reaches console.warn.
+    // Unknown-code failures surface a generic localized message to the DOM;
+    // the raw err reaches console.warn only, never user-facing text.
     it('sanitizes generic error: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('Bad creds hex=deadbeefcafebabe');
       mockLoginWithPassword.mockRejectedValue(leaky);
@@ -204,8 +204,8 @@ describe('signInModal', () => {
       expect(comp.resendSuccess).toBe(true);
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Resend failure surfaces a generic localized message to the DOM;
+    // the raw err reaches console.warn only, never user-facing text.
     it('sanitizes resend failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('Rate limited hex=deadbeefcafebabe');
       mockResendVerification.mockRejectedValue(leaky);
@@ -235,10 +235,9 @@ describe('signInModal', () => {
     });
   });
 
-  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
-  // must not write to component state. A modal login that resolves after the
-  // modal is torn down would otherwise flip auth state + modal mode on a
-  // destroyed scope.
+  // Post-destroy() async continuations must not write to component state. A
+  // modal login that resolves after the modal is torn down would otherwise
+  // flip auth state + modal mode on a destroyed scope.
   describe('teardown', () => {
     it('handleEmailLogin catch does not set emailError after destroy()', async () => {
       let rejectFn;

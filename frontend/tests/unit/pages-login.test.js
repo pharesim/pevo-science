@@ -121,13 +121,13 @@ describe('loginPage', () => {
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers');
     });
 
-    // UI-AUTH-LOGINFROMRESPONSE-HELPER-ADOPTION: per-site preserve-on-omit
-    // coverage. The login site now routes through loginFromResponse(),
-    // which enforces the atomic {token, expires_at} pair invariant — if
-    // the backend omits expires_at, neither rotates. The pre-adoption
-    // form set token=res.data.token and expiresAt=undefined unconditionally,
-    // which JSON.stringify then dropped, so _restoreSession evicted on
-    // next load and the user was silently logged out.
+    // Per-site preserve-on-omit coverage. The login site routes through
+    // loginFromResponse(), which enforces the atomic {token, expires_at}
+    // pair invariant: if the backend omits expires_at, neither rotates.
+    // A form that set token=res.data.token and expiresAt=undefined
+    // unconditionally would have JSON.stringify drop the undefined, so
+    // _restoreSession evicted on next load and the user was silently
+    // logged out.
     it('atomic pair: preserves token + expiresAt when login response omits expires_at', async () => {
       mockLoginWithPassword.mockResolvedValue({
         data: {
@@ -240,8 +240,7 @@ describe('loginPage', () => {
       expect(dest).not.toContain('undefined');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND hold item #1: the
-    // PENDING_UNVERIFIED branch binds the localized login.pendingUnverified
+    // The PENDING_UNVERIFIED branch binds the localized login.pendingUnverified
     // key to the DOM field and routes raw err (including any server-text
     // sentinel) to console.warn. Guards against reverting to `err.message`.
     it('sanitizes PENDING_UNVERIFIED: sets pendingState=unverified, generic key to DOM, raw err to console.warn', async () => {
@@ -264,8 +263,7 @@ describe('loginPage', () => {
       warnSpy.mockRestore();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND hold item #1: the
-    // SIGNUP_EXPIRED branch binds the localized login.signupExpired key to
+    // The SIGNUP_EXPIRED branch binds the localized login.signupExpired key to
     // the DOM field and routes raw err to console.warn. The pendingState
     // === 'expired' view renders `error` inline (see login.js template),
     // so sanitization here matters even though it's a known-code branch.
@@ -302,10 +300,9 @@ describe('loginPage', () => {
       expect(comp.pendingState).toBeNull();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: unknown-code failures
-    // must surface a generic localized message and route raw err to
-    // console.warn. PENDING_UNVERIFIED and SIGNUP_EXPIRED now follow the
-    // same invariant on dedicated i18n keys (see tests above).
+    // Unknown-code failures must surface a generic localized message and
+    // route raw err to console.warn. PENDING_UNVERIFIED and SIGNUP_EXPIRED
+    // follow the same invariant on dedicated i18n keys (see tests above).
     it('sanitizes unknown-code error: generic message to DOM, raw err to console.warn', async () => {
       const leaky = Object.assign(new Error('bad creds hex=deadbeefcafebabe'), { code: 'UNKNOWN' });
       mockLoginWithPassword.mockRejectedValue(leaky);
@@ -339,8 +336,8 @@ describe('loginPage', () => {
       expect(comp.error).toBeNull();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Failure surfaces a generic localized message; raw err reaches
+    // console.warn.
     it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('oops hex=deadbeefcafebabe');
       mockResendVerification.mockRejectedValue(leaky);
@@ -385,8 +382,8 @@ describe('loginPage', () => {
       expect(mockStartOrcid).not.toHaveBeenCalled();
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-    // generic localized message; raw err reaches console.warn.
+    // Failure surfaces a generic localized message; raw err reaches
+    // console.warn.
     it('sanitizes failure: clears orcid mode, generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('fail hex=deadbeefcafebabe');
       mockStartOrcid.mockRejectedValue(leaky);
@@ -425,8 +422,8 @@ describe('loginPage', () => {
     });
   });
 
-  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
-  // must not write to component state. A login that resolves/rejects after
+  // Post-destroy() async continuations must not write to component state.
+  // A login that resolves/rejects after
   // Alpine tears the page down would otherwise flip auth store + error state
   // on a destroyed scope.
   describe('teardown', () => {

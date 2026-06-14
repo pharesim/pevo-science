@@ -51,8 +51,8 @@ describe('accreditationVerifyPage', () => {
     expect(comp.resultUsername).toBe('alice');
   });
 
-  // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
-  // generic localized message; raw err reaches console.warn.
+  // Failure surfaces a generic localized message; raw err reaches
+  // console.warn (no leaky error text in the DOM).
   it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
     const leaky = new Error('invalid hex=deadbeefcafebabe');
     mockVerifyAccreditation.mockRejectedValue(leaky);
@@ -68,10 +68,10 @@ describe('accreditationVerifyPage', () => {
     warnSpy.mockRestore();
   });
 
-  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() .catch
-  // continuation must not write to component state. The verifyAccreditation
-  // promise rejects after destroy(), and the .catch sees _mounted === false
-  // and short-circuits before touching `state` or `errorMessage`.
+  // A post-destroy() .catch continuation must not write to component state.
+  // The verifyAccreditation promise rejects after destroy(), and the .catch
+  // sees _mounted === false and short-circuits before touching `state` or
+  // `errorMessage`.
   it('post-destroy() verifyAccreditation rejection does not write to state or errorMessage', async () => {
     let rejectFn;
     mockVerifyAccreditation.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
@@ -95,8 +95,8 @@ describe('accreditationVerifyPage', () => {
     warnSpy.mockRestore();
   });
 
-  // UI-ACCREDITATION-VERIFY-RETRIABLE-HANDLING: the backend emits
-  // `ACCREDITATION_GATE_UNAVAILABLE` with `details.retriable: true` when the
+  // The backend emits `ACCREDITATION_GATE_UNAVAILABLE` with
+  // `details.retriable: true` when the
   // HAF gate query throws and preserves the verification token. The SPA must
   // route this distinctly from non-retriable 4xx errors so the user is shown
   // a Retry affordance instead of a Request New CTA that would burn one of
@@ -249,7 +249,6 @@ describe('accreditationVerifyPage', () => {
       warnSpy.mockRestore();
     });
 
-    // UI-ACCREDITATION-VERIFY-RETRIABLE-HANDLING round-2 hold item 1:
     // Concurrent _verify() flights race on shared state. The generation
     // counter bumped synchronously at the top of _verify() captures into the
     // .then/.catch closures so a stale loser's resolution bails before
@@ -276,9 +275,9 @@ describe('accreditationVerifyPage', () => {
       expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
 
       // Synthetic second flight: invoke _verify() directly to bypass the
-      // retryVerification loading-guard (item 2). This is the entry-point
-      // the generation counter must defend against in case any future
-      // caller bypasses retryVerification.
+      // retryVerification loading-guard. This is the entry-point the
+      // generation counter must defend against in case any future caller
+      // bypasses retryVerification.
       comp._verify(); // flight B, _verifyGeneration === 2
       expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
 
@@ -300,12 +299,12 @@ describe('accreditationVerifyPage', () => {
       warnSpy.mockRestore();
     });
 
-    // UI-ACCREDITATION-VERIFY-RETRIABLE-HANDLING round-2 hold item 2:
     // retryVerification() must drop a double-tap that lands while a verify
     // flight is already in-flight (state === 'loading'). Without the guard,
     // a rapid second click between state='loading' and Alpine's x-if
     // teardown of the Retry button would fire a second verifyAccreditation
-    // call — the user-driven entry point into the item-1 race.
+    // call — the user-driven entry point into the concurrent-flight race the
+    // generation guard defends against.
     // Network-layer errors (`TypeError` from fetch failure, `AbortError`
     // from the 30s fetch timeout in `api.js`) never reach `ApiRequestError`
     // — `api.js` constructs `ApiRequestError` from the response body, so a
@@ -389,9 +388,8 @@ describe('accreditationVerifyPage', () => {
 
         await vi.waitFor(() => expect(comp.state).toBe('success'));
         expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
-        // Same token, satisfies AC #2 (token preserved across retry —
-        // backend was never reached on a network error, so the token is
-        // still valid server-side).
+        // Same token preserved across retry — backend was never reached on a
+        // network error, so the token is still valid server-side.
         expect(mockVerifyAccreditation).toHaveBeenNthCalledWith(2, 'tok123');
         expect(comp.resultUsername).toBe('alice');
         warnSpy.mockRestore();

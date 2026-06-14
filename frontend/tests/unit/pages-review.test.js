@@ -178,8 +178,8 @@ describe('reviewPage', () => {
     });
   });
 
-  // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
-  // surfaces a generic localized message; raw err reaches console.warn.
+  // Broadcast failure surfaces a generic localized message; raw err
+  // reaches console.warn only (never the DOM).
   describe('handleSubmit sanitization', () => {
     it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
       const { broadcastOps } = await import('../../src/signer.js');
@@ -208,9 +208,9 @@ describe('reviewPage', () => {
       warnSpy.mockRestore();
     });
 
-    // UI-SETTIMEOUT-NAVIGATE-TEARDOWN-GUARD-SWEEP: the 1.5s post-success
-    // redirect must be cancelable. If the user navigates away during the
-    // wait, destroy() clears the pending timer and navigate MUST NOT fire.
+    // The post-success redirect timer must be cancelable. If the user
+    // navigates away during the wait, destroy() clears the pending timer
+    // and navigate MUST NOT fire.
     it('destroy() cancels the post-success redirect timer (no navigate after teardown)', async () => {
       vi.useFakeTimers();
       const { broadcastOps } = await import('../../src/signer.js');
@@ -235,10 +235,9 @@ describe('reviewPage', () => {
       vi.useRealTimers();
     });
 
-    // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
-    // continuation catches must not write step/errorMessage. A broadcast
-    // that rejects after Alpine tears the component down would otherwise
-    // mutate a destroyed reactive scope.
+    // Post-destroy() async continuation catches must not write
+    // step/errorMessage. A broadcast that rejects after Alpine tears the
+    // component down would otherwise mutate a destroyed reactive scope.
     it('catch does not write step=error / errorMessage after destroy()', async () => {
       const { broadcastOps } = await import('../../src/signer.js');
       let rejectFn;
@@ -266,12 +265,11 @@ describe('reviewPage', () => {
     });
   });
 
-  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP round-2 hold item #5:
-  // loadPaper previously had a bare `await fetchPaper(...)` with no
-  // try/catch/finally. A rejection became an unhandled promise (init()
-  // calls loadPaper() without awaiting) and `loadingPaper=true` was
-  // never reset on failure. Post-destroy continuations must also not
-  // write to reactive state.
+  // loadPaper must wrap fetchPaper in try/catch/finally: a bare
+  // `await fetchPaper(...)` makes a rejection an unhandled promise
+  // (init() calls loadPaper() without awaiting) and leaves
+  // `loadingPaper=true` unreset on failure. Post-destroy continuations
+  // must also not write to reactive state.
   describe('loadPaper teardown guard', () => {
     it('catch does not write paper / loadingPaper after destroy()', async () => {
       const { fetchPaper } = await import('../../src/api.js');

@@ -1,6 +1,6 @@
 /**
- * UI-SETTINGS-ORCID-FACTOR-E2E — the ORCID-factor settings critical-action
- * round-trip, end-to-end against the test-mode stack.
+ * The ORCID-factor settings critical-action round-trip, end-to-end against the
+ * test-mode stack.
  *
  * The settings-action fresh-auth flow (the `withSettingsFreshAuth` wrapper in
  * settings-fresh-auth.js) wires two factors: PASSWORD and ORCID. settings.spec.js

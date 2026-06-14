@@ -6,8 +6,8 @@
  * that a regression would land silently until a developer happened to rerun
  * against the wrong DB or point SESSION_SECRET at a commented value.
  *
- * Added in FE-E2E-AUTH-FIXTURE-HARDEN actions #5 + #11 to keep the fix
- * regression-proof.
+ * These cover the inline-comment-strip in parseEnvFile and the _test DB-suffix
+ * guard in assertTestDatabase to keep both fixes regression-proof.
  */
 
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
@@ -53,7 +53,7 @@ describe('parseEnvFile', () => {
   });
 
   it('strips a trailing inline "# comment" suffix from unquoted values', () => {
-    // Regression: before FE-E2E-AUTH-FIXTURE-HARDEN #5, `SESSION_SECRET=abc # dev`
+    // Regression: before parseEnvFile stripped inline comments, `SESSION_SECRET=abc # dev`
     // yielded the literal `'abc # dev'`, which the backend rejected as a 401 on
     // the JWT probe.
     const path = writeTmp('SESSION_SECRET=abc # dev\nFOO=bar#nospace\n');

@@ -136,8 +136,8 @@ describe('vouchSection', () => {
       expect(comp.message).toContain('wot.accreditedViaWot');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
-    // surfaces a generic localized message; raw err reaches console.warn.
+    // broadcast failure surfaces a generic localized message; the raw err
+    // reaches console.warn (no leaky details in the DOM-facing message).
     it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('Signing failed hex=deadbeefcafebabe');
       mockBroadcastWithFreshAuth.mockRejectedValue(leaky);
@@ -224,8 +224,8 @@ describe('vouchSection', () => {
       expect(comp.message).toContain('carol');
     });
 
-    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
-    // surfaces a generic localized message; raw err reaches console.warn.
+    // broadcast failure surfaces a generic localized message; the raw err
+    // reaches console.warn (no leaky details in the DOM-facing message).
     it('sanitizes retract broadcast failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('Signing failed hex=deadbeefcafebabe');
       mockBroadcastWithFreshAuth.mockRejectedValue(leaky);
@@ -261,11 +261,10 @@ describe('vouchSection', () => {
     });
   });
 
-  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() catch
-  // continuation must not write to component state. The broadcastOps
-  // promise rejects after destroy(), and handleVouch's catch sees
-  // _mounted === false and short-circuits before touching `step` or
-  // `message`.
+  // A post-destroy() catch continuation must not write to component state.
+  // The broadcastOps promise rejects after destroy(), and handleVouch's
+  // catch sees _mounted === false and short-circuits before touching `step`
+  // or `message`.
   describe('teardown guard', () => {
     it('post-destroy() handleVouch rejection does not write to step or message', async () => {
       let rejectFn;

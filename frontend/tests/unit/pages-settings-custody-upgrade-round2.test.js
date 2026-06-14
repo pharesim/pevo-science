@@ -1,15 +1,14 @@
-// UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW round-2 hold block coverage.
+// Custody-upgrade seed-phrase derivation flow coverage.
 //
-// Test focus (per round-2 architect HOLD PENDING FIXES block at
-// agents/docs/tasks/{blocked,pending,review}/ui-custody-upgrade-seed-phrase-derive-flow.md):
+// Test focus (the custody-upgrade error-routing + state-machine contracts):
 //
-//   #2 beforeunload registration/deregistration during upgradePhase='upgrading'
-//   #3 retryUpgradeBackend _mounted guard after _postUpgradeBackend await
-//   #4 retryUpgradeBackend concurrency gate (phase flip first synchronous statement)
-//   #5 first 401 keeps newSeedPhrase + retryable proofRejected; second 401 wipes
-//   #6 backendTimeout no longer wipes newSeedPhrase (covered in sibling file's update)
-//   #7 UPGRADE_ERROR_KEYS hoist + RETRYABILITY annotation drives canRetryUpgrade + handleRetry
-//   #8 _handlePostBroadcastError helper consumed by both executeUpgrade and retryUpgradeBackend
+//   - beforeunload registration/deregistration during upgradePhase='upgrading'
+//   - retryUpgradeBackend _mounted guard after _postUpgradeBackend await
+//   - retryUpgradeBackend concurrency gate (phase flip first synchronous statement)
+//   - first 401 keeps newSeedPhrase + retryable proofRejected; second 401 wipes
+//   - backendTimeout no longer wipes newSeedPhrase (covered in sibling file's update)
+//   - UPGRADE_ERROR_KEYS hoist + RETRYABILITY annotation drives canRetryUpgrade + handleRetry
+//   - _handlePostBroadcastError helper consumed by both executeUpgrade and retryUpgradeBackend
 //
 // Carve-out clause (a): the upstream pages-settings.test.js fixture already
 // stubs hive-keys, dhive, and Alpine stores; this file reuses the same shape
@@ -17,7 +16,7 @@
 // (cryptographic verification correctness) is covered by the real-path
 // sec-001-equivalence.test.js + backend tests against signed proofs; this
 // file's focus is the FE error-routing + state-machine behaviour around the
-// new round-2 contracts (retry budget, terminality, helper dispatch).
+// upgrade error contracts (retry budget, terminality, helper dispatch).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 
@@ -146,10 +145,10 @@ describe('settingsPage round-2 hold-block findings', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Round-2 hold #7: UPGRADE_ERROR_KEYS + RETRYABILITY map drives both
-  // canRetryUpgrade and handleRetry dispatch. Adding a key to the map
-  // without updating the catch site (or vice versa) used to silently
-  // mis-classify; the typed annotation makes drift a runtime undefined.
+  // UPGRADE_ERROR_KEYS + RETRYABILITY map drives both canRetryUpgrade and
+  // handleRetry dispatch. Adding a key to the map without updating the catch
+  // site (or vice versa) used to silently mis-classify; the typed annotation
+  // makes drift a runtime undefined.
   // ─────────────────────────────────────────────────────────────────────────
   describe('round-2 #7: RETRYABILITY-driven canRetryUpgrade + handleRetry', () => {
     it('proofRejected is retryable (canRetryUpgrade = true)', () => {
@@ -202,9 +201,9 @@ describe('settingsPage round-2 hold-block findings', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Round-2 hold #5: first 401 keeps newSeedPhrase and routes to retryable
+  // First post-broadcast 401 keeps newSeedPhrase and routes to retryable
   // proofRejected so user can correct clock + retry; second 401 wipes and
-  // terminal partialApplyFailed.
+  // routes to terminal partialApplyFailed.
   // ─────────────────────────────────────────────────────────────────────────
   describe('round-2 #5: 401 retry budget', () => {
     it('first post-broadcast 401 → upgrade.proofRejected, retryable, newSeedPhrase preserved', async () => {
@@ -305,10 +304,10 @@ describe('settingsPage round-2 hold-block findings', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Round-2 hold #4: retryUpgradeBackend concurrency gate (phase write is
-  // the first synchronous statement after guard checks, mirroring
-  // executeUpgrade). Without this, two parallel Try Again clicks both pass
-  // the guard before either writes 'upgrading' and we POST twice.
+  // retryUpgradeBackend concurrency gate: the phase write is the first
+  // synchronous statement after guard checks, mirroring executeUpgrade.
+  // Without this, two parallel Try Again clicks both pass the guard before
+  // either writes 'upgrading' and we POST twice.
   // ─────────────────────────────────────────────────────────────────────────
   describe('round-2 #4: retryUpgradeBackend concurrency gate', () => {
     it('two parallel invocations from the error state issue exactly one POST', async () => {
@@ -349,9 +348,9 @@ describe('settingsPage round-2 hold-block findings', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Round-2 hold #3: retryUpgradeBackend _mounted guard immediately after
-  // _postUpgradeBackend resolves, before loginFromResponse. Mirrors
-  // executeUpgrade:783's guard.
+  // retryUpgradeBackend re-checks the _mounted guard immediately after
+  // _postUpgradeBackend resolves, before loginFromResponse. Mirrors the
+  // post-await _mounted guard in executeUpgrade.
   // ─────────────────────────────────────────────────────────────────────────
   describe('round-2 #3: retryUpgradeBackend post-await _mounted guard', () => {
     it('unmount during _postUpgradeBackend await skips loginFromResponse', async () => {
@@ -388,8 +387,8 @@ describe('settingsPage round-2 hold-block findings', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Round-2 hold #2: beforeunload listener registered in init(), removed in
-  // destroy(). Warns when upgradePhase==='upgrading'; silent otherwise.
+  // beforeunload listener registered in init(), removed in destroy().
+  // Warns when upgradePhase==='upgrading'; silent otherwise.
   // ─────────────────────────────────────────────────────────────────────────
   describe('round-2 #2: beforeunload guard', () => {
     it('init registers a beforeunload listener; destroy removes it', () => {
@@ -469,9 +468,9 @@ describe('settingsPage round-2 hold-block findings', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // UI-MID-BROADCAST-SPA-NAVIGATION-GUARD: SPA-internal navigation guard.
-  // beforeunload covers tab close; this covers router.navigate() in-page
-  // navigation that would otherwise silently abandon a mid-broadcast upgrade.
+  // SPA-internal navigation guard. beforeunload covers tab close; this covers
+  // router.navigate() in-page navigation that would otherwise silently abandon
+  // a mid-broadcast upgrade.
   // ─────────────────────────────────────────────────────────────────────────
   describe('SPA navigation guard', () => {
     it('init registers a navigation guard; destroy unregisters the same function reference', () => {
@@ -556,10 +555,10 @@ describe('settingsPage round-2 hold-block findings', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Round-2 hold #1 (advisory): the clock-skew console.warn fires on every
-  // _signUpgradeProof call. It does NOT block the broadcast (full fix
-  // requires a backend GET /api/time endpoint, tracked as a follow-up); it
-  // surfaces signed_at so ops can correlate a 401 with clock skew.
+  // The clock-skew console.warn fires on every _signUpgradeProof call. It does
+  // NOT block the broadcast (a full fix requires a backend GET /api/time
+  // endpoint, not yet implemented); it surfaces signed_at so ops can correlate
+  // a 401 with clock skew.
   // ─────────────────────────────────────────────────────────────────────────
   describe('round-2 #1 advisory: clock-skew warning on proof signing', () => {
     it('console.warn includes the signed_at timestamp on every proof sign', async () => {
@@ -580,9 +579,9 @@ describe('settingsPage round-2 hold-block findings', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Round-2 hold #8: shared _handlePostBroadcastError helper consumed by
-  // both executeUpgrade and retryUpgradeBackend. Sub-case assignments are
-  // funnelled through this single helper rather than duplicated.
+  // Shared _handlePostBroadcastError helper consumed by both executeUpgrade
+  // and retryUpgradeBackend. Sub-case assignments are funnelled through this
+  // single helper rather than duplicated.
   // ─────────────────────────────────────────────────────────────────────────
   describe('round-2 #8: _handlePostBroadcastError helper', () => {
     it('helper exists as a method on the component', () => {

@@ -288,11 +288,11 @@ describe('isImageFile', () => {
 
 // --- Error sanitization for _handleImageUpload ---
 //
-// UI-ERR-MESSAGE-SANITIZE-PAPER-DETAIL-SURVIVORS: the image-upload catch
-// was sanitized in commit 0ee5bfe to bind the generic 'imageUploadFailed'
-// key instead of err?.message. Mirrors the pages-paper-detail.test.js
-// pattern: generic i18n key bound to the toast, raw err reaches
-// console.warn, leak sentinel does NOT surface in the toast message.
+// The image-upload catch binds the generic 'imageUploadFailed' i18n key to
+// the toast instead of err?.message, so backend leak details never surface
+// in user-facing copy. Mirrors the pages-paper-detail.test.js pattern:
+// generic i18n key bound to the toast, raw err reaches console.warn, leak
+// sentinel does NOT surface in the toast message.
 //
 // We skip PevoEditor's real constructor (it renders DOM / mounts Tiptap) and
 // drive _handleImageUpload directly on a prototype-backed stub. The catch

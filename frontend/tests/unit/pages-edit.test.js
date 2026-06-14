@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Minimal test harness for frontend/src/pages/edit.js focused on the
-// FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND catch-block behavior.
+// error-message-sanitization catch-block behavior.
 // The handleSubmit() flow is long, but all error shapes land in the same
 // terminal catch: set step = 'error', console.warn the raw err, bind the
 // generic i18n key to errorMessage.
@@ -107,8 +107,8 @@ describe('editPage handleSubmit sanitization', () => {
     mockStores.auth.username = 'alice';
   });
 
-  // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
-  // surfaces a generic localized message; raw err reaches console.warn.
+  // Broadcast failure surfaces a generic localized message; raw err
+  // reaches console.warn (error-message sanitization).
   it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
     const leaky = new Error('edit broadcast boom hex=deadbeefcafebabe');
     broadcastOps.mockRejectedValueOnce(leaky);
@@ -144,10 +144,10 @@ describe('editPage handleSubmit sanitization', () => {
     warnSpy.mockRestore();
   });
 
-  // UI-SETTIMEOUT-NAVIGATE-TEARDOWN-GUARD-SWEEP: the 1.5s post-success
-  // redirect must be cancelable on BOTH the same-author edit path and
-  // the continuation path. If the user navigates away during the wait,
-  // destroy() clears the pending timer and navigate MUST NOT fire.
+  // The 1.5s post-success redirect must be cancelable on BOTH the
+  // same-author edit path and the continuation path. If the user navigates
+  // away during the wait, destroy() clears the pending timer and navigate
+  // MUST NOT fire.
   it('same-author edit path: destroy() cancels the post-success redirect timer', async () => {
     vi.useFakeTimers();
     const { invalidatePaperCache } = await import('../../src/api.js');
@@ -231,16 +231,15 @@ describe('editPage handleSubmit sanitization', () => {
     vi.useRealTimers();
   });
 
-  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
-  // continuation catches must not write step/errorMessage. A broadcast
-  // that rejects after Alpine tears the component down would otherwise
-  // mutate a destroyed reactive scope.
-  // UI-ERR-MESSAGE-SANITIZE-PAPER-DETAIL-SURVIVORS: the loadPaperData catch
-  // block was sanitized in commit 0ee5bfe to bind a generic localized key
-  // instead of err?.message. Mirrors the pages-paper-detail.test.js pattern.
-  // The catch fires on unexpected failures after the Promise.allSettled
-  // (e.g. a synchronous throw in _prefillForm during post-fetch bookkeeping),
-  // and the error binding must use this.$t('edit.loadError') — not err.message.
+  // Post-destroy() async continuation catches must not write
+  // step/errorMessage. A broadcast that rejects after Alpine tears the
+  // component down would otherwise mutate a destroyed reactive scope.
+  // The loadPaperData catch block binds a generic localized key instead of
+  // err?.message (error-message sanitization). Mirrors the
+  // pages-paper-detail.test.js pattern. The catch fires on unexpected
+  // failures after the Promise.allSettled (e.g. a synchronous throw in
+  // _prefillForm during post-fetch bookkeeping), and the error binding must
+  // use this.$t('edit.loadError') — not err.message.
   it('loadPaperData catch: generic key bound to loadError, raw err to warn, no leak', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     fetchPaper.mockResolvedValue({ data: { author: 'alice', permlink: 'p1', body: '', json_metadata: '{}' } });
@@ -261,14 +260,13 @@ describe('editPage handleSubmit sanitization', () => {
     warnSpy.mockRestore();
   });
 
-  // Round-2 item 2: $watch handlers + storage listener registration
-  // moved out of loadPaperData() into init()/_setupReactiveBindings().
-  // The Retry button at edit.js:50 re-invokes loadPaperData(); before
-  // the refactor each retry duplicated 8 $watch handlers (Alpine's
-  // returned unsubscribe handle was discarded) and overwrote
-  // _storageListener without removeEventListener'ing the prior one. The
-  // invariant: registrations happen exactly once across init + N
-  // loadPaperData calls.
+  // $watch handlers + storage listener registration live in
+  // init()/_setupReactiveBindings(), not loadPaperData(). The Retry button
+  // re-invokes loadPaperData(); if registration lived there, each retry
+  // would duplicate the 8 $watch handlers (Alpine's returned unsubscribe
+  // handle was discarded) and overwrite _storageListener without
+  // removeEventListener'ing the prior one. The invariant: registrations
+  // happen exactly once across init + N loadPaperData calls.
   describe('reactive bindings register exactly once across retries', () => {
     it('init() registers all 8 $watch handlers + 1 storage listener; subsequent loadPaperData() does not re-register', async () => {
       const addEventListenerSpy = vi.spyOn(window, 'addEventListener');
@@ -307,8 +305,7 @@ describe('editPage handleSubmit sanitization', () => {
     });
   });
 
-  // UI-EDIT-LOADPAPERDATA-CONCURRENT-RETRY-GUARD: loadPaperData() is
-  // re-entrant via the Retry button at edit.js:50. Without an in-flight
+  // loadPaperData() is re-entrant via the Retry button. Without an in-flight
   // guard, double-clicking Retry on a slow network races two fetches;
   // the slower-resolving one overwrites _originalBody / this.paper,
   // corrupting the diff base for the next native edit. The
@@ -392,7 +389,7 @@ describe('editPage handleSubmit sanitization', () => {
     });
   });
 
-  // UI-EDIT-NARROW-GATING-DROP-ACCREDITED-FALLBACK: isAuthorized recognises
+  // isAuthorized recognises
   // exactly three paths to the edit form — original author, named co-author,
   // accepted authorship-claimer. Accreditation alone is NOT sufficient (the
   // dropped fallback). The backend continuation consent-gate filters
@@ -440,7 +437,7 @@ describe('editPage handleSubmit sanitization', () => {
     });
   });
 
-  // UI-COAUTHOR-CONTINUATION-PUBLISHING: a co-author who already has a
+  // A co-author who already has a
   // post in the version chain (e.g. bob with bob/cont-1) must native-edit
   // their existing post on subsequent edits, not balloon the chain with a
   // new continuation post per edit. The version-chain walk surfaces the
@@ -461,10 +458,10 @@ describe('editPage handleSubmit sanitization', () => {
       expect(comp.userPostInChain).toBeNull();
     });
 
-    // Round-2 item 8: dedicated unit spec for the user-is-chain-head
-    // partition. Previously only exercised indirectly via the
-    // handleSubmit broadcast-target test; making the partition explicit
-    // protects against regressions in the version walk's tail behavior.
+    // Dedicated unit spec for the user-is-chain-head partition. Previously
+    // only exercised indirectly via the handleSubmit broadcast-target test;
+    // making the partition explicit protects against regressions in the
+    // version walk's tail behavior.
     it('userPostInChain returns the head entry when the user IS the chain head', () => {
       const comp = createComponent();
       mockStores.auth.username = 'bob';
@@ -529,7 +526,7 @@ describe('editPage handleSubmit sanitization', () => {
       expect(comp.isContinuation).toBe(true);
     });
 
-    // Round-2 item 3: the `ownPost ?` ternary in handleSubmit's edit
+    // The `ownPost ?` ternary in handleSubmit's edit
     // branch is a load-bearing null guard for the sparse-versions
     // root-author case (versions[] entries lack author/permlink in some
     // HAF-replay-not-run states). isContinuation returns false because
@@ -786,7 +783,7 @@ describe('editPage handleSubmit sanitization', () => {
     expect(comp.errorMessage).toBe('');
   });
 
-  // UI-MOUNT-EDITORS-DESTROYED-GUARD: _mountEditors awaits a dynamic import
+  // _mountEditors awaits a dynamic import
   // of editor.js. If the component is destroyed (Alpine teardown) between
   // the $nextTick dispatch and the import resolving, $refs are stale and
   // any editor instances created post-await leak (destroy() already nulled
@@ -882,7 +879,7 @@ describe('editPage handleSubmit sanitization', () => {
   });
 });
 
-// Held re-review item 3: page-integration of the ORCID prefill flow on
+// Page-integration of the ORCID prefill flow on
 // edit.js. The new-co-author rows mirror publish.js's behavior; the
 // existing-co-author rows must stay disabled regardless of accreditation
 // state (the publish/edit asymmetry the task calls out).
@@ -915,7 +912,6 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
     expect(comp.isNewCoAuthorAccredited(0)).toBe(false);
   });
 
-  // ITEM 1
   it('updateNewCoAuthor: accredited→non-accredited transition clears prefilled ORCID', () => {
     const comp = createComponent();
     comp.accreditedDirectory = directory;
@@ -937,7 +933,6 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
     expect(comp.newCoAuthors[0].orcid).toBe('0000-0002-2222-2222');
   });
 
-  // ITEM 9
   it('updateNewCoAuthor: accredited hive with no orcid in directory leaves typed orcid intact', () => {
     const comp = createComponent();
     comp.accreditedDirectory = directory;
@@ -947,7 +942,6 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
     expect(comp.isNewCoAuthorAccredited(0)).toBe(true);
   });
 
-  // ITEM 2
   it('_loadAccreditedDirectory: reapplication preserves user-typed ORCID on a draft row', async () => {
     const { _resetAccreditedDirectoryForTests } = await import('../../src/lib/accredited-directory.js');
     _resetAccreditedDirectoryForTests();
@@ -1030,7 +1024,7 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
   });
 });
 
-// UI-PAPERS-ORCID-NULL-FALLBACK-VERIFICATION: backend's vouch-coauthor
+// Backend's vouch-coauthor
 // spoof-suppression branch in buildCumulativeAuthorsForChain emits
 // `authors[].orcid = null` for accredited authors on continuation chains.
 // The API contract at `agents/docs/api-contracts/papers.md` widened the

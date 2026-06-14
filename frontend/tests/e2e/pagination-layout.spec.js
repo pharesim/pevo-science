@@ -1,5 +1,5 @@
 /**
- * Regression guard for the UI-REFAC-3 P1 visual-order bug in the shared
+ * Regression guard for the pagination-nav visual-order bug in the shared
  * pagination template. The bug was that `:key="i"` (index as key) allowed
  * Alpine to patch DOM nodes in place when the `pages` array reshaped, which
  * could leave ellipses rendered before all page-number buttons instead of
