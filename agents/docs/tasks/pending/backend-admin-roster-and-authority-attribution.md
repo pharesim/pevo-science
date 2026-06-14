@@ -56,3 +56,54 @@ This task touches shared code with two sibling accreditation tasks:
 - Resolver order: `root` (bootstrap config) → latest non-revoked on-chain grant for the caller (`active_admins` HAF read, Redis-cached) → unauthorized. The lockout guard runs before broadcast on demote.
 - Latest-op-per-account-wins makes re-broadcast naturally idempotent (a re-emitted `admin_grant` just re-resolves to the same level — there are no rows to duplicate).
 - All user-facing error strings (lockout, insufficient tier) must be emdash-free per project convention.
+
+## Backend progress (PARTIAL — 2026-06-14, NOT ready for review)
+
+Two of the five increments have landed on `main`; three remain. This task is
+NOT in `review/` — do not archive until the remaining increments land.
+
+**Landed:**
+- Roster core (commit `f51e9820`): `activeAdminsCteBody` (hafsql.ts, singular `?`
+  signer gate over `admin_grant`/`admin_revoke`, verified against live HAF),
+  `admin-roster.ts` service module (`getAdminRoster` Redis-cached chain read,
+  `getAdminLevel` resolver root→grant→none with fail-closed, `levelMeets`,
+  `requireAdminLevel` middleware, `bustAdminRosterCache`), `config.rootAdminAccount`
+  bootstrap (`PEVO_ROOT_ADMIN || hiveAdminAccount`), `AdminGrantAction` /
+  `AdminRevokeAction` types + union. 16 tests.
+- `issued_by` attribution (commit `8d3b0fd7`): field defined on `AccreditAction` /
+  `RevokeAction` / `RetractPaperAction` (optional on `UpdateWeightsAction`), stamped
+  at every `broadcastAdminCustomJson` site.
+
+**Resolved design decision (with user, 2026-06-14) — self-service accredit is NOT
+admin-gated.** The email `/verify`, ORCID callback, and signup confirm/link flows
+are triggered by the scientist (no admin in the loop), so `requireAdminLevel` on
+them would break self-service accreditation. They are LEFT UNGATED and stamp
+`issued_by = config.hiveAdminAccount` (the admin account is the accreditor; the
+user only supplies verification). `requireAdminLevel` + fresh-auth applies ONLY to
+genuine admin-moderation endpoints. WoT auto ops stamp `issued_by: "wot"`.
+
+**Findings for architect triage:**
+- `update_weights` has NO backend broadcast endpoint today (read-only from chain in
+  reputation.ts / reputation-batch.ts). Nothing to gate-to-root or stamp; the type
+  field is added for forward-compat only. The AC's "gate update_weights / stamp
+  issued_by" is moot until a backend broadcast endpoint exists.
+- Bridge-key authorship paths in `claims.ts` (approve/revoke via
+  `broadcastJsonWithTimeout` under `config.hiveBridgeAccount`, a DIFFERENT signer)
+  are NOT stamped — only `broadcastAdminCustomJson` payloads were, per the AC's
+  load-bearing rule. Whether bridge-signed ops also carry `issued_by` is a finer
+  attribution question for the architect.
+
+**Remaining increments:**
+1. Gate admin-moderation endpoints (`retract_paper` papers.ts, `approve_authorship`
+   / `revoke_authorship` claims.ts) with `requireAdminLevel(tier)` + a fresh re-auth
+   proof per §6.4 (per-request Hive signature for self-custody; fresh-auth token for
+   light accounts — read §6.4 carefully; do NOT ship a JWT-only critical path). The
+   sanction endpoint is owned by `backend-revoke-sanction-wot-membership`; provide the
+   middleware/fresh-auth machinery for it to wire through.
+2. Promote/demote endpoints: `super_admin` ↔ `admin`, `root` ↔ `super_admin`;
+   broadcast `admin_grant` / `admin_revoke` (`issued_by` = acting human) then
+   `bustAdminRosterCache()`; lockout guard (cannot demote `root`; cannot orphan
+   `super_admin` control); broadcast-timeout-ambiguous handling per the WoT pattern.
+3. hafsql.ts "admin singular by design" comment update (signer singular vs roster
+   layer); `[TODO Architect]` notes for the root `CLAUDE.md` "admin is singular"
+   edit and the `project_admin_is_singular` memory; final full typecheck/lint/test.
