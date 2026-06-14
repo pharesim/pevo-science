@@ -1,6 +1,7 @@
 ---
 title: "Committing while a sibling commits in a tight loop: throwaway-index `git commit` silently reverts the sibling; use `commit-tree` + `update-ref` compare-and-swap"
 date: 2026-06-09
+last_updated: 2026-06-14
 category: conventions
 module: agent-coordination
 problem_type: convention
@@ -15,10 +16,12 @@ tags:
   - update-ref
   - compare-and-swap
   - git-mv
+  - unmerged-index-conflict
 applies_when:
   - "A concurrent agent session is committing in a TIGHT LOOP, so HEAD advances repeatedly while you assemble your own commit (not merely staging — HEAD is actually moving)"
   - "Landing a task-file `git mv` (`review/`↔`pending/`↔`blocked/`) + content edit, or an archive (`tasks-archive.md` prepend + `git rm`), under that contention"
   - "Reaching for the throwaway `GIT_INDEX_FILE` technique to dodge the commit-msg whole-index zone-audit false-trip, while HEAD is unstable"
+  - "A sibling left an UNRESOLVED merge conflict (`UU` / unmerged stage-1/2/3 entries) in the shared index, so a normal `git commit` refuses outright with 'committing is not possible because you have unmerged files' — even with an explicit pathspec naming only your own clean paths"
 ---
 
 # Committing safely while a sibling commits in a tight loop (moving HEAD)
@@ -69,6 +72,23 @@ After a successful swap, run `git reset -q HEAD -- <your paths>` to realign **on
 
 `git commit-tree` + `git update-ref` are plumbing; per `githooks(5)` they do **not** fire the `commit-msg` hook, so the [`commit-zone-audit-hook-2026-04-30.md`](commit-zone-audit-hook-2026-04-30.md) zone audit — PEvO's mechanical backstop against committing outside your agent zone — **does not run on this path**. This is acceptable **only** because the temp `git diff --cached --name-status "$P"` sanity check proves the tree is in-zone before you write it. That check is the manual substitute for the hook you bypassed; do not skip it, and never use this technique to land paths outside your own zone. (This is a deliberate plumbing path, **not** `git commit --no-verify`, which is separately prohibited.)
 
+### Variant — a sibling's unresolved merge conflict (`UU`) blocks your commit outright
+
+A third trigger reaches the same throwaway-index escape hatch from a different direction: a sibling leaves an **unresolved merge conflict** in the shared index — `git status` shows `UU <path>` (unmerged stage-1/2/3 entries) and the working-tree file carries conflict markers — sometimes with **no `.git/MERGE_HEAD` / rebase / cherry-pick marker** present (the sibling's merge operation concluded but left the unmerged entries, e.g. a worktree merge-back or two same-zone sessions touching one file). The 2026-06-14 instance was a sibling's `UU backend/src/cache.ts` + `cache.test.ts` sitting in the shared index while an architect needed to land `agents/docs` archives, a task `git mv`, and a new task file.
+
+What is **new** versus the moving-HEAD and staging-contention cases:
+
+- **Unmerged entries make git refuse ALL commits, pre-hook.** `git commit` — and even `git commit -- <only-your-clean-paths>` — errors `committing is not possible because you have unmerged files` and exits non-zero **without committing**. Git's unmerged-entry guard is whole-index; it does **not** honor a pathspec that excludes the conflicted files. This is a *harder* block than the `commit-zone-audit-hook` false-trip (which is the `commit-msg` hook rejecting) — it is git itself, before any hook runs.
+- **The conflict is NOT yours to resolve when it is outside your agent zone.** You do not know the correct resolution, and `git add` / `git checkout --ours|--theirs` / `git merge --abort` on a sibling-zone file entangles or destroys their in-progress work. Leave the `UU` entries **exactly as-is** for their owner.
+
+Resolution — commit your in-zone work *around* the conflict via the same throwaway index:
+
+- `git read-tree HEAD` into a throwaway `GIT_INDEX_FILE` produces a **conflict-free** temp index (it has zero unmerged entries regardless of the main index's `UU` state), so your commit proceeds. The `git diff --cached --name-status` sanity check then proves your tree is in-zone and contains **none** of the conflicted paths.
+- Under a **stable HEAD**, the porcelain `git commit` on the temp index is enough. Under a **moving HEAD** (a sibling also committing, as in this session), the `UU` block and the parent-race **compound** — use the `commit-tree` + `update-ref` CAS form above, which handles both. Do not assume the HEAD is stable just because the visible symptom is a conflict.
+- Afterwards `git reset -q HEAD -- <your paths>` realigns **only your paths**. The `UU` files are not in your pathspec, so `git reset` prints `<file>: needs merge` for them and leaves the unmerged entries untouched — that message is **informational, not an error**. The sibling's conflict remains exactly as it was, for them to resolve and commit.
+
+Never reach for `--no-verify` here: the throwaway-index path already lands the commit cleanly, and `--no-verify` is separately prohibited.
+
 ## Why This Matters
 
 Both failure modes are **silent and destructive on a shared branch**. Failure mode 1 erases a sibling agent's *committed* work with no error, no conflict marker, and only a finite reflog window to recover it — the same class of multi-agent data loss the root `CLAUDE.md` shared-index discipline exists to prevent, but reached through a commit-parent race rather than a staging sweep. Failure mode 2 corrupts PEvO's task-state machine: a task file present in both `review/` and `pending/` (or absent from both) breaks the per-task-file state transitions the architect/implementer handoff depends on, and the corruption surfaces only later when an agent finds a task in an impossible state.
@@ -79,6 +99,7 @@ The CAS technique makes the whole operation **independent of the shared index, o
 
 - **Apply CAS** on multi-agent checkouts where a sibling may be **committing rapidly** — HEAD actually moving (multiple commits within your turn), not merely the index being staged. The 2026-06-09 trigger was an architect committing ~6 times in one turn alongside another architect landing 3 dispositions.
 - Apply it specifically for **task-file `git mv` + content-edit commits** and **archive moves** (the `pending/`↔`review/`↔`blocked/` transitions and `tasks-archive.md` prepend + `git rm`) under that contention, since those renames are the ones vulnerable to the half-rename no-op.
+- **A sibling's unresolved `UU` conflict in the shared index** blocks every commit (git refuses on unmerged entries, even with a pathspec excluding the conflicted files). Commit your in-zone work via the throwaway index regardless of HEAD motion, add the CAS form if HEAD is also moving, and leave the conflict for its owner — never resolve a sibling-zone conflict. See the "Variant — a sibling's unresolved merge conflict (`UU`)" subsection above.
 - **Do NOT reach for CAS for staging-only contention under a stable HEAD.** When the race is a sibling staging foreign paths but HEAD is not advancing, the simpler existing techniques still apply and are cheaper:
   - `git restore --staged <foreign path>` to unstage a sibling's path — [`concurrent-agent-staging-sweep-2026-05-12.md`](concurrent-agent-staging-sweep-2026-05-12.md), [`parallel-agent-git-index-race-2026-05-15.md`](parallel-agent-git-index-race-2026-05-15.md).
   - `git commit -m "..." -- <explicit paths>` to defend the verify→commit window — [`git-commit-explicit-path-arg-defeats-shared-index-race-2026-05-21.md`](git-commit-explicit-path-arg-defeats-shared-index-race-2026-05-21.md).
