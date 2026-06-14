@@ -435,9 +435,11 @@ json: {
 }
 ```
 
+The `accredit` op is **re-broadcastable**, and an account may accumulate several over time: the first establishes accreditation, later ones carry edited profile metadata (`name`/`institution`/`field`) or re-grant after a sanction. Two different ops are authoritative for two different purposes — **profile metadata** (`name`/`institution`/`field`/`method`) reads from the account's **latest** `accredit` op so edits take effect, while **tenure** ("accredited since") reads from the account's **earliest** `accredit` op so edits and re-grants never reset standing (see "Accreditation Lifecycle & Sanctions" below). `name`/`institution`/`field` are always user-supplied free text: the authority attests that the account is a verified researcher, not that these strings are correct, so editing them does not change what the attestation means.
+
 ### Revocation (custom_json)
 
-Revokes a previously issued accreditation.
+A `revoke` is a **sanction** — a deliberate authority action against a bad actor. It is NOT the mechanism for ordinary loss of standing: a WoT member falling below the vouch threshold is handled by live membership evaluation, with no `revoke` op (see "Accreditation Lifecycle & Sanctions").
 
 ```
 id: "pevo"
@@ -446,10 +448,15 @@ required_posting_auths: ["pevo.admin"]
 json: {
   action: "revoke",
   account: "<hive_username>",
+  type: "sanction",
   reason: "...",
   timestamp: "<ISO 8601>"
 }
 ```
+
+A sanction is **sticky**: while an account has an un-lifted sanction it is not accredited regardless of vouch support, and the WoT auto-accreditation path MUST refuse it (vouches cannot re-admit a sanctioned account). Only a later authority `accredit` op lifts the sanction; on lift, the account's full pre-sanction history counts (tenure still reads from the earliest `accredit` op).
+
+**Legacy revokes.** Every `revoke` broadcast before this model carries `reason: "WoT threshold no longer met"` and no `type` field; these are historical WoT threshold-drops, NOT sanctions. Membership evaluation MUST treat any `revoke` lacking `type: "sanction"` as a non-sanction and ignore it for stickiness — such an account's status is determined by its live WoT standing and authority `accredit` ops alone.
 
 ### Author Accept (custom_json)
 
@@ -505,6 +512,36 @@ AND cj.required_posting_auths ?| $N::text[]
 where `$N` is the whitelist array. The `?|` operator checks if the jsonb array contains any of the given text values.
 
 **WoT vouches** are not filtered by `?|` on posting authorities. Instead, vouches are validated by joining on `active_accreditations`, so only currently accredited users' vouches count.
+
+### Accreditation Lifecycle & Sanctions
+
+Accreditation status is an on-chain dimension **orthogonal to the § 6.1 `accounts`-table state machine**: it is computed from authority-signed `accredit`/`revoke` `custom_json` ops plus the live WoT vouch graph, applies to every account (including no-row pure-self-custody users), and adds no column to the `accounts` table. Reviewers must not conflate it with the § 6.1 `(verify_token, …, upgraded_at)` dimensions.
+
+**Accreditation sources (the `method` field).** `email`, `orcid`, `manual` are **authority-pinned** — a deliberate platform attestation. `wot` is **vouch-derived** — granted when an account crosses the vouch threshold. All four are admin-signed `accredit` ops; they differ only by `method`.
+
+**Membership rule.** An account is **accredited** iff it is **not sanctioned** AND either:
+- its latest `accredit` op is authority-pinned (`method ∈ {email, orcid, manual}`), OR
+- its latest `accredit` op is `method = wot` AND it **currently** meets the vouch threshold (evaluated against the live `active_vouches` graph).
+
+**WoT standing is live, not pinned.** A WoT member that falls below the vouch threshold loses standing immediately, with **no `revoke` op** — losing vouch support is ordinary, not a sanction. Recovering vouches restores standing automatically (self-healing). This is the chosen representation; an implementer may fall back to a neutral "demote" op if live evaluation proves too costly on HAF, but the *semantics* above (non-sanction, self-healing) are fixed. This reverses the earlier op-pinned, non-self-healing behavior in which a threshold-drop broadcast a `revoke`; see "Legacy revokes" under § 2 Revocation.
+
+**Sanctions are sticky.** A `revoke` with `type: "sanction"` suppresses accreditation regardless of vouch support, and the WoT auto-accreditation path MUST refuse any account with an un-lifted sanction (vouches cannot re-admit a sanctioned account). Only a later authority `accredit` op lifts a sanction. Issuing a sanction is an **authorized-admin action** (the admin-set that may sign authority ops is administered separately from these semantics).
+
+**Editable profile metadata.** `name`/`institution`/`field` are user-editable after accreditation by re-broadcasting an admin-signed `accredit` op carrying the new values (user-initiated through the edit endpoint; the broadcast is admin-signed, so neither light nor self-custody users sign the op — they only re-auth the request per § 6.4). The account's **latest** `accredit` op is authoritative for metadata, so edits take effect. ORCID-accredited accounts (whose `institution`/`field` are empty at grant) use the same path to set them for the first time. This replaces the former "metadata is one-shot" code invariant.
+
+**Tenure anchor ("accredited since").** Tenure reads from the account's **earliest** `accredit` op — all history, across sanction gaps — so a metadata edit or a post-sanction re-grant never resets standing. The anchor is the earliest op's **chain block time**, not the payload `timestamp` (which a re-broadcast rewrites). Reputation **scoring** is present-tense membership (a flat `accreditation` bonus) plus content-age decay and does not key off accreditation date at all, so edits and re-grants do not move scores; only the displayed "accredited since" uses the anchor.
+
+**Lifecycle states** (on-chain, per account):
+
+| State | Condition | Accredited? |
+|---|---|---|
+| Unaccredited | No authority `accredit` op | No |
+| Accredited (authority) | Latest accredit `method ∈ {email,orcid,manual}`, not sanctioned | Yes |
+| Accredited (WoT) | Latest accredit `method = wot`, live vouch threshold met, not sanctioned | Yes (while threshold met) |
+| Below-threshold (WoT) | Latest accredit `method = wot`, live vouch threshold **not** met, not sanctioned | No (self-heals if vouches return) |
+| Sanctioned | Un-lifted `type: "sanction"` revoke | No (only an authority `accredit` lifts) |
+
+Wire formats: § 2 "Accreditation" / "Revocation". Reputation interaction: § 3.
 
 ## 3. Reputation Algorithm (v3 — current)
 
@@ -737,3 +774,74 @@ The section is referenced from root `CLAUDE.md` "Code Review Findings" guidance:
 - **Known self-healing edge.** `POST /api/auth/reset` stamps `sessions_invalidated_at` but mints no token (the user logs in afterward via `POST /api/auth/login`, whose token carries no `reissuedAt`). A relogin completed within the same integer second as the reset is revoked on its first request (no matching `reissuedAt`) and the user logs in once more; the next login lands in a later second and survives. Accepted residual: the window is sub-second, the failure self-heals on the next login, and it affects only the email-reset path. The `reissuedAt` identity covers the recovery routes, which both stamp and reissue in one handler.
 
 Client-visible effect: `verifyHiveSignature` emits `401 SESSION_INVALIDATED` (see `api-contracts/common.md`) on any authenticated route when the bearer token is revoked; the SPA treats it as session expiry and redirects to login.
+
+## 7. Admin Roles & Authority Attribution
+
+PEvO's authority operations (`accredit`, `revoke`, `retract_paper`, `approve_authorship`, `revoke_authorship`, `update_weights`) are all signed on-chain by a **single** key — the `pevo.admin` posting key via `broadcastAdminCustomJson` (`backend/src/hive.ts`). This section adds a human-authorization layer **in front of** that one key and an attribution field **inside** every op's payload. It does not widen the signer.
+
+### The model: one signer, a roster in front of it
+
+Two distinct concepts, often confused — keep them apart:
+
+- **`accreditationAuthorities`** (`config.ts`) is the **on-chain signer whitelist**: `[HIVE_ADMIN_ACCOUNT, ...ACCREDITATION_AUTHORITIES]`, used at **read time** to filter which `custom_json` senders' authority ops the backend trusts (see § 2 "Accreditation Authority Whitelist"). In practice this is `pevo.admin` alone. It stays singular — the "admin is singular by design" decision refers to **this signer**, and it is PRESERVED. The backend never signs authority ops with any key other than `config.pevoAdminPostingKey`.
+- **`admins`** (new, this section) is an **app-level human-authorization roster**: the set of Hive accounts a human operator has empowered to *trigger* authority ops. A roster entry confers no signing key and no on-chain authority of its own; it gates the backend endpoints that, after the gate passes, sign with the one `pevo.admin` key.
+
+So `accreditationAuthorities` answers "whose on-chain signature does a reader trust?" (still: `pevo.admin`). `admins` answers "which human may ask the backend to make `pevo.admin` sign?" These are orthogonal axes; widening the roster does not widen the signer.
+
+### `issued_by` attribution on every authority op
+
+Every authority-op payload gains an `issued_by: <hive_account>` field naming the human who triggered it. The op surface and its `issued_by` semantics:
+
+| Op | Site (stable symbol) | `issued_by` |
+|---|---|---|
+| `accredit` | `routes/accreditation.ts`, `routes/orcid.ts` (×2), `routes/signup-verify.ts`, `wot.ts` `broadcastWotAccreditation` | acting admin; **`"wot"`** for auto-grants (see below) |
+| `revoke` (sanction) | `wot.ts` `buildRevocationPayload` / `revokeVoucheeIfBelowThreshold` / `cascadeRevocation` | acting admin |
+| `retract_paper` | `routes/papers.ts` | acting admin |
+| `approve_authorship` / `revoke_authorship` | `routes/claims.ts` | acting admin |
+| `admin_grant` / `admin_revoke` | roster-management endpoint (new) | acting super-admin or root |
+| `update_weights` | `types/hive.ts` `UpdateWeightsAction` | root |
+
+**WoT auto-grant marker.** The Web-of-Trust auto-accreditation path (`broadcastWotAccreditation`) and the live-threshold/self-healing machinery have no human trigger. Their ops carry a **system marker** `issued_by: "wot"`, not a person. A reader distinguishes operator-driven attestations from graph-derived ones by this marker.
+
+**`issued_by` is a server-attributed claim, not a cryptographic proof.** The op is still signed by `pevo.admin`; `issued_by` is the backend's record of which roster member's authenticated request caused the broadcast. It exists for **transparency and audit** (on-chain history of *who* triggered each authority action), and its trustworthiness reduces to trusting the operator's backend — exactly as the single-signer trust model already requires. Readers MUST NOT treat `issued_by` as an independent authorization proof; the authorization happened at the backend gate (below), and the chain-level authority is and remains `pevo.admin`'s signature.
+
+### Tier model and power matrix
+
+Three tiers, strictly ordered: **admin < super-admin < root**.
+
+- **root** is the `pevo.admin` key-holder (the operator). It is **bootstrap config, not a table row**, is **un-demotable**, and seeds the initial roster.
+- **admin** holds **all operational moderation authority**.
+- **super-admin** adds **admin-roster management** (promote/demote `admin`s).
+- Only `update_weights` (reputation governance) and **super-admin management** are root-gated. Admin-level roster management is super-admin+. All operational moderation — including sanction, retract, and revoke_authorship — is available to a plain `admin`.
+
+| Authority op / capability | admin | super-admin | root |
+|---|:---:|:---:|:---:|
+| `accredit` (incl. bridged-paper author approval) | ✓ | ✓ | ✓ |
+| `approve_authorship` / `revoke_authorship` | ✓ | ✓ | ✓ |
+| `revoke` (`type:"sanction"`) | ✓ | ✓ | ✓ |
+| `retract_paper` | ✓ | ✓ | ✓ |
+| promote/demote `admin` (`admin_grant`/`admin_revoke`) | | ✓ | ✓ |
+| promote/demote `super_admin` | | | ✓ |
+| `update_weights` (reputation governance) | | | ✓ |
+
+**Lockout guard.** A super-admin may manage `admin`s but **MUST NOT** promote, demote, or otherwise manage another `super_admin` — only root manages the super-admin tier. Root is un-demotable and cannot be removed via `admin_revoke` (it is config, not a roster row), so the roster can never be emptied of its bootstrap authority and no roster operation can lock the operator out.
+
+### Roster data model
+
+App-level Postgres `admins` table:
+
+| Column | Notes |
+|---|---|
+| `admin_account` | Hive username |
+| `level` | `'admin'` \| `'super_admin'` (root is **never** a row — it is bootstrap config) |
+| `granted_by` | acting super-admin/root Hive account |
+| `granted_at` | timestamp |
+| `revoked_at` | nullable; set on demotion |
+
+Every promotion/demotion is **also** broadcast on-chain as an `admin_grant` / `admin_revoke` authority `custom_json`, signed by `pevo.admin`, with `issued_by` = the acting super-admin/root. **The chain is SSoT**; the `admins` table is a **runtime cache rebuildable from the on-chain `admin_grant`/`admin_revoke` history** (latest op per `admin_account` wins, mirroring the accreditation read model). On a cache/chain divergence, the chain ops are authoritative.
+
+### Authorization enforcement
+
+An authority endpoint MUST check the **caller's current roster level** (read from `admins`, backed by chain) against the power matrix **before** the backend signs the op with `pevo.admin`. The roster check is a server-side authorization gate; it is not, and cannot be, enforced at the chain layer (the chain sees only one signer).
+
+Every admin authority action — accredit, sanction, retract, authorship grant/revoke, roster management, `update_weights`, and the metadata-edit endpoint — is a **critical action** under § 6.4. Per § 6.5 invariant #1, **JWT-only access is a defect**: each requires a **fresh re-auth proof** matching a factor registered on the caller's account, in addition to passing the roster-level check. A stolen admin JWT must not be a one-step path to broadcasting an authority op. The roster level and the re-auth proof are independent gates — both must pass before `broadcastAdminCustomJson` runs.
