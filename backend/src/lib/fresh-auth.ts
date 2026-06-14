@@ -131,6 +131,48 @@ export function isCreditOpAction(action: string): action is CreditOpAction {
   return CREDIT_OP_ACTIONS.has(action);
 }
 
+/** Single source of truth for the admin-authority-action fresh-auth target set,
+ *  same Set+union derivation as the consent/credit tuples above. These name the
+ *  roster-gated `/api/admin/*` critical actions: a member of the admin roster
+ *  triggers the backend to broadcast an authority op signed by the single
+ *  `pevo.admin` key. Per `agents/docs/ARCHITECTURE.md` § 6.4 (admin-authority
+ *  row) / § 6.5 invariant #1, the roster-level check is necessary but NOT
+ *  sufficient — each action ALSO demands a fresh re-auth proof so a stolen admin
+ *  JWT cannot broadcast authority ops in one step. Unlike the credit ops these
+ *  bind only `(action, <acting-admin-username>, '')` (per-actor, not per-subject)
+ *  — the same per-user binding the non-broadcast criticals (`set_password` /
+ *  `change_email` / `delete_account` / `ipfs_upload`) use; the distinct `action`
+ *  value is what stops a proof minted for one admin action being redirected to
+ *  another under one JWT. A sibling sanction action (`admin_sanction`) extends
+ *  this tuple when that task lands; adding the member here is all that is needed
+ *  (the generic builder and the generic issuance branch handle any member). */
+const ADMIN_FRESH_AUTH_ACTION_TUPLE = [
+  'admin_grant_role',
+  'admin_revoke_role',
+  'admin_grant_accreditation',
+  'admin_retract_paper',
+  'admin_revoke_authorship',
+  'admin_approve_authorship',
+] as const;
+
+/** Action subset for the roster-gated admin authority actions, derived from
+ *  {@link ADMIN_FRESH_AUTH_ACTION_TUPLE} so the union and the Set cannot
+ *  diverge. The generic target-builder (`adminActionFreshAuthTarget`) and both
+ *  issuance routes type their `action` param to this union. */
+export type AdminFreshAuthTargetAction = (typeof ADMIN_FRESH_AUTH_ACTION_TUPLE)[number];
+
+/** Set of admin authority actions that require a per-actor fresh-auth proof.
+ *  Typed `ReadonlySet<string>` for raw-`action` membership-test ergonomics;
+ *  `isAdminFreshAuthAction` does the narrowing. */
+export const ADMIN_FRESH_AUTH_ACTIONS: ReadonlySet<string> = new Set(ADMIN_FRESH_AUTH_ACTION_TUPLE);
+
+/** Narrows a raw wire `action` string to `AdminFreshAuthTargetAction` via Set
+ *  membership, so both issuance paths can mint an admin-action proof from a
+ *  validated body action without an unsound cast. */
+export function isAdminFreshAuthAction(action: string): action is AdminFreshAuthTargetAction {
+  return ADMIN_FRESH_AUTH_ACTIONS.has(action);
+}
+
 export type FreshAuthMechanism = 'password' | 'orcid';
 
 /** Action component of the per-op target binding. The fresh-auth proof
@@ -190,6 +232,7 @@ export type FreshAuthMechanism = 'password' | 'orcid';
 export type FreshAuthTargetAction =
   | ConsentOpAction
   | CreditOpAction
+  | AdminFreshAuthTargetAction
   | 'set_password'
   | 'change_email'
   | 'delete_account'
@@ -416,6 +459,25 @@ export function deleteAccountFreshAuthTarget(username: string): FreshAuthTarget 
  *  /api/orcid/start { mode: 'fresh_auth', action: 'ipfs_upload' }` (ORCID). */
 export function ipfsUploadFreshAuthTarget(username: string): FreshAuthTarget {
   return { action: 'ipfs_upload', root_author: username, root_permlink: '' };
+}
+
+/** Target-binding helper for the roster-gated admin authority actions
+ *  (`/api/admin/*`). Like the non-broadcast criticals it is per-actor, not
+ *  per-paper: the proof binds to `(<action>, <acting-admin-username>, '')`, so a
+ *  proof minted for one admin action by one admin cannot be redirected to a
+ *  different admin action or replayed as a different admin under one JWT (the
+ *  length-prefixed `action` and the consume-side username check enforce both).
+ *  Empty `root_permlink` keeps the hash domain collision-free against consent-op
+ *  proofs (which require a non-empty `root_permlink` at the route layer). One
+ *  generic builder serves every admin action so a new member added to
+ *  {@link ADMIN_FRESH_AUTH_ACTION_TUPLE} needs no new builder. Issuance side:
+ *  `POST /api/custody/fresh-auth { action }` (password) and `POST
+ *  /api/orcid/start { mode: 'fresh_auth', action }` (ORCID). */
+export function adminActionFreshAuthTarget(
+  action: AdminFreshAuthTargetAction,
+  username: string,
+): FreshAuthTarget {
+  return { action, root_author: username, root_permlink: '' };
 }
 
 /** Per-op field shape for the three name-only-route credit ops, expressed so

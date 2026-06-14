@@ -36,6 +36,63 @@ export const contactSchema = z.object({
   website: z.string().max(0).optional(), // honeypot — must be empty
 });
 
+// ─── Admin console (roster management + authority actions) ─────────
+// Body shapes for the roster-gated `/api/admin/*` endpoints, matching the
+// admin-console SPA client (`frontend/src/api.js`). Every action also passes
+// requireAdminLevel(tier) and requireFreshAdminAuth(action). The optional
+// fresh_auth_proof is consumed on the JWT path; self-custody callers satisfy the
+// §6.4 fresh-proof gate via the per-request Hive signature, so it is optional
+// here and the gate enforces presence per auth mechanism. Hive account names are
+// lowercased to match the chain-stored, always-lowercase form the roster read
+// and verifyHiveSignature produce.
+const adminFreshAuthProof = z.string().min(1).max(512).optional();
+const hiveAccount = z.string().min(1).max(50).transform((s) => s.toLowerCase());
+const hivePermlink = z.string().min(1).max(256);
+
+export const adminRosterGrantSchema = z.object({
+  account: hiveAccount,
+  level: z.enum(['admin', 'super_admin']),
+  fresh_auth_proof: adminFreshAuthProof,
+});
+
+export const adminRosterRevokeSchema = z.object({
+  account: hiveAccount,
+  level: z.enum(['admin', 'super_admin']),
+  fresh_auth_proof: adminFreshAuthProof,
+});
+
+export const adminAccreditationGrantSchema = z.object({
+  account: hiveAccount,
+  full_name: z.string().min(1).max(200),
+  institution: z.string().max(200).optional().default(''),
+  field: z.string().max(100).optional().default(''),
+  method: z.enum(['manual', 'email', 'orcid']).optional().default('manual'),
+  fresh_auth_proof: adminFreshAuthProof,
+});
+
+export const adminRetractPaperSchema = z.object({
+  author: hiveAccount,
+  permlink: hivePermlink,
+  reason: z.string().max(500).optional().default(''),
+  fresh_auth_proof: adminFreshAuthProof,
+});
+
+export const adminAuthorshipRevokeSchema = z.object({
+  author: hiveAccount,
+  permlink: hivePermlink,
+  claimer: hiveAccount,
+  reason: z.string().max(500).optional().default('Revoked'),
+  fresh_auth_proof: adminFreshAuthProof,
+});
+
+export const adminAuthorshipApproveSchema = z.object({
+  author: hiveAccount,
+  permlink: hivePermlink,
+  claimer: hiveAccount,
+  author_index: z.number().int().min(0).optional(),
+  fresh_auth_proof: adminFreshAuthProof,
+});
+
 // ─── Middleware factory ───────────────────────────────────────────
 
 /**

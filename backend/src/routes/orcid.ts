@@ -26,6 +26,7 @@ import { logger } from '../logger.js';
 import { assertNever } from '../util/assertNever.js';
 import { seedAccreditationBonus } from '../reputation.js';
 import {
+  adminActionFreshAuthTarget,
   changeEmailFreshAuthTarget,
   consentOpFreshAuthTarget,
   creditOpFreshAuthTarget,
@@ -33,6 +34,7 @@ import {
   extractConsentOpFields,
   extractCreditOpFields,
   ipfsUploadFreshAuthTarget,
+  isAdminFreshAuthAction,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
   setPasswordFreshAuthTarget,
@@ -443,12 +445,22 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         return sendError(res, 400, 'VALIDATION_ERROR', `${extraction.field} is missing or invalid`);
       }
       freshAuthTarget = creditOpFreshAuthTarget(extraction.fields);
+    } else if (typeof action === 'string' && isAdminFreshAuthAction(action)) {
+      // Roster-gated admin authority actions (ORCID-mechanism issuance side;
+      // serves state C ORCID-only + state B admins). Per-actor like the
+      // non-broadcast criticals: target binds to (action, <username>, ''),
+      // consumed at the /api/admin/* route by requireFreshAdminAuth on the JWT
+      // path. Same username guard as the non-broadcast branch above.
+      if (!username) {
+        return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required for fresh-auth action');
+      }
+      freshAuthTarget = adminActionFreshAuthTarget(action, username);
     } else {
       return sendError(
         res,
         400,
         'VALIDATION_ERROR',
-        'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, set_password, change_email, delete_account, ipfs_upload',
+        'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, set_password, change_email, delete_account, ipfs_upload, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
       );
     }
   }

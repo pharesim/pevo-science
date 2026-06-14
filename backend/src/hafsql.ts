@@ -334,6 +334,13 @@ export function activeAdminsCteBody(startIdx = 1): SqlFragment {
       cj.json::jsonb ->> 'action' AS action,
       cj.json::jsonb ->> 'account' AS account,
       cj.json::jsonb ->> 'level' AS level,
+      -- Attribution + display metadata for the roster view. granted_by is the
+      -- acting super_admin/root that signed the grant (issued_by); granted_at is
+      -- the grant op's payload timestamp (display only — latest-wins ordering
+      -- below uses block_num, the authoritative chain order). Mirrors how
+      -- activeAccreditationsCteBody projects event_timestamp from the payload.
+      cj.json::jsonb ->> 'issued_by' AS granted_by,
+      cj.json::jsonb ->> 'timestamp' AS granted_at,
       -- Same-block tie-breaker: cj.id (monotonic HAF op id; the view has no
       -- trx_in_block), mirroring activeAccreditationsCteBody.
       ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC, cj.id DESC) AS rn
@@ -343,7 +350,7 @@ export function activeAdminsCteBody(startIdx = 1): SqlFragment {
       AND cj.required_posting_auths ? $${p + 1}
   ),
   active_admins AS (
-    SELECT account, level
+    SELECT account, level, granted_by, granted_at
     FROM admin_ranked
     WHERE rn = 1 AND action = 'admin_grant'
   )`,

@@ -30,6 +30,8 @@ import {
   extractConsentOpFields,
   extractCreditOpFields,
   ipfsUploadFreshAuthTarget,
+  adminActionFreshAuthTarget,
+  isAdminFreshAuthAction,
   isConsentOpAction,
   isCreditOpAction,
   issueFreshAuthToken,
@@ -160,9 +162,17 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
   const password = requireStringField(body, 'password', PASSWORD_MAX_LEN, 'Password is required');
   if (!password.ok) return sendError(res, 400, 'VALIDATION_ERROR', password.error);
   const action = body.action;
-  if (action === 'change_email' || action === 'delete_account' || action === 'ipfs_upload') {
+  if (
+    action === 'change_email' ||
+    action === 'delete_account' ||
+    action === 'ipfs_upload' ||
+    (typeof action === 'string' && isAdminFreshAuthAction(action))
+  ) {
     // No additional fields required; target is derived from authenticated
-    // username inside the handler.
+    // username inside the handler. The admin authority actions (admin_grant_role,
+    // admin_revoke_role, admin_grant_accreditation, admin_retract_paper,
+    // admin_revoke_authorship, admin_approve_authorship) are per-actor like the
+    // non-broadcast criticals — they bind only to the acting admin's username.
     return next();
   }
   if (action === 'author_accept' || action === 'author_resign') {
@@ -206,7 +216,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     res,
     400,
     'VALIDATION_ERROR',
-    'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload',
+    'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
   );
 }
 
@@ -1013,12 +1023,20 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
       return sendError(res, 400, 'VALIDATION_ERROR', `${extraction.field} is missing or invalid`);
     }
     target = creditOpFreshAuthTarget(extraction.fields);
+  } else if (typeof action === 'string' && isAdminFreshAuthAction(action)) {
+    // Roster-gated admin authority actions. Per-actor (not per-paper) like the
+    // non-broadcast criticals: the target binds to (action, <username>, '') with
+    // no root_author / root_permlink in the body. Consumed at the /api/admin/*
+    // route by `requireFreshAdminAuth(action)` on the JWT path. Password-mechanism
+    // issuance here serves state A/B admins; state C (passwordless) admins mint
+    // via /api/orcid/start { mode: 'fresh_auth', action }.
+    target = adminActionFreshAuthTarget(action, username);
   } else {
     return sendError(
       res,
       400,
       'VALIDATION_ERROR',
-      'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload',
+      'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
     );
   }
 
