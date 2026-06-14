@@ -1,6 +1,8 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim, isRetriable503 } from '../api.js';
-import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
+import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim, buildConsentCustomJson, fetchEmailStatus, isRetriable503 } from '../api.js';
+import { broadcastOps } from '../signer.js';
+import { withAuthorshipFreshAuth } from '../lib/authorship-consent.js';
+import { isSlotCredited, creditProfileForSlot as creditProfileForSlotFn, acceptedClaimerForSlot as acceptedClaimerForSlotFn } from '../lib/credit.js';
 import { getAppTag } from '../config.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
@@ -373,12 +375,20 @@ const template = `
                         </template>
                       </span>
                     </template>
-                    <!-- Claim status badge -->
-                    <template x-if="enrichmentLoaded && claimStatusForSlot(idx) === 'accepted'">
-                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-800 font-medium" x-text="$t('claims.confirmed')"></span>
-                    </template>
-                    <template x-if="enrichmentLoaded && claimStatusForSlot(idx) === 'pending'">
-                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium" x-text="$t('claims.pending')"></span>
+                    <!-- Unified credit badge (decision β): a credited author —
+                         Routes 1/2 (consented) or an accepted Route-3 claim — gets a
+                         single PEvO badge linking to the credited account's profile
+                         (the slot's hive for 1/2, the claimer's hive for Route 3). A
+                         pending claim shows NO badge; its state lives in the affordances
+                         below. The badge presence is the only display distinction. -->
+                    <template x-if="enrichmentLoaded && creditedForSlot(idx)">
+                      <a :href="$lp('/profile/' + creditProfileForSlot(idx))"
+                         @click.prevent="navigate('/profile/' + creditProfileForSlot(idx))"
+                         class="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-800 font-medium no-underline hover:bg-green-200"
+                         :title="$t('claims.creditedTitle')" data-testid="credit-badge">
+                        <svg class="h-2.5 w-2.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd" /></svg>
+                        <span x-text="$t('claims.credited')"></span>
+                      </a>
                     </template>
                     <!-- Claim button for logged-in accredited user on unclaimed matching slot -->
                     <template x-if="enrichmentLoaded && canClaimSlot(idx)">
@@ -391,8 +401,18 @@ const template = `
                         <button type="button" class="text-[10px] px-1.5 py-0.5 rounded border border-green-500 text-green-700 hover:bg-green-50 cursor-pointer"
                                 @click="handleApproveClaim(pendingClaimerForSlot(idx), idx)" :disabled="claimLoading" x-text="$t('claims.approve')"></button>
                         <button type="button" class="text-[10px] px-1.5 py-0.5 rounded border border-red-400 text-red-600 hover:bg-red-50 cursor-pointer"
-                                @click="handleRejectClaim(pendingClaimerForSlot(idx))" :disabled="claimLoading" x-text="$t('claims.reject')"></button>
+                                @click="confirmRevoke(pendingClaimerForSlot(idx))" :disabled="claimLoading" x-text="$t('claims.reject')"></button>
                       </span>
+                    </template>
+                    <!-- Backstop revoke: post author strips an ACCEPTED name-only claim -->
+                    <template x-if="enrichmentLoaded && canRevokeSlot(idx)">
+                      <button type="button" class="text-[10px] px-1.5 py-0.5 rounded border border-red-400 text-red-600 hover:bg-red-50 cursor-pointer"
+                              @click="confirmRevoke(acceptedClaimerForSlot(idx))" :disabled="claimLoading" x-text="$t('claims.revokeButton')"></button>
+                    </template>
+                    <!-- Self-withdraw: the accepted Route-3 claimer drops their own credit -->
+                    <template x-if="enrichmentLoaded && canWithdrawSlot(idx)">
+                      <button type="button" class="text-[10px] px-1.5 py-0.5 rounded border border-red-400 text-red-600 hover:bg-red-50 cursor-pointer"
+                              @click="confirmRevoke($store.auth.username)" :disabled="claimLoading" x-text="$t('claims.withdrawButton')"></button>
                     </template>
                   </span>
                 </template>
@@ -403,6 +423,57 @@ const template = `
                   <button type="button" class="text-xs px-3 py-1.5 rounded border border-pevo-teal text-pevo-teal hover:bg-pevo-teal-light cursor-pointer"
                           @click="handleClaimSlot(null)" :disabled="claimLoading"
                           x-text="claimLoading ? $t('claims.claiming') : $t('claims.claimAuthorship')"></button>
+                </div>
+              </template>
+
+              <!-- Route-2 anchored-slot consent: accept (prominent) + resign ("..." menu) -->
+              <template x-if="enrichmentLoaded && (canAcceptHere || canResignHere)">
+                <div class="flex items-center gap-2 mb-4">
+                  <template x-if="canAcceptHere">
+                    <button type="button" class="text-xs px-3 py-1.5 rounded border border-pevo-teal text-pevo-teal hover:bg-pevo-teal-light cursor-pointer"
+                            @click="handleAcceptAuthorship()" :disabled="claimLoading"
+                            x-text="claimLoading ? $t('claims.accepting') : $t('claims.acceptAuthorship')" data-testid="accept-authorship"></button>
+                  </template>
+                  <template x-if="canResignHere">
+                    <div class="relative" @click.outside="moreMenuOpen = false">
+                      <button type="button" class="text-xs px-2 py-1.5 rounded border border-parchment-dark text-ink-muted hover:text-ink hover:border-pevo-teal cursor-pointer"
+                              @click="moreMenuOpen = !moreMenuOpen" :disabled="claimLoading" :aria-label="$t('claims.moreActions')" aria-haspopup="true" :aria-expanded="moreMenuOpen">&hellip;</button>
+                      <div x-show="moreMenuOpen" x-transition class="absolute left-0 rtl:left-auto rtl:right-0 top-full mt-1 w-48 rounded-lg border border-parchment-dark bg-white shadow-lg z-40">
+                        <button type="button" class="w-full px-3 py-2 text-sm text-pevo-crimson hover:bg-pevo-crimson-light text-left rtl:text-right rounded-lg"
+                                @click="moreMenuOpen = false; resignModalOpen = true" x-text="$t('claims.resignAuthorship')" data-testid="resign-authorship"></button>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <!-- Resign confirmation (Route-2 self-resign) -->
+              <template x-if="resignModalOpen">
+                <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="resignModalOpen = false">
+                  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
+                    <h3 class="text-lg font-bold text-pevo-crimson mb-2" x-text="$t('claims.resignConfirmTitle')"></h3>
+                    <p class="text-sm text-ink-muted mb-4" x-text="$t('claims.resignConfirmDescription')"></p>
+                    <div class="flex justify-end gap-2">
+                      <button type="button" class="btn-secondary text-sm" @click="resignModalOpen = false" :disabled="claimLoading" x-text="$t('common.cancel')"></button>
+                      <button type="button" class="btn-primary text-sm bg-pevo-crimson hover:bg-pevo-crimson-dark" @click="handleResignAuthorship()" :disabled="claimLoading"
+                              x-text="claimLoading ? $t('claims.resigning') : $t('claims.confirmResign')" data-testid="confirm-resign"></button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Revoke / reject / withdraw confirmation (shared; Route-3 credit) -->
+              <template x-if="revokeModalOpen">
+                <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="revokeModalOpen = false; revokeTarget = null">
+                  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
+                    <h3 class="text-lg font-bold text-pevo-crimson mb-2" x-text="$t('claims.revokeConfirmTitle')"></h3>
+                    <p class="text-sm text-ink-muted mb-4" x-text="$t('claims.revokeConfirmDescription')"></p>
+                    <div class="flex justify-end gap-2">
+                      <button type="button" class="btn-secondary text-sm" @click="revokeModalOpen = false; revokeTarget = null" :disabled="claimLoading" x-text="$t('common.cancel')"></button>
+                      <button type="button" class="btn-primary text-sm bg-pevo-crimson hover:bg-pevo-crimson-dark" @click="handleRevokeClaim(revokeTarget)" :disabled="claimLoading"
+                              x-text="claimLoading ? $t('claims.revoking') : $t('claims.confirmRevoke')" data-testid="confirm-revoke"></button>
+                    </div>
+                  </div>
                 </div>
               </template>
 
@@ -814,8 +885,17 @@ export function initPaperDetailPage() {
     // Version switching
     viewingVersion: null,
 
-    // Authorship claims
+    // Authorship claims / consent affordances
     claimLoading: false,
+    // Lazily-fetched (light accounts only) password-factor availability for the
+    // fresh-auth challenge; null = not yet resolved. See _authCtx().
+    _hasPassword: null,
+    // Confirmation modals for the withdraw-credit actions (resign / revoke), and
+    // the per-paper "..." actions menu that hosts resign.
+    resignModalOpen: false,
+    revokeModalOpen: false,
+    revokeTarget: null,
+    moreMenuOpen: false,
 
     // Paper body collapse
     bodyExpanded: false,
@@ -1330,6 +1410,115 @@ export function initPaperDetailPage() {
       return username === this.paper?.author;
     },
 
+    // ── Unified credit badge (decision β) ──────────────────────────
+    creditedForSlot(idx) {
+      return isSlotCredited(this.paper?.authors?.[idx], this.paper?.authorship_claims, idx);
+    },
+
+    creditProfileForSlot(idx) {
+      return creditProfileForSlotFn(this.paper?.authors?.[idx], this.paper?.authorship_claims, idx);
+    },
+
+    acceptedClaimerForSlot(idx) {
+      return acceptedClaimerForSlotFn(this.paper?.authorship_claims, idx);
+    },
+
+    // Post author/admin backstop: revoke an ACCEPTED name-only Route-3 claim.
+    // Shown only on slots credited via an accepted claim (the slot carries no
+    // hive, so the credit comes from the claim, not a Route-1/2 consent).
+    canRevokeSlot(idx) {
+      if (!this.canManageClaims) return false;
+      return this.acceptedClaimerForSlot(idx) !== null;
+    },
+
+    // The accepted Route-3 claimer drops their OWN credit on slot `idx`.
+    canWithdrawSlot(idx) {
+      const username = this.$store.auth.username;
+      if (!username || !this.$store.auth.isConnected) return false;
+      return this.acceptedClaimerForSlot(idx) === username;
+    },
+
+    // ── Route-2 anchored-slot accept / resign ──────────────────────
+    // Accept eligibility is backend-authoritative: the paper appears in the
+    // user's pending_consents (anchored slots awaiting their author_accept,
+    // resolved by hive OR attested-ORCID anchor, already-consented excluded).
+    // This avoids client-side anchor resolution, which the hive-keyed `consented`
+    // flag cannot do for an ORCID-only slot.
+    get canAcceptHere() {
+      const auth = this.$store.auth;
+      if (!auth.username || !auth.isConnected || !auth.isAccredited) return false;
+      const pending = this.$store.authorships?.pendingConsents || [];
+      return pending.some(c => c.paper_author === this.author && c.paper_permlink === this.permlink);
+    },
+
+    // Resign applies to a co-author currently consented via the anchored route:
+    // a hive slot the user owns whose `consented` flag is set. The root
+    // broadcaster (Route 1) is excluded — their consent is the post itself.
+    get canResignHere() {
+      const username = this.$store.auth.username;
+      if (!username || !this.$store.auth.isConnected) return false;
+      if (username === this.paper?.author) return false;
+      const authors = this.paper?.authors || [];
+      return authors.some(a => a.hive === username && a.consented === true);
+    },
+
+    confirmRevoke(claimer) {
+      if (!claimer) return;
+      this.revokeTarget = claimer;
+      this.revokeModalOpen = true;
+    },
+
+    // Resolve the fresh-auth context. Self-custody needs none; for light accounts
+    // the password-vs-ORCID factor turns on whether the account carries a
+    // password, fetched lazily once (every accredited account has a linked ORCID,
+    // so an unknown/failed fetch safely falls back to the ORCID factor).
+    async _authCtx() {
+      const auth = this.$store.auth;
+      const ctx = { custody: auth.custody, username: auth.username, hasPassword: false };
+      if (auth.custody === 'light') {
+        if (this._hasPassword === null) {
+          try {
+            const res = await fetchEmailStatus();
+            this._hasPassword = res?.data?.hasPassword === true;
+          } catch {
+            this._hasPassword = false;
+          }
+        }
+        ctx.hasPassword = this._hasPassword;
+      }
+      return ctx;
+    },
+
+    async _refreshPending() {
+      const store = this.$store.authorships;
+      if (store && typeof store.refresh === 'function') await store.refresh();
+    },
+
+    // Shared broadcast path for every consent/credit op: mint the target-bound
+    // fresh-auth proof (light accounts) or sign via Keychain (self-custody),
+    // broadcast, then on success toast + refresh the badge and pending lists.
+    // Returns true on a completed broadcast, false on a clean abort (ORCID
+    // redirect / cancelled modal) or a surfaced re-auth failure. Throws on
+    // unexpected broadcast errors for the caller's op-level handler to catch.
+    async _broadcastConsentOp(target, op, successKey) {
+      const username = this.$store.auth.username;
+      const ctx = await this._authCtx();
+      const outcome = await withAuthorshipFreshAuth(
+        target,
+        ctx,
+        (proof) => broadcastOps(username, [op], proof ? { freshAuthProof: proof } : {}),
+      );
+      if (outcome.redirect || outcome.cancelled) return false;
+      if (outcome.freshAuthFailed) {
+        this.$store.toast.show(this.$t('claims.reauthFailed'), 'error');
+        return false;
+      }
+      this.$store.toast.show(this.$t(successKey), 'success');
+      await this.loadEnrichment();
+      await this._refreshPending();
+      return true;
+    },
+
     async handleClaimSlot(authorIndex) {
       const username = this.$store.auth.username;
       if (!username) return;
@@ -1338,12 +1527,14 @@ export function initPaperDetailPage() {
         const res = await claimAuthorship(this.author, this.permlink, authorIndex);
         const op = res.data?.operation;
         if (op) {
-          const broadcastResult = await broadcastWithFreshAuth(username, [op]);
-          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
+          const target = {
+            action: 'claim_authorship',
+            rootAuthor: this.author,
+            rootPermlink: this.permlink,
+            authorIndex: authorIndex ?? null,
+          };
+          await this._broadcastConsentOp(target, op, 'claims.claimSubmitted');
         }
-        this.$store.toast.show(this.$t('claims.claimSubmitted'), 'success');
-        // Refresh enrichment to update claim status
-        await this.loadEnrichment();
       } catch (err) {
         console.warn('[paper detail claim slot]', err);
         this.$store.toast.show(this.$t('claims.claimFailed'), 'error');
@@ -1359,14 +1550,21 @@ export function initPaperDetailPage() {
       try {
         const res = await approveAuthorshipClaim(this.author, this.permlink, claimer, authorIndex);
         if (res.data?.tx_id) {
-          // Server-side broadcast (bridge papers)
+          // Server-side broadcast (bridge papers, signed with the bridge key) —
+          // no client fresh-auth needed.
           this.$store.toast.show(this.$t('claims.approveSuccess'), 'success');
+          await this.loadEnrichment();
+          await this._refreshPending();
         } else if (res.data?.operation) {
-          const broadcastResult = await broadcastWithFreshAuth(username, [res.data.operation]);
-          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
-          this.$store.toast.show(this.$t('claims.approveSuccess'), 'success');
+          const target = {
+            action: 'approve_authorship',
+            rootAuthor: this.author,
+            rootPermlink: this.permlink,
+            authorIndex,
+            claimer,
+          };
+          await this._broadcastConsentOp(target, res.data.operation, 'claims.approveSuccess');
         }
-        await this.loadEnrichment();
       } catch (err) {
         console.warn('[paper detail approve claim]', err);
         this.$store.toast.show(this.$t('claims.approveFailed'), 'error');
@@ -1375,23 +1573,66 @@ export function initPaperDetailPage() {
       }
     },
 
-    async handleRejectClaim(claimer) {
+    // Revoke a Route-3 claim — post-author reject of a pending claim, post-author
+    // backstop on an accepted claim, or the claimer's self-withdraw. Always
+    // entered through the shared confirm modal (confirmRevoke → revokeTarget).
+    async handleRevokeClaim(claimer) {
+      const username = this.$store.auth.username;
+      if (!username || !claimer) return;
+      this.revokeModalOpen = false;
+      this.claimLoading = true;
+      try {
+        const res = await revokeAuthorshipClaim(this.author, this.permlink, claimer, 'Revoked');
+        if (res.data?.tx_id) {
+          this.$store.toast.show(this.$t('claims.rejectSuccess'), 'success');
+          await this.loadEnrichment();
+          await this._refreshPending();
+        } else if (res.data?.operation) {
+          const target = {
+            action: 'revoke_authorship',
+            rootAuthor: this.author,
+            rootPermlink: this.permlink,
+            claimer,
+          };
+          await this._broadcastConsentOp(target, res.data.operation, 'claims.rejectSuccess');
+        }
+      } catch (err) {
+        console.warn('[paper detail revoke claim]', err);
+        this.$store.toast.show(this.$t('claims.rejectFailed'), 'error');
+      } finally {
+        this.revokeTarget = null;
+        this.claimLoading = false;
+      }
+    },
+
+    async handleAcceptAuthorship() {
       const username = this.$store.auth.username;
       if (!username) return;
       this.claimLoading = true;
       try {
-        const res = await revokeAuthorshipClaim(this.author, this.permlink, claimer, 'Rejected by post author');
-        if (res.data?.tx_id) {
-          this.$store.toast.show(this.$t('claims.rejectSuccess'), 'success');
-        } else if (res.data?.operation) {
-          const broadcastResult = await broadcastWithFreshAuth(username, [res.data.operation]);
-          if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
-          this.$store.toast.show(this.$t('claims.rejectSuccess'), 'success');
-        }
-        await this.loadEnrichment();
+        const op = buildConsentCustomJson('author_accept', this.author, this.permlink, username);
+        const target = { action: 'author_accept', rootAuthor: this.author, rootPermlink: this.permlink };
+        await this._broadcastConsentOp(target, op, 'claims.acceptSuccess');
       } catch (err) {
-        console.warn('[paper detail reject claim]', err);
-        this.$store.toast.show(this.$t('claims.rejectFailed'), 'error');
+        console.warn('[paper detail accept authorship]', err);
+        this.$store.toast.show(this.$t('claims.acceptFailed'), 'error');
+      } finally {
+        this.claimLoading = false;
+      }
+    },
+
+    async handleResignAuthorship() {
+      const username = this.$store.auth.username;
+      if (!username) return;
+      this.resignModalOpen = false;
+      this.claimLoading = true;
+      try {
+        const op = buildConsentCustomJson('author_resign', this.author, this.permlink, username);
+        const target = { action: 'author_resign', rootAuthor: this.author, rootPermlink: this.permlink };
+        await this._broadcastConsentOp(target, op, 'claims.resignSuccess');
+      } catch (err) {
+        console.warn('[paper detail resign authorship]', err);
+        this.$store.toast.show(this.$t('claims.resignFailed'), 'error');
       } finally {
         this.claimLoading = false;
       }

@@ -331,17 +331,23 @@ export function initOrcidCallbackPage() {
         this.errorMessage = this.$t('orcid.verificationFailed');
         return;
       }
-      // Target-bound consent-op proof: cache against the triple the backend
-      // bound at /start (action + root_author + root_permlink) so the eventual
-      // broadcast consumer can look it up by matching target. Single-slot
-      // cache; the consumer side (ui-multi-author-consent-affordances) calls
-      // getCachedConsentOpProof(action, rootAuthor, rootPermlink) to retrieve.
+      // Target-bound consent-op proof: cache against the target the backend
+      // bound at /start so the eventual broadcast consumer looks it up by
+      // matching target. For settings actions and anchored consent ops that is
+      // the (action, root_author, root_permlink) triple; name-only credit ops
+      // additionally bind author_index (claim/approve) and claimer
+      // (approve/revoke), echoed here only when present. The consumer
+      // (withAuthorshipFreshAuth) retrieves via getCachedConsentOpProof with the
+      // same target; cacheConsentOpProof normalizes absent credit fields to null
+      // so a triple-only target still matches. Single-slot cache.
       cacheConsentOpProof(
         data.fresh_auth_proof,
         data.expires_at,
         data.action,
         data.root_author,
         data.root_permlink,
+        data.author_index,
+        data.claimer,
       );
       const returnPath = getReturnPath() || '/';
       clearReturnPath();

@@ -1221,7 +1221,28 @@
     "approveSuccess": "Yazarlık talebi onaylandı.",
     "approveFailed": "Yazarlık talebi onaylanamadı.",
     "rejectSuccess": "Yazarlık talebi reddedildi.",
-    "rejectFailed": "Yazarlık talebi reddedilemedi."
+    "rejectFailed": "Yazarlık talebi reddedilemedi.",
+    "credited": "Credited author",
+    "creditedTitle": "Credited PEvO author for this paper",
+    "revokeButton": "Revoke",
+    "withdrawButton": "Withdraw",
+    "acceptAuthorship": "Accept authorship",
+    "accepting": "Accepting...",
+    "acceptSuccess": "Authorship accepted.",
+    "acceptFailed": "Failed to accept authorship.",
+    "resignAuthorship": "Resign authorship",
+    "resigning": "Resigning...",
+    "resignConfirmTitle": "Resign authorship?",
+    "resignConfirmDescription": "You will no longer be credited as an author of this paper and will lose the ability to publish continuations of it. Your historical contribution record is kept, and you can accept again later.",
+    "confirmResign": "Resign authorship",
+    "resignSuccess": "Authorship resigned.",
+    "resignFailed": "Failed to resign authorship.",
+    "revokeConfirmTitle": "Remove authorship credit?",
+    "revokeConfirmDescription": "This removes the authorship credit for this name-only slot. The contribution record is kept, and the slot can be claimed again.",
+    "confirmRevoke": "Remove credit",
+    "revoking": "Removing...",
+    "moreActions": "More actions",
+    "reauthFailed": "Re-authentication failed. Please try again."
   },
   "auth": {
     "sessionInconsistency": "Session inconsistency detected. Please sign in again."
@@ -1259,5 +1280,11 @@
     "ctaTitle": "Açık Bilime Katılmaya Hazır Mısınız?",
     "ctaDescription": "Bugün yayınlamaya, değerlendirmeye ve bilimsel itibarınızı oluşturmaya başlayın.",
     "ctaButton": "Başlayın"
+  },
+  "authorships": {
+    "pendingTitle": "Pending authorship actions",
+    "acceptItem": "Accept authorship on @{author}'s paper",
+    "claimItem": "Authorship claim awaiting approval on @{author}'s paper",
+    "retry": "Could not load. Retry"
   }
 }

@@ -71,3 +71,37 @@ passes `fresh_auth_proof` lands; whoever lands it moves this file to
 `pending/`. No backend work remains on this task.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+## [UI] (2026-06-14) — DELIVERED with the consent-affordances surface; moved to review/
+
+The unblock condition is met AND the acceptance is implemented, landing together
+with `ui-multi-author-consent-affordances` (the surface that IS this cache's
+broadcast-wiring consumer). Moving directly to `review/` (done, not merely
+startable). What landed:
+
+- The single-slot consent-op proof cache now keys on the FULL target. Both
+  `cacheConsentOpProof` and `getCachedConsentOpProof` (`frontend/src/lib/fresh-auth.js`)
+  take optional `authorIndex` / `claimer`, normalize absent values to `null`, and
+  strict-match every field. Anchored consent ops and settings actions (no
+  author_index/claimer) keep matching on the `(action, root_author, root_permlink)`
+  triple — backward compatible, including pre-extension cached entries.
+- The key derives from the BACKEND-ECHOED target, not a client reconstruction:
+  the `/orcid/callback` `_handleFreshAuth` threads `data.author_index` /
+  `data.claimer` into `cacheConsentOpProof`; the password factor mints via the
+  same target fields. Both issuance paths echo `author_index` (claim/approve) and
+  `claimer` (approve/revoke).
+- The credit-op broadcast wiring that consumes the keyed proof is the
+  `withAuthorshipFreshAuth` orchestrator (`frontend/src/lib/authorship-consent.js`),
+  used by paper-detail's claim/approve/revoke handlers (which previously broadcast
+  a session-kind proof the custody gate rejects with `kind_mismatch`).
+- Tests: `frontend/tests/unit/lib-fresh-auth-consent-op-cache.test.js` pins the
+  acceptance directly — a slot-2 proof is not reused for slot-3; an approve proof
+  for claimer A is not reused against claimer B; the triple-only and pre-extension
+  paths still hit. `lib-authorship-consent.test.js` covers the orchestrator's
+  full-target cache lookup.
+
+Acceptance met: full-target store+lookup; slot-2/slot-3 non-reuse; key derived
+from echoed fields; consent-op (triple) path unchanged. The architect reviews
+and archives alongside the parent.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

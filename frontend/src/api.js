@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { signRequest } from './sign-request.js';
 import { sha256File } from './crypto.js';
+import { getAppTag } from './config.js';
 
 const BASE_URL = '/api';
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -488,6 +489,74 @@ export function revokeAuthorshipClaim(author, permlink, claimer, reason) {
       body: JSON.stringify({ reason }),
     }
   );
+}
+
+// ─── Authorship consent (Routes 2 & 3) ──────────────────────────
+
+// The signed-in user's outstanding authorship actions: `pending_consents` =
+// Route-2 anchored slots awaiting their `author_accept`; `pending_claims` =
+// Route-3 name-only slots awaiting their `claim`/approval. Fail-closed: the
+// endpoint returns 503 SERVICE_UNAVAILABLE on HAF unavailability rather than an
+// empty list (a silent empty would read as "nothing pending" and hide real
+// obligations), so callers must surface a retry affordance on 503, never treat
+// it as "no actions."
+export function fetchPendingAuthorships() {
+  return authenticatedRequest('/me/authorships/pending');
+}
+
+// Map a normalized authorship fresh-auth target to the request-body fields the
+// issuance endpoints (`POST /custody/fresh-auth`, `POST /orcid/start
+// {mode:'fresh_auth'}`) expect. Anchored consent ops (author_accept /
+// author_resign) carry root_author/root_permlink; name-only credit ops
+// (claim/approve/revoke) carry paper_author/paper_permlink plus author_index
+// (claim/approve) and claimer (approve/revoke). `action` is always included; the
+// optional credit fields are emitted only when bound, mirroring what the backend
+// echoes so the SPA proof-cache key matches the proof's actual binding.
+export function consentOpRequestFields(target) {
+  const { action, rootAuthor, rootPermlink, authorIndex, claimer } = target;
+  if (action === 'author_accept' || action === 'author_resign') {
+    return { action, root_author: rootAuthor, root_permlink: rootPermlink };
+  }
+  const fields = { action, paper_author: rootAuthor, paper_permlink: rootPermlink };
+  if (authorIndex !== undefined && authorIndex !== null) fields.author_index = authorIndex;
+  if (claimer !== undefined && claimer !== null) fields.claimer = claimer;
+  return fields;
+}
+
+// Mint a single-use, target-bound fresh-auth proof for an authorship consent/
+// credit op via the PASSWORD factor (light accounts that carry a password).
+// POSTs the password plus the op's target fields to `/custody/fresh-auth`; the
+// backend argon2-verifies and returns a proof bound to that same target. Mirrors
+// mintPasswordFreshAuthProof but for the per-paper (and, for credit ops,
+// per-slot/subject) target. A wrong password and a passwordless account both
+// return 401 UNAUTHORIZED, so ORCID-only accounts route to the ORCID factor
+// instead. Returns the proof string.
+export async function mintAuthorshipFreshAuthProof(target, password) {
+  const res = await authenticatedRequest('/custody/fresh-auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...consentOpRequestFields(target), password }),
+  });
+  return res.data.fresh_auth_proof;
+}
+
+// Build the unsigned `author_accept` / `author_resign` custom_json operation
+// tuple. Unlike the Route-3 credit ops (claim/approve/revoke), the backend does
+// NOT pre-build these — there is no preflight endpoint — so the SPA constructs
+// the op directly per ARCHITECTURE.md "Author Accept (custom_json)". The signer
+// (required_posting_auths[0]) IS the implicit accepting/resigning author: the
+// payload carries no subject field, so signer identity is the consenter identity.
+// `json` is a stringified payload, matching the backend's claim-op construction.
+export function buildConsentCustomJson(action, rootAuthor, rootPermlink, signer) {
+  return [
+    'custom_json',
+    {
+      id: getAppTag(),
+      json: JSON.stringify({ action, root_author: rootAuthor, root_permlink: rootPermlink }),
+      required_auths: [],
+      required_posting_auths: [signer],
+    },
+  ];
 }
 
 // ─── Cache Invalidation ─────────────────────────────────────────

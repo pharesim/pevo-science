@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { startOrcid } from '../api.js';
+import { startOrcid, consentOpRequestFields } from '../api.js';
 import { broadcastOps } from '../signer.js';
 
 // In-tab cache of a session-kind fresh_auth_proof. The proof is a single-use
@@ -12,14 +12,20 @@ import { broadcastOps } from '../signer.js';
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
 
 // In-tab cache of a consent_op-kind fresh_auth_proof. Target-bound to the
-// triple `(action, root_author, root_permlink)`; the broadcast consumer
-// MUST match all three to consume. Single-slot by design: each ORCID
-// fresh_auth round-trip mints state for one target, so a second flow
-// overwrites the cached entry (matches the existing pevo_orcid_mode
-// overwrite pattern). The token itself is a single-use bearer bound to the
-// JWT subject with the same 5-minute TTL as session-kind proofs; backend
-// invariant is identical (consumed atomically on broadcast attempt, gone
-// post-attempt whether success or failure).
+// triple `(action, root_author, root_permlink)` and, for name-only-route
+// credit ops, the additional per-op fields the backend binds: `author_index`
+// (claim/approve) and `claimer` (approve/revoke). The broadcast consumer MUST
+// match every bound field to consume; a proof minted for slot 2 cannot be
+// reused for slot 3, nor an approve proof for co-author A reused against
+// co-author B (the substitution `target_mismatch` the binding defends).
+// Settings critical actions and anchored-route consent ops (author_accept /
+// author_resign) leave `author_index` / `claimer` null, so they match on the
+// triple alone. Single-slot by design: each ORCID fresh_auth round-trip mints
+// state for one target, so a second flow overwrites the cached entry (matches
+// the existing pevo_orcid_mode overwrite pattern). The token itself is a
+// single-use bearer bound to the JWT subject with the same 5-minute TTL as
+// session-kind proofs; backend invariant is identical (consumed atomically on
+// broadcast attempt, gone post-attempt whether success or failure).
 const CONSENT_OP_PROOF_KEY = 'pevo_fresh_auth_consent_op_proof';
 
 // Stashed pre-redirect context so the callback handler can navigate the
@@ -84,26 +90,47 @@ export function clearCachedSessionProof() {
   }
 }
 
-// Cache a consent_op-kind proof along with its `(action, root_author,
-// root_permlink)` binding. Returns void; failures (private mode, quota) are
-// swallowed and the consumer simply won't find a cache hit on lookup — the
-// freshly-minted token returned by the mint flow can still be passed to the
-// broadcast in-memory.
-export function cacheConsentOpProof(token, expiresAt, action, rootAuthor, rootPermlink) {
+// Cache a consent_op-kind proof along with its target binding: the
+// `(action, root_author, root_permlink)` triple plus the optional credit-op
+// fields `author_index` (claim/approve) and `claimer` (approve/revoke). Pass
+// the values the backend ECHOED at issuance, not values reconstructed
+// client-side, so the cache key cannot drift from the proof's actual binding.
+// Anchored consent ops and settings actions omit the two optional fields;
+// they normalize to null and the lookup matches on the triple alone. Returns
+// void; failures (private mode, quota) are swallowed and the consumer simply
+// won't find a cache hit on lookup — the freshly-minted token returned by the
+// mint flow can still be passed to the broadcast in-memory.
+export function cacheConsentOpProof(
+  token, expiresAt, action, rootAuthor, rootPermlink, authorIndex, claimer,
+) {
   try {
     sessionStorage.setItem(
       CONSENT_OP_PROOF_KEY,
-      JSON.stringify({ token, expiresAt, action, rootAuthor, rootPermlink }),
+      JSON.stringify({
+        token,
+        expiresAt,
+        action,
+        rootAuthor,
+        rootPermlink,
+        authorIndex: authorIndex ?? null,
+        claimer: claimer ?? null,
+      }),
     );
   } catch {
     /* same swallow as cacheSessionProof */
   }
 }
 
-// Look up a cached consent_op-kind proof. Strict match on all three target
-// fields — any mismatch returns null so the consumer mints fresh. Also
-// returns null and clears the slot on TTL expiry.
-export function getCachedConsentOpProof(action, rootAuthor, rootPermlink) {
+// Look up a cached consent_op-kind proof. Strict match on every target field —
+// the `(action, root_author, root_permlink)` triple plus `author_index` and
+// `claimer` (each normalized to null when absent). Any mismatch returns null so
+// the consumer mints a fresh proof bound to the intended slot/subject rather
+// than replaying one minted for a different one. Also returns null and clears
+// the slot on TTL expiry. A pre-extension cached entry (no author_index/claimer
+// fields) reads them as undefined → null, so a triple-only lookup still hits.
+export function getCachedConsentOpProof(
+  action, rootAuthor, rootPermlink, authorIndex, claimer,
+) {
   try {
     const raw = sessionStorage.getItem(CONSENT_OP_PROOF_KEY);
     if (!raw) return null;
@@ -122,7 +149,9 @@ export function getCachedConsentOpProof(action, rootAuthor, rootPermlink) {
     if (
       entry.action !== action ||
       entry.rootAuthor !== rootAuthor ||
-      entry.rootPermlink !== rootPermlink
+      entry.rootPermlink !== rootPermlink ||
+      (entry.authorIndex ?? null) !== (authorIndex ?? null) ||
+      (entry.claimer ?? null) !== (claimer ?? null)
     ) {
       return null;
     }
@@ -250,8 +279,14 @@ async function mintNonConsentProof() {
 // sent. Returns `FRESH_AUTH_REDIRECT_PENDING` after starting the full-page
 // redirect; callers abort cleanly and resume after the user returns. Throws on
 // transport / config / invalid-redirect-host errors.
-export async function beginSettingsActionOrcidFreshAuth(action) {
-  const returnPath = window.location.pathname || '/settings';
+// Generic ORCID fresh-auth redirect. Stashes the return path + per-tab mode
+// marker, starts the OAuth round-trip with the caller's target `extra`, validates
+// the redirect host against the shared allowlist, and navigates. Callers supply
+// the `extra` (the action plus any target fields the backend binds) and a default
+// return path used only when `window.location.pathname` is empty. Returns
+// FRESH_AUTH_REDIRECT_PENDING; throws on transport / config / invalid-host errors.
+async function beginOrcidFreshAuthRedirect(extra, returnPathDefault) {
+  const returnPath = window.location.pathname || returnPathDefault;
   try {
     sessionStorage.setItem(RETURN_PATH_KEY, returnPath);
   } catch {
@@ -263,7 +298,7 @@ export async function beginSettingsActionOrcidFreshAuth(action) {
 
   let data;
   try {
-    data = await startOrcid('fresh_auth', { action });
+    data = await startOrcid('fresh_auth', extra);
   } catch (err) {
     sessionStorage.removeItem('pevo_orcid_mode');
     clearReturnPath();
@@ -290,6 +325,20 @@ export async function beginSettingsActionOrcidFreshAuth(action) {
 
   window.location.href = data.redirect_url;
   return FRESH_AUTH_REDIRECT_PENDING;
+}
+
+export async function beginSettingsActionOrcidFreshAuth(action) {
+  return beginOrcidFreshAuthRedirect({ action }, '/settings');
+}
+
+// Initiate an ORCID fresh-auth round-trip for an authorship consent/credit op.
+// Sibling of beginSettingsActionOrcidFreshAuth, but the backend binds the proof
+// to the paper target (and, for credit ops, the slot/subject), so the full
+// target travels in the start `extra` via consentOpRequestFields. The
+// `/orcid/callback` handler caches the echoed proof through cacheConsentOpProof
+// keyed on that target; withAuthorshipFreshAuth retrieves it post-redirect.
+export async function beginAuthorshipOrcidFreshAuth(target) {
+  return beginOrcidFreshAuthRedirect(consentOpRequestFields(target), '/');
 }
 
 // High-level wrapper around `broadcastOps`: mints a session-kind proof if

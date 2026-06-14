@@ -10,6 +10,7 @@ import { initI18n } from './i18n.js';
 import { initAuth } from './auth.js';
 import { initToast } from './toast.js';
 import { initNotifications } from './notifications.js';
+import { initAuthorships } from './authorships.js';
 
 // Components
 import { initHeader } from './components/header.js';
@@ -42,6 +43,7 @@ setupAlpineErrorHandler();
 initRouter();
 initToast();
 initNotifications();
+initAuthorships();
 initAuth();
 
 // Initialize components
@@ -87,12 +89,17 @@ document.addEventListener('alpine:init', () => {
     const username = auth.username;
     queueMicrotask(() => {
       const notifications = Alpine.store('notifications');
+      const authorships = Alpine.store('authorships');
       if (isConnected && username) {
         if (notifications._username !== username) {
           notifications.start(username);
         }
-      } else if (notifications._username) {
-        notifications.stop();
+        if (authorships._username !== username) {
+          authorships.start(username);
+        }
+      } else {
+        if (notifications._username) notifications.stop();
+        if (authorships._username) authorships.stop();
       }
     });
   });

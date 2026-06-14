@@ -103,9 +103,9 @@
                   <svg class="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
                   </svg>
-                  <span x-show="$store.notifications.unreadCount > 0" aria-live="polite"
+                  <span x-show="$store.notifications.unreadCount + $store.authorships.count > 0" aria-live="polite"
                         class="absolute -top-1.5 -right-1.5 flex h-3.5 min-w-[0.875rem] items-center justify-center rounded-full bg-pevo-crimson px-0.5 text-[9px] font-bold text-white"
-                        x-text="$store.notifications.unreadCount > 99 ? '99+' : $store.notifications.unreadCount"></span>
+                        x-text="($store.notifications.unreadCount + $store.authorships.count) > 99 ? '99+' : ($store.notifications.unreadCount + $store.authorships.count)"></span>
                 </span>
                 <span x-text="'@' + $store.auth.username"></span>
                 <svg class="w-3.5 h-3.5 transition-transform" :class="userMenuOpen ? 'rotate-180' : ''" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
@@ -133,6 +133,42 @@
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.75l16.5 0M3.75 4.5h16.5v15H3.75v-15zM7.5 14.25h6" /></svg>
                   <span x-text="$t('myImports.navLabel')"></span>
                 </a>
+                <!-- Pending authorship actions (discovery surface). Rendered only
+                     when there is something to show OR the fetch failed — a 503 is
+                     fail-closed (retry affordance), never a silent empty. -->
+                <template x-if="$store.authorships.count > 0 || $store.authorships.unavailable">
+                  <div>
+                    <div class="border-t border-parchment-dark"></div>
+                    <div class="px-4 py-3 max-h-56 overflow-auto" data-testid="pending-authorships">
+                      <div class="flex items-center justify-between mb-2">
+                        <h3 class="text-sm font-semibold text-ink" x-text="$t('authorships.pendingTitle')"></h3>
+                        <span x-show="$store.authorships.count > 0"
+                              class="text-[10px] px-1.5 py-0.5 rounded-full bg-pevo-teal-light text-pevo-teal font-bold"
+                              x-text="$store.authorships.count > 99 ? '99+' : $store.authorships.count"></span>
+                      </div>
+                      <template x-if="$store.authorships.unavailable">
+                        <button type="button" class="text-xs text-pevo-teal hover:text-pevo-teal-dark font-medium"
+                                @click="$store.authorships.refresh()" x-text="$t('authorships.retry')" data-testid="pending-authorships-retry"></button>
+                      </template>
+                      <template x-if="!$store.authorships.unavailable">
+                        <div>
+                          <template x-for="(c, i) in $store.authorships.pendingConsents" :key="'consent-' + i">
+                            <a :href="$lp('/paper/' + c.paper_author + '/' + c.paper_permlink)"
+                               @click.prevent="navigate('/paper/' + c.paper_author + '/' + c.paper_permlink); userMenuOpen = false"
+                               class="block py-2 border-b border-parchment text-sm text-ink-light no-underline hover:text-pevo-teal"
+                               x-text="$t('authorships.acceptItem', { author: c.paper_author })"></a>
+                          </template>
+                          <template x-for="(c, i) in $store.authorships.pendingClaims" :key="'claim-' + i">
+                            <a :href="$lp('/paper/' + c.paper_author + '/' + c.paper_permlink)"
+                               @click.prevent="navigate('/paper/' + c.paper_author + '/' + c.paper_permlink); userMenuOpen = false"
+                               class="block py-2 border-b border-parchment text-sm text-ink-light no-underline hover:text-pevo-teal"
+                               x-text="$t('authorships.claimItem', { author: c.paper_author })"></a>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
                 <div class="border-t border-parchment-dark"></div>
                 <!-- Notifications section -->
                 <div class="px-4 py-3 max-h-64 overflow-auto">
