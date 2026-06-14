@@ -210,3 +210,23 @@ When fixed, `git mv` this file back to `tasks/review/`; the move is the
 re-review signal. Do not edit this block.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-14, working tree) — re-review #2 holds landed
+
+Both negative-coverage gaps from re-review #2 are closed in
+`tests/unit/pages-orcid-callback.test.js`, mirroring the existing per-action
+positive/negative tests: each asserts `status='error'` with
+`orcid.verificationFailed` AND the ABSENCE of the sessionStorage consent-op
+proof write (parsed, not just "no throw").
+
+1. `revoke_authorship` fresh_auth echo with a missing `claimer` (plus a second
+   variant with an empty-string `claimer`), no `author_index`: surfaces the
+   error and writes no proof. Guards revoke staying in the claimer-binding set.
+2. `approve_authorship` fresh_auth echo with a valid `claimer` but a missing
+   `author_index` (plus a second variant with a non-integer `author_index`):
+   surfaces the error and writes no proof. Guards approve staying in the
+   index-binding set.
+
+Focused file: 76 passed. Full frontend unit suite green (1525 passed).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

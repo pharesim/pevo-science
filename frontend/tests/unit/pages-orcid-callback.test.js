@@ -1350,6 +1350,98 @@ describe('orcidCallbackPage', () => {
       expect(comp.status).not.toBe('error');
     });
 
+    // Negative branches of the per-action guard for the claimer-binding and
+    // index-binding requirement sets. A regression dropping revoke from the
+    // claimer-binding set, or approve from the index-binding set, would cache a
+    // null credit field for an op the broadcast consumer keys on the real value,
+    // producing a permanent strict-match miss; these pin the error surface so
+    // such a mutation fails the suite instead of slipping through.
+    it('fresh_auth revoke_authorship with missing claimer: surfaces error, no cache write', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'revoke_authorship',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          // claimer intentionally omitted — revoke binds claimer only
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+    });
+
+    it('fresh_auth revoke_authorship with empty claimer: surfaces error, no cache write', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'revoke_authorship',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          claimer: '', // empty string is not a valid bound subject
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+    });
+
+    it('fresh_auth approve_authorship with valid claimer but missing author_index: surfaces error, no cache write', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'approve_authorship',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          claimer: 'bob',
+          // author_index intentionally omitted — approve binds BOTH fields
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+    });
+
+    it('fresh_auth approve_authorship with valid claimer but non-integer author_index: surfaces error, no cache write', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'approve_authorship',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          claimer: 'bob',
+          author_index: 'two', // non-integer is not a valid bound slot
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+    });
+
     it('init sets backPath from getReturnPath for fresh_auth mode', () => {
       sessionStorageData['pevo_fresh_auth_return_to'] = '/papers/alice/some-paper';
       sessionStorageData['pevo_orcid_mode'] = 'fresh_auth';
