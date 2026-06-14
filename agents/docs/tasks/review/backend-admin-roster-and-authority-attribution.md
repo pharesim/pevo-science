@@ -107,3 +107,77 @@ genuine admin-moderation endpoints. WoT auto ops stamp `issued_by: "wot"`.
 3. hafsql.ts "admin singular by design" comment update (signer singular vs roster
    layer); `[TODO Architect]` notes for the root `CLAUDE.md` "admin is singular"
    edit and the `project_admin_is_singular` memory; final full typecheck/lint/test.
+
+## Backend completion (2026-06-14) — remaining increments landed; ready for review
+
+Topology decision (with user, 2026-06-14): the admin authority surface is exposed
+as NEW `/api/admin/*` endpoints (roster-gated + fresh-re-auth), SEPARATE from the
+existing self-service user-signed routes (author self-retract in `papers.ts`, peer
+approve/revoke in `claims.ts`), which keep their own identity-based authorization
+untouched. This matches the already-built, in-review `ui-admin-console` SPA, which
+explicitly defers final shapes to the backend. The earlier increment-1 phrasing
+("gate the existing endpoints") would have either broken those self-service paths
+or forced a UI rewrite; the new-endpoint topology avoids both.
+
+**Landed:**
+- Increment 2+1 (commit `a026f63f`): fresh-auth machinery in `lib/fresh-auth.ts`
+  (`AdminFreshAuthTargetAction` tuple/union/Set/guard for the six `admin_*`
+  actions + generic `adminActionFreshAuthTarget((action,<username>,'')` builder);
+  issuance wiring on BOTH paths (`POST /api/custody/fresh-auth` password +
+  `POST /api/orcid/start mode=fresh_auth` ORCID) + the body-shape validator).
+  Reusable `requireFreshAdminAuth(action)` in `admin-roster.ts` (self-custody
+  signature passes; JWT path demands a single-use target-bound proof, 401/403
+  split mirroring `ipfs.ts`) — the sibling sanction task wires through this same
+  helper. `getAdminRosterDetailed()` + `activeAdminsCteBody` now project
+  `granted_by`/`granted_at` (additive; `getAdminLevel`'s account/level read
+  unchanged). Seven endpoints in `routes/admin.ts`, each
+  `verifyHiveSignature -> requireAdminLevel(tier) -> validate -> requireFreshAdminAuth`:
+  `GET /roster` (tier:null/200 for non-roster), `POST /roster/grant|revoke`
+  (tier matrix + lockout guards: root un-demotable, no self-demote; cache bust on
+  success/timeout, broadcast-timeout-ambiguous handled via `handleBroadcastError`),
+  `POST /accreditation/grant`, `/papers/retract`, `/authorship/revoke`
+  (pevo.admin-signed), `/authorship/approve` (bridge-key, bridged papers only).
+  `issued_by` stamps the acting admin on every payload.
+- Increment 3 (commit `cfa2bfbe`): `retractedPapersCteBody` comment clarified
+  (singular on-chain SIGNER vs the separate chain-derived human-admin ROSTER).
+- Tests (commit `a0df4799`): `tests/routes/admin-endpoints.test.ts` (25, mocked-auth
+  focus: tier gating, lockout, issued_by/payload capture, fresh-auth gate,
+  roster GET disclosure) + `tests/routes/admin-fresh-auth-real-path-verifyhivesignature.test.ts`
+  (3, real `verifyHiveSignature` + `requireFreshAdminAuth` on `/roster/grant` —
+  carve-out clause (c) real-path companion for the new gate). 28 new + related
+  existing (admin-roster, fresh-auth, custody-fresh-auth, admin) all green
+  (132 specs). `npm run typecheck` (src+tests) + `npm run lint` clean (one
+  pre-existing unrelated warning in `author-supersession.ts`).
+
+**[TODO Architect] — API-contract edits (architect-owned `api-contracts/*.md`):**
+- Document the new `/api/admin/*` endpoints (paths, request/response shapes,
+  tier + fresh-auth requirements). Shapes are pinned by `routes/admin.ts` +
+  `validation.ts` and match `frontend/src/api.js`'s `/admin/*` client. Suggest a
+  new section in `accreditation.md` (alongside the existing
+  `/api/admin/accreditation/reset-broadcast-counter`) or a dedicated admin block.
+- Document the new fresh-auth issuance actions (`admin_grant_role`,
+  `admin_revoke_role`, `admin_grant_accreditation`, `admin_retract_paper`,
+  `admin_revoke_authorship`, `admin_approve_authorship`) in `custody.md`
+  (`POST /api/custody/fresh-auth`) and `orcid.md` (`POST /api/orcid/start
+  mode=fresh_auth`), and the §6.4 admin-authority row already added at
+  ARCHITECTURE.md line ~855.
+
+**[TODO Architect] — decisions to confirm:**
+- `update_weights` remains moot: there is still NO backend `update_weights`
+  broadcast endpoint (read-only from chain), so nothing to root-gate or stamp.
+  The type field exists for forward-compat only.
+- Bridge-signed `approve_authorship` (`/authorship/approve`) now carries
+  `issued_by` (the acting admin) even though it is signed by the bridge key, not
+  pevo.admin. This resolves the open "should bridge-signed ops carry issued_by"
+  question in the attribution direction (attribution is a payload field,
+  independent of the signer). Confirm or revert.
+- **Pre-existing §6.4 gap (left untouched by design):** the self-service routes
+  (`POST /api/papers/:author/:permlink/retract`, `POST /api/papers/:author/:permlink/claims/:claimer/{approve,revoke}`)
+  accept a JWT without a fresh re-auth proof. Per the user's "keep it separate
+  from user actions" decision, these were NOT modified here. Strictly, §6.4 line
+  735 ("every critical action requires fresh re-auth") implies they should gate
+  too; filing as a separate follow-up rather than widening this task's scope.
+- Roster `granted_at` is the grant op's payload `timestamp` (display only;
+  latest-wins ordering uses `block_num`), mirroring `activeAccreditationsCteBody`'s
+  `event_timestamp`. If the architect wants chain-block-time for display, that is
+  an additive block-time join (out of scope here).
