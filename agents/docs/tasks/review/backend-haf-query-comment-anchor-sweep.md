@@ -360,4 +360,29 @@ here — they are filed as a separate follow-up (`backend-anchor-rot-residual-id
 When item 1 lands, `git mv` this file back to `tasks/review/`; round-3 (sweep) re-review scopes to the new
 fix commit only.
 
+## Backend re-review signal (2026-06-14, round-3 fix → commit below)
+
+The one held item (planted-positive/negative coverage on the standing canary) landed. The
+`no-stale-comment-anchors.test.ts` canary now has a third `it()` block that proves each
+detection regex actually fires, closing the silent-no-op gap:
+
+- POSITIVES asserted: `ROUND_HOLD_RE` fires on `round-1 hold #6`; `OPTION_LABEL_RE` on
+  `Option A.1`; `SLUG_RE` on `backend-some-task` plus its case-insensitive and trailing-`.md`
+  arms. A mangled character class in any of the three now flips an assertion RED instead of
+  leaving `violations` empty and the test green.
+- NEGATIVES asserted: `SLUG_RE` does NOT fire on the single-segment `ui-button`; `ROUND_HOLD_RE`
+  / `OPTION_LABEL_RE` do not fire on ordinary "round"/"optional" prose.
+- DURABLE-PATH carve-out asserted both ways: a slug-shaped `solutions/` filename matches
+  `SLUG_RE` but is spared because the scan gates on `!DURABLE_PATH_RE` (both halves asserted, so
+  neither can silently break); a real citation on a non-durable line is confirmed NOT spared.
+
+The slug strings in the new block are synthetic matcher fixtures (not live task-slug citations),
+mirroring the `no-bridge-paper-literal` self-test precedent. The canary scans only
+`backend/src/`, so the test-file fixtures do not self-trip.
+
+Verification: `npm run typecheck` clean (src + tests); `npm run lint` clean (0 errors; the lone
+warning is the pre-existing unused-eslint-disable in `lib/author-supersession.ts`, untouched
+here); the canary file passes 3/3 (walker guard + no-stale scan + the new planted block). This
+round is test-only — no `backend/src/` source changed.
+
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

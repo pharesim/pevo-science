@@ -81,4 +81,35 @@ describe('no stale comment anchors in backend/src/', () => {
     }
     expect(violations, `stale comment anchors found:\n${violations.join('\n')}`).toEqual([]);
   });
+
+  it('detection regexes fire on planted-bad anchors and spare legitimate / durable tokens', () => {
+    // Planted POSITIVES — each rot class MUST be detected. Without this block
+    // the scan above can silently no-op: a future edit that mangles a character
+    // class in any regex would leave `violations` empty (test stays green) while
+    // the canary enforces nothing. These assertions fail RED the moment a regex
+    // stops matching the class it owns. The slug strings here are synthetic
+    // fixtures (not real citations) exercising the matcher, per the
+    // `no-bridge-paper-literal` self-test precedent.
+    expect(ROUND_HOLD_RE.test('round-1 hold #6')).toBe(true);
+    expect(OPTION_LABEL_RE.test('Option A.1')).toBe(true);
+    expect(SLUG_RE.test('backend-some-task')).toBe(true);
+    expect(SLUG_RE.test('BACKEND-SOME-TASK')).toBe(true); // case-insensitive arm
+    expect(SLUG_RE.test('see backend-some-task.md')).toBe(true); // trailing-.md arm
+
+    // Planted NEGATIVES — legitimate tokens must NOT trip the checks.
+    expect(SLUG_RE.test('ui-button')).toBe(false); // single kebab segment, not a slug
+    expect(ROUND_HOLD_RE.test('the next round of work')).toBe(false);
+    expect(OPTION_LABEL_RE.test('an optional value')).toBe(false);
+
+    // Durable-path carve-out: a slug-shaped filename under solutions/ DOES match
+    // SLUG_RE, but the scan gates on `!DURABLE_PATH_RE`, so it is spared. Proves
+    // both halves — the slug pattern would catch it, and the exemption rescues
+    // it — so neither side can silently break without flipping this assertion.
+    const durablePathLine = 'see agents/docs/solutions/conventions/backend-foo-bar-2026-01-01.md';
+    expect(SLUG_RE.test(durablePathLine)).toBe(true);
+    expect(DURABLE_PATH_RE.test(durablePathLine)).toBe(true);
+
+    // A real task-slug citation on a non-durable line is NOT spared.
+    expect(DURABLE_PATH_RE.test('fixed per backend-foo-bar (since archived)')).toBe(false);
+  });
 });
