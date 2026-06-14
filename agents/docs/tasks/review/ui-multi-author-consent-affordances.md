@@ -195,3 +195,53 @@ When fixed, `git mv` this file back to `tasks/review/`; the move is the re-revie
 signal. Do not edit this block — the commit diff is the evidence.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-14, working tree) — holds landed
+
+BLOCKER + all should-fix items landed; minors addressed except #5 (dismissed
+with rationale below). Full frontend unit suite green (1490 passed).
+
+1. RED suite (BLOCKER): `handleRejectClaim` → `handleRevokeClaim` in
+   `tests/unit/pages-paper-detail.test.js` (it() title + call; `revokeTarget`
+   seeded first; the `claims.rejectFailed` assertion is unchanged and still
+   correct). `npx vitest run` green.
+2. Double-submit: `if (this.claimLoading) return;` is now the first statement of
+   all five consent handlers in `paper-detail.js` (claimLoading was already set
+   synchronously before the first await; the missing piece was the early-return
+   guard, per the synchronous-flag-before-await idempotency convention).
+3. Duplicated password-factor machinery extracted into `lib/fresh-auth.js`:
+   `mintViaPasswordFactor(mintFn, { message })`, `REMINTABLE_REASONS`, the
+   `FRESH_AUTH_CANCELLED` / `FRESH_AUTH_MINT_FAILED` sentinels, and
+   `passwordPromptMessage`. Both orchestrators (`authorship-consent.js`,
+   `settings-fresh-auth.js`) call the shared helper via a thin surface-bound
+   wrapper, and `broadcastWithFreshAuth`'s inline reason list now references the
+   shared constant. Both orchestrator test suites partial-mock `fresh-auth.js`
+   (importActual) so they exercise the REAL shared helper against the real
+   sentinel symbols.
+4. Comment anchors re-anchored on behavior: `authorships.js` header,
+   `lib-credit.test.js` header, and both authorship e2e spec headers.
+5. (Minor — DISMISSED) "Rethrow non-UNAUTHORIZED on the second password mint":
+   the shared helper preserves the EXISTING masking behavior (returns
+   `FRESH_AUTH_MINT_FAILED`). `settings-fresh-auth.js` deliberately masks
+   second-mint transport errors — documented in its code and pinned by
+   `lib-settings-fresh-auth.test.js` ("a transport error on the second password
+   mint surfaces freshAuthFailed"). Applying the rethrow to the shared helper
+   would break that pinned test and contradict the sibling's design; applying it
+   only to authorship-consent would recreate the very drift the unification (#3)
+   removes. Net: zero behavior change to either surface, full de-duplication.
+6. (Minor) `username_mismatch` on a consent op now tears the session down
+   (`auth.disconnect()` + re-login toast) and returns `{ sessionInconsistent }`;
+   `_broadcastConsentOp` treats that as a clean abort (no second toast), matching
+   the session-kind `broadcastWithFreshAuth`. New unit test in
+   `lib-authorship-consent.test.js`.
+7. (Minor) `authorships` store `load()` short-circuits on `isLoading` (start()
+   clears it via stop() first, so it is never blocked).
+8. (Minor) `orcid-callback` `destroy()` now also calls `clearReturnPath()`.
+   Test gap: slot-0 positive credit-badge assertion added to `lib-credit.test.js`
+   (the slot-0 cache-hit half lives on the sibling `ui-credit-op-proof-cache-slot-key`).
+
+Pre-existing/unrelated: 3 unhandled errors in `pages-edit.test.js`
+(`$refs.abstractEditor` editor init) reproduce on the untouched file in isolation
+and are out of scope.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

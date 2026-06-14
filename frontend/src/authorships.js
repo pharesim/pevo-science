@@ -2,9 +2,8 @@ import Alpine from 'alpinejs';
 import { fetchPendingAuthorships } from './api.js';
 
 // Store of the signed-in user's outstanding authorship actions, surfaced in the
-// header user-menu dropdown (the discovery surface for
-// UI-MULTI-AUTHOR-CONSENT-AFFORDANCES Acceptance #5). Sourced from
-// GET /api/me/authorships/pending:
+// header user-menu dropdown (the pending-authorships discovery surface). Sourced
+// from GET /api/me/authorships/pending:
 //   - pending_consents: Route-2 anchored slots awaiting the user's author_accept
 //   - pending_claims:   the user's own Route-3 claims awaiting approval
 //
@@ -47,6 +46,12 @@ export function initAuthorships() {
 
     async load() {
       if (!this._username) return;
+      // In-flight short-circuit: a refresh() firing while a load is already
+      // running would otherwise issue a redundant fetch. The generation counter
+      // still keeps a superseded result from landing, but this avoids the wasted
+      // request. start() clears isLoading via stop() first, so it is never
+      // blocked here.
+      if (this.isLoading) return;
       const gen = (this._generation += 1);
       this.isLoading = true;
       try {

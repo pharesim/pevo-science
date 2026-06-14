@@ -5,6 +5,11 @@ import {
   clearCachedConsentOpProof,
   beginAuthorshipOrcidFreshAuth,
   FRESH_AUTH_REDIRECT_PENDING,
+  FRESH_AUTH_CANCELLED,
+  FRESH_AUTH_MINT_FAILED,
+  REMINTABLE_REASONS,
+  mintViaPasswordFactor,
+  passwordPromptMessage,
 } from './fresh-auth.js';
 
 /**
@@ -36,56 +41,14 @@ import {
  * fields the backend echoes and the proof cache keys on, for both routes).
  */
 
-// Sentinel: the user dismissed the password re-auth modal. Both this and
-// FRESH_AUTH_REDIRECT_PENDING mean "no proof obtained — abort cleanly without an
-// error toast"; the caller surfaces them the same way.
-const CANCELLED = Symbol('authorship_fresh_auth_cancelled');
-
-// Sentinel: re-auth could not be completed (a second wrong password, or a
-// transport error minting the proof). The caller surfaces a generic re-auth
-// failure rather than letting the mint failure escape as the op's own message.
-const MINT_FAILED = Symbol('authorship_fresh_auth_mint_failed');
-
-// 401 consume-failure reasons that mean "the proof was absent or no longer
-// usable" — re-mint and retry once. Mirrors `withSettingsFreshAuth`'s set;
-// `wrong_mechanism` is excluded (re-minting the same factor would not fix it).
-const REMINTABLE_REASONS = ['missing', 'expired', 'malformed'];
-
-function passwordPromptMessage() {
-  // Lib code cannot use the `$t` magic helper; read the i18n store directly with
-  // an English fallback, matching settings-fresh-auth.js.
-  return (
-    Alpine.store('i18n')?.messages?.settings?.reauthPasswordPrompt ||
-    'Enter your account password to confirm this action.'
+// Bind the password factor to this surface's mint call. The prompt/re-prompt
+// flow and the CANCELLED/MINT_FAILED outcomes live in the shared
+// mintViaPasswordFactor (fresh-auth.js); only the target-bound mint differs.
+function mintViaPassword(target) {
+  return mintViaPasswordFactor(
+    (password) => mintAuthorshipFreshAuthProof(target, password),
+    { message: passwordPromptMessage() },
   );
-}
-
-// Password-factor mint: prompt via the global reauth modal, then mint a proof
-// bound to `target`. A wrong password (401 UNAUTHORIZED at the mint route)
-// re-prompts once. Returns the proof string, CANCELLED (modal dismissed at
-// either prompt), or MINT_FAILED (a second wrong password, or a transport error
-// on the retry mint). A non-auth error on the first attempt (transport, 503,
-// VALIDATION_ERROR) propagates so the caller's op-level handler surfaces it.
-async function mintViaPassword(target) {
-  const modal = Alpine.store('reauthModal');
-  const message = passwordPromptMessage();
-
-  let password = await modal.request({ message });
-  if (password === null || password === undefined) return CANCELLED;
-
-  try {
-    return await mintAuthorshipFreshAuthProof(target, password);
-  } catch (err) {
-    if (err?.code !== 'UNAUTHORIZED') throw err;
-
-    password = await modal.request({ message });
-    if (password === null || password === undefined) return CANCELLED;
-    try {
-      return await mintAuthorshipFreshAuthProof(target, password);
-    } catch {
-      return MINT_FAILED;
-    }
-  }
 }
 
 function getCachedProof(target) {
@@ -113,11 +76,15 @@ async function resolveProof(target, { hasPassword }) {
  * custody path requires. `run(proof)` performs the broadcast (proof is
  * `undefined` for self-custody — Keychain signs). Returns an outcome object:
  *
- *   { ok: <broadcastResult> }  broadcast succeeded
- *   { redirect: true }         ORCID round-trip in flight; abort cleanly
- *   { cancelled: true }        user dismissed the password modal; abort cleanly
- *   { freshAuthFailed: true }  re-auth rejected or could not be completed; show
- *                              a generic error
+ *   { ok: <broadcastResult> }     broadcast succeeded
+ *   { redirect: true }            ORCID round-trip in flight; abort cleanly
+ *   { cancelled: true }           user dismissed the password modal; abort cleanly
+ *   { freshAuthFailed: true }     re-auth rejected or could not be completed;
+ *                                 show a generic error
+ *   { sessionInconsistent: true } the JWT subject and proof subject diverge
+ *                                 (corrupted session); the session is torn down
+ *                                 and a re-login toast shown here — the caller
+ *                                 aborts cleanly without a second toast
  *
  * Non-fresh-auth errors (a Keychain rejection, a 403 from the chain gate, a
  * transport error) propagate to the caller, which keeps its op-level handling.
@@ -135,8 +102,8 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
 
   const proof = await resolveProof(target, ctx);
   if (proof === FRESH_AUTH_REDIRECT_PENDING) return { redirect: true };
-  if (proof === CANCELLED) return { cancelled: true };
-  if (proof === MINT_FAILED) return { freshAuthFailed: true };
+  if (proof === FRESH_AUTH_CANCELLED) return { cancelled: true };
+  if (proof === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
 
   try {
     const ok = await run(proof);
@@ -161,8 +128,8 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
     const remintable = REMINTABLE_REASONS.includes(err.details?.reason);
     if (remintable && ctx.hasPassword) {
       const retry = await mintViaPassword(target);
-      if (retry === CANCELLED) return { cancelled: true };
-      if (retry === MINT_FAILED) return { freshAuthFailed: true };
+      if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };
+      if (retry === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
       try {
         const ok = await run(retry);
         clearCachedConsentOpProof();
@@ -171,6 +138,21 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
         if (retryErr?.code === 'FRESH_AUTH_REQUIRED') return { freshAuthFailed: true };
         throw retryErr;
       }
+    }
+
+    // username_mismatch: the JWT subject and the proof subject diverge — a
+    // corrupted session, not a retryable re-auth failure. Tear the session down
+    // and force re-login, matching broadcastWithFreshAuth's session-kind
+    // handling; otherwise the user retries a broken session indefinitely against
+    // the generic "try again" outcome. Gate on the reason, not a status code:
+    // api.js ApiRequestError carries only code/details, no `status`.
+    if (err.details?.reason === 'username_mismatch') {
+      Alpine.store('auth')?.disconnect();
+      const msg =
+        Alpine.store('i18n')?.messages?.auth?.sessionInconsistency ||
+        'Session inconsistency detected. Please sign in again.';
+      Alpine.store('toast')?.show(msg, 'error');
+      return { sessionInconsistent: true };
     }
 
     return { freshAuthFailed: true };

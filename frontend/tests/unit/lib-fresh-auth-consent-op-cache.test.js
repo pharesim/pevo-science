@@ -1,9 +1,9 @@
 // Tests the consent-op fresh-auth proof cache in `frontend/src/lib/fresh-auth.js`
 // — cacheConsentOpProof / getCachedConsentOpProof / clearCachedConsentOpProof —
-// with the credit-op target extension (author_index + claimer). This pins the
-// sibling `ui-credit-op-proof-cache-slot-key` acceptance: a proof minted for one
-// slot/subject is NEVER reused for another, and anchored consent ops / settings
-// actions (triple-only target) keep matching.
+// with the credit-op target extension (author_index + claimer). Pins slot-keyed
+// proof non-reuse: a proof minted for one slot/subject is NEVER reused for
+// another, and anchored consent ops / settings actions (triple-only target) keep
+// matching.
 //
 // Mocking justification (project-CLAUDE.md "Carve-out for deterministic edge-case
 // coverage", clause-a): fresh-auth.js imports signer.js (real fetch to
@@ -56,6 +56,16 @@ describe('consent-op proof cache — credit-op target keying', () => {
     expect(getCachedConsentOpProof('revoke_authorship', 'alice', 'perm', undefined, 'bob')).toBe('proof-rev');
     // A revoke lookup that (wrongly) supplies an author_index misses.
     expect(getCachedConsentOpProof('revoke_authorship', 'alice', 'perm', 0, 'bob')).toBe(null);
+  });
+
+  it('hits on a slot-0 credit-op target (0 is a real index, not "absent")', () => {
+    // Guards the `author_index ?? null` normalization: slot 0 must round-trip as
+    // 0 on both store and lookup, never collapse to the triple-only (absent)
+    // form. A `0 || null` / truthiness bug here would drop a first-author proof.
+    cacheConsentOpProof('proof-slot0', future(), 'claim_authorship', 'alice', 'perm', 0);
+    expect(getCachedConsentOpProof('claim_authorship', 'alice', 'perm', 0)).toBe('proof-slot0');
+    // A triple-only lookup (absent slot) must NOT hit the slot-0 entry.
+    expect(getCachedConsentOpProof('claim_authorship', 'alice', 'perm')).toBe(null);
   });
 });
 

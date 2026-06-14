@@ -1508,7 +1508,9 @@ export function initPaperDetailPage() {
         ctx,
         (proof) => broadcastOps(username, [op], proof ? { freshAuthProof: proof } : {}),
       );
-      if (outcome.redirect || outcome.cancelled) return false;
+      // sessionInconsistent: the orchestrator already tore the session down and
+      // showed the re-login toast, so abort cleanly without a second toast.
+      if (outcome.redirect || outcome.cancelled || outcome.sessionInconsistent) return false;
       if (outcome.freshAuthFailed) {
         this.$store.toast.show(this.$t('claims.reauthFailed'), 'error');
         return false;
@@ -1520,6 +1522,7 @@ export function initPaperDetailPage() {
     },
 
     async handleClaimSlot(authorIndex) {
+      if (this.claimLoading) return;
       const username = this.$store.auth.username;
       if (!username) return;
       this.claimLoading = true;
@@ -1544,6 +1547,7 @@ export function initPaperDetailPage() {
     },
 
     async handleApproveClaim(claimer, authorIndex) {
+      if (this.claimLoading) return;
       const username = this.$store.auth.username;
       if (!username) return;
       this.claimLoading = true;
@@ -1577,6 +1581,7 @@ export function initPaperDetailPage() {
     // backstop on an accepted claim, or the claimer's self-withdraw. Always
     // entered through the shared confirm modal (confirmRevoke → revokeTarget).
     async handleRevokeClaim(claimer) {
+      if (this.claimLoading) return;
       const username = this.$store.auth.username;
       if (!username || !claimer) return;
       this.revokeModalOpen = false;
@@ -1606,6 +1611,7 @@ export function initPaperDetailPage() {
     },
 
     async handleAcceptAuthorship() {
+      if (this.claimLoading) return;
       const username = this.$store.auth.username;
       if (!username) return;
       this.claimLoading = true;
@@ -1622,6 +1628,7 @@ export function initPaperDetailPage() {
     },
 
     async handleResignAuthorship() {
+      if (this.claimLoading) return;
       const username = this.$store.auth.username;
       if (!username) return;
       this.resignModalOpen = false;

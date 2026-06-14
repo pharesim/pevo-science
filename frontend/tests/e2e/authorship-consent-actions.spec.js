@@ -1,8 +1,8 @@
 /**
- * E2E for the authorship consent/credit affordances on paper-detail
- * (UI-MULTI-AUTHOR-CONSENT-AFFORDANCES Acceptance #2/#3/#7) — the Keychain
- * (self-custody) signing path. Covers Route-2 accept + resign and Route-3 claim +
- * approve: each affordance must build the correct op and hand it to Keychain.
+ * E2E for the authorship consent/credit affordances on paper-detail — the
+ * Keychain (self-custody) signing path. Covers Route-2 accept + resign and
+ * Route-3 claim + approve: each affordance must build the correct op and hand it
+ * to Keychain.
  *
  * Mocking justification (project-CLAUDE.md "Carve-out for deterministic edge-case
  * coverage"):

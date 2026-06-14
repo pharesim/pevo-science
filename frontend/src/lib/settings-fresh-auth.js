@@ -1,10 +1,14 @@
-import Alpine from 'alpinejs';
 import { mintSettingsActionProof } from '../api.js';
 import {
   getCachedConsentOpProof,
   clearCachedConsentOpProof,
   beginSettingsActionOrcidFreshAuth,
   FRESH_AUTH_REDIRECT_PENDING,
+  FRESH_AUTH_CANCELLED,
+  FRESH_AUTH_MINT_FAILED,
+  REMINTABLE_REASONS,
+  mintViaPasswordFactor,
+  passwordPromptMessage,
 } from './fresh-auth.js';
 
 /**
@@ -32,68 +36,14 @@ import {
  * keyed on (action, username, ''), NOT the session-kind broadcast path.
  */
 
-// Sentinel: the user dismissed the password re-auth modal. Distinct from
-// FRESH_AUTH_REDIRECT_PENDING (an ORCID round-trip is navigating away). Both
-// mean "no proof obtained — abort the action cleanly without an error"; the
-// caller surfaces them the same way (no error toast).
-const CANCELLED = Symbol('settings_fresh_auth_cancelled');
-
-// Sentinel: re-auth could not be completed (a second wrong password, or a
-// transport error minting the proof). Distinct from CANCELLED (user dismissed
-// the modal → abort silently): the caller surfaces a generic re-auth error
-// (`settings.reauthFailed`) rather than letting the mint failure escape as the
-// action's own generic message.
-const MINT_FAILED = Symbol('settings_fresh_auth_mint_failed');
-
-// 401 consume-failure reasons that mean "the proof was absent or no longer
-// usable" — re-mint and retry once. Mirrors the reason set
-// `broadcastWithFreshAuth` retries on. `wrong_mechanism` is deliberately
-// excluded: it means the minted factor is not registered on the account, which
-// re-minting the same factor would not fix, so it falls through to the generic
-// failure outcome.
-const REMINTABLE_REASONS = ['missing', 'expired', 'malformed'];
-
-function passwordPromptMessage() {
-  // Lib code cannot use the `$t` magic helper; read the i18n store directly with
-  // an English fallback, matching the fresh-auth.js session-inconsistency path.
-  return (
-    Alpine.store('i18n')?.messages?.settings?.reauthPasswordPrompt ||
-    'Enter your account password to confirm this action.'
+// Bind the password factor to this surface's mint call. The prompt/re-prompt
+// flow and the CANCELLED/MINT_FAILED outcomes live in the shared
+// mintViaPasswordFactor (fresh-auth.js); only the action-bound mint differs.
+function mintViaPassword(action) {
+  return mintViaPasswordFactor(
+    (password) => mintSettingsActionProof(action, password),
+    { message: passwordPromptMessage() },
   );
-}
-
-// Password-factor mint: prompt via the global reauth modal, then mint. A wrong
-// password (401 UNAUTHORIZED at the mint route) re-prompts once. Returns the
-// proof string, CANCELLED (modal dismissed at either prompt), or MINT_FAILED (a
-// second wrong password, or any transport error on the retry mint — re-auth is
-// spent). The second attempt is wrapped so neither a repeat UNAUTHORIZED nor a
-// transport error escapes the orchestrator and mis-surfaces as the action's own
-// generic error instead of `settings.reauthFailed`.
-async function mintViaPassword(action) {
-  const modal = Alpine.store('reauthModal');
-  const message = passwordPromptMessage();
-
-  let password = await modal.request({ message });
-  if (password === null || password === undefined) return CANCELLED;
-
-  try {
-    return await mintSettingsActionProof(action, password);
-  } catch (err) {
-    // A non-auth error on the first attempt (transport, 503) propagates as an
-    // unexpected failure; only a wrong password (UNAUTHORIZED) re-prompts.
-    if (err?.code !== 'UNAUTHORIZED') throw err;
-
-    password = await modal.request({ message });
-    if (password === null || password === undefined) return CANCELLED;
-    try {
-      return await mintSettingsActionProof(action, password);
-    } catch {
-      // Last re-prompt spent: a second auth failure, or any transport error on
-      // the retry mint, means re-auth could not be completed. Surface the
-      // generic re-auth failure rather than letting it escape.
-      return MINT_FAILED;
-    }
-  }
 }
 
 // The PASSWORD factor applies when the account has a password AND the action is
@@ -150,8 +100,8 @@ export async function withSettingsFreshAuth(action, ctx, run) {
 
   const proof = await resolveProof(action, ctx);
   if (proof === FRESH_AUTH_REDIRECT_PENDING) return { redirect: true };
-  if (proof === CANCELLED) return { cancelled: true };
-  if (proof === MINT_FAILED) return { freshAuthFailed: true };
+  if (proof === FRESH_AUTH_CANCELLED) return { cancelled: true };
+  if (proof === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
 
   try {
     const ok = await run(proof);
@@ -183,8 +133,8 @@ export async function withSettingsFreshAuth(action, ctx, run) {
     // deliberately rather than bouncing through ORCID a second time.
     if (remintable && usesPasswordFactor(action, ctx.hasPassword)) {
       const retry = await mintViaPassword(action);
-      if (retry === CANCELLED) return { cancelled: true };
-      if (retry === MINT_FAILED) return { freshAuthFailed: true };
+      if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };
+      if (retry === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
       try {
         const ok = await run(retry);
         clearCachedConsentOpProof();

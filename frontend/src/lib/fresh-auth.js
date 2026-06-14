@@ -48,6 +48,76 @@ export const FRESH_AUTH_REDIRECT_PENDING = null;
 // (`.includes()` is unaffected by the freeze).
 export const ORCID_REDIRECT_HOSTS = Object.freeze(['orcid.org', 'sandbox.orcid.org']);
 
+// 401 consume-failure reasons that mean "the proof was absent or no longer
+// usable" — re-mint and retry once. `wrong_mechanism` is excluded (re-minting
+// the same factor would not fix it). Single source of truth shared by both
+// fresh-auth orchestrators (settings + authorship consent ops) and the
+// session-kind retry gate in broadcastWithFreshAuth below, so the three retry
+// gates cannot drift on which 401 reasons are recoverable.
+export const REMINTABLE_REASONS = Object.freeze(['missing', 'expired', 'malformed']);
+
+// Shared password-factor outcome sentinels for the consent-op / settings
+// fresh-auth orchestrators. Exported (not per-orchestrator locals) so the
+// orchestrators compare against the SAME symbol mintViaPasswordFactor returns —
+// a per-file Symbol would never be `===` to the helper's return.
+//   FRESH_AUTH_CANCELLED  the user dismissed the re-auth modal (abort cleanly,
+//                         no error toast).
+//   FRESH_AUTH_MINT_FAILED  re-auth could not be completed (a second wrong
+//                         password, or a transport error on the retry mint);
+//                         the caller surfaces a generic re-auth failure rather
+//                         than letting the mint failure escape as the op's own
+//                         message.
+export const FRESH_AUTH_CANCELLED = Symbol('fresh_auth_cancelled');
+export const FRESH_AUTH_MINT_FAILED = Symbol('fresh_auth_mint_failed');
+
+// Default re-auth modal prompt. Lib code cannot use the `$t` magic helper; read
+// the i18n store directly with an English fallback. Shared by both orchestrators
+// so the prompt copy cannot drift between the settings and authorship surfaces.
+export function passwordPromptMessage() {
+  return (
+    Alpine.store('i18n')?.messages?.settings?.reauthPasswordPrompt ||
+    'Enter your account password to confirm this action.'
+  );
+}
+
+// Password-factor mint shared by the settings + authorship consent-op
+// orchestrators. Prompt via the global reauth modal, then mint via the caller's
+// `mintFn(password)` — the only part that differs between surfaces (the settings
+// vs authorship target binding). A wrong password (401 UNAUTHORIZED at the mint
+// route) re-prompts once. Returns:
+//   - the proof string on success;
+//   - FRESH_AUTH_CANCELLED if the modal was dismissed at either prompt;
+//   - FRESH_AUTH_MINT_FAILED if re-auth is spent (a second wrong password, or any
+//     transport error on the retry mint).
+// A non-auth error on the FIRST attempt (transport, 503, VALIDATION_ERROR)
+// propagates so the caller's op-level handler surfaces the real cause.
+export async function mintViaPasswordFactor(mintFn, { message }) {
+  const modal = Alpine.store('reauthModal');
+
+  let password = await modal.request({ message });
+  if (password === null || password === undefined) return FRESH_AUTH_CANCELLED;
+
+  try {
+    return await mintFn(password);
+  } catch (err) {
+    // A non-auth error on the first attempt (transport, 503) propagates as an
+    // unexpected failure; only a wrong password (UNAUTHORIZED) re-prompts.
+    if (err?.code !== 'UNAUTHORIZED') throw err;
+
+    password = await modal.request({ message });
+    if (password === null || password === undefined) return FRESH_AUTH_CANCELLED;
+    try {
+      return await mintFn(password);
+    } catch {
+      // Last re-prompt spent: a second auth failure, or any transport error on
+      // the retry mint, means re-auth could not be completed. Surface the
+      // generic re-auth failure rather than letting it escape as the op's own
+      // message — the user has already been prompted twice.
+      return FRESH_AUTH_MINT_FAILED;
+    }
+  }
+}
+
 function getCachedSessionProof() {
   try {
     const raw = sessionStorage.getItem(PROOF_KEY);
@@ -382,7 +452,7 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
       // null in that case and we propagate the pending sentinel.
       if (
         err.status === 401 &&
-        ['missing', 'expired', 'malformed'].includes(err.details?.reason)
+        REMINTABLE_REASONS.includes(err.details?.reason)
       ) {
         // Normalize any error thrown by mintNonConsentProof or the retry
         // broadcastOps to the `{ status, code, details }` shape callers

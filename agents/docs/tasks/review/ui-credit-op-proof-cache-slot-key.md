@@ -144,3 +144,27 @@ When fixed, `git mv` this file back to `tasks/review/`; the move is the re-revie
 signal. Do not edit this block.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-14, working tree) — holds landed
+
+Both items landed (alongside the sibling `ui-multi-author-consent-affordances`,
+same commit). Full frontend unit suite green (1490 passed).
+
+1. (Should-fix) `_handleFreshAuth` echo guard in `src/pages/orcid-callback.js`
+   now validates the per-action credit fields the cache keys on, after the
+   existing triple guard: `author_index` a non-negative integer for
+   `claim_authorship` / `approve_authorship` (slot 0 is valid — checked via
+   `Number.isInteger`, not truthiness); `claimer` a non-empty string for
+   `approve_authorship` / `revoke_authorship`. A malformed/dropped echo now
+   surfaces `status='error'` / `orcid.verificationFailed` instead of caching
+   undefined→null and re-OAuth-looping. Anchored consent ops (author_accept /
+   author_resign) and settings actions bind neither field and skip the guard.
+   New per-action tests in `pages-orcid-callback.test.js`: slot-0 claim caches
+   author_index 0; missing author_index errors; approve caches both fields;
+   missing claimer errors; revoke binds claimer only.
+2. (Anchor) `lib-fresh-auth-consent-op-cache.test.js` header re-anchored on
+   behavior ("slot-keyed proof non-reuse"). Test gap closed: slot-0 positive
+   cache-hit test added (guards the `author_index ?? null` normalization — 0
+   round-trips as 0, and a triple-only lookup does NOT hit a slot-0 entry).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

@@ -14,23 +14,40 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockMintAuthorshipFreshAuthProof = vi.fn();
 vi.mock('../../src/api.js', () => ({
   mintAuthorshipFreshAuthProof: (...a) => mockMintAuthorshipFreshAuthProof(...a),
+  // The real fresh-auth.js (loaded via importActual below) imports these at
+  // module load; stub them so the import resolves. Never called from here.
+  startOrcid: vi.fn(),
+  consentOpRequestFields: vi.fn(),
 }));
+
+// signer.js is a module-load dependency of the real fresh-auth.js; mock it so the
+// partial mock below loads the real module without pulling real broadcast I/O.
+vi.mock('../../src/signer.js', () => ({ broadcastOps: vi.fn() }));
 
 const mockGetCachedConsentOpProof = vi.fn();
 const mockClearCachedConsentOpProof = vi.fn();
 const mockBeginAuthorshipOrcid = vi.fn();
-vi.mock('../../src/lib/fresh-auth.js', () => ({
-  FRESH_AUTH_REDIRECT_PENDING: null,
+// Partial mock: keep the REAL shared password-factor helper, outcome sentinels,
+// and REMINTABLE_REASONS so the orchestrator exercises the real
+// mintViaPasswordFactor and compares against the real sentinel symbols (a
+// re-stubbed Symbol would never be === the helper's return). Mock only the
+// cache and the ORCID redirect.
+vi.mock('../../src/lib/fresh-auth.js', async (importActual) => ({
+  ...(await importActual()),
   getCachedConsentOpProof: (...a) => mockGetCachedConsentOpProof(...a),
   clearCachedConsentOpProof: (...a) => mockClearCachedConsentOpProof(...a),
   beginAuthorshipOrcidFreshAuth: (...a) => mockBeginAuthorshipOrcid(...a),
 }));
 
 const reauthRequest = vi.fn();
+const authDisconnect = vi.fn();
+const toastShow = vi.fn();
 vi.mock('alpinejs', () => ({
   default: {
     store: vi.fn((name) => {
       if (name === 'reauthModal') return { request: (...a) => reauthRequest(...a) };
+      if (name === 'auth') return { disconnect: (...a) => authDisconnect(...a) };
+      if (name === 'toast') return { show: (...a) => toastShow(...a) };
       if (name === 'i18n') return { messages: null };
       return null;
     }),
@@ -58,6 +75,8 @@ describe('withAuthorshipFreshAuth', () => {
     mockClearCachedConsentOpProof.mockReset();
     mockBeginAuthorshipOrcid.mockReset();
     reauthRequest.mockReset();
+    authDisconnect.mockReset();
+    toastShow.mockReset();
     mockGetCachedConsentOpProof.mockReturnValue(null);
     reauthRequest.mockResolvedValue('hunter2');
     mockMintAuthorshipFreshAuthProof.mockResolvedValue('minted-proof');
@@ -133,6 +152,18 @@ describe('withAuthorshipFreshAuth', () => {
     run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'target_mismatch'));
     const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
     expect(out).toEqual({ freshAuthFailed: true });
+  });
+
+  it('403 username_mismatch → tears down the session and surfaces sessionInconsistent', async () => {
+    // Corrupted session: the JWT subject and the proof subject diverge. Matches
+    // broadcastWithFreshAuth's session-kind handling — disconnect + re-login
+    // toast — rather than the retryable freshAuthFailed "try again" outcome.
+    mockGetCachedConsentOpProof.mockReturnValue('cached-proof');
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'username_mismatch'));
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ sessionInconsistent: true });
+    expect(authDisconnect).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(expect.any(String), 'error');
   });
 
   it('non-fresh-auth errors propagate to the caller', async () => {

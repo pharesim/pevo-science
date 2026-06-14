@@ -1069,6 +1069,123 @@ describe('orcidCallbackPage', () => {
       expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
     });
 
+    // Per-action credit-field guard. claim/approve bind author_index (the
+    // name-only slot); approve/revoke bind claimer (the subject). A dropped
+    // credit-field echo would cache undefined→null while the broadcast consumer
+    // keys on the real slot/subject — a permanent strict-match miss and an
+    // indefinite re-OAuth loop. The guard requires each field its action binds.
+    it('fresh_auth claim_authorship caches author_index, including slot 0', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'claim_authorship',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          author_index: 0, // first slot — must be treated as a real index
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      const cached = JSON.parse(sessionStorageData['pevo_fresh_auth_consent_op_proof']);
+      expect(cached.action).toBe('claim_authorship');
+      expect(cached.authorIndex).toBe(0);
+      expect(cached.claimer).toBe(null);
+      expect(comp.status).not.toBe('error');
+    });
+
+    it('fresh_auth claim_authorship with missing author_index: surfaces error, no cache write', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'claim_authorship',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          // author_index intentionally omitted
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+    });
+
+    it('fresh_auth approve_authorship caches both author_index and claimer', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'approve_authorship',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          author_index: 2,
+          claimer: 'bob',
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      const cached = JSON.parse(sessionStorageData['pevo_fresh_auth_consent_op_proof']);
+      expect(cached.authorIndex).toBe(2);
+      expect(cached.claimer).toBe('bob');
+      expect(comp.status).not.toBe('error');
+    });
+
+    it('fresh_auth approve_authorship with missing claimer: surfaces error, no cache write', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'approve_authorship',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          author_index: 2,
+          // claimer intentionally omitted
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+    });
+
+    it('fresh_auth revoke_authorship binds claimer only (author_index null)', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'revoke_authorship',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          claimer: 'bob',
+          // no author_index on the wire for revoke
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      const cached = JSON.parse(sessionStorageData['pevo_fresh_auth_consent_op_proof']);
+      expect(cached.claimer).toBe('bob');
+      expect(cached.authorIndex).toBe(null);
+      expect(comp.status).not.toBe('error');
+    });
+
     it('init sets backPath from getReturnPath for fresh_auth mode', () => {
       sessionStorageData['pevo_fresh_auth_return_to'] = '/papers/alice/some-paper';
       sessionStorageData['pevo_orcid_mode'] = 'fresh_auth';

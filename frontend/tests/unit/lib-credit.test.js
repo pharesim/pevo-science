@@ -4,8 +4,8 @@
 // of the two backend-authoritative signals holds — `author.consented === true`
 // (Routes 1/2, hive-keyed) OR an accepted `authorship_claims[]` entry for the
 // slot (Route 3). A pending claim is NOT credited; a hive-less bridge credit with
-// neither signal is NOT credited. See ARCHITECTURE.md § 2 and the task's
-// Acceptance #1 / #7.
+// neither signal is NOT credited. See ARCHITECTURE.md § 2 "Consented vs claimed
+// authorship".
 import { describe, it, expect } from 'vitest';
 import {
   isSlotCredited,
@@ -53,6 +53,15 @@ describe('isSlotCredited', () => {
   it('handles a null author defensively (credits only via an accepted claim)', () => {
     expect(isSlotCredited(null, [accepted(0, 'bob')], 0)).toBe(true);
     expect(isSlotCredited(null, [], 0)).toBe(false);
+  });
+
+  it('credits a name-only slot-0 accepted claim (0 is a real index, not "absent")', () => {
+    // Slot 0 is the first author slot, not a falsy "no slot" value: a
+    // `0`-treated-as-absent bug in slot matching would wrongly drop the badge
+    // and the profile link for a first-author Route-3 claim.
+    const author = { name: 'First Author' };
+    expect(isSlotCredited(author, [accepted(0, 'bob')], 0)).toBe(true);
+    expect(creditProfileForSlot(author, [accepted(0, 'bob')], 0)).toBe('bob');
   });
 });
 

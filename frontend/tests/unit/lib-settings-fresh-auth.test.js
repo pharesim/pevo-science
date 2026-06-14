@@ -9,13 +9,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockMintSettingsActionProof = vi.fn();
 vi.mock('../../src/api.js', () => ({
   mintSettingsActionProof: (...a) => mockMintSettingsActionProof(...a),
+  // The real fresh-auth.js (loaded via importActual below) imports these at
+  // module load; stub them so the import resolves. Never called from here.
+  startOrcid: vi.fn(),
+  consentOpRequestFields: vi.fn(),
 }));
+
+// signer.js is a module-load dependency of the real fresh-auth.js; mock it so the
+// partial mock below loads the real module without pulling real broadcast I/O.
+vi.mock('../../src/signer.js', () => ({ broadcastOps: vi.fn() }));
 
 const mockGetCachedConsentOpProof = vi.fn();
 const mockClearCachedConsentOpProof = vi.fn();
 const mockBeginOrcid = vi.fn();
-vi.mock('../../src/lib/fresh-auth.js', () => ({
-  FRESH_AUTH_REDIRECT_PENDING: null,
+// Partial mock: keep the REAL shared password-factor helper, outcome sentinels,
+// and REMINTABLE_REASONS so the orchestrator exercises the real
+// mintViaPasswordFactor and compares against the real sentinel symbols. Mock
+// only the cache and the ORCID redirect.
+vi.mock('../../src/lib/fresh-auth.js', async (importActual) => ({
+  ...(await importActual()),
   getCachedConsentOpProof: (...a) => mockGetCachedConsentOpProof(...a),
   clearCachedConsentOpProof: (...a) => mockClearCachedConsentOpProof(...a),
   beginSettingsActionOrcidFreshAuth: (...a) => mockBeginOrcid(...a),

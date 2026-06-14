@@ -1,7 +1,6 @@
 /**
- * E2E for the pending-authorships discovery surface (UI-MULTI-AUTHOR-CONSENT-
- * AFFORDANCES Acceptance #5 / #7). The header user-menu dropdown surfaces the
- * signed-in user's outstanding authorship actions from GET
+ * E2E for the pending-authorships discovery surface. The header user-menu
+ * dropdown surfaces the signed-in user's outstanding authorship actions from GET
  * /api/me/authorships/pending, and the endpoint is FAIL-CLOSED: a 503 must show a
  * retry affordance, never a silent empty list.
  *

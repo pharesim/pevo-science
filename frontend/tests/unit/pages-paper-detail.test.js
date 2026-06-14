@@ -739,11 +739,12 @@ describe('paperDetailPage', () => {
       expect(warnSpy.mock.calls[0][1]).toBe(err);
     });
 
-    it('handleRejectClaim: generic key, raw err to warn, no leak', async () => {
+    it('handleRevokeClaim: generic key, raw err to warn, no leak', async () => {
       const err = leakyError();
       revokeAuthorshipClaim.mockRejectedValue(err);
       const comp = createComponent();
-      await comp.handleRejectClaim('bob');
+      comp.revokeTarget = 'bob';
+      await comp.handleRevokeClaim('bob');
       expect(mockStores.toast.show).toHaveBeenCalledWith('claims.rejectFailed', 'error');
       expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
       expect(warnSpy).toHaveBeenCalled();

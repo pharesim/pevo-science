@@ -113,13 +113,18 @@ export function initOrcidCallbackPage() {
 
     destroy() {
       this._teardownTimers();
-      // Mid-callback teardown clears the return-path pointer so a later
-      // ORCID flow that does not write `pevo_orcid_return_to` (e.g. signup)
-      // cannot read a stale 'recover' value and route the user to the
-      // wrong destination. Parity with `pevo_orcid_mode`'s scrub-on-logout
-      // in `auth.js`. Happy-path resolution already removes the key inside
-      // `_handleSignup`; this covers the abandoned-mid-flight path.
+      // Mid-callback teardown clears BOTH return-path pointers so a later ORCID
+      // flow that does not write its own return path (e.g. signup) cannot read a
+      // stale value and route the user to the wrong destination:
+      //   - `pevo_orcid_return_to`, the signup/recover flows' pointer (happy-path
+      //     resolution removes it inside `_handleSignup`; this covers the
+      //     abandoned-mid-flight path);
+      //   - the fresh-auth flow's return path via `clearReturnPath()`, which the
+      //     fresh_auth / session_auth handlers otherwise clear only on the
+      //     happy path.
+      // Parity with `pevo_orcid_mode`'s scrub-on-logout in `auth.js`.
       sessionStorage.removeItem('pevo_orcid_return_to');
+      clearReturnPath();
     },
 
     async _verify(code, state, mode) {
@@ -326,6 +331,29 @@ export function initOrcidCallbackPage() {
         typeof data.action !== 'string' || !data.action ||
         typeof data.root_author !== 'string' || !data.root_author ||
         typeof data.root_permlink !== 'string'
+      ) {
+        this.status = 'error';
+        this.errorMessage = this.$t('orcid.verificationFailed');
+        return;
+      }
+      // Per-action credit-field guard, one binding level deeper than the triple
+      // guard above. Claim/approve bind author_index (the name-only slot);
+      // approve/revoke bind claimer (the subject). If the backend drops a
+      // credit-field echo, cacheConsentOpProof would store undefined→null while
+      // the eventual broadcast consumer keys on the real index/subject — a
+      // permanent strict-match miss and the same indefinite re-OAuth loop the
+      // triple guard prevents. Require each field the action binds: author_index
+      // a non-negative integer (slot 0 is valid, so check Number.isInteger, not
+      // truthiness), claimer a non-empty string. Anchored consent ops
+      // (author_accept / author_resign) and settings actions bind neither, so
+      // they skip this guard.
+      const needsAuthorIndex =
+        data.action === 'claim_authorship' || data.action === 'approve_authorship';
+      const needsClaimer =
+        data.action === 'approve_authorship' || data.action === 'revoke_authorship';
+      if (
+        (needsAuthorIndex && !(Number.isInteger(data.author_index) && data.author_index >= 0)) ||
+        (needsClaimer && !(typeof data.claimer === 'string' && data.claimer))
       ) {
         this.status = 'error';
         this.errorMessage = this.$t('orcid.verificationFailed');
