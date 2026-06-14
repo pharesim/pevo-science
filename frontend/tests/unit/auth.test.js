@@ -225,6 +225,54 @@ describe('auth store', () => {
     });
   });
 
+  describe('applyAccreditationMetadata', () => {
+    it('merges name/institution/field and preserves tenure, method, and orcid', () => {
+      store.accreditation = {
+        orcid: '0000-0001', method: 'orcid',
+        accredited_since: 'SINCE', timestamp: 'LATEST',
+        name: 'Old', institution: 'Old U', field: 'Old Field',
+      };
+      const ok = store.applyAccreditationMetadata({
+        name: 'Ada Lovelace', institution: 'AE Co', field: 'Mathematics',
+      });
+      expect(ok).toBe(true);
+      expect(store.accreditation).toEqual({
+        orcid: '0000-0001', method: 'orcid',
+        accredited_since: 'SINCE', timestamp: 'LATEST',
+        name: 'Ada Lovelace', institution: 'AE Co', field: 'Mathematics',
+      });
+    });
+
+    it('bumps the polling generation so an in-flight stale poll drops itself', () => {
+      store.accreditation = { name: 'Old', institution: 'Old U', field: 'Old Field' };
+      const before = store._pollingGeneration;
+      store.applyAccreditationMetadata({ name: 'Ada', institution: 'AE Co', field: 'Math' });
+      expect(store._pollingGeneration).toBe(before + 1);
+    });
+
+    it('persists the merged metadata to localStorage', () => {
+      store.accreditation = { name: 'Old', institution: 'Old U', field: 'Old Field' };
+      localStorage.setItem.mockClear();
+      store.applyAccreditationMetadata({ name: 'Ada', institution: 'AE Co', field: 'Math' });
+      const call = localStorage.setItem.mock.calls.find((c) => c[0] === 'pevo_session');
+      expect(call).toBeDefined();
+      expect(JSON.parse(call[1]).accreditation).toMatchObject({
+        name: 'Ada', institution: 'AE Co', field: 'Math',
+      });
+    });
+
+    it('returns false and changes nothing when there is no current accreditation', () => {
+      store.accreditation = null;
+      const before = store._pollingGeneration;
+      localStorage.setItem.mockClear();
+      const ok = store.applyAccreditationMetadata({ name: 'Ada', institution: 'AE Co', field: 'Math' });
+      expect(ok).toBe(false);
+      expect(store.accreditation).toBeNull();
+      expect(store._pollingGeneration).toBe(before);
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_session', expect.anything());
+    });
+  });
+
   describe('init', () => {
     it('checks keychain availability', async () => {
       mockWaitForKeychain.mockResolvedValue(true);

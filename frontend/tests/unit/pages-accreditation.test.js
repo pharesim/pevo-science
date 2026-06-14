@@ -37,7 +37,8 @@ vi.mock('alpinejs', () => ({
 }));
 
 import Alpine from 'alpinejs';
-import { initAccreditationPage } from '../../src/pages/accreditation.js';
+import { initAccreditationPage, accreditationPageTemplate } from '../../src/pages/accreditation.js';
+import { getAccreditedSince } from '../../src/lib/accreditation-tenure.js';
 
 function createComponent() {
   initAccreditationPage();
@@ -62,6 +63,23 @@ describe('accreditationPage', () => {
         removeItem: vi.fn(),
       };
     }
+  });
+
+  // "Accredited since" must read the earliest-accredit anchor (accredited_since),
+  // not the rewritable latest-op timestamp. These guards FAIL if the status row
+  // reverts to `formatDate(accreditation.timestamp)`: the template-string check
+  // pins the binding, and the factory-exposure check ensures the x-text call
+  // won't ReferenceError at render.
+  describe('accredited-since tenure anchor', () => {
+    it('renders the status date via getAccreditedSince, not a bare timestamp', () => {
+      expect(accreditationPageTemplate).toContain('formatDate(getAccreditedSince(accreditation))');
+      expect(accreditationPageTemplate).not.toContain('formatDate(accreditation.timestamp)');
+    });
+
+    it('factory().getAccreditedSince is identity-equal to the imported helper', () => {
+      const comp = createComponent();
+      expect(comp.getAccreditedSince).toBe(getAccreditedSince);
+    });
   });
 
   describe('methodLabel', () => {

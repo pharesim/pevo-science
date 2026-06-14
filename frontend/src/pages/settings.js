@@ -15,7 +15,9 @@ const CONFIRM_WORD_COUNT = 3;
 // Per-field length bounds for the editable-accreditation-metadata form, mirroring
 // accreditationRequestSchema in backend/src/validation.ts (full_name/institution
 // max 200, field max 100; min 1 after trim). The client gate is UX-only; the
-// backend re-validates. Kept here so a future bound change is a one-line edit.
+// backend re-validates. The single source for both the `canSubmitMetadata` gate
+// and the template `:maxlength` bindings (exposed as `metadataMax`), so a future
+// bound change is a one-line edit here.
 const METADATA_MAX = { name: 200, institution: 200, field: 100 };
 
 // Single source of truth for `upgradeErrorKey` discriminators. Catch-block
@@ -272,19 +274,19 @@ const template = `
                 <form @submit.prevent="handleMetadataSubmit()" class="space-y-3">
                   <div>
                     <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.metadataNameLabel')"></label>
-                    <input type="text" data-testid="metadata-name-input" x-model="editName" required maxlength="200"
+                    <input type="text" data-testid="metadata-name-input" x-model="editName" required :maxlength="metadataMax.name"
                            class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
                            :placeholder="$t('settings.metadataNamePlaceholder')">
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.metadataInstitutionLabel')"></label>
-                    <input type="text" data-testid="metadata-institution-input" x-model="editInstitution" required maxlength="200"
+                    <input type="text" data-testid="metadata-institution-input" x-model="editInstitution" required :maxlength="metadataMax.institution"
                            class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
                            :placeholder="$t('settings.metadataInstitutionPlaceholder')">
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.metadataFieldLabel')"></label>
-                    <input type="text" data-testid="metadata-field-input" x-model="editField" required maxlength="100"
+                    <input type="text" data-testid="metadata-field-input" x-model="editField" required :maxlength="metadataMax.field"
                            class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
                            :placeholder="$t('settings.metadataFieldPlaceholder')">
                   </div>
@@ -534,6 +536,9 @@ export function initSettingsPage() {
     metadataSubmitting: false,
     metadataError: null,
     _metadataPrefilled: false,
+    // Exposed for the template `:maxlength` bindings so the per-field caps share
+    // the single METADATA_MAX source with the canSubmitMetadata gate.
+    metadataMax: METADATA_MAX,
 
     // Admin-console entry-link gate: the viewer's admin tier, or null if not in
     // the roster (or before the roster endpoint lands). Best-effort, set in init.
@@ -882,19 +887,21 @@ export function initSettingsPage() {
         }
         // Optimistically reflect the merged metadata in the auth store so the
         // Settings inputs, profile, and accreditation pages update without a
-        // reload. Chain is SSoT; this matches the latest-op metadata the edit
-        // just broadcast. Tenure ("accredited since") is unaffected by an edit.
-        const auth = Alpine.store('auth');
-        if (auth.accreditation) {
-          auth.accreditation = {
-            ...auth.accreditation,
-            name: values.full_name,
-            institution: values.institution,
-            field: values.field,
-          };
-          auth._saveSession();
+        // reload. The store helper merges the latest-op metadata, preserves
+        // tenure, and invalidates any in-flight accreditation poll that could
+        // revert the display (see auth.applyAccreditationMetadata). Only claim
+        // success when the merge landed: if the store has no current
+        // accreditation to merge into, the on-chain edit still landed but the
+        // display can't update, so a "saved" toast against stale values would
+        // mislead.
+        const applied = Alpine.store('auth').applyAccreditationMetadata({
+          name: values.full_name,
+          institution: values.institution,
+          field: values.field,
+        });
+        if (applied) {
+          Alpine.store('toast').show(this.$t('settings.metadataSaved'), 'success');
         }
-        Alpine.store('toast').show(this.$t('settings.metadataSaved'), 'success');
       } catch (err) {
         // Sanitization pattern (see handleOrcidLink): generic localized message
         // to the DOM, raw error only to console.warn.

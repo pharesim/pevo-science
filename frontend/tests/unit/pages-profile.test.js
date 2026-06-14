@@ -29,8 +29,9 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { fetchProfile, fetchProfilePapers, fetchProfileReviews } from '../../src/api.js';
-import { initProfilePage } from '../../src/pages/profile.js';
+import { initProfilePage, profilePageTemplate } from '../../src/pages/profile.js';
 import { titleCaseDiscipline } from '../../src/lib/discipline-display.js';
+import { getAccreditedSince } from '../../src/lib/accreditation-tenure.js';
 
 // Sentinel the DOM-bound field / toast must NOT contain.
 const LEAK_SENTINEL = 'deadbeef-leak-sentinel';
@@ -64,6 +65,23 @@ describe('profilePage', () => {
     it('factory().titleCaseDiscipline is identity-equal to the imported helper', () => {
       const comp = createComponent();
       expect(comp.titleCaseDiscipline).toBe(titleCaseDiscipline);
+    });
+  });
+
+  // "Accredited since" must read the earliest-accredit anchor (accredited_since),
+  // not the rewritable latest-op timestamp. These guards FAIL if the
+  // accreditedVia line reverts to `formatDate(profile.accreditation.timestamp)`:
+  // the template-string check pins the binding, and the factory-exposure check
+  // ensures the x-text call won't ReferenceError at render.
+  describe('accredited-since tenure anchor', () => {
+    it('renders the accreditedVia date via getAccreditedSince, not a bare timestamp', () => {
+      expect(profilePageTemplate).toContain('formatDate(getAccreditedSince(profile.accreditation))');
+      expect(profilePageTemplate).not.toContain('formatDate(profile.accreditation.timestamp)');
+    });
+
+    it('factory().getAccreditedSince is identity-equal to the imported helper', () => {
+      const comp = createComponent();
+      expect(comp.getAccreditedSince).toBe(getAccreditedSince);
     });
   });
 

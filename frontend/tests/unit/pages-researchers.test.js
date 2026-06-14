@@ -27,8 +27,9 @@ vi.mock('alpinejs', () => ({
 }));
 
 import Alpine from 'alpinejs';
-import { initResearchersPage } from '../../src/pages/researchers.js';
+import { initResearchersPage, researchersPageTemplate } from '../../src/pages/researchers.js';
 import { titleCaseDiscipline } from '../../src/lib/discipline-display.js';
+import { getAccreditedSince } from '../../src/lib/accreditation-tenure.js';
 
 function createComponent() {
   initResearchersPage();
@@ -53,6 +54,24 @@ describe('researchersPage', () => {
     it('factory().titleCaseDiscipline is identity-equal to the imported helper', () => {
       const comp = createComponent();
       expect(comp.titleCaseDiscipline).toBe(titleCaseDiscipline);
+    });
+  });
+
+  // Tenure must read the earliest-accredit anchor (accredited_since), not the
+  // rewritable latest-op timestamp. The directory card was the surface the
+  // first pass missed. These guards FAIL if the card reverts to rendering
+  // `formatDate(r.timestamp)`: the template-string check pins the binding, and
+  // the factory-exposure check ensures the `getAccreditedSince(...)` x-text call
+  // won't ReferenceError at render.
+  describe('accredited-since tenure anchor', () => {
+    it('renders the directory date via getAccreditedSince, not a bare timestamp', () => {
+      expect(researchersPageTemplate).toContain('formatDate(getAccreditedSince(r))');
+      expect(researchersPageTemplate).not.toContain('formatDate(r.timestamp)');
+    });
+
+    it('factory().getAccreditedSince is identity-equal to the imported helper', () => {
+      const comp = createComponent();
+      expect(comp.getAccreditedSince).toBe(getAccreditedSince);
     });
   });
 

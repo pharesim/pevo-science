@@ -720,15 +720,11 @@ export function setPassword(password, freshAuthProof) {
 // asking the backend to re-broadcast an admin-signed `accredit` op carrying the
 // merged values. The user never signs the op — the latest accredit op is
 // authoritative for metadata so the edit takes effect, while tenure
-// ("accredited since") stays anchored to the earliest op (ARCHITECTURE.md § 2).
-// A critical action: on the JWT (light-account) path the backend requires a
+// ("accredited since") stays anchored to the earliest op's chain block time (the
+// `accredited_since` field the status/profile responses expose). A critical
+// action: on the JWT (light-account) path the backend requires a
 // `fresh_auth_proof` bound to (edit_accreditation_metadata, <username>, '');
 // the Keychain (self-custody) path is fresh at the middleware and omits it.
-//
-// The endpoint/method (`PATCH /api/accreditation/metadata`) and the fresh-auth
-// action string (`edit_accreditation_metadata`) match the backend's documented
-// metadata-edit contract; integration-verify once the backend edit endpoint
-// lands (the endpoint does not exist yet).
 export function submitAccreditationMetadata(values, freshAuthProof) {
   return authenticatedRequest('/accreditation/metadata', {
     method: 'PATCH',

@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { requestAccreditation, startOrcid, searchAccounts } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
+import { getAccreditedSince } from '../lib/accreditation-tenure.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { createOrcidRedirectGuard } from '../lib/orcid-redirect-guard.js';
 import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
@@ -62,10 +63,9 @@ const template = `
               <div>
                 <dt class="text-ink-muted font-medium" x-text="$t('accreditation.statusSince')"></dt>
                 <!-- Tenure reads the earliest-accredit anchor (accredited_since)
-                     so a metadata re-broadcast does not reset the date; falls
-                     back to the latest-op timestamp until the backend exposes
-                     the anchor field. -->
-                <dd class="text-ink" x-text="formatDate(accreditation.accredited_since || accreditation.timestamp)"></dd>
+                     via the shared accessor so a metadata re-broadcast does not
+                     reset the date. -->
+                <dd class="text-ink" x-text="formatDate(getAccreditedSince(accreditation))"></dd>
               </div>
             </dl>
 
@@ -239,6 +239,7 @@ export function initAccreditationPage() {
     get isSubmitting() { return this.step === 'submitting'; },
 
     formatDate,
+    getAccreditedSince,
     methodLabel(method) {
       if (method === 'email') return this.$t('researchers.emailVerification');
       if (method === 'orcid') return this.$t('researchers.orcid');

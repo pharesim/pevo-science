@@ -113,6 +113,11 @@ const mockAuthStore = {
   _saveSession: vi.fn(),
   _checkAccreditation: vi.fn(),
   _startAccreditationPolling: vi.fn(),
+  // Optimistic accreditation-metadata merge + poll-generation bump. The real
+  // merge/preserve/generation-bump behavior is covered in auth.test.js; here it
+  // is a spy returning true (merge landed) by default, overridden per-test to
+  // return false for the no-current-accreditation branch.
+  applyAccreditationMetadata: vi.fn(() => true),
   loginFromResponse: vi.fn(mockLoginFromResponse),
   disconnect: vi.fn(),
 };
@@ -194,6 +199,9 @@ describe('settingsPage', () => {
     mockAuthStore.accreditation = { orcid: '0000-0001' };
     mockAuthStore.token = 'jwt';
     mockAuthStore.expiresAt = '2099-01-01T00:00:00.000Z';
+    // clearAllMocks resets call history but not implementations; re-establish the
+    // merge-landed default so a per-test false override doesn't leak to siblings.
+    mockAuthStore.applyAccreditationMetadata.mockReturnValue(true);
     localStorageData = {};
     sessionStorageData = {};
     vi.stubGlobal('localStorage', {
@@ -3001,6 +3009,22 @@ describe('settingsPage', () => {
         comp.editField = 'Physics';
         expect(comp.canSubmitMetadata).toBe(false);
       });
+
+      it('is false when institution exceeds its 200-char bound', () => {
+        const comp = createComponent();
+        comp.editName = 'Ada Lovelace';
+        comp.editInstitution = 'I'.repeat(201); // institution max 200
+        comp.editField = 'Physics';
+        expect(comp.canSubmitMetadata).toBe(false);
+      });
+
+      it('is false when field exceeds its 100-char bound', () => {
+        const comp = createComponent();
+        comp.editName = 'Ada Lovelace';
+        comp.editInstitution = 'MIT';
+        comp.editField = 'F'.repeat(101); // field max 100
+        expect(comp.canSubmitMetadata).toBe(false);
+      });
     });
 
     describe('_prefillMetadata', () => {
@@ -3051,7 +3075,6 @@ describe('settingsPage', () => {
       });
 
       it('submits trimmed values with the edit_accreditation_metadata action and refreshes the store', async () => {
-        mockAuthStore.accreditation = { orcid: '0000-0001', method: 'orcid' };
         mockSubmitAccreditationMetadata.mockResolvedValue({ status: 'ok', data: {} });
         const comp = createComponent();
         comp.editName = '  Ada Lovelace  ';
@@ -3069,14 +3092,34 @@ describe('settingsPage', () => {
           { full_name: 'Ada Lovelace', institution: 'AE Co', field: 'Mathematics' },
           undefined,
         );
-        // Optimistic store refresh: metadata merged in, orcid/method preserved.
-        expect(mockAuthStore.accreditation).toEqual({
-          orcid: '0000-0001', method: 'orcid',
+        // Optimistic store refresh is delegated to auth.applyAccreditationMetadata
+        // (merge + preserve + poll-generation bump tested in auth.test.js); here
+        // assert the handler hands it the trimmed metadata in accreditation shape.
+        expect(mockAuthStore.applyAccreditationMetadata).toHaveBeenCalledWith({
           name: 'Ada Lovelace', institution: 'AE Co', field: 'Mathematics',
         });
-        expect(mockAuthStore._saveSession).toHaveBeenCalled();
         expect(mockToastStore.show).toHaveBeenCalledWith('settings.metadataSaved', 'success');
         expect(comp.metadataError).toBeNull();
+        expect(comp.metadataSubmitting).toBe(false);
+      });
+
+      it('does not toast when the store has no accreditation to merge into', async () => {
+        // The edit landed on-chain but the store was cleared mid round-trip:
+        // applyAccreditationMetadata returns false, so no misleading "saved"
+        // toast fires against stale display.
+        mockSubmitAccreditationMetadata.mockResolvedValue({ status: 'ok', data: {} });
+        mockAuthStore.applyAccreditationMetadata.mockReturnValueOnce(false);
+        const comp = createComponent();
+        comp.editName = 'Ada';
+        comp.editInstitution = 'AE Co';
+        comp.editField = 'Math';
+
+        await comp.handleMetadataSubmit();
+
+        expect(mockAuthStore.applyAccreditationMetadata).toHaveBeenCalled();
+        expect(mockToastStore.show).not.toHaveBeenCalled();
+        expect(comp.metadataError).toBeNull();
+        expect(comp.metadataSubmitting).toBe(false);
       });
 
       it('surfaces reauthFailed and does not touch the store on freshAuthFailed', async () => {
@@ -3089,8 +3132,9 @@ describe('settingsPage', () => {
         await comp.handleMetadataSubmit();
 
         expect(comp.metadataError).toBe('settings.reauthFailed');
-        expect(mockAuthStore._saveSession).not.toHaveBeenCalled();
+        expect(mockAuthStore.applyAccreditationMetadata).not.toHaveBeenCalled();
         expect(mockToastStore.show).not.toHaveBeenCalled();
+        expect(comp.metadataSubmitting).toBe(false);
       });
 
       it('aborts cleanly on redirect (ORCID round-trip) without toast or store write', async () => {
@@ -3103,8 +3147,41 @@ describe('settingsPage', () => {
         await comp.handleMetadataSubmit();
 
         expect(comp.metadataError).toBeNull();
-        expect(mockAuthStore._saveSession).not.toHaveBeenCalled();
+        expect(mockAuthStore.applyAccreditationMetadata).not.toHaveBeenCalled();
         expect(mockToastStore.show).not.toHaveBeenCalled();
+        expect(comp.metadataSubmitting).toBe(false);
+      });
+
+      it('aborts cleanly on cancelled (password modal dismissed) without toast or store write', async () => {
+        mockWithSettingsFreshAuth.mockResolvedValueOnce({ cancelled: true });
+        const comp = createComponent();
+        comp.editName = 'Ada';
+        comp.editInstitution = 'AE Co';
+        comp.editField = 'Math';
+
+        await comp.handleMetadataSubmit();
+
+        expect(comp.metadataError).toBeNull();
+        expect(mockAuthStore.applyAccreditationMetadata).not.toHaveBeenCalled();
+        expect(mockToastStore.show).not.toHaveBeenCalled();
+        expect(comp.metadataSubmitting).toBe(false);
+      });
+
+      it('aborts cleanly on sessionInconsistent without a second toast or store write', async () => {
+        // The orchestrator already disconnected and toasted the re-login prompt;
+        // the handler must not toast again or touch the store.
+        mockWithSettingsFreshAuth.mockResolvedValueOnce({ sessionInconsistent: true });
+        const comp = createComponent();
+        comp.editName = 'Ada';
+        comp.editInstitution = 'AE Co';
+        comp.editField = 'Math';
+
+        await comp.handleMetadataSubmit();
+
+        expect(comp.metadataError).toBeNull();
+        expect(mockAuthStore.applyAccreditationMetadata).not.toHaveBeenCalled();
+        expect(mockToastStore.show).not.toHaveBeenCalled();
+        expect(comp.metadataSubmitting).toBe(false);
       });
 
       it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {

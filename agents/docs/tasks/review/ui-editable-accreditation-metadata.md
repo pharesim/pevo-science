@@ -150,3 +150,45 @@ ARCHITECTURE.md § "Authorization enforcement" — the self-service metadata-edi
 endpoint was wrongly listed among roster-gated admin authority actions; it is now
 documented as owner-authorized (not roster-gated). Reconcile if
 backend-admin-roster touches that endpoint.
+
+## UI re-review signal (2026-06-14, working tree) — hold fixes 1–7 landed
+
+All seven held fixes are in. Built against the ratified contract names
+(`accredited_since`, `PATCH /api/accreditation/metadata`,
+`edit_accreditation_metadata`); integration-verify still deferred until
+backend-editable-accreditation-metadata lands.
+
+1. **Third tenure surface repointed.** `researchers.js` directory card now renders
+   `formatDate(getAccreditedSince(r))` instead of `formatDate(r.timestamp)`.
+2. **Shared accessor extracted.** New `frontend/src/lib/accreditation-tenure.js`
+   exports `getAccreditedSince(acc)` (prefers `accredited_since`, falls back to
+   `timestamp`). All three surfaces (accreditation.js, profile.js, researchers.js)
+   import it and expose it on their Alpine factory. Independently re-grepped the
+   whole `frontend/src` tree: the only `.timestamp` read left is the accessor's
+   own fallback — no fourth surface.
+3. **Poll-clobbers-optimistic-write race fixed.** Moved the optimistic merge into
+   a new `auth.applyAccreditationMetadata({name,institution,field})` that merges,
+   bumps `_pollingGeneration` (so any in-flight `_checkAccreditation` drops itself
+   at the stale-fetch guard), saves the session, and returns a bool. It does NOT
+   re-fetch (HAF lags the broadcast). settings.js calls it instead of writing the
+   store inline.
+4. **Success toast guarded.** settings.js shows the "saved" toast only when
+   `applyAccreditationMetadata` returns true (an edit with no current
+   accreditation to merge into no longer shows a misleading success).
+5. **Tests.** New `lib-accreditation-tenure.test.js` (prefers anchor / fallback /
+   null). Tenure guards added to accreditation/profile/researchers tests:
+   template-string assertions that FAIL if a surface reverts to a bare
+   `*.timestamp`, plus factory-exposure identity checks. settings tests:
+   `field`>100, `institution`>200, `cancelled`, `sessionInconsistent`,
+   null-accreditation no-toast, and `metadataSubmitting` reset on the non-error
+   paths; merge assertions repointed to `applyAccreditationMetadata`. auth tests:
+   merge/preserve-tenure/generation-bump/persist/null-no-op.
+6. **maxlength bound to the constant.** settings.js exposes `metadataMax`
+   (= METADATA_MAX) and the three inputs bind `:maxlength` to it.
+7. **api.js comment de-rotted.** Dropped the "endpoint does not exist yet"
+   deployment-state note and the `§ 2` section cite; kept the behavioral
+   invariant (latest-op metadata, earliest-op `accredited_since` tenure).
+
+Verification: 6 affected unit files green (207 tests; settings 103→108) plus the
+two sibling settings files (32 tests); `npm run build` OK. No new i18n strings
+(no STUBS.md change).

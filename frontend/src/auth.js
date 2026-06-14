@@ -133,6 +133,32 @@ export function initAuth() {
       this._startAccreditationPolling();
     },
 
+    // Optimistically reflect a locally-known accreditation metadata edit
+    // (full name / institution / field). The edit is admin-signed and broadcast
+    // on-chain by the backend (chain is SSoT); this merges the new values into
+    // the stored accreditation so Settings, profile, and the accreditation page
+    // update without a reload. Tenure (`accredited_since`) and method/orcid are
+    // untouched by a metadata edit, so the spread preserves them.
+    //
+    // Returns true when the merge landed, false when there is no current
+    // accreditation to merge into (the store was cleared mid fresh-auth
+    // round-trip). The caller must not claim success on false: the on-chain edit
+    // still landed, but the display can't reflect it.
+    //
+    // Bumps `_pollingGeneration` so any in-flight `_checkAccreditation` fetch —
+    // which captured the prior generation and would otherwise resolve with
+    // pre-edit data and revert this write via its own store assignment — drops
+    // its result at the stale-fetch guard. We deliberately do NOT re-fetch here:
+    // the HAF-indexed accreditation status lags the chain broadcast, so an
+    // immediate re-fetch could itself return pre-edit metadata.
+    applyAccreditationMetadata({ name, institution, field }) {
+      if (!this.accreditation) return false;
+      this.accreditation = { ...this.accreditation, name, institution, field };
+      this._pollingGeneration += 1;
+      this._saveSession();
+      return true;
+    },
+
     disconnect() {
       this.username = null;
       this.isConnected = false;

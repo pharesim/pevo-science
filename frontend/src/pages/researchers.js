@@ -5,6 +5,7 @@ import { paginationTemplate } from '../components/pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
 import { titleCaseDiscipline } from '../lib/discipline-display.js';
+import { getAccreditedSince } from '../lib/accreditation-tenure.js';
 
 const ITEMS_PER_PAGE = 12;
 
@@ -76,7 +77,10 @@ const template = `
                   <div class="mt-3 pt-3 border-t border-parchment-dark text-xs text-ink-muted">
                     <span x-text="methodLabel(r.method)"></span>
                     <span class="mx-1">&middot;</span>
-                    <span x-text="formatDate(r.timestamp)"></span>
+                    <!-- Tenure reads the earliest-accredit anchor (accredited_since)
+                         via the shared accessor so a metadata re-broadcast does not
+                         reset the directory card's date. -->
+                    <span x-text="formatDate(getAccreditedSince(r))"></span>
                   </div>
                 </div>
               </template>
@@ -111,6 +115,7 @@ export function initResearchersPage() {
 
     formatDate,
     titleCaseDiscipline,
+    getAccreditedSince,
 
     init() {
       this._syncFromUrl();
