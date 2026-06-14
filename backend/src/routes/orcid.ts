@@ -31,6 +31,7 @@ import {
   consentOpFreshAuthTarget,
   creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
+  editAccreditationMetadataFreshAuthTarget,
   extractConsentOpFields,
   extractCreditOpFields,
   ipfsUploadFreshAuthTarget,
@@ -375,7 +376,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   let freshAuthTarget: FreshAuthTarget | undefined;
   if (mode === 'fresh_auth') {
     const { action } = startParsed.data;
-    if (action === 'set_password' || action === 'change_email' || action === 'delete_account' || action === 'ipfs_upload') {
+    if (action === 'set_password' || action === 'change_email' || action === 'delete_account' || action === 'ipfs_upload' || action === 'edit_accreditation_metadata') {
       // Non-broadcast actions bind the target to the authenticated
       // username. The invariant "`username` is set when `mode === 'fresh_auth'`"
       // is enforced by middleware composition (`AUTHENTICATED_MODES`
@@ -407,6 +408,12 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         // ORCID-only and state B). Binds to (ipfs_upload, <username>, ''),
         // consumed at POST /api/ipfs/upload-token on the JWT path.
         freshAuthTarget = ipfsUploadFreshAuthTarget(username);
+      } else if (action === 'edit_accreditation_metadata') {
+        // Self-service accreditation-metadata edit (ORCID-mechanism issuance;
+        // serves state C ORCID-only + state B). Binds to
+        // (edit_accreditation_metadata, <username>, ''), consumed at
+        // PATCH /api/accreditation/metadata on the JWT path.
+        freshAuthTarget = editAccreditationMetadataFreshAuthTarget(username);
       } else {
         // Non-broadcast target. Same shape as set_password / delete_account:
         // target binds to (action, <authenticated username>, ''); request body
@@ -460,7 +467,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         res,
         400,
         'VALIDATION_ERROR',
-        'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, set_password, change_email, delete_account, ipfs_upload, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
+        'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, set_password, change_email, delete_account, ipfs_upload, edit_accreditation_metadata, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
       );
     }
   }

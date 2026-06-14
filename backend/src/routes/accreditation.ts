@@ -8,8 +8,15 @@ import { handleBroadcastError, PostBroadcastWriteError } from '../lib/broadcast-
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
-import { validate, accreditationRequestSchema, accreditationVerifySchema } from '../validation.js';
+import { validate, accreditationRequestSchema, accreditationVerifySchema, accreditationMetadataEditSchema } from '../validation.js';
 import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
+import { getAccreditedSet, getLatestAccreditOp } from '../accreditation.js';
+import { getAppPool } from '../app-db.js';
+import {
+  computeFreshAuthTargetHash,
+  consumeFreshAuthToken,
+  editAccreditationMetadataFreshAuthTarget,
+} from '../lib/fresh-auth.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
 import { hashEmailForLogs, hashTokenForLogs, maskEmail } from '../lib/log-pii.js';
@@ -55,6 +62,11 @@ const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24
 // side effects. Mirrors the `accreditationRequestLimiter` shape and
 // `upgradeLimiter` in `custody.ts`.
 const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp, skipFailedRequests: true });
+
+// Per-account write limiter for the metadata edit (each success triggers an
+// admin-signed re-broadcast). Placed AFTER verifyHiveSignature so byAccount has
+// req.hiveUsername; bounds how fast one account can drive accredit re-broadcasts.
+const accreditationEditLimiter = rateLimit({ name: 'accred-edit', windowMs: 60_000, max: 5, keyFn: byAccount });
 
 const router = Router();
 
@@ -774,21 +786,19 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
     try {
       const existingForUser = await findExistingAccreditation(hafPool, pending.hive_username);
       if (existingForUser) {
-        // Metadata-update invariant. Gate-hit short-circuits before the
-        // pending row's metadata (full_name, institution, field captured at
-        // /request) would be embedded into a fresh accredit op. This is
-        // correct under the current product model: there is no
-        // `update_accreditation` custom_op, no UI affordance for editing
-        // accreditation metadata post-verification, and the only path that
-        // could re-issue an accredit op with new metadata is a second
-        // /request → /verify flow. Profile metadata is one-shot at first
-        // /verify; the gate-hit discard is intentional. If a future product
-        // change introduces an updateable-metadata flow, this branch needs
-        // a paired design pass (broadcast a fresh accredit op, distinct
-        // `update_accreditation` op type, or reject metadata changes at
-        // /request when an accreditation exists). The gate's revoke-aware
-        // semantics preserve the re-accreditation path after revoke — that
-        // flow DOES rebroadcast with fresh metadata.
+        // Metadata-update routing. Gate-hit short-circuits before the pending
+        // row's metadata (full_name, institution, field captured at /request)
+        // would be embedded into a fresh accredit op, and /verify stays
+        // idempotent: a re-confirm of an already-accredited account returns the
+        // prior tx_id without re-broadcasting. Metadata edits do NOT flow through
+        // a second /request -> /verify; they have their own dedicated path,
+        // PATCH /api/accreditation/metadata, which re-broadcasts a merged
+        // admin-signed accredit op behind its own fresh-auth proof. So
+        // discarding the /request-captured metadata here is correct — the edit
+        // surface lives elsewhere, not in /verify. The gate's latest-action read
+        // (findExistingAccreditation, null on a latest revoke) preserves the
+        // re-accreditation path after a revoke: that flow DOES rebroadcast with
+        // fresh metadata.
         logger.info(
           {
             event: 'accreditation.verify.existing_accreditation_hit',
@@ -1282,6 +1292,145 @@ setInterval(() => {
     );
   });
 }, 60 * 60 * 1000);
+
+// ──────────────────────────────────────────────
+// PATCH /api/accreditation/metadata — self-service metadata edit
+// ──────────────────────────────────────────────
+// An accredited account edits its own name/institution/field by re-broadcasting
+// a merged admin-signed accredit op. Authorization is the caller's OWN current
+// accreditation (currently accredited AND not sanctioned — both implied by the
+// sanction-aware getAccreditedSet), NOT an admin roster level. Critical action
+// per ARCHITECTURE.md §6.4 / §6.5 invariant #1: a fresh re-auth proof is
+// required, NOT a JWT alone. The tenure anchor ("accredited since") is unaffected
+// — it derives from the EARLIEST accredit op's block time, which this later
+// re-broadcast does not move.
+router.patch(
+  '/metadata',
+  verifyHiveSignature,
+  validate(accreditationMetadataEditSchema),
+  accreditationEditLimiter,
+  async (
+    req: Request<Record<string, string>, unknown, z.infer<typeof accreditationMetadataEditSchema>>,
+    res: Response,
+  ) => {
+    const username = req.hiveUsername;
+    if (!username) {
+      return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required to edit accreditation metadata');
+    }
+
+    // Guard: the caller must be CURRENTLY accredited. getAccreditedSet is
+    // sanction-aware, so membership here also implies not-sanctioned and (for a
+    // WoT account) at-or-above threshold. Checked BEFORE consuming the single-use
+    // fresh-auth proof so a non-eligible caller cannot burn a valid proof.
+    const accreditedSet = await getAccreditedSet([username]);
+    if (!accreditedSet.has(username)) {
+      return sendError(
+        res,
+        403,
+        'FORBIDDEN',
+        'Only a currently-accredited, non-sanctioned account can edit its accreditation metadata',
+      );
+    }
+
+    // Fresh re-auth gate (NOT JWT-only). Self-custody/Keychain (signature) is
+    // fresh at the middleware; the JWT path demands a single-use proof bound to
+    // (edit_accreditation_metadata, <username>, ''). Mirrors requireFreshAdminAuth.
+    if (req.hiveAuthMethod === 'jwt') {
+      const proofRaw = (req.body as { fresh_auth_proof?: unknown }).fresh_auth_proof;
+      const proofToken = typeof proofRaw === 'string' ? proofRaw : undefined;
+      const expectedTargetHash = computeFreshAuthTargetHash(editAccreditationMetadataFreshAuthTarget(username));
+      const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
+      if (!result.valid) {
+        const status =
+          result.reason === 'username_mismatch' ||
+          result.reason === 'target_mismatch' ||
+          result.reason === 'kind_mismatch'
+            ? 403
+            : 401;
+        return sendError(
+          res,
+          status,
+          'FRESH_AUTH_REQUIRED',
+          'Re-authentication required to edit accreditation metadata. Please complete the fresh-auth challenge and retry.',
+          { reason: result.reason },
+        );
+      }
+    }
+
+    // Load the latest accredit op to merge against (carries method/orcid/evidence_hash,
+    // which the active_accreditations view does not all expose).
+    const prior = await getLatestAccreditOp(username);
+    if (!prior) {
+      // The account is in getAccreditedSet, so an accredit op exists; a null here
+      // is a transient HAF read failure between the membership and op reads.
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Could not load the current accreditation. Please retry.', {
+        retriable: true,
+      });
+    }
+
+    const { full_name, institution, field } = req.body;
+    const merged = {
+      action: 'accredit' as const,
+      account: username,
+      name: full_name ?? prior.name,
+      institution: institution ?? prior.institution,
+      field: field ?? prior.field,
+      // Preserve method/orcid/evidence_hash from the prior op — a metadata edit
+      // changes only name/institution/field. Carrying orcid forward keeps the
+      // ORCID binding intact; carrying evidence_hash forward avoids fabricating
+      // a new attestation hash.
+      method: prior.method,
+      orcid: prior.orcid,
+      evidence_hash: prior.evidence_hash,
+      // Self-service edit: the op is admin-key-signed (single signer) but
+      // authorized by the account owner, so issued_by is the admin account
+      // marker, consistent with the other self-service accredit paths
+      // (email /verify, ORCID, signup-verify) per the admin-roster design.
+      issued_by: config.hiveAdminAccount,
+      timestamp: new Date().toISOString(),
+    };
+
+    try {
+      const result = await broadcastAdminCustomJson(merged);
+
+      // Sync the accounts-row metadata cache (chain stays SSoT). A pure
+      // self-custody caller has no accounts row, so this UPDATE affects 0 rows.
+      const appPool = getAppPool();
+      if (appPool) {
+        try {
+          await appPool.query(
+            'UPDATE accounts SET full_name = $1, institution = $2, field = $3 WHERE username = $4',
+            [merged.name, merged.institution, merged.field, username],
+          );
+        } catch (dbErr) {
+          // The chain broadcast is authoritative; a failed cache sync reconciles
+          // when the chain read repopulates. Log, do not fail the request.
+          logger.warn({ err: dbErr, username }, 'accounts metadata cache sync failed after edit broadcast');
+        }
+      }
+
+      logger.info({ event: 'accreditation.metadata.edit', username, tx_id: result.id }, 'accreditation metadata edited');
+      return sendOk(res, {
+        message: 'Accreditation metadata updated',
+        tx_id: result.id,
+        accreditation: {
+          name: merged.name,
+          institution: merged.institution,
+          field: merged.field,
+          method: merged.method,
+          orcid: merged.orcid || null,
+        },
+      });
+    } catch (err) {
+      return handleBroadcastError(res, err, {
+        timeoutMsg: 'Broadcasting the metadata update timed out',
+        failMsg: 'Failed to broadcast the metadata update',
+        logContext: { username },
+        routeLabel: 'accreditation.metadata.edit',
+      });
+    }
+  },
+);
 
 export default router;
 

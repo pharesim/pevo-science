@@ -77,11 +77,13 @@ describe('GET /api/accreditations/:username — membership-CTE status mapping', 
     );
   });
 
-  it('returns is_accredited:true with the latest-op metadata when present in active_accreditations', async () => {
+  it('returns is_accredited:true with latest-op metadata AND the accredited_since tenure anchor', async () => {
     const account = 'accreds-status-accredited-user';
 
     hafQueryMock.mockImplementation(async (sql: string) => {
       if (sql.includes('active_accreditations') && sql.includes('account =')) {
+        // The status query LEFT JOINs first_accredited_at for the anchor.
+        expect(sql).toContain('first_accredited_at');
         return {
           rows: [
             {
@@ -92,6 +94,7 @@ describe('GET /api/accreditations/:username — membership-CTE status mapping', 
               orcid: '0000-0001-2345-6789',
               event_timestamp: '2026-02-01T00:00:00.000Z',
               event_id: 9876,
+              accredited_since: '2026-01-15T00:00:00Z',
             },
           ],
         };
@@ -108,8 +111,49 @@ describe('GET /api/accreditations/:username — membership-CTE status mapping', 
       field: 'Physics',
       method: 'email',
       orcid: '0000-0001-2345-6789',
+      // Latest-op timestamp AND the additive tenure anchor are both present.
       timestamp: '2026-02-01T00:00:00.000Z',
+      accredited_since: '2026-01-15T00:00:00Z',
       tx_id: '9876',
     });
+  });
+
+  it('LIST route exposes accredited_since but keeps sorting by the latest-op timestamp', async () => {
+    let capturedSql: string | undefined;
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      // The LIST data query is identified by the window-count total projection.
+      if (sql.includes('count(*) OVER ()')) {
+        capturedSql = sql;
+        return {
+          rows: [
+            {
+              username: 'lister1',
+              name: 'Dr Lister',
+              institution: 'Inst',
+              field: 'Bio',
+              method: 'email',
+              orcid: null,
+              timestamp: '2026-03-01T00:00:00.000Z',
+              accredited_since: '2026-01-01T00:00:00Z',
+              total: 1,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/accreditations');
+    expect(res.status).toBe(200);
+    expect(res.body.data[0]).toMatchObject({
+      username: 'lister1',
+      timestamp: '2026-03-01T00:00:00.000Z',
+      accredited_since: '2026-01-01T00:00:00Z',
+    });
+    expect(capturedSql).toBeDefined();
+    // Sort stays on the latest-op payload timestamp; the anchor is additive.
+    expect(capturedSql).toContain('ORDER BY aa.event_timestamp DESC');
+    expect(capturedSql).not.toContain('ORDER BY accredited_since');
+    expect(capturedSql).toContain('accredited_since');
   });
 });

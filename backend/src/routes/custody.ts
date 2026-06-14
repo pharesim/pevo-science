@@ -27,6 +27,7 @@ import {
   CREDIT_OP_ACCOUNT_MAX_LEN,
   creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
+  editAccreditationMetadataFreshAuthTarget,
   extractConsentOpFields,
   extractCreditOpFields,
   ipfsUploadFreshAuthTarget,
@@ -166,6 +167,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     action === 'change_email' ||
     action === 'delete_account' ||
     action === 'ipfs_upload' ||
+    action === 'edit_accreditation_metadata' ||
     (typeof action === 'string' && isAdminFreshAuthAction(action))
   ) {
     // No additional fields required; target is derived from authenticated
@@ -216,7 +218,7 @@ function validateFreshAuthBodyShape(req: Request, res: Response, next: NextFunct
     res,
     400,
     'VALIDATION_ERROR',
-    'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
+    'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload, edit_accreditation_metadata, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
   );
 }
 
@@ -995,6 +997,15 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
     // here serves state A/B accounts; state C (passwordless) mints via
     // /api/orcid/start { mode: 'fresh_auth', action: 'ipfs_upload' }.
     target = ipfsUploadFreshAuthTarget(username);
+  } else if (action === 'edit_accreditation_metadata') {
+    // Self-service accreditation-metadata edit. Per-user (not per-paper) like the
+    // other non-broadcast criticals: target binds to
+    // (edit_accreditation_metadata, <username>, ''), no root_author /
+    // root_permlink in the body. Consumed at PATCH /api/accreditation/metadata on
+    // the JWT path. Password-mechanism issuance here serves state A/B; state C
+    // (passwordless) mints via /api/orcid/start { mode: 'fresh_auth',
+    // action: 'edit_accreditation_metadata' }.
+    target = editAccreditationMetadataFreshAuthTarget(username);
   } else if (action === 'author_accept' || action === 'author_resign') {
     // Anchored-route consent ops. Field normalization (trim + length cap)
     // lives in the shared `extractConsentOpFields`, the same validator the
@@ -1036,7 +1047,7 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
       res,
       400,
       'VALIDATION_ERROR',
-      'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
+      'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, change_email, delete_account, ipfs_upload, edit_accreditation_metadata, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
     );
   }
 

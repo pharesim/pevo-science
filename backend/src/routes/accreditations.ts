@@ -3,7 +3,7 @@ import { getPool, isHafConfigured } from '../db.js';
 import { sendOk, sendError } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { buildWith, activeAccreditationsCteBody } from '../hafsql.js';
+import { buildWith, activeAccreditationsCteBody, firstAccreditedAnchorCteBody } from '../hafsql.js';
 import { validateOptionalLikeFilter } from '../types/search-filters.js';
 
 const router = Router();
@@ -35,7 +35,7 @@ async function fetchAccreditationsFromHaf(
     // `ESCAPE '\\'` clause on the ILIKE site below. Without that clause,
     // `_%_%_…` would inject N live wildcards and force Postgres to backtrack
     // against every accredited-account row.
-    const cte = buildWith(1, activeAccreditationsCteBody);
+    const cte = buildWith(1, activeAccreditationsCteBody, firstAccreditedAnchorCteBody);
     const conditions: string[] = [];
     const params: unknown[] = [...cte.params];
     let paramIdx = cte.nextIdx;
@@ -53,15 +53,17 @@ async function fetchAccreditationsFromHaf(
 
     const dataResult = await pool.query(`
       ${cte.sql}
-      SELECT account AS username, researcher_name AS name, institution, field, method, orcid,
-        event_timestamp AS timestamp,
+      SELECT aa.account AS username, aa.researcher_name AS name, aa.institution, aa.field, aa.method, aa.orcid,
+        aa.event_timestamp AS timestamp,
+        fa.accredited_since,
         count(*) OVER ()::int AS total
       FROM active_accreditations AS aa
+      LEFT JOIN first_accredited_at fa ON fa.account = aa.account
       WHERE TRUE
       ${filterConditions}
       -- Sort stays on the latest-op payload timestamp (event_timestamp); the
       -- tenure anchor "accredited_since" is additive and does NOT drive the sort.
-      ORDER BY event_timestamp DESC
+      ORDER BY aa.event_timestamp DESC
       LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
       [...params, limit, offset],
     );
@@ -122,13 +124,15 @@ async function fetchAccreditationStatusFromHaf(username: string) {
     // legacy-revoked account resolves to NOT accredited / accredited per the
     // membership rule, not the old "latest op is a revoke" check. The row, when
     // present, carries the latest accredit op's metadata.
-    const cte = buildWith(1, activeAccreditationsCteBody);
+    const cte = buildWith(1, activeAccreditationsCteBody, firstAccreditedAnchorCteBody);
     const userParam = `$${cte.nextIdx}`;
     const result = await pool.query(
       `${cte.sql}
-       SELECT researcher_name, institution, field, method, orcid, event_timestamp, event_id
-       FROM active_accreditations
-       WHERE account = ${userParam}`,
+       SELECT aa.researcher_name, aa.institution, aa.field, aa.method, aa.orcid, aa.event_timestamp, aa.event_id,
+              fa.accredited_since
+       FROM active_accreditations aa
+       LEFT JOIN first_accredited_at fa ON fa.account = aa.account
+       WHERE aa.account = ${userParam}`,
       [...cte.params, username],
     );
 
@@ -146,7 +150,11 @@ async function fetchAccreditationStatusFromHaf(username: string) {
         field: row.field,
         method: row.method,
         orcid: row.orcid ?? null,
+        // Latest-op payload timestamp (moves on a metadata-edit re-broadcast).
         timestamp: row.event_timestamp,
+        // Tenure anchor: chain block time of the EARLIEST accredit op, spanning
+        // sanction gaps and stable across edits. Clients render this for "since".
+        accredited_since: row.accredited_since ?? null,
         tx_id: row.event_id?.toString() ?? null,
       },
     };

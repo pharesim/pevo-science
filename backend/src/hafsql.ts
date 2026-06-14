@@ -292,6 +292,51 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
 }
 
 /**
+ * CTE body for the first-accreditation tenure anchor: per account, the chain
+ * block time of its EARLIEST `accredit` op. This is the "accredited since" value
+ * — distinct from the latest-op payload `timestamp` that `active_accreditations`
+ * carries, which a metadata-edit re-broadcast rewrites. The anchor never moves:
+ * it counts ALL accredit history across sanction gaps (a sanction-then-re-grant,
+ * or a metadata edit, only ADD later accredit ops, leaving MIN(block_num)
+ * unchanged), so tenure spans suppression gaps.
+ *
+ * Additive and self-contained: composes alongside `activeAccreditationsCteBody`
+ * via `buildWith`; consumers LEFT JOIN `first_accredited_at` on `account`.
+ *
+ * `MIN(cj.block_num)` is an AGGREGATE projection, NOT a `block_num >=` floor, so
+ * the same BitmapAnd-avoidance constraint as `activeAccreditationsCteBody`
+ * holds (the `custom_id = $appTag` index scan wins; do NOT add a block_num floor
+ * to the custom_json scan). The block-time join is on the small per-account MIN
+ * result. The `to_char(...,'...Z')` renders the block timestamp (stored UTC,
+ * `timestamp without time zone`) as an ISO-8601 UTC string, matching the shape
+ * of the payload `timestamp` field clients already render.
+ *
+ * @param startIdx - first available $N parameter index
+ */
+export function firstAccreditedAnchorCteBody(startIdx = 1): SqlFragment {
+  const p = startIdx;
+  return {
+    sql: `
+  first_accredit_block AS (
+    SELECT cj.json::jsonb ->> 'account' AS account, MIN(cj.block_num) AS first_block
+    FROM ${T.customJson} cj
+    WHERE cj.custom_id = $${p}
+      AND cj.json::jsonb ->> 'action' = 'accredit'
+      AND cj.required_posting_auths ?| $${p + 1}::text[]
+    GROUP BY 1
+  ),
+  first_accredited_at AS (
+    SELECT fab.account,
+           to_char(b.timestamp, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS accredited_since
+    FROM first_accredit_block fab
+    JOIN ${T.blocks} b ON b.block_num = fab.first_block
+  )`,
+    params: [config.appTag, config.accreditationAuthorities],
+    nextIdx: p + 2,
+  };
+}
+
+/**
  * CTE body that derives a per-account accreditation status row for every
  * account that has ever been accredited. Distinguishes 'active' from
  * 'revoked' so post-revocation audit visibility can be preserved on

@@ -77,6 +77,55 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
 }
 
 /**
+ * Load the latest authority-signed `accredit` op for `account`, returning its
+ * full payload metadata INCLUDING `evidence_hash` and `method`/`orcid` — fields
+ * the membership `active_accreditations` view does not all carry. Used by the
+ * self-service metadata edit to merge new name/institution/field over the
+ * current op while PRESERVING method/orcid/evidence_hash (the edit carries the
+ * prior evidence forward; it does not fabricate a new hash). Returns null when
+ * the account has no accredit op or HAF is unavailable.
+ */
+export async function getLatestAccreditOp(account: string): Promise<{
+  name: string;
+  institution: string;
+  field: string;
+  method: string;
+  orcid: string;
+  evidence_hash: string;
+} | null> {
+  const pool = getPool();
+  if (!pool) return null;
+
+  try {
+    const result = await pool.query<{ json: string | Record<string, unknown> }>(
+      `SELECT cj.json FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.json::jsonb ->> 'account' = $2
+         AND cj.json::jsonb ->> 'action' = 'accredit'
+         AND cj.required_posting_auths ?| $3::text[]
+       ORDER BY cj.block_num DESC, cj.id DESC
+       LIMIT 1`,
+      [config.appTag, account, config.accreditationAuthorities],
+    );
+    if (result.rows.length === 0) return null;
+    const raw = result.rows[0].json;
+    const p = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Record<string, unknown>;
+    const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
+    return {
+      name: str(p.name),
+      institution: str(p.institution),
+      field: str(p.field),
+      method: str(p.method, 'manual'),
+      orcid: str(p.orcid),
+      evidence_hash: str(p.evidence_hash),
+    };
+  } catch (err) {
+    logger.error({ err, account }, 'HAF latest-accredit-op read failed');
+    return null;
+  }
+}
+
+/**
  * Whether `account` currently carries an un-lifted sanction (a `type:"sanction"`
  * revoke at or after its most-recent authority-pinned `accredit`, or with no
  * authority accredit at all). A sanction is sticky and lifted ONLY by a later

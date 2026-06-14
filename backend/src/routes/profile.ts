@@ -15,7 +15,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, buildWith, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentStackCteBody } from '../hafsql.js';
+import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, buildWith, buildRecursiveWith, activeAccreditationsCteBody, firstAccreditedAnchorCteBody, authorshipClaimsCteBody, consentStackCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -34,13 +34,15 @@ async function getAccreditationFromHaf(username: string) {
     // a sanctioned, below-threshold-WoT, or legacy-revoked account resolves
     // correctly here without keying on a bare latest `revoke`. A present row
     // carries the latest accredit op's metadata.
-    const cte = buildWith(1, activeAccreditationsCteBody);
+    const cte = buildWith(1, activeAccreditationsCteBody, firstAccreditedAnchorCteBody);
     const userParam = `$${cte.nextIdx}`;
     const result = await pool.query(
       `${cte.sql}
-       SELECT researcher_name, institution, field, method, orcid, event_timestamp, event_id
-       FROM active_accreditations
-       WHERE account = ${userParam}`,
+       SELECT aa.researcher_name, aa.institution, aa.field, aa.method, aa.orcid, aa.event_timestamp, aa.event_id,
+              fa.accredited_since
+       FROM active_accreditations aa
+       LEFT JOIN first_accredited_at fa ON fa.account = aa.account
+       WHERE aa.account = ${userParam}`,
       [...cte.params, username],
     );
     if (result.rows.length === 0) return null;
@@ -52,7 +54,11 @@ async function getAccreditationFromHaf(username: string) {
       field: row.field,
       method: row.method,
       orcid: row.orcid || null,
+      // Latest-op payload timestamp (moves on a metadata-edit re-broadcast).
       timestamp: row.event_timestamp,
+      // Tenure anchor: chain block time of the earliest accredit op (stable
+      // across edits and sanction gaps). Frontend renders this for "since".
+      accredited_since: row.accredited_since ?? null,
       tx_id: row.event_id?.toString() ?? null,
     };
   } catch (err) {

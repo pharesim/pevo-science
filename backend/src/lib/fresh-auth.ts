@@ -238,7 +238,8 @@ export type FreshAuthTargetAction =
   | 'set_password'
   | 'change_email'
   | 'delete_account'
-  | 'ipfs_upload';
+  | 'ipfs_upload'
+  | 'edit_accreditation_metadata';
 
 /** Shape of the per-op target the fresh-auth proof binds to. The fields are
  *  reduced to a SHA-256 hash at issuance time via `computeFreshAuthTargetHash`.
@@ -288,6 +289,23 @@ export interface FreshAuthTarget {
 export function setPasswordFreshAuthTarget(username: string): FreshAuthTarget {
   return {
     action: 'set_password',
+    root_author: username,
+    root_permlink: '',
+  };
+}
+
+/** Helper that builds the canonical `FreshAuthTarget` for the self-service
+ *  accreditation-metadata edit (`PATCH /api/accreditation/metadata`). Same
+ *  per-user `(action, <username>, '')` shape as the other non-paper criticals:
+ *  it binds the proof to the editing account so a proof minted for user A cannot
+ *  re-broadcast an accredit op for user B, and the distinct `action` value stops
+ *  a proof minted for another action being redirected here. Unlike the admin
+ *  authority ops this is NOT roster-gated — authorization is the caller's own
+ *  current accreditation; the op is admin-key-signed but human-authorized by the
+ *  account owner editing their own profile (ARCHITECTURE.md § 6.4). */
+export function editAccreditationMetadataFreshAuthTarget(username: string): FreshAuthTarget {
+  return {
+    action: 'edit_accreditation_metadata',
     root_author: username,
     root_permlink: '',
   };

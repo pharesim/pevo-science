@@ -12,6 +12,21 @@ export const accreditationRequestSchema = z.object({
   orcid: z.string().max(50).optional().default(''),
 });
 
+// Self-service accreditation-metadata edit (PATCH /api/accreditation/metadata).
+// Reuses accreditationRequestSchema's per-field bounds via pick/partial (no
+// literal duplication); all three fields optional, at least one required. The
+// fresh_auth_proof is consumed on the JWT path (mirrors the admin schemas'
+// proof shape); self-custody callers satisfy the gate via the per-request Hive
+// signature so it is optional here.
+export const accreditationMetadataEditSchema = accreditationRequestSchema
+  .pick({ full_name: true, institution: true, field: true })
+  .partial()
+  .extend({ fresh_auth_proof: z.string().min(1).max(512).optional() })
+  .refine(
+    (v) => v.full_name !== undefined || v.institution !== undefined || v.field !== undefined,
+    { message: 'Provide at least one of full_name, institution, or field to edit' },
+  );
+
 export const accreditationVerifySchema = z.object({
   token: z.string().min(1).max(128),
 });
