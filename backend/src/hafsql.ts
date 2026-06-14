@@ -275,8 +275,12 @@ export function activeVouchesCteBody(startIdx = 1): SqlFragment {
  * handler signing with `config.pevoAdminPostingKey`, so a row whose
  * `required_posting_auths` does not contain `config.hiveAdminAccount`
  * is a forgery and must not suppress the named paper from listings.
- * Singular `?` not `?|` because the admin account is singular by
- * design (see CLAUDE.md).
+ * Singular `?` not `?|` because the on-chain SIGNER is singular by
+ * design: every authority op stays signed by the one `pevo.admin` key.
+ * The separate human-admin ROSTER (chain-derived from `admin_grant` /
+ * `admin_revoke`, see `activeAdminsCteBody` / `admin-roster.ts`) is the
+ * authorization layer that gates WHICH human may trigger that key — it
+ * does NOT widen the signer, so this gate stays singular. (See CLAUDE.md.)
  *
  * @param startIdx - first available $N parameter index
  */
