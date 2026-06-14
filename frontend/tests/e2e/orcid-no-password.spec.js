@@ -15,18 +15,34 @@
  * taken by `orcid-link.spec.js` (SEC-002-UI) and keeps the assertion
  * deterministic regardless of the backend's own auth state.
  *
- * Two real-backend assertions below stay `test.fixme`: ORCID *signup* and
- * *recovery* with a null password. Both drive ORCID signup mode, whose backend
- * handler fetches a works count from a hardcoded pub.orcid.org URL that the
- * token-only orcid-stub OAuth sidecar does not serve, so the works-count gate
- * cannot be satisfied in-network without a second stub for the works API (filed
- * as a follow-up). The set-password real round-trip this header previously
- * listed is now driven for real by the set_password round-trip test in
+ * Two real-backend assertions at the bottom drive the ORCID *signup* and
+ * *recovery* null-password round-trips end-to-end against the test stack. Both
+ * exercise ORCID signup mode, whose backend handler gates on a works count
+ * fetched from <ORCID_API_BASE_URL>/v3.0/<orcidId>/works. The test stack points
+ * that fetch at the in-network orcid-works-stub sidecar (which serves five
+ * externally-sourced works, clearing ORCID_MIN_WORKS), so the works gate is now
+ * satisfiable in-network alongside the orcid-stub OAuth token exchange. Those two
+ * tests removed their former `test.fixme` skips. The set-password real round-trip
+ * this header previously listed is driven by the set_password round-trip test in
  * settings-orcid-factor.spec.js (against the orcid-stub) and is not duplicated
- * here. See the docblock above the fixme blocks for the full rationale.
+ * here. See the docblock above the real round-trip describe for the full
+ * rationale.
  */
 
 import { test, expect } from './fixtures/keychain.js';
+import { openAppPool } from './fixtures/db.js';
+import { routeOrcidStubBridge } from './fixtures/orcid.js';
+
+// File-level (Playwright forbids screenshot/video/trace overrides inside a
+// describe group — they force a new worker). The real-backend round-trips at the
+// bottom of this file exercise real backend JWTs (signup auth_token,
+// recover/login session tokens) that ride in responses; disabling
+// trace/video/screenshot keeps those tokens out of trace.zip artifacts (the
+// global `trace: 'retain-on-failure'` default would otherwise persist them on a
+// failing run). Parity with settings-orcid-factor.spec.js. The stubbed tests
+// above forgo failure traces as a result; they stub every backend hop and assert
+// deterministically, so the loss is minor.
+test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
 const STUB_ORCID_TOKEN = 'stub-orcid-nonce-abc';
 const STUB_ORCID_ID = '0000-0001-0000-0001';
@@ -363,7 +379,7 @@ test.describe('recover — ORCID branch never persists password', () => {
 });
 
 /**
- * Real-backend ORCID round-trips.
+ * Real-backend ORCID null-password round-trips.
  *
  * The set-password real round-trip on a null-hash State-C account (real ORCID
  * fresh-auth proof -> real /api/settings/set-password -> password_hash
@@ -373,31 +389,227 @@ test.describe('recover — ORCID branch never persists password', () => {
  * proof"), which drives it against the orcid-stub OAuth sidecar. It is not
  * duplicated here.
  *
- * The signup and recovery round-trips below stay `test.fixme`: both drive the
- * ORCID *signup* mode, whose backend handler additionally fetches a works count
- * from a hardcoded pub.orcid.org URL. The orcid-stub sidecar only serves
- * /oauth/token (it reflects the submitted code back as the orcid iD); it does
- * NOT serve the pub.orcid.org works endpoint, so the signup-mode works-count
- * gate cannot be satisfied in-network. Driving these needs a second stub for the
- * works API; out of scope for the token-only orcid-stub, filed as a follow-up.
+ * The two tests below drive the ORCID *signup* and *recovery* null-password
+ * flows end-to-end against the real test stack. Both reach ORCID signup mode,
+ * whose callback handler gates on a works count fetched from
+ * <ORCID_API_BASE_URL>/v3.0/<orcidId>/works. The test stack points that fetch at
+ * the in-network orcid-works-stub sidecar (five externally-sourced works clears
+ * ORCID_MIN_WORKS), and the orcid-stub OAuth sidecar reflects the driven `code`
+ * back as the bound ORCID iD, so the whole start -> authorize -> callback ->
+ * action round-trip resolves in-network with a genuine backend-minted result.
+ * The shared routeOrcidStubBridge fixture bridges the SPA open-redirect guard
+ * and the in-network authorize hop (same mechanism settings-orcid-factor.spec.js
+ * uses for the set_password round-trip).
  */
-test.fixme(
-  'ORCID signup with password: null creates an account with password_hash = NULL (needs a pub.orcid.org works stub)',
-  async () => {
-    // 1. Drive /signup through the ORCID branch end-to-end.
-    // 2. Real /api/auth/signup accepts password: null and returns 200.
-    // 3. Query pevo_app_test: accounts.password_hash IS NULL.
-    // 4. Attempt /api/auth/login with any password → 403 NO_PASSWORD_SET.
-    // 5. ORCID login succeeds.
-  },
-);
+test.describe('real-backend ORCID null-password round-trips', () => {
+  let pool;
 
-test.fixme(
-  'ORCID recovery with new_password: null preserves password_hash = NULL (needs a pub.orcid.org works stub)',
-  async () => {
-    // 1. Seed an ORCID-linked account.
-    // 2. Drive /recover through the ORCID branch with new_password: null.
-    // 3. 200, accounts.password_hash unchanged (still NULL).
-    // 4. Password login still 403 NO_PASSWORD_SET after recovery.
-  },
-);
+  test.beforeAll(() => {
+    pool = openAppPool();
+  });
+
+  test.afterAll(async () => {
+    if (pool) await pool.end();
+  });
+
+  // Build a per-run-unique, ORCID_RE-valid iD (groups of 4-4-4-4 digits) from a
+  // numeric seed. The orcid-stub reflects whatever `code` we drive straight back
+  // as the bound ORCID iD, so this is the iD the account binds against. A
+  // now-derived seed never collides with the orcid-works-stub's fixed
+  // source-orcid constants (0000-0003-0000-000X), so every returned work counts
+  // as external and the works gate clears. (Slice-built, not regex-formatted, so
+  // the literal carries no backslash escapes.)
+  function makeOrcid(seedDigits) {
+    const s = seedDigits.padStart(16, '0').slice(-16);
+    return `${s.slice(0, 4)}-${s.slice(4, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}`;
+  }
+
+  test('ORCID signup with password: null creates an account with password_hash = NULL', async ({ page, baseURL }, testInfo) => {
+    page.on('dialog', (dialog) => {
+      throw new Error(`Unexpected dialog: ${dialog.type()} "${dialog.message()}"`);
+    });
+
+    const now = Date.now();
+    const suffix = `${now.toString(36).slice(-6)}r${testInfo.retry}`;
+    const email = `e2e+orcidsignup-${suffix}@pevo.test`;
+    // Hive usernames cap at 16 chars (accounts.username + the recover field's
+    // maxlength); keep the synthetic username short so nothing truncates it.
+    const username = `sig${suffix}`;
+    const orcid = makeOrcid(`${now}${testInfo.retry}`);
+
+    await page.context().clearCookies();
+
+    // Drive the authorize fulfil with code = orcid so the orcid-stub reflects it
+    // back as the callback's bound ORCID iD (stored on the new account, and the
+    // iD ORCID login later resolves the account by).
+    await routeOrcidStubBridge(page, baseURL, orcid);
+
+    await page.goto('/signup');
+    await page.locator('input[x-model="email"]').fill(email);
+    await page.locator('input[x-model="fullName"]').fill('E2E ORCID Signup');
+    await page.locator('input[x-model="institution"]').fill('Test Institution');
+    await page.locator('input[x-model="field"]').fill('Test Science');
+
+    // "Verify with ORCID" runs the real round-trip: real /api/orcid/start ->
+    // authorize fulfil -> real /api/orcid/callback (handleSignup clears the
+    // works-stub gate and mints a verified-ORCID nonce) -> orcid-callback page
+    // stores the nonce and navigates back to /signup.
+    const callbackResponse = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/orcid/callback') && resp.request().method() === 'POST',
+    );
+    await page.locator('button[\\@click="handleOrcidVerify()"]').click();
+    expect((await callbackResponse).status()).toBe(200);
+
+    // Back on /signup with the verified ORCID iD shown; password fields hidden.
+    await page.waitForSelector('[x-data="signupPage"]');
+    await expect(page.getByText(orcid)).toBeVisible();
+    await expect(page.locator('input[x-model="password"]')).toBeHidden();
+
+    // Submit: real POST /api/auth/signup with password: null.
+    const signupResponse = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/auth/signup') && resp.request().method() === 'POST',
+    );
+    await page.locator('[x-data="signupPage"] form button[type="submit"]').click();
+    expect((await signupResponse).status()).toBe(200);
+
+    // The real backend created the account with no password hash (ORCID signups
+    // skip email verification and land in confirmed state; the user can set a
+    // password later from Settings).
+    const created = await pool.query(
+      'SELECT password_hash, orcid FROM accounts WHERE email = $1',
+      [email],
+    );
+    expect(created.rows.length).toBe(1);
+    expect(created.rows[0].password_hash).toBeNull();
+    expect(created.rows[0].orcid).toBe(orcid);
+
+    // Password login on the null-hash account is refused with NO_PASSWORD_SET
+    // (the login handler returns it before any email-verification check).
+    const pwLogin = await page.request.post('/api/auth/login', {
+      data: { email_or_username: email, password: 'NotMyPassword1X' },
+    });
+    expect(pwLogin.status()).toBe(403);
+    expect((await pwLogin.json())?.error?.code).toBe('NO_PASSWORD_SET');
+
+    // ORCID login resolves accounts by `orcid` only when the Hive account exists
+    // (handleLogin: WHERE orcid = $1 AND username IS NOT NULL). The signup POST
+    // above leaves username NULL — it is set by the account-type-choice /
+    // Hive-account-creation step that is out of scope for this spec (covered by
+    // the light-account creation flow). Finalize that one column directly in the
+    // test DB so the real ORCID-login round-trip can resolve the account the
+    // signup just created. This is a direct test-DB write (the mechanism
+    // settings-orcid-factor.spec.js uses to seed/mutate rows), not a mock — every
+    // backend hop below runs for real.
+    await pool.query(
+      `UPDATE accounts SET username = $1, custody = 'light', verify_token = NULL WHERE email = $2`,
+      [username, email],
+    );
+
+    // Drive the real ORCID login round-trip with the same iD; handleLogin finds
+    // the now-finalized account and mints a session, bouncing the user to /papers.
+    const loginCallback = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/orcid/callback') && resp.request().method() === 'POST',
+    );
+    await page.goto('/login');
+    await page.locator('button[\\@click="handleOrcidLogin()"]').click();
+    expect((await loginCallback).status()).toBe(200);
+    await page.waitForURL('**/papers');
+  });
+
+  test('ORCID recovery with new_password: null preserves password_hash = NULL', async ({ page, baseURL }, testInfo) => {
+    page.on('dialog', (dialog) => {
+      throw new Error(`Unexpected dialog: ${dialog.type()} "${dialog.message()}"`);
+    });
+
+    const now = Date.now();
+    const suffix = `${now.toString(36).slice(-6)}r${testInfo.retry}`;
+    // Hive usernames cap at 16 chars (the recover username field is maxlength=16);
+    // keep it short so the typed value is not truncated away from the seeded row.
+    const username = `rec${suffix}`;
+    const oldEmail = `e2e+orcidrecover-${suffix}@pevo.test`;
+    const newEmail = `e2e+orcidrecover-new-${suffix}@pevo.test`;
+    const orcid = makeOrcid(`${now}${testInfo.retry}`);
+
+    // Seed a finalized, passwordless ORCID account. ORCID recovery requires
+    // exactly this shape (recover.ts: WHERE username AND verify_token IS NULL,
+    // orcid present, upgraded_at NULL). password_hash starts NULL so the
+    // "new_password: null preserves NULL" assertion is meaningful.
+    await pool.query(
+      `INSERT INTO accounts (email, username, password_hash, orcid, full_name, institution, field, custody, verify_token)
+       VALUES ($1, $2, NULL, $3, 'E2E ORCID Recover', 'Test Institution', 'Test Science', 'light', NULL)
+       ON CONFLICT (email) DO UPDATE SET
+         username = EXCLUDED.username,
+         password_hash = NULL,
+         orcid = EXCLUDED.orcid,
+         custody = 'light',
+         verify_token = NULL`,
+      [oldEmail, username, orcid],
+    );
+
+    await page.context().clearCookies();
+    await routeOrcidStubBridge(page, baseURL, orcid);
+
+    // The ORCID method tab is x-show="orcidAvailable", which the page derives from
+    // GET /api/accreditations/<username> (an ORCID-method accreditation). That
+    // status is read from HAF/on-chain custom_json attestations — impractical to
+    // seed per-test, and it is a read-only UI gate, not part of the recover
+    // round-trip under test. Stub only that status lookup so the ORCID tab is
+    // available; every recover hop below (/api/orcid/start, /api/orcid/callback,
+    // /api/auth/recover) stays fully real. Same stub the SEC-004 recover test uses.
+    await page.route(`**/api/accreditations/${username}`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'ok',
+          data: { username, is_accredited: true, accreditation: { method: 'orcid' } },
+        }),
+      });
+    });
+
+    await page.goto('/recover');
+    await page.locator('input[x-model="username"]').fill(username);
+    const orcidTab = page.getByTestId('recover-method-orcid');
+    await expect(orcidTab).toBeVisible({ timeout: 3000 });
+    await orcidTab.click();
+    await page.locator('input[x-model="newEmail"]').fill(newEmail);
+
+    // "Verify with ORCID" mints a verified-ORCID nonce bound to the seeded orcid,
+    // then returns to /recover with the ORCID branch active and the draft
+    // (username, newEmail) restored.
+    const callbackResponse = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/orcid/callback') && resp.request().method() === 'POST',
+    );
+    await page.locator('button[\\@click="handleOrcidVerify()"]').click();
+    expect((await callbackResponse).status()).toBe(200);
+
+    await page.waitForSelector('[x-data="recoverPage"]');
+    // ORCID branch active on return: the new-password field is hidden.
+    await expect(page.locator('input[x-model="newPassword"]')).toBeHidden();
+
+    // Submit recovery: real POST /api/auth/recover with new_password: null. The
+    // backend validates the nonce's orcid against accounts.orcid and rotates the
+    // email, leaving password_hash NULL.
+    const recoverResponse = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/auth/recover') && resp.request().method() === 'POST',
+    );
+    await page.locator('[x-data="recoverPage"] form button[type="submit"]').click();
+    expect((await recoverResponse).status()).toBe(200);
+
+    // password_hash preserved as NULL; email rotated to the new address.
+    const after = await pool.query(
+      'SELECT password_hash, email FROM accounts WHERE username = $1',
+      [username],
+    );
+    expect(after.rows.length).toBe(1);
+    expect(after.rows[0].password_hash).toBeNull();
+    expect(after.rows[0].email).toBe(newEmail);
+
+    // Password login still refused with NO_PASSWORD_SET after recovery.
+    const pwLogin = await page.request.post('/api/auth/login', {
+      data: { email_or_username: newEmail, password: 'NotMyPassword1X' },
+    });
+    expect(pwLogin.status()).toBe(403);
+    expect((await pwLogin.json())?.error?.code).toBe('NO_PASSWORD_SET');
+  });
+});

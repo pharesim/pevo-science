@@ -46,6 +46,7 @@
 import { test, expect } from './fixtures/keychain.js';
 import { mintSessionJwt } from './fixtures/auth.js';
 import { openAppPool } from './fixtures/db.js';
+import { routeOrcidStubBridge } from './fixtures/orcid.js';
 
 // Specs in this file mint live backend-valid bearer JWTs via mintSessionJwt.
 // Disable trace/video/screenshot to keep those tokens out of trace.zip
@@ -127,48 +128,9 @@ async function seedSession(page, username = TEST_USERNAME) {
   return { token };
 }
 
-// Bridge the SPA open-redirect guard and the in-network-only ORCID authorize hop
-// for the real round-trip tests. Registers two routes together; `code` is the
-// only lever a caller varies (seeded iD for the match case, a distinct valid-format
-// iD for the mismatch case):
-//
-//   1. **/api/orcid/start — the real /api/orcid/start builds redirect_url from
-//      config.orcidBaseUrl, which the test stack points at the compose-internal
-//      stub (http://orcid-stub:8099). beginSettingsActionOrcidFreshAuth validates
-//      the redirect host against the ORCID_REDIRECT_HOSTS allowlist (orcid.org /
-//      sandbox.orcid.org) BEFORE navigating, so an orcid-stub host throws before
-//      the browser ever leaves the app. Pass /start through to the REAL backend
-//      (it allocates the real Redis state), then rewrite ONLY the redirect_url
-//      host to orcid.org so the guard passes and the authorize navigation fires.
-//      The real `state` rides through untouched.
-//   2. **/oauth/authorize* — no browser can reach the compose-internal stub, and
-//      the stub serves no /oauth/authorize endpoint by design. Intercept the
-//      authorize navigation, read the real `state` the backend stored in Redis,
-//      and 302 the browser to the real /orcid/callback with the given `code`. The
-//      backend exchanges that code against the stub's /oauth/token, which reflects
-//      it straight back as the `orcid` field, so the callback compares it against
-//      accounts.orcid (match -> mints a proof; mismatch -> 403).
-async function routeOrcidStubBridge(page, baseURL, code) {
-  await page.route('**/api/orcid/start', async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    const real = new URL(body.data.redirect_url);
-    body.data.redirect_url = `https://orcid.org${real.pathname}${real.search}`;
-    await route.fulfill({
-      status: response.status(),
-      contentType: 'application/json',
-      body: JSON.stringify(body),
-    });
-  });
-
-  await page.route('**/oauth/authorize*', async (route) => {
-    const state = new URL(route.request().url()).searchParams.get('state');
-    await route.fulfill({
-      status: 302,
-      headers: { location: `${baseURL}/orcid/callback?code=${code}&state=${state}` },
-    });
-  });
-}
+// The ORCID OAuth-stub bridge (open-redirect guard + in-network authorize hop)
+// lives in fixtures/orcid.js — shared with orcid-no-password.spec.js, which
+// drives the real signup/recover round-trips against the same stub.
 
 test.describe('settings — ORCID-factor set_password (State C)', () => {
   let pool;
