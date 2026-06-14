@@ -89,3 +89,15 @@ Body status is "NOT YET SCOPED. Phase 1 brainstorm + design required before impl
 The "Trigger" section already documents the external conditions for activation (real user request, volume threshold, or architect elevation). Moving to `blocked/` so backend's `pending/` queue reflects only actionable tasks and the architect's startup scan surfaces this when a trigger fires.
 
 When triggered, the architect runs `/ce-brainstorm` per Phase 1, lands the design in `ARCHITECTURE.md`, and `git mv`s this file back to `pending/` for backend Phase 2 implementation.
+
+## [Architect] (2026-06-14) — embedded boundary decision settled; full flow STAYS deferred (no trigger)
+
+Reviewed at the architect-blocked sweep. The full claim flow is correctly deferred — none of the Trigger conditions has fired (no real original-preprint author has asked to claim; bridge import volume has not crossed a claim-anticipation threshold; no product elevation). The Phase-1 brainstorm would be speculative without real user requirements, so this **stays in `blocked/`**.
+
+But the 2026-06-11 design-input note raised a boundary question that IS live now that the consented model has shipped, so it is settled here so it does not block at trigger time:
+
+**Decision (Q from the 2026-06-11 note): bridge papers do NOT admit a direct Route-2 ORCID consent shortcut.** They remain single-consented (bridge account only) until this verified claim flow lands. Rationale: a bridge slot's ORCID is **external preprint metadata** (self-asserted at arXiv/Crossref), not a slot asserted by an accountable accredited PEvO poster (the native Route-2 case). Gating reputation/citation credit on un-revouched external metadata is precisely what this verified claim flow exists to prevent, and it leans against `pevo-object-identity-is-author-vouching-not-metadata-claim` (gates terminate in a verified identity link, not a metadata claim). This keeps the eventual Phase-1 design's full scope intact (it does NOT obsolete the attestation flow for ORCID-bearing slots — all bridge slots, ORCID-bearing or name-only, route through the verified flow). It is the conservative, reversible default: if a future product decision prefers the Route-2 ORCID shortcut, the exclusion is one predicate to remove.
+
+**Near-term defensive guard filed separately:** `backend-bridge-exclude-route2-orcid-consent` (pending/) adds the bridge exclusion to the live `consentedAuthorsCteBody` Route-2 ORCID arm + a corpus case where a bridge slot ORCID matches an attested account (asserting it confers NO consent). No live defect today (the real-postgres corpus pins only the no-match case), but the boundary becomes reachable as bridge-with-ORCID imports and ORCID attestations both grow, so it is closed now rather than left to coincide. This is the "if the latter, the eligibility arm needs a bridge exclusion plus a corpus case" action from the 2026-06-11 note.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
