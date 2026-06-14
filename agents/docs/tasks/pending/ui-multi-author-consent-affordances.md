@@ -40,7 +40,7 @@ For each entry in the displayed authors list on `/papers/:author/:permlink`, ren
   - an `authorship_claims[]` entry (from enrichment) with `status === 'accepted'` exists for this author's slot index (Route 3) — link the badge to that entry's `claimer` profile (a name-only slot has no `hive`, but the accepted claim carries the claimer's handle).
 - **Not credited** (plain text, no badge, no profile link) otherwise: a pending or absent claim, a `consented: false` slot, or a hive-less bridge-paper credit.
 
-A pending Route-3 claim shows **no badge** (plain text), not a "Pending" badge — the pending state is carried by the claim/approve affordances (Acceptance #3), not by a badge. Note the ORCID-anchored edge: `consented` is hive-keyed, so a hive-less anchored slot can read `consented: false` even when cycle-credited (documented in `agents/docs/api-contracts/common.md`); render it plain-text and do not synthesize a badge from another field.
+A pending Route-3 claim shows **no badge** (plain text), not a "Pending" badge — the pending state is carried by the claim/approve affordances (Acceptance #3), not by a badge. Note the ORCID-anchored edge: `consented` is hive-keyed, so a hive-less anchored slot can read `consented: false` even when cycle-credited (documented in `agents/docs/api-contracts/papers.md`, the `authors[].consented` field note); render it plain-text and do not synthesize a badge from another field.
 
 ### 2. Route 2 — accept / resign (anchored slots)
 
@@ -97,8 +97,8 @@ Both backend dependencies are satisfied (archived 2026-06-14 / 2026-06-12):
 ## Cross-references
 
 - `agents/docs/ARCHITECTURE.md` § 2 "Consented vs claimed authorship" — canonical model.
-- `agents/docs/api-contracts/papers.md` — paper-detail author entries and the `authorship_claims[]` enrichment array. (Architect is separately correcting this file to document the `consented` flag and current accepted-claim semantics; until that lands, `backend/src/routes/papers.ts` `annotateAuthorsWithConsent` is authoritative for `consented`, and `authorshipClaimsCteBody` for claim `status`.)
-- `agents/docs/api-contracts/common.md` — the `/api/me/authorships/pending` 503 fail-closed contract and the `consented` absent-vs-false / ORCID-anchored hive-less semantics.
+- `agents/docs/api-contracts/papers.md` — the `authors[].consented` flag (hive-keyed; `false` for hive-less slots even when cycle-credited) and the `authorship_claims[].status` accepted/pending semantics on the paper-detail / enrichment responses.
+- `agents/docs/api-contracts/me.md` — the `GET /api/me/authorships/pending` contract: the `{pending_claims, pending_consents}` response shape and the 503 fail-closed posture.
 - `ui-credit-op-proof-cache-slot-key` — the SPA credit-op proof-cache keying that this surface's Route-3 broadcast wiring unblocks (this task IS that wiring).
 - Archived backend parents in `agents/docs/tasks-archive.md`: `backend-implement-consented-authorship-model`, `backend-consented-set-read-surfaces`.
 

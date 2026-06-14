@@ -10,6 +10,7 @@ The API contract is split by domain. Read only the file(s) relevant to your curr
 | [papers.md](api-contracts/papers.md) | `/api/papers/*`, `/api/search` — list, detail, enrichment, comments, cite, retract, invalidate, search |
 | [reviews.md](api-contracts/reviews.md) | `/api/reviews/*` — single review, anonymous review |
 | [profiles.md](api-contracts/profiles.md) | `/api/profile/*`, `/api/accounts/search` — profiles, notification prefs |
+| [me.md](api-contracts/me.md) | `/api/me/*` -- authenticated-user reads: pending authorship actions (consent model) |
 | [settings.md](api-contracts/settings.md) | `/api/settings/*` — email management, `set-password` (opt-in to password login) |
 | [accreditation.md](api-contracts/accreditation.md) | `/api/accreditations/*`, `/api/accreditation/*`, `/api/wot/*` -- accreditation, web of trust |
 | [custody.md](api-contracts/custody.md) | `/api/custody/*` — light account broadcast, upgrade to self-custody |
