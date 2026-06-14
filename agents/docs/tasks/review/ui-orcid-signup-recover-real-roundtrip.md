@@ -202,3 +202,25 @@ compose-stub blockers were already resolved (works-stub + `ORCID_API_BASE_URL`
 wired per the 06-14 note above); this schema fix was the sole remaining blocker.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## [UI] (2026-06-14) — VERIFIED end-to-end, both real round-trips green; moving to review/
+
+Both `test.fixme` blocks were already real bodies (committed earlier); the signup
+half was the only thing still blocked, on the backend schema bug now resolved. No
+further spec edits were needed — the blocker was a backend rebuild away.
+
+Ran `frontend/tests/e2e/orcid-no-password.spec.js` against the full test stack
+(`./deploy.sh restart` to pick up the committed `auth.ts` null-password fix — the
+running container predated it — then `test-db-up` + `test-up`, orcid-stub +
+orcid-works-stub both up, `ORCID_API_BASE_URL` wired): **7/7 passed**, including:
+- `real-backend ... ORCID signup with password: null creates an account with
+  password_hash = NULL` (the previously-blocked spec) — PASS.
+- `real-backend ... ORCID recovery with new_password: null preserves
+  password_hash = NULL` — PASS.
+
+Signup round-trip confirmed end-to-end: works gate -> `/api/auth/signup` 200 ->
+`password_hash IS NULL` -> password login 403 `NO_PASSWORD_SET` -> finalized-account
+ORCID login bounces to /papers. Dev routing restored (`./deploy.sh up`). No code
+change in this move — verification only.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
