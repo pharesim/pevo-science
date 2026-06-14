@@ -1245,7 +1245,12 @@ export function consentChainCteBody(
  *     signer, OR an orcid slot equal to the signer's authority-attested
  *     ORCID (latest accredit/revoke wins via active_accreditations; an
  *     account with no live attested ORCID is NOT eligible through an orcid
- *     slot — a broadcaster-claimed ORCID never anchors). Accept validity
+ *     slot — a broadcaster-claimed ORCID never anchors). The ORCID anchor
+ *     additionally excludes bridge papers: a bridge slot's ORCID is external
+ *     preprint metadata, not an accredited-poster-vouched slot, so it never
+ *     admits an attested account into credit (bridge papers stay
+ *     single-consented via the Route-1 bridge-account arm until the verified
+ *     bridge-claim flow lands). Accept validity
  *     additionally requires the accept block to be strictly after the slot's
  *     first-appearance block (anti-name-squat; resigns carry no temporal
  *     rule). Revoke rows are valid only when signed by the real root author,
@@ -1315,6 +1320,19 @@ export function consentedAuthorsCteBody(
       FROM claimed_orcid_slots o
       JOIN active_accreditations aa
         ON aa.orcid IS NOT NULL AND aa.orcid != '' AND aa.orcid = o.orcid
+      -- Bridge papers are excluded from the Route-2 ORCID anchor: a bridge
+      -- slot ORCID is external preprint metadata (self-asserted upstream),
+      -- not a slot vouched-for by an accountable accredited PEvO poster.
+      -- Admitting an attested account here would let it author_accept into
+      -- credit by ORCID-equality alone, bypassing the verified bridge-claim
+      -- flow. Bridge papers stay single-consented (the bridge account, via the
+      -- Route-1 arm of consented_authors) until that flow lands. The hive-slot
+      -- anchor above needs no such guard: a bridge slot carries no hive name.
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ${T.comments} bp
+        WHERE bp.author = o.root_author AND bp.permlink = o.root_permlink
+          AND ${validPevoPaperWhere({ commentAlias: 'bp', appTagParam: tag, bridgeAccountParam: bridge, source: 'bridge' })}
+      )
     ) anchors
     GROUP BY 1, 2, 3
   ),
