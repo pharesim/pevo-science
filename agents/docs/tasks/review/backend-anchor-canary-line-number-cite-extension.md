@@ -57,3 +57,43 @@ matching the existing self-test block, tuned to avoid false-positives on legitim
   `getPool()` re-anchor cleared the one known line-cite instance; the `SEC-003-BE` site was
   confirmed a durable reference (not dead), which is why any non-role-prefix id check must carry the
   durable-path exemption.
+
+## Backend implementation note (2026-06-14, working tree)
+
+Landed in `backend/tests/eslint/no-stale-comment-anchors.test.ts`:
+
+- New combined `LINE_CITE_RE` detects all three documented forms in `src/` comments:
+  `<file>.(ts|tsx|js|mjs|cjs|sql):<n>` path cites, `line <n>` / `lines <n>-<n>` references, and the
+  bare `~<n>` tilde approximation. Wired into the scan loop as a fourth class (alongside round-N
+  hold / Option X.N / task-slug). The `it()` title now reads "...Option X.N, or line-number-cite...".
+- **Tilde tuning — the load-bearing design choice.** `backend/src/` carries ~80 legitimate `~<n>`
+  approximations (latency `~50ms`/`~3s`, strides `~28,800 blocks`/`~201,600-block`, sizes
+  `~4096 bytes`, ranges `~5-30s`, decimals `~3.5 days`, `~2×`, `~95%`, counts `~5 concurrent`). A
+  naive `~\d+` would red-bar every one. Rather than a fragile unit denylist (which would have forced
+  embedding `×`/en-dash/em-dash literals — Edit-tool unicode-corruption risk), the tilde arm fires
+  ONLY when the `~<n>` is **terminal**: followed by EOL or clause punctuation (`)`, `]`, `;`, `:`,
+  `}`, or a `.`/`,` that does not open a decimal/thousands group). Every legitimate quantity is
+  instead followed by a unit letter, digit, hyphen, `%`, or `×`, so none trip. Rationale is captured
+  in the test header (LINE-CITE TUNING) so a future maintainer does not broaden it back to `~\d+`.
+  - Accepted, documented blind spot: a cite immediately followed by a word (`~337 in foo`) is
+    indistinguishable from `~5 concurrent` and is NOT caught. The documented rot form (`now ~337`)
+    is terminal, so this is a deliberate trade for zero false positives.
+- **Re-enumeration of `backend/src/` (acceptance item): zero remaining line-number cites.** Forms 1
+  and 2 (`.ts:<n>`, `line <n>`) have zero instances; the `idempotency.ts` `getPool()` re-anchor had
+  already cleared the last one. All ~80 tilde instances are legitimate and spared. Verified by
+  running the final regex against every `.ts` line under `src/`: 0 hits.
+- **Planted self-test:** 7 positives (one per form + the three terminal-tail variants) and 12
+  negatives (one representative of each kept numeric class, including the `~2×`/`~28,800`/`~3.5`
+  edge cases and the `lines`-inside-a-word negatives) added to the existing self-test `it()`, mirroring
+  the `no-bridge-paper-literal` precedent. Fixtures are synthetic and live under `tests/`, which the
+  scan does not walk, so they cannot self-trip (audit-own-new-code convention satisfied).
+- **OPTIONAL SEC-NNN/BE-NNN tracking-id check: OMITTED, by design.** `grep -rE '\b(SEC|BE)-[0-9]+'
+  src` returns zero instances, so the check would catch nothing today while introducing a real
+  false-positive hazard: a durable id reference (the residual review's `SEC-003-BE` → a persistent
+  `solutions/` incident doc + the `claims.test.ts` suite) does not necessarily appear on a line that
+  also cites a `solutions/`/`api-contracts/` path, so the `DURABLE_PATH_RE` exemption could not
+  reliably rescue it. Net-negative (zero catch, live-reference false-positive risk), so left out per
+  the task's "leave it out and note why" clause.
+- Verification: `npm run typecheck` clean (src + tests), `npm run lint` clean (the lone warning is a
+  pre-existing unused-eslint-disable in `src/lib/author-supersession.ts`, untouched here), canary
+  green (3 test groups: walker guard + 4-class scan + expanded self-test).
