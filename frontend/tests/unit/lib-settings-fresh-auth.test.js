@@ -34,11 +34,15 @@ vi.mock('../../src/lib/fresh-auth.js', async (importActual) => ({
 }));
 
 const reauthRequest = vi.fn();
+const authDisconnect = vi.fn();
+const toastShow = vi.fn();
 let i18nMessages = null;
 vi.mock('alpinejs', () => ({
   default: {
     store: vi.fn((name) => {
       if (name === 'reauthModal') return { request: (...a) => reauthRequest(...a) };
+      if (name === 'auth') return { disconnect: (...a) => authDisconnect(...a) };
+      if (name === 'toast') return { show: (...a) => toastShow(...a) };
       if (name === 'i18n') return { messages: i18nMessages };
       return null;
     }),
@@ -68,6 +72,8 @@ describe('withSettingsFreshAuth', () => {
     mockClearCachedConsentOpProof.mockReset();
     mockBeginOrcid.mockReset();
     reauthRequest.mockReset();
+    authDisconnect.mockReset();
+    toastShow.mockReset();
     i18nMessages = null;
     // Defaults: cache miss, password modal returns a password, mint succeeds,
     // ORCID begin returns the redirect-pending sentinel (null).
@@ -172,6 +178,20 @@ describe('withSettingsFreshAuth', () => {
     run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 'wrong_mechanism'));
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ freshAuthFailed: true });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('a username_mismatch tears down the session and surfaces sessionInconsistent', async () => {
+    // Corrupted session: the JWT subject and the proof subject diverge. Matches
+    // the authorship and session-kind siblings — disconnect + re-login toast —
+    // rather than the retryable freshAuthFailed "try again" outcome, so the user
+    // does not retry a broken session indefinitely on a settings critical action.
+    run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 'username_mismatch'));
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ sessionInconsistent: true });
+    expect(authDisconnect).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(expect.any(String), 'error');
+    // No inline retry on a corrupted session — the action ran once and stopped.
     expect(run).toHaveBeenCalledTimes(1);
   });
 

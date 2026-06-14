@@ -744,9 +744,12 @@ export function initSettingsPage() {
           this._freshAuthCtx(),
           (proof) => submitEmail(email, proof),
         );
-        // ORCID round-trip navigating away, or password modal dismissed: abort
-        // cleanly. The user resumes (re-clicks) after returning from ORCID.
-        if (outcome.redirect || outcome.cancelled) return;
+        // ORCID round-trip navigating away, password modal dismissed, or a
+        // torn-down corrupted session: abort cleanly. The user resumes
+        // (re-clicks) after returning from ORCID; on sessionInconsistent the
+        // orchestrator already disconnected and showed the re-login toast, so we
+        // skip a second toast here.
+        if (outcome.redirect || outcome.cancelled || outcome.sessionInconsistent) return;
         if (outcome.freshAuthFailed) {
           this.emailError = this.$t('settings.reauthFailed');
           return;
@@ -794,10 +797,12 @@ export function initSettingsPage() {
           this._freshAuthCtx(),
           (proof) => setPassword(password, proof),
         );
-        if (outcome.redirect || outcome.cancelled) {
+        if (outcome.redirect || outcome.cancelled || outcome.sessionInconsistent) {
           // Zero the plaintext password from reactive state before navigating
-          // away (ORCID redirect) or returning (cancel) — same XSS-read
-          // hygiene the custody-upgrade flow applies to held credentials.
+          // away (ORCID redirect), returning (cancel), or aborting on a torn-down
+          // corrupted session (sessionInconsistent — the orchestrator already
+          // disconnected and toasted) — same XSS-read hygiene the custody-upgrade
+          // flow applies to held credentials.
           this.newPasswordInput = '';
           this.newPasswordConfirmInput = '';
           return;
@@ -844,9 +849,12 @@ export function initSettingsPage() {
           this._freshAuthCtx(),
           (proof) => deleteEmail(true, proof),
         );
-        // ORCID round-trip navigating away, or password modal dismissed: abort
-        // cleanly. The user resumes (re-confirms) after returning from ORCID.
-        if (outcome.redirect || outcome.cancelled) return;
+        // ORCID round-trip navigating away, password modal dismissed, or a
+        // torn-down corrupted session: abort cleanly. The user resumes
+        // (re-confirms) after returning from ORCID; on sessionInconsistent the
+        // orchestrator already disconnected and showed the re-login toast, so we
+        // skip a second toast here.
+        if (outcome.redirect || outcome.cancelled || outcome.sessionInconsistent) return;
         if (outcome.freshAuthFailed) {
           this.emailError = this.$t('settings.reauthFailed');
           return;

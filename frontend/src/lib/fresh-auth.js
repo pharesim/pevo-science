@@ -80,6 +80,26 @@ export function passwordPromptMessage() {
   );
 }
 
+// Tear down a corrupted session on `username_mismatch`: the JWT subject and the
+// proof subject diverge, which no re-auth can fix. Disconnect the session and
+// surface the re-login toast. Shared by all three fresh-auth orchestrators
+// (broadcastWithFreshAuth, withAuthorshipFreshAuth, withSettingsFreshAuth) so the
+// teardown side-effects cannot drift between surfaces; each caller still returns
+// its own surface-appropriate sentinel after calling this (the session-kind path
+// returns FRESH_AUTH_REDIRECT_PENDING, the consent-op/settings paths return
+// { sessionInconsistent: true }). `auth.disconnect()` is synchronous (auth.js —
+// in-memory mutation + localStorage/sessionStorage removals, no awaited I/O), so
+// teardown completes before the toast fires and there is no toast-vs-teardown
+// race. Lib code cannot use `$t`; read the i18n store directly with an English
+// fallback for the not-yet-loaded-bundle case.
+export function handleSessionInconsistency() {
+  Alpine.store('auth')?.disconnect();
+  const msg =
+    Alpine.store('i18n')?.messages?.auth?.sessionInconsistency ||
+    'Session inconsistency detected. Please sign in again.';
+  Alpine.store('toast')?.show(msg, 'error');
+}
+
 // Password-factor mint shared by the settings + authorship consent-op
 // orchestrators. Prompt via the global reauth modal, then mint via the caller's
 // `mintFn(password)` — the only part that differs between surfaces (the settings
@@ -482,20 +502,12 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
       }
 
       // 403 username_mismatch → JWT subject and proof subject diverge.
-      // Critical session inconsistency; force re-login.
-      // `auth.disconnect()` is synchronous (see auth.js — no awaited I/O,
-      // only in-memory mutation + localStorage/sessionStorage removals), so
-      // teardown completes before the toast fires and there is no race
-      // between the toast and any pending session-clear work.
+      // Critical session inconsistency; force re-login via the shared teardown
+      // (disconnect + re-login toast). The session-kind error carries `status`
+      // (signer.js#broadcastOps shapes it), so this surface gates on the 403,
+      // unlike the consent-op/settings paths whose api.js errors omit `status`.
       if (err.status === 403 && err.details?.reason === 'username_mismatch') {
-        auth.disconnect();
-        // fresh-auth.js is a lib, not an Alpine component, so it cannot use
-        // the `$t` magic helper. Reach into the i18n store directly; fall
-        // back to the English value if the locale bundle hasn't loaded.
-        const msg =
-          Alpine.store('i18n')?.messages?.auth?.sessionInconsistency ||
-          'Session inconsistency detected. Please sign in again.';
-        Alpine.store('toast')?.show(msg, 'error');
+        handleSessionInconsistency();
         return FRESH_AUTH_REDIRECT_PENDING;
       }
 

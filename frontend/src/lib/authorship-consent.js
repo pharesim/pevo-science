@@ -1,4 +1,3 @@
-import Alpine from 'alpinejs';
 import { mintAuthorshipFreshAuthProof } from '../api.js';
 import {
   getCachedConsentOpProof,
@@ -10,6 +9,7 @@ import {
   REMINTABLE_REASONS,
   mintViaPasswordFactor,
   passwordPromptMessage,
+  handleSessionInconsistency,
 } from './fresh-auth.js';
 
 /**
@@ -142,16 +142,13 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
 
     // username_mismatch: the JWT subject and the proof subject diverge — a
     // corrupted session, not a retryable re-auth failure. Tear the session down
-    // and force re-login, matching broadcastWithFreshAuth's session-kind
-    // handling; otherwise the user retries a broken session indefinitely against
-    // the generic "try again" outcome. Gate on the reason, not a status code:
-    // api.js ApiRequestError carries only code/details, no `status`.
+    // and force re-login via the shared teardown, matching the session-kind and
+    // settings siblings; otherwise the user retries a broken session indefinitely
+    // against the generic "try again" outcome. Gate on the reason, not a status
+    // code: the custody-broadcast error reaching this catch is an api.js
+    // ApiRequestError carrying only code/details, no `status`.
     if (err.details?.reason === 'username_mismatch') {
-      Alpine.store('auth')?.disconnect();
-      const msg =
-        Alpine.store('i18n')?.messages?.auth?.sessionInconsistency ||
-        'Session inconsistency detected. Please sign in again.';
-      Alpine.store('toast')?.show(msg, 'error');
+      handleSessionInconsistency();
       return { sessionInconsistent: true };
     }
 

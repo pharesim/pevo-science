@@ -9,6 +9,7 @@ import {
   REMINTABLE_REASONS,
   mintViaPasswordFactor,
   passwordPromptMessage,
+  handleSessionInconsistency,
 } from './fresh-auth.js';
 
 /**
@@ -83,6 +84,10 @@ async function resolveProof(action, { username, hasPassword }) {
  *                             binding violation, wrong mechanism, a second wrong
  *                             password, or an expired ORCID-factor proof on
  *                             arrival); show a generic error
+ *   { sessionInconsistent: true } the JWT subject and the proof subject diverge
+ *                             (corrupted session); the session is torn down and a
+ *                             re-login toast shown here — the caller aborts
+ *                             cleanly without a second toast
  *
  * Non-fresh-auth errors (DUPLICATE, validation, transport, etc.) propagate to
  * the caller, which keeps the existing per-action error handling.
@@ -145,8 +150,22 @@ export async function withSettingsFreshAuth(action, ctx, run) {
       }
     }
 
-    // 401 wrong_mechanism, 403 username/target/kind mismatch, or an ORCID-factor
-    // proof we decline to re-mint inline → surface a generic re-auth failure.
+    // username_mismatch: the JWT subject and the proof subject diverge — a
+    // corrupted session, not a retryable re-auth failure. Tear the session down
+    // and force re-login via the shared teardown, matching the authorship and
+    // session-kind siblings; otherwise a settings critical action on a corrupted
+    // session shows a generic "try again" and the user retries the broken session
+    // indefinitely. Gate on the reason, not a status code: the settings action
+    // call rejects with an api.js ApiRequestError carrying only code/details, no
+    // `status` (so this matches the authorship sibling, not the session-kind
+    // path's `status === 403` check on the signer.js-shaped error).
+    if (err.details?.reason === 'username_mismatch') {
+      handleSessionInconsistency();
+      return { sessionInconsistent: true };
+    }
+
+    // 401 wrong_mechanism, 403 target/kind mismatch, or an ORCID-factor proof we
+    // decline to re-mint inline → surface a generic re-auth failure.
     return { freshAuthFailed: true };
   }
 }
