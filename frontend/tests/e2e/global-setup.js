@@ -1,6 +1,6 @@
 /**
  * Playwright global-setup — resets the `pevo_app_test` Postgres DB before every
- * E2E run by invoking the backend-provided reset hook from TEST-001-BE.
+ * E2E run by invoking the backend-provided database reset hook.
  *
  * DB routing:
  *   - `APP_DATABASE_URL` must point at the dedicated `pevo_app_test` database,

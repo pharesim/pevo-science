@@ -180,7 +180,7 @@ export function initSearchPage() {
     // Tracks the AbortController for the most recently issued search request.
     // When a new doSearch starts (via handleSubmit, goToPage, or popstate),
     // the prior controller is aborted so stacked in-flight requests do not
-    // last-arrival-wins-overwrite the visible results. See JFR-001.
+    // last-arrival-wins-overwrite the visible results.
     _searchController: null,
 
     formatDate,
@@ -253,7 +253,7 @@ export function initSearchPage() {
       // the same trimmed form. Without this the input keeps leading/trailing
       // whitespace and `_pushUrl` produces `?q=+foo+` (space-encoded padding).
       if (this.query !== trimmed) this.query = trimmed;
-      // Cancel-on-new guard (JFR-001): if a prior doSearch is in flight
+      // Cancel-on-new guard: if a prior doSearch is in flight
       // (from handleSubmit, goToPage, or popstate), abort its underlying
       // fetch and discard its results. Without this guard, two stacked
       // requests race and whichever response arrives LAST overwrites

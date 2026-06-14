@@ -160,7 +160,7 @@ test('publish flow assembles a valid Hive comment broadcast with IPFS CID', asyn
   });
 
   // The second op configures comment_options (rewards off); verify presence
-  // but not details since those aren't part of this task's contract.
+  // but not details, which are not asserted here.
   const optionsOp = broadcast.operations.find((op) => op[0] === 'comment_options');
   expect(optionsOp).toBeTruthy();
 });

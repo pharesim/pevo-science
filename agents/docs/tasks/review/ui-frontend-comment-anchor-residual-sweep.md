@@ -131,3 +131,36 @@ cites, and soft `See task …` redirects), per
 `agents/docs/solutions/conventions/sweep-acceptance-grep-under-enumerates-slug-prefix-families-2026-06-08.md`
 — a narrow per-prefix grep is exactly what missed these. When the five items land,
 `git mv` this file back to `tasks/review/`.
+
+## UI re-review signal (2026-06-14, working tree) — re-sweep holds landed
+
+All five held items re-anchored; comment-only diff (every added line is a
+comment; non-comment content byte-identical). The widened enumeration over
+`frontend/src/**` + `frontend/tests/**` (uppercase coordination-ID shapes,
+lowercase role-kebab, line/`LNN`/`~NNN`/`AC #`/`§` cites, soft `see/this task`
+redirects, trailing `.md`) surfaced no rot beyond the five plus one soft
+`this task's contract` redirect, which was also re-anchored:
+
+1. `src/pages/search.js` — dropped both `JFR-001` tokens; kept the
+   abort-prior-in-flight-doSearch behavioral prose.
+2. `src/lib/accredited-directory.js` — dropped the three `See task ITEM N`
+   redirects; the numbered case prose carries the behavior.
+3. `tests/unit/pages-settings.test.js` — dropped `This is AC #3's`; kept the
+   "surface the unmount as an explicit cleanup signal" behavioral phrase.
+4. `tests/e2e/bridge-preview.spec.js` — re-anchored `bridge.js L66` on the
+   bridge-preview author template behavior.
+5. `tests/e2e/fixtures/keychain.js` + `global-setup.js` — `SEC-001` re-anchored
+   on the durable `sec-001-equivalence.test.js`; `TEST-003` / `TEST-001-BE`
+   re-anchored on behavior (the keyless canonical-message equivalence test; the
+   backend DB-reset hook). Plus `tests/e2e/publish.spec.js`: `this task's
+   contract` -> `not asserted here`.
+
+KEEP confirmed (untouched): spec-header `SEC-002`/`SEC-004` and coverage-matrix
+labels, ARCHITECTURE.md `§6.5` invariant refs, durable `solutions/` /
+`api-contracts/` `.md` refs, `sec-001-equivalence.test.js` file refs. DEFER
+confirmed: task-IDs inside describe()/it() test-name strings. Replacements
+audited against every rot class — no slug/line/SHA/ordinal reintroduced. Focused
+unit suites green (pages-search, lib-accredited-directory, pages-settings: 156
+passed); the four e2e files `node --check` clean.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

@@ -2197,10 +2197,9 @@ describe('settingsPage', () => {
 
     // Companion to the above: calling destroy() on a mid-flow component
     // wipes sensitive reactive state via the explicit cleanup signal.
-    // This is AC #3's "surface the unmount as an explicit cleanup
-    // signal" — the navigate-away path runs comp.destroy(), which flips
-    // _mounted and clears the mnemonic, both atomically from the user's
-    // perspective.
+    // Surfaces the unmount as an explicit cleanup signal: the navigate-away
+    // path runs comp.destroy(), which flips _mounted and clears the mnemonic,
+    // both atomically from the user's perspective.
     it('destroy() wipes sensitive upgrade state in addition to flipping _mounted', () => {
       const comp = createComponent();
       comp.oldSeedPhrase = 'old old old old old old old old old old old old';

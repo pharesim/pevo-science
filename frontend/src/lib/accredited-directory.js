@@ -69,11 +69,11 @@ export function lookupAccredited(directory, username) {
 //   2. New hive is accredited but the directory row has NO `orcid` field
 //      (malformed accreditation record): leave row.orcid untouched. The input
 //      still locks (the field is owned by the accreditation record), but we
-//      do NOT blank a value the user already typed. See task ITEM 9.
+//      do NOT blank a value the user already typed.
 //   3. New hive is NOT accredited: clear row.orcid. This is the
 //      "accredited→non-accredited transition" case — the previously prefilled
 //      ORCID belongs to a different identity and would silently be carried
-//      onto the published Hive post otherwise. See task ITEM 1.
+//      onto the published Hive post otherwise.
 export function applyHiveChangePrefill(row, directory) {
   if (!row) return;
   const acc = lookupAccredited(directory, row.hive);
@@ -90,7 +90,6 @@ export function applyHiveChangePrefill(row, directory) {
 // (potentially after a draft restore), so we must not clobber any ORCID the
 // user typed BEFORE the fetch returned. We only write when row.orcid is
 // blank — a non-blank value is treated as user intent and left alone.
-// See task ITEM 2.
 //
 // Reactivity note: in-place `row.orcid` mutation is safe under Alpine 3's
 // proxy. Alpine's reactivity engine is @vue/reactivity's `reactive()`,

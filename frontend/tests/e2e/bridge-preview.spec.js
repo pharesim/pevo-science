@@ -126,7 +126,7 @@ test('bridge preview renders title, authors, and abstract for an arXiv ID', asyn
   // Title — rendered as the h3 directly after the previewTitle heading.
   await expect(page.locator('h3', { hasText: ARXIV_LOOKUP.title })).toBeVisible();
 
-  // Authors — joined with ", " by the template (bridge.js L66).
+  // Authors — joined with ", " by the bridge-preview author template.
   const authorsText = ARXIV_LOOKUP.authors.map((a) => a.name).join(', ');
   await expect(page.getByText(authorsText)).toBeVisible();
 

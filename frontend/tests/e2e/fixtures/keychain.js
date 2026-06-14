@@ -11,9 +11,9 @@
  * at the "UI reached expected state / fired expected request" layer.
  *
  * End-to-end signature verification is deliberately kept out of automation;
- * it is part of the manual pre-deploy check. See TEST-003 for the
- * deterministic, keyless equivalence test that replaces the in-browser
- * Keychain smoke test from SEC-001.
+ * it is part of the manual pre-deploy check. The deterministic, keyless
+ * canonical-message equivalence test (`sec-001-equivalence.test.js`) replaces
+ * the in-browser Keychain smoke test.
  */
 
 import { test as base, expect } from '@playwright/test';
