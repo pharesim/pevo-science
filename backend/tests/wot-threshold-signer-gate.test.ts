@@ -113,6 +113,24 @@ describe('loadWotThreshold — accreditation-authority signer gate (SQL-shape ca
   });
 });
 
+describe('loadWotThreshold — planner-fence canary (SQL-shape)', () => {
+  it('wraps the row match in an AS MATERIALIZED CTE', async () => {
+    // The candidate match must sit inside an `AS MATERIALIZED` CTE. Without that
+    // optimization fence, `ORDER BY block_num DESC LIMIT 1` lets PostgreSQL walk
+    // the 100M+-row blocks index backward in a nested loop (block_num is a
+    // function over the operation id, not a stored column) probing the
+    // near-empty update_params set — an ~18s scan that trips the 5s
+    // statement_timeout and silently degrades the live WoT threshold to the
+    // default. Real HAF cannot cheaply demonstrate that timing gap
+    // deterministically, so this canary pins the fence so a future
+    // "simplification" back to a bare `ORDER BY ... LIMIT 1` over the view
+    // fails red here instead of regressing the live threshold in production.
+    stubSelect([{ json: JSON.stringify({ action: 'update_params', params: { min_accreditations_for_wot: 5 } }) }]);
+    await getWotThreshold();
+    expect(capturedSql).toMatch(/\bAS\s+MATERIALIZED\b/i);
+  });
+});
+
 describe('loadWotThreshold — threshold value derivation', () => {
   it('forged update_params (stranger signer) is filtered in SQL → falls back to default', async () => {
     // The signer gate lives in the WHERE clause, so a forged op signed by a

@@ -73,17 +73,33 @@ async function loadWotThreshold(): Promise<number> {
 
   let client: pg.PoolClient | undefined;
   try {
-    // Use a short timeout — this scans the massive operation_custom_json_view
-    // table with text→jsonb casts. Fail fast and use default threshold.
     client = await pool.connect();
     await client.query('BEGIN');
+    // Defensive cap only: with the operations-first plan below this query
+    // returns in ~15ms, but a degraded HAF should still fail fast to the
+    // default rather than hang.
     await client.query('SET LOCAL statement_timeout = 5000');
 
+    // The row match is wrapped in an `AS MATERIALIZED` CTE as an optimization
+    // fence so the planner resolves the small `custom_id`-indexed candidate set
+    // FIRST, then sorts and limits it. Without the fence, `ORDER BY block_num
+    // DESC LIMIT 1` lets the planner walk the 100M+-row blocks index backward
+    // in a nested loop (block_num is a function over the operation id, not a
+    // stored column) probing the near-empty update_params set — an ~18s scan
+    // that trips the 5s cap and silently degrades the live threshold to the
+    // default. The `custom_id` filter alone is selective (a handful of
+    // admin-signed app ops); materializing lets that index scan win. Do NOT add
+    // a `block_num >=` floor to narrow further — it flips the planner to a
+    // BitmapAnd against the full view (see the no-custom-id-block-num-floor lint
+    // rule and the activeAccreditationsCteBody docstring).
     const result = await client.query(
-      `SELECT json FROM ${T.customJson}
-       WHERE custom_id = $1
-         AND json::jsonb ->> 'action' = 'update_params'
-         AND required_posting_auths ?| $2::text[]
+      `WITH candidates AS MATERIALIZED (
+         SELECT json, block_num FROM ${T.customJson}
+         WHERE custom_id = $1
+           AND json::jsonb ->> 'action' = 'update_params'
+           AND required_posting_auths ?| $2::text[]
+       )
+       SELECT json FROM candidates
        ORDER BY block_num DESC
        LIMIT 1`,
       [config.appTag, config.accreditationAuthorities],
