@@ -76,3 +76,27 @@ With the probe green and the index gone, `/signup` (`auth.ts`) and
 - All 5 specs in the file green. `npm run typecheck` + `npm run lint` clean (the
   lone lint warning is the pre-existing unused-eslint-disable in
   `src/lib/author-supersession.ts`, untouched).
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES:
+
+`/ce-code-review` (correctness, reliability, testing, project-standards; ce-agent-native
+skipped per PEvO) came back clean on the substance: `to_regclass('public.accounts_orcid_unique')`
+verified correct for a partial unique index against the live DB, fail-fast and boot-ordering
+correct (the probe is awaited before `listen()`, BootFatalError routes to `flushAndExit`), the
+read-only probe respects the "no DDL on startup" contract, and the decoupled-state test
+mutation-kills (delete the throw body and the spec goes red, not skip). One P3 holds archive:
+
+1. **Wrong-symbol comment.** The new docblock states the ORCID writes live in
+   `updateAccountOrcid (orcid.ts)`, but no `updateAccountOrcid` function exists — the ORCID
+   writes are inline `UPDATE accounts SET orcid` inside the `routes/orcid.ts` handlers.
+   Re-anchor the comment on a symbol/path that actually exists (e.g. "the ORCID-write handlers
+   in `routes/orcid.ts`") per the stable-symbol anchoring convention, so a future reader
+   grepping the cited symbol does not come up empty. Comment-only fix; no behavior change.
+
+Dismissed / not blocking (no action needed): the index-name to migration-filename string
+coupling (intentional fork-safety, fires today, low-likelihood future rename); the missing
+per-statement `statement_timeout` on the boot verify queries (pre-existing, applies to all four
+queries, out of scope here); the incidental positive-control coverage of the new branch
+(genuine, just not explicitly named in a dedicated assertion).
+
+When the fix lands, `git mv` this file back to `tasks/review/` (the move is the re-review signal).
