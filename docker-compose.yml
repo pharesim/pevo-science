@@ -2,6 +2,9 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: always
+    # Logging: json-file by default (dev/E2E); does NOT survive `down`/recreate.
+    # Production routes this service to the host journal via
+    # docker-compose.prod.override.yml (journald, 14-day retention).
     environment:
       POSTGRES_USER: pevo
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
@@ -63,6 +66,13 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: always
+    # Logging: this base file uses Docker's default json-file driver (dev/E2E).
+    # Those logs live in the per-container layer and are DISCARDED on every
+    # `down`/recreate (each `./deploy.sh restart`), so they do NOT survive a
+    # restart. Production retention is off-container: docker-compose.prod.override.yml
+    # routes this service to the host systemd journal (journald, 14-day retention),
+    # auto-applied by deploy.sh when a systemd-journal socket is present. Retrieve
+    # historical cross-restart logs with `./deploy.sh logs-history`.
     ports:
       - "127.0.0.1:3001:3001"
     env_file:

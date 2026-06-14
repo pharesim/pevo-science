@@ -140,8 +140,7 @@ allowed_for_agent() {
       [[ "$path" == "README.md" ]]                          && return 0
       [[ "$path" == "LICENSE" ]]                            && return 0
       [[ "$path" == "Dockerfile" ]]                         && return 0
-      [[ "$path" == "docker-compose.yml" ]]                 && return 0
-      [[ "$path" == "docker-compose.test.override.yml" ]]   && return 0
+      [[ "$path" =~ ^docker-compose.*\.yml$ ]]             && return 0  # base + any *.override.yml overlay
       [[ "$path" == ".dockerignore" ]]                      && return 0
       [[ "$path" == ".gitignore" ]]                         && return 0
       [[ "$path" == ".env.example" ]]                       && return 0

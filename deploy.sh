@@ -8,12 +8,20 @@ set -euo pipefail
 #   down          — stop all services
 #   migrate       — run database migrations against pevo_app
 #   logs          — tail logs from all services
+#   logs-history  — retrieve historical container logs from the host journal
 #   restart       — rebuild and restart all services
 #   status        — show service status
 #   clean         — stop services and remove volumes (DESTRUCTIVE)
 #   test-db-up    — provision pevo_app_test and run migrations against it (idempotent)
 #   test-db-down  — drop pevo_app_test (DESTRUCTIVE)
 #   test-up       — start services with backend routed at pevo_app_test (for E2E)
+#
+# Log retention: on a host with a systemd-journal socket (production), `up` and
+# `restart` auto-apply docker-compose.prod.override.yml so backend + postgres
+# logs flow to the HOST journal and survive `down`/recreate (json-file logs do
+# NOT — they live in the per-container layer). Host-side 14-day retention is
+# configured in /etc/systemd/journald.conf.d/ (see the deploy runbook). Override
+# detection with PEVO_LOG_DRIVER=journald|json-file (default: auto).
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
@@ -53,6 +61,45 @@ check_env() {
   fi
 }
 
+# Production logging overlay (journald -> host systemd journal, 14-day retention).
+# Container logs land in the HOST journal, which survives `down`/recreate and image
+# rebuilds; the default json-file driver does not (those logs die with the container).
+PROD_OVERRIDE_FILE="docker-compose.prod.override.yml"
+# Set by resolve_log_overlay(); threaded into container-CREATING compose calls (up).
+# Empty means "default json-file driver" (base docker-compose.yml only).
+COMPOSE_FILES=""
+
+# Decide whether to apply the journald logging overlay. Default 'auto' applies it
+# only when the host exposes a systemd-journal socket (production), because the
+# journald driver HARD-FAILS container start when the socket is absent — so a dev
+# host without systemd-journald (WSL2 with systemd off, or Docker Desktop whose
+# daemon cannot reach the host journal) stays on json-file automatically.
+# Override: PEVO_LOG_DRIVER=journald (force on) | json-file (force off) | auto.
+resolve_log_overlay() {
+  local mode="${PEVO_LOG_DRIVER:-auto}"
+  case "$mode" in
+    json-file|none)
+      COMPOSE_FILES=""
+      ;;
+    journald)
+      if [ ! -f "$PROD_OVERRIDE_FILE" ]; then
+        err "PEVO_LOG_DRIVER=journald but $PROD_OVERRIDE_FILE not found"
+        exit 1
+      fi
+      COMPOSE_FILES="-f docker-compose.yml -f $PROD_OVERRIDE_FILE"
+      ;;
+    auto)
+      if [ -S /run/systemd/journal/socket ] && [ -f "$PROD_OVERRIDE_FILE" ]; then
+        COMPOSE_FILES="-f docker-compose.yml -f $PROD_OVERRIDE_FILE"
+      fi
+      ;;
+    *)
+      err "PEVO_LOG_DRIVER must be one of: auto, journald, json-file (got '$mode')"
+      exit 1
+      ;;
+  esac
+}
+
 cmd_build() {
   log "Building Docker images..."
   DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 $COMPOSE build "$@"
@@ -61,10 +108,13 @@ cmd_build() {
 
 cmd_up() {
   check_env
+  if [ -n "$COMPOSE_FILES" ]; then
+    log "Logging: journald overlay active — backend + postgres -> host journal (14-day retention). Force off with PEVO_LOG_DRIVER=json-file."
+  fi
   log "Starting services..."
   # --remove-orphans cleans up services introduced by docker-compose.test.override.yml
   # (e.g. mailpit) when switching back from `test-up` to plain `up`.
-  $COMPOSE up -d --remove-orphans "$@"
+  $COMPOSE $COMPOSE_FILES up -d --remove-orphans "$@"
   log "Waiting for backend to be healthy..."
   local retries=30
   while [ $retries -gt 0 ]; do
@@ -202,6 +252,29 @@ cmd_logs() {
   $COMPOSE logs -f "$@"
 }
 
+# Retrieve historical container logs from the HOST systemd journal. Unlike
+# `logs` (docker compose logs), this reaches logs from PRIOR container
+# generations — i.e. logs written before the last `./deploy.sh restart` — which
+# is the incident-investigation case the journald retention exists for.
+# Usage: ./deploy.sh logs-history [pevo-backend|pevo-postgres] ["since"]
+#   ./deploy.sh logs-history                       # backend, last 2 weeks
+#   ./deploy.sh logs-history pevo-postgres "1 day ago"
+#   ./deploy.sh logs-history pevo-backend "2026-06-12"
+# Reading the journal requires membership in the 'systemd-journal' group or
+# sudo; if it errors on permissions, run `sudo ./deploy.sh logs-history ...` or
+# add the deploy user once: `sudo usermod -aG systemd-journal "$USER"` (re-login).
+cmd_logs_history() {
+  local tag="${1:-pevo-backend}"
+  local since="${2:-2 weeks ago}"
+  if ! command -v journalctl &>/dev/null; then
+    err "journalctl not found — this host has no systemd journal."
+    err "logs-history only works where the journald logging overlay is active (production)."
+    exit 1
+  fi
+  log "Journal entries for CONTAINER_TAG=$tag since '$since' (host journal, -o cat):"
+  journalctl CONTAINER_TAG="$tag" --since "$since" --all -o cat
+}
+
 cmd_restart() {
   log "Rebuilding and restarting..."
   $COMPOSE down
@@ -215,7 +288,10 @@ cmd_restart() {
   # than racing against an in-flight migrate.
   check_env
   log "Starting infrastructure services (postgres, redis, ipfs)..."
-  $COMPOSE up -d --remove-orphans postgres redis ipfs
+  # $COMPOSE_FILES threads the journald overlay (when active) at container CREATE
+  # time so postgres comes up on the journald driver. The backend is created via
+  # cmd_up below, which also threads $COMPOSE_FILES.
+  $COMPOSE $COMPOSE_FILES up -d --remove-orphans postgres redis ipfs
   log "Waiting for postgres to be ready..."
   local retries=30
   while [ $retries -gt 0 ]; do
@@ -261,6 +337,7 @@ cmd_help() {
   echo "  down          Stop all services"
   echo "  migrate       Run database migrations against pevo_app"
   echo "  logs          Tail logs (optionally: ./deploy.sh logs backend)"
+  echo "  logs-history  Historical logs from host journal (./deploy.sh logs-history [tag] [since])"
   echo "  restart       Rebuild and restart all services"
   echo "  status        Show service status"
   echo "  clean         Stop services and remove volumes (DESTRUCTIVE)"
@@ -272,6 +349,7 @@ cmd_help() {
 
 # --- Main ---
 check_deps
+resolve_log_overlay
 
 case "${1:-help}" in
   build)        shift; cmd_build "$@" ;;
@@ -279,6 +357,7 @@ case "${1:-help}" in
   down)         shift; cmd_down "$@" ;;
   migrate)      shift; cmd_migrate "$@" ;;
   logs)         shift; cmd_logs "$@" ;;
+  logs-history) shift; cmd_logs_history "$@" ;;
   restart)      shift; cmd_restart "$@" ;;
   status)       shift; cmd_status "$@" ;;
   clean)        shift; cmd_clean "$@" ;;

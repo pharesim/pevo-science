@@ -1,0 +1,40 @@
+# Production logging overlay: route backend + postgres container stdout to the
+# HOST systemd journal (journald driver) instead of the per-container json-file.
+#
+# WHY: PEvO's `./deploy.sh restart` runs `down` then `up`, which DESTROYS and
+# RECREATES the containers. json-file logs live inside the per-container layer
+# and are discarded on every recreate, so a single-user incident becomes
+# undiagnosable a day later (a 2026-06-12 ORCID signup failure could not be
+# investigated two days on). The systemd journal lives on the HOST, independent
+# of container lifecycle, so entries survive `down`/recreate AND image rebuilds.
+# Host-side retention (Storage=persistent, MaxRetentionSec=2week, a SystemMaxUse
+# size cap) is configured in /etc/systemd/journald.conf.d/ on the host — see the
+# deploy runbook. Time-based 14-day pruning is native to journald.
+#
+# SCOPE: backend (the incident surface) + postgres (DB constraint/connection
+# errors, the next-most-useful stream for auth/signup incidents). redis and ipfs
+# stay on json-file — high-chatter, low incident value, and keeping them off the
+# journal limits journald rate-limit pressure on the shared host journal.
+#
+# PORTABILITY: this overlay is applied ONLY when deploy.sh detects a usable
+# systemd-journal socket (PEVO_LOG_DRIVER=auto, the default). The journald driver
+# HARD-FAILS container start when the socket is absent, so a host without
+# systemd-journald (e.g. a WSL2 dev box with systemd disabled, or Docker Desktop
+# whose daemon cannot reach the host journal) never loads this file and stays on
+# json-file. Force on/off with PEVO_LOG_DRIVER=journald|json-file.
+#
+# `tag` sets CONTAINER_TAG (and SYSLOG_IDENTIFIER) to a stable, recreation-proof
+# query key. Every recreate reuses the same tag, so historical logs across
+# restarts are one continuous stream: `journalctl CONTAINER_TAG=pevo-backend
+# --since "2 weeks ago"` (wrapped by `./deploy.sh logs-history`).
+services:
+  backend:
+    logging:
+      driver: journald
+      options:
+        tag: "pevo-backend"
+  postgres:
+    logging:
+      driver: journald
+      options:
+        tag: "pevo-postgres"

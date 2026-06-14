@@ -94,7 +94,7 @@ The runtime-authoritative ownership map for commit-time enforcement is `.githook
 - `agents/docs/reputation-algorithm.md`
 - `agents/docs/solutions/**/*.md` — shared learnings knowledge store. Any agent may append via `/ce-compound`; the architect maintains the convention (categories, format, the root-CLAUDE.md surface) and consolidates drift via `/ce-compound-refresh`.
 - `agents/docs/tasks/**/*.md` — task-coordination tree. Architect can touch any-slug task files for hold-block appends and review→pending moves (rule #8); other agents are restricted to their own slug.
-- `docker-compose.yml`, `docker-compose.test.override.yml`, `Dockerfile`, `.dockerignore`
+- `docker-compose*.yml` (base `docker-compose.yml`, `docker-compose.test.override.yml`, `docker-compose.prod.override.yml`, and any future overlay), `Dockerfile`, `.dockerignore`
 - `.env.example`, `deploy.sh`
 - `README.md`, `LICENSE`, `.gitignore`
 - `CLAUDE.md` (root) — project-wide conventions and agent coordination rules
