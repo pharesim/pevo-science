@@ -9,9 +9,8 @@ import { Router, type Request, type Response } from 'express';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
-import { assertNever } from '../util/assertNever.js';
 import { getAccreditedSet } from '../accreditation.js';
-import { getVouchStatus, broadcastWotAccreditation, revokeVoucheeIfBelowThreshold, vouchStatusCacheKey, type VouchStatus } from '../wot.js';
+import { getVouchStatus, broadcastWotAccreditation, vouchStatusCacheKey, type VouchStatus } from '../wot.js';
 import { logger } from '../logger.js';
 import { isHafConfigured } from '../db.js';
 import { hafCache } from '../cache.js';
@@ -237,62 +236,24 @@ router.post('/retract', verifyHiveSignature, wotWriteLimiter, async (req: Reques
   }
 
   // The retract_vouch custom_json is broadcast by the frontend BEFORE this call.
-  // Re-evaluate the VOUCHEE that lost a vouch (NOT the voucher): if it was
-  // WoT-accredited and now sits below the threshold, revoke its accreditation.
-  // cascadeRevocation is reserved for the case where an account's own
-  // accreditation was revoked; calling it with the voucher here re-evaluated
-  // the voucher's still-active vouchees and never the one that lost a vouch.
-  //
-  // Verify the retraction actually landed on-chain before honoring it: poll HAF
-  // until the signer's vouch edge to the vouchee disappears. Acting on an
-  // unverified retraction would let an accredited voucher revoke a victim's WoT
-  // accreditation by POSTing here while broadcasting no retract — the admin
-  // revoke sticks under latest-action-wins, and the victim's standing on-chain
-  // vouches fire no re-accreditation event, so it does not self-heal.
-  //
-  // The poll returns the freshest VouchStatus, and the revoke decision is taken
-  // from THAT SAME snapshot (revokeVoucheeIfBelowThreshold reads the verified
-  // status, not a second independent query). One snapshot means a fresh vouch
-  // cannot land between the verification read and the threshold recount and
-  // straddle HAF's ingestion lag to revoke an at-threshold account.
+  // WoT membership is LIVE: a vouchee that drops below the threshold loses
+  // accreditation automatically (recomputed from the current vouch graph in
+  // activeAccreditationsCteBody) with NO `revoke` op, and recovering vouches
+  // restores it. So a retraction is a non-event here — there is nothing to
+  // broadcast and no griefing vector to guard against (a fake retraction POST
+  // can no longer plant a sticky revoke). We still poll HAF to bust the stale
+  // vouch-status cache and return a fresh count for the UI.
   const status = await pollForRetraction(vouchee, voucher);
-  const retractionVerified = status !== null && !status.vouches.some((v) => v.voucher === voucher);
+  const retractionReflected = status !== null && !status.vouches.some((v) => v.voucher === voucher);
 
-  if (!retractionVerified) {
-    // HAF unavailable, ingestion lagged past the poll cap, or the retraction was
-    // never broadcast. Fail closed: do not revoke on an unverified retraction.
-    return sendOk(res, {
-      message: `Retraction received. The withdrawn vouch for ${vouchee} is not yet reflected on-chain, so no revocation was evaluated.`,
-      revocation_outcome: 'unverified',
-      revocations: [],
-      vouch_status: status,
-    });
-  }
-
-  const revocation = await revokeVoucheeIfBelowThreshold(status);
-
-  let message: string;
-  switch (revocation.outcome) {
-    case 'revoked':
-      message = `Retraction processed. ${vouchee}'s Web of Trust accreditation was revoked (threshold no longer met).`;
-      break;
-    case 'timeout':
-      message = `Retraction processed. The revocation broadcast for ${vouchee} is in a degraded state (timeout). Please check on-chain status before re-attempting.`;
-      break;
-    case 'chain_error':
-      message = `Retraction processed. The revocation broadcast for ${vouchee} failed.`;
-      break;
-    case 'skipped':
-      message = 'Retraction processed. No revocation needed.';
-      break;
-    default:
-      return assertNever(revocation);
-  }
+  const message = retractionReflected
+    ? `Retraction processed. ${vouchee}'s Web of Trust standing is evaluated live from the current vouch graph; no revocation is needed.`
+    : `Retraction received. The withdrawn vouch for ${vouchee} is not yet reflected on-chain; ${vouchee}'s standing re-evaluates automatically once it is.`;
 
   sendOk(res, {
     message,
-    revocation_outcome: revocation.outcome,
-    revocations: revocation.outcome === 'revoked' ? [revocation.txId] : [],
+    revocation_outcome: 'none',
+    revocations: [],
     vouch_status: status,
   });
 });

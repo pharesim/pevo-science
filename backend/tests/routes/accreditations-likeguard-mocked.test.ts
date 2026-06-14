@@ -70,7 +70,7 @@ describe('GET /api/accreditations — ?field= / ?institution= LIKE-escape SQL co
   // AS total` carried alongside the row data — there are NOT separate count
   // and data branches). The two ILIKE call sites are the two conditions
   // appended to the `conditions` array inside `fetchAccreditationsFromHaf`:
-  // the `latest.field ILIKE …` push and the `latest.institution ILIKE …`
+  // the `aa.field ILIKE …` push and the `aa.institution ILIKE …`
   // push. Both fragments end up in the same emitted SQL string.
 
   it('?field= bound parameter is LIKE-escaped (% → \\%, _ → \\_, \\ → \\\\) with `${escaped}%` prefix-match suffix', async () => {
@@ -151,7 +151,7 @@ describe('GET /api/accreditations — ?field= / ?institution= LIKE-escape SQL co
     await request(app).get('/api/accreditations?field=biology');
     expect(capturedSql).toBeDefined();
     const escapeClause = `ESCAPE '\\'`;
-    expect(capturedSql).toContain(`latest.field ILIKE`);
+    expect(capturedSql).toContain(`aa.field ILIKE`);
     expect(capturedSql).toContain(escapeClause);
     // Field-only request → exactly 1 ILIKE site → exactly 1 ESCAPE clause.
     const occurrences = capturedSql!.split(escapeClause).length - 1;
@@ -170,7 +170,7 @@ describe('GET /api/accreditations — ?field= / ?institution= LIKE-escape SQL co
     await request(app).get('/api/accreditations?institution=mit');
     expect(capturedSql).toBeDefined();
     const escapeClause = `ESCAPE '\\'`;
-    expect(capturedSql).toContain(`latest.institution ILIKE`);
+    expect(capturedSql).toContain(`aa.institution ILIKE`);
     expect(capturedSql).toContain(escapeClause);
     const occurrences = capturedSql!.split(escapeClause).length - 1;
     expect(occurrences).toBe(1);
@@ -194,8 +194,8 @@ describe('GET /api/accreditations — ?field= / ?institution= LIKE-escape SQL co
     expect(capturedSql).toBeDefined();
     const escapeClause = `ESCAPE '\\'`;
     // Both ILIKE conditions present.
-    expect(capturedSql).toContain(`latest.field ILIKE`);
-    expect(capturedSql).toContain(`latest.institution ILIKE`);
+    expect(capturedSql).toContain(`aa.field ILIKE`);
+    expect(capturedSql).toContain(`aa.institution ILIKE`);
     // Exactly two `ESCAPE '\\'` clauses, one per ILIKE site. A regression
     // dropping the clause from either site would surface as `toBe(1)`.
     const occurrences = capturedSql!.split(escapeClause).length - 1;

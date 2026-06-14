@@ -9,6 +9,7 @@ import {
   adminRosterGrantSchema,
   adminRosterRevokeSchema,
   adminAccreditationGrantSchema,
+  adminSanctionSchema,
   adminRetractPaperSchema,
   adminAuthorshipRevokeSchema,
   adminAuthorshipApproveSchema,
@@ -317,6 +318,48 @@ router.post(
         failMsg: 'Failed to broadcast the accreditation',
         logContext: { username: actor },
         routeLabel: 'admin.accreditation.grant',
+      });
+    }
+  },
+);
+
+// POST /api/admin/accreditation/sanction — authority sanction (admin tier).
+// Broadcasts a `revoke` carrying `type:"sanction"`, which is STICKY: it
+// suppresses accreditation regardless of vouch support and is lifted ONLY by a
+// later authority `accredit` (POST /accreditation/grant). This is the only
+// `revoke` the backend broadcasts — a WoT threshold drop is a self-healing
+// live-membership non-event with no op. Membership reflects the sanction on the
+// next volatile-cache refresh (block-watcher tick) once HAF ingests it.
+router.post(
+  '/accreditation/sanction',
+  verifyHiveSignature,
+  requireAdminLevel('admin'),
+  validate(adminSanctionSchema),
+  requireFreshAdminAuth('admin_sanction'),
+  async (
+    req: Request<Record<string, string>, unknown, z.infer<typeof adminSanctionSchema>>,
+    res: Response,
+  ) => {
+    const actor = req.hiveUsername!;
+    const { account, reason } = req.body;
+    const payload = {
+      action: 'revoke',
+      type: 'sanction',
+      account,
+      reason,
+      issued_by: actor,
+      timestamp: new Date().toISOString(),
+    };
+    try {
+      const result = await broadcastAdminCustomJson(payload);
+      logger.info({ event: 'admin.accreditation.sanction', actor, account, tx_id: result.id }, 'admin accreditation sanction');
+      sendOk(res, { message: `Accreditation sanctioned for ${account}`, tx_id: result.id });
+    } catch (err) {
+      handleBroadcastError(res, err, {
+        timeoutMsg: 'Broadcasting the sanction timed out',
+        failMsg: 'Failed to broadcast the sanction',
+        logContext: { username: actor },
+        routeLabel: 'admin.accreditation.sanction',
       });
     }
   },

@@ -70,6 +70,15 @@ export const adminAccreditationGrantSchema = z.object({
   fresh_auth_proof: adminFreshAuthProof,
 });
 
+// Authority sanction: broadcasts a `revoke` carrying `type:"sanction"`. Sticky
+// (suppresses membership regardless of vouch support; lifted only by a later
+// authority accredit). A re-grant via adminAccreditationGrantSchema is the lift.
+export const adminSanctionSchema = z.object({
+  account: hiveAccount,
+  reason: z.string().max(500).optional().default(''),
+  fresh_auth_proof: adminFreshAuthProof,
+});
+
 export const adminRetractPaperSchema = z.object({
   author: hiveAccount,
   permlink: hivePermlink,

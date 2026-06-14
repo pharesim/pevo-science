@@ -52,25 +52,19 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
     try {
       const unique = [...new Set(usernames)];
 
-      // $1 = appTag, $2 = whitelist, $3+ = usernames
-      const userPlaceholders = unique.map((_, i) => `$${i + 3}`).join(', ');
+      // Compose the shared membership CTE (sanction-aware + live-threshold WoT,
+      // self-contained per its docstring) and filter its output to the requested
+      // accounts. Using the shared builder instead of an inline `ranked` copy is
+      // what keeps the membership rule in ONE place — a below-threshold WoT
+      // account, a sanctioned account, and a legacy-revoked account all resolve
+      // identically here and in `getAllAccreditedAccounts`.
+      const cte = buildWith(1, activeAccreditationsCteBody);
+      const userStart = cte.nextIdx;
+      const userPlaceholders = unique.map((_, i) => `$${userStart + i}`).join(', ');
       const result = await pool.query(
-        `WITH ranked AS (
-          SELECT
-            cj.json::jsonb ->> 'action' AS action,
-            cj.json::jsonb ->> 'account' AS account,
-            -- Same-block tie-breaker: cj.id (operation_custom_json_view has no
-            -- trx_in_block; cj.id is the monotonic HAF op id) per
-            -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
-            ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC, cj.id DESC) AS rn
-          FROM ${T.customJson} cj
-          WHERE cj.custom_id = $1
-            AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-            AND cj.required_posting_auths ?| $2::text[]
-            AND cj.json::jsonb ->> 'account' IN (${userPlaceholders})
-        )
-        SELECT account FROM ranked WHERE rn = 1 AND action = 'accredit'`,
-        [config.appTag, config.accreditationAuthorities, ...unique],
+        `${cte.sql}
+         SELECT account FROM active_accreditations WHERE account IN (${userPlaceholders})`,
+        [...cte.params, ...unique],
       );
 
       return new Set(result.rows.map((r: { account: string }) => r.account));
@@ -80,6 +74,60 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
   }
 
   return new Set();
+}
+
+/**
+ * Whether `account` currently carries an un-lifted sanction (a `type:"sanction"`
+ * revoke at or after its most-recent authority-pinned `accredit`, or with no
+ * authority accredit at all). A sanction is sticky and lifted ONLY by a later
+ * authority `accredit` (email/orcid/manual) — a `wot` auto-accredit does NOT
+ * lift it. This is the same suppression predicate `activeAccreditationsCteBody`
+ * applies, scoped to one account.
+ *
+ * Used by the WoT auto-accreditation path (`broadcastWotAccreditation`) to
+ * refuse re-admitting a sanctioned account on vouch support. A sanctioned
+ * account is already absent from `getAccreditedSet`, so this read is what
+ * distinguishes "suppressed by sanction" (refuse the broadcast) from "never
+ * enrolled / below threshold" (proceed to enroll).
+ *
+ * **Fail-closed.** If HAF is unavailable or the query throws, returns `true`
+ * (assume sanctioned) so an indeterminate sanction state can never let an
+ * auto-accreditation slip through.
+ */
+export async function hasUnliftedSanction(account: string): Promise<boolean> {
+  const pool = getPool();
+  if (!pool) return true;
+
+  try {
+    const result = await pool.query<{ sanction_block: string | null; auth_block: string | null }>(
+      `WITH acct_ops AS (
+        SELECT
+          cj.json::jsonb ->> 'action' AS action,
+          cj.json::jsonb ->> 'method' AS method,
+          cj.json::jsonb ->> 'type' AS revoke_type,
+          cj.block_num AS block_num
+        FROM ${T.customJson} cj
+        WHERE cj.custom_id = $1
+          AND cj.json::jsonb ->> 'account' = $2
+          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+          AND cj.required_posting_auths ?| $3::text[]
+      )
+      SELECT
+        (SELECT MAX(block_num) FROM acct_ops WHERE action = 'revoke' AND revoke_type = 'sanction') AS sanction_block,
+        -- Authority-pinned = any non-wot accredit (only a wot op is vouch-derived);
+        -- matches activeAccreditationsCteBody's auth_accredit definition.
+        (SELECT MAX(block_num) FROM acct_ops WHERE action = 'accredit' AND method IS DISTINCT FROM 'wot') AS auth_block`,
+      [config.appTag, account, config.accreditationAuthorities],
+    );
+    const row = result.rows[0];
+    if (!row || row.sanction_block === null) return false;
+    const sanctionBlock = Number(row.sanction_block);
+    const authBlock = row.auth_block === null ? null : Number(row.auth_block);
+    return authBlock === null || sanctionBlock >= authBlock;
+  } catch (err) {
+    logger.error({ err, account }, 'HAF un-lifted sanction check failed — failing closed');
+    return true;
+  }
 }
 
 /**

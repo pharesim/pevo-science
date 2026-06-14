@@ -85,16 +85,69 @@ export const CHAIN_ORCID_BTRIM_CHARSET = " \\t\\n\\r\\x0B\\f";
 // ─── Common CTEs ──────────────────────────────────────────────────
 
 /**
- * CTE body that computes the current accreditation status per account.
+ * CTE body that computes the current accreditation membership per account.
  * Replaces `pevo.active_accreditations`.
+ *
+ * Membership rule (ARCHITECTURE.md § 2 "Accreditation Lifecycle & Sanctions"):
+ * an account is accredited iff it is NOT sanctioned AND either
+ *   (a) its latest `accredit` op is authority-pinned (method ∈ {email, orcid,
+ *       manual}), OR
+ *   (b) its latest `accredit` op is `method = wot` AND it CURRENTLY meets the
+ *       live vouch threshold.
+ *
+ * Three semantics this CTE encodes that the old "latest op is an accredit"
+ * filter did not:
+ *
+ *  - **Sticky sanctions.** A `revoke` carrying `type:"sanction"` suppresses
+ *    membership regardless of vouch support and is lifted ONLY by a later
+ *    authority-pinned `accredit` (email/orcid/manual) — a `wot` auto-accredit
+ *    does not lift it. So an account is sanctioned iff its most-recent sanction
+ *    block is at-or-after its most-recent authority `accredit` block (or it has
+ *    no authority accredit at all).
+ *  - **Legacy revokes are non-sanctions.** A `revoke` WITHOUT `type:"sanction"`
+ *    (every historical WoT threshold-drop revoke, reason "WoT threshold no
+ *    longer met") no longer suppresses membership. Membership reverts to the
+ *    latest `accredit` (authority rows) or to live threshold evaluation (WoT
+ *    rows). `cj.json::jsonb ->> 'type'` is SQL NULL for these — exactly the
+ *    non-sanction case.
+ *  - **Live WoT threshold (self-healing).** A WoT row stays accredited only
+ *    while it currently meets the vouch threshold; dropping below removes it
+ *    with no `revoke` op, and recovering vouches restores it automatically.
+ *    The threshold is the on-chain `min_accreditations_for_wot` (default 3),
+ *    read here in SQL so the whole rule is self-contained and no consumer of
+ *    this builder has to thread a threshold parameter.
+ *
+ * **Op-pinned voucher counting (non-recursive).** A vouch counts toward a WoT
+ * threshold iff the voucher is in `accred_pinned` — has a current, not-superseded,
+ * not-sanctioned `accredit` op (any method). This matches the historical
+ * `JOIN active_accreditations` voucher-eligibility and, crucially, is NOT
+ * recursive: a WoT account's standing depends on its vouchers' op-pinned
+ * accreditation, never on the live-threshold output being computed. A true
+ * graph fixed-point (a below-threshold WoT voucher not counting) would need a
+ * recursive aggregate, which Postgres forbids in a recursive-CTE term; the
+ * op-pinned reading is the SQL-expressible interpretation. `getVouchStatus`
+ * (`wot.ts`) counts the SAME `accred_pinned` set so the broadcast-trigger
+ * eligibility and this membership filter never disagree.
+ *
+ * **Self-contained vouch graph.** The private `aa_vouch_ranked` / `aa_active_vouches`
+ * CTEs carry distinct names so a consumer that ALSO composes
+ * `activeVouchesCteBody` (e.g. `getVouchStatus`) gets no CTE-name collision.
  *
  * The `custom_id = $appTag` filter alone is selective enough on Mahdi's HAF
  * (single-digit row count per namespace), so we deliberately do NOT add a
- * `block_num >= genesis` floor. Combining the two via `WHERE ... AND
- * block_num >= ...` triggers a BitmapAnd plan that scans tens of millions
- * of operation rows on the block_num index and runs in seconds; the
- * custom_id index alone runs in low milliseconds. The
- * `required_posting_auths` gate already prevents pre-namespace forgeries.
+ * `block_num >= genesis` floor to any of the `operation_custom_json_view` scans
+ * below. Combining the two via `WHERE ... AND block_num >= ...` triggers a
+ * BitmapAnd plan that scans tens of millions of operation rows on the block_num
+ * index and runs in seconds; the custom_id index alone runs in low milliseconds.
+ * The `required_posting_auths` gate already prevents pre-namespace forgeries.
+ * The `aa_params_latest` threshold scan mirrors `loadWotThreshold`'s
+ * `AS MATERIALIZED` optimization fence so the planner resolves the small
+ * custom_id-indexed candidate set before the ORDER BY/LIMIT.
+ *
+ * `accred_ranked` keeps its latest-op-per-account `rn` ordering (and now also
+ * projects `revoke_type` and `block_num`) because `accreditationStatusCteBody`
+ * depends on `accred_ranked` (account/action/orcid/rn) for the forged-ORCID
+ * audit path; the additive columns do not disturb it.
  *
  * @param startIdx - first available $N parameter index
  * @returns SqlFragment with the CTE body (without WITH keyword)
@@ -112,8 +165,15 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
       cj.json::jsonb ->> 'field' AS field,
       cj.json::jsonb ->> 'method' AS method,
       cj.json::jsonb ->> 'orcid' AS orcid,
+      -- Sanction discriminator: present ('sanction') on a deliberate authority
+      -- sanction, SQL NULL on a legacy non-sanction revoke and on accredit ops.
+      cj.json::jsonb ->> 'type' AS revoke_type,
       cj.json::jsonb ->> 'timestamp' AS event_timestamp,
-      cj.id AS event_id,
+      -- The monotonic HAF op id, carried as op_id (exposed as event_id at the
+      -- active_accreditations boundary). op_id is the same-block tie-breaker the
+      -- accred_latest ranking orders on.
+      cj.id AS op_id,
+      cj.block_num AS block_num,
       -- Same-block tie-breaker: cj.id (operation_custom_json_view has no
       -- trx_in_block; cj.id is the monotonic HAF op id) per
       -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
@@ -123,10 +183,108 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
       AND cj.required_posting_auths ?| $${p + 1}::text[]
   ),
-  active_accreditations AS (
-    SELECT account, researcher_name, institution, field, method, orcid, event_timestamp, event_id
+  -- Latest accredit op per account (revokes ignored entirely): supplies the
+  -- current method + metadata. A legacy revoke after it does not suppress; a
+  -- sanction is handled separately below.
+  accred_latest AS (
+    SELECT account, researcher_name, institution, field, method, orcid, event_timestamp, op_id, block_num,
+      ROW_NUMBER() OVER (PARTITION BY account ORDER BY block_num DESC, op_id DESC) AS arn
     FROM accred_ranked
-    WHERE rn = 1 AND action = 'accredit'
+    WHERE action = 'accredit'
+  ),
+  -- Most-recent authority-pinned accredit block per account (the only op that
+  -- lifts a sanction). Authority-pinned = any NON-wot accredit. For the closed
+  -- method set this is exactly {email, orcid, manual} (the section 2 enumeration);
+  -- the IS DISTINCT FROM wot form is equivalent for valid data and also treats a
+  -- malformed/absent method as a deliberate (non-vouch-derived) authority op
+  -- rather than silently dropping it. Only a wot op is vouch-derived.
+  auth_accredit AS (
+    SELECT account, MAX(block_num) AS auth_block
+    FROM accred_ranked
+    WHERE action = 'accredit' AND method IS DISTINCT FROM 'wot'
+    GROUP BY account
+  ),
+  -- Most-recent sanction block per account.
+  sanction_latest AS (
+    SELECT account, MAX(block_num) AS sanction_block
+    FROM accred_ranked
+    WHERE action = 'revoke' AND revoke_type = 'sanction'
+    GROUP BY account
+  ),
+  -- Op-pinned, not-sanctioned accredited set: latest accredit not overridden by
+  -- a more-recent (or same-block) un-lifted sanction. This is BOTH the WoT
+  -- voucher-eligibility set and the membership base. A same-block sanction/
+  -- re-accredit tie resolves to sanctioned (auth_block must be strictly later).
+  accred_pinned AS (
+    SELECT la.account, la.researcher_name, la.institution, la.field, la.method, la.orcid, la.event_timestamp, la.op_id, la.block_num
+    FROM accred_latest la
+    LEFT JOIN sanction_latest s ON s.account = la.account
+    LEFT JOIN auth_accredit au ON au.account = la.account
+    WHERE la.arn = 1
+      AND (s.sanction_block IS NULL OR (au.auth_block IS NOT NULL AND s.sanction_block < au.auth_block))
+  ),
+  -- Private live vouch graph (distinct names so consumers composing
+  -- activeVouchesCteBody too do not collide on active_vouches).
+  aa_vouch_ranked AS (
+    SELECT
+      cj.json::jsonb ->> 'action' AS action,
+      cj.json::jsonb ->> 'voucher' AS voucher,
+      cj.json::jsonb ->> 'vouchee' AS vouchee,
+      ROW_NUMBER() OVER (
+        PARTITION BY cj.json::jsonb ->> 'voucher', cj.json::jsonb ->> 'vouchee'
+        ORDER BY cj.block_num DESC, cj.id DESC
+      ) AS rn
+    FROM ${T.customJson} cj
+    WHERE cj.custom_id = $${p}
+      AND cj.json::jsonb ->> 'action' IN ('vouch', 'retract_vouch')
+      AND cj.required_posting_auths ? (cj.json::jsonb ->> 'voucher')
+  ),
+  aa_active_vouches AS (
+    SELECT voucher, vouchee FROM aa_vouch_ranked WHERE rn = 1 AND action = 'vouch'
+  ),
+  -- Live WoT threshold from on-chain update_params (latest-op-wins, positive
+  -- integer required else default 3). Mirrors loadWotThreshold (wot.ts) exactly,
+  -- including the AS MATERIALIZED fence that forces the custom_id index scan
+  -- ahead of the ORDER BY/LIMIT.
+  aa_params_latest AS MATERIALIZED (
+    SELECT cj.json AS json, cj.block_num, cj.id
+    FROM ${T.customJson} cj
+    WHERE cj.custom_id = $${p}
+      AND cj.json::jsonb ->> 'action' = 'update_params'
+      AND cj.required_posting_auths ?| $${p + 1}::text[]
+  ),
+  aa_wot_threshold AS (
+    SELECT COALESCE(
+      (
+        SELECT CASE WHEN v ~ '^[0-9]+$' AND v::int >= 1 THEN v::int ELSE NULL END
+        FROM (
+          SELECT json::jsonb -> 'params' ->> 'min_accreditations_for_wot' AS v
+          FROM aa_params_latest
+          ORDER BY block_num DESC, id DESC
+          LIMIT 1
+        ) latest
+      ),
+      3
+    )::int AS threshold
+  ),
+  -- Accredited-voucher count per WoT vouchee (op-pinned vouchers only).
+  aa_wot_counts AS (
+    SELECT av.vouchee AS account, COUNT(DISTINCT av.voucher) AS cnt
+    FROM aa_active_vouches av
+    JOIN accred_pinned p ON p.account = av.voucher
+    GROUP BY av.vouchee
+  ),
+  active_accreditations AS (
+    SELECT pp.account, pp.researcher_name, pp.institution, pp.field, pp.method, pp.orcid, pp.event_timestamp, pp.op_id AS event_id
+    FROM accred_pinned pp
+    LEFT JOIN aa_wot_counts c ON c.account = pp.account
+    CROSS JOIN aa_wot_threshold t
+    -- Authority-pinned (any non-wot accredit) passes through; a wot accredit is
+    -- live only at-or-above the vouch threshold. The two arms are mutually
+    -- exclusive and exhaustive over method. See auth_accredit for why non-wot
+    -- (rather than the literal {email,orcid,manual}) defines authority-pinned.
+    WHERE pp.method IS DISTINCT FROM 'wot'
+      OR (pp.method = 'wot' AND COALESCE(c.cnt, 0) >= t.threshold)
   )`,
     params: [config.appTag, config.accreditationAuthorities],
     nextIdx: p + 2,

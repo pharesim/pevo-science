@@ -2,8 +2,8 @@
  * BE-WOT-VOUCH-ROUTE-COVERAGE — route-level coverage for POST /api/wot/vouch
  * branching on the tagged-union `WotAccreditationResult` returned by
  * `broadcastWotAccreditation`. Sibling to `tests/wot-broadcast-timeout.test.ts`
- * (which covers the lib-level surface of `broadcastWotAccreditation` /
- * `cascadeRevocation`); this file covers the route-handler translation of
+ * (which covers the lib-level surface of `broadcastWotAccreditation`); this
+ * file covers the route-handler translation of
  * each tagged-union arm into the response shape, status code, and the
  * `logger.error` observability calls described by the architect's hold block
  * on BE-WOT-BROADCAST-TIMEOUT-HANDLING (P3b).
@@ -109,10 +109,10 @@ vi.mock('../../src/accreditation.js', () => ({
   getAccreditedSet: getAccreditedSetMock,
 }));
 
-// `wot.ts` exports a tagged-union producer (`broadcastWotAccreditation`),
-// the vouch-status getter, and the cascade revocation primitives. We mock
-// the two functions the vouch handler calls and re-export the rest from the
-// real module so PartialCascadeError instanceof checks elsewhere still work.
+// `wot.ts` exports a tagged-union producer (`broadcastWotAccreditation`) and
+// the vouch-status getter. We mock the two functions the vouch handler calls
+// and re-export the rest from the real module so the other wot.js exports the
+// route module imports still load.
 vi.mock('../../src/wot.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/wot.js')>('../../src/wot.js');
   return {

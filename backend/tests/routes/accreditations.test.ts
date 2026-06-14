@@ -185,12 +185,16 @@ describe('GET /api/accreditations/:username', () => {
     },
   );
 
-  // Regression guard for BE-ACCRED-REVOKE-TEST: the revoke branch of
-  // fetchAccreditationStatusFromHaf must return is_accredited:false with a null
-  // accreditation. Without this, a mutation that returns is_accredited:true
-  // from the revoke branch would not be caught by the orcid/parity specs above.
+  // Regression guard: a SANCTIONED account (an un-lifted `revoke` carrying
+  // type:"sanction") must return is_accredited:false with a null accreditation.
+  // A legacy (non-sanction) revoke no longer suppresses membership — it reverts
+  // to the latest accredit — so only a sanction exercises the not-accredited
+  // branch here. The mocked-pool `accreditations-status-route.test.ts` and the
+  // real-Postgres `accreditation-membership-cte.test.ts` cover the membership
+  // rule deterministically; this guard checks it against real chain data when a
+  // sanctioned account exists.
   it.skipIf(!isHafConfigured())(
-    'returns is_accredited:false when the latest on-chain op is a revoke',
+    'returns is_accredited:false when the account is sanctioned (un-lifted type:"sanction" revoke)',
     { timeout: 60_000 },
     async (ctx) => {
       const pool = getPool();
@@ -199,11 +203,13 @@ describe('GET /api/accreditations/:username', () => {
         return;
       }
 
-      // Find an account whose latest authority-signed op is a revoke.
-      const res = await queryWithRetry(pool, 
+      // Find an account whose latest authority-signed op is a sanction revoke
+      // with no later authority accredit lifting it.
+      const res = await queryWithRetry(pool,
         `SELECT account FROM (
            SELECT cj.json::jsonb ->> 'account' AS account,
                   cj.json::jsonb ->> 'action'  AS action,
+                  cj.json::jsonb ->> 'type'    AS type,
                   ROW_NUMBER() OVER (
                     PARTITION BY cj.json::jsonb ->> 'account'
                     ORDER BY cj.block_num DESC
@@ -214,13 +220,13 @@ describe('GET /api/accreditations/:username', () => {
              AND cj.required_posting_auths ?| $2::text[]
              AND cj.block_num >= $3
          ) latest
-         WHERE rn = 1 AND action = 'revoke'
+         WHERE rn = 1 AND action = 'revoke' AND type = 'sanction'
          LIMIT 1`,
         [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock()],
       );
 
       if (res.rows.length === 0) {
-        ctx.skip('HAF has no account with latest op = revoke — branch not exercisable');
+        ctx.skip('HAF has no sanctioned account (latest op = type:"sanction" revoke) — branch not exercisable');
         return;
       }
 

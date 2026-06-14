@@ -15,7 +15,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentStackCteBody } from '../hafsql.js';
+import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, buildWith, buildRecursiveWith, activeAccreditationsCteBody, authorshipClaimsCteBody, consentStackCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -28,39 +28,32 @@ async function getAccreditationFromHaf(username: string) {
   if (!pool) return undefined; // no HAF available
 
   try {
-    // Filter by accreditationAuthorities so a self-broadcast custom_json (signed
-    // by the target account's own posting key) cannot masquerade as a real
-    // accreditation and paint attacker-chosen metadata onto someone's profile.
-    // Mirrors the same filter in accreditations.ts and
-    // orcid.ts's getExistingAccreditation.
-    // `cj.id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
-    // id) per the custom-json hive-primitive design-rules convention, so a
-    // same-block accredit/revoke resolves to the later op.
+    // is_accredited + metadata come from the shared membership CTE, which filters
+    // by accreditationAuthorities (so a self-broadcast custom_json cannot
+    // masquerade as a real accreditation) AND applies the full membership rule:
+    // a sanctioned, below-threshold-WoT, or legacy-revoked account resolves
+    // correctly here without keying on a bare latest `revoke`. A present row
+    // carries the latest accredit op's metadata.
+    const cte = buildWith(1, activeAccreditationsCteBody);
+    const userParam = `$${cte.nextIdx}`;
     const result = await pool.query(
-      `SELECT cj.json, cj.id AS event_id FROM ${T.customJson} cj
-       WHERE cj.custom_id = $2
-         AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-         AND cj.required_posting_auths ?| $3::text[]
-         AND cj.json::jsonb ->> 'account' = $1
-       ORDER BY cj.block_num DESC, cj.id DESC
-       LIMIT 1`,
-      [username, config.appTag, config.accreditationAuthorities],
+      `${cte.sql}
+       SELECT researcher_name, institution, field, method, orcid, event_timestamp, event_id
+       FROM active_accreditations
+       WHERE account = ${userParam}`,
+      [...cte.params, username],
     );
     if (result.rows.length === 0) return null;
 
-    const payload = typeof result.rows[0].json === 'string'
-      ? JSON.parse(result.rows[0].json)
-      : result.rows[0].json;
-
-    if (payload.action === 'revoke') return null;
+    const row = result.rows[0];
     return {
-      name: payload.name,
-      institution: payload.institution,
-      field: payload.field,
-      method: payload.method,
-      orcid: payload.orcid || null,
-      timestamp: payload.timestamp,
-      tx_id: result.rows[0].event_id?.toString() ?? null,
+      name: row.researcher_name,
+      institution: row.institution,
+      field: row.field,
+      method: row.method,
+      orcid: row.orcid || null,
+      timestamp: row.event_timestamp,
+      tx_id: row.event_id?.toString() ?? null,
     };
   } catch (err) {
     logger.error({ err }, 'HAF accreditation query failed');

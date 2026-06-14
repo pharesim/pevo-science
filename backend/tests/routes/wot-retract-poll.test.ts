@@ -1,18 +1,18 @@
 /**
- * Coverage for `pollForRetraction` — the on-chain retraction-verification step
- * in POST /api/wot/retract. The poll busts the 60s `vouch_status` cache and
+ * Coverage for `pollForRetraction` — the cache-bust-and-reread step in
+ * POST /api/wot/retract. The poll busts the 60s `vouch_status` cache and
  * re-reads HAF until the retracting voucher's vouch edge to the vouchee has
  * DISAPPEARED (the retract_vouch is reflected on-chain) or a tight cap elapses.
- * The route revokes only on a verified retraction; an edge that never
- * disappears is treated as unverified and is NOT honored — that gate is what
- * stops an accredited voucher from revoking a victim's accreditation by claiming
- * a retraction they never broadcast.
+ * WoT membership is live, so the route broadcasts NOTHING on a retraction (a
+ * threshold drop self-heals via the live membership read); the poll's job is to
+ * return a fresh `vouch_status` for the response and bust the stale cache so the
+ * UI sees the updated count promptly.
  *
  * Sibling to `tests/routes/wot-vouch-poll.test.ts` (the vouch-appears poll) and
- * `tests/routes/wot-retract-cascaderevocation.test.ts` (the integrated route).
- * This file isolates the poll-loop control flow below the route layer so the
- * verified/unverified decision is exercised deterministically with short caps
- * instead of through the route's hardcoded ~6s cap against real HAF.
+ * `tests/routes/wot-retract-route.test.ts` (the integrated route). This file
+ * isolates the poll-loop control flow below the route layer so the
+ * reflected/not-yet-reflected decision is exercised deterministically with short
+ * caps instead of through the route's hardcoded ~6s cap against real HAF.
  *
  * Justification for mocking `getVouchStatus` + spying `hafCache.invalidate`
  * (per root CLAUDE.md "Running Tests" carve-out):
@@ -31,8 +31,7 @@
  *     apply (no auth middleware is bypassed here).
  *   - Real-path companion (clause c): the integrated retract route runs with
  *     real `verifyHiveSignature` + real `pollForRetraction` in
- *     `wot-retract-cascaderevocation.test.ts` (including the unverified-edge
- *     griefing case end-to-end). This file's risk class ("poll-loop control
+ *     `wot-retract-route.test.ts`. This file's risk class ("poll-loop control
  *     flow / cap timeout") is orthogonal.
  */
 
@@ -44,7 +43,7 @@ const { getVouchStatusMock } = vi.hoisted(() => ({
 }));
 
 // Mock at the wot.js boundary and re-export the rest so the route module's other
-// wot.js imports (revokeVoucheeIfBelowThreshold, etc.) still load.
+// wot.js imports (broadcastWotAccreditation, vouchStatusCacheKey, etc.) still load.
 vi.mock('../../src/wot.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/wot.js')>('../../src/wot.js');
   return { ...actual, getVouchStatus: getVouchStatusMock };
@@ -132,7 +131,8 @@ describe('pollForRetraction — bust-and-poll for a freshly-broadcast retraction
     const result = await pollForRetraction(VOUCHEE, VOUCHER, { capMs: 30, intervalMs: 10 });
 
     // Latest status handed back; the voucher's edge is still present, so the
-    // route treats this as an unverified retraction and does NOT revoke.
+    // route reports the retraction as not-yet-reflected (and broadcasts nothing
+    // either way — membership self-heals once HAF ingests the retraction).
     expect(result).toEqual(stillVouched);
     expect(result?.vouches.some((v) => v.voucher === VOUCHER)).toBe(true);
   });
@@ -142,7 +142,8 @@ describe('pollForRetraction — bust-and-poll for a freshly-broadcast retraction
 
     const result = await pollForRetraction(VOUCHEE, VOUCHER, { capMs: 30, intervalMs: 10 });
 
-    // Null is unverifiable; the route fails closed (no revoke) on a null status.
+    // Null means HAF was unavailable; the route reports not-yet-reflected and
+    // still broadcasts nothing (membership self-heals on the next live read).
     expect(result).toBeNull();
   });
 });

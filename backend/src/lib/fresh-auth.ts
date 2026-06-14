@@ -143,9 +143,10 @@ export function isCreditOpAction(action: string): action is CreditOpAction {
  *  — the same per-user binding the non-broadcast criticals (`set_password` /
  *  `change_email` / `delete_account` / `ipfs_upload`) use; the distinct `action`
  *  value is what stops a proof minted for one admin action being redirected to
- *  another under one JWT. A sibling sanction action (`admin_sanction`) extends
- *  this tuple when that task lands; adding the member here is all that is needed
- *  (the generic builder and the generic issuance branch handle any member). */
+ *  another under one JWT. `admin_sanction` is the authority-sanction action (a
+ *  `revoke` carrying `type:"sanction"`); adding the member here is all that is
+ *  needed (the generic builder and the generic issuance branch handle any
+ *  member). */
 const ADMIN_FRESH_AUTH_ACTION_TUPLE = [
   'admin_grant_role',
   'admin_revoke_role',
@@ -153,6 +154,7 @@ const ADMIN_FRESH_AUTH_ACTION_TUPLE = [
   'admin_retract_paper',
   'admin_revoke_authorship',
   'admin_approve_authorship',
+  'admin_sanction',
 ] as const;
 
 /** Action subset for the roster-gated admin authority actions, derived from

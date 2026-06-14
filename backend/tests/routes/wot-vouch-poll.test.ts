@@ -40,8 +40,8 @@ const { getVouchStatusMock } = vi.hoisted(() => ({
   getVouchStatusMock: vi.fn<(username: string) => Promise<VouchStatus | null>>(),
 }));
 
-// Mock at the wot.js boundary and re-export the rest so PartialCascadeError /
-// broadcastWotAccreditation imported elsewhere in the route module still load.
+// Mock at the wot.js boundary and re-export the rest so broadcastWotAccreditation
+// and the other wot.js exports imported in the route module still load.
 vi.mock('../../src/wot.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/wot.js')>('../../src/wot.js');
   return { ...actual, getVouchStatus: getVouchStatusMock };

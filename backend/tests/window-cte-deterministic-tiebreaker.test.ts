@@ -51,19 +51,29 @@ import { config } from '../src/config.js';
  */
 
 function runAccredCte(
-  // Each row: action, account, block_num, op id. The synthetic rows always
-  // carry an accreditation-authority signer so the `?|` gate passes.
-  rows: Array<{ action: 'accredit' | 'revoke'; account: string; blockNum: number; id: number }>,
+  // Each row: action, account, block_num, op id, and (for accredits) the method;
+  // a revoke may carry type:'sanction'. The synthetic rows always carry an
+  // accreditation-authority signer so the `?|` gate passes. ALL FROM references
+  // in the membership CTE (accred_ranked, the private vouch graph, the
+  // update_params threshold scan) are redirected to the synthetic set.
+  rows: Array<{
+    action: 'accredit' | 'revoke';
+    account: string;
+    blockNum: number;
+    id: number;
+    method?: string;
+    type?: string;
+  }>,
 ): Promise<Set<string>> {
   const pool = getPool();
   if (!pool) throw new Error('no pool');
 
   const body = activeAccreditationsCteBody(1);
-  // Redirect the CTE's FROM at the real HAF view to the synthetic row set;
+  // Redirect every CTE FROM at the real HAF view to the synthetic row set;
   // everything else (the `?|` gate, the per-account ROW_NUMBER ranking with the
-  // `cj.id DESC` same-block tie-breaker, the rn=1 AND action='accredit' filter)
-  // is the production SQL verbatim.
-  const redirected = body.sql.replace(`${T.customJson} cj`, 'synthetic_cj cj');
+  // `cj.id DESC` same-block tie-breaker, the sanction/legacy-revoke and live
+  // WoT-threshold membership filter) is the production SQL verbatim.
+  const redirected = body.sql.split(`${T.customJson} cj`).join('synthetic_cj cj');
 
   // $1 = custom_id bind (reused as every synthetic row's custom_id so the
   // WHERE custom_id = $1 matches). $2 = authority array for the `?|` gate.
@@ -71,7 +81,10 @@ function runAccredCte(
   const authsLiteral = JSON.stringify(config.accreditationAuthorities);
   const valueLines: string[] = [];
   rows.forEach((r) => {
-    const json = JSON.stringify({ action: r.action, account: r.account });
+    const jsonObj: Record<string, unknown> = { action: r.action, account: r.account };
+    if (r.method) jsonObj.method = r.method;
+    if (r.type) jsonObj.type = r.type;
+    const json = JSON.stringify(jsonObj);
     const jsonIdx = params.push(json);
     const authsIdx = params.push(authsLiteral);
     valueLines.push(
@@ -142,7 +155,7 @@ function runVoteCount(
 
 describe('window CTE / vote DISTINCT ON — same-block deterministic tie-breaker', () => {
   it.skipIf(!isHafConfigured())(
-    'same-block accredit/revoke resolves deterministically to the higher op id',
+    'membership resolves deterministically: legacy revoke ignored, sanction sticky, latest-accredit method wins on id tie-break',
     { timeout: 30_000 },
     async (ctx) => {
       const pool = getPool();
@@ -151,36 +164,49 @@ describe('window CTE / vote DISTINCT ON — same-block deterministic tie-breaker
         return;
       }
 
-      // Account `alice`: accredit and revoke land in the SAME block. The op with
-      // the higher id is the later op and must win, regardless of VALUES order.
-
-      // revoke has the higher id -> alice ends NOT active.
-      const revokeWins = await runAccredCte([
-        { action: 'accredit', account: 'alice', blockNum: 100, id: 10 },
+      // A LEGACY revoke (no type:"sanction") no longer suppresses membership:
+      // it is ignored and membership reverts to the latest accredit. Same-block
+      // accredit + legacy-revoke -> alice ACTIVE, regardless of VALUES order.
+      const legacyA = await runAccredCte([
+        { action: 'accredit', account: 'alice', blockNum: 100, id: 10, method: 'email' },
         { action: 'revoke', account: 'alice', blockNum: 100, id: 11 },
       ]);
-      expect(revokeWins.has('alice')).toBe(false);
-
-      // Same rows, reversed VALUES order — result must be identical (deterministic).
-      const revokeWinsReordered = await runAccredCte([
+      expect(legacyA.has('alice')).toBe(true);
+      const legacyB = await runAccredCte([
         { action: 'revoke', account: 'alice', blockNum: 100, id: 11 },
-        { action: 'accredit', account: 'alice', blockNum: 100, id: 10 },
+        { action: 'accredit', account: 'alice', blockNum: 100, id: 10, method: 'email' },
       ]);
-      expect(revokeWinsReordered.has('alice')).toBe(false);
+      expect(legacyB.has('alice')).toBe(true);
 
-      // accredit has the higher id -> alice ends active.
-      const accreditWins = await runAccredCte([
-        { action: 'revoke', account: 'alice', blockNum: 100, id: 20 },
-        { action: 'accredit', account: 'alice', blockNum: 100, id: 21 },
+      // A SANCTION (type:"sanction") IS sticky and suppresses regardless of op
+      // order. Same-block accredit + sanction -> alice NOT active (a same-block
+      // tie resolves to sanctioned; no later authority accredit lifts it).
+      const sanctionA = await runAccredCte([
+        { action: 'accredit', account: 'alice', blockNum: 100, id: 10, method: 'email' },
+        { action: 'revoke', account: 'alice', blockNum: 100, id: 11, type: 'sanction' },
       ]);
-      expect(accreditWins.has('alice')).toBe(true);
+      expect(sanctionA.has('alice')).toBe(false);
+      const sanctionB = await runAccredCte([
+        { action: 'revoke', account: 'alice', blockNum: 100, id: 11, type: 'sanction' },
+        { action: 'accredit', account: 'alice', blockNum: 100, id: 10, method: 'email' },
+      ]);
+      expect(sanctionB.has('alice')).toBe(false);
 
-      // Reversed VALUES order — identical result.
-      const accreditWinsReordered = await runAccredCte([
-        { action: 'accredit', account: 'alice', blockNum: 100, id: 21 },
-        { action: 'revoke', account: 'alice', blockNum: 100, id: 20 },
+      // The same-block `id DESC` tie-breaker decides which of two accredits is
+      // the LATEST, and the winner's method drives membership: a wot winner with
+      // zero vouchers is below threshold (NOT active), an email winner is active.
+      // Higher id wins regardless of VALUES order.
+      const emailWins = await runAccredCte([
+        { action: 'accredit', account: 'alice', blockNum: 100, id: 20, method: 'wot' },
+        { action: 'accredit', account: 'alice', blockNum: 100, id: 21, method: 'email' },
       ]);
-      expect(accreditWinsReordered.has('alice')).toBe(true);
+      expect(emailWins.has('alice')).toBe(true);
+      const wotWins = await runAccredCte([
+        { action: 'accredit', account: 'alice', blockNum: 100, id: 20, method: 'email' },
+        { action: 'accredit', account: 'alice', blockNum: 100, id: 21, method: 'wot' },
+      ]);
+      // wot winner, zero accredited vouchers -> below threshold -> NOT active.
+      expect(wotWins.has('alice')).toBe(false);
     },
   );
 

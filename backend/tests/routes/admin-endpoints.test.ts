@@ -381,6 +381,53 @@ describe('POST /api/admin/accreditation/grant', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+// POST /api/admin/accreditation/sanction
+// ─────────────────────────────────────────────────────────────────────
+describe('POST /api/admin/accreditation/sanction', () => {
+  it('admin succeeds; payload carries action=revoke, type=sanction, issued_by=actor', async () => {
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/accreditation/sanction'), ADMIN).send({
+      account: 'baduser',
+      reason: 'fabricated results',
+    });
+    expect(res.status).toBe(200);
+    expect(broadcastAdminMock).toHaveBeenCalledTimes(1);
+    const payload = broadcastAdminMock.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      action: 'revoke',
+      type: 'sanction',
+      account: 'baduser',
+      reason: 'fabricated results',
+      issued_by: ADMIN,
+    });
+  });
+
+  it('403s a non-roster caller (no broadcast)', async () => {
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/accreditation/sanction'), 'randomreader').send({
+      account: 'baduser',
+      reason: 'x',
+    });
+    expect(res.status).toBe(403);
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a JWT caller without a valid fresh-auth proof (no broadcast)', async () => {
+    // §6.4 / §6.5 invariant #1: a stolen admin JWT alone must not broadcast an
+    // authority op. consumeMock defaults to {valid:false}, so the requireFreshAdminAuth
+    // gate rejects the JWT path even though the caller is a roster admin.
+    stubDefaultRoster();
+    const res = await asJwt(request(app).post('/api/admin/accreditation/sanction'), ADMIN).send({
+      account: 'baduser',
+      reason: 'x',
+    });
+    expect(res.status).toBeGreaterThanOrEqual(401);
+    expect(res.status).toBeLessThan(404);
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
 // POST /api/admin/papers/retract
 // ─────────────────────────────────────────────────────────────────────
 describe('POST /api/admin/papers/retract', () => {

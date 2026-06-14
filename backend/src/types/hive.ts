@@ -133,10 +133,20 @@ export interface AccreditAction {
 
 export interface RevokeAction {
   action: "revoke";
+  // Sanction discriminator. A deliberate authority sanction carries
+  // `type: "sanction"` and is STICKY: it suppresses accreditation regardless of
+  // vouch support and is lifted ONLY by a later authority-pinned `accredit`
+  // (email/orcid/manual) — a `wot` auto-accredit does not lift it. Legacy
+  // revokes (historical WoT threshold-drop revocations, reason "WoT threshold
+  // no longer met") lack this field; they are non-sanctions and no longer
+  // suppress membership. The backend no longer broadcasts any non-sanction
+  // revoke — a WoT threshold drop is a self-healing live-membership non-event
+  // (see activeAccreditationsCteBody).
+  type?: "sanction";
   account: string;
   reason: string;
-  // Authority attribution (see AccreditAction). WoT auto-revocations carry the
-  // 'wot' system marker; a deliberate admin sanction carries the acting admin.
+  // Authority attribution (see AccreditAction): a deliberate admin sanction
+  // carries the acting admin's Hive account.
   issued_by: string;
   timestamp: string;
 }
