@@ -8,6 +8,15 @@ import {
   clearReturnPath,
 } from '../lib/fresh-auth.js';
 
+// Fallback for the ORCID minimum-works threshold shown in the insufficient-works
+// copy when the backend's 422 carries no `details.required`. Mirrors the backend
+// default for `ORCID_MIN_WORKS` documented in api-contracts/orcid.md. Once the
+// backend emits `details: { required, have }` on the insufficient-works 422, the
+// real value reaches the user and this fallback is never hit; it only covers the
+// transitional window before that lands, so the threshold lives in one place
+// here rather than baked into all 16 locale strings.
+const ORCID_MIN_WORKS_FALLBACK = 3;
+
 const template = `
       <div x-data="orcidCallbackPage" class="container-narrow py-8">
         <div class="max-w-md mx-auto text-center py-16">
@@ -50,6 +59,11 @@ const template = `
             <template x-if="errorAction === 'settings'">
               <a :href="$lp('/settings')" @click.prevent="navigate('/settings')" class="btn-primary inline-block no-underline" x-text="$t('common.verifyInSettings')"></a>
             </template>
+            <!-- errorAction === 'timeout' (ORCID provider timeout / service
+                 unavailable) intentionally renders NO action button: the message
+                 instructs the user to wait and start over from scratch, and an
+                 immediate same-code retry would 400 (state consumed). Withholding
+                 the one-tap retry is the point — do not add a 'timeout' branch. -->
             <template x-if="errorAction === '' || errorAction === null">
               <a :href="$lp(backPath)" @click.prevent="navigate(backPath)" class="btn-secondary inline-block no-underline" x-text="$t('common.tryAgain')"></a>
             </template>
@@ -72,7 +86,7 @@ export function initOrcidCallbackPage() {
 
     status: 'verifying',
     errorMessage: '',
-    errorAction: '', // 'signup' for NO_ACCOUNT, 'recover' for ORCID_ALREADY_LINKED, 'settings' for BROADCAST_TIMEOUT, POST_BROADCAST_FAILED (outcome:'confirmed'), and POST_BROADCAST_OPERATOR_REQUIRED (outcome:'confirmed'), else empty
+    errorAction: '', // 'signup' for NO_ACCOUNT; 'recover' for ORCID_ALREADY_LINKED; 'settings' for BROADCAST_TIMEOUT, POST_BROADCAST_FAILED / POST_BROADCAST_OPERATOR_REQUIRED (outcome:'confirmed'), and accredit/link ORCID_PROVIDER_TIMEOUT; 'timeout' (renders no one-tap retry button) for the other ORCID_PROVIDER_TIMEOUT modes and INTERNAL_ERROR; else empty
     resultUsername: '',
     backPath: '/',
 
@@ -192,13 +206,61 @@ export function initOrcidCallbackPage() {
           return;
         }
 
-        // NO_ACCOUNT and VALIDATION_ERROR are semantic codes, safe to
-        // branch on. All other failures take the generic-message +
-        // console.warn sanitization path shared with executeUpgrade() in
-        // settings.js. console.warn fires only on the generic fallback,
-        // not on expected VALIDATION_ERROR responses (avoids log noise).
+        // ORCID_PROVIDER_TIMEOUT (504): the ORCID provider HTTP call (token
+        // exchange or works fetch) did not respond in time. Per the orcid.md
+        // contract the OAuth state is already consumed, so a same-{code,state}
+        // retry returns 400; and on accredit/link the call may have partially
+        // completed (the 504's verify_before_retry hint), so an immediate retry
+        // risks a duplicate on-chain bind. Surface dedicated copy and withhold
+        // the generic one-tap retry. Accredit/link route to /settings to verify
+        // before restarting (matching the contract's verify_location); the
+        // broadcast-less modes (signup/login/fresh_auth) get the no-retry
+        // 'timeout' affordance.
+        if (err.code === 'ORCID_PROVIDER_TIMEOUT') {
+          if (mode === 'accredit' || mode === 'link') {
+            this.errorMessage = this.$t('orcid.providerTimeoutVerify');
+            this.errorAction = 'settings';
+          } else {
+            this.errorMessage = this.$t('orcid.providerTimeout');
+            this.errorAction = 'timeout';
+          }
+          return;
+        }
+
+        // INTERNAL_ERROR (500/503): ORCID API unreachable, or the backend
+        // service unavailable. A pre-broadcast failure with no chain side-effect,
+        // but the state is consumed downstream of the consume DEL, so a same-code
+        // retry returns 400 — withhold the one-tap retry via the 'timeout'
+        // affordance. Keep the console.warn: unlike an expected VALIDATION_ERROR,
+        // a 5xx is an unexpected server failure worth diagnosing, and the raw
+        // error stays out of the DOM behind the dedicated copy.
+        if (err.code === 'INTERNAL_ERROR') {
+          console.warn('[orcid callback complete]', err);
+          this.errorMessage = this.$t('orcid.serviceUnavailable');
+          this.errorAction = 'timeout';
+          return;
+        }
+
+        // VALIDATION_ERROR: the insufficient-works 422 (signup + accredit) is the
+        // only VALIDATION_ERROR that carries a works-count details shape
+        // ({ required, have }). The other VALIDATION_ERRORs on this surface — the
+        // accredit "already accredited" 422 and the link "not accredited" 422 —
+        // must NOT borrow the works copy. Detect the works case by that details
+        // shape; until the backend emits it, fall back to mode (signup mode's
+        // ONLY VALIDATION_ERROR is insufficient-works). The threshold is
+        // de-hardcoded from the copy: pass the backend's real `required` when
+        // present, else the documented-default fallback. Both VALIDATION_ERROR
+        // paths are expected responses, so neither warns (avoids log noise);
+        // only the generic fallback below console.warns for diagnostics.
         if (err.code === 'VALIDATION_ERROR') {
-          this.errorMessage = this.$t('signup.orcidInsufficientWorks');
+          const required = err.details?.required;
+          if (typeof required === 'number' || mode === 'signup') {
+            this.errorMessage = this.$t('signup.orcidInsufficientWorks', {
+              min: typeof required === 'number' ? required : ORCID_MIN_WORKS_FALLBACK,
+            });
+          } else {
+            this.errorMessage = this.$t('orcid.verificationFailed');
+          }
         } else {
           console.warn('[orcid callback complete]', err);
           this.errorMessage = this.$t('orcid.verificationFailed');

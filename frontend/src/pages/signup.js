@@ -124,6 +124,13 @@ const template = `
               <span x-show="orcidLoading" x-text="$t('orcid.redirecting')"></span>
             </button>
 
+            <!-- ORCID works-requirement pre-flight note: state the gate before
+                 the OAuth round-trip so the user learns it up front, not only on
+                 rejection. Covers the two failure modes that produce the same
+                 rejection (self-asserted works don't count; non-Everyone
+                 visibility is invisible to the public API). -->
+            <p class="text-center text-xs text-ink-muted mt-2" x-text="$t('signup.orcidWorksRequirementNote')"></p>
+
             <!-- Login link -->
             <p class="text-center text-sm text-ink-muted mt-6">
               <span x-text="$t('signup.hasAccount')"></span>

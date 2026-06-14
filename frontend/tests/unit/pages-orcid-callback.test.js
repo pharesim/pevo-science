@@ -18,6 +18,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
+import enMessages from '../../public/messages/en.json';
 
 const mockCompleteOrcid = vi.fn();
 
@@ -70,6 +71,20 @@ function createComponent() {
   const comp = factory();
   comp.$t = (key) => key;
   return comp;
+}
+
+// Resolves an i18n key against the real en.json copy and interpolates simple
+// {key} params, mirroring i18n.js's simple-{key} branch. Used so tests can
+// assert on the RESOLVED insufficient-works string (the de-hardcoded {min}
+// threshold) rather than only the i18n key — the page's own $t is mocked to
+// echo keys. interpolate() itself is covered by i18n.js's own suite.
+function resolveT(key, params) {
+  const tmpl = key.split('.').reduce(
+    (o, p) => (o && typeof o === 'object' ? o[p] : undefined), enMessages,
+  );
+  if (tmpl === undefined) return key;
+  if (!params) return tmpl;
+  return tmpl.replace(/\{(\w+)\}/g, (_, k) => (params[k] !== undefined ? String(params[k]) : `{${k}}`));
 }
 
 describe('orcidCallbackPage', () => {
@@ -424,6 +439,159 @@ describe('orcidCallbackPage', () => {
       expect(comp.status).toBe('error');
       expect(comp.errorMessage).toBe('signup.orcidInsufficientWorks');
       expect(comp.errorAction).toBe('');
+    });
+
+    // ── De-hardcoded works threshold: the backend's real count reaches the user ──
+    // The insufficient-works copy is parameterized on {min}; the page passes the
+    // backend's `details.required` when present, else a documented-default
+    // fallback. These assert on the RESOLVED string (via resolveT), not the key.
+    it('insufficient works: the backend required (5) reaches the resolved copy', async () => {
+      const comp = createComponent();
+      comp.$t = resolveT;
+      const err = new Error('Insufficient works');
+      err.code = 'VALIDATION_ERROR';
+      err.details = { required: 5, have: 1 };
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'signup');
+
+      expect(comp.status).toBe('error');
+      // The real backend threshold (5), not a baked-in number, reaches the user.
+      expect(comp.errorMessage).toContain('5');
+      expect(comp.errorMessage).not.toContain('3');
+      // Fully interpolated — no leftover placeholder.
+      expect(comp.errorMessage).not.toContain('{min}');
+    });
+
+    it('insufficient works: a non-default threshold (7) surfaces that number', async () => {
+      const comp = createComponent();
+      comp.$t = resolveT;
+      const err = new Error('Insufficient works');
+      err.code = 'VALIDATION_ERROR';
+      err.details = { required: 7, have: 0 };
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'accredit');
+
+      expect(comp.errorMessage).toContain('7');
+    });
+
+    it('insufficient works: falls back to the documented default (3) when the 422 has no details', async () => {
+      const comp = createComponent();
+      comp.$t = resolveT;
+      const err = new Error('Insufficient works');
+      err.code = 'VALIDATION_ERROR'; // pre-backend: no details shape
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'signup');
+
+      expect(comp.status).toBe('error');
+      // Documented ORCID_MIN_WORKS default surfaces until the backend emits details.
+      expect(comp.errorMessage).toContain('3');
+      expect(comp.errorMessage).not.toContain('{min}');
+    });
+
+    it('the en insufficient-works copy is parameterized, not a baked-in number', () => {
+      const tmpl = enMessages.signup.orcidInsufficientWorks;
+      expect(tmpl).toContain('{min}');
+      // No hardcoded "<N> works" threshold left in the source string.
+      expect(tmpl).not.toMatch(/\b\d+\s+works\b/);
+    });
+
+    // ── VALIDATION_ERROR mis-mapping: non-works 422s must not borrow works copy ──
+    it('accredit-mode VALIDATION_ERROR without works details does NOT borrow the works copy', async () => {
+      // e.g. accredit's "Account is already accredited" 422 — non-works, must not
+      // render "needs at least N works".
+      const comp = createComponent();
+      const err = new Error('Account is already accredited');
+      err.code = 'VALIDATION_ERROR'; // no { required } shape
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'accredit');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(comp.errorMessage).not.toBe('signup.orcidInsufficientWorks');
+    });
+
+    it('link-mode VALIDATION_ERROR without works details does NOT borrow the works copy', async () => {
+      const comp = createComponent();
+      const err = new Error('User is not accredited');
+      err.code = 'VALIDATION_ERROR';
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+    });
+
+    it('accredit-mode insufficient-works WITH details DOES show the works copy', async () => {
+      const comp = createComponent(); // key-echo $t
+      const err = new Error('Insufficient works');
+      err.code = 'VALIDATION_ERROR';
+      err.details = { required: 3, have: 0 };
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'accredit');
+
+      expect(comp.errorMessage).toBe('signup.orcidInsufficientWorks');
+    });
+
+    // ── Provider timeout / service outage: distinct copy, no one-tap retry ──
+    it('ORCID_PROVIDER_TIMEOUT (signup): dedicated copy, no one-tap retry affordance', async () => {
+      const comp = createComponent();
+      const err = new Error('provider timeout');
+      err.code = 'ORCID_PROVIDER_TIMEOUT';
+      err.details = { retriable: false, outcome: 'timeout', verify_before_retry: true };
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'signup');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.providerTimeout');
+      // 'timeout' renders no retry button (see template) — not the generic
+      // immediate "Try Again" affordance.
+      expect(comp.errorAction).toBe('timeout');
+    });
+
+    it('ORCID_PROVIDER_TIMEOUT (accredit): routes to Settings to verify before retry', async () => {
+      const comp = createComponent();
+      const err = new Error('provider timeout');
+      err.code = 'ORCID_PROVIDER_TIMEOUT';
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'accredit');
+
+      expect(comp.errorMessage).toBe('orcid.providerTimeoutVerify');
+      expect(comp.errorAction).toBe('settings');
+    });
+
+    it('ORCID_PROVIDER_TIMEOUT (link): routes to Settings to verify before retry', async () => {
+      const comp = createComponent();
+      const err = new Error('provider timeout');
+      err.code = 'ORCID_PROVIDER_TIMEOUT';
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.errorMessage).toBe('orcid.providerTimeoutVerify');
+      expect(comp.errorAction).toBe('settings');
+    });
+
+    it('INTERNAL_ERROR: distinct unavailable copy, no one-tap retry, warns for diagnostics', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      const err = new Error('ORCID API unreachable');
+      err.code = 'INTERNAL_ERROR';
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'signup');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.serviceUnavailable');
+      expect(comp.errorAction).toBe('timeout');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
 
     // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: generic (non-semantic)
