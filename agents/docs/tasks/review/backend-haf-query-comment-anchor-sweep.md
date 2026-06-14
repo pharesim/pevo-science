@@ -252,3 +252,79 @@ new occurrences may have appeared since this snapshot. Per
 replacement text for any new rot class (do not substitute one rot form for another). Then
 `git mv` the file back to `tasks/review/` — the move is the re-review signal; the architect
 re-reviews only the diff since this hold block.
+
+## Backend re-review signal (2026-06-14, working tree → commit below)
+
+Round-2 hold items all landed. Fresh re-enumeration first (mandatory step): grepped
+`backend/src/` for every rot class from scratch — `round-N hold`, uppercase
+`(BACKEND|BE|SEC|UI|ARCH)-` slugs, lowercase `(backend|ui|architect)-<kebab>` slugs,
+`Option [A-Z].[0-9]`, bare `[A-Z].[0-9]` shorthand, `hold #N`/`item #N`/`F-finding`/
+`acceptance #N`, and `see task`/`tasks-archive`/`tasks/<dir>` redirects. Result confirmed
+the hold-block snapshot exactly: the same 8 lowercase slugs + 6 `A.1` sites, no new
+occurrences, none already cleaned by a sibling.
+
+**Hold item 1 (orcid.ts `A.1` orphans).** Re-anchored all six on behavior, no `Option A.N`
+label reintroduced:
+- Two operator-log strings: `A.1 lock-TTL extension skipped` → `lock-TTL extension skipped`;
+  `A.1 protection degraded` → `duplicate-bind protection degraded`.
+- Four comments (the "race A.1 was designed to close", the docblock `redis.expire side
+  effect for A.1 lock-TTL`, the `BroadcastTimeoutError + A.1 extend-helper` release-semantics
+  note, and the `A.1 lock-TTL extension is a NO-OP` branch note) re-anchored on
+  "the duplicate-bind race the lock-TTL extension was designed to close" / "the lock-TTL
+  extension" / "lock-TTL extend-helper" / "lock-TTL extension".
+
+**Hold item 2 (8 lowercase slug citations).** All re-anchored on behavior / stable symbol:
+- `argon2-error-handler.ts` ×3 — dropped the three `See backend-503-*.md` redirect
+  sentences; the preceding WHY prose (genericized wire body / `details.reason` discriminator /
+  per-branch `Retry-After`) is the durable doc and stays.
+- `request-abort-signal.ts` — rewrote the consolidation tail to drop both the `.md` slug
+  and the soft "abort-signal task" redirect, anchoring on the four route filenames already
+  named (auth/custody/settings/signup-verify).
+- `search.ts` — replaced the `see lane 4 of backend-papers-filter-accreditation` redirect
+  with the actual predicate text + the `reviews.ts` stable-symbol anchor.
+- `auth.ts` — the thrown UV_THREADPOOL_SIZE assertion string keeps the behavioral reason
+  ("the JS-level argon2 semaphore is the real concurrency cap") and drops the slug; the
+  resend-verification comment re-anchored on "the SMTP-tail timing differential there is not
+  equalized here".
+- `hafsql.ts` — dropped the slug paren on the active/revoked accreditation-status docblock;
+  the post-revocation-audit-visibility WHY stays.
+
+Note on the architect's "absent from solutions/" claim: 5 of the 8 slugs DO still appear in
+`solutions/` entry bodies. That does not rescue the source citations — the task files they
+point to are gone from both `tasks/` and `tasks-archive.md`, so they are dead pointers in
+source regardless. The lingering solutions/-body mentions are a separate, out-of-scope matter
+(those bodies rot per the same convention but are not this task's surface).
+
+**Hold item 3 (tighten the canary).** Interpretation choice, flagged for the architect: the
+"acceptance canary" was a grep in the acceptance, not a committed test (the prior round only
+touched `notification-queries-lateral-guard-canary.test.ts`). "So this class cannot recur"
+is only true with a standing guard, so I added one: `tests/eslint/no-stale-comment-anchors.test.ts`
+(placed beside the `no-bridge-paper-literal` precedent). It walks every `.ts` under
+`backend/src/` and fails on `round-N hold`, `Option X.N`, and a CASE-INSENSITIVE
+`(backend|ui|architect)-<kebab-kebab>` slug regex — the single insensitive pattern subsumes
+the old `^BACKEND-` (uppercase, line-anchored) and the lowercase mid-comment class in one,
+closing both the case- and position-gaps the hold block named. Durable `solutions/` /
+`api-contracts/` path lines are exempt from the slug check (the allowed persistent-store
+class). If the architect prefers a grep-only deliverable or an ESLint rule instead, easy to
+swap — but the standing test is the only form that actually prevents recurrence.
+
+**Verification.**
+- Re-enumeration grep clean across all classes after the edits (every class returns empty).
+- Canary green (2/2) AND non-vacuous: a negative-control confirmed the regexes fire on
+  `round-1 hold #6`, `BACKEND-REPUTATION-SSOT`, `backend-503-message-genericize.md`,
+  `see backend-papers-filter-accreditation`, `Option A.1`, and do NOT fire on `ui-button`,
+  behavioral prose, or "a normal round of work"; the durable-path exemption fires correctly.
+- `npm run typecheck` clean; `npm run lint` clean (0 errors; the lone warning is the
+  pre-existing unused-eslint-disable in `lib/author-supersession.ts`, untouched here).
+- Every `backend/src/` change is provably comment/string-only (`git diff` non-comment-line
+  filter returns empty); the only logic-adjacent surface is the new test file.
+- `orcid.test.ts` + `auth-log-shape.test.ts` green (115 tests) — confirms the two changed
+  operator-log strings and the changed assertion string break no log-spy/assertion pin.
+- Audited own replacement text per `convention-enforcing-fix-must-audit-its-own-new-code`:
+  no slug-for-SHA / SHA-for-slug substitution; replacements anchor only on stable symbols
+  (`reviews.ts`, route filenames, CTE/behavior names).
+
+**Out of scope (unchanged from hold block):** the test-tree rot noted in the 2026-06-09 /
+2026-06-12 sections (`orcid.test.ts` `A.1` comments, `profile-reviews-accred-gate.test.ts`,
+`reputation-batch-internals.test.ts` headers) stays for a future `tests/` sweep — user
+scoped this task to `src/`.

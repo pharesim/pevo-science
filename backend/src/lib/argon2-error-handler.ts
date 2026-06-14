@@ -56,7 +56,7 @@
 // reconnaissance that the SERVICE_UNAVAILABLE error code already conveys
 // more cleanly. Operators still get the distinct branch via the
 // `logger.warn` (queue-full) vs `logger.info` (shutdown) call below; only
-// the wire body is genericized. See `backend-503-message-genericize.md`.
+// the wire body is genericized.
 //
 // ── Machine-readable details.reason discriminator ─────────────────────
 //
@@ -67,7 +67,7 @@
 // distinct cases without needing log-stream correlation — the wire body
 // stays generic so an attacker still cannot distinguish saturation from
 // drain via the human-readable `message`. `ArgonAbortError` writes no
-// response so it has no `reason`. See `backend-503-reason-discrimination.md`.
+// response so it has no `reason`.
 //
 // ── Retry-After header on 503 responses ─────────────────────────────────
 //
@@ -79,7 +79,7 @@
 // meant to kill. `HandleArgonErrorOpts.retryAfterSec` is an optional
 // per-call override; when set it wins over the defaults for both branches.
 // `ArgonAbortError` gets no header (the socket is gone — there is no
-// header to send). See `backend-503-retry-after.md`.
+// header to send).
 
 import type { Response } from 'express';
 import { sendError } from '../response.js';

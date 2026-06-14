@@ -142,7 +142,7 @@ export const RESET_REQUEST_OK_MESSAGE = 'If an account exists with that email, a
   const pool = Number(process.env.UV_THREADPOOL_SIZE);
   if (!Number.isFinite(pool) || pool < 16) {
     throw new Error(
-      `UV_THREADPOOL_SIZE must be >= 16 for burnSentinel determinism (got ${process.env.UV_THREADPOOL_SIZE ?? 'unset'}); the JS-level semaphore (backend-argon2-jslevel-concurrency-cap) is the real cap, this env value is libuv headroom.`,
+      `UV_THREADPOOL_SIZE must be >= 16 for burnSentinel determinism (got ${process.env.UV_THREADPOOL_SIZE ?? 'unset'}); the JS-level argon2 semaphore is the real concurrency cap, this env value is libuv headroom.`,
     );
   }
 }
@@ -884,8 +884,8 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
     // (100-2000ms depending on the SMTP server). Without this burn, the
     // unknown-email path returns in ~1ms and a caller can enumerate accounts
     // on the email axis by response time alone. Note: the SMTP-tail timing
-    // oracle on the known-email path is a separate concern (tracked as
-    // `backend-resend-verification-smtp-timing.md`); this closes the
+    // oracle on the known-email path is a separate concern (the SMTP-tail
+    // timing differential there is not equalized here); this closes the
     // cheap-early-return half only.
     if (rows.length === 0) {
       // Drain-window enumeration fix: if the sentinel burn aborts because the

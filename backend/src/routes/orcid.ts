@@ -1500,7 +1500,7 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
         routeLabel,
         orcidId,
       },
-      `${routeLabel} A.1 lock-TTL extension skipped — Redis unavailable at BroadcastTimeoutError time, duplicate-bind window may be open`,
+      `${routeLabel} lock-TTL extension skipped — Redis unavailable at BroadcastTimeoutError time, duplicate-bind window may be open`,
     );
     return;
   }
@@ -1544,7 +1544,7 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
           cause,
           pttlBefore,
         },
-        `${routeLabel} binding lock expired between acquire and TTL-extend — A.1 protection degraded for this request`,
+        `${routeLabel} binding lock expired between acquire and TTL-extend — duplicate-bind protection degraded for this request`,
       );
       return;
     }
@@ -1564,7 +1564,8 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
     // ambiguous-outcome envelope). Log at error level because the
     // duplicate-bind protection is degraded for this request — the lock
     // will fall back to its original ~35s TTL and a concurrent bind
-    // arriving after that could slip the race A.1 was designed to close.
+    // arriving after that could slip the duplicate-bind race the lock-TTL
+    // extension was designed to close.
     logger.error(
       {
         event: 'orcid.binding_lock.extend_threw',
@@ -1599,7 +1600,7 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
  *                   'unavailable' branch. Inside fn, callers may still catch
  *                   known throw classes earlier to surface a different
  *                   envelope (e.g. BroadcastTimeoutError → 504 with
- *                   timeout_ms + redis.expire side effect for A.1 lock-TTL
+ *                   timeout_ms + redis.expire side effect for the lock-TTL
  *                   extension; non-timeout broadcast errors on 'acquired' →
  *                   502 BROADCAST_FAILED; PostBroadcastWriteError → 502
  *                   POST_BROADCAST_FAILED with tx_id). Anything that escapes
@@ -1730,7 +1731,7 @@ async function withOrcidBindingLock(
     //      Wire shape: 502 POST_BROADCAST_FAILED.
     //
     // Lock release semantics: throws release the lock (skipRelease stays
-    // false); successful skipRelease (the BroadcastTimeoutError + A.1
+    // false); successful skipRelease (the BroadcastTimeoutError + lock-TTL
     // extend-helper path inside fn) still skips. Caught throws don't set
     // skipRelease so the finally releases — a subsequent retry can acquire
     // a fresh lock.
@@ -1763,7 +1764,7 @@ async function withOrcidBindingLock(
     // reappear. See convention doc
     // agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md.
     //
-    // NB: A.1 lock-TTL extension is a NO-OP on this branch. There is no lock
+    // NB: lock-TTL extension is a NO-OP on this branch. There is no lock
     // to extend (acquireBindingLock returned 'unavailable'). The duplicate-
     // bind window in the degraded-Redis regime is a separate axis tracked
     // outside this function; the wrapper's outer catch below routes throws

@@ -13,9 +13,8 @@
 //
 // Extracted from the four routes (auth.ts, custody.ts, settings.ts,
 // signup-verify.ts) that previously each defined this helper inline. The
-// per-file duplication landed under the abort-signal task's "no shared new
-// file per the file-list scope" constraint; this module is the
-// consolidation pass tracked by `backend-argon2-error-handler-extract.md`.
+// per-file duplication originally landed under a "no shared new file"
+// scope constraint; this module is the later consolidation that removed it.
 
 import type { Request, Response } from 'express';
 

@@ -137,7 +137,7 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
  * CTE body that derives a per-account accreditation status row for every
  * account that has ever been accredited. Distinguishes 'active' from
  * 'revoked' so post-revocation audit visibility can be preserved on
- * forged-ORCID claims (`backend-orcid-claim-mismatch-post-revocation-audit.md`).
+ * forged-ORCID claims.
  *
  * Composition contract: this CTE MUST be combined with
  * `activeAccreditationsCteBody` in the same WITH block (it depends on

@@ -205,9 +205,9 @@ async function searchReviewsFromHaf(
     excludeConsentedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: 'p.author', paperPermlinkExpr: 'p.permlink' }),
   ];
 
-  // Accreditation gate is unconditional — see lane 4 of
-  // backend-papers-filter-accreditation for the single-doc reviews gate
-  // rationale; this list-mode site enforces the same predicate. Reviews
+  // Accreditation gate is unconditional: this list-mode site enforces the
+  // same `c.author IN (SELECT account FROM active_accreditations)` predicate
+  // the single-doc reviews detail endpoint (reviews.ts) applies. Reviews
   // surfaces do NOT include the hiveAnonAccount OR-arm here because list
   // search has no need to surface anon-proxy reviews — the single-doc
   // detail endpoint (reviews.ts) handles that path.
