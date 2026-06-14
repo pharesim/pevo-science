@@ -197,3 +197,58 @@ comment-only (`git diff` non-comment-line check returns empty).
 references in source are durable (files exist on disk) and correctly left intact —
 the convention distinguishes those persistent knowledge-store filenames from
 rotting task-slug / round / line anchors.
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES
+
+Reviewed commit `324ca283` via `/ce-code-review` (7 personas; `ce-agent-native-reviewer`
+skipped per root CLAUDE.md). The substantive change is clean and archive-ready on its
+own: the `citationsArrayGuardSql` extraction is semantically equivalent to the inline
+arm 6a/6b guards (guard stays at the `jsonb_array_elements` argument site, preserving
+the LATERAL-before-WHERE invariant), the alias is identifier-validated, the `appTagParam`
+trace confirms it is always a `$N` bound placeholder (appTag value lands bound, no
+injection), and the canary is drift-proof by construction. Correctness, security,
+adversarial, and learnings all returned zero findings.
+
+Held only on TWO completeness gaps against this task's own (user-chosen, full
+`backend/src/`) acceptance. Both are P3 paperwork, neither is a behavior/security defect.
+
+1. **Incomplete Option-A.N removal in `routes/orcid.ts` (INTRODUCED by this commit).**
+   The sweep deleted the `Option A.1` expansions from the orcid binding-lock docblocks
+   but left SIX bare `A.1` shorthand references orphaned — the text defining what "A.1"
+   meant is gone, so the shorthand now dangles (an operator sees "A.1 lock-TTL extension
+   skipped" in logs with nothing defining the term). Sites: the two BroadcastTimeoutError
+   operator-log strings ("lock-TTL extension skipped" / "protection degraded") and four
+   comments around the binding-lock TTL-extend / skipRelease branches. Re-anchor each on
+   the behavior ("lock-TTL extension" / "duplicate-bind protection" / "the duplicate-bind
+   race"), matching how the removed docblocks were re-anchored. Do NOT reintroduce the
+   `Option A.N` label. This is unfinished by the commit's own stated `Option A.N` removal
+   scope.
+
+2. **Eight dead lowercase task-slug citations remain in `backend/src/`.** The acceptance's
+   grep-canary matches only UPPERCASE line-anchored `^BACKEND-`, so lowercase mid-comment
+   `<role>-<kebab>` / `<role>-<kebab>.md` citations slipped through. All eight are
+   confirmed dead pointers (absent from `tasks/`, `solutions/`, and `tasks-archive.md`):
+   - `hafsql.ts` — `backend-orcid-claim-mismatch-post-revocation-audit.md` (active-accred CTE docblock)
+   - `lib/argon2-error-handler.ts` — `backend-503-message-genericize.md`, `backend-503-reason-discrimination.md`, `backend-503-retry-after.md`
+   - `lib/request-abort-signal.ts` — `backend-argon2-error-handler-extract.md`
+   - `routes/auth.ts` — `backend-argon2-jslevel-concurrency-cap` (inside a thrown error STRING, not a comment) and `backend-resend-verification-smtp-timing.md`
+   - `routes/search.ts` — `backend-papers-filter-accreditation`
+   Re-anchor each on behavior / stable symbol per the Comment Anchors convention. For the
+   `auth.ts` runtime-error-string one, keep the behavioral reason (the JS-level semaphore
+   is the real cap) and drop the slug. Two of these files (`argon2-error-handler.ts`,
+   `request-abort-signal.ts`) were not touched by `324ca283` at all.
+
+3. **Tighten the acceptance canary so this class cannot recur.** The current canary
+   (`round-\d+ hold` + `^BACKEND-`) is case- and position-limited. Extend it to also fail
+   on lowercase `\b(backend|ui|architect)-[a-z0-9]+(-[a-z0-9]+)+(\.md)?` task-slug
+   citations and bare `Option [A-Z]\.[0-9]` labels anywhere in `backend/src/`, EXCLUDING
+   durable `solutions/` and `api-contracts/` path references (those are the allowed
+   persistent-knowledge-store class). Re-run after the fixes to confirm green.
+
+**Before editing: RE-ENUMERATE.** Grep `backend/src/` fresh for all 14 anchors above plus
+the new lowercase + Option-A.N classes — a concurrent sibling may have cleaned some, and
+new occurrences may have appeared since this snapshot. Per
+`convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`, audit your own
+replacement text for any new rot class (do not substitute one rot form for another). Then
+`git mv` the file back to `tasks/review/` — the move is the re-review signal; the architect
+re-reviews only the diff since this hold block.
