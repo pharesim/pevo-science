@@ -197,3 +197,32 @@ symbol; zero lib→route edges), re-pointing the two named tests
 `profile-papers-empty-cumulative-fallback.test.ts`) to the lib module.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+## Backend completion (2026-06-14) — landed at `022a7d0b` on main
+
+Option (b) implemented per the directed shape. `safePevoMeta` → `helpers.ts`;
+cumulative helpers (`resolveChainCumulativeAuthors` [signature unchanged, incl.
+`prebuiltChainPosts`], `computeChainCumulativeFromHaf`, `buildChainCumulativeFromPosts`,
+`buildCumulativeAuthorsForChain`, `emitOrcidClaimMismatchAudit`, `hivelessCompositeKey`,
+new `enrichRowsWithChainAuthors` with the affiliation-strip + `length>0` takeover gate
+folded in, + the result/options types) → `lib/chain-cumulative.ts`; the three chain walkers
+(`resolveContinuationChain`, `findCanonicalRoot`, `reconstructVersionsFromHaf`) + their
+support closure + `CHAIN_CUMULATIVE_AUTHORS_TTL_MS` → shared `lib/chain-walkers.ts` (all three
+are called by `papers.ts` on non-cumulative detail/version paths, so shared not cumulative-only).
+`resolveVersionsFromHaf` stays in `papers.ts`. `papers.ts`/`profile.ts` consume the shared
+`enrichRowsWithChainAuthors`; profile's route-to-route import on `./papers.js` is gone. The
+profile fallback test re-points its `vi.mock` to `enrichRowsWithChainAuthors` (the handler's
+actual call point — a partial export-mock of the inner symbol can't intercept the intra-module
+call); the parity-mocked test just re-points its import.
+
+**Hard invariant verified:** zero `import ... from './papers.js'` for any moved symbol
+tree-wide; zero `routes/` imports inside `lib/`. Cache key (`chain-authors:<a>:<p>`), TTL
+(`1_800_000`), epoch-guard (`getOrSet`) byte-for-byte preserved — no behavioral change.
+typecheck + lint clean; papers/profile/chain-walker/cumulative regression 101/101 green.
+
+NB for re-review: the first fan-out attempt built this on a **53-commit-stale `papers.ts`**
+(worktree cut from `63c076c9`, never reset) and was DISCARDED; `022a7d0b` is the redo on the
+correct base (`f2202a12`), so the option-(b) move sits on the current post-sibling-archival
+`papers.ts` (consent-display / consented-set / me-surfaces / anchor-sweep all present).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
