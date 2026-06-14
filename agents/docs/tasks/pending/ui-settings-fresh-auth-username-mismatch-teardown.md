@@ -69,3 +69,50 @@ minimal fix is the per-action block above.
 - `agents/docs/ARCHITECTURE.md` § 6.4 / § 6.5 — fresh-auth proof contract and the session-state invariants.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES:
+
+`/ce-code-review` on the implementation commit came back clean on production
+code: correctness, security, project-standards, and reliability all returned
+zero findings. The `handleSessionInconsistency()` extraction is faithful and
+behavior-preserving, the reason-only gate matches the `ApiRequestError`
+(no-`status`) shape, comment anchors are clean, and `disconnect()` is confirmed
+synchronous (no toast-vs-teardown race). The orchestrator-level teardown is
+covered by the new `lib-settings-fresh-auth.test.js` case. Two items to land
+before archive:
+
+1. **Caller-level `sessionInconsistent` coverage in `pages-settings.test.js`.**
+   The three `settings.js` handlers fold `sessionInconsistent` into the shared
+   `if (outcome.redirect || outcome.cancelled || outcome.sessionInconsistent)`
+   early-return, and none of that caller-side routing is exercised at the page
+   level (the new lib test pins the orchestrator outcome, not the caller's use
+   of it). Add at least a `handleSetPassword` + `{ sessionInconsistent: true }`
+   case asserting the plaintext fields (`newPasswordInput` /
+   `newPasswordConfirmInput`) are zeroed and no second toast fires — this branch
+   is the security-adjacent one (XSS-read hygiene on held plaintext). A
+   `handleEmailDelete` / `handleEmailSubmit` `sessionInconsistent` case (assert
+   clean early-return, no double toast) is welcome but the `set_password`
+   plaintext-zeroing case is the required one. Rationale: this is a new behavior
+   arm, not preemptive hardening (`behavior-change-coverage-gap-not-preemptive-hardening`),
+   so it warrants coverage. Mirror the existing redirect/cancelled abort tests
+   in that handler's describe block.
+
+2. **Stale "both orchestrators" comment in `fresh-auth.js`.** The
+   `passwordPromptMessage` docblock still says the prompt copy is "Shared by both
+   orchestrators" — there are now three fresh-auth orchestrators, and the
+   adjacent `handleSessionInconsistency` docblock names all three, so "both"
+   reads as stale. `passwordPromptMessage` is in fact called only by the settings
+   and authorship orchestrators (not `broadcastWithFreshAuth`), so reword to
+   name those two surfaces rather than the count. Pre-existing nit, folded here
+   since you're back in the file.
+
+Reviewed-and-dismissed (no action needed, recorded for the trail): the
+`delete_account` `sessionInconsistent` branch returns without `navigate('/')`,
+unlike the delete-success path. Verified benign — it is consistent with how
+`change_email` / `set_password` handle `sessionInconsistent` (none navigate),
+and `disconnect()` flips `isConnected` so the `x-if` collapses the authenticated
+settings UI to the sign-in prompt. Working as designed; do not change.
+
+When both items land, `git mv` this file back to `tasks/review/`.
