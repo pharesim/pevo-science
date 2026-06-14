@@ -52,3 +52,27 @@ With the probe green and the index gone, `/signup` (`auth.ts`) and
   migrations (`index.ts` wires `verifyAppDbMigrations()`; `BootFatalError` →
   `flushAndExit()`), so a missing index fails fast at startup rather than at first
   duplicate write.
+
+## Backend implementation note (2026-06-14, working tree)
+
+- **Assertion (items 1 + 2).** `verifyAppDbMigrationsWith` (`backend/src/app-db.ts`)
+  now runs, AFTER the existing missing-migrations check, a
+  `to_regclass('public.accounts_orcid_unique') IS NOT NULL` probe and throws the
+  same `BootFatalError` path on absence (operator-actionable message naming the
+  index, `007_accounts_orcid_unique.sql`, and `./deploy.sh migrate`). Cheap,
+  idempotent, single query. Gated on `expected.includes('007_accounts_orcid_unique.sql')`
+  so a fork that drops migration 007 is not force-failed — the assertion only
+  fires when its migration is on disk (always true for PEvO). Scoped to this one
+  sole-guard index; not a verify-every-index sweep.
+- **Coverage (item 3).** New real-DB spec in
+  `backend/tests/app-db-fresh-migrations.test.ts` reproduces the exact decoupled
+  state inside a transaction: cold-apply all migrations, `DROP INDEX
+  accounts_orcid_unique`, then assert `verifyAppDbMigrationsWith` throws
+  `BootFatalError` naming the index. A guard assertion confirms 007's
+  `schema_migrations` row is still present, so the throw is specifically the index
+  check and not the missing-migration path. The existing "cold-applied migrations
+  populate schema_migrations" spec is the positive control (it resolves cleanly
+  with the index present, exercising the new check's pass path).
+- All 5 specs in the file green. `npm run typecheck` + `npm run lint` clean (the
+  lone lint warning is the pre-existing unused-eslint-disable in
+  `src/lib/author-supersession.ts`, untouched).

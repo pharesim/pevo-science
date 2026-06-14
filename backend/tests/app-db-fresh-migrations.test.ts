@@ -237,4 +237,50 @@ describe.skipIf(!dbReachable)('verifyAppDbMigrations + cold-migrate fresh-DB reg
       client.release();
     }
   });
+
+  it('throws BootFatalError when accounts_orcid_unique index is absent though its migration row is recorded', async () => {
+    const pool = getAppPool();
+    if (!pool) throw new Error('App DB pool unavailable despite dbReachable');
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DROP SCHEMA public CASCADE');
+      await client.query('CREATE SCHEMA public');
+      await applyAllMigrations(client);
+      // Decouple the recorded migration from the physical index: 007's
+      // schema_migrations row survives, but the index is gone. This is the
+      // exact state a hand-run `DROP INDEX`, a rows-only pg_dump/restore, or an
+      // out-of-order hand-apply leaves, and the migration-row probe alone
+      // (which only checks that the filename was recorded) cannot catch it.
+      await client.query('DROP INDEX accounts_orcid_unique');
+
+      let caught: unknown;
+      try {
+        await verifyAppDbMigrationsWith(client);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(BootFatalError);
+      const errMsg = (caught as Error).message;
+      expect(errMsg).toMatch(/accounts_orcid_unique/);
+      expect(errMsg).toMatch(/deploy\.sh migrate/);
+
+      // Pin that this throw is the index assertion, NOT the missing-migration
+      // path: 007's row must still be present. Without this guard a regression
+      // that dropped the 007 row instead would produce the same BootFatalError
+      // class and silently pass the assertions above.
+      const row = await client.query(
+        `SELECT 1 FROM schema_migrations WHERE filename = '007_accounts_orcid_unique.sql'`,
+      );
+      expect(row.rowCount).toBe(1);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+
+  // Positive control: the "cold-applied migrations populate schema_migrations"
+  // spec above already resolves verifyAppDbMigrationsWith cleanly with the index
+  // physically present, so the index assertion's pass path is covered there.
 });

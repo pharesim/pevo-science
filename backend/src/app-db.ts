@@ -119,6 +119,33 @@ export async function verifyAppDbMigrationsWith(p: Queryable): Promise<void> {
     );
   }
 
+  // Sole-guard assertion: the accounts_orcid_unique partial index
+  // (007_accounts_orcid_unique.sql) is the ONLY backstop against duplicate-ORCID
+  // account rows — /signup (auth.ts) and updateAccountOrcid (orcid.ts) carry no
+  // application-level uniqueness check. Its schema_migrations row can outlive the
+  // index itself (a hand-run DROP INDEX, a pg_dump/restore that ships table rows
+  // but omits or fails the post-data index section, or out-of-order hand-applied
+  // migrations), and migration 008 backfills the 007 row unconditionally — so
+  // "row recorded" does NOT prove "index exists". Verify the index is physically
+  // present, not merely recorded, so a missing backstop fails fast at boot rather
+  // than at the first silent duplicate write. Gated on 007 being expected so a
+  // fork that drops the migration is not force-failed. Scoped to this one
+  // sole-guard index by design; NOT a general verify-every-index sweep.
+  if (expected.includes('007_accounts_orcid_unique.sql')) {
+    const orcidIndex = await p.query<{ exists: boolean }>(
+      `SELECT (to_regclass('public.accounts_orcid_unique') IS NOT NULL) AS exists`,
+    );
+    if (!orcidIndex.rows[0]?.exists) {
+      throw new BootFatalError(
+        'App database is missing the accounts_orcid_unique index, the sole backstop ' +
+          'against duplicate-ORCID account rows, even though its migration row is recorded. ' +
+          'Re-apply backend/migrations/007_accounts_orcid_unique.sql (or run `./deploy.sh migrate`) ' +
+          'so the index is physically present. See agents/docs/ARCHITECTURE.md (Migrations) for the ' +
+          'contract: migrations are authoritative, application code never issues DDL on startup.',
+      );
+    }
+  }
+
   logger.info(
     { migrations: expected.length },
     'App database schema verified against migrations on disk',
