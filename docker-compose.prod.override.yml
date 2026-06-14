@@ -12,18 +12,17 @@
 # HOST SETUP (run once on the production host; this overlay alone does NOT give
 # retention — the journal must be made persistent and time-capped). Without
 # Storage=persistent the journal is volatile and is wiped on reboot, so the
-# 14-day goal silently fails. Create the drop-in and restart journald:
+# 14-day goal silently fails. Tune SystemMaxUse to the host's free disk; the
+# RateLimit* lines raise the burst ceiling so a spike of pino lines is not
+# silently dropped (journald has no fallback cache). NOTE: systemd config does
+# NOT support trailing `#` comments on a value line (they become part of the
+# value and the setting is rejected), so the drop-in carries values only. The
+# printf form avoids heredoc-terminator pitfalls (the terminator must be at
+# column 0). Create the drop-in and restart journald:
 #
 #   sudo mkdir -p /etc/systemd/journald.conf.d
-#   sudo tee /etc/systemd/journald.conf.d/pevo-retention.conf >/dev/null <<'EOF'
-#   [Journal]
-#   Storage=persistent
-#   MaxRetentionSec=2week
-#   SystemMaxUse=1G          # tune to the host's free disk
-#   SystemKeepFree=500M
-#   RateLimitIntervalSec=30s # raise the rate limit so a burst of pino lines is
-#   RateLimitBurst=20000     # not SILENTLY dropped (journald has no fallback cache)
-#   EOF
+#   printf '[Journal]\nStorage=persistent\nMaxRetentionSec=2week\nSystemMaxUse=1G\nSystemKeepFree=500M\nRateLimitIntervalSec=30s\nRateLimitBurst=20000\n' \
+#     | sudo tee /etc/systemd/journald.conf.d/pevo-retention.conf
 #   sudo systemctl restart systemd-journald
 #
 # Verify: `systemd-analyze cat-config systemd/journald.conf` (effective config),
