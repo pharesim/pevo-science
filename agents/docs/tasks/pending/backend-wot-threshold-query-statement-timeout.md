@@ -146,3 +146,58 @@ BY block_num DESC)`, computed after the set is gathered) and are not obviously
 exposed to the empty-match worst case. Only the wot.ts case was verified
 empirically. If a broader audit is wanted, the same `AS MATERIALIZED` fence is
 the remediation; filing that as its own task is the architect's call.
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `ca18ee81` (correctness, security, performance,
+reliability, project-standards, testing, maintainability, adversarial,
+learnings). The perf fix is sound and verified clean: the `required_posting_auths`
+signer gate is preserved inside the materialized CTE (forged ops filtered before
+the sort), the rewrite is result-set-equivalent, and the new query is lint-clean
+(it correctly omits the `block_num >=` floor — the `no-custom-id-block-num-floor`
+rule names this exact `loadWotThreshold` shape as the allowed one). Archive is
+held on one substantive item:
+
+1. **Add the missing same-block tie-breaker (Rule 2).** The `candidates` CTE
+   currently projects only `json, block_num` and the outer query sorts on
+   `ORDER BY block_num DESC LIMIT 1` alone. That implements "latest `update_params`
+   op wins," which is exactly the semantic governed by Rule 2 in
+   `agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`:
+   latest-op-wins reads over `operation_custom_json_view` MUST order by
+   `(block_num, id)`, not `block_num` alone, because the deployed HAF views omit
+   `trx_in_block` and `id` is the global op-id tiebreaker. Every sibling
+   latest-op read already complies (`routes/accreditations.ts`, `routes/papers.ts`,
+   `reputation.ts` all carry `block_num DESC, id DESC`); `loadWotThreshold` is the
+   lone divergence, and this fix rewrote that exact `ORDER BY` while choosing a CTE
+   that structurally precludes the tiebreaker. The practical blast radius is small
+   (two authority-signed `update_params` ops in one 3s block), so this is low
+   severity — but it is a documented-convention divergence on the precise line the
+   fix touched, and leaving it makes the resolution's "latest-op-wins" claim
+   overstated.
+
+   Fix: project `id` in the `candidates` CTE and add `, id DESC` as the secondary
+   outer sort key (`ORDER BY block_num DESC, id DESC LIMIT 1`). Adding `id` to the
+   CTE projection does NOT weaken the `AS MATERIALIZED` fence — there is no
+   `ORDER BY`/`LIMIT` inside the CTE, so the inner plan is unchanged. Anchor any
+   new inline comment on "Rule 2" by name (the convention doc), not a line number
+   or SHA, per the comment-anchor conventions.
+
+2. **Extend the planner-fence canary to also pin the tiebreaker.** The added
+   canary asserts the SQL carries `AS MATERIALIZED`; extend the same captured-SQL
+   assertion to require the outer `ORDER BY` carries the `id` secondary key (e.g.
+   match `block_num DESC, id DESC`), so a future edit that drops the tiebreaker
+   fails red here the same way a dropped fence would. This mirrors the file's
+   existing SQL-shape canary pattern and stays within the documented carve-out.
+
+3. **(Cosmetic, optional — do while you're here.)** The inline comment naming the
+   `no-custom-id-block-num-floor` lint rule omits the canonical `pevo/` ESLint
+   prefix used everywhere else. If you touch that comment, prefer
+   `pevo/no-custom-id-block-num-floor`. Not blocking on its own.
+
+The duplicated-rationale comment between `wot.ts` and the test canary is
+**dismissed** — the two comments serve distinct audiences (implementation
+rationale vs regression-guard rationale) and the overlap is acceptable.
+
+When fixed, `git mv` this file back to `tasks/review/`; the move is the
+re-review signal. The re-review will scope `/ce-code-review` to the commits since
+this hold block. Do NOT edit this hold block — the commit diff is the evidence.
