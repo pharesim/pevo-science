@@ -389,13 +389,20 @@ export function initAdminPage() {
     // re-broadcast harmless), so tell the operator to verify rather than showing
     // a definite failure. Structured backend errors carry a user-facing message
     // (an already-retracted 422, not-in-roster, root-not-demotable, a bad-enum
-    // 400) — surface it so the operator sees WHY, not a blanket "failed". Plain
-    // transport/unexpected errors carry no envelope `code`; fall back to a
-    // generic localized string (their raw .message may leak internals, so only
-    // console.warn sees it).
+    // 400) — surface it so the operator sees WHY, not a blanket "failed".
+    // Transport/unexpected failures fall back to a generic localized string
+    // (their raw .message may leak internals, so only console.warn sees it).
+    // The api.js request() helper synthesizes a bare INTERNAL_ERROR code with an
+    // untranslated "Request failed with status N" message for any non-enveloped
+    // response (a raw 404/502/proxy error, e.g. while a stale image 404s the
+    // roster route). That message is a transport string, not a backend reason,
+    // so INTERNAL_ERROR is treated as unstructured and falls through to the
+    // localized fallback (mirrors bridge.js handleLookup). Genuine backend
+    // errors keep their real codes (NOT_FOUND, VALIDATION_ERROR,
+    // SERVICE_UNAVAILABLE, etc.) and surface above.
     _errorMessage(err, fallbackKey) {
       if (err?.details?.outcome === 'uncertain') return this.$t('admin.broadcastUncertain');
-      if (typeof err?.code === 'string' && err?.message) return err.message;
+      if (typeof err?.code === 'string' && err.code !== 'INTERNAL_ERROR' && err?.message) return err.message;
       return this.$t(fallbackKey);
     },
 
@@ -415,7 +422,9 @@ export function initAdminPage() {
       // Self-lockout guard: the backend does not reject a self-grant, so a
       // super_admin granting themselves `admin` would silently downgrade out of
       // the roster controls they are using. Mirror canDemoteRow's self-check.
-      if (account === this.username) {
+      // Hive usernames are lowercase-only, so compare case-insensitively: an
+      // operator typing their own name with capitals must still be caught here.
+      if (account.toLowerCase() === this.username) {
         Alpine.store('toast').show(this.$t('admin.cannotPromoteSelf'), 'error');
         return;
       }

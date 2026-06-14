@@ -361,3 +361,52 @@ correctly closes the gap via `requireFreshAdminAuth`, so this is solutions-store
 to handle via `/ce-compound-refresh`, not a code defect.)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## UI re-review signal (2026-06-15) — item 10 landed; recommended self-promote casing landed; ORCID rebind + item 8 deferred
+
+Required item 10 and the case-sensitive self-promote recommended item landed (this
+commit). Full frontend unit suite green; production build OK.
+
+- **10. INTERNAL_ERROR transport string no longer leaks.** `_errorMessage`
+  (`admin.js`) now excludes the synthetic `INTERNAL_ERROR` code from its
+  structured-message branch (`err.code !== 'INTERNAL_ERROR'`), so the
+  `request()`-minted "Request failed with status N" string falls through to the
+  localized fallback (`admin.loadFailed` / `admin.actionFailed`) instead of
+  reaching the operator. This mirrors the `bridge.js` `handleLookup` mapping of
+  `INTERNAL_ERROR` to a localized key. Genuine backend errors keep their real
+  codes (`NOT_FOUND`, `VALIDATION_ERROR`, `SERVICE_UNAVAILABLE`, the
+  `details.outcome:'uncertain'` 504) and still surface their messages. The
+  docstring above the helper was updated to describe the synthetic-code exclusion.
+  Two regression tests added (one per call site): a synthetic `INTERNAL_ERROR`
+  rejection routed through `loadRoster` asserts `loadError === 'admin.loadFailed'`
+  and `not.toContain('Request failed')`; the same through `runConfirmed` asserts
+  `actionError === 'admin.actionFailed'`. The second is placed directly after the
+  existing genuine-`VALIDATION_ERROR` test so the structured-vs-synthetic boundary
+  is pinned by contrast.
+
+- **(recommended) Case-sensitive self-promote guard closed.** `requestPromote`'s
+  self-check now compares `account.toLowerCase() === this.username` (Hive names are
+  lowercase-only; `this.username` is the canonical lowercase auth-store value), so
+  an operator typing their own name with capitals is still refused client-side.
+  One-char behavioral fix; a regression test (`promoteAccount = 'Alice'` vs viewer
+  `alice`) pins it.
+
+**Not addressed (deferred, per the architect's own framing):**
+- ORCID-factor minted-proof target-rebind — the architect folded this into the
+  deferred item-8 integration-verify; preserving Alpine form state across a
+  full-page OAuth round-trip remains out of the lean-console scope.
+- Item 8 (integration-verify) stays OPERATOR-GATED/deferred as documented in the
+  prior signal: a live run broadcasts irreversible `custom_json` ops via the
+  server-held `pevo.admin` key and requires authenticating as a roster admin on a
+  clean deploy, unavailable headlessly. No on-chain broadcast from this session
+  (per the user, 2026-06-14).
+
+No new i18n keys (item 10 reuses `admin.loadFailed`/`admin.actionFailed`; the
+self-promote fix reuses `admin.cannotPromoteSelf`), so no STUBS.md sweep. No
+em-dashes in user-facing strings.
+
+Tests: `pages-admin` 36 green (33 prior + 3 new), full frontend unit suite 1601
+green (the 3 unhandled rejections are pre-existing in untouched
+`pages-edit.test.js`). Production build OK.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

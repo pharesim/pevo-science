@@ -149,6 +149,21 @@ describe('adminPage', () => {
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       warnSpy.mockRestore();
     });
+
+    it('does not leak a synthetic INTERNAL_ERROR transport string; uses the localized fallback', async () => {
+      // api.js request() mints `code: INTERNAL_ERROR` / "Request failed with
+      // status N" for any non-enveloped response (a bare 404/502 from a stale
+      // image or proxy). That raw English string must NOT reach the operator;
+      // _errorMessage treats the synthetic code as unstructured and falls back.
+      const transport = Object.assign(new Error('Request failed with status 404'), { code: 'INTERNAL_ERROR' });
+      mockFetchAdminRoster.mockRejectedValue(transport);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      await comp.loadRoster();
+      expect(comp.loadError).toBe('admin.loadFailed');
+      expect(comp.loadError).not.toContain('Request failed');
+      warnSpy.mockRestore();
+    });
   });
 
   describe('form validation', () => {
@@ -292,6 +307,16 @@ describe('adminPage', () => {
       expect(mockToastStore.show).toHaveBeenCalledWith('admin.cannotPromoteSelf', 'error');
     });
 
+    it('catches a self-promotion typed with different casing (Hive names are lowercase-only)', () => {
+      const comp = createComponent();
+      comp.tier = 'super_admin';
+      comp.promoteAccount = 'Alice'; // viewer is 'alice'; capitalized input must still match
+      comp.promoteLevel = 'admin';
+      comp.requestPromote();
+      expect(comp.pendingConfirm).toBeNull();
+      expect(mockToastStore.show).toHaveBeenCalledWith('admin.cannotPromoteSelf', 'error');
+    });
+
     it('warns with the overwrite summary when the target already holds an equal-or-higher tier', () => {
       const comp = createComponent();
       comp.tier = 'root';
@@ -389,6 +414,22 @@ describe('adminPage', () => {
       expect(comp.actionError).toBe('Paper is already retracted');
       // Panel stays open so the operator can read why and adjust or cancel.
       expect(comp.pendingConfirm).toBeTruthy();
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT surface a synthetic INTERNAL_ERROR transport string (contrast to the structured case above)', async () => {
+      // The structured-error test above surfaces a genuine VALIDATION_ERROR
+      // message. A synthetic INTERNAL_ERROR (api.js's non-enveloped fallback)
+      // carries an untranslated "Request failed with status N" string and must
+      // instead drop to the localized actionFailed key.
+      const transport = Object.assign(new Error('Request failed with status 502'), { code: 'INTERNAL_ERROR' });
+      mockPromoteAdmin.mockRejectedValue(transport);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      stagePromote(comp);
+      await comp.runConfirmed();
+      expect(comp.actionError).toBe('admin.actionFailed');
+      expect(comp.actionError).not.toContain('Request failed');
       warnSpy.mockRestore();
     });
 
