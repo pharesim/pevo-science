@@ -7,6 +7,7 @@ const mockDeleteEmail = vi.fn();
 const mockStartOrcid = vi.fn();
 const mockSetPassword = vi.fn();
 const mockSubmitAccreditationMetadata = vi.fn();
+const mockFetchAdminRoster = vi.fn();
 const mockIsKeychainInstalled = vi.fn(() => true);
 
 vi.mock('../../src/api.js', () => ({
@@ -16,6 +17,7 @@ vi.mock('../../src/api.js', () => ({
   startOrcid: (...args) => mockStartOrcid(...args),
   setPassword: (...args) => mockSetPassword(...args),
   submitAccreditationMetadata: (...args) => mockSubmitAccreditationMetadata(...args),
+  fetchAdminRoster: (...args) => mockFetchAdminRoster(...args),
 }));
 
 // settings.js routes the three critical-action handlers (change-email,
@@ -183,6 +185,9 @@ describe('settingsPage', () => {
     // permanently overrides the orchestrator outcome would otherwise leak into
     // siblings. Re-establish the pass-through default each test.
     mockWithSettingsFreshAuth.mockImplementation(async (_action, _ctx, run) => ({ ok: await run(undefined) }));
+    // Best-effort admin-tier probe fired in init(); default to not-in-roster so
+    // the admin-console entry link stays hidden in the existing settings tests.
+    mockFetchAdminRoster.mockResolvedValue({ data: { tier: null } });
     mockAuthStore.isConnected = true;
     mockAuthStore.custody = 'light';
     mockAuthStore.isAccredited = true;

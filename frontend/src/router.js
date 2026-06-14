@@ -26,6 +26,9 @@ const ROUTE_TITLES = {
   'settings':              'Settings — PEvO',
   'settings-verify-email': 'Verify Email — PEvO',
   'my-imports':            'My Imports — PEvO',
+  // Hyphen, not em-dash: the project forbids em-dashes in user-facing text and a
+  // browser title is user-facing (sibling em-dash entries are a separate sweep).
+  'admin':                 'Admin Console - PEvO',
 };
 
 function updateTitle(routeName) {
@@ -63,6 +66,7 @@ const ROUTES = [
   { pattern: /^\/settings$/,                           name: 'settings' },
   { pattern: /^\/settings\/verify-email\/([^/]+)$/,   name: 'settings-verify-email', params: ['token'] },
   { pattern: /^\/my-imports$/,                         name: 'my-imports' },
+  { pattern: /^\/admin$/,                              name: 'admin' },
 ];
 
 function parsePath(url) {

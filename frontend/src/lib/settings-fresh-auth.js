@@ -92,7 +92,12 @@ async function resolveProof(action, { username, hasPassword }) {
  * Non-fresh-auth errors (DUPLICATE, validation, transport, etc.) propagate to
  * the caller, which keeps the existing per-action error handling.
  *
- * @param {'change_email'|'set_password'|'delete_account'} action
+ * @param {string} action - the fresh-auth target action, e.g. the settings
+ *   actions ('change_email' | 'set_password' | 'delete_account' |
+ *   'edit_accreditation_metadata') or the admin-console authority actions
+ *   ('admin_grant_role', 'admin_grant_accreditation', etc.). Only the value
+ *   matters to the backend's proof target; the orchestrator special-cases
+ *   'set_password' (ORCID-only factor) and otherwise picks factor by hasPassword.
  * @param {{ custody: string, username: string, hasPassword: boolean }} ctx
  * @param {(proof: string|undefined) => Promise<any>} run
  */

@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
-import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword, submitAccreditationMetadata } from '../api.js';
+import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword, submitAccreditationMetadata, fetchAdminRoster } from '../api.js';
 import { withSettingsFreshAuth } from '../lib/settings-fresh-auth.js';
 import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, loadDhive, validateMnemonic } from '../hive-keys.js';
 import { isPasswordValid } from '../password-policy.js';
@@ -89,6 +89,14 @@ const template = `
         <template x-if="isConnected">
           <div class="max-w-lg mx-auto">
             <h1 class="text-3xl font-bold text-ink mb-8" x-text="$t('settings.title')"></h1>
+
+            <!-- Admin console entry: shown only when the best-effort tier probe
+                 returns a tier (roster members). The /admin route re-gates
+                 server-side, so this is discoverability only. -->
+            <template x-if="adminTier">
+              <a :href="$lp('/admin')" @click.prevent="navigate('/admin')"
+                 class="inline-block -mt-4 mb-8 text-sm text-pevo-teal hover:underline" x-text="$t('settings.adminConsoleLink')"></a>
+            </template>
 
             <!-- Upgrade section (only for light accounts) -->
             <template x-if="isLight">
@@ -527,6 +535,10 @@ export function initSettingsPage() {
     metadataError: null,
     _metadataPrefilled: false,
 
+    // Admin-console entry-link gate: the viewer's admin tier, or null if not in
+    // the roster (or before the roster endpoint lands). Best-effort, set in init.
+    adminTier: null,
+
     // Upgrade flow state
     // Phases: 'idle' | 'new-seed' | 'confirm-new' | 'enter-old' | 'upgrading' | 'done' | 'error'
     upgradePhase: 'idle',
@@ -655,6 +667,15 @@ export function initSettingsPage() {
       this.$watch('isAccredited', (accredited) => {
         if (accredited) this._prefillMetadata();
       });
+
+      // Best-effort admin-tier probe for the console entry link. Silent on
+      // failure (non-admins, or before the roster endpoint lands) so it renders
+      // nothing rather than an error. The /admin route re-gates server-side.
+      if (this.isConnected) {
+        fetchAdminRoster()
+          .then((res) => { if (this._mounted) this.adminTier = res.data?.tier ?? null; })
+          .catch(() => {});
+      }
 
       // Warn on tab close / navigation while `upgradePhase==='upgrading'`.
       // Mid-broadcast unload bricks the account (server keeps stale keys,

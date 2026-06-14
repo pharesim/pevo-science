@@ -776,6 +776,122 @@ export function deleteEmail(confirm, freshAuthProof) {
   });
 }
 
+// ─── Admin Console ───────────────────────────────────────────────
+//
+// The admin console drives tier-gated roster management and authority
+// moderation. Every mutation is ADMIN-SIGNED: the backend (sole holder of the
+// `pevo.admin` posting key) broadcasts via `broadcastAdminCustomJson` and
+// records the acting admin as `issued_by`. The console never signs an op; it
+// only collects a fresh re-auth proof (§ 6.4) and lets the backend sign. This
+// is distinct from the self-service, user-signed paths (`retractPaper`,
+// `approveAuthorshipClaim`, `revokeAuthorshipClaim`) above, which the paper's
+// own author/claimant signs via Keychain.
+//
+// CONTRACT PENDING BACKEND: the `/admin/*` endpoint paths/shapes and the
+// per-action fresh-auth action strings below follow the admin-roster backend
+// task's documented design (chain-derived `active_admins` roster, Redis-cached;
+// tier middleware; `issued_by` attribution; `admin_grant`/`admin_revoke` plus
+// the admin-signed authority ops). The backend endpoints do not exist yet —
+// every function here MUST be integration-verified once that task lands, and the
+// backend owns the final shapes (the UI consumes, it does not define them).
+
+// Read the viewer's admin tier and the current roster. Returns the response
+// envelope's data: { tier: 'admin'|'super_admin'|'root'|null, roster:
+// [{ account, level, granted_by, granted_at }] }. `tier: null` means the viewer
+// is not in the roster (the console renders a not-authorized state).
+export function fetchAdminRoster() {
+  return authenticatedRequest('/admin/roster');
+}
+
+// Promote/demote a roster member. The backend re-enforces the tier gate
+// (super_admin manages `admin`; root manages `super_admin`) and broadcasts
+// `admin_grant` / `admin_revoke` with `issued_by` set to the acting admin. JWT
+// path requires a fresh-auth proof bound to (admin_grant_role / admin_revoke_role,
+// <acting-admin>, '').
+export function promoteAdmin(account, level, freshAuthProof) {
+  return authenticatedRequest('/admin/roster/grant', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account, level, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) }),
+  });
+}
+
+export function demoteAdmin(account, level, freshAuthProof) {
+  return authenticatedRequest('/admin/roster/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account, level, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) }),
+  });
+}
+
+// Grant (or re-grant) accreditation: an admin-signed `accredit` op carrying
+// metadata. A re-grant lifts a prior sanction (latest op authoritative). JWT
+// path requires a fresh-auth proof bound to (admin_grant_accreditation,
+// <acting-admin>, '').
+export function adminGrantAccreditation(values, freshAuthProof) {
+  return authenticatedRequest('/admin/accreditation/grant', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      account: values.account,
+      full_name: values.full_name,
+      institution: values.institution,
+      field: values.field,
+      method: values.method,
+      ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
+    }),
+  });
+}
+
+// Retract a paper as an authority action (admin-signed `retract_paper`). Distinct
+// from the author's own `retractPaper` above. JWT path requires a fresh-auth
+// proof bound to (admin_retract_paper, <acting-admin>, '').
+export function adminRetractPaper(values, freshAuthProof) {
+  return authenticatedRequest('/admin/papers/retract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      author: values.author,
+      permlink: values.permlink,
+      reason: values.reason,
+      ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
+    }),
+  });
+}
+
+// Revoke an authorship credit as an authority action (admin-signed
+// `revoke_authorship`). JWT path requires a fresh-auth proof bound to
+// (admin_revoke_authorship, <acting-admin>, '').
+export function adminRevokeAuthorship(values, freshAuthProof) {
+  return authenticatedRequest('/admin/authorship/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      author: values.author,
+      permlink: values.permlink,
+      claimer: values.claimer,
+      ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
+    }),
+  });
+}
+
+// Approve a bridged-paper author claim as an authority action (admin-signed
+// `approve_authorship`). JWT path requires a fresh-auth proof bound to
+// (admin_approve_authorship, <acting-admin>, '').
+export function adminApproveAuthorship(values, freshAuthProof) {
+  return authenticatedRequest('/admin/authorship/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      author: values.author,
+      permlink: values.permlink,
+      claimer: values.claimer,
+      author_index: values.author_index,
+      ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
+    }),
+  });
+}
+
 // ─── Blog ───────────────────────────────────────────────────────
 
 export function fetchBlogPosts(params = {}) {

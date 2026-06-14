@@ -25,6 +25,8 @@ const mockSubmitEmail = vi.fn();
 const mockDeleteEmail = vi.fn();
 const mockStartOrcid = vi.fn();
 const mockSetPassword = vi.fn();
+const mockSubmitAccreditationMetadata = vi.fn();
+const mockFetchAdminRoster = vi.fn(() => Promise.resolve({ data: { tier: null } }));
 const mockIsKeychainInstalled = vi.fn(() => true);
 
 vi.mock('../../src/api.js', () => ({
@@ -33,6 +35,8 @@ vi.mock('../../src/api.js', () => ({
   deleteEmail: (...args) => mockDeleteEmail(...args),
   startOrcid: (...args) => mockStartOrcid(...args),
   setPassword: (...args) => mockSetPassword(...args),
+  submitAccreditationMetadata: (...args) => mockSubmitAccreditationMetadata(...args),
+  fetchAdminRoster: (...args) => mockFetchAdminRoster(...args),
 }));
 
 vi.mock('../../src/keychain.js', () => ({
