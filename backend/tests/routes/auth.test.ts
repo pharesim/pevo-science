@@ -499,3 +499,97 @@ describe.skipIf(!dbReachable)('POST /api/auth/signup — duplicate ORCID maps 23
     expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
   });
 });
+
+describe.skipIf(!dbReachable)('POST /api/auth/signup — SignupBodySchema accepts password: null (SEC-004 passwordless ORCID)', () => {
+  // The frontend's passwordless-ORCID signup sends an explicit `password: null`.
+  // Before the schema fix, `z.string().optional()` rejected null and the request
+  // 400'd at safeParse before the handler ever ran. These real-path specs pin
+  // that null is accepted (and lands password_hash NULL), and that the
+  // omitted-undefined and non-null-string cases still work.
+  const RUN = Date.now();
+  const suffix = String(RUN % 10000).padStart(4, '0');
+  const EMAIL_PREFIX = `null_pw_${RUN}_`;
+
+  async function seedOrcidVerified(nonce: string, orcidId: string): Promise<void> {
+    const payload = { orcid_id: orcidId, works_count: 5, name: 'Null Pw' };
+    const redis = getRedis();
+    if (redis && isRedisAvailable()) {
+      await redis.set(
+        `${config.appTag}:orcid_verified:${nonce}`,
+        JSON.stringify(payload),
+        'EX',
+        600,
+      );
+    }
+    const { orcidVerified } = await import('../../src/routes/orcid.js');
+    orcidVerified.set(nonce, { ...payload, expires: Date.now() + 600_000 });
+  }
+
+  beforeAll(async () => {
+    await clearRateLimitKeys(['auth-signup']);
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query(`DELETE FROM accounts WHERE orcid LIKE $1 OR email LIKE $2`, [
+      `0000-0003-${suffix}-%`,
+      `${EMAIL_PREFIX}%`,
+    ]);
+  });
+
+  it('password: null + valid orcid_token clears schema validation and lands password_hash NULL', async () => {
+    const pool = getAppPool()!;
+    const orcid = `0000-0003-${suffix}-0001`;
+    const nonce = `nullpw-only-${suffix}`;
+    await seedOrcidVerified(nonce, orcid);
+
+    const res = await request(app).post('/api/auth/signup').send({ orcid_token: nonce, password: null });
+
+    // No longer a schema 400: the handler runs and finalizes the ORCID-only row.
+    expect(res.body.error?.code).not.toBe('VALIDATION_ERROR');
+    expect(res.status).toBe(200);
+
+    const row = await pool.query<{ password_hash: string | null }>(
+      `SELECT password_hash FROM accounts WHERE orcid = $1`,
+      [orcid],
+    );
+    expect(row.rowCount).toBe(1);
+    expect(row.rows[0].password_hash).toBeNull();
+  });
+
+  it('password omitted (undefined) still clears schema validation (regression guard)', async () => {
+    const orcid = `0000-0003-${suffix}-0002`;
+    const nonce = `nullpw-omit-${suffix}`;
+    await seedOrcidVerified(nonce, orcid);
+
+    const res = await request(app).post('/api/auth/signup').send({ orcid_token: nonce });
+
+    expect(res.body.error?.code).not.toBe('VALIDATION_ERROR');
+    expect(res.status).toBe(200);
+  });
+
+  it('a non-null string password still works (regression guard)', async () => {
+    const pool = getAppPool()!;
+    const orcid = `0000-0003-${suffix}-0003`;
+    const nonce = `nullpw-str-${suffix}`;
+    await seedOrcidVerified(nonce, orcid);
+
+    const res = await request(app).post('/api/auth/signup').send({
+      orcid_token: nonce,
+      email: `${EMAIL_PREFIX}str@example.com`,
+      password: 'NullPwString1',
+      full_name: 'Null Pw',
+      field: 'CS',
+    });
+
+    expect(res.body.error?.code).not.toBe('VALIDATION_ERROR');
+    expect(res.status).toBe(200);
+    const row = await pool.query<{ password_hash: string | null }>(
+      `SELECT password_hash FROM accounts WHERE orcid = $1`,
+      [orcid],
+    );
+    expect(row.rowCount).toBe(1);
+    expect(row.rows[0].password_hash).not.toBeNull();
+  });
+});

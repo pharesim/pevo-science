@@ -59,3 +59,30 @@ signup half is gated on this.
 - `backend/src/routes/recover.ts` — `new_password` shows the correct nullable pattern.
 - `agents/docs/tasks/blocked/ui-orcid-signup-recover-real-roundtrip.md` — the
   downstream E2E task this unblocks.
+
+## Backend implementation note (2026-06-14, working tree)
+
+- **Schema fix (item 1).** `SignupBodySchema.password` in `backend/src/routes/auth.ts`
+  is now `z.string().optional().nullable()` (added `.nullable()` only; no `.min(1)`).
+  An explicit `password: null` now clears `safeParse`. `npm run typecheck` passes,
+  confirming the widened `string | null | undefined` type is already handled
+  downstream (no handler change needed, per item 2 — the `hasPassword` /
+  `if (password)` guards treat null as falsy).
+- **Coverage (item 3).** New real-path describe block in
+  `backend/tests/routes/auth.test.ts` ("SignupBodySchema accepts password: null")
+  under the existing `dbReachable` guard, seeding the ORCID-verification nonce
+  directly:
+  - `password: null` + valid `orcid_token` → not 400, 200, and the landed row has
+    `accounts.password_hash IS NULL`.
+  - `password` omitted (undefined) → still 200 (regression guard).
+  - non-null string `password` (ORCID+email) → still 200 and `password_hash` is
+    NOT NULL (regression guard).
+  Full `auth.test.ts` green (26). `npm run lint` clean (the lone warning is the
+  pre-existing unused-eslint-disable in `src/lib/author-supersession.ts`).
+- **Downstream unblock.** Per the "After the fix lands" step and rule #6 (the
+  blocking agent moves the file back), `ui-orcid-signup-recover-real-roundtrip.md`
+  is `git mv`d blocked → pending in a companion `[skip-zone-audit]` commit (the
+  ui-zone task file is outside backend's zone). Verified the older 06-09 seam /
+  06-11 compose-stub blockers are already resolved (the 06-14 UI note confirms the
+  works-stub + `ORCID_API_BASE_URL` are wired); the schema fix is the sole
+  remaining blocker.

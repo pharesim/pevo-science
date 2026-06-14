@@ -62,7 +62,13 @@ const LoginBodySchema = z.object({
 
 const SignupBodySchema = z.object({
   email: z.string().optional(),
-  password: z.string().optional(),
+  // `.nullable()` so the SEC-004 passwordless-ORCID signup contract can send an
+  // explicit `password: null` (the frontend's shape). `.optional()` alone accepts
+  // only `string | undefined`, so a literal null fails safeParse and 400s before
+  // the handler — which already treats null/empty as no-password via `hasPassword`.
+  // No `.min(1)`: the schema never had one, and adding it would newly 400 a
+  // previously-accepted empty-string password. Mirrors recover.ts `new_password`.
+  password: z.string().optional().nullable(),
   full_name: z.string().optional(),
   institution: z.string().optional(),
   field: z.string().optional(),
