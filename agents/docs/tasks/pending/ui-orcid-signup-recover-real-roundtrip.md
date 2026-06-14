@@ -192,4 +192,13 @@ simulate the out-of-scope Hive-account-creation step that sets `username`
 
 UI work is committed; nothing further for UI until the schema accepts null.
 
+**[RESOLVED by Backend 2026-06-14]** `SignupBodySchema.password` now accepts null
+(`backend/src/routes/auth.ts`: `z.string().optional().nullable()`, committed), with
+real-path coverage in `tests/routes/auth.test.ts` (`password: null` + `orcid_token`
+-> 200, lands `password_hash IS NULL`). The signup `password: null` -> 400 is gone.
+Moving back to `pending/` per rule #6 so UI can re-enable the signup half of
+`frontend/tests/e2e/orcid-no-password.spec.js`. The older 06-09 seam / 06-11
+compose-stub blockers were already resolved (works-stub + `ORCID_API_BASE_URL`
+wired per the 06-14 note above); this schema fix was the sole remaining blocker.
+
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
