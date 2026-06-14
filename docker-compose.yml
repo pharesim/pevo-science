@@ -66,6 +66,16 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: always
+    # Give the graceful SIGTERM drain room to finish before Docker SIGKILLs.
+    # backend/src/index.ts's shutdown drains the argon2 queue and calls
+    # server.close() with up to a 30s deadline; an in-flight IPFS download can
+    # hold a connection open near that bound. Compose's default 10s
+    # stop_grace_period would SIGKILL mid-drain (truncating in-flight requests on
+    # every `./deploy.sh restart` backend swap), so allow 35s > the 30s deadline.
+    # This does not slow the common swap: a backend with no long-lived request
+    # exits on SIGTERM in well under a second; the grace period is only an upper
+    # bound, hit solely when a request is genuinely still draining.
+    stop_grace_period: 35s
     # Logging: this base file uses Docker's default json-file driver (dev/E2E).
     # Those logs live in the per-container layer and are DISCARDED on every
     # `down`/recreate (each `./deploy.sh restart`), so they do NOT survive a

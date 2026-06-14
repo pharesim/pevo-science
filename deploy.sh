@@ -9,7 +9,7 @@ set -euo pipefail
 #   migrate       — run database migrations against pevo_app
 #   logs          — tail logs from all services
 #   logs-history  — retrieve historical container logs from the host journal
-#   restart       — rebuild and restart all services
+#   restart       — rebuild image, migrate, swap ONLY the backend (near-zero-downtime; infra stays up)
 #   status        — show service status
 #   clean         — stop services and remove volumes (DESTRUCTIVE)
 #   test-db-up    — provision pevo_app_test and run migrations against it (idempotent)
@@ -290,23 +290,111 @@ cmd_logs_history() {
   fi
 }
 
+# Echo migration files present on disk but NOT yet recorded in schema_migrations
+# (one path per line). Conservative on uncertainty: if the tracking table is
+# absent or the query fails, EVERY file is treated as unapplied, so the
+# destructive pre-flight below sees them and errs toward the safe brief-stop
+# carve-out. Scanning the whole *.sql set instead would always match the
+# already-applied 004 DROP TABLE and wrongly force the carve-out on every restart.
+unapplied_migrations() {
+  local applied
+  applied="$($COMPOSE exec -T postgres psql -U pevo -d pevo_app -tAc \
+    'SELECT filename FROM schema_migrations' 2>/dev/null)" || applied=""
+  local f base
+  for f in backend/migrations/*.sql; do
+    base="$(basename "$f")"
+    grep -qxF "$base" <<<"$applied" || echo "$f"
+  done
+}
+
+# Echo destructive/unsafe-for-a-live-old-backend DDL found in the UNAPPLIED
+# migration set; empty output means migrating live is safe. Matches relation or
+# column REMOVAL, RENAME, a column TYPE change, and ADD COLUMN ... NOT NULL.
+# ADD COLUMN ... NOT NULL is matched broadly: one carrying a DEFAULT is in fact
+# safe, but a false-positive carve-out costs only a brief stop while a MISSED
+# destructive migration breaks the still-serving old backend, so the tripwire
+# over-matches by design. NOT matched (documented foot-gun, see ARCHITECTURE.md
+# Migrations): a large-table non-CONCURRENTLY CREATE INDEX or ALTER ... SET NOT
+# NULL can take an ACCESS EXCLUSIVE lock that stalls the old backend even when
+# this grep passes; negligible at beta row counts, prefer CONCURRENTLY at scale.
+destructive_pending_migrations() {
+  local files
+  files="$(unapplied_migrations)"
+  [ -z "$files" ] && return 0
+  printf '%s\n' "$files" | xargs grep -niE \
+    'DROP[[:space:]]+TABLE|DROP[[:space:]]+COLUMN|\bRENAME\b|ALTER[[:space:]]+COLUMN[^;]*TYPE|ADD[[:space:]]+COLUMN[^;]*NOT[[:space:]]+NULL' \
+    2>/dev/null || true
+}
+
+# Probe the HOST-side published port (127.0.0.1:3001), not inside the container.
+# The swap's whole point is the host docker-proxy rebinding that port to the new
+# container; an in-container probe passes the instant the new Node process
+# listens and is blind to whether the host port has actually handed over. Prefer
+# curl, fall back to wget; if neither is on the host, fall back to the
+# in-container probe (which cannot observe the host rebind but still confirms the
+# new process booted).
+host_health_ok() {
+  if command -v curl &>/dev/null; then
+    curl -fsS -o /dev/null --max-time 5 http://127.0.0.1:3001/api/health 2>/dev/null
+  elif command -v wget &>/dev/null; then
+    wget -q -T 5 -O /dev/null http://127.0.0.1:3001/api/health 2>/dev/null
+  else
+    $COMPOSE exec -T backend wget -qO- http://localhost:3001/api/health &>/dev/null
+  fi
+}
+
+# Recreate ONLY the backend container with the freshly-built image and wait for
+# it to answer on the host port. --no-deps skips the depends_on health-gate
+# re-eval (infra is already up and pg_isready already passed); WITHOUT
+# --remove-orphans so a live `test-up` session's E2E sidecars (mailpit,
+# orcid-stub) are not reaped. $LOG_OVERLAY_FLAGS keeps the journald overlay at
+# container-create time. Compose SIGTERMs the old container (graceful drain, up
+# to stop_grace_period) and starts the new one, so the client-visible outage is
+# just this stop -> port-rebind -> warm-boot gap.
+swap_backend() {
+  log "Swapping in the new backend (only the backend container is recreated)..."
+  $COMPOSE $LOG_OVERLAY_FLAGS up -d --no-deps backend
+  log "Waiting for the new backend to answer on the host port (127.0.0.1:3001)..."
+  local retries=30
+  while [ $retries -gt 0 ]; do
+    if host_health_ok; then
+      log "New backend is serving on 127.0.0.1:3001"
+      return 0
+    fi
+    retries=$((retries - 1))
+    sleep 2
+  done
+  warn "New backend did not answer on 127.0.0.1:3001 within 60s — check: ./deploy.sh logs backend"
+}
+
+# Rebuild + redeploy with a near-zero-downtime swap. The prior implementation ran
+# `$COMPOSE down` FIRST, so 127.0.0.1:3001 had no listener for the whole
+# down -> build -> infra-up -> migrate -> boot sequence and host nginx returned a
+# 502 for minutes. This ordering keeps the OLD backend serving for the entire
+# (dominant) image build and swaps only the backend container last, collapsing
+# the outage to a few-second container swap — the inherent floor for a single
+# host port behind an unreloadable host nginx.
+#
+# Migrations apply with the old backend still serving on the expand-only path.
+# That is safe because `verifyAppDbMigrations` (backend/src/app-db.ts) fails
+# closed only when the DB is BEHIND the code and tolerates it being AHEAD, and
+# the old backend already passed its probe at its own boot and does not re-run
+# it. A destructive migration (relation/column removal, rename, type change,
+# ADD COLUMN ... NOT NULL) would break the still-serving old backend, so the
+# unapplied set is grepped for those shapes first and, on a match, falls back to
+# the brief-stop carve-out. Full rationale: ARCHITECTURE.md (Migrations).
 cmd_restart() {
-  log "Rebuilding and restarting..."
-  $COMPOSE down
-  DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 $COMPOSE build
-  # Bring up infrastructure (postgres, redis, ipfs) and apply migrations
-  # BEFORE the backend starts. Migrations are the sole source of truth for
-  # the application schema; the backend's `verifyAppDbMigrations` probe in
-  # `backend/src/app-db.ts` aborts boot if `schema_migrations` lacks any row
-  # for a `*.sql` file present on disk. Running migrations first guarantees
-  # the probe sees a fully-migrated schema on the first boot attempt rather
-  # than racing against an in-flight migrate.
   check_env
-  log "Starting infrastructure services (postgres, redis, ipfs)..."
-  # $LOG_OVERLAY_FLAGS threads the journald overlay (when active) at container CREATE
-  # time so postgres comes up on the journald driver. The backend is created via
-  # cmd_up below, which also threads $LOG_OVERLAY_FLAGS.
-  $COMPOSE $LOG_OVERLAY_FLAGS up -d --remove-orphans postgres redis ipfs
+  # 1. Build the new image FIRST, with the old backend still serving. The build
+  #    is the dominant cost and now contributes ZERO downtime. Only the backend
+  #    service has a build: stanza; infra images are pinned.
+  log "Building the new backend image (old backend keeps serving 127.0.0.1:3001)..."
+  DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 $COMPOSE build backend
+
+  # 2. Ensure infra is up (idempotent); never tear it down. $LOG_OVERLAY_FLAGS
+  #    threads the journald overlay at container-create time.
+  log "Ensuring infrastructure (postgres, redis, ipfs) is up..."
+  $COMPOSE $LOG_OVERLAY_FLAGS up -d postgres redis ipfs
   log "Waiting for postgres to be ready..."
   local retries=30
   while [ $retries -gt 0 ]; do
@@ -321,10 +409,27 @@ cmd_restart() {
     err "Postgres did not become ready within 60s — aborting restart"
     exit 1
   fi
-  log "Applying migrations..."
-  cmd_migrate
-  log "Starting backend..."
-  cmd_up backend
+
+  # 3. Migration safety pre-flight (see the decision rule above). The DB briefly
+  #    runs ahead of the still-serving old backend; that is safe ONLY for the
+  #    expand-only set, so gate it rather than assume it.
+  local destructive
+  destructive="$(destructive_pending_migrations)"
+  if [ -n "$destructive" ]; then
+    warn "Unapplied migration(s) contain destructive/unsafe DDL for a live old backend:"
+    printf '%s\n' "$destructive" | sed 's/^/    /' >&2
+    warn "Taking the brief-stop carve-out: stopping the backend before migrating."
+    $COMPOSE stop backend
+    log "Applying migrations against the quiescent database..."
+    cmd_migrate
+  else
+    log "Unapplied migrations are expand-only (or none) — migrating live, old backend still serving..."
+    cmd_migrate
+  fi
+
+  # 4. Swap only the backend, last.
+  swap_backend
+  cmd_status
 }
 
 cmd_status() {
@@ -353,7 +458,7 @@ cmd_help() {
   echo "  migrate       Run database migrations against pevo_app"
   echo "  logs          Tail logs (optionally: ./deploy.sh logs backend)"
   echo "  logs-history  Historical logs from host journal (./deploy.sh logs-history [tag] [since])"
-  echo "  restart       Rebuild and restart all services"
+  echo "  restart       Rebuild, migrate, swap ONLY the backend (near-zero-downtime; infra stays up)"
   echo "  status        Show service status"
   echo "  clean         Stop services and remove volumes (DESTRUCTIVE)"
   echo "  test-db-up    Provision pevo_app_test and migrate (idempotent)"
