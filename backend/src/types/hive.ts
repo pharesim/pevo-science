@@ -122,6 +122,12 @@ export interface AccreditAction {
   field: string;
   method: AccreditationMethod;
   evidence_hash: string;
+  // Authority attribution: WHO/WHAT caused this op. For the automated
+  // self-service flows (email/ORCID/signup) the admin account itself is the
+  // accreditor (config.hiveAdminAccount); WoT auto-accreditation uses the
+  // 'wot' system marker; a human-admin-initiated accredit would carry that
+  // admin's account. See admin-roster.ts.
+  issued_by: string;
   timestamp: string;
 }
 
@@ -129,6 +135,9 @@ export interface RevokeAction {
   action: "revoke";
   account: string;
   reason: string;
+  // Authority attribution (see AccreditAction). WoT auto-revocations carry the
+  // 'wot' system marker; a deliberate admin sanction carries the acting admin.
+  issued_by: string;
   timestamp: string;
 }
 
@@ -146,6 +155,12 @@ export interface UpdateWeightsAction {
   action: "update_weights";
   weights: Partial<ReputationWeights>; // missing fields use DEFAULT_REPUTATION_WEIGHTS
   rationale: string;
+  // Authority attribution (see AccreditAction). NOTE: the backend has no
+  // update_weights BROADCAST site today (it is only read/validated from chain
+  // in reputation.ts / reputation-batch.ts), so nothing stamps this field yet;
+  // it is defined here for forward-compat and for the type to match the
+  // attribution convention if a root-gated broadcast endpoint is added.
+  issued_by?: string;
   timestamp: string;
 }
 
@@ -213,6 +228,9 @@ export interface RetractPaperAction {
   author: string;
   permlink: string;
   reason: string;
+  // Authority attribution (see AccreditAction): the acting human (paper author
+  // self-retract, or the admin who retracted).
+  issued_by: string;
   timestamp: string;
 }
 

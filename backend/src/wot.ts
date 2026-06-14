@@ -336,6 +336,8 @@ export async function broadcastWotAccreditation(vouchee: string): Promise<WotAcc
       field: '',
       method: 'wot',
       evidence_hash: evidenceHash,
+      // System marker: WoT auto-accreditation is not a human admin action.
+      issued_by: 'wot',
       timestamp: now,
     };
 
@@ -432,6 +434,9 @@ function buildRevocationPayload(account: string) {
     action: 'revoke' as const,
     account,
     reason: 'WoT threshold no longer met',
+    // System marker: WoT threshold-drop revocation is automated, not a human
+    // admin sanction (a deliberate sanction carries the acting admin).
+    issued_by: 'wot' as const,
     timestamp: new Date().toISOString(),
   };
 }

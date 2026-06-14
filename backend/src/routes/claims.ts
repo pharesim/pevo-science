@@ -345,7 +345,8 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
     // ops should treat the `required_posting_auths[0]` as the revoker, not
     // the paper author.
     try {
-      const result = await broadcastAdminCustomJson(payload);
+      // Authority attribution: the admin-signed op records the acting admin.
+      const result = await broadcastAdminCustomJson({ ...payload, issued_by: username });
       await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
       return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
     } catch (err) {

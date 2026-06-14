@@ -2167,6 +2167,9 @@ router.post('/:author/:permlink/retract', validateRetractParams, verifyHiveSigna
     author,
     permlink,
     reason,
+    // Authority attribution: the acting human (paper author self-retract, or an
+    // admin). The op is admin-signed, so issued_by names who triggered it.
+    issued_by: username,
     timestamp: new Date().toISOString(),
   };
 

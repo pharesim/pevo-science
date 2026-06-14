@@ -908,6 +908,8 @@ async function handleAccredit(
       method: 'orcid',
       orcid: orcidId,
       evidence_hash: crypto.createHash('sha256').update(`orcid:${orcidId}:${username}`).digest('hex'),
+      // Issued by the admin account (the accreditor); see AccreditAction.
+      issued_by: config.hiveAdminAccount,
       timestamp: new Date().toISOString(),
     };
 
@@ -1114,6 +1116,8 @@ async function handleLink(
       method: existing.method,
       orcid: orcidId,
       evidence_hash: crypto.createHash('sha256').update(`orcid:${orcidId}:${username}`).digest('hex'),
+      // Issued by the admin account (the accreditor); see AccreditAction.
+      issued_by: config.hiveAdminAccount,
       timestamp: new Date().toISOString(),
     };
 

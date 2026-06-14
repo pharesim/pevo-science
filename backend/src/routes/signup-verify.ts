@@ -227,6 +227,8 @@ async function broadcastAccreditationAndSeed(
         orcid: account.orcid || '',
         method: 'email',
         evidence_hash: evidenceHash,
+        // Issued by the admin account (the accreditor); see AccreditAction.
+        issued_by: config.hiveAdminAccount,
         timestamp: new Date().toISOString(),
       });
     } catch (err) {

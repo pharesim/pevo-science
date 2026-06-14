@@ -1074,6 +1074,9 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
     method: 'email',
     evidence_hash: evidenceHash,
     idempotency_key: idempotencyKey,
+    // Self-service email accreditation is issued BY the admin account (the
+    // accreditor); the scientist only supplies verification, not authority.
+    issued_by: config.hiveAdminAccount,
     timestamp: new Date().toISOString(),
   };
 
