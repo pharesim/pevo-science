@@ -260,3 +260,76 @@ Items 4/5/6 were partially pre-satisfied by main's independent refactors; the de
 remainder. `git mv`-ing to `review/`; round-2 re-review scopes to `89d0a067` + `1b6a5eff`.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES (round 2):
+
+`/ce-code-review` on `89d0a067` + `1b6a5eff` (10 reviewers: correctness/security/adversarial on the
+session model; reliability/testing/maintainability/project-standards/data-migration/deployment-verification
++ learnings on Sonnet; `ce-agent-native` skipped per PEvO). **All 7 round-1 hold items are CODE-CORRECT** —
+verified independently by correctness, security, and adversarial: item 1's recency guard is on BOTH the
+`/confirm` and `/link` stuck-recovery lookups and is ADDED to (not replacing) the crypto ownership proof
+(`/confirm` still requires the posting-private proof, `/link` a fresh Hive signature, per ARCHITECTURE
+§6.3/§6.5); migration `016` back-fills to `COALESCE(created_at, NOW() - INTERVAL '1 day')` BEFORE sealing
+NOT NULL, so no pre-existing row sits inside the 1h window post-deploy (5 reviewers concurred; a Go/No-Go
+deploy checklist was produced); item 2 removed every in-memory lock-acquire path and fails closed
+(`unavailable` → retriable 503) on Redis-down; items 3/5/7 + Decision B are present and correct. The
+redesign substance is ACCEPTED. What holds the archive is the test-effectiveness of the P1 security fix
+plus two docstring-accuracy corrections — none are code defects.
+
+The architect has ALREADY landed the one architect-owned finding: ARCHITECTURE.md §6.1's orthogonal-overlays
+enumeration now lists `updated_at` (the recency marker the stuck-recovery defense reads), so the
+account-state defense rule's "unenumerated combination" flag is cleared. Do NOT re-do that doc edit.
+
+Implementer fixes (the file move back to `review/` is the round-3 re-review signal; do not edit this block):
+
+1. **(P2, conf 100 — adversarial + testing + correctness + security) The item-1 recency guard is not
+   isolated by tests; a refactor deleting it would stay green.** The `/confirm` stale-finalized-row test in
+   `signup-verify-stuck-recovery.test.ts` returns 400 because the ownership probe fails independently
+   (`getAccounts` returns empty), NOT because the recency guard rejects — so removing the
+   `AND updated_at > NOW() - INTERVAL ...` clause from the `/confirm` lookup would not fail any test. Fix:
+   stub `getAccounts` to return the VALID authorized account (so the posting-key proof WOULD pass), proving
+   the 400 is caused solely by the recency guard. AND add the missing `/link` mirror: there is currently NO
+   stale-row exclusion test for the `/link` stuck-recovery lookup — seed a self-custody row with
+   `verify_token` NULL and `updated_at` aged past the recovery window, drive a real-`verifyHiveSignature`
+   signed `/link`, and assert 400 with no JWT. The window-aged `/link` test MUST run the real signature
+   middleware (this is an auth-focused path — the carve-out's clause (b) forbids mocking the crypto proof
+   here).
+
+2. **(P2, conf 100 — adversarial + testing) The `refundStatusCodes` surgical-refund property has no
+   isolating test.** Add a `rateLimit` middleware unit test (sibling to the existing `skipFailedRequests`
+   tests) pinning that a 409 response refunds its slot (a subsequent attempt is admitted) WHILE a 400
+   response still consumes its slot (brute-force protection intact, advances toward 429). This kills the
+   `shouldRefund` mutation "treat 400 as refundable" that no current test catches.
+
+3. **(P2, conf 100 — maintainability) The `refundStatusCodes` docstring in `rateLimit.ts` mis-states its own
+   mechanism.** It claims the refund is "gated on `res.writableEnded` so a pre-status TCP-abort … is
+   unaffected," but `shouldRefund`'s `refundCodes` branch does NOT check `writableEnded` — a TCP-abort is
+   excluded only because its default `statusCode` 200 is not in the configured `[409]` set. Correct today,
+   but the stated mechanism is false and would mislead a future caller that lists a 2xx code. Fix: either
+   reword the docstring to the actual mechanism (TCP-abort's 200 is simply never in the refund set), OR add
+   the `writableEnded` guard to the `refundCodes` branch so code matches the docstring.
+
+4. **(P3, conf 75 — reliability) The `LOCK_HELD` Retry-After docstring overstates protection.** The docstring
+   on the `LOCK_HELD_RETRY_AFTER_SECONDS` constant in `signup-activation-lock.ts` says the 5s spacing is
+   "past a typical holder's broadcast window," but 5s is past the loser WAIT budget, not the ~30s holder
+   broadcast — a 5s retry will often hit another 409 while the holder is still broadcasting (harmless: the
+   per-token 409 refund means repeated 409 retries do not exhaust the budget). Reword to the accurate
+   mechanism.
+
+5. **(Advisory — adversarial, surfaced not held as a defect) Restore the consensus-rejection backstop caveat
+   the item-2 fix deleted.** Removing the in-memory fallback (item 2) also deleted the docstring note that a
+   duplicate `create_claimed_account` is rejected by Hive consensus and burns NO claim token. That backstop
+   is exactly what makes the item-6 lock-self-expiry resume safe when the resume's chain-exists `getAccounts`
+   hits a lagging node and misses the just-created account. Restore a short acknowledgment of it (anchored on
+   the behavior, not on a removed mechanism) so the resume path's safety argument stays documented.
+
+Not held (residuals for awareness): the `chain-write-timeout-ambiguous-outcome` convention is now reachable
+on this path (pre-existing main code, not the round-2 delta; round-1 dispositioned it as awareness-only —
+unchanged); 503 SERVICE_UNAVAILABLE carries no Retry-After (the 409 does); the per-token Redis refund is a
+blind DECR with no zero-floor (pre-existing `skipFailedRequests` behavior, sub-ms race, practically
+unreachable). File follow-ups only if a real reachable failure mode is found.
+
+When items 1-5 land, `git mv` this file back to `tasks/review/`; round-3 re-review scopes to the new fix
+commit(s) only.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

@@ -599,7 +599,7 @@ The `accounts` Postgres table tracks signup-originated users (email and ORCID si
 
 ### 6.1 Reachable Steady States
 
-Six dimensions of the `accounts` row affect auth and state transitions: `verify_token`, `username`, `password_hash`, `orcid`, `custody`, `upgraded_at`. Orthogonal overlays (`reset_token`, `pending_email_*`, `sessions_invalidated_at`) are transient flags layered on top of these states, not states themselves.
+Six dimensions of the `accounts` row affect auth and state transitions: `verify_token`, `username`, `password_hash`, `orcid`, `custody`, `upgraded_at`. Orthogonal overlays (`reset_token`, `pending_email_*`, `sessions_invalidated_at`, `updated_at`) are transient flags layered on top of these states, not states themselves. `updated_at` is a recency marker (bumped at every `/confirm`+`/link` finalize UPDATE): it is the staleness signal the stuck-recovery lookups conjoin with the crypto ownership proof so the Option C resume path admits only genuinely-mid-crash rows, not every steady-state finalized row (see § 6.3's Option C note). A defense reading `updated_at` is therefore reviewable against this overlay, not an unenumerated state dimension.
 
 | State | verify_token | username | password_hash | orcid | custody | upgraded_at | Reached by |
 |---|---|---|---|---|---|---|---|
