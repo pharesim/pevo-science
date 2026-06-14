@@ -70,7 +70,11 @@ const template = `
               </div>
               <template x-if="profile.accreditation">
                 <div class="mt-4 pt-4 border-t border-parchment-dark text-xs text-ink-muted flex items-center gap-2 flex-wrap">
-                  <span x-text="$t('profile.accreditedVia', { method: profile.accreditation.method, date: formatDate(profile.accreditation.timestamp) })"></span>
+                  <!-- "accredited since" reads the earliest-accredit anchor
+                       (accredited_since) so a metadata re-broadcast does not reset
+                       the date; falls back to the latest-op timestamp until the
+                       backend anchor field lands. -->
+                  <span x-text="$t('profile.accreditedVia', { method: profile.accreditation.method, date: formatDate(profile.accreditation.accredited_since || profile.accreditation.timestamp) })"></span>
                   <template x-if="profile.accreditation.field">
                     <span> &middot; <span x-text="titleCaseDiscipline(profile.accreditation.field)"></span></span>
                   </template>

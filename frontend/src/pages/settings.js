@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
-import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword } from '../api.js';
+import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword, submitAccreditationMetadata } from '../api.js';
 import { withSettingsFreshAuth } from '../lib/settings-fresh-auth.js';
 import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, loadDhive, validateMnemonic } from '../hive-keys.js';
 import { isPasswordValid } from '../password-policy.js';
@@ -11,6 +11,12 @@ import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
 
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
+
+// Per-field length bounds for the editable-accreditation-metadata form, mirroring
+// accreditationRequestSchema in backend/src/validation.ts (full_name/institution
+// max 200, field max 100; min 1 after trim). The client gate is UX-only; the
+// backend re-validates. Kept here so a future bound change is a one-line edit.
+const METADATA_MAX = { name: 200, institution: 200, field: 100 };
 
 // Single source of truth for `upgradeErrorKey` discriminators. Catch-block
 // sub-cases reference UPGRADE_ERROR_KEYS by symbolic name; `canRetryUpgrade`
@@ -243,6 +249,45 @@ const template = `
               </div>
             </template>
 
+            <!-- Editable accreditation metadata (accredited users). Edits
+                 re-broadcast an admin-signed accredit op (the user never signs;
+                 they only re-auth per § 6.4). The latest op is authoritative for
+                 metadata so edits show; tenure ("accredited since") stays on the
+                 earliest-op anchor. ORCID-accredited users with empty
+                 institution/field fill them in here for the first time via the
+                 same form. -->
+            <template x-if="isAccredited">
+              <div data-testid="accreditation-metadata-section" class="border border-parchment-dark rounded-xl p-6 mt-6">
+                <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('settings.metadataTitle')"></h2>
+                <p class="text-sm text-ink-muted mb-4" x-text="$t('settings.metadataDescription')"></p>
+
+                <form @submit.prevent="handleMetadataSubmit()" class="space-y-3">
+                  <div>
+                    <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.metadataNameLabel')"></label>
+                    <input type="text" data-testid="metadata-name-input" x-model="editName" required maxlength="200"
+                           class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                           :placeholder="$t('settings.metadataNamePlaceholder')">
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.metadataInstitutionLabel')"></label>
+                    <input type="text" data-testid="metadata-institution-input" x-model="editInstitution" required maxlength="200"
+                           class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                           :placeholder="$t('settings.metadataInstitutionPlaceholder')">
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.metadataFieldLabel')"></label>
+                    <input type="text" data-testid="metadata-field-input" x-model="editField" required maxlength="100"
+                           class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                           :placeholder="$t('settings.metadataFieldPlaceholder')">
+                  </div>
+                  <button type="submit" data-testid="metadata-submit" :disabled="!canSubmitMetadata || metadataSubmitting"
+                          class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                          x-text="metadataSubmitting ? $t('settings.metadataSaving') : $t('settings.metadataSubmit')"></button>
+                  <p x-show="metadataError" class="text-sm text-red-600" x-text="metadataError"></p>
+                </form>
+              </div>
+            </template>
+
             <!-- Set a password section: only shown for accounts with no
                  password. ORCID-verified signups/recoveries leave the
                  password empty; this lets the user opt into password
@@ -432,7 +477,20 @@ export function initSettingsPage() {
     get custody() { return Alpine.store('auth').custody; },
     get isLight() { return this.custody === 'light'; },
     get isAccredited() { return Alpine.store('auth').isAccredited; },
+    get accreditation() { return Alpine.store('auth').accreditation; },
     get currentOrcid() { return Alpine.store('auth').accreditation?.orcid || null; },
+
+    // Mirrors the backend bounds (METADATA_MAX / accreditationRequestSchema):
+    // all three fields required, non-empty after trim, within length. UX gate
+    // only; the backend re-validates.
+    get canSubmitMetadata() {
+      const n = this.editName.trim();
+      const i = this.editInstitution.trim();
+      const f = this.editField.trim();
+      return n.length >= 1 && n.length <= METADATA_MAX.name
+        && i.length >= 1 && i.length <= METADATA_MAX.institution
+        && f.length >= 1 && f.length <= METADATA_MAX.field;
+    },
 
     // ORCID link state
     orcidLinking: false,
@@ -457,6 +515,17 @@ export function initSettingsPage() {
     newPasswordConfirmInput: '',
     passwordSubmitting: false,
     passwordError: null,
+
+    // Editable accreditation metadata. Pre-filled once from the auth store's
+    // current accreditation (persisted/restored, so usually present at init;
+    // a $watch covers the late-load case). ORCID-accredited users land with
+    // empty institution/field and fill them in here via the same inputs.
+    editName: '',
+    editInstitution: '',
+    editField: '',
+    metadataSubmitting: false,
+    metadataError: null,
+    _metadataPrefilled: false,
 
     // Upgrade flow state
     // Phases: 'idle' | 'new-seed' | 'confirm-new' | 'enter-old' | 'upgrading' | 'done' | 'error'
@@ -576,6 +645,15 @@ export function initSettingsPage() {
       }
       this.$watch('isConnected', (connected) => {
         if (connected) this.loadEmailStatus();
+      });
+
+      // Pre-fill the editable-metadata inputs from the current accreditation.
+      // Usually present at init (the store is persisted/restored); the $watch
+      // covers the case where accreditation lands later (login or polling). The
+      // one-shot guard prevents a late update from clobbering in-progress edits.
+      this._prefillMetadata();
+      this.$watch('isAccredited', (accredited) => {
+        if (accredited) this._prefillMetadata();
       });
 
       // Warn on tab close / navigation while `upgradePhase==='upgrading'`.
@@ -737,6 +815,73 @@ export function initSettingsPage() {
         username: this.username,
         hasPassword: this.emailStatus?.hasPassword === true,
       };
+    },
+
+    // One-shot pre-fill of the editable-metadata inputs from the current
+    // accreditation. No-op once filled so a late store update (polling) cannot
+    // overwrite edits the user has started typing.
+    _prefillMetadata() {
+      if (this._metadataPrefilled) return;
+      const acc = this.accreditation;
+      if (!acc) return;
+      this.editName = acc.name || '';
+      this.editInstitution = acc.institution || '';
+      this.editField = acc.field || '';
+      this._metadataPrefilled = true;
+    },
+
+    async handleMetadataSubmit() {
+      if (!this.canSubmitMetadata || this.metadataSubmitting) return;
+      this.metadataSubmitting = true;
+      this.metadataError = null;
+      // Trim to match the backend's trim-before-validate; the broadcast carries
+      // the merged values and the latest accredit op becomes authoritative.
+      const values = {
+        full_name: this.editName.trim(),
+        institution: this.editInstitution.trim(),
+        field: this.editField.trim(),
+      };
+      try {
+        // Critical action (admin-signed on-chain broadcast): the JWT path needs
+        // an edit_accreditation_metadata fresh-auth proof. The orchestrator
+        // mints it (password modal or ORCID round-trip) and threads it into the
+        // request; self-custody passes no proof. Same flow as handleEmailSubmit.
+        const outcome = await withSettingsFreshAuth(
+          'edit_accreditation_metadata',
+          this._freshAuthCtx(),
+          (proof) => submitAccreditationMetadata(values, proof),
+        );
+        // ORCID round-trip navigating away, password modal dismissed, or a
+        // torn-down corrupted session: abort cleanly (the orchestrator already
+        // toasted on sessionInconsistent).
+        if (outcome.redirect || outcome.cancelled || outcome.sessionInconsistent) return;
+        if (outcome.freshAuthFailed) {
+          this.metadataError = this.$t('settings.reauthFailed');
+          return;
+        }
+        // Optimistically reflect the merged metadata in the auth store so the
+        // Settings inputs, profile, and accreditation pages update without a
+        // reload. Chain is SSoT; this matches the latest-op metadata the edit
+        // just broadcast. Tenure ("accredited since") is unaffected by an edit.
+        const auth = Alpine.store('auth');
+        if (auth.accreditation) {
+          auth.accreditation = {
+            ...auth.accreditation,
+            name: values.full_name,
+            institution: values.institution,
+            field: values.field,
+          };
+          auth._saveSession();
+        }
+        Alpine.store('toast').show(this.$t('settings.metadataSaved'), 'success');
+      } catch (err) {
+        // Sanitization pattern (see handleOrcidLink): generic localized message
+        // to the DOM, raw error only to console.warn.
+        console.warn('[accreditation metadata]', err);
+        this.metadataError = this.$t('settings.metadataUpdateFailed');
+      } finally {
+        this.metadataSubmitting = false;
+      }
     },
 
     async handleEmailSubmit() {

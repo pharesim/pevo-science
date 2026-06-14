@@ -61,7 +61,11 @@ const template = `
               </div>
               <div>
                 <dt class="text-ink-muted font-medium" x-text="$t('accreditation.statusSince')"></dt>
-                <dd class="text-ink" x-text="formatDate(accreditation.timestamp)"></dd>
+                <!-- Tenure reads the earliest-accredit anchor (accredited_since)
+                     so a metadata re-broadcast does not reset the date; falls
+                     back to the latest-op timestamp until the backend exposes
+                     the anchor field. -->
+                <dd class="text-ink" x-text="formatDate(accreditation.accredited_since || accreditation.timestamp)"></dd>
               </div>
             </dl>
 

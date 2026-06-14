@@ -6,6 +6,7 @@ const mockSubmitEmail = vi.fn();
 const mockDeleteEmail = vi.fn();
 const mockStartOrcid = vi.fn();
 const mockSetPassword = vi.fn();
+const mockSubmitAccreditationMetadata = vi.fn();
 const mockIsKeychainInstalled = vi.fn(() => true);
 
 vi.mock('../../src/api.js', () => ({
@@ -14,6 +15,7 @@ vi.mock('../../src/api.js', () => ({
   deleteEmail: (...args) => mockDeleteEmail(...args),
   startOrcid: (...args) => mockStartOrcid(...args),
   setPassword: (...args) => mockSetPassword(...args),
+  submitAccreditationMetadata: (...args) => mockSubmitAccreditationMetadata(...args),
 }));
 
 // settings.js routes the three critical-action handlers (change-email,
@@ -2961,6 +2963,163 @@ describe('settingsPage', () => {
       comp.orcidLinking = true;
       win.fire('pageshow', { persisted: true });
       expect(comp.orcidLinking).toBe(true);
+    });
+  });
+
+  // Editable accreditation metadata: the Settings form re-broadcasts an
+  // admin-signed accredit op through the same fresh-auth orchestrator the
+  // email/set-password handlers use. The orchestrator is mocked (pass-through
+  // by default); these assert the handler's plumbing — trimmed payload, action
+  // string, optimistic auth-store refresh, and outcome handling.
+  describe('editable accreditation metadata', () => {
+    describe('canSubmitMetadata', () => {
+      it('is false when any field is empty (after trim)', () => {
+        const comp = createComponent();
+        comp.editName = 'Ada Lovelace';
+        comp.editInstitution = '   ';
+        comp.editField = 'Mathematics';
+        expect(comp.canSubmitMetadata).toBe(false);
+      });
+
+      it('is true when all three fields are within bounds', () => {
+        const comp = createComponent();
+        comp.editName = 'Ada Lovelace';
+        comp.editInstitution = 'Analytical Engine Co';
+        comp.editField = 'Mathematics';
+        expect(comp.canSubmitMetadata).toBe(true);
+      });
+
+      it('is false when a field exceeds its length bound', () => {
+        const comp = createComponent();
+        comp.editName = 'A'.repeat(201); // name max 200
+        comp.editInstitution = 'MIT';
+        comp.editField = 'Physics';
+        expect(comp.canSubmitMetadata).toBe(false);
+      });
+    });
+
+    describe('_prefillMetadata', () => {
+      it('pre-fills the inputs from the current accreditation', () => {
+        mockAuthStore.accreditation = { name: 'Ada', institution: 'AE Co', field: 'Math', orcid: '0000-0001' };
+        const comp = createComponent();
+        comp._prefillMetadata();
+        expect(comp.editName).toBe('Ada');
+        expect(comp.editInstitution).toBe('AE Co');
+        expect(comp.editField).toBe('Math');
+      });
+
+      it('leaves ORCID-accredited empty institution/field as empty inputs', () => {
+        mockAuthStore.accreditation = { name: 'Ada', institution: '', field: '', orcid: '0000-0001' };
+        const comp = createComponent();
+        comp._prefillMetadata();
+        expect(comp.editName).toBe('Ada');
+        expect(comp.editInstitution).toBe('');
+        expect(comp.editField).toBe('');
+      });
+
+      it('does not overwrite edits already in progress (one-shot)', () => {
+        mockAuthStore.accreditation = { name: 'Ada', institution: 'AE Co', field: 'Math' };
+        const comp = createComponent();
+        comp._prefillMetadata();
+        comp.editName = 'Edited';
+        comp._prefillMetadata(); // late store update / second call
+        expect(comp.editName).toBe('Edited');
+      });
+    });
+
+    describe('handleMetadataSubmit', () => {
+      it('does nothing when the form is invalid', async () => {
+        const comp = createComponent();
+        comp.editName = '';
+        await comp.handleMetadataSubmit();
+        expect(mockSubmitAccreditationMetadata).not.toHaveBeenCalled();
+      });
+
+      it('does nothing when already submitting', async () => {
+        const comp = createComponent();
+        comp.editName = 'Ada';
+        comp.editInstitution = 'AE Co';
+        comp.editField = 'Math';
+        comp.metadataSubmitting = true;
+        await comp.handleMetadataSubmit();
+        expect(mockSubmitAccreditationMetadata).not.toHaveBeenCalled();
+      });
+
+      it('submits trimmed values with the edit_accreditation_metadata action and refreshes the store', async () => {
+        mockAuthStore.accreditation = { orcid: '0000-0001', method: 'orcid' };
+        mockSubmitAccreditationMetadata.mockResolvedValue({ status: 'ok', data: {} });
+        const comp = createComponent();
+        comp.editName = '  Ada Lovelace  ';
+        comp.editInstitution = '  AE Co  ';
+        comp.editField = '  Mathematics  ';
+
+        await comp.handleMetadataSubmit();
+
+        expect(mockWithSettingsFreshAuth).toHaveBeenCalledWith(
+          'edit_accreditation_metadata',
+          expect.objectContaining({ custody: 'light', username: 'alice' }),
+          expect.any(Function),
+        );
+        expect(mockSubmitAccreditationMetadata).toHaveBeenCalledWith(
+          { full_name: 'Ada Lovelace', institution: 'AE Co', field: 'Mathematics' },
+          undefined,
+        );
+        // Optimistic store refresh: metadata merged in, orcid/method preserved.
+        expect(mockAuthStore.accreditation).toEqual({
+          orcid: '0000-0001', method: 'orcid',
+          name: 'Ada Lovelace', institution: 'AE Co', field: 'Mathematics',
+        });
+        expect(mockAuthStore._saveSession).toHaveBeenCalled();
+        expect(mockToastStore.show).toHaveBeenCalledWith('settings.metadataSaved', 'success');
+        expect(comp.metadataError).toBeNull();
+      });
+
+      it('surfaces reauthFailed and does not touch the store on freshAuthFailed', async () => {
+        mockWithSettingsFreshAuth.mockResolvedValueOnce({ freshAuthFailed: true });
+        const comp = createComponent();
+        comp.editName = 'Ada';
+        comp.editInstitution = 'AE Co';
+        comp.editField = 'Math';
+
+        await comp.handleMetadataSubmit();
+
+        expect(comp.metadataError).toBe('settings.reauthFailed');
+        expect(mockAuthStore._saveSession).not.toHaveBeenCalled();
+        expect(mockToastStore.show).not.toHaveBeenCalled();
+      });
+
+      it('aborts cleanly on redirect (ORCID round-trip) without toast or store write', async () => {
+        mockWithSettingsFreshAuth.mockResolvedValueOnce({ redirect: true });
+        const comp = createComponent();
+        comp.editName = 'Ada';
+        comp.editInstitution = 'AE Co';
+        comp.editField = 'Math';
+
+        await comp.handleMetadataSubmit();
+
+        expect(comp.metadataError).toBeNull();
+        expect(mockAuthStore._saveSession).not.toHaveBeenCalled();
+        expect(mockToastStore.show).not.toHaveBeenCalled();
+      });
+
+      it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+        const leaky = new Error('rate-limited token=deadbeefcafebabe');
+        mockSubmitAccreditationMetadata.mockRejectedValue(leaky);
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const comp = createComponent();
+        comp.editName = 'Ada';
+        comp.editInstitution = 'AE Co';
+        comp.editField = 'Math';
+
+        await comp.handleMetadataSubmit();
+
+        expect(comp.metadataError).toBe('settings.metadataUpdateFailed');
+        expect(comp.metadataError).not.toContain('deadbeef');
+        expect(warnSpy).toHaveBeenCalled();
+        expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+        expect(comp.metadataSubmitting).toBe(false);
+        warnSpy.mockRestore();
+      });
     });
   });
 });

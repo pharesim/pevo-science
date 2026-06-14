@@ -39,3 +39,39 @@ The hafsql.ts membership CTEs and the accreditation status/profile response shap
 - **backend-editable-accreditation-metadata** (the backend half of this task) owns the new edit endpoint and the `accredited_since` tenure anchor on the response — this UI task consumes that field and must not define its name/shape independently. Anchor the "accredited since" repoint on whatever field the backend task ships.
 - The **revoke-sanction / live-threshold** task also touches the membership CTEs (`activeAccreditationsCteBody`, `accreditationStatusCteBody`, `activeVouchesCteBody` in `backend/src/hafsql.ts`) for sanction stickiness and live WoT threshold evaluation. Both that task and this one read accreditation status through the same response surface; coordinate so the `accredited_since` anchor and any sanction/method fields land without clobbering each other.
 - The **admin-roster** task adds `issued_by` to authority-op payloads (including the `accredit` op this feature re-broadcasts). No frontend payload change here (the user does not sign the op), but be aware the admin-signed metadata edit's `accredit` op carries `issued_by:<admin>` set backend-side.
+
+## [UI] (2026-06-14) — built against contract; integration-verify deferred (backend endpoint unlanded)
+
+Built the full UI against the ARCHITECTURE.md § 2 contract (latest-op metadata,
+earliest-op `accredited_since` tenure anchor) and the § 6.4 fresh-auth flow.
+Landed:
+- `frontend/src/api.js` — `submitAccreditationMetadata(values, freshAuthProof)`.
+- `frontend/src/pages/settings.js` — editable-metadata section (gated on
+  `isAccredited`), pre-fill from the auth store (one-shot, late-load `$watch`),
+  client validation mirroring `accreditationRequestSchema` bounds, and
+  `handleMetadataSubmit` routed through `withSettingsFreshAuth` exactly as
+  `handleEmailSubmit`; optimistic auth-store refresh on success.
+- Tenure repoint to `accredited_since` (fallback to latest-op `timestamp` until
+  the backend exposes the field) in `accreditation.js` + `profile.js`; audited
+  that no other frontend surface reads `accreditation.timestamp` as tenure.
+- i18n: 12 `settings.metadata*` keys across all 16 locales + STUBS.md sweep.
+- Unit tests: +12 in `pages-settings.test.js` (validation, prefill one-shot,
+  submit plumbing + trim, optimistic refresh, freshAuthFailed/redirect/error).
+  103/103 settings tests pass; profile/accreditation green; production build OK.
+
+**Contract assumptions to verify when the backend lands** (UI consumes, does not
+define API shape — these follow the backend task's documented shape):
+- Endpoint/method `PATCH /api/accreditation/metadata`. (Backend task wrote the
+  same as an "e.g."; the UI task's loose "POST/submitEmail-shaped" wording
+  conflicts — backend owns the shape, so I matched the backend's.)
+- Fresh-auth action string `edit_accreditation_metadata` (the union member the
+  backend task names). Must be added to the backend's fresh-auth mint + edit
+  endpoint and the orchestrator's JSDoc union.
+- Tenure anchor field name `accredited_since`. The fallback keeps the date
+  rendering correct until the field appears.
+
+Integration-verify (real edit is admin-signed/no user signature; edit shows on
+profile/accreditation; "accredited since" fixed across an edit) deferred per the
+task until the backend half lands. Moving to review/.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
