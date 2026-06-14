@@ -200,3 +200,27 @@ block archive.
 
 Moving to `pending/` for the UI agent. Land the required fixes, then `git mv` back
 to `review/` (the move is the re-review signal).
+
+## Architect addendum (2026-06-14, from the backend-admin-roster review) — one additional held item:
+
+The `/ce-code-review` of the now-landed backend `backend-admin-roster-and-authority-attribution`
+surfaced one console gap not named in the hold above. (The `method:'admin'` enum break and the
+self-downgrade-via-promote lockout are ALREADY covered above; this is a distinct third item,
+user-triaged 2026-06-14.)
+
+9. **(P2) Self-custody admins cannot satisfy the § 6.4 fresh-auth gate.** Every admin client
+   function in `frontend/src/api.js` (`fetchAdminRoster`, `promoteAdmin`, `demoteAdmin`,
+   `adminGrantAccreditation`, `adminRetractPaper`, `adminRevokeAuthorship`, `adminApproveAuthorship`)
+   uses `authenticatedRequest` (Bearer JWT). The backend's `requireFreshAdminAuth` only treats the
+   per-request Hive signature as a satisfied fresh-proof when `hiveAuthMethod === 'signature'`; a JWT
+   request must carry a minted single-use proof. A self-custody (Keychain) admin therefore arrives as
+   JWT, the console mints no proof for non-light custody, and the backend rejects with
+   `FRESH_AUTH_REQUIRED`. This contradicts the per-action fresh-re-auth AC ("fresh Hive signature for
+   self-custody"). Fix: for self-custody admins, route the admin mutations through the Hive-signature
+   path (`signRequest`) so the backend sees `hiveAuthMethod === 'signature'` and the per-request
+   signature satisfies the gate; OR, if the console is deliberately scoped to light / password+ORCID
+   admins, enforce and document that and show a clear "self-custody admins sign with Keychain"
+   affordance. The backend is correct (it accepts both the signature and JWT+proof paths) — the gap is
+   the console always using JWT. Confirm this case under the existing integration-verify item.
+
+Fold this into the same re-review cycle as the items above; `git mv` back to `review/` once all land.
