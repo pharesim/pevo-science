@@ -48,4 +48,35 @@ live external reference and left intentionally with a clarifying note. No new ro
 - `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`
 - Parent sweep: `backend-haf-query-comment-anchor-sweep` (in `tasks/pending/` at filing time, round-3 hold).
 
+## Backend completion (2026-06-14) — moved to review/
+
+Both sites re-verified live before editing, then re-anchored. Both changes are comment-only.
+
+1. **`backend/src/lib/idempotency.ts`** — the `(see the HAF pool config in src/db.ts)` location
+   cite is re-anchored on the exported symbol `getPool()` (the live function in `db.ts` holding
+   `max: 3` / `connectionTimeoutMillis: 5_000`, the values already named inline in the comment and
+   preserved). `getPool()` is genuinely used across the backend (e.g. `routes/claims.ts`), so the
+   anchor is durable. No file-path/line-number cite remains.
+
+2. **`backend/src/routes/claims.ts`** — `SEC-003-BE` determined a DEAD POINTER and dropped.
+   Checked repo-wide: the id resolves NOWHERE (absent from `tasks/`, `tasks-archive.md`,
+   `solutions/`, and any review log), unlike SEC-001 / SEC-002-* / SEC-004-* which all resolve to
+   durable records. So it is not a live external reference. Re-anchored on behavior
+   ("Prior to SEC-003-BE including it meant ..." became "Including it would mean ..."), preserving
+   the full security WHY for excluding bridge-account equality from the revoke gate.
+
+Audited own replacements per `convention-enforcing-fix-must-audit-its-own-new-code`: no
+line-number / slug / SHA substituted in (idempotency anchor is a stable symbol; claims one is pure
+behavioral prose).
+
+**Optional canary-extension item NOT taken here.** Extending the standing canary to also catch
+line-number cites (the gap that let the idempotency site through) is left as the explicit
+follow-up the task names, to avoid colliding with the sibling `backend-haf-query-comment-anchor-sweep`
+round-3 canary work landing in the same test file this same session. Surface for the architect: fold
+the line-number-cite class into that canary in a follow-up, or confirm it stays out of scope.
+
+Verification: `npm run typecheck` clean; `npm run lint` clean (only the pre-existing untouched
+`author-supersession.ts` warning); `no-stale-comment-anchors` canary green; residual-site grep and
+new-rot grep both clean.
+
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

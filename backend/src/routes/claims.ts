@@ -273,9 +273,9 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
 
   // Authorization: post author, admin, or claimer themselves. Note that
   // `paperAuthor === config.hiveBridgeAccount` (a property of the paper, not
-  // the caller) is deliberately NOT part of this gate. Prior to SEC-003-BE
-  // including it meant every authenticated user could revoke any claim on any
-  // bridge paper, since the bridge account is never a human caller.
+  // the caller) is deliberately NOT part of this gate. Including it would mean
+  // every authenticated user could revoke any claim on any bridge paper, since
+  // the bridge account is never a human caller.
   const isPostAuthor = username === paperAuthor;
   const isClaimer = username === claimer;
   const isAdmin = username === config.hiveAdminAccount;

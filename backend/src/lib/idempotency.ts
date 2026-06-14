@@ -424,7 +424,7 @@ export function validateIdempotencyKey(value: unknown): ValidateIdempotencyKeyRe
 //   Aggregate-retry dimension: the trade-off above frames
 //   the single-user retry case. For N concurrent retries on the same miss-
 //   key, the HAF pool itself bounds the blast radius: `max:3` with
-//   `connectionTimeoutMillis:5000` (see the HAF pool config in `src/db.ts`).
+//   `connectionTimeoutMillis:5000` (see the `getPool()` HAF pool config).
 //   Requests 1-3 queue
 //   live HAF probes; requests 4+ wait up to 5s for a pool slot, then fall
 //   through to the `lookupErr` handler (which logs
