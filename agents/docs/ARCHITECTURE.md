@@ -464,7 +464,7 @@ json: {
 }
 ```
 
-A sanction is **sticky**: while an account has an un-lifted sanction it is not accredited regardless of vouch support, and the WoT auto-accreditation path MUST refuse it (vouches cannot re-admit a sanctioned account). Only a later authority `accredit` op lifts the sanction; on lift, the account's full pre-sanction history counts (tenure still reads from the earliest `accredit` op).
+A sanction is **sticky**: while an account has an un-lifted sanction it is not accredited regardless of vouch support. Only a **deliberate admin** `accredit` (the admin grant endpoint) lifts it; on lift, the account's full pre-sanction history counts (tenure still reads from the earliest `accredit` op). Every other accreditation path MUST refuse a sanctioned account: the WoT auto-accreditation path (vouches cannot re-admit a sanctioned account) AND the scientist-triggered self-service accredit paths (email verification, ORCID callback, signup-verify). Those self-service broadcasts are admin-key-signed but scientist-initiated, so re-verifying an institutional email or ORCID cannot lift a moderation sanction.
 
 **Legacy revokes.** Every `revoke` broadcast before this model carries `reason: "WoT threshold no longer met"` and no `type` field; these are historical WoT threshold-drops, NOT sanctions. Membership evaluation MUST treat any `revoke` lacking `type: "sanction"` as a non-sanction and ignore it for stickiness — such an account's status is determined by its live WoT standing and authority `accredit` ops alone.
 
@@ -535,7 +535,7 @@ Accreditation status is an on-chain dimension **orthogonal to the § 6.1 `accoun
 
 **WoT standing is live, not pinned.** A WoT member that falls below the vouch threshold loses standing immediately, with **no `revoke` op** — losing vouch support is ordinary, not a sanction. Recovering vouches restores standing automatically (self-healing). This is the chosen representation; an implementer may fall back to a neutral "demote" op if live evaluation proves too costly on HAF, but the *semantics* above (non-sanction, self-healing) are fixed. This reverses the earlier op-pinned, non-self-healing behavior in which a threshold-drop broadcast a `revoke`; see "Legacy revokes" under § 2 Revocation.
 
-**Sanctions are sticky.** A `revoke` with `type: "sanction"` suppresses accreditation regardless of vouch support, and the WoT auto-accreditation path MUST refuse any account with an un-lifted sanction (vouches cannot re-admit a sanctioned account). Only a later authority `accredit` op lifts a sanction. Issuing a sanction is an **authorized-admin action** (the admin-set that may sign authority ops is administered separately from these semantics).
+**Sanctions are sticky.** A `revoke` with `type: "sanction"` suppresses accreditation regardless of vouch support. Only a **deliberate admin** `accredit` (the admin grant endpoint) lifts a sanction; every other accreditation path MUST refuse a sanctioned account — both the WoT auto-accreditation path (vouches cannot re-admit a sanctioned account) and the scientist-triggered self-service accredit paths (email/ORCID/signup), which are admin-key-signed but scientist-initiated and so cannot self-lift a moderation sanction. Issuing a sanction is an **authorized-admin action** (the admin-set that may sign authority ops is administered separately from these semantics).
 
 **Editable profile metadata.** `name`/`institution`/`field` are user-editable after accreditation by re-broadcasting an admin-signed `accredit` op carrying the new values (user-initiated through the edit endpoint; the broadcast is admin-signed, so neither light nor self-custody users sign the op — they only re-auth the request per § 6.4). The account's **latest** `accredit` op is authoritative for metadata, so edits take effect. ORCID-accredited accounts (whose `institution`/`field` are empty at grant) use the same path to set them for the first time. This replaces the former "metadata is one-shot" code invariant.
 
@@ -806,7 +806,7 @@ Every authority-op payload gains an `issued_by: <hive_account>` field naming the
 | Op | Site (stable symbol) | `issued_by` |
 |---|---|---|
 | `accredit` | `routes/accreditation.ts`, `routes/orcid.ts` (×2), `routes/signup-verify.ts`, `wot.ts` `broadcastWotAccreditation` | acting admin; **`"wot"`** for auto-grants (see below) |
-| `revoke` (sanction) | `wot.ts` `buildRevocationPayload` / `revokeVoucheeIfBelowThreshold` / `cascadeRevocation` | acting admin |
+| `revoke` (`type:"sanction"`) | `routes/admin.ts` `POST /api/admin/accreditation/sanction` | acting admin |
 | `retract_paper` | `routes/papers.ts` | acting admin |
 | `approve_authorship` / `revoke_authorship` | `routes/claims.ts` | acting admin |
 | `admin_grant` / `admin_revoke` | roster-management endpoint (new) | acting super-admin or root |

@@ -66,7 +66,8 @@ Accreditation status for a single user.
 }
 ```
 
-- `accreditation.tx_id` — the HAF `customJson.id` of the latest authority-signed `accredit` custom_json for this account, as a decimal string. `null` when the account has never been accredited or when the latest authority op is a `revoke` (in which case `accreditation` itself is `null`). Shape matches `/api/profile/:username` exactly — both endpoints resolve the same authority-filtered HAF query.
+- `is_accredited`: reflects live membership (sanction-aware, live-WoT-threshold-gated). It is `false` when the account is sanctioned (an un-lifted `type:"sanction"` `revoke`, sticky until a later authority `accredit`) or is a `wot`-method account currently below the live vouch threshold. A legacy (non-sanction) `revoke` no longer suppresses membership: a WoT account reverts to live-threshold evaluation and an authority-pinned account reverts to its latest `accredit`. See ARCHITECTURE.md § 2 "Accreditation Lifecycle & Sanctions".
+- `accreditation.tx_id`: the HAF `customJson.id` of the latest authority-signed `accredit` custom_json for this account, as a decimal string. `null` (and `accreditation` itself `null`) when the account has never been accredited or is currently sanctioned. Shape matches `/api/profile/:username` exactly. Note `accreditation` may be non-`null` while `is_accredited` is `false` for a WoT account below threshold (it carries the latest `accredit` metadata even when live standing has lapsed).
 
 The `accredit` row is filtered server-side to only include events signed by `config.accreditationAuthorities` (via `required_posting_auths ?|` on HAF). Self-broadcast fake `accredit` ops do not surface here.
 
@@ -138,7 +139,7 @@ The backend broadcasts the accreditation `custom_json` to Hive upon successful v
 
 - **Omitted** on a fresh broadcast (the route signed and submitted a new accredit op; `tx_id` is the just-broadcast tx).
 - **`"already_landed"`** on the per-token HAF idempotency-hit path: a prior `/verify` call for the SAME token already landed an accredit op (matched by `idempotency_key = sha256(${token}:${hive_username})`). `tx_id` carries the prior broadcast's tx. Per-token state is best-effort cleaned.
-- **`"already_accredited"`** on the user-level existing-accreditation gate hit: the Hive account already has an `accredit` op on chain from a DIFFERENT verification flow (e.g., a sibling pending token from a prior `/api/accreditation/request`). `tx_id` carries the prior accredit-op's tx (potentially older). No broadcast attempted; per-token state is best-effort cleaned. The gate filters on the LATEST authority-signed action: if the most-recent action for the account is `revoke`, the gate falls through to the normal per-token check + broadcast path (revocation reversibility is operator-only-reversible per ARCHITECTURE.md § 6).
+- **`"already_accredited"`** on the user-level existing-accreditation gate hit: the Hive account already has an `accredit` op on chain from a DIFFERENT verification flow (e.g., a sibling pending token from a prior `/api/accreditation/request`). `tx_id` carries the prior accredit-op's tx (potentially older). No broadcast attempted; per-token state is best-effort cleaned. Latest-action handling: a `type:"sanction"` `revoke` is sticky and is REFUSED here with `ACCREDITATION_SANCTIONED` (see below) because self-service re-verification cannot lift a moderation sanction; only a deliberate admin `accredit` lifts it. A legacy (non-sanction) `revoke` is not sticky: the gate falls through to the normal per-token check + broadcast path, which re-accredits the account.
 
 Both short-circuit branches return the same envelope shape (`{ message, username, tx_id, outcome }`) on the first flight; only the `outcome` discriminator and the `tx_id` semantics differ.
 
@@ -146,6 +147,7 @@ Both short-circuit branches return the same envelope shape (`{ message, username
 
 **Errors:**
 - `BAD_REQUEST`: invalid/expired token.
+- `ACCREDITATION_SANCTIONED` (403): the account carries an un-lifted `type:"sanction"` `revoke`. Self-service accreditation cannot lift a moderation sanction, and the response does not disclose the sanction reason. The account is restored only by a deliberate admin `accredit` (`POST /api/admin/accreditation/grant`). The same refusal applies on the ORCID callback and signup-verify accredit paths.
 - `BROADCAST_FAILED` (502): Hive chain rejected the accreditation broadcast. `details.retriable: false`. The token is consumed; request a new verification token.
 - `POST_BROADCAST_FAILED` (502): Broadcast confirmed on chain, then a transient downstream cascade write failed. Today the only emitter on this route is `seedAccreditationBonus`, which writes the initial reputation-bonus row keyed by username. Wire shape per [common.md](common.md). `details.failed_step: 'reputation_seed'`, `details.outcome: 'confirmed'`, `details.tx_id` carries the confirmed accreditation tx_id. The accreditation IS durable; the bonus row is reconciled by the next reputation-batch cycle. Clients should treat this as success from the user's perspective (do NOT prompt for a new verification token; the chain op is canonical).
 - `POST_BROADCAST_OPERATOR_REQUIRED` (502): Broadcast confirmed on chain, then a permanent downstream cascade write failed (e.g., a TypeError or non-retriable DB error inside `seedAccreditationBonus`). Wire shape per [common.md](common.md). Same chain-is-canonical semantics as `POST_BROADCAST_FAILED`, but operator intervention is required to reconcile the missed bonus. User-facing message indicates support contact rather than automatic reconciliation. Clients should NOT prompt for a new verification token. **On retry of the same token, the endpoint returns 400 BAD_REQUEST**: the token is consumed by the post-broadcast cleanup so the retry surfaces the operator-actionable signal (rather than serving a misleading cached 200 from the grace-period record, which is deliberately NOT written on this path). The on-chain accreditation IS durable; clients should display the 502 message verbatim and not interpret the subsequent 400 as "token expired, request a new one."
@@ -191,6 +193,45 @@ Operator manual-reset for the per-token broadcast-attempts counter. Use when the
 
 ---
 
+### POST /api/admin/accreditation/sanction
+
+Issue a sticky moderation sanction against an account's accreditation. Broadcasts a `revoke` custom_json carrying `type:"sanction"`. A sanction suppresses accreditation membership regardless of vouch support and is lifted ONLY by a later authority `accredit` (`POST /api/admin/accreditation/grant`). This is the only `revoke` the backend broadcasts; a WoT threshold drop is a self-healing live-membership non-event with no op (see POST /api/wot/retract).
+
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`.
+
+**Authorization:** admin-tier (resolved from the on-chain admin roster) AND a fresh re-auth proof for action `admin_sanction`. Sanctioning is a critical action (ARCHITECTURE.md § 6.4 / § 6.5 invariant #1), so a JWT alone is never sufficient. Mint the proof via `POST /api/custody/fresh-auth` or `POST /api/orcid/start` (`mode=fresh_auth`) with `action: "admin_sanction"`; the proof is bound to `(admin_sanction, <acting-admin-username>, "")` and consumed single-use here. Self-custody (Keychain) callers satisfy the fresh-auth requirement with the request signature and may omit `fresh_auth_proof`.
+
+**Request Body:**
+
+```json
+{
+  "account": "scientist1",
+  "reason": "Repeated misconduct after warning",
+  "fresh_auth_proof": "<single-use proof token>"
+}
+```
+
+`reason` is optional free text (max 500 chars) and is broadcast verbatim on-chain (public and immutable). `fresh_auth_proof` is required only on the JWT/light-account path.
+
+**Response `data`:**
+
+```json
+{
+  "message": "Accreditation sanctioned for scientist1",
+  "tx_id": "<Hive custom_json transaction ID>"
+}
+```
+
+Membership reflects the sanction once HAF ingests the op and the slow-changing membership cache refreshes, so there can be a short propagation delay before the sanctioned account drops from the accredited set.
+
+**Errors:**
+- `BAD_REQUEST` (400): request body fails validation (invalid `account`, `reason` over 500 chars).
+- `FORBIDDEN` (403): the caller is not an admin-roster member, OR the target is protected from this actor (a base admin cannot sanction `root`, a higher-or-equal admin tier, or themselves).
+- `FRESH_AUTH_REQUIRED` (401/403): missing, expired, or mismatched fresh-auth proof. Reason-to-status mapping per [custody.md](custody.md).
+- `BROADCAST_FAILED` (502) / `BROADCAST_TIMEOUT` (504): the chain rejected the broadcast or it timed out. Wire shape per [common.md](common.md).
+
+---
+
 ### GET /api/wot/:username
 
 Vouch status for a user in the Web of Trust system. Returns the number of vouches received, the threshold required for WoT accreditation, and the list of vouchers.
@@ -211,7 +252,7 @@ Vouch status for a user in the Web of Trust system. Returns the number of vouche
 }
 ```
 
-`accreditation_method` is the account's own active accreditation method (`wot`, `email`, `orcid`, or `manual`), or `null` when the account is not currently accredited. It is the method of the most recent authority-signed `accredit` event and is independent of `eligible` (which reflects only the vouch count against the threshold).
+`accreditation_method` is the method (`wot`, `email`, `orcid`, or `manual`) of the account's latest `accredit` op in the op-pinned (not-sanctioned) set, or `null` when the account has no current `accredit` op or is sanctioned. It is independent of `eligible` (which reflects only the live vouch count against the threshold): a WoT account below threshold still reports `accreditation_method: "wot"` with `eligible: false`.
 
 **Errors:**
 - `INTERNAL_ERROR`: HAF database unavailable (required for WoT queries)
@@ -254,7 +295,7 @@ When the vouchee has not yet reached the threshold, the message format is `"Vouc
 
 ### POST /api/wot/retract
 
-Notify the backend that a `retract_vouch` custom_json has been broadcast. The backend first verifies the retraction has landed on-chain (it polls HAF until the signer's vouch edge to the vouchee has disappeared from `active_vouches`), then re-evaluates the VOUCHEE that lost the vouch: if the vouchee was WoT-accredited and now sits below the threshold, its accreditation is revoked. The re-evaluation is non-recursive (a single withdrawn edge can drop at most that one vouchee, and revoking it does not unwind that account's own outbound vouches). On-chain verification is what prevents an accredited voucher from revoking a victim by claiming a retraction they never broadcast. The frontend must first broadcast the `retract_vouch` custom_json via Hive Keychain, then call this endpoint.
+Notify the backend that a `retract_vouch` custom_json has been broadcast. WoT membership is evaluated live against the current vouch graph, so a retraction is a self-healing non-event: when a vouchee drops below the threshold it simply stops appearing in the accredited set on the next membership read. No `revoke` op is broadcast and no cascade runs. The backend polls HAF until the signer's vouch edge to the vouchee has disappeared from `active_vouches` (so the returned `vouch_status` reflects fresh chain state), then responds. The frontend must first broadcast the `retract_vouch` custom_json via Hive Keychain, then call this endpoint.
 
 **Headers:** `X-Hive-Username`, `X-Hive-Signature`
 
@@ -270,21 +311,14 @@ Notify the backend that a `retract_vouch` custom_json has been broadcast. The ba
 
 ```json
 {
-  "message": "Retraction processed. No revocation needed.",
-  "revocation_outcome": "skipped",
+  "message": "Retraction processed.",
+  "revocation_outcome": "none",
   "revocations": [],
   "vouch_status": { "...VouchStatus object, or null when HAF is unavailable..." }
 }
 ```
 
-`revocation_outcome` is one of:
-- `revoked`: the vouchee fell below threshold and its accreditation was revoked. `revocations` carries the revocation transaction ID.
-- `skipped`: the retraction was verified on-chain but the vouchee still meets the threshold, so no revocation was needed.
-- `unverified`: the retraction could not be confirmed against current chain state. This covers both the not-yet-on-chain case (HAF ingestion lag, HAF unavailable, or no retract was broadcast) and the case where the single verification-and-re-evaluation read itself failed. Fail-closed: nothing was evaluated and no revocation was issued. Retry once HAF is healthy.
-- `timeout`: the revocation broadcast timed out and its on-chain outcome is ambiguous. Check on-chain status before re-attempting.
-- `chain_error`: the revocation broadcast failed.
-
-`revocations` carries the revocation transaction ID only for the `revoked` outcome; it is `[]` for every other outcome. `vouch_status` may be `null` in the `unverified` arm when HAF is unavailable.
+`revocation_outcome` is always `none` and `revocations` is always `[]`. A WoT threshold drop no longer triggers a `revoke` op; membership self-heals from the live vouch graph on the next read. (The five former outcome values, `revoked`, `skipped`, `unverified`, `timeout`, and `chain_error`, were removed when the threshold-drop cascade was retired.) `vouch_status` may be `null` when HAF is unavailable during the post-retraction status poll.
 
 **Errors:**
 - `BAD_REQUEST` (400): missing `vouchee`

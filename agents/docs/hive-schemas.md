@@ -108,8 +108,8 @@ A PEvO paper is a top-level Hive post (comment with no parent author).
 **ORCID supersession rule (read time).** The chain-stored `authors[i].orcid` is the **as-typed-or-prefilled-at-broadcast-time** value — the publisher's stated claim, frozen forever once broadcast. It is NOT authoritative for display when a more trustworthy attestation exists. Backends and frontends MUST resolve the **canonical display ORCID** for each `authors[i]` row as follows:
 
 1. If `authors[i].hive` is empty or absent, use `authors[i].orcid` as-is. No supersession applies (the row carries no on-chain identity to look up).
-2. If `authors[i].hive` is set AND that account is currently accredited (per `active_accreditations` — latest `accredit` / `revoke` action wins, see [accreditation-state-read-latest-action-wins-2026-05-15.md](solutions/conventions/accreditation-state-read-latest-action-wins-2026-05-15.md)) AND the accreditation record carries a non-empty `orcid`, the **accreditation-attested ORCID supersedes the chain-stored value** for canonical display. The chain-stored `authors[i].orcid` remains the publisher's stated claim but is not authoritative.
-3. If `authors[i].hive` is set AND that account is NOT currently accredited (no row, or latest action is `revoke`), use `authors[i].orcid` as-is.
+2. If `authors[i].hive` is set AND that account is currently accredited (per `active_accreditations`, the sanction-aware live-membership view; see [accreditation-state-read-latest-action-wins-2026-05-15.md](solutions/conventions/accreditation-state-read-latest-action-wins-2026-05-15.md)) AND the accreditation record carries a non-empty `orcid`, the **accreditation-attested ORCID supersedes the chain-stored value** for canonical display. The chain-stored `authors[i].orcid` remains the publisher's stated claim but is not authoritative.
+3. If `authors[i].hive` is set AND that account is NOT currently accredited (absent from the `active_accreditations` membership view), use `authors[i].orcid` as-is.
 4. If `authors[i].hive` is set AND currently accredited BUT the accreditation record's `orcid` is null/empty, use `authors[i].orcid` as-is (the accreditation carries no ORCID claim to supersede with).
 
 When the chain-stored `authors[i].orcid` differs from the accreditation-attested ORCID for the same hive account, surfaces SHOULD render a discrepancy indicator so readers can see both values (the publisher's claim and the verified attestation). This addresses the forward-looking case where a co-author becomes accredited after the paper was broadcast, and the original case where the publisher typed an ORCID that doesn't match the co-author's later-verified identity.
@@ -120,16 +120,16 @@ The same supersession rule applies to reputation queries that aggregate by ORCID
 
 **Name-supersession rule (read time).** Like ORCID, an accredited author's chain-claimed `authors[i].name` is the broadcaster's stated claim, not authoritative when a more trustworthy attestation exists. Backends and frontends MUST resolve the **canonical display name** for each `authors[i]` row via this fallback chain (first non-empty wins):
 
-1. **Attested name** — the accreditation-attested `researcher_name` when `authors[i].hive` is set AND that account is **currently accredited** (per `active_accreditations`, latest action wins). The attested name supersedes the broadcaster claim.
+1. **Attested name** — the accreditation-attested `researcher_name` when `authors[i].hive` is set AND that account is **currently accredited** (per `active_accreditations`, the sanction-aware live-membership view). The attested name supersedes the broadcaster claim.
 2. **Broadcaster name** — the chain-claimed `authors[i].name`.
 3. **Hive handle** — `authors[i].hive`, for a co-author with an account but no typed name.
 4. **ORCID** — `authors[i].orcid`, last-resort identifier.
 
 An entry resolving none of the above names no one and is dropped from the displayed `authors[]`. Consequently `authors[i].name` is **mandatory** (a non-empty string) on every read surface, even though the broadcaster MAY omit it on chain.
 
-**Name-supersession is silent — this is the key contrast with ORCID.** When the attested name differs from the broadcaster claim, surfaces render NO discrepancy indicator and emit NO audit event. Name variation (Rob/Robert, maiden names, transliterations, initials, diacritics) is benign and high-noise, so a "claimed vs verified" badge would be pure noise; ORCID divergence, by contrast, is a potential identity-spoof signal and is audited (`orcid_claim_mismatch`). No new on-chain field is introduced — supersession operates on the existing `{hive, name, orcid}` fields at read time. Only the **currently-accredited** arm is active (a revoked account's last-attested name does NOT supersede), matching the JS `resolveAuthorName` / SQL `authorsWithSupersessionSelect` `name`-arm parity. See `agents/docs/ARCHITECTURE.md § 2 "Display construction (cumulative union)"` for how supersession composes with the cumulative author union.
+**Name-supersession is silent — this is the key contrast with ORCID.** When the attested name differs from the broadcaster claim, surfaces render NO discrepancy indicator and emit NO audit event. Name variation (Rob/Robert, maiden names, transliterations, initials, diacritics) is benign and high-noise, so a "claimed vs verified" badge would be pure noise; ORCID divergence, by contrast, is a potential identity-spoof signal and is audited (`orcid_claim_mismatch`). No new on-chain field is introduced — supersession operates on the existing `{hive, name, orcid}` fields at read time. Only the **currently-accredited** arm is active (a non-member account's last-attested name does NOT supersede), matching the JS `resolveAuthorName` / SQL `authorsWithSupersessionSelect` `name`-arm parity. See `agents/docs/ARCHITECTURE.md § 2 "Display construction (cumulative union)"` for how supersession composes with the cumulative author union.
 
-**Canonical SQL pattern.** Backends resolving `authors[i]` for display MUST LEFT JOIN per-author against the `active_accreditations` CTE (defined in `backend/src/hafsql.ts:activeAccreditationsCteBody`). The CTE already encodes the latest-action-wins predicate (`IN ('accredit','revoke')`, partitioned by account, `rn = 1 AND action = 'accredit'`) and exposes the attested `orcid` per accredited account. There is no separate query to author; reuse the existing CTE and project the supersession fields:
+**Canonical SQL pattern.** Backends resolving `authors[i]` for display MUST LEFT JOIN per-author against the `active_accreditations` CTE (defined in `backend/src/hafsql.ts:activeAccreditationsCteBody`). The CTE encodes the full membership rule (sanction-aware, live-WoT-threshold-gated, with legacy revokes reclassified as non-sanctions) and exposes the attested `orcid` per accredited account. There is no separate query to author; reuse the existing CTE and project the supersession fields:
 
 ```sql
 WITH ${activeAccreditationsCteBody(...).sql}
@@ -156,7 +156,7 @@ ORDER BY a.ordinality;
 
 Notes on the canonical pattern:
 - The LEFT JOIN handles all four supersession cases naturally: no `hive` value yields no JOIN match (`aa.orcid` is NULL → `orcid_verified` is NULL → consumer falls back to chain `orcid`); a `hive` value with no current accreditation also yields no match (same fallback); a `hive` value with a current accreditation carrying NULL `orcid` projects `aa.orcid = NULL` (still falls back); only when the accreditation carries a non-empty `orcid` does `orcid_verified` populate.
-- `active_accreditations` already filters to `action = 'accredit'` after ranking by `block_num DESC`. A revoked account is absent from the CTE entirely, which is the correct semantics for supersession (revoked accounts contribute no attested ORCID).
+- `active_accreditations` is the full membership view (sanction-aware, live-WoT-threshold-gated). A non-member account — sanctioned, or a WoT account below the live threshold — is absent from the CTE entirely, which is the correct semantics for supersession (non-members contribute no attested ORCID). A legacy-revoked account that still satisfies the membership rule (e.g. a WoT account back above threshold) remains present and does contribute.
 - ORDER BY `ordinality` preserves the `authors[]` array order from chain. Without it, the row order is undefined and the response shape may flip authors between requests.
 
 **Body Format:**
@@ -381,16 +381,20 @@ Broadcast by the admin account to attest that a Hive user is a verified scientis
 
 ### 2.2 Revocation
 
-Revokes a previously issued accreditation.
+Revokes a previously issued accreditation. A backend-broadcast `revoke` carries `type: "sanction"` — a deliberate, sticky moderation sanction. (A WoT threshold drop no longer broadcasts a revoke; see § 2.6.)
 
 ```json
 {
   "action": "revoke",
   "account": "<hive_username>",
-  "reason": "Institution affiliation no longer valid",
+  "type": "sanction",
+  "reason": "Repeated misconduct after warning",
+  "issued_by": "<acting_admin_hive_account>",
   "timestamp": "<ISO 8601>"
 }
 ```
+
+`type` is an optional discriminator. `type: "sanction"` marks a deliberate authority sanction (the only kind the backend now broadcasts). A `revoke` lacking `type` is a **legacy** op (historical WoT threshold-drops, typically `reason: "WoT threshold no longer met"`) and is treated as a non-sanction.
 
 **Hive Operation:**
 
@@ -401,7 +405,7 @@ Revokes a previously issued accreditation.
 | `required_posting_auths` | `["<HIVE_ADMIN_ACCOUNT>"]` |
 | `json` | Stringified JSON above |
 
-An account's accreditation status is determined by the most recent `accredit` or `revoke` action targeting that account.
+An account's accreditation status is determined by its membership rule (latest `accredit` op, live WoT threshold, and sanction stickiness), not by a bare "latest action wins". A `type: "sanction"` revoke suppresses membership until a later **deliberate admin** `accredit` lifts it. A legacy revoke (no `type`) does NOT suppress membership: a WoT account reverts to live-threshold evaluation and an authority-pinned account reverts to its latest `accredit`. See ARCHITECTURE.md § 2 "Accreditation Lifecycle & Sanctions".
 
 ### 2.3 Anonymous Review Attestation
 
@@ -522,7 +526,7 @@ Retracts a previously issued vouch.
 | `required_posting_auths` | `["<voucher_username>"]` |
 | `json` | Stringified JSON above |
 
-**Cascading Effects:** If retracting a vouch causes a WoT-accredited researcher to drop below the `min_accreditations_for_wot` threshold, the backend suspends their accreditation by broadcasting a `revoke` action with `reason: "WoT threshold no longer met"`.
+**No revocation on threshold drop.** WoT membership is evaluated live against the current vouch graph. If retracting a vouch drops a WoT-accredited researcher below the `min_accreditations_for_wot` threshold, they simply stop appearing in the accredited set on the next membership read — the backend broadcasts NO `revoke` op, and recovering vouches restores standing automatically (self-healing). This replaces the former behavior, which broadcast a `revoke` with `reason: "WoT threshold no longer met"` (now reclassified as a legacy non-sanction; see § 2.2).
 
 ### 2.7 Retract Paper
 
