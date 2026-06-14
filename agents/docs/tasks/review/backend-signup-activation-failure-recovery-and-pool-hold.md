@@ -219,3 +219,44 @@ run `./deploy.sh migrate`-equivalent locally + the `signup-verify-*` suites gree
 to `review/`. The round-2 re-review will scope to the merge commit.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+## Backend re-review signal (2026-06-14) — round-1 holds re-implemented onto main (NOT a WIP merge)
+
+**The WIP-merge mechanism was infeasible; pivoted to re-implementation (user-authorized).** The
+WIP `backend-signup-activation-holds-wip` (`225d3ebe`) forked at `aa60d465`, but main then
+independently rewrote the activation path (`5f874215` extracted `withSignupActivationLock`,
+`00ca9510` route-flavor derivation, `abaf65a5` admin-broadcast, `9b65bf07` crash-transition test,
+`324ca283` anchor-sweep). The WIP's 79-line diff targets the old inline structure and cannot apply
+to the refactored wrapper, and an audit found main already had the core machinery (resume,
+LOCK_HELD, lock extraction) + a generalized rate-limit refund, while the **P1 security holds (items
+1, 2) were still OPEN on main**. The still-missing delta was re-implemented directly onto current
+main using `225d3ebe` only as an intent reference. The WIP branch is now obsolete (do not merge it).
+
+**What landed — code at `89d0a067`, acceptance tests at `1b6a5eff` (both on main):**
+- Item 1 (P1): `STUCK_RECOVERY_WINDOW` (1h) recency guard on both /confirm + /link stuck-recovery
+  lookups; `updated_at = NOW()` at both finalize UPDATEs; migration `016_accounts_updated_at.sql`
+  adds the column WITH the architect-required back-fill (`COALESCE(created_at, NOW()-1 day)` before
+  SET NOT NULL, so the bypass is NOT left open for ~1h post-deploy). Migration applied to dev DB.
+- Item 2 (P1): activation lock fails closed on Redis-down — in-memory fallback removed,
+  `acquireSignupActivationLock` returns `reason:'unavailable'`, the wrapper maps it to retriable 503.
+- Item 3: `createResult: {block_num}|null`; block_num omitted from the /confirm 200 on resume paths.
+- Item 5: new `refundStatusCodes:[409]` rateLimit option on both token limiters (surgical 409
+  refund; 400 brute-force attempts still pay) + `Retry-After: 5` on the 409 LOCK_HELD in the wrapper.
+  (Main's generalized `skipFailedRequests` refund already existed; the token limiters did NOT use it,
+  so the 409-consumes-a-slot defect was genuinely open.)
+- Item 7: lock TTL docstring corrected to ~45s holder budget / 15s margin.
+- Decision B: /confirm best-effort-JWT contract documented in the handler docblock.
+
+**Test mapping (all green against real Postgres/Redis):** items 1,2,3,4,6 covered by
+`signup-verify-activation-lock-unavailable.test.ts` (new) + additions to
+`signup-verify-activation-recovery.test.ts`, `signup-verify-stuck-recovery.test.ts`,
+`signup-verify.test.ts`. Full signup-verify suite 55/55 + rateLimit 16/16 green; typecheck + lint
+clean. (Note: the pre-existing item-5-residual "409 LOCK_HELD" test uses a FIXED auth_token with a
+no-`ORDER BY` `verify_token` lookup, which made it flake against an orphan fixture row left by a
+prior session; cleaned the orphan row, suite now deterministic. The fixed-token+no-ORDER-BY fragility
+is pre-existing and surfaced for architect awareness, not changed here.)
+
+Items 4/5/6 were partially pre-satisfied by main's independent refactors; the delta above closes the
+remainder. `git mv`-ing to `review/`; round-2 re-review scopes to `89d0a067` + `1b6a5eff`.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
