@@ -66,17 +66,16 @@ export function getRequestId(): string {
 //     redact policy stays single-source-of-truth.
 //
 // Cross-references:
-//   - α (BACKEND-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION) — AssertionError leak
-//   - δ (BE-VERIFY-BROADCAST-ATTEMPTS-CAP) — ReplyError.command leak
+//   - the bridge custody-broadcast discrimination path — AssertionError leak
+//   - the accreditation verify-attempts cap path — ReplyError.command leak
 //   - lib/log-pii.ts — per-field hash helpers (`hashEmailForLogs`,
 //     `hashTokenForLogs`); this redact policy is the project-wide complement.
 
 const SAFE_BASELINE_FIELDS = ['code', 'errno', 'syscall'] as const;
 const RELAXED_EXTRA_FIELDS = ['port', 'address', 'hostname', 'path'] as const;
 
-// Round-3 hold #3 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-// upper bound on `cause`/`errors[]` recursion depth. The pre-round-3 self-
-// reference guard (`errAny.cause !== errAny`) caught only depth-1 cycles
+// Upper bound on `cause`/`errors[]` recursion depth. The bare self-
+// reference guard (`errAny.cause !== errAny`) catches only depth-1 cycles
 // (`A.cause = A`); a 2-step cycle (`A.cause = B; B.cause = A`) or an
 // adversarial unbounded chain would stack-overflow and crash the process
 // (PEvO is single-instance ⇒ full availability impact). Bail at depth > 10
@@ -114,17 +113,17 @@ function isErrorLike(value: unknown): value is Error {
  * `stack`) so existing log consumers (Slack/Sentry/Loki shippers) keep
  * working. The deviation is the absence of the leaky enumerated fields.
  *
- * `depth` parameter (round-3 hold #3): bounds recursive `cause`/`errors[]`
- * traversal. The pre-round-3 self-reference guard caught only depth-1
- * cycles (`A.cause = A`); a 2-step cycle (`A.cause = B; B.cause = A`) or
- * an adversarial unbounded chain would stack-overflow and crash the
- * process. At depth > MAX_CAUSE_DEPTH (10) we bail with a sentinel so
+ * `depth` parameter: bounds recursive `cause`/`errors[]` traversal. The
+ * bare self-reference guard catches only depth-1 cycles (`A.cause = A`);
+ * a 2-step cycle (`A.cause = B; B.cause = A`) or an adversarial unbounded
+ * chain would stack-overflow and crash the process. At depth >
+ * MAX_CAUSE_DEPTH (10) we bail with a sentinel so
  * operators see why the chain truncated rather than the process dying.
  */
 export function redactErrSerializer(err: unknown, depth = 0): SerializedErr | unknown {
   if (!isErrorLike(err)) return err;
 
-  // Round-3 hold #3: depth/cycle guard. Returning early at `depth > MAX`
+  // Depth/cycle guard. Returning early at `depth > MAX`
   // (rather than `>=`) lets the top-level call (depth=0) and 10 levels of
   // genuine cause chain through; depth 11 would be the first to bail. The
   // sentinel shape is recognizable in operator logs as a redact-truncation
@@ -165,10 +164,9 @@ export function redactErrSerializer(err: unknown, depth = 0): SerializedErr | un
   // Recursively redact the cause chain so a wrapped AssertionError or
   // ReplyError cannot smuggle leaky fields through a wrapper. Aggregate
   // errors (`err.errors`) follow the same recursion. Both pass `depth + 1`
-  // so the depth guard above bounds the total recursion (round-3 hold #3).
+  // so the depth guard above bounds the total recursion.
   //
-  // Round-4 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-  // when `cause` is a non-Error plain object (e.g. `class WrappedErr extends
+  // When `cause` is a non-Error plain object (e.g. `class WrappedErr extends
   // Error { constructor(...) { super(...); this.cause = leakyContext; } }`
   // or `Object.assign(new Error(...), { cause: { command: { args: [...] } } })`),
   // routing it back through `redactErrSerializer` hits the
@@ -186,7 +184,6 @@ export function redactErrSerializer(err: unknown, depth = 0): SerializedErr | un
       : redactPlainObject(errAny.cause, depth + 1);
   }
 
-  // Round-5 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
   // Same plain-object bypass class as the `cause` recursion above. A plain-
   // object `errors[]` member (`Object.assign(new Error('outer'), { errors:
   // [{ command: { args: ['raw-token'] } }] })`) hits `isErrorLike(plainObj)
@@ -204,7 +201,6 @@ export function redactErrSerializer(err: unknown, depth = 0): SerializedErr | un
 }
 
 /**
- * Round-4 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
  * SAFE_BASELINE_FIELDS allowlist redactor for non-Error `cause` payloads.
  *
  * `redactErrSerializer`'s entry guard (`if (!isErrorLike(err)) return err`)
@@ -217,8 +213,8 @@ export function redactErrSerializer(err: unknown, depth = 0): SerializedErr | un
  * land the unredacted plain object in the serialized payload.
  *
  * This helper applies the allowlist (and ONLY the allowlist) to non-null
- * objects with no isErrorLike short-circuit. The depth guard from round-3
- * hold #3 carries through so cycles and unbounded chains still bail.
+ * objects with no isErrorLike short-circuit. The MAX_CAUSE_DEPTH guard
+ * carries through so cycles and unbounded chains still bail.
  * Non-object inputs (strings, numbers, etc.) pass through — pino can
  * coerce those itself; the failure mode this closes is the structural
  * smuggling-via-plain-object case.
@@ -231,8 +227,7 @@ function redactPlainObject(value: unknown, depth: number): unknown {
   if (depth > MAX_CAUSE_DEPTH) {
     return { type: 'MaxDepthExceeded', depth };
   }
-  // Round-5 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-  // arrays previously fell through verbatim here, which let an array-shaped
+  // Arrays must not fall through verbatim here: an array-shaped
   // `cause` (`isErrorLike([]) === false` ⇒ this branch) leak its members'
   // leaky fields. Recurse element-wise so each member passes through the
   // allowlist (Error-like members go through `redactErrSerializer`; plain
@@ -276,8 +271,7 @@ function redactPlainObject(value: unknown, depth: number): unknown {
 }
 
 /**
- * Round-3 hold #4 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
- * fault-tolerant invocation of `redactErrSerializer`. The serializer reads
+ * Fault-tolerant invocation of `redactErrSerializer`. The serializer reads
  * `errAny.stack`, `errAny.cause`, `errAny.errors`, and the SAFE_BASELINE_FIELDS
  * indices on the input. Any of these may throw on a hostile / buggy err
  * shape:
@@ -291,7 +285,7 @@ function redactPlainObject(value: unknown, depth: number): unknown {
  * crash. Returning a sentinel keeps the log line on the wire and surfaces
  * the serializer-fault to operators as a recognizable shape.
  *
- * Pairs with the depth/cycle guard (round-3 hold #3): together they make
+ * Pairs with the MAX_CAUSE_DEPTH depth/cycle guard: together they make
  * the serializer fault-tolerant against deep cycles AND throwing-getter
  * shapes. Used by both Layer A (`redactErrInArg`) and Layer B (the
  * `serializers.err` config below).
@@ -317,7 +311,7 @@ function safeRedactErr(input: unknown): unknown {
 const baseLogger = pino({
   level: process.env.LOG_LEVEL || 'info',
   serializers: {
-    // Round-3 hold #4: the Layer-B `serializers.err` callback fires inside
+    // The Layer-B `serializers.err` callback fires inside
     // pino's format-and-write path (worker thread under the async transport).
     // A throwing serializer here would surface as an unhandled exception in
     // the transport, dropping the log line AND potentially destabilizing
@@ -356,7 +350,7 @@ function redactErrInArg(arg: unknown): unknown {
   if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
     const obj = arg as Record<string, unknown>;
     if ('err' in obj) {
-      // Round-3 hold #4: route through `safeRedactErr` so a throwing-getter
+      // Route through `safeRedactErr` so a throwing-getter
       // err shape (custom subclass with throwing `stack` getter, hostile
       // Proxy, AggregateError with throwing `Symbol.toPrimitive`) cannot
       // propagate out of a `logger.error({err}, 'msg')` call site and
@@ -373,7 +367,7 @@ function redactErrInArg(arg: unknown): unknown {
  * to pino. See the pino-spy-serializer-ordering-trap convention doc for
  * the layering rationale.
  *
- * Round-3 hold #5: each level method is declared with the explicit
+ * Each level method is declared with the explicit
  * `LogFn` type from pino instead of `Parameters<typeof baseLogger.warn>`.
  * `Parameters<>` reduces an overload set to the LAST overload's tuple —
  * pino's `LogFn` is a 3-overload union (msg-only string, obj+optional-msg,
@@ -441,9 +435,8 @@ export const logger: {
    *
    * If a call site needs Layer-A on a child, migrate this method to wrap
    * the child via a `wrapPinoLogger(baseLogger.child(bindings, options))`
-   * factory (option 1 of the original task). Today's PEvO has no .child
-   * callers, so the documentary approach (option 2) is the architect's
-   * call per the 2026-05-11 archive of the parent task.
+   * factory. Today's PEvO has no .child callers, so this method forwards
+   * verbatim and relies on Layer-B serializer redaction instead.
    */
   child(bindings: pino.Bindings, options?: pino.ChildLoggerOptions): pino.Logger {
     return baseLogger.child(bindings, options);
@@ -481,7 +474,7 @@ export const httpLogger = pinoHttp({
     res: (res) => ({
       statusCode: res.statusCode,
     }),
-    // Round-3 hold #4: same fault-tolerant invocation as the baseLogger's
+    // Same fault-tolerant invocation as the baseLogger's
     // err serializer above. pino-http child loggers inherit the parent's
     // serializers config, but since this httpLogger declares its own
     // serializers slot we have to wire the safe wrapper here too.

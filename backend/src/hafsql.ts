@@ -315,7 +315,7 @@ export function retractedPapersCteBody(startIdx = 1): SqlFragment {
  *      "accreditation is the trust layer", the authoring client is not
  *      load-bearing — an accredited scientist's review is a PEvO review
  *      regardless of which UI minted it. (Same failure mode as the
- *      discussion-comments fix in commit `d92e605`.)
+ *      discussion-comments fix.)
  *
  *   2. Type-only validation admitted review-shaped replies with missing,
  *      partial, or non-numeric `rating` objects. Downstream callers then
@@ -392,8 +392,8 @@ export function validReviewWhere(opts: {
  * reviewer is the paper author OR a named co-author of the same paper.
  *
  * **Why this helper exists.** Self-votes are already excluded from every
- * vote-aggregating surface (paper-class via `paper_resolved_votes` at
- * `reputation.ts:551-561`; review-class via `c2.weight != 0 AND
+ * vote-aggregating surface (paper-class via the `paper_resolved_votes`
+ * CTE in `reputation.ts`; review-class via `c2.weight != 0 AND
  * lv.voter != v.author` patterns). The principle is settled: an
  * account cannot vote for itself. Self-reviews were the symmetric gap
  * — an accredited paper author (or named co-author who is accredited)
@@ -455,12 +455,11 @@ export function validReviewWhere(opts: {
  *
  * `commentAlias` defaults to `'c'` to match sibling helpers
  * (`validReviewWhere`, `validPevoPaperWhere`) — reduces parameter-naming
- * asymmetry across the helper set (BACKEND-SELF-REVIEW-EXCLUSION round-1
- * hold #9). The `jsonb_typeof(...) = 'array'` guard before
- * `jsonb_array_elements` defends against a chain post broadcasting a
+ * asymmetry across the helper set. The `jsonb_typeof(...) = 'array'` guard
+ * before `jsonb_array_elements` defends against a chain post broadcasting a
  * non-array `pevo.authors` (null, string, integer, object) — without it,
  * Postgres raises at runtime and the reputation cycle cascade-fails for
- * every user (BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #2; companion to
+ * every user (companion to
  * `pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12`).
  */
 export function excludeSelfReviewWhere(opts: {
@@ -473,8 +472,8 @@ export function excludeSelfReviewWhere(opts: {
   const tag = opts.appTagParam;
   // `jsonb_typeof(auth) = 'object'` inside the EXISTS predicate is a
   // cascade-fail defense, NOT a co-author admission tightening. It works
-  // alongside the outer CASE-WHEN array guard (round-1 hold #2) to defend
-  // the helper against malformed `pevo.authors` shapes on chain.
+  // alongside the outer CASE-WHEN array guard to defend the helper against
+  // malformed `pevo.authors` shapes on chain.
   //
   // What this guard prevents: a chain post whose `authors` element is a
   // JSONB scalar (string, integer, null literal) would otherwise reach the

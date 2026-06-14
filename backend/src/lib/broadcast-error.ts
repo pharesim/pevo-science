@@ -24,12 +24,13 @@ import { logger } from '../logger.js';
  * advancing it before each `await`, so the catch can attach the precise
  * failed step.
  *
- * BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION (round-2 follow-up).
+ * Part of the ORCID post-broadcast outcome-discrimination contract (the
+ * confirmed-but-cascade-failed vs. broadcast-threw split above).
  */
 export type PostBroadcastFailedStep = 'cache_write' | 'account_update' | 'reputation_seed';
 
 /**
- * Severity discriminator for `PostBroadcastWriteError` (round-2 F3):
+ * Severity discriminator for `PostBroadcastWriteError`:
  *
  *   `'transient'` — the cascade failure may self-heal via a subsequent batch
  *     cycle, retry, or HAF re-derivation. User-facing message says "will
@@ -39,17 +40,17 @@ export type PostBroadcastFailedStep = 'cache_write' | 'account_update' | 'reputa
  *
  *   `'permanent'` — operator must investigate; no batch cycle will recover
  *     the missed write. User-facing message asks the user to contact support
- *     directly (round-3 hold #3: prior "support has been notified" wording
- *     overstated the alerting backend, which doesn't exist yet beyond log
- *     greping). Emits 502 `POST_BROADCAST_OPERATOR_REQUIRED`. Structured log
+ *     directly (the prior "support has been notified" wording overstated the
+ *     alerting backend, which doesn't exist yet beyond log greping). Emits
+ *     502 `POST_BROADCAST_OPERATOR_REQUIRED`. Structured log
  *     severity is `'permanent'` for dashboard discrimination.
  *
  * Accreditation `/verify`'s `seedAccreditationBonus` wrap sets `'permanent'`
  * because `seedAccreditationBonus` only re-throws on permanent (programmer-
  * error class) failures — transient Redis/HAF blips stay swallowed inside
- * the cascade fn per `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`. The
+ * the cascade fn per the cascade-fn permanent-error rethrow convention. The
  * comment that previously claimed "next cycle reconciles" at this site was
- * stale (re. round-2 F3 finding); the next reputation cycle does NOT
+ * stale; the next reputation cycle does NOT
  * self-heal a `TypeError`/`SyntaxError`/`RangeError` in `getReputationWeights`
  * output, so the user message must reflect that.
  */
@@ -90,8 +91,8 @@ export class AppPoolNotInitialisedError extends Error {
  * Classify a post-broadcast cascade error as `'permanent'` (operator-actionable;
  * no batch cycle will self-heal) or `'transient'` (may self-heal via retry,
  * batch re-derivation, or HAF replay). The classification rule mirrors the
- * `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` convention's permanent-class
- * union — namely:
+ * cascade-fn permanent-error rethrow convention's permanent-class union —
+ * namely:
  *
  *   * `TypeError`, `SyntaxError`, `RangeError`: programmer-error shape
  *     regressions (e.g. `getReputationWeights()` output drift; coercion-path
@@ -165,7 +166,7 @@ export class PostBroadcastWriteError extends Error {
     // ES2022 Error.cause property is set. pino's error serializer, structured
     // clone, and any consumer using the inherited Error.prototype.cause read
     // it from there — a class field `public readonly cause: unknown` shadows
-    // that slot and presents undefined to those consumers (round-1 hold #6).
+    // that slot and presents undefined to those consumers.
     super(`Post-broadcast write failed at step '${failedStep}' (tx ${txId})`, { cause });
     this.name = 'PostBroadcastWriteError';
   }
@@ -183,8 +184,8 @@ export class PostBroadcastWriteError extends Error {
  * messages.
  *
  * Stable log-message suffixes + structured `event:` discriminators (operator
- * alert anchors — change with care). Round-5 hold #2 added the `event:`
- * literal on every site so dashboards can key on the structured field instead
+ * alert anchors — change with care). The `event:` literal on every site lets
+ * dashboards key on the structured field instead
  * of suffix-matching the free-text message; both the suffix and the literal
  * are load-bearing and pinned at the unit-test layer.
  *   <routeLabel> broadcast timed out                                  (logger.warn,  event:'broadcast_timeout',          timer-fire path)
@@ -193,20 +194,18 @@ export class PostBroadcastWriteError extends Error {
  *   <routeLabel> broadcast confirmed but post-broadcast write failed  (logger.error, event:'post_broadcast_write_failed', PostBroadcastWriteError discrimination path — routes to DB on-call, not broadcast on-call)
  *   <routeLabel> postBroadcastMsgFn threw — using generic fallback    (logger.warn,  event:'post_broadcast_msg_fn_threw', recovery branch when caller-supplied msg-fn throws)
  *
- * Item #1 of round-2 hold (BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING):
- * `forceAmbiguousOutcome` and `ambiguousMsg` are now correlated via a
+ * `forceAmbiguousOutcome` and `ambiguousMsg` are correlated via a
  * discriminated union. Setting `forceAmbiguousOutcome: true` REQUIRES
- * `ambiguousMsg`; the round-1 `ambiguousMsg ?? failMsg` fallback is gone so
+ * `ambiguousMsg`; the prior `ambiguousMsg ?? failMsg` fallback is gone so
  * a future caller cannot silently regress to "Failed to broadcast …" on a
- * `outcome:'uncertain'` envelope (the round-1 #2 contradiction class). The
+ * `outcome:'uncertain'` envelope (the message-contradicts-outcome class). The
  * non-ambiguous variant explicitly disallows `ambiguousMsg` (`?: never`) so
  * a stray field on a non-ambiguous opts object is a compile error.
  */
 /**
  * Narrowed structured-log context for the 504/502 broadcast-error envelopes.
  *
- * Round-2 hold #6 (BACKEND-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION): the
- * pre-fix `Record<string, unknown>` accepted any string key, so a typo at a
+ * The pre-narrowing `Record<string, unknown>` accepted any string key, so a typo at a
  * call site (`permink` for `permlink`, `usernam` for `username`) compiled
  * silently and operators got an inconsistent log shape. The fields below are
  * the union of every key actually passed at the existing call sites
@@ -222,13 +221,11 @@ export class PostBroadcastWriteError extends Error {
  * narrowing on a small set of structured fields is the right trade vs. the
  * unbounded `Record<string, unknown>`.
  *
- * Round-3 hold #5 (BACKEND-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION):
  * `cause` is INTENTIONALLY OMITTED from this interface. The
  * `handleBroadcastError` body below (see the `sanitizedLogContext`
  * destructure) strips a caller-supplied `cause` field from the spread via
  * a `LogContext & { cause?: unknown }` widening destructure, closing the
- * sibling-cause leak path documented in round-3 hold #1 of
- * `backend-bridge-key-startup-validation-and-pino-redact` (top-level
+ * sibling-cause leak path in the pino-redact policy (top-level
  * `cause:` siblings bypass both the `redactErrInArg` wrapper and the
  * Layer-B `serializers.err` redactor, which only key on the `err` slot).
  * Adding `cause` here directly would silently turn the runtime strip
@@ -278,7 +275,7 @@ export interface LogContext {
   /** Bridge paper identifier (DOI / arXiv id) — used by bridge.register attempts */
   identifier?: string;
   /**
-   * Stuck-recovery flag (signup-verify Option C). True when the route entered
+   * Stuck-recovery flag (signup-verify resume path). True when the route entered
    * the broadcast block via the stuck-account resume path (chain step 1 +
    * pg state already complete from a prior attempt); false / undefined for
    * first-attempt flows. Lets operators distinguish a first-time broadcast
@@ -317,14 +314,14 @@ interface BaseHandleBroadcastErrorOpts {
    * `'account_update'` is a denormalized projection that requires a
    * HAF-replay or manual re-run). Defaults to a generic "broadcast confirmed;
    * we'll restore the backend record from the chain shortly" line that does
-   * NOT leak internal step labels (round-1 hold #9). Today only ORCID callers
+   * NOT leak internal step labels. Today only ORCID callers
    * throw `PostBroadcastWriteError` (handleAccredit / handleLink); other
    * callers leave this undefined.
    *
-   * Renamed from `postBroadcastFailedMsgFn` (round-1 hold #7 — option (b):
-   * dropped the redundant `Failed` segment since the type already implies
-   * failure; kept the `Fn` suffix to make the callback contract explicit at
-   * the type level, since the per-step rendering needs the function form).
+   * Renamed from `postBroadcastFailedMsgFn`: dropped the redundant `Failed`
+   * segment since the type already implies failure; kept the `Fn` suffix to
+   * make the callback contract explicit at the type level, since the per-step
+   * rendering needs the function form.
    */
   postBroadcastMsgFn?: (failedStep: PostBroadcastFailedStep) => string;
 }
@@ -352,7 +349,7 @@ export type HandleBroadcastErrorOpts = BaseHandleBroadcastErrorOpts & AmbiguousO
 /**
  * Generic POST_BROADCAST_FAILED fallback used when a caller omits
  * `postBroadcastMsgFn` or that callback itself throws. Deliberately omits the
- * internal step label (round-1 hold #9 — `'cache_write'` / `'reputation_seed'`
+ * internal step label (`'cache_write'` / `'reputation_seed'`
  * are operator vocabulary, not user-facing). Names the txId so the user (or
  * the support agent helping them) has the chain reference for later
  * verification.
@@ -362,19 +359,18 @@ function defaultPostBroadcastMsg(txId: string): string {
 }
 
 /**
- * Permanent-severity counterpart to `defaultPostBroadcastMsg` (round-2 F3).
+ * Permanent-severity counterpart to `defaultPostBroadcastMsg`.
  * Communicates that operator action is required because the permanent
  * class — `TypeError`/`SyntaxError`/`RangeError` rethrown by a cascade fn —
  * represents a programmer-error state that no batch cycle will self-heal.
  *
- * Round-3 hold #3: prior wording said "support has been notified" but no
+ * Prior wording said "support has been notified" but no
  * PagerDuty/Slack/email integration is wired in the codebase to back the
  * claim. The single-instance beta only fires
  * `logger.error({event:'post_broadcast_write_failed', severity:'permanent'})`,
  * which operators learn about by greping logs. The honest user-facing copy
  * is to ask the user to contact support themselves. Once an alerting
- * backend lands (`backend-post-broadcast-operator-alerting.md`), the
- * copy can be revisited.
+ * backend lands, the copy can be revisited.
  */
 function defaultPostBroadcastOperatorRequiredMsg(txId: string): string {
   return `Your operation is confirmed on Hive (tx ${txId}). A backend write failed and could not be reconciled automatically; please contact support.`;
@@ -385,9 +381,8 @@ function defaultPostBroadcastOperatorRequiredMsg(txId: string): string {
  * ambiguous-outcome envelope (currently {@link withOrcidBindingLock}'s
  * `'unavailable'` branch) take this type and call
  * {@link handleBroadcastErrorAmbiguous}, so the wrapper does not need to
- * spread `forceAmbiguousOutcome:true` into the helper opts itself (item #4
- * of the round-2 hold — keeps the helper's internal flag name out of caller
- * sites).
+ * spread `forceAmbiguousOutcome:true` into the helper opts itself — this
+ * keeps the helper's internal flag name out of caller sites.
  */
 export type HandleBroadcastErrorAmbiguousOpts = Extract<
   HandleBroadcastErrorOpts,
@@ -409,7 +404,7 @@ export type HandleBroadcastErrorAmbiguousOpts = Extract<
  *
  * The `'post_broadcast'` return distinguishes "broadcast confirmed, downstream
  * write threw" (502 POST_BROADCAST_FAILED) from "broadcast was rejected by
- * chain" (502 BROADCAST_FAILED, return `'failure'`). Round-1 hold #4: a future
+ * chain" (502 BROADCAST_FAILED, return `'failure'`). A future
  * caller that adopts `PostBroadcastWriteError` discrimination must NOT fire
  * destructive cleanup (e.g. `deleteToken`, `releaseLock`) on a confirmed-on-
  * chain operation — branching only on `'failure'` keeps that property safe.
@@ -419,12 +414,11 @@ export function handleBroadcastError(
   err: unknown,
   opts: HandleBroadcastErrorOpts,
 ): 'timeout' | 'failure' | 'post_broadcast' {
-  // Round-4 hold #3 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-  // strip a caller-supplied `cause` field from `opts.logContext` BEFORE
-  // every `{...opts.logContext, err, ...}` spread below. Round-3 hold #1
+  // Strip a caller-supplied `cause` field from `opts.logContext` BEFORE
+  // every `{...opts.logContext, err, ...}` spread below. An earlier change
   // dropped the helper-emitted top-level `cause: err.cause` field because
-  // it bypassed both redaction layers (the wrapper at `logger.ts:redact-
-  // ErrInArg` and Layer-B `serializers.err` only redact the `err` slot, so
+  // it bypassed both redaction layers (the wrapper at `logger.ts`'s
+  // `redactErrInArg` and Layer-B `serializers.err` only redact the `err` slot, so
   // a sibling top-level `cause` falls through to pino's default Error
   // serialization). The companion gap left open: the spread of caller-
   // supplied `opts.logContext` had no symmetric `cause: undefined` strip.
@@ -454,11 +448,11 @@ export function handleBroadcastError(
   // operators (alerts route to broadcast on-call instead of DB on-call) and
   // the user (asked to verify a confirmed write). 502 POST_BROADCAST_FAILED
   // with details.outcome:'confirmed' is the right shape.
-  // (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION.)
+  // (Part of the ORCID post-broadcast outcome-discrimination contract.)
   if (err instanceof PostBroadcastWriteError) {
-    // Severity discriminator (round-2 F3): permanent-class throws emit a
-    // distinct 502 code (POST_BROADCAST_OPERATOR_REQUIRED) and the round-3
-    // hold #3 "please contact support" message so user-visible recovery
+    // Severity discriminator: permanent-class throws emit a
+    // distinct 502 code (POST_BROADCAST_OPERATOR_REQUIRED) and the
+    // "please contact support" message so user-visible recovery
     // copy stops claiming automatic reconciliation on a permanent
     // programmer-error class. Operator-alert routing keys on the same `event:` anchor today
     // because both severities share the cascade-failure on-call disposition
@@ -470,8 +464,8 @@ export function handleBroadcastError(
     // dashboard-keyable alongside the sibling event-tagged anchors
     // (`event:'binding_lock_extend_*'`, `event:'lock_contention_held'`,
     // `event:'post_broadcast_msg_fn_threw'`). The 4th anchor is the
-    // operator-facing signal for `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`
-    // — when a cascade fn re-throws on a permanent error, this is what fires
+    // operator-facing signal for the cascade-fn permanent-error rethrow
+    // convention — when a cascade fn re-throws on a permanent error, this is what fires
     // at error level. Routes oncall to DB on-call (not broadcast on-call) per
     // the discrimination contract.
     logger.error(
@@ -481,25 +475,24 @@ export function handleBroadcastError(
         // caller-supplied `logContext: { err / txId / failedStep / event:
         // ... }` cannot silently override the helper's source-of-truth
         // values. JS later-wins semantics; the literals must always win.
-        // Round-5 hold #1 extends the round-4 `event:` protection to
+        // The same spread-after-literal protection covering `event:` extends to
         // err / txId / failedStep so the discrimination contract documented
         // in `agents/docs/api-contracts/orcid.md` for `details.failed_step`
         // remains load-bearing in operator logs even if a future caller's
         // logContext drops a colliding key.
         //
-        // Round-3 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-        // a redundant top-level sibling `cause: err.cause` field used to live
+        // A redundant top-level sibling `cause: err.cause` field used to live
         // here but bypassed both redaction layers — the wrapper at
-        // `logger.ts:redactErrInArg` and the Layer-B `serializers.err` only
+        // `logger.ts`'s `redactErrInArg` and the Layer-B `serializers.err` only
         // strip the `err` slot, so a sibling `cause` would fall through to
         // pino's default Error serialization (re-introducing the leaky-
         // enumerable surface the redact policy exists to close). It's also
         // unnecessary: the recursive `cause` traversal in `redactErrSerializer`
-        // (logger.ts:140-142) already preserves the redacted cause inside
+        // already preserves the redacted cause inside
         // `err.cause` of the serialized payload. Do NOT re-add a top-level
         // `cause:` here without first widening the redact policy to cover
-        // sibling-cause shapes too. Round-4 hold #3 closes the symmetric
-        // gap by sanitizing caller-supplied `cause` from `opts.logContext`
+        // sibling-cause shapes too. The symmetric gap is closed by sanitizing
+        // caller-supplied `cause` from `opts.logContext`
         // at the function entry above (the `sanitizedLogContext` const).
         err,
         txId: err.txId,
@@ -515,7 +508,7 @@ export function handleBroadcastError(
     // Letting an exception escape here would skip `sendError`, propagate to
     // the route's outer catch as a generic 500 INTERNAL_ERROR, and (on the
     // ORCID surface) consume the OAuth state token in the process — the
-    // exact hard-block class the wrapper exists to prevent (round-1 hold #2).
+    // exact hard-block class the wrapper exists to prevent.
     const fallbackMsg =
       err.severity === 'permanent'
         ? defaultPostBroadcastOperatorRequiredMsg(err.txId)
@@ -530,16 +523,16 @@ export function handleBroadcastError(
           // Authoritative fields placed AFTER `...sanitizedLogContext` so a
           // caller-supplied `logContext: { err / txId / failedStep / event:
           // ... }` cannot silently override the helper's source-of-truth
-          // values (round-5 hold #1: extends round-4's `event:` protection
+          // values (the spread-after-literal protection extends from `event:`
           // to the sibling fields). The msg-fn-throws anchor is the
           // dashboard-keyable signal that a caller's `postBroadcastMsgFn`
           // template threw — `err` here is the inner template error, NOT
           // the outer `PostBroadcastWriteError`; we name it `err` so pino's
           // serializer renders it as the primary error.
-          // Round-4 hold #3: caller-supplied `cause` from `opts.logContext`
+          // Caller-supplied `cause` from `opts.logContext`
           // is stripped at the function entry (`sanitizedLogContext`),
-          // closing the symmetric leak path called out in the round-3 hold
-          // #1 comment block above.
+          // closing the symmetric leak path called out in the redundant-
+          // top-level-`cause` comment block above.
           err: msgErr,
           txId: err.txId,
           failedStep: err.failedStep,
@@ -560,14 +553,13 @@ export function handleBroadcastError(
     return 'post_broadcast';
   }
   if (err instanceof BroadcastTimeoutError) {
-    // Round-5 hold #2: structured `event:` discriminator alongside the
+    // Structured `event:` discriminator alongside the
     // sibling event-tagged anchors (`event:'post_broadcast_write_failed'`
     // above, `event:'post_broadcast_msg_fn_threw'` in the recovery branch).
     // Lets dashboards key on the operator-alert anchor without parsing the
     // free-text suffix. Placed AFTER `...opts.logContext` so a caller-
     // supplied `logContext: { event: / err: / timeoutMs: ... }` cannot
-    // silently override the literal (item 1's spread-after-literal
-    // convention).
+    // silently override the literal (the spread-after-literal convention).
     logger.warn(
       {
         ...sanitizedLogContext,
@@ -604,7 +596,7 @@ export function handleBroadcastError(
     // client treats the outcome as uncertain. `timeout_ms` is omitted: the
     // error didn't originate from the timer, so reporting a fake value would
     // mislead consumers keying retry-backoff off that field.
-    // Round-5 hold #2: same `event:` discriminator pattern as the sibling
+    // Same `event:` discriminator pattern as the sibling
     // anchors. `event:'broadcast_ambiguous'` distinguishes this branch
     // (non-timer throw on a path the caller forced into ambiguous-outcome
     // semantics) from the timer-fire branch (`'broadcast_timeout'`) and the
@@ -628,14 +620,14 @@ export function handleBroadcastError(
       details.verify_location = opts.verifyLocation;
     }
     // `ambiguousMsg` is required by the discriminated union when
-    // forceAmbiguousOutcome is true — no `?? failMsg` fallback (the round-1
+    // forceAmbiguousOutcome is true — no `?? failMsg` fallback (the prior
     // fallback could silently regress to "Failed to broadcast …" which
-    // contradicts outcome:'uncertain'; round-2 item #1 closes that class at
-    // the type level).
+    // contradicts outcome:'uncertain'; the discriminated union closes that
+    // class at the type level).
     sendError(res, 504, 'BROADCAST_TIMEOUT', opts.ambiguousMsg, details);
     return 'failure';
   }
-  // Round-5 hold #2: standard failure-branch `event:'broadcast_failed'`. The
+  // Standard failure-branch `event:'broadcast_failed'`. The
   // common case for a non-timer broadcast throw — chain rejection, RPC error,
   // dhive client error — emits the 502 BROADCAST_FAILED envelope and routes
   // to broadcast on-call (vs. DB on-call for `'post_broadcast_write_failed'`).
@@ -657,7 +649,7 @@ export function handleBroadcastError(
  * to the `forceAmbiguousOutcome:true; ambiguousMsg:string` variant of the
  * union. Wrappers like {@link withOrcidBindingLock}'s `'unavailable'`-branch
  * catch call this directly so the helper's internal `forceAmbiguousOutcome`
- * flag name does not leak into caller code (item #4 of round-2 hold).
+ * flag name does not leak into caller code.
  */
 export function handleBroadcastErrorAmbiguous(
   res: Response,
@@ -668,9 +660,9 @@ export function handleBroadcastErrorAmbiguous(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Per-attempt audit-log helper (BACKEND-BROADCAST-ATTEMPT-HELPER-EXTRACTION).
+// Per-attempt audit-log helper.
 //
-// Round-2 hold #4 of `backend-bridge-custody-broadcast-discrimination` added
+// The custody-broadcast discrimination work added
 // a per-attempt audit-log helper inside `routes/custody.ts` as an in-handler
 // closure: every broadcast attempt fires a structured pino event tagged
 // `event:<route>.attempt` with `outcome ∈ {success, failure, timeout}` so
@@ -699,7 +691,7 @@ export function handleBroadcastErrorAmbiguous(
 // not load-bearing), and `outcome` + `event` go AFTER `...extra` so the
 // helper's source-of-truth values cannot be silently overridden by a
 // caller-supplied colliding key in `extra`. This is the spread-after-
-// literal convention from `handleBroadcastError`'s round-4/5 holds (the
+// literal convention from `handleBroadcastError` (the
 // `event:` field guard at the four 502/504 anchors).
 //
 // `attempt_n` is INTENTIONALLY NOT a declared field on the factory and the
@@ -770,7 +762,7 @@ export function makeLogBroadcastAttempt(
       // Authoritative fields placed AFTER `...extra` so a caller-supplied
       // `extra: { outcome: ..., event: ... }` cannot silently override the
       // helper's source-of-truth values. Same spread-after-literal
-      // convention as `handleBroadcastError`'s round-4/5 holds.
+      // convention as `handleBroadcastError`.
       outcome,
       event: eventLabel,
     };

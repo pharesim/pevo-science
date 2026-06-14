@@ -724,7 +724,7 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
     .update(`${pending.email}:${pending.hive_username}:${pending.token}`)
     .digest('hex');
 
-  // Idempotency key for Option A.4 dedup. Deterministic per (token, username)
+  // Idempotency key for pre-broadcast dedup. Deterministic per (token, username)
   // pair so a retry — including a retry after a 504 BROADCAST_TIMEOUT, where
   // the token is preserved by soft-block semantics — computes the same value,
   // and the pre-broadcast HAF lookup short-circuits to 200 instead of broadcasting
@@ -840,8 +840,8 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
         'accreditation.verify existing-accreditation gate HAF query failed — returning 503 SERVICE_UNAVAILABLE; token preserved for retry',
       );
       // Server-driven backoff cadence (30s default). The SPA's
-      // ApiRequestError infrastructure (frontend/src/api.js:28-33,63-71)
-      // parses Retry-After into `err.retryAfterSeconds`; emitting it
+      // ApiRequestError infrastructure (frontend api client) parses the
+      // Retry-After header into `err.retryAfterSeconds`; emitting it
       // here lets layered consumers (SPA + nginx + any future
       // auto-retry middleware) share a coherent floor instead of each
       // picking its own cadence. 30s is a reasonable HAF-outage

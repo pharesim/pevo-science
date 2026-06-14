@@ -17,8 +17,7 @@ import { logger } from '../logger.js';
  * path that needs to exit the process with a flushed fatal log MUST go
  * through this helper rather than a bare process.exit(1).
  *
- * Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
- * extracted to its own module (a) so the boot path AND the unit-test canary
+ * Extracted to its own module (a) so the boot path AND the unit-test canary
  * share the exact same implementation, and (b) so the watchdog shape is
  * mutation-killable at the function-call layer (see
  * `tests/lib/flush-and-exit.test.ts`).

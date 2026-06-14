@@ -431,9 +431,8 @@ function buildCumulativeAuthorsForChain(
   // `orcid_claim_mismatch` audit emission. The cumulative-union loop iterates
   // chain posts and resolves one winning entry per hive; the audit only
   // needs to fire once per (paper, hive) combination regardless of how
-  // many chain posts contributed a spoofed claim. Per architect ratification
-  // 2026-05-16 (`backend-orcid-claim-mismatch-post-revocation-audit.md`):
-  // dedup by (rootAuthor, rootPermlink, hive); future volume data drives
+  // many chain posts contributed a spoofed claim. The audit dedups by
+  // (rootAuthor, rootPermlink, hive); future volume data drives
   // any further gating (e.g., per-hive-per-cycle rate limit, persistent
   // store). The Set is request-scoped — no cross-request leakage.
   const auditedKeys = new Set<string>();
@@ -545,7 +544,7 @@ function buildCumulativeAuthorsForChain(
     // against the chain-claimed value; if we sampled `out.orcid` after the
     // override, the discrepancy signal would always be false on
     // overridden chain papers (a known constraint of running both layers
-    // simultaneously, called out in the task body).
+    // simultaneously).
     const preOverrideChainOrcid = typeof out.orcid === 'string' && (out.orcid as string).length > 0
       ? (out.orcid as string)
       : null;
@@ -558,8 +557,7 @@ function buildCumulativeAuthorsForChain(
     //     displayed ORCID. Prefill applies when the broadcaster's claim is
     //     absent. Match passes through unchanged.
     //
-    //  2. REVOKED accreditation
-    //     (`backend-orcid-claim-mismatch-post-revocation-audit.md`):
+    //  2. REVOKED accreditation:
     //     the operator has retired this account's accreditation. The
     //     account no longer has authoritative ORCID standing, so the
     //     server does NOT override the broadcaster's claim. BUT the audit
@@ -686,7 +684,7 @@ function buildCumulativeAuthorsForChain(
       // missing/match cases are silent (no audit signal worth firing).
     }
 
-    // Supersession fields (BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION). The
+    // Supersession fields (canonical ORCID resolution). The
     // attested ORCID and discrepancy signal must be computed against the
     // PRE-override chain claim so consumers can see when the publisher's
     // broadcast value diverged from the eventual attestation — even on
@@ -1363,8 +1361,8 @@ async function fetchPapersFromHaf(
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {
       const meta = parseMeta(r.json_metadata);
       const pevo = safePevoMeta(meta);
-      // Supersession-aware authors from SQL (per
-      // BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION + `hive-schemas.md` § 1.1).
+      // Supersession-aware authors from SQL (canonical ORCID resolution,
+      // per `hive-schemas.md` § 1.1).
       // The SQL helper LEFT JOINs each author against `active_accreditations`
       // in a single query so the per-author lookup doesn't multiply by
       // result-set size. The `pevoAuthors` raw projection below is kept for
@@ -1583,8 +1581,8 @@ async function fetchPaperDetailFromHaf(
     // enforced at the SQL layer for defense in depth.
     //
     // Wraps the paper SELECT with `activeAccreditationsCteBody` so the
-    // `authorsWithSupersessionSelect` projection (per
-    // BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION + `hive-schemas.md` § 1.1)
+    // `authorsWithSupersessionSelect` projection (canonical ORCID
+    // resolution, per `hive-schemas.md` § 1.1)
     // can LEFT JOIN per-author against the `active_accreditations` CTE
     // in-query. Param layout: $1=author, $2=permlink, $3=bridgeAccount,
     // $4=appTag (CTE), $5=authorities (CTE), $6=genesis (CTE). The
@@ -1598,7 +1596,7 @@ async function fetchPaperDetailFromHaf(
     // Resolve the continuation chain ONCE up-front and hand it to
     // reconstructVersionsFromHaf to avoid duplicate
     // `fetchHeadAuthorizedAuthors` + chain-walk queries (one each from this
-    // function and reconstructVersionsFromHaf). Per task hold-block item 4d.
+    // function and reconstructVersionsFromHaf).
     // The optional `memo` parameter lets the caller share the
     // per-`(author, permlink)` metadata cache with the backward
     // canonical-root walker (see `findCanonicalRoot`).
@@ -1635,11 +1633,10 @@ async function fetchPaperDetailFromHaf(
       getAccreditedOrcidsByAccount(),
       getAllEverAccreditedOrcidsWithStatus(),
       getAccreditedNamesByAccount(),
-      // List-view (and profile-view) parity per BACKEND-REPUTATION-SSOT
-      // AC #1: every reputation value displayed in the UI must derive
+      // List-view (and profile-view) parity on the reputation SSoT:
+      // every reputation value displayed in the UI must derive
       // from the same `${appTag}:reputation:batch:${user}` value. Paper
-      // detail previously hardcoded `author_reputation: 0` (round-2
-      // hold #6).
+      // detail previously hardcoded `author_reputation: 0`.
       getReputationScore(author),
     ]);
 
@@ -1696,7 +1693,7 @@ async function fetchPaperDetailFromHaf(
         //     remove a hive that another chain post added) — a structural
         //     invariant replaces the prior inversion-prone explicit check.
         //     See `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author
-        //     Trust Model" (architect-rewritten at archive of this task).
+        //     Trust Model".
         //   - `pevo.ipfs_cid` / `pevo.document_hash` / `pevo.ipfs_filename`
         //     apply per-version: each chain post's pointers describe that
         //     version's PDF (alice's v1 has CID_A, bob's v2 may have
@@ -1854,7 +1851,7 @@ async function fetchPaperDetailFromHaf(
     // the union still carries the dropped author.
     detail.is_accredited = accreditedAccountSet.has(author);
     // Symmetric chain pre-check: non-accredited author shows score 0 even
-    // if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
+    // if a stale batch entry survives in Redis (reputation
     // direction-of-truth: chain is SSoT, batch map is a perf cache).
     detail.author_reputation = detail.is_accredited ? authorReputation.score : 0;
     const detailAuthors = (detail.authors as Array<Record<string, unknown>>) || [];
@@ -2056,8 +2053,8 @@ async function fetchHeadAuthorizedAuthors(
     return set;
   } catch (err) {
     logger.error({ err }, 'Head authorized-authors lookup failed');
-    // Memoize the null on failure too. Documented contract on lines
-    // 826-827 says "Both null and Set results are cached"; without this
+    // Memoize the null on failure too. This function's docstring contract
+    // says "Both null and Set results are cached"; without this
     // set, a single request hitting canonical-walker + a second
     // `fetchPaperDetailFromHaf` + `reconstructVersionsFromHaf` re-fires
     // the failing query 3+ times under degraded HAF, each blocking for
@@ -2187,7 +2184,8 @@ async function resolveContinuationChain(
   const visited = new Set<string>([memoKey(currentAuthor, currentPermlink)]);
 
   // MAX_HOPS = 50. Per-request worst-case latency under degraded HAF:
-  // 50 hops × ≥1 sequential SQL query × 30s statement_timeout (`db.ts:22`)
+  // 50 hops × ≥1 sequential SQL query × 30s statement_timeout (the
+  // connection-level `SET statement_timeout = 30000` in db.ts)
   // = up to 1500s (~25 min) per request before the depth cap exits.
   // The depth cap is the attacker-amplifier defense; the wall-clock
   // budget threaded via `signal?: AbortSignal` (and the route-handler
@@ -2205,7 +2203,7 @@ async function resolveContinuationChain(
       // request, the wall-clock signal takes priority (operator-actionable
       // degraded-HAF signal vs the depth cap's attacker-amplifier signal)
       // because we check the budget BEFORE the depth-cap exit condition
-      // at line `i < MAX_HOPS`. See task acceptance section 3.
+      // at the `i < MAX_HOPS` loop guard.
       if (signal?.aborted) {
         logger.warn(
           {
@@ -3022,8 +3020,7 @@ async function reconstructVersionsFromHaf(
     const seenFirstOp = new Set<string>();
     // Track per-post pevo.authors[] state for the audit-log: emit a warn
     // event whenever a paper edit mutates pevo.authors[] (TOCTOU residual
-    // mitigation per task hold-block item 4b — operators correlate
-    // post-incident).
+    // mitigation — operators correlate post-incident).
     const authorsByPost = new Map<string, string>();
 
     for (const r of rows) {
@@ -3066,7 +3063,7 @@ async function reconstructVersionsFromHaf(
       // Audit log: emit a structured warn whenever a paper edit mutates
       // `pevo.authors[]`. Pairs with the head-meta override subset-check
       // above to provide post-incident operator correlation for the
-      // TOCTOU author-set-expansion concern (task hold-block item 4b).
+      // TOCTOU author-set-expansion concern.
       // Compare structurally (JSON stringify) so any change to the array
       // shape — add, remove, reorder, hive-rename — surfaces an event.
       const authorsRaw = Array.isArray(pevo.authors) ? pevo.authors : [];

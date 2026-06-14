@@ -1,6 +1,6 @@
 // Deterministic JS-level concurrency cap on argon2 operations.
 //
-// Rationale (from BE-ARGON2-JSLEVEL-CONCURRENCY-CAP):
+// Rationale:
 //
 // 1. argon2's `parallelism=4` option (see ARGON2_OPTIONS) means each hash/
 //    verify holds 4 libuv threads for its duration. At UV_THREADPOOL_SIZE=16
@@ -238,10 +238,11 @@ export function createArgon2Semaphore(
   // the waiter from the queue on abort (so a dead client doesn't consume a
   // slot once the in-flight op completes and drains the next waiter).
   type Waiter = { resolve: () => void; reject: (err: Error) => void };
-  // waiters[] holds Waiter object references by identity; the abort listener at
-  // line ~255 uses indexOf reference-equality to splice. Any refactor to a
-  // ring-buffer / value-copy queue MUST update the abort path — silent miss
-  // otherwise (indexOf returns -1, splice(-1, 1) removes the wrong element).
+  // waiters[] holds Waiter object references by identity; the `onAbort` abort
+  // listener inside runWithArgon2Slot uses indexOf reference-equality to splice.
+  // Any refactor to a ring-buffer / value-copy queue MUST update the abort path —
+  // silent miss otherwise (indexOf returns -1, splice(-1, 1) removes the wrong
+  // element).
   const waiters: Waiter[] = [];
   let shuttingDown = false;
 

@@ -138,7 +138,7 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 //   (5) Duplicate-email SELECTs (409 on hit) — only reached on valid proof
 //       or via the Keychain path.
 //   (6) INSERT (Add) or UPDATE (Change) the pending_email triple.
-//   (7) Send verification email. SMTP failure follows Option A of the
+//   (7) Send verification email. SMTP failure follows the catch-warn-200
 //       status-code-oracle convention (`agents/docs/solutions/conventions/
 //       timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`): catch,
 //       log warn, return uniform 200. DB write rolls back: DELETE on Add;
@@ -311,7 +311,7 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
       );
     }
 
-    // Send verification email. SMTP failure follows Option A of the
+    // Send verification email. SMTP failure follows the catch-warn-200
     // status-code-oracle convention: catch, log warn, fall through to a
     // uniform 200. Emitting 500 only on the known-identity path would be a
     // status-code oracle; the fresh-auth gate above does not change the
@@ -734,8 +734,8 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
 // This is the "set from null" operation; rotating an existing password is a
 // separate flow (not yet implemented) that must require the current password.
 //
-// Re-auth contract (BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH, see
-// ARCHITECTURE.md § 6.4): JWT alone is not sufficient. The request body MUST
+// Re-auth contract (see ARCHITECTURE.md § 6.4): JWT alone is not
+// sufficient. The request body MUST
 // carry a `fresh_auth_proof` minted via `POST /api/orcid/start { mode:
 // 'fresh_auth', action: 'set_password' }` followed by `POST
 // /api/orcid/callback`. The proof's `mechanism` MUST be `'orcid'`: a state-C

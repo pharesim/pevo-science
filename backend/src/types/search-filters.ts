@@ -1,5 +1,5 @@
 // ──────────────────────────────────────────────
-// /api/search ?q= filter validation (BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP)
+// /api/search ?q= filter validation
 // ──────────────────────────────────────────────
 //
 // Two distinct defenses for the `?q=` parameter on /api/search:
@@ -116,7 +116,7 @@ export type OptionalLikeFilterResult =
  * Behaviour:
  * - absent (missing) / non-string (repeated `?param=a&param=b` → string[]) /
  *   empty / whitespace-only → `{ ok: true, value: undefined }` (silent
- *   unfilter; mirrors the round-4 `?discipline=` contract).
+ *   unfilter; mirrors the `?discipline=` silent-unfilter contract).
  * - length > SEARCH_QUERY_MAX_LEN → `{ ok: false, message }`.
  * - otherwise → `{ ok: true, value: escapeLikePattern(raw) }`.
  *
@@ -138,7 +138,6 @@ export function validateOptionalLikeFilter(
 
 // ──────────────────────────────────────────────
 // /api/search ?type= / ?source= / ?sort= / ?language= filter validation
-// (BE-SEARCH-QUERY-PARAM-TYPEOF-NARROW-SWEEP)
 // ──────────────────────────────────────────────
 //
 // Each `?param=` enum is exported as three pieces:
@@ -184,9 +183,8 @@ export function isSearchSort(s: string): s is SearchSort {
  * bridge imports from arXiv/Crossref) may have any shape. Length is
  * capped at SEARCH_LANGUAGE_MAX_LEN = 16, which fits BCP-47 / IETF
  * language tags comfortably (most real tags are ≤10 chars; 16 leaves
- * headroom for shapes like `zh-Hant-TW`). The cap closes the cache-key
- * enumeration vector flagged during the typeof-narrow-sweep cluster-3
- * review (2026-05-16): without it, an attacker could enumerate distinct
+ * headroom for shapes like `zh-Hant-TW`). The cap closes a cache-key
+ * enumeration vector: without it, an attacker could enumerate distinct
  * `?language=` values to populate distinct `hafCache` entries on
  * cache-miss, costing HAF backend CPU. SHA-256 hashing of the cache
  * `rawKey` bounds Redis KEY size but does not bound the COUNT of distinct
@@ -203,10 +201,10 @@ export function isSearchSort(s: string): s is SearchSort {
  * bridge papers with non-conforming tags. A separate follow-up can pin
  * the charset once the publishing UI lands.
  *
- * Option A from the sweep spec (mirror `?type=` 400-on-repeated) is the
- * adopted contract; Option B (silent-unfilter like `?discipline=`) was
- * dismissed because language has no "all languages" semantic — an
- * unparseable value is more useful as a 400 than as a silent unfilter.
+ * The adopted contract mirrors `?type=` (400-on-repeated); the
+ * silent-unfilter alternative (like `?discipline=`) was dismissed because
+ * language has no "all languages" semantic — an unparseable value is more
+ * useful as a 400 than as a silent unfilter.
  */
 export type LanguageFilterResult =
   | { ok: true; value: string | undefined }

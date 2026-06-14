@@ -101,9 +101,8 @@ export const config = {
   // retry amplification opened by the 504 BROADCAST_TIMEOUT envelope's 24h
   // token survival window. Counts only definitive 502 BROADCAST_FAILED
   // outcomes; timeout outcomes are compensated (decrement) so transient
-  // slow-Hive windows don't destroy a verified token. See
-  // BE-VERIFY-BROADCAST-ATTEMPTS-CAP. Flippable without redeploy so
-  // operators can tighten or relax during incident response.
+  // slow-Hive windows don't destroy a verified token. Flippable without
+  // redeploy so operators can tighten or relax during incident response.
   verifyBroadcastAttemptsCap: parseInt(process.env.VERIFY_BROADCAST_ATTEMPTS_CAP || '3', 10),
   // Drain interval (ms) for the in-process pending-decrement queue that
   // recovers DECR calls failed during a Redis flap on /api/accreditation/verify.
@@ -129,8 +128,8 @@ export const config = {
   //
   // Default 3000ms derivation: typical HAF response 50-200ms × expected
   // 10-15-query depth = 500-3000ms. Anything beyond is degraded HAF.
-  // Operators can tune via env. See BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET
-  // and `verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`.
+  // Operators can tune via env. See
+  // `verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`.
   //
   // Parse is delegated to `parseHafWalkerBudget` (above). The helper uses
   // `Number(...)` + `Number.isFinite(...)` + `> 0` rather than `parseInt`

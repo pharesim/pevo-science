@@ -2,8 +2,8 @@
  * Per-broadcast idempotency layer for custody + accreditation surfaces.
  *
  * Closes the retry-amplification class documented in
- * `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`
- * Option A.4: dhive constructs a fresh transaction per broadcast call (new
+ * `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`:
+ * dhive constructs a fresh transaction per broadcast call (new
  * expiry), so a /broadcast retry after a 504 timeout does NOT collide at the
  * Hive dedup layer. Without an application-level idempotency check, a network
  * hiccup -> 504 -> blind SPA retry -> both broadcasts land -> silent duplicate.
@@ -27,7 +27,7 @@
  *     `accreditationAuthorities` (so a self-broadcast custom_json carrying
  *     a forged key cannot poison the dedup check).
  *
- * Cross-op-type shadowing defense (round-2 F2): the custody lookup accepts an
+ * Cross-op-type shadowing defense: the custody lookup accepts an
  * optional `opType` parameter. When the caller has run `embedIdempotencyKey`
  * first and knows which op surface carries the embed, it passes the resolved
  * `opType` so the HAF lookup probes ONLY that arm. This binds the lookup to
@@ -101,7 +101,7 @@ export function embedIdempotencyKey(
     if (typeof opType !== 'string' || !ALLOWED_OPS_FOR_EMBED.has(opType)) continue;
     if (typeof opParams !== 'object' || opParams === null) continue;
 
-    // F26: hoist the `params` cast once after the null-guard so future op-type
+    // Hoist the `params` cast once after the null-guard so future op-type
     // additions don't pay the "remember to cast" tax per branch.
     const params = opParams as Record<string, unknown>;
 
@@ -149,9 +149,9 @@ export function embedIdempotencyKey(
 
 /**
  * HAF lookup for a prior custody /broadcast carrying `idempotencyKey` for
- * `username`. When `opType` is supplied, probes ONLY that arm (round-2 F2 —
+ * `username`. When `opType` is supplied, probes ONLY that arm — this
  * binds the lookup to the same op surface the embed picks, closing the cross-
- * op-type shadowing class). When `opType` is undefined, probes both arms
+ * op-type shadowing class. When `opType` is undefined, probes both arms
  * (pure-vote bundles fall through here so the layer can still dedup against
  * prior comment/cj broadcasts that carried the same key).
  *
@@ -237,8 +237,8 @@ export async function findCustodyBroadcastByIdempotencyKey(
  * via the shared op id (see `findCustodyBroadcastByIdempotencyKey` for the
  * schema rationale).
  *
- * Renamed (F23) from `findAccreditByIdempotencyKey` to parallel
- * `findCustodyBroadcastByIdempotencyKey`. Establishes the naming precedent
+ * Named to parallel `findCustodyBroadcastByIdempotencyKey` (renamed from the
+ * earlier `findAccreditByIdempotencyKey`). Establishes the naming precedent
  * for the survey table's future per-surface follow-up lookups (claims,
  * papers, wot, anon-review).
  */
@@ -246,7 +246,7 @@ export async function findAccreditationBroadcastByIdempotencyKey(
   pool: IdempotencyPool,
   idempotencyKey: string,
 ): Promise<IdempotencyHit | null> {
-  // Round-1 hold #5: ORDER BY (cj.block_num, cj.id) DESC matches the sibling
+  // ORDER BY (cj.block_num, cj.id) DESC matches the sibling
   // `findExistingAccreditation` tiebreaker per convention Rule 2 of
   // `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`.
   // `operation_custom_json_view` does NOT expose `trx_in_block`; cj.id (the
@@ -286,11 +286,12 @@ export async function findAccreditationBroadcastByIdempotencyKey(
  * BEFORE the per-token check so a hit on the user gate short-circuits without
  * touching the per-token lookup or the broadcast-attempt cap counter.
  *
- * Revoke-handling alignment (round-1 hold #1): the query selects from BOTH
+ * Revoke-handling alignment: the query selects from BOTH
  * `accredit` and `revoke` ops and uses the latest-action-wins semantics every
- * other accreditation-state read in PEvO uses (profile.ts:37, orcid.ts:1756,
- * accreditations.ts:59, hafsql.ts:79, wot.ts:347). wot.ts:347 is a live
- * producer of revoke ops via the WoT cleanup path, so a revoked user retrying
+ * other accreditation-state read in PEvO uses (the reads in routes/profile.ts,
+ * routes/orcid.ts, routes/accreditations.ts, hafsql.ts, and routes/wot.ts).
+ * The WoT cleanup path in routes/wot.ts is a live
+ * producer of revoke ops, so a revoked user retrying
  * /verify must NOT hit the gate on their old accredit op — that would return
  * 200 outcome='already_accredited' with a stale tx_id, eat the fresh token in
  * cleanup, and silently lock the user out of re-accreditation. Helper picks
@@ -353,7 +354,7 @@ export async function findExistingAccreditation(
  * specific format — the field's job is to be a deterministic-per-attempt
  * value the SPA can regenerate on retry.
  *
- * Discriminated result (round-2 F11): `{ ok: true, value }` on success,
+ * Discriminated result: `{ ok: true, value }` on success,
  * `{ ok: false, error }` on failure. Replaces the old `string | null` shape
  * (null on success, error message on failure) where the success and error
  * channels shared a type. A future validator extension that forgot to
@@ -378,7 +379,7 @@ export function validateIdempotencyKey(value: unknown): ValidateIdempotencyKeyRe
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Redis short-circuit cache for the HAF idempotency lookup (round-2 F5/F12).
+// Redis short-circuit cache for the HAF idempotency lookup.
 //
 // Explicit scope expansion over the original task spec which excluded Redis
 // caching ("Per-request HAF query is sufficient at current scale"). The HAF
@@ -390,14 +391,14 @@ export function validateIdempotencyKey(value: unknown): ValidateIdempotencyKeyRe
 //
 // Discipline per `caching-wrapper-discriminated-union-poisoning-2026-05-11.md`:
 //   - Cache only resolved positive `Hit` variants. Negative results (HAF
-//     misses) are NOT cached (round-3 hold #5 — see below).
+//     misses) are NOT cached (see the negative-caching rationale below).
 //   - NEVER cache `haf_unavailable` (config-missing) or `lookup_failed` (HAF
 //     throw) — those degrade to the existing structured-warn paths and the
 //     next request re-runs the live query.
 //   - Positive-cache TTL = `max(observed HAF indexer lag, 60s)` to bridge
 //     the documented indexer-lag defense window.
 //
-// Round-3 hold #5: NEGATIVE caching dropped (option (a)).
+// NEGATIVE caching dropped.
 //   The prior 10s negative TTL could serve stale misses inside the HAF
 //   indexer-lag window. Sequence: pre-broadcast probe at t=0 caches
 //   {kind:'miss'} for 10s; backend broadcasts and chain confirms in ~3s;
@@ -407,8 +408,9 @@ export function validateIdempotencyKey(value: unknown): ValidateIdempotencyKeyRe
 //   502 BROADCAST_FAILED); for custom_json ops NO chain-level dedup, op
 //   is duplicated on chain.
 //
-//   Rationale for dropping over shortening (option b) or post-broadcast-only
-//   (option c): the positive-cache hit case is the load-bearing retry-storm
+//   Rationale for dropping over shortening the negative TTL or caching
+//   negatives only post-broadcast: the positive-cache hit case is the
+//   load-bearing retry-storm
 //   absorption — once a broadcast lands and is HAF-indexed, the 60s positive
 //   cache absorbs the entire repeated-retry window. The negative cache only
 //   helps in the narrow window where (a) a probe ran and missed, (b) the
@@ -419,10 +421,11 @@ export function validateIdempotencyKey(value: unknown): ValidateIdempotencyKeyRe
 //   transient failures") frames the policy as conservative-by-default; the
 //   structural-correctness argument here aligns with that posture.
 //
-//   Aggregate-retry dimension (round-4 hold #7): the trade-off above frames
+//   Aggregate-retry dimension: the trade-off above frames
 //   the single-user retry case. For N concurrent retries on the same miss-
 //   key, the HAF pool itself bounds the blast radius: `max:3` with
-//   `connectionTimeoutMillis:5000` (`src/db.ts:23-27`). Requests 1-3 queue
+//   `connectionTimeoutMillis:5000` (see the HAF pool config in `src/db.ts`).
+//   Requests 1-3 queue
 //   live HAF probes; requests 4+ wait up to 5s for a pool slot, then fall
 //   through to the `lookupErr` handler (which logs
 //   `idempotency_lookup_failed` and degrades to the cap/broadcast path).
@@ -433,8 +436,9 @@ export function validateIdempotencyKey(value: unknown): ValidateIdempotencyKeyRe
 //   pool-latency tail is the better trade.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Cache shape persisted into Redis. After round-3 hold #5 the `miss` variant
- *  is no longer written, but it remains in the union for backward-compatible
+/** Cache shape persisted into Redis. The `miss` variant
+ *  is no longer written (negative caching was dropped), but it remains in the
+ *  union for backward-compatible
  *  reads of stale entries written before this change (the read path treats a
  *  cached miss as "no cached value" and the entry's own TTL drains it).
  *  Discriminated so a `miss` is a distinct value from "no cache entry" —
@@ -458,13 +462,14 @@ function buildCustodyCacheKey(
   // sha256(username|key|opType) bounds the key length (idempotency_key may be
   // up to 128 chars; the hash is always 64 hex). Username is included so two
   // users with the same key — allowed by the wire shape — never share a
-  // cache row. Round-3 hold #1: `opType` is folded into the hash so the
-  // cache shares F2's op-type scoping. Without it, a comment-op hit cached
+  // cache row. `opType` is folded into the hash so the
+  // cache shares the same op-type scoping the HAF lookup uses. Without it, a
+  // comment-op hit cached
   // under (username, key) would be served back on a subsequent custom_json
   // request carrying the same key (different op surface, but cache says
   // "already_landed" with the comment's tx_id — wrong-tx-id 200). The
-  // shadowing class F2 closed at the HAF SQL layer was still open at the
-  // cache layer.
+  // cross-op-type shadowing class closed at the HAF SQL layer would otherwise
+  // still be open at the cache layer.
   const hash = crypto
     .createHash('sha256')
     .update(`${username}|${idempotencyKey}|${opType}`)
@@ -480,8 +485,8 @@ function buildAccreditationCacheKey(idempotencyKey: string): string {
 }
 
 /** Runtime-validate that `parsed` matches the `CachedIdempotencyResult`
- *  discriminated union. Round-3 hold #2: `JSON.parse` followed by an
- *  `as CachedIdempotencyResult` cast was unchecked — a stale Redis entry from
+ *  discriminated union. `JSON.parse` followed by an unchecked
+ *  `as CachedIdempotencyResult` cast is unsafe — a stale Redis entry from
  *  a future format mutation (rename of `tx_id`, change of discriminant key,
  *  addition of a required field) that persists past a process restart could
  *  slip through the `cached.kind === 'hit'` check at the caller and let the
@@ -509,14 +514,14 @@ async function readCached(key: string): Promise<CachedIdempotencyResult | undefi
     if (!raw) return undefined;
     const parsed: unknown = JSON.parse(raw);
     if (!isValidCachedResult(parsed)) {
-      // Round-3 hold #2: discriminant shape mismatch. Log structured for
+      // Discriminant shape mismatch. Log structured for
       // operator visibility — a corrupt entry usually means a forgotten
       // format-migration step or an external write into the namespace.
       // Degrade to cache miss (return undefined) so the HAF lookup
       // proceeds. The convention anchor at
       // `caching-wrapper-discriminated-union-poisoning-2026-05-11.md` is
       // the discipline source for this fail-open shape.
-      // Round-4 hold #8: `cache_class` discriminator (custody vs accred)
+      // `cache_class` discriminator (custody vs accred) is logged as a
       // sibling field so an alert/dashboard can filter by class without
       // parsing the full sha256-prefixed key. The key shape is
       // `${appTag}:idem:<class>:<hash>`, so the class segment lives at
@@ -544,7 +549,7 @@ async function readCached(key: string): Promise<CachedIdempotencyResult | undefi
 async function writeCached(key: string, value: CachedIdempotencyResult): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  // Round-3 hold #5: only positive (hit) entries are written. Negative
+  // Only positive (hit) entries are written. Negative
   // results re-run the bare HAF probe on every retry; the structural
   // correctness gain (no stale-miss double-broadcast inside the indexer-
   // lag window) outweighs the bounded retry-storm absorption a 10s
@@ -563,8 +568,8 @@ async function writeCached(key: string, value: CachedIdempotencyResult): Promise
 
 /**
  * Cache-wrapped lookup for custody broadcasts. Reads the Redis short-circuit
- * before consulting HAF; populates the cache on resolved hits only (round-3
- * hold #5 dropped negative caching — see the discipline block above).
+ * before consulting HAF; populates the cache on resolved hits only (negative
+ * caching was dropped — see the discipline block above).
  * NEVER caches a HAF-throw — those propagate to the caller's degraded path.
  *
  * Plumbing-through of `opType` is forwarded to the bare HAF lookup so the
@@ -576,9 +581,10 @@ export async function lookupCustodyBroadcastIdempotency(
   idempotencyKey: string,
   opType?: IdempotencyEmbedOpType,
 ): Promise<IdempotencyHit | null> {
-  // Round-3 hold #1: the cache key must encode `opType` so a comment-op hit
+  // The cache key must encode `opType` so a comment-op hit
   // doesn't shadow a sibling custom_json request carrying the same key (the
-  // class F2 closed at the HAF SQL layer). When `opType` is undefined
+  // cross-op-type shadowing class closed at the HAF SQL layer). When `opType`
+  // is undefined
   // (pure-vote bundles fall through to the unscoped two-arm probe — they
   // have no embed surface, so there's no op-type to bind to), the cache is
   // skipped entirely. Pure-vote retries are low-harm (VP cost only); paying
@@ -590,7 +596,8 @@ export async function lookupCustodyBroadcastIdempotency(
   const cacheKey = buildCustodyCacheKey(username, idempotencyKey, opType);
   const cached = await readCached(cacheKey);
   if (cached !== undefined) {
-    // A cached `'miss'` from a stale pre-round-3-hold-#5 entry reads as a
+    // A cached `'miss'` from a stale entry written before negative caching
+    // was dropped reads as a
     // cache miss here (degrades to live HAF probe). Negative results are no
     // longer written by writeCached, so this only matters for backward
     // compatibility with entries already in Redis at deployment time.

@@ -110,7 +110,7 @@ export function getPool(): pg.Pool | null {
   if (pool) return pool;
   if (config.hafDatabaseUrls.length === 0) return null;
 
-  // Round-2 F4: `onConnect` Pool-constructor option (vs. the pre-fix
+  // The `onConnect` Pool-constructor option (vs. the older
   // `pool.on('connect', ...)` listener) makes the first query on a brand-new
   // connection wait for `SET statement_timeout = 30000` to complete. Under
   // the pre-fix shape, the listener fired asynchronously and the first query
@@ -146,7 +146,7 @@ export function getPool(): pg.Pool | null {
  * discriminate "HAF not configured" from "HAF transiently unreachable"
  * key the discrimination on the error path, not on this return.
  *
- * Renamed (round-2 F10) from `isHafAvailable` to make the config-only
+ * Renamed from `isHafAvailable` to make the config-only
  * semantics explicit. The prior name suggested reachability and led to log
  * events tagged `idempotency_haf_unavailable` that operators mis-read as
  * outage signals.

@@ -29,8 +29,7 @@ export type AccreditationStatus = 'active' | 'revoked';
  * - `getAllAccreditedAccounts` feeds the batch job's `scoredUsers` set.
  *   Silent empty-set there is catastrophic: the cycle advances over
  *   empty cycles and prev_scores rehydrates from empty state, collapsing
- *   voter weights to 1.0 for subsequent cycles
- *   (BACKEND-REPUTATION-SSOT round-1 hold #9). So loud-fail.
+ *   voter weights to 1.0 for subsequent cycles. So loud-fail.
  *
  * Reader-class divergence under HAF outage is the accepted cost:
  * batch-fed surfaces 500, display-fed surfaces 200 with everyone marked
@@ -222,7 +221,7 @@ export async function getAccreditedNamesByAccount(): Promise<Map<string, string>
  * **Error contract:** loud-fail. Distinguishes "HAF returned 0 accredited"
  * (legitimate empty population — cached) from "HAF query failed"
  * (re-thrown so callers can fail loudly instead of caching an empty set
- * on outage). Per BACKEND-REPUTATION-SSOT round-1 hold #9: the batch
+ * on outage). The batch
  * job's outer catch must observe an HAF outage and bail without advancing
  * cycle:last; otherwise the batch advances over empty cycles,
  * prev_scores rehydrates from empty state, and voter weights collapse to
@@ -294,7 +293,7 @@ export async function getAllAccreditedAccounts(): Promise<Set<string>> {
  * `routes/papers.ts`). Distinguishes "HAF returned 0" (legitimate empty
  * population, cached) from "HAF query failed" (re-thrown). Audit emission
  * silently degrading to "no rows" on HAF outage would mask the visibility
- * this task exists to preserve.
+ * this loud-fail path preserves.
  *
  * `pool === null` (dev environment without HAF connected) returns an empty
  * map — that is a startup condition, not a transient outage.

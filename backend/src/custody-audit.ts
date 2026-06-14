@@ -9,19 +9,19 @@ import { logger } from './logger.js';
  * (every field stores NULL) — the parameter is `undefined`, not an empty
  * object.
  *
- * Round-5 hold #5: collapsed from a `T | Record<string, never>` discriminated
+ * This type collapsed from a `T | Record<string, never>` discriminated
  * union to a single optional shape. The empty `Record<string, never>` arm was
  * phantom: every call site either passed the consent shape or omitted `extras`
  * entirely; no caller ever constructed `{}`. The convention's load-bearing
- * detail (the round-4 fix preventing half-population — `auth_mechanism`
+ * detail (preventing half-population — `auth_mechanism`
  * without `fresh_auth_outcome` or vice versa) is preserved by the consent
  * arm's required-fields shape: TS still rejects an `extras` value that
  * carries one of the two co-required fields without the other.
  *
- * Round-4 hold #9 carry-over: per
+ * Per
  * `agents/docs/solutions/conventions/correlated-options-discriminated-union-2026-04-28.md`.
  * The four fields are semantically correlated (only meaningful when a
- * consent op fired); the round-4 typing fixed callers supplying
+ * consent op fired); making both fields co-required prevents callers supplying
  * `fresh_auth_outcome` without `auth_mechanism` with no TS error.
  *
  * `fresh_auth_outcome` is constrained to the values `consumeFreshAuthToken`
@@ -67,7 +67,7 @@ export async function logCustodyBroadcast(
   }
 
   try {
-    // Round-5 hold #5: with the union collapsed to a single optional shape,
+    // With the union collapsed to a single optional shape,
     // narrowing degenerates to a bare `extras !== undefined` check. The
     // empty Record<string, never> arm is gone; callers either pass the
     // full consent shape or omit `extras` entirely.

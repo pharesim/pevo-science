@@ -17,9 +17,8 @@ const router = Router();
 const STATS_REFRESH_INTERVAL = 300_000; // 5 minutes
 
 // Exported for tests so the stats SQL can be exercised without registering a
-// periodic-refresh setInterval (see BE-DISCIPLINE-CANONICALIZE round-2 hold
-// #4). Production callers should go through the HTTP route, which reads from
-// the cache warmed by startStatsCache().
+// periodic-refresh setInterval. Production callers should go through the HTTP
+// route, which reads from the cache warmed by startStatsCache().
 export async function fetchStatsFromHaf() {
   const pool = getPool();
   if (!pool) return null;
@@ -108,8 +107,8 @@ export async function fetchStatsFromHaf() {
     // ReputationScore objects ({score, breakdown}); compare on `.score`.
     // Symmetric chain pre-check with /api/profile/:username — gate on
     // currently-accredited set so a stale prod entry for a chain-revoked user
-    // (per BACKEND-REPUTATION-SSOT direction-of-truth: chain is SSoT, batch
-    // map is a perf cache) cannot surface as `highest_reputation_user`.
+    // (chain is SSoT for accreditation; the batch reputation map is a perf
+    // cache) cannot surface as `highest_reputation_user`.
     // Leave the field null when nobody has a strictly positive score — the
     // frontend hides the card on a falsy value, which is the correct
     // rendering for the "fresh Redis, no cycle yet" state.

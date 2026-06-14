@@ -25,7 +25,7 @@ import {
 import { createSmtpTransporter } from '../lib/smtp.js';
 import { mintBinding, setBindingCookie } from '../signup-session-binding.js';
 
-// ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
+// ─── Per-route Zod body schemas ────
 //
 // These schemas replace the `req.body as any` + `field as string` casts
 // that previously existed across these 3 handlers. Each schema narrows
@@ -69,7 +69,7 @@ const SignupBodySchema = z.object({
   orcid_token: z.string().optional(),
 });
 
-// BE-ZOD-MIGRATION-EXTENSION: schemas for /resend-verification,
+// Schemas for /resend-verification,
 // /reset-request, /reset. Same flat-error pattern as the earlier Zod
 // schemas in this file — shape only, business validation (isEmail, isPasswordValid)
 // continues to run after safeParse.
@@ -352,7 +352,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   try {
     // Check email not already registered or pending (skip for no-email ORCID signups).
     //
-    // Check-order note (BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING): this
+    // Check-order note: this
     // duplicate-email check fires BEFORE the accreditation gate below.
     // If the two fired in the opposite order, an attacker could probe
     // public-domain institutional emails (mit.edu, harvard.edu, and so
@@ -644,7 +644,7 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
       [newToken, expiresAt, account.id],
     );
 
-    // SMTP-failure status-code oracle (BE-AUTH-SMTP-STATUS-CODE-ORACLE):
+    // SMTP-failure status-code oracle:
     // this known-email branch MUST NOT return 500 when sendMail throws. If it
     // did, an attacker inducing an SMTP outage would observe 500 = "pending
     // signup exists for this email + matches this password" vs 200 = any other
@@ -943,7 +943,7 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
 
     // Send reset email.
     //
-    // SMTP-failure status-code oracle (BE-AUTH-SMTP-STATUS-CODE-ORACLE): the
+    // SMTP-failure status-code oracle: the
     // known-email branch MUST NOT return 500 when sendMail throws or SMTP is
     // unconfigured. If it did, an attacker inducing or waiting for an SMTP
     // outage would observe 500 = "email exists" vs 200 = "email unknown" from

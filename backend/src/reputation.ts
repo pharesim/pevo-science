@@ -25,7 +25,7 @@ export const BATCH_KEY_PREFIX = `${config.appTag}:reputation:batch:`;
  * in `getBatchReputationMap` and the writer paths in `reputation-batch.ts`
  * reference a single source of truth — a future change to the staging
  * segment cannot leave one side referencing the old prefix while the other
- * uses the new one (BACKEND-REPUTATION-SSOT round-2 hold #7).
+ * uses the new one.
  */
 export const STAGING_SEGMENT = 'staging:';
 export const REDIS_KEY_STAGING_PREFIX = `${BATCH_KEY_PREFIX}${STAGING_SEGMENT}`;
@@ -112,7 +112,6 @@ export async function scanAllKeys(
  * surfaces a rate-limited operator warn so a deploy-flush-skipped state
  * (e.g., legacy numeric-string keys persisting after the JSON-shape
  * migration) is visible on the first request, not after user complaint.
- * Per BACKEND-REPUTATION-SSOT round-1 hold #6.
  */
 const PARSE_WARN_INTERVAL_MS = 60_000;
 const parseWarnState: { count: number; lastLogTime: number; lastSampleRaw: string | null; lastError: unknown } = {
@@ -189,9 +188,9 @@ function provisionalScore(bonus: number): ReputationScore {
  * user's profile shows `accreditation_bonus` immediately, without waiting
  * for the next cycle boundary.
  *
- * BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS: re-throws on permanent
- * (operator-actionable) errors so the orcid post-broadcast cascade wrap
- * surfaces 502 POST_BROADCAST_FAILED with `failed_step:'reputation_seed'`.
+ * Per the cascade-fn permanent-error rethrow convention: re-throws on
+ * permanent (operator-actionable) errors so the orcid post-broadcast cascade
+ * wrap surfaces 502 POST_BROADCAST_FAILED with `failed_step:'reputation_seed'`.
  * Transient errors (Redis-side blips, transient HAF query failures) stay
  * swallowed because the next batch cycle re-derives the score from chain
  * state regardless. Permanent errors are programmer-error class
@@ -201,11 +200,11 @@ function provisionalScore(bonus: number): ReputationScore {
  *
  * Currently only `TypeError` is reachable from the seed try-block in
  * production: there is no `JSON.parse` on input and no array allocation.
- * `SyntaxError` and `RangeError` are pre-wired anticipatorily (round-1
- * hold #27 — tests synthesize them via mocks and the discrimination
- * surface is the canonical "permanent programmer-error class" set so the
- * BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS convention can grow
- * without the next cascade-fn author re-deriving the membership question).
+ * `SyntaxError` and `RangeError` are pre-wired anticipatorily: tests
+ * synthesize them via mocks and the discrimination surface is the canonical
+ * "permanent programmer-error class" set so the cascade-fn permanent-error
+ * rethrow convention can grow without the next cascade-fn author re-deriving
+ * the membership question.
  */
 function isPermanentSeedError(err: unknown): boolean {
   return err instanceof TypeError
@@ -1035,8 +1034,8 @@ export async function computeReputationBatch(
         -- to a target user paper would inflate pr.quality (5/5/5/5 ->
         -- AVG/4.0/5.0 = 1.0x max multiplier on the paper vote-derived
         -- score). The helper docstring documents that callers must
-        -- compose accreditation; this CTE is one of three review-class
-        -- composition sites flagged by the round-1 review.
+        -- compose accreditation; this CTE is one of the review-class
+        -- composition sites that compose the accreditation gate.
         --
         -- Keyed on chain_papers, NOT user_papers: reviews target the on-chain
         -- post (parent_author = the chain author), and the self-exclusion's
@@ -1335,8 +1334,9 @@ export async function computeReputationBatch(
           -- malformed ratings at the gate (same load-bearing reason).
           -- excludeSelfReviewWhere matches paper_reviews — a self-review on
           -- a citing paper inflates that paper's citation-discount weight
-          -- via cpq.review_quality at line 743, ultimately boosting the
-          -- cited author's reputation through a self-vouched citation.
+          -- via cpq.review_quality (consumed in citation_scores), ultimately
+          -- boosting the cited author's reputation through a self-vouched
+          -- citation.
           SELECT up2.permlink, up2.author,
             AVG(
               ((c2.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +

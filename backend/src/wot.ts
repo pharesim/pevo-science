@@ -34,8 +34,7 @@ export const CASCADE_BUDGET_MS = 60_000;
  * Result of `broadcastWotAccreditation` (the Web-of-Trust auto-accreditation
  * broadcast). A tagged union so the caller branches explicitly on outcome
  * instead of conflating "skipped because not eligible" with "broadcast timed
- * out and we have no idea whether it landed". See
- * BE-WOT-BROADCAST-TIMEOUT-HANDLING.
+ * out and we have no idea whether it landed".
  */
 export type WotAccreditationResult =
   | { ok: true; txId: string }
@@ -502,8 +501,9 @@ export async function cascadeRevocation(
       try {
         // Invalidate the batch entry BEFORE broadcasting. If the broadcast
         // times out (chain outcome ambiguous), we'd otherwise leak a stale
-        // positive score for a chain-revoked user (per BACKEND-REPUTATION-SSOT
-        // round-1 hold #7). Cost of an erroneous DEL on broadcast failure is
+        // positive score for a chain-revoked user (the chain is the SSoT for
+        // accreditation; the batch entry is a cache layer that must not outlive
+        // it). Cost of an erroneous DEL on broadcast failure is
         // one cycle of zero score for a still-accredited user, recovered at
         // the next batch cycle via getAllAccreditedAccounts() reseeding.
         // Cost of NOT DEL'ing on a successful timeout is a permanent stale

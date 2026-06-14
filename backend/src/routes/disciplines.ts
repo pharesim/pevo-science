@@ -64,7 +64,7 @@ async function fetchDisciplinesFromHaf() {
 router.get('/', async (_req: Request, res: Response) => {
   // Coerce null (pool-unavailable / query-error) → [] at the envelope layer.
   // Keeping the null sentinel inside fetchDisciplinesFromHaf lets hafCache
-  // skip caching on transient HAF outages (see cache.ts:73 null-guard) so a
+  // skip caching on transient HAF outages (getOrSet's skip-cache-on-null rule) so a
   // recovered HAF is re-queried on the next request instead of serving a
   // 60s stale-empty window.
   const result = await hafCache.getOrSet('disciplines', fetchDisciplinesFromHaf, 60_000, true);

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { getPool, isHafConfigured } from '../src/db.js';
+import { citationsArrayGuardSql } from '../src/notification-queries.js';
 
 /**
  * Per-layer cascade-fail defense canary for `CROSS JOIN LATERAL
@@ -36,6 +39,12 @@ import { getPool, isHafConfigured } from '../src/db.js';
  * (cascade-fail on a malformed citations shape that would survive HAF
  * ingestion) is the same class the existing real-path coverage cannot
  * exercise without seeding a malformed chain post.
+ *
+ * The behavioral SQL below composes the production `citationsArrayGuardSql`
+ * builder (notification-queries.ts) so the exercised fragment cannot drift from
+ * the live guard; the builder + call-site presence canary at the end then pins
+ * that arms 6a/6b still interpolate that builder at their SRF argument, so a
+ * revert that re-inlined or dropped the guard fails red.
  *
  * See citations-lateral-guard-canary.test.ts header for the full
  * jsonb_array_elements audit.
@@ -76,10 +85,7 @@ describe('notification-queries.ts arm 6a/6b CROSS JOIN LATERAL cascade-fail defe
           SELECT COUNT(*)::int AS hit_count
           FROM citing
           CROSS JOIN LATERAL jsonb_array_elements(
-            CASE WHEN jsonb_typeof(citing.json_metadata -> $1 -> 'citations') = 'array'
-              THEN citing.json_metadata -> $1 -> 'citations'
-              ELSE '[]'::jsonb
-            END
+            ${citationsArrayGuardSql('citing', '$1')}
           ) AS cite_elem
           CROSS JOIN LATERAL (
             SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
@@ -167,10 +173,7 @@ describe('notification-queries.ts arm 6a/6b CROSS JOIN LATERAL cascade-fail defe
           SELECT COUNT(*)::int AS hit_count
           FROM citing
           CROSS JOIN LATERAL jsonb_array_elements(
-            CASE WHEN jsonb_typeof(citing.json_metadata -> $1 -> 'citations') = 'array'
-              THEN citing.json_metadata -> $1 -> 'citations'
-              ELSE '[]'::jsonb
-            END
+            ${citationsArrayGuardSql('citing', '$1')}
           ) AS cite_elem
           CROSS JOIN LATERAL (
             SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
@@ -272,4 +275,67 @@ describe('notification-queries.ts arm 6a/6b CROSS JOIN LATERAL cascade-fail defe
       expect(result.rows[0]?.hit_count).toBe(1);
     },
   );
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Shared-builder + call-site presence canary.
+//
+// The behavioral blocks above compose the imported citationsArrayGuardSql, so
+// they cannot drift from production by construction. This block adds two layers:
+// (1) the shared builder still carries the CASE-WHEN jsonb_typeof array guard,
+// substitutes its alias argument, and interpolates the appTag bind placeholder
+// verbatim; and (2) both citation SRF sites in notification-queries.ts (arms
+// 6a/6b of fetchNotificationsFromHaf) interpolate that builder into their
+// jsonb_array_elements() argument, so a revert that gutted the builder, dropped
+// its alias argument, or inlined an unguarded SRF argument fails red. Modeled on
+// tests/lib/ipfs-image-srf-guard.test.ts.
+// ──────────────────────────────────────────────────────────────────────
+
+const PROJECT_ROOT = resolve(__dirname, '..');
+
+describe('citations SRF guard — shared builder + call-site presence canary', () => {
+  it('citationsArrayGuardSql(alias, param) carries the CASE-WHEN guard and substitutes both arguments', () => {
+    const normalized = citationsArrayGuardSql('citing', '$1').replace(/\s+/g, ' ').trim();
+    expect(normalized).toContain("CASE WHEN jsonb_typeof(citing.json_metadata -> $1 -> 'citations') = 'array'");
+    expect(normalized).toContain("THEN citing.json_metadata -> $1 -> 'citations'");
+    expect(normalized).toContain("ELSE '[]'::jsonb");
+    expect(normalized).toMatch(/END$/);
+
+    // Alias substitution: a different alias appears verbatim and the default
+    // `citing` does not leak.
+    const aliased = citationsArrayGuardSql('p', '$1').replace(/\s+/g, ' ').trim();
+    expect(aliased).toContain("jsonb_typeof(p.json_metadata -> $1 -> 'citations')");
+    expect(aliased).not.toContain('citing.json_metadata');
+
+    // appTagParam is interpolated verbatim (NOT identifier-validated): an
+    // arbitrary $N placeholder threads straight through.
+    expect(citationsArrayGuardSql('citing', '$7')).toContain('-> $7 ->');
+
+    // Non-identifier aliases are rejected (the alias is interpolated, not bound).
+    expect(() => citationsArrayGuardSql("citing; DROP TABLE comments;--", '$1')).toThrow();
+  });
+
+  it('notification-queries.ts composes citationsArrayGuardSql at every citations jsonb_array_elements() SRF', () => {
+    const source = readFileSync(resolve(PROJECT_ROOT, 'src/notification-queries.ts'), 'utf-8');
+    const normalized = source.replace(/\s+/g, ' ');
+
+    // A non-`)` first arg char counts only real SRF calls, excluding empty-paren
+    // and bare-word prose mentions in the docblock/comments.
+    const totalCalls = (normalized.match(/jsonb_array_elements\([^)]/g) ?? []).length;
+    // Calls whose argument is the shared builder invoked with a bare-identifier
+    // alias literal and the `at` appTag placeholder.
+    const viaBuilder = (normalized.match(/jsonb_array_elements\(\s*\$\{citationsArrayGuardSql\('[A-Za-z_][A-Za-z0-9_]*', at\)\}\s*\)/g) ?? []).length;
+
+    expect(
+      totalCalls,
+      'expected at least one citations jsonb_array_elements() SRF call in notification-queries.ts',
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      viaBuilder,
+      'every citations jsonb_array_elements() SRF argument in notification-queries.ts must interpolate the ' +
+      'shared citationsArrayGuardSql(<alias>, at) builder — an inlined or unguarded argument bypasses the ' +
+      'single source of the LATERAL-before-WHERE type guard ' +
+      '(see pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16).',
+    ).toBe(totalCalls);
+  });
 });

@@ -135,7 +135,7 @@ export async function invalidatePendingClaimedAccountsCache(): Promise<void> {
  * Packs multiple claim_account ops per tx, then retries with smaller batches
  * when RC runs low. Stops when even a single claim fails.
  *
- * No DB mirror: per BE-ACCOUNT-CREATION-TOKENS-DROP, the on-chain
+ * No DB mirror: the on-chain
  * `pending_claimed_accounts` counter on `config.hiveOnboardAccount` is the
  * canonical view of available capacity. On `BroadcastTimeoutError` we log the
  * outcome and break the loop; the next 24h cycle reads chain state fresh and

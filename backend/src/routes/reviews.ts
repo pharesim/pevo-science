@@ -89,8 +89,7 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     const bridgeIdx = paramIdx++;
     // INNER JOIN parent paper `p` so `excludeSelfReviewWhere` can read
     // `p.json_metadata -> authors[]` AND so the parent title comes back in
-    // one round-trip instead of the prior two-query shape
-    // (BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #1). A review whose
+    // one round-trip instead of the prior two-query shape. A review whose
     // parent isn't on HAF can't surface meaningfully via this endpoint
     // anyway; INNER JOIN matches the parity with `profile.ts:
     // fetchUserReviewsFromHaf`.
@@ -152,8 +151,8 @@ async function enrichReviewDetail(review: Record<string, unknown>): Promise<Reco
     getReputationScore(reviewAuthor),
   ]);
   // Symmetric chain pre-check: non-accredited reviewer shows score 0 even if
-  // a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
-  // direction-of-truth: chain is SSoT, batch map is a perf cache).
+  // a stale batch entry survives in Redis (direction-of-truth: chain is SSoT,
+  // the batch map is a perf cache).
   const isAccredited = accreditedSet.has(reviewAuthor);
   return {
     ...review,

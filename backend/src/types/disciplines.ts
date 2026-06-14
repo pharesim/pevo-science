@@ -88,7 +88,7 @@ export function getFieldForDiscipline(
 }
 
 // ──────────────────────────────────────────────
-// ?discipline= filter validation (BE-DISCIPLINE-LENGTH-CAP)
+// ?discipline= filter validation
 // ──────────────────────────────────────────────
 
 export const DISCIPLINE_FILTER_MAX_LEN = 100;
@@ -138,7 +138,7 @@ export function validateDisciplineFilter(raw: unknown): DisciplineFilterResult |
 }
 
 // ──────────────────────────────────────────────
-// Per-paper `discipline` response field (BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME)
+// Per-paper `discipline` response field
 //
 // Distinct from `validateDisciplineFilter` above: this helper shapes the
 // on-chain stored value into the response payload (lenient — accepts any

@@ -6,9 +6,9 @@ import { config } from '../config.js';
 // Every site that needs to send mail in PEvO routes through this helper so
 // each one gets the same 5-field shape (host/port/secure/auth + 4 timeout
 // knobs). Direct calls to `nodemailer.createTransport` outside this module
-// reopen the "missed third site" failure mode that BE-AUTH-SMTP-STATUS-CODE-
-// ORACLE round-1 suffered when /signup was left at nodemailer's defaults
-// while the other two routes had timeouts; a structural grep test in
+// reopen the "missed third site" failure mode that occurred when /signup was
+// left at nodemailer's defaults while the other two mail-sending routes had
+// timeouts; a structural grep test in
 // `tests/lib/smtp-helper-exhaustive-call-sites.test.ts` enforces the
 // no-direct-call rule.
 //

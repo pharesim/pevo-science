@@ -53,8 +53,7 @@ const REDIS_KEY_LAST_CYCLE = `${config.appTag}:reputation:cycle:last`;
  * orchestrator) crashes between the SET and the Lua, this sentinel survives
  * to the next startup and signals that a prior run crashed mid-swap. The
  * recovery action is: log a loud operator alert and DEL the sentinel so the
- * next batch run recomputes from `cycle:last` to current. Per
- * BACKEND-REPUTATION-SSOT round-1 hold #17.
+ * next batch run recomputes from `cycle:last` to current.
  *
  * Lives OUTSIDE BATCH_KEY_PREFIX so it cannot collide with a user-keyed
  * entry under getBatchReputationMap's prefix glob (a sibling of
@@ -151,8 +150,7 @@ async function clearInProgressSentinels(redis: Redis): Promise<void> {
  * mid-swap crash on the prior run goes unannounced for an entire outage.
  *
  * Idempotent and Redis-only (no HAF, no pool); safe to fire from the
- * non-awaited Promise.all warmup in index.ts. Per BACKEND-REPUTATION-SSOT
- * round-2 hold #2.
+ * non-awaited Promise.all warmup in index.ts.
  */
 export async function repairAbandonedBatchState(): Promise<void> {
   const redis = getRedis();
@@ -175,8 +173,7 @@ export async function repairAbandonedBatchState(): Promise<void> {
  * DEL — a naive `redis.del(lockKey)` could release a sibling's lock after
  * this caller's TTL elapsed. The in-process `batchRunning` flag survives as a
  * fast-path skip for repeated calls in the same process; the Redis lock is
- * the source of truth for cross-instance safety. Per BACKEND-REPUTATION-SSOT
- * round-1 hold #10.
+ * the source of truth for cross-instance safety.
  */
 export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_MS): Promise<void> {
   if (batchRunning) {
@@ -231,9 +228,8 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       // Defense-in-depth against a corrupted update_weights custom_json that
       // sets cycle_blocks to 0 or negative. With cycle_blocks === 0,
       // Math.floor((head - genesis) / 0) === Infinity and the catch-up loop
-      // iterates forever bounded only by the wall-clock time cap (BACKEND-
-      // REPUTATION-SSOT round-1 hold #26). Bail loudly so an operator can
-      // patch the weights.
+      // iterates forever bounded only by the wall-clock time cap. Bail loudly
+      // so an operator can patch the weights.
       logger.error({ cycleBlocks }, 'Reputation weights cycle_blocks must be > 0; skipping batch computation');
       return;
     }
@@ -270,10 +266,9 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
 
     // Load previous cycle's scores (or empty for bootstrap). The shared
     // helper does the staging-key filter, MGET, and parseBatchValue dance
-    // exactly once across the codebase — see BACKEND-REPUTATION-SSOT
-    // round-1 hold #11. Forgetting to share this path is how the prior
-    // hand-rolled loop drifted from the reader (parseBatchValue shape,
-    // staging-key filter, prefix construction).
+    // exactly once across the codebase. Forgetting to share this path is how
+    // the prior hand-rolled loop drifted from the reader (parseBatchValue
+    // shape, staging-key filter, prefix construction).
     let prevScores: Record<string, number> = {};
     if (startCycle > 0) {
       prevScores = batchMapToScoreRecord(await getBatchReputationMap());
@@ -307,11 +302,11 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       // The "active authors" subset (gates the activity-based voter-weight
       // bonus) is rebuilt independently inside the SQL `active_authors` CTE.
       //
-      // Per BACKEND-REPUTATION-SSOT round-1 hold #9: getAllAccreditedAccounts
-      // re-throws on HAF query failure, so an empty set here is always a
-      // legitimate "no accredited users yet" state (early bootstrap, dev env
-      // with HAF connected but no attestations). Failures bubble to the outer
-      // catch and bail without advancing cycle:last. Advancing over a
+      // getAllAccreditedAccounts re-throws on HAF query failure, so an empty
+      // set here is always a legitimate "no accredited users yet" state (early
+      // bootstrap, dev env with HAF connected but no attestations). Failures
+      // bubble to the outer catch and bail without advancing cycle:last.
+      // Advancing over a
       // legitimate empty cycle is correct: there is nothing to score, no
       // votes from accredited users to weight, and the next cycle's
       // prev_scores remains empty until accreditations land on chain.
@@ -477,10 +472,10 @@ export function stopBatchReputation(): void {
  * tests of the atomic-swap primitive, the in-progress sentinel recovery, and
  * the staging-key cleanup helper. Production code must not import these.
  *
- * Per BACKEND-REPUTATION-SSOT round-1 hold #14/#15/#17: the atomic Lua swap
- * IS the load-bearing atomicity primitive; the in-progress sentinel IS the
- * crash-detection contract; clearStagingKeys IS the recovery contract.
- * Each gets a direct test, not just transitive coverage via runBatchComputation.
+ * The atomic Lua swap IS the load-bearing atomicity primitive; the
+ * in-progress sentinel IS the crash-detection contract; clearStagingKeys IS
+ * the recovery contract. Each gets a direct test, not just transitive
+ * coverage via runBatchComputation.
  */
 export const __test_seams = {
   CYCLE_SWAP_LUA,

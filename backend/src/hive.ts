@@ -32,10 +32,9 @@ export async function checkHiveNodes(): Promise<void> {
 
 export class BroadcastTimeoutError extends Error {
   constructor(public readonly timeoutMs: number) {
-    // Round-5 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER): the canonical
-    // input-validation site is now the wrapper entry below
-    // (`assertFinitePositiveTimeoutMs`), NOT this constructor. Round 4
-    // placed the guard here, but the only throw site is inside the
+    // The canonical input-validation site is the wrapper entry below
+    // (`assertFinitePositiveTimeoutMs`), NOT this constructor. Placing the
+    // guard here is wrong because the only throw site is inside the
     // `setTimeout(() => reject(new BroadcastTimeoutError(timeoutMs)))`
     // closure: a synchronous throw from the constructor fires *before*
     // `reject()` is called, so the wrapping `Promise.race` never observes
@@ -75,7 +74,7 @@ export class BroadcastTimeoutError extends Error {
  * route's catch → `handleBroadcastError` → 502 `BROADCAST_FAILED` envelope)
  * instead of firing inside the `setTimeout` callback as an
  * `uncaughtException` (which would crash the process before any envelope is
- * written). Round-5 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER).
+ * written).
  */
 function assertFinitePositiveTimeoutMs(timeoutMs: number, fnName: string): void {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -94,8 +93,8 @@ type BroadcastJsonResult = Awaited<ReturnType<typeof hiveClient.broadcast.json>>
  * Wraps hiveClient.broadcast.json with a wall-clock timeout.
  *
  * dhive leaves broadcast fetch calls without a per-request timeout
- * (@hiveio/dhive/lib/client.js:166-170 — `fetchTimeout` is set only when
- * `!isBroadcast`). A slow-but-alive Hive node can hold the socket open
+ * (its `Client` HTTP layer sets `fetchTimeout` only when `!isBroadcast`,
+ * so broadcast POSTs run untimed). A slow-but-alive Hive node can hold the socket open
  * indefinitely. Without this wrapper the ORCID binding lock's 35s TTL has
  * no real safety margin: broadcast A can execute for >35s, the lock auto-
  * expires, broadcast B acquires a new lock and fires the same custom_json,
@@ -120,7 +119,7 @@ export async function broadcastJsonWithTimeout(
   // rejection (reaches the route's catch → `handleBroadcastError`'s 502
   // `BROADCAST_FAILED` envelope). Validating inside the `setTimeout` callback
   // via the constructor guard would fire as an uncaughtException and crash
-  // the process. Round-5 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER).
+  // the process.
   assertFinitePositiveTimeoutMs(timeoutMs, 'broadcastJsonWithTimeout');
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -171,8 +170,8 @@ export async function broadcastSendOperationsWithTimeout(
   key: PrivateKey,
   timeoutMs: number = DEFAULT_BROADCAST_TIMEOUT_MS,
 ): Promise<BroadcastSendOperationsResult> {
-  // Round-5 hold #1: same wrapper-entry validation as
-  // `broadcastJsonWithTimeout`. See its comment for the full rationale.
+  // Same wrapper-entry validation as `broadcastJsonWithTimeout`. See its
+  // comment for the full rationale.
   assertFinitePositiveTimeoutMs(timeoutMs, 'broadcastSendOperationsWithTimeout');
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {

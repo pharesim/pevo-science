@@ -31,7 +31,7 @@ async function getAccreditationFromHaf(username: string) {
     // Filter by accreditationAuthorities so a self-broadcast custom_json (signed
     // by the target account's own posting key) cannot masquerade as a real
     // accreditation and paint attacker-chosen metadata onto someone's profile.
-    // See SEC-AUTH-BYPASS. Mirrors the same filter in accreditations.ts and
+    // Mirrors the same filter in accreditations.ts and
     // orcid.ts's getExistingAccreditation.
     // `cj.id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
     // id) per the custom-json hive-primitive design-rules convention, so a

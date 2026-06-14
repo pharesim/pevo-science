@@ -102,7 +102,7 @@ async function searchPapersFromHaf(
   // handler via `validateSearchQuery`. The wildcards we wrap around it are
   // the literal LIKE metacharacters; user-supplied `%` `_` `\` are
   // backslash-escaped inside `query` so Postgres treats them as literals
-  // under the `ESCAPE '\\'` clause (BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP).
+  // under the `ESCAPE '\\'` clause.
   const ilikeParam = `$${paramIdx++}`;
   const ilikePattern = `%${query}%`;
   const textMatch = `(c.title ILIKE ${ilikeParam} ESCAPE '\\' OR c.body ILIKE ${ilikeParam} ESCAPE '\\')`;
@@ -306,7 +306,7 @@ async function searchFromHaf(
 
     // type === 'all': run both queries and merge.
     //
-    // BE-SEARCH-PARTIAL-DEGRADATION-ALLSETTLED: `Promise.all` rejects on the
+    // `Promise.all` rejects on the
     // FIRST branch rejection and the outer catch swallows the failure into a
     // 200 empty envelope, which collapses both branches when only one is
     // broken. `Promise.allSettled` lets us return the surviving branch and
@@ -371,7 +371,7 @@ async function searchFromHaf(
 }
 
 router.get('/', async (req: Request, res: Response) => {
-  // BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP: validate length + LIKE-escape BEFORE
+  // validate length + LIKE-escape BEFORE
   // the bound parameter reaches the SQL binder. null = absent (missing,
   // empty/whitespace, repeated-param array shape, non-string) → 400 required;
   // ok=false = present-but-too-long → 400 too-long; ok=true → LIKE-escaped
@@ -385,7 +385,7 @@ router.get('/', async (req: Request, res: Response) => {
   }
   const q = qResult.value;
 
-  // BE-SEARCH-REVIEWS-CONTRACT-RECONCILE / BE-SEARCH-QUERY-PARAM-TYPEOF-NARROW-SWEEP:
+  // Enum-shaped query-param typeof-narrowing:
   // four enum-shaped params (`?type=`, `?source=`, `?sort=`, `?language=`)
   // are each typeof-narrowed against their literal-tuple constant. Repeated
   // params yield `string[]` in Express's parsed query — the typeof-string

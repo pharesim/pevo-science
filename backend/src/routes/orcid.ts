@@ -39,8 +39,8 @@ import {
   type FreshAuthTarget,
 } from '../lib/fresh-auth.js';
 
-// Per-route Zod body schema for POST /api/orcid/callback
-// (BE-REQUEST-BODY-TYPING-ZOD). Narrows req.body to typed fields so
+// Per-route Zod body schema for POST /api/orcid/callback.
+// Narrows req.body to typed fields so
 // downstream code doesn't need `req.body as { code?: string; state?: string }`
 // casts. Business-required guards ("code and state are required") still
 // run after the schema parse; Zod only enforces shape.
@@ -49,7 +49,7 @@ const CallbackBodySchema = z.object({
   state: z.string().optional(),
 });
 
-// BE-ZOD-MIGRATION-EXTENSION: schema for POST /api/orcid/start. The mode
+// Schema for POST /api/orcid/start. The mode
 // value is an optional string at the Zod layer; VALID_MODES membership is
 // enforced as business validation below (same pattern as auth.ts schemas
 // that defer isEmail/isPasswordValid to post-parse). This replaces the
@@ -89,7 +89,7 @@ const router = Router();
 // surface for future callers (e.g. an admin UI rendering orcid_id in HTML).
 const ORCID_RE = /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;
 
-// Round-3 of BACKEND-COAUTHOR-TRUST-MODEL: 'fresh_auth' is an authenticated
+// 'fresh_auth' is an authenticated
 // mode that completes a fresh OAuth round-trip and mints a single-use
 // fresh-auth proof token bound to the JWT subject. Issued tokens are
 // consumed by the custody-broadcast handler when broadcasting `author_accept`
@@ -127,8 +127,9 @@ const ORCID_VERIFIED_TTL = 1800; // 30 minutes
 // concerns that share the same operational bound:
 //
 //   1. Lock-TTL extension on `BroadcastTimeoutError` inside the lock-acquired
-//      branch of withOrcidBindingLock (Option A.1 from the chain-write-timeout
-//      convention doc) — the lock TTL is extended to this value so a
+//      branch of withOrcidBindingLock (the lock-TTL-extension remediation from
+//      the chain-write-timeout-ambiguous-outcome convention doc) — the lock TTL
+//      is extended to this value so a
 //      concurrent bind for the same orcid_id cannot acquire a fresh lock
 //      during the window in which our broadcast may still be on-chain
 //      unindexed. Used only on the timer-fire path; non-timeout throws
@@ -140,12 +141,12 @@ const ORCID_VERIFIED_TTL = 1800; // 30 minutes
 //      `findAccreditedAccountWithOrcid` would otherwise not see the fresh
 //      binding and two concurrent binds could slip through.
 //
-// Round-1 hold #4: previously declared as `ORCID_BINDING_CACHE_TTL = 120`
+// Previously declared as `ORCID_BINDING_CACHE_TTL = 120`
 // AND `HAF_INDEXING_LAG_CEILING_SECONDS = 120` separately — future tuning
 // (e.g. observed lag spikes prompting a 180s ceiling) would have required
 // changing both. Single named constant, two consumers reference it.
 //
-// Round-2 hold #3 — derivation chain (per
+// Derivation chain (per
 // `agents/docs/solutions/conventions/verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`):
 //   * Source of `120`: empirical upper bound on HAF block-watcher catch-up
 //     after a Hive broadcast lands. Hive blocks are 3s; HAF's catch-up plus
@@ -160,7 +161,7 @@ const ORCID_VERIFIED_TTL = 1800; // 30 minutes
 //     (return the just-written binding from cache before HAF sees it). They
 //     cover the same window from two angles, so a single value is correct
 //     by construction. A divergence (e.g. cache TTL set lower than lock TTL)
-//     would re-introduce the duplicate-bind race A.1 closes.
+//     would re-introduce the duplicate-bind race the lock-TTL extension closes.
 //   * What would force re-evaluation: (a) observed HAF-lag p99 exceeding the
 //     ceiling (split this constant if cache and lock have different operating
 //     bounds — currently they don't); (b) a new consumer with a genuinely
@@ -169,7 +170,7 @@ const ORCID_VERIFIED_TTL = 1800; // 30 minutes
 //     buffer would no longer hold).
 //
 // See `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`
-// (Option A.1) and `tasks-archive.md` BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT.
+// for the lock-TTL-extend-on-timeout remediation this constant backs.
 const HAF_INDEXING_LAG_CEILING_SECONDS = 120;
 // Alias: the binding-cache TTL tracks the lag ceiling exactly. Kept as a
 // named alias so call sites read with semantic intent (`ORCID_BINDING_CACHE_TTL`
@@ -212,7 +213,7 @@ const LOCK_NONCE_RE = /^[0-9a-f]{32}$/;
 const orcidStates = new Map<string, {
   mode: OrcidMode;
   username?: string;
-  /** Round-5 hold #3: target triple stored when `mode === 'fresh_auth'`,
+  /** Target triple stored when `mode === 'fresh_auth'`,
    *  read back at callback to mint a target-bound proof. Always undefined
    *  for non-fresh-auth modes. */
   fresh_auth_target?: FreshAuthTarget;
@@ -235,7 +236,7 @@ setInterval(() => {
 const startLimiter = rateLimit({ name: 'orcid-start', windowMs: 60_000, max: 10, keyFn: byIp });
 const callbackLimiter = rateLimit({ name: 'orcid-callback', windowMs: 60_000, max: 10, keyFn: byIp });
 
-/** Round-5 hold #4: per-fetch timeout for ORCID provider calls. Native Node
+/** Per-fetch timeout for ORCID provider calls. Native Node
  *  `fetch` has no default timeout; an ORCID-side hang (provider outage,
  *  network blackhole) blocks the handler indefinitely. New consent-flow
  *  modes (`fresh_auth`) inherited the same surface so the fix is uniform.
@@ -248,7 +249,7 @@ const ORCID_FETCH_TIMEOUT_MS = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 10_000;
 })();
 
-/** Round-5 hold #4: typed error surface for an ORCID-provider hang. The
+/** Typed error surface for an ORCID-provider hang. The
  *  /callback outer catch maps this specifically to a 504
  *  ORCID_PROVIDER_TIMEOUT response with `details.outcome: 'timeout'`,
  *  distinct from generic 500 errors and distinct from upstream non-2xx
@@ -260,7 +261,7 @@ class OrcidProviderTimeoutError extends Error {
   }
 }
 
-/** Round-5 hold #4: timed-fetch wrapper. Combines the per-call timeout
+/** Timed-fetch wrapper. Combines the per-call timeout
  *  with any external AbortSignal the caller already supplies. On timer
  *  fire, throws `OrcidProviderTimeoutError` so the route can map it to a
  *  504 (rather than `AbortError` which is also surfaced for caller-driven
@@ -350,11 +351,11 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
     username = authed;
   }
 
-  // Round-5 hold #3: when mode === 'fresh_auth', the request body must
+  // When mode === 'fresh_auth', the request body must
   // carry the per-op target. Closed-default at issuance: an SPA that
   // omits/malforms the target gets a 400, never a target-less proof.
   //
-  // Round-6 of BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH: the `set_password`
+  // The `set_password`
   // action is non-broadcast (transitions state C → state B per
   // ARCHITECTURE.md § 6.3) and has no paper. The target binds to the
   // authenticated username via `root_author`; `root_permlink` is forced
@@ -524,7 +525,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
             username?: string;
             fresh_auth_target?: FreshAuthTarget;
           };
-          // Round-2 hold #3: runtime membership guard on the deserialized
+          // Runtime membership guard on the deserialized
           // `mode`. A stale Redis entry written by a prior code version
           // carrying an unrecognized literal would otherwise fall out of the
           // dispatch switch at the end of this function and send no response.
@@ -571,7 +572,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
       orcidStates.delete(state);
     }
 
-    // Exchange code for access token. Round-5 hold #4: wrapped in
+    // Exchange code for access token. Wrapped in
     // `fetchWithOrcidTimeout` so an ORCID provider hang surfaces as a
     // 504 ORCID_PROVIDER_TIMEOUT (mapped at the outer catch) rather
     // than blocking the handler indefinitely.
@@ -623,7 +624,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
       case 'link':
         return await handleLink(res, orcidId, storedUsername!);
       case 'fresh_auth':
-        // Round-5 hold #3: storedFreshAuthTarget must be present at this
+        // storedFreshAuthTarget must be present at this
         // point because /start enforces it on entry. If somehow absent
         // (corrupt Redis state, future refactor regression), reject as
         // BAD_REQUEST rather than minting a target-less proof.
@@ -642,7 +643,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
         // Same (orcidId, username) binding check as fresh_auth.
         return await handleSessionAuth(res, orcidId, storedUsername!);
       default:
-        // Round-2 hold #2: explicit `assertNever` so a future arm added to
+        // Explicit `assertNever` so a future arm added to
         // `OrcidMode` without a switch case fails at compile time instead
         // of falling off the end of the switch body and sending no
         // response. Matches the pattern at the three other switches in
@@ -650,7 +651,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
         return assertNever(storedMode);
     }
   } catch (err) {
-    // Round-5 hold #4: surface ORCID provider hangs as 504 with a
+    // Surface ORCID provider hangs as 504 with a
     // structured `details` block, distinct from generic 500s. The
     // closed-enum payload (`outcome: 'timeout'`, `verify_before_retry:
     // true`) signals to the SPA that retrying immediately is unsafe —
@@ -694,8 +695,8 @@ async function handleSignup(
 ): Promise<void> {
   // Belt-and-suspenders format guard matching handleLogin / handleAccredit /
   // handleLink. The dispatch site in POST /callback already guards; this inner
-  // check removes the "handler-guard asymmetry" that round-2 review flagged,
-  // and — specifically for signup — is the only handler that feeds orcidId
+  // check removes the handler-guard asymmetry where only the dispatch site
+  // validated, and — specifically for signup — is the only handler that feeds orcidId
   // into a URL-path interpolation (countExternalWorks → pub.orcid.org).
   // Keeping the guard here locks in the mutation-kill for the signup path so
   // the dispatch-site guard is not the sole defense.
@@ -757,8 +758,7 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   );
 
   if (result.rows.length === 0) {
-    // NO_ACCOUNT 409/404 carries no payload. Per BE-ORCID-NO-ACCOUNT-
-    // ERROR-SHAPE-ALIGN (2026-04-22), the prior `{ orcid_id }` details
+    // NO_ACCOUNT 409/404 carries no payload. The prior `{ orcid_id }` details
     // field was never consumed by any frontend handler — the caller
     // already knows which ORCID they submitted, so echoing it back is
     // redundant. The contract (api-contracts/orcid.md) previously
@@ -837,31 +837,32 @@ async function handleAccredit(
     // because all three are terminal from the user's perspective (the OAuth
     // state token has either been consumed or will be on the next attempt;
     // restart the ORCID flow). Cause discrimination is server-side telemetry
-    // only — see `agents/docs/api-contracts/orcid.md:185` for the three causes
-    // and `withOrcidBindingLock`'s `'held'` branch for the contention anchor.
+    // only — see `agents/docs/api-contracts/orcid.md` (the ORCID_ALREADY_LINKED
+    // section) for the three causes and `withOrcidBindingLock`'s `'held'` branch
+    // for the contention anchor.
     sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
     return;
   }
 
-  // Split into two opts shapes per round-2 hold item #1:
+  // Split into two opts shapes:
   //   * accreditErrorOpts — non-ambiguous variant for fn's inner catch (acquired
   //     branch's BroadcastTimeoutError → 504 timer-fire envelope; non-timeout
   //     broadcast error → 502 BROADCAST_FAILED). The discriminated union forbids
   //     `ambiguousMsg` on this variant so a stray field is a compile error.
   //   * accreditAmbiguousOpts — ambiguous variant for the wrapper's outer catch
-  //     on the 'unavailable' branch and (after item #6) for non-timeout
+  //     on the 'unavailable' branch and for non-timeout
   //     broadcast errors re-thrown from the same branch. `forceAmbiguousOutcome:
   //     true` + `ambiguousMsg` are required by the discriminated union; the
-  //     round-1 `ambiguousMsg ?? failMsg` fallback is gone.
+  //     earlier `ambiguousMsg ?? failMsg` fallback is gone.
   const accreditErrorOpts: HandleBroadcastErrorOpts = {
     timeoutMsg: 'Broadcasting ORCID accreditation timed out',
     failMsg: 'Failed to broadcast ORCID accreditation to Hive',
     logContext: { username, orcid: orcidId, mode: 'accredit' },
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleAccredit',
-    // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION: 502 POST_BROADCAST_FAILED
-    // user-facing message, tailored per cascade step (round-1 hold #3). Recovery
-    // semantics differ by step and the round-1 review surfaced that a single
+    // Post-broadcast outcome discrimination: 502 POST_BROADCAST_FAILED
+    // user-facing message, tailored per cascade step. Recovery
+    // semantics differ by step, and a single
     // "HAF will reconcile" line overpromises auto-recovery: only
     // `'reputation_seed'` reconciles via the next batch cycle; `'cache_write'`
     // is repopulated by the next request that needs the binding;
@@ -871,7 +872,7 @@ async function handleAccredit(
     // alarming users — the chain state is durable and ORCID-based login
     // lookups via HAF still work; only the denormalized accounts.orcid column
     // is potentially stale until a manual reconcile lands.
-    // Round-2 hold #1: switch + `assertNever` (not nested ternary). Adding a
+    // Switch + `assertNever` (not nested ternary). Adding a
     // 4th `PostBroadcastFailedStep` member would silently route to the
     // account_update tail under the prior `else`-fallback shape — exactly the
     // drift class the discriminated-union convention exists to prevent. The
@@ -923,7 +924,7 @@ async function handleAccredit(
       result = await broadcastAdminCustomJson(customJsonPayload);
     } catch (err) {
       if (err instanceof BroadcastTimeoutError) {
-        // Option A.1 lock-TTL extension. The extend-or-log helper MUST run
+        // Lock-TTL extension on timeout. The extend-or-log helper MUST run
         // BEFORE handleBroadcastError writes the response, because the
         // response-write is the last thing inside fn and a malicious caller
         // terminating the connection mid-write could otherwise escape fn
@@ -933,13 +934,12 @@ async function handleAccredit(
         // concurrent binds for the same orcid_id during the window in which
         // our broadcast may still be on-chain unindexed. Non-timeout throws
         // (rethrown below) flow through the wrapper's normal release path.
-        // Round-1 hold items #1/#2/#3/#5: failure-mode robustness +
-        // observability collapsed into the helper.
+        // Failure-mode robustness + observability collapsed into the helper.
         await __test_seams.extendBindingLockOnTimeoutOrLog(orcidId, 'orcid.handleAccredit');
         handleBroadcastError(res, err, accreditErrorOpts);
         return { skipRelease: true };
       }
-      // Round-2 hold item #6: on the 'unavailable' branch ANY throw is
+      // On the 'unavailable' branch ANY throw is
       // outcome-ambiguous (no lock-TTL margin, no binding cache to dedup
       // against). Re-throw non-timeout broadcast errors so the wrapper's
       // outer catch emits the 504 ambiguous-outcome envelope via
@@ -961,9 +961,9 @@ async function handleAccredit(
     // POST_BROADCAST_FAILED with `outcome:'confirmed'` + `tx_id` +
     // `failed_step` instead of the over-cautious 504. `currentStep` advances
     // before each await so the catch attaches the precise step.
-    // (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION.)
+    // (This is the post-broadcast outcome-discrimination contract.)
     //
-    // Dead-defense note (round-1 hold #5): the three cascade fns currently
+    // Dead-defense note: the three cascade fns currently
     // swallow their async errors internally — `cacheOrcidBinding` warns and
     // returns, `__test_seams.updateAccountOrcid` (== `updateAccountOrcid`)
     // logs and returns, `seedAccreditationBonus` logs and returns. The
@@ -971,21 +971,20 @@ async function handleAccredit(
     // future refactor returning null where a method is expected) or if a
     // future cascade-fn refactor switches to re-throwing critical errors.
     // Kept structurally because (a) the discrimination shape is the canonical
-    // surface for `backend-sendoperations-outcome-handling-sweep.md` to reuse,
+    // surface for the broader send-operations outcome-handling work to reuse,
     // and (b) tightening cascade-fn error semantics is a separate, wider scope.
     // A test that exercises the discrimination via __test_seams (see
     // tests/routes/orcid.test.ts post-broadcast specs) is the live proof the
     // path remains wired.
-    // Round-2 hold #2: typed as the full `PostBroadcastFailedStep` union as
+    // Typed as the full `PostBroadcastFailedStep` union as
     // an *intent signal* — handleAccredit's cascade can advance through every
     // member of the union (cache_write → account_update → reputation_seed),
     // so widening to a future 4th member is a deliberate annotation choice,
     // not compile-time enforcement. The compile-time enforcement against
     // forgotten union extensions lives at handleLink's `Extract<>` narrowing
     // below — when a 4th member is added that is reachable from link mode,
-    // that site is what fails to compile and forces the question (round-3
-    // hold #2 corrected the prior comment, which mis-claimed enforcement at
-    // both sites).
+    // that site is what fails to compile and forces the question. Enforcement
+    // lives only at the handleLink site, not here.
     let currentStep: PostBroadcastFailedStep = 'cache_write';
     try {
       // Cache the binding so a concurrent bind request in the HAF-lag window sees
@@ -995,7 +994,7 @@ async function handleAccredit(
 
       // Update orcid column in accounts (if light account row exists)
       // Routed through __test_seams so a unit spec can spy on this call
-      // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
+      // (replaces the fragile getAppPool() Once-stack).
       await __test_seams.updateAccountOrcid(username, orcidId);
       currentStep = 'reputation_seed';
 
@@ -1008,8 +1007,8 @@ async function handleAccredit(
       // or PostgreSQL 23xxx/42xxx — and 502 POST_BROADCAST_FAILED (with
       // the "will reconcile automatically" copy) for everything else.
       // The three cascade fns above already filter and only re-throw
-      // permanent-class errors per the
-      // `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` convention, but the
+      // permanent-class errors per the cascade-fn permanent-error rethrow
+      // convention, but the
       // `'transient'` branch is NOT dead code — `updateAccountOrcid`'s
       // pre-pool guard throws before its per-error filter runs, so a
       // sentinel-less pool-missing throw would have leaked as transient.
@@ -1062,25 +1061,26 @@ async function handleLink(
   if (existingBinding && existingBinding !== username) {
     // Durable-binding 409. Wire shape is shared across all
     // `ORCID_ALREADY_LINKED` 409 paths (no `retriable`, no `Retry-After`); see
-    // handleAccredit counterpart and `agents/docs/api-contracts/orcid.md:185`.
+    // handleAccredit counterpart and `agents/docs/api-contracts/orcid.md`
+    // (the ORCID_ALREADY_LINKED section).
     sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
     return;
   }
 
-  // See handleAccredit counterpart for split-opts rationale (round-2 hold #1).
+  // See handleAccredit counterpart for split-opts rationale.
   const linkErrorOpts: HandleBroadcastErrorOpts = {
     timeoutMsg: 'Broadcasting ORCID link timed out',
     failMsg: 'Failed to broadcast ORCID link to Hive',
     logContext: { username, orcid: orcidId, mode: 'link' },
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleLink',
-    // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION: per-step user-facing
-    // message — see handleAccredit counterpart for full rationale (round-1
-    // hold #3). handleLink does NOT seed reputation, so `'reputation_seed'`
+    // Post-broadcast outcome discrimination: per-step user-facing
+    // message — see handleAccredit counterpart for full rationale.
+    // handleLink does NOT seed reputation, so `'reputation_seed'`
     // is unreachable from this route in practice; the switch covers it
     // exhaustively for type safety (and the message degrades gracefully to
     // the account_update phrasing — that was the prior implicit behavior
-    // under the else-fallback ternary). Round-2 hold #1: switch + assertNever
+    // under the else-fallback ternary). Switch + assertNever
     // (not nested ternary) so a 4th union member surfaces as a compile error
     // rather than silently routing to the account_update tail.
     postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) => {
@@ -1124,14 +1124,14 @@ async function handleLink(
       result = await broadcastAdminCustomJson(customJsonPayload);
     } catch (err) {
       if (err instanceof BroadcastTimeoutError) {
-        // See handleAccredit counterpart for the full rationale (Option A.1
-        // lock-TTL extension; helper before handleBroadcastError; skipRelease
+        // See handleAccredit counterpart for the full rationale (lock-TTL
+        // extension on timeout; helper before handleBroadcastError; skipRelease
         // signals withOrcidBindingLock to leave the extended lock alone).
         await __test_seams.extendBindingLockOnTimeoutOrLog(orcidId, 'orcid.handleLink');
         handleBroadcastError(res, err, linkErrorOpts);
         return { skipRelease: true };
       }
-      // Round-2 hold item #6: see handleAccredit counterpart.
+      // See handleAccredit counterpart.
       if (lockState === 'unavailable') {
         throw err;
       }
@@ -1145,7 +1145,7 @@ async function handleLink(
     // narrows to 'cache_write' | 'account_update'. The 'reputation_seed'
     // value is reserved for handleAccredit. (Both step labels remain in
     // PostBroadcastWriteError's union for sweep-extensibility.)
-    // Round-2 hold #2: typed as the link-narrow Extract over
+    // Typed as the link-narrow Extract over
     // `PostBroadcastFailedStep` — handleLink's cascade does not seed
     // reputation, so `'reputation_seed'` is structurally unreachable here.
     // Adding a 4th union member surfaces as a compile error if it would
@@ -1159,7 +1159,7 @@ async function handleLink(
 
       // Update orcid column in accounts (if light account row exists)
       // Routed through __test_seams so a unit spec can spy on this call
-      // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
+      // (replaces the fragile getAppPool() Once-stack).
       await __test_seams.updateAccountOrcid(username, orcidId);
     } catch (postErr) {
       // See handleAccredit counterpart for full rationale. handleLink's
@@ -1189,7 +1189,7 @@ async function handleLink(
 }
 
 // ─────────────────────────────────────────────────────────────
-// Round-3 of BACKEND-COAUTHOR-TRUST-MODEL — fresh-auth via ORCID
+// handleFreshAuth — fresh-auth via ORCID
 // ─────────────────────────────────────────────────────────────
 //
 // Authenticated mode that completes a fresh OAuth round-trip and mints a
@@ -1290,7 +1290,7 @@ async function handleSessionAuth(
     return;
   }
 
-  // Round-2 hold #4: scoped try/catch on the DB lookup so a Postgres
+  // Scoped try/catch on the DB lookup so a Postgres
   // connection error surfaces as a discriminated 500 with the structured
   // `orcid.session_auth.db_failed` event slug rather than propagating to
   // the outer `/callback` catch (which would emit a generic
@@ -1457,37 +1457,36 @@ async function releaseBindingLock(orcidId: string, nonce: string): Promise<void>
 }
 
 /**
- * Option A.1 lock-TTL extension on `BroadcastTimeoutError`. Extends the
+ * Lock-TTL extension on `BroadcastTimeoutError`. Extends the
  * binding-lock TTL to {@link HAF_INDEXING_LAG_CEILING_SECONDS} so a concurrent
  * bind for the same `orcid_id` cannot acquire a fresh lock during the window
- * in which our broadcast may still be on-chain unindexed. Round-1 hold items
- * #1, #2, #3, #5 fold together here so each failure mode emits the structured
- * log operators need:
+ * in which our broadcast may still be on-chain unindexed. The four failure
+ * modes fold together here so each emits the structured log operators need:
  *
- *   - **Redis absent** (item #3) — `getRedis()` returns null or
+ *   - **Redis absent** — `getRedis()` returns null or
  *     `isRedisAvailable()` is false. Silent no-op was the prior shape; now
  *     emits `error` so a degraded-during-timeout event is recoverable from
  *     logs. The `expireErr` catch below cannot fire on the absent-Redis path.
  *
- *   - **`expire` returns 0** (item #1) — lock key was already gone (TTL
+ *   - **`expire` returns 0** — lock key was already gone (TTL
  *     expiry, eviction, FLUSHDB, AOF stall between acquire and the catch).
  *     `redis.expire` on a missing key resolves to 0, no exception. Without
- *     this branch the wrapper would skipRelease anyway and A.1 protection
- *     would be silently violated. We emit `error` and let the wrapper
+ *     this branch the wrapper would skipRelease anyway and the duplicate-bind
+ *     protection would be silently violated. We emit `error` and let the wrapper
  *     skipRelease (the `return { skipRelease: true }` is now a no-op — no
  *     lock to skip releasing — but is structurally still correct).
  *
- *   - **`expire` returns 1** (item #2) — extension landed. Emits `warn`
+ *   - **`expire` returns 1** — extension landed. Emits `warn`
  *     (not `info`) because the event is operationally abnormal (a real
  *     broadcast timeout is alert-worthy) and dashboards should surface it.
  *
  *   - **`expire` throws** (Redis-flap mid-call) — same shape as the prior
- *     inline catch (round-1 hold #8 adds a unit test pinning this branch).
+ *     inline catch; a unit test pins this branch.
  *
  * The function returns void; the caller still issues
  * `return { skipRelease: true }` to signal the wrapper. Decoupled because the
  * skipRelease semantics belong to the wrapper contract, not the lock-extend
- * helper. Round-1 hold #5 — collapses two duplicated catch blocks
+ * helper. Collapses two duplicated catch blocks
  * (`handleAccredit` and `handleLink`) into one site so a future edit to the
  * extend-or-log shape only happens once.
  */
@@ -1506,7 +1505,7 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
     return;
   }
   try {
-    // Round-1 (BACKEND-A1-EXTEND-LOCK-MISSING-EVENT-DISCRIMINATION): probe
+    // Probe
     // the lock's residual TTL immediately before the extend attempt so the
     // `binding_lock_extend_lock_missing` anchor can carry a `cause:` field
     // that operators can dashboard-filter. Three operational causes
@@ -1523,7 +1522,7 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
     const pttlBefore = await redis.pttl(lockKey);
     const extended = await redis.expire(lockKey, HAF_INDEXING_LAG_CEILING_SECONDS);
     if (extended === 0) {
-      // Round-2 hold #4: caller's subsequent `return { skipRelease: true }`
+      // Caller's subsequent `return { skipRelease: true }`
       // is decorative on this branch — the lock is already gone, so
       // releaseBindingLock's Lua CAS is a no-op against a missing key
       // either way. Preserved for structural parity with the success branch
@@ -1590,8 +1589,8 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
  *                   `retriable` flag, no `Retry-After` header — the OAuth
  *                   state token was consumed at /callback entry, so the
  *                   client must restart the ORCID flow); callback is NOT run.
- *                   See ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 in
- *                   tasks-archive.md (Option B) for the rationale.
+ *                   Rationale: the OAuth state token is consumed before the
+ *                   lock check, so the 409 is terminal rather than retriable.
  *   'acquired'    — callback runs inside try/catch/finally; release happens
  *                   under nonce CAS in finally on both success and caught
  *                   throw paths. The wrapper catches every throw escaping fn
@@ -1638,7 +1637,7 @@ async function withOrcidBindingLock(
   // handleAccredit/handleLink, which extends the lock TTL to
   // HAF_INDEXING_LAG_CEILING_SECONDS so a concurrent bind for the same
   // orcid_id cannot acquire a fresh lock while our broadcast may still be
-  // on-chain unindexed (Option A.1). Throws from fn still flow through the
+  // on-chain unindexed. Throws from fn still flow through the
   // finally and release as before — only an explicit `{ skipRelease: true }`
   // return short-circuits the release. Returning void preserves the legacy
   // success-path release.
@@ -1647,7 +1646,7 @@ async function withOrcidBindingLock(
   // 'unavailable' branch, ANY throw is outcome-ambiguous (no lock-TTL
   // margin, no binding-cache to dedup against), so non-timeout broadcast
   // errors must be re-thrown to let this wrapper's outer catch emit the
-  // ambiguous-outcome envelope (round-2 hold item #6). On the 'acquired'
+  // ambiguous-outcome envelope. On the 'acquired'
   // branch, fn keeps its existing 502 BROADCAST_FAILED response for
   // non-timeout broadcast errors. ('held' is handled by the wrapper before
   // fn runs; fn never observes that state.)
@@ -1660,7 +1659,7 @@ async function withOrcidBindingLock(
   // it costs nothing and forecloses the silent regression. Future callers
   // that genuinely have no broadcast-write to recover (e.g. a read-only
   // probe) MUST justify the addition by extending this signature, not by
-  // omitting the safety envelope. Round-2 hold item #4: takes the narrowed
+  // omitting the safety envelope. Takes the narrowed
   // ambiguous variant directly so the wrapper does not spread-and-override
   // `forceAmbiguousOutcome:true` into the helper opts (i.e. doesn't leak the
   // helper's internal flag name); calls handleBroadcastErrorAmbiguous, which
@@ -1673,8 +1672,8 @@ async function withOrcidBindingLock(
     // /callback entry, so the wire shape here is terminal from the user's
     // perspective. Restart the ORCID flow rather than retry. Matches the
     // durable on-chain binding 409 envelope (no `retriable`, no `Retry-After`).
-    // Rationale: ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 (Option B)
-    // in tasks-archive.md.
+    // Rationale: the OAuth state token is consumed before this lock check, so
+    // the 409 is terminal rather than retriable.
     //
     // Operator-alert anchor: structured `event:'lock_contention_held'` so
     // contention frequency is dashboard-keyable. Sibling lock-helper anchors
@@ -1709,9 +1708,9 @@ async function withOrcidBindingLock(
     // prevented). Throws skip the `if (result?.skipRelease)` line entirely,
     // leaving skipRelease=false, so finally releases as before.
     //
-    // Symmetric ambiguous-outcome catch (BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD):
-    // closes the symmetric hard-block class round-1 #3 closed on the
-    // 'unavailable' branch. Throw classes escape fn's inner try/catch even
+    // Symmetric ambiguous-outcome catch:
+    // closes the same hard-block class on the 'acquired' branch that the
+    // 'unavailable' branch already closes. Throw classes escape fn's inner try/catch even
     // on the lock-acquired branch and would otherwise consume the OAuth
     // state token + produce 500 INTERNAL_ERROR. The catch below routes them
     // through handleBroadcastErrorAmbiguous, which in turn discriminates
@@ -1719,12 +1718,12 @@ async function withOrcidBindingLock(
     // failed_step + outcome:'confirmed') from everything else (504
     // BROADCAST_TIMEOUT + outcome:'uncertain' + verify_before_retry:true).
     //
-    // Surviving throw classes after the d8b9b75 PostBroadcastWriteError swap:
+    // Surviving throw classes after the PostBroadcastWriteError swap:
     //   1. Pre-broadcast SYNC throw — e.g. PrivateKey.fromString on a
     //      malformed admin key. Routed as 504 ambiguous-outcome.
-    //      backend-pevo-admin-key-startup-validation.md added a startup-time
-    //      check that fails boot on a malformed key, so this class should
-    //      not reach the catch in production.
+    //      A startup-time admin-key validation check fails boot on a
+    //      malformed key, so this class should not reach the catch in
+    //      production.
     //   2. Post-broadcast cascade throw — fn wraps the cascade in a
     //      PostBroadcastWriteError before re-throwing, and handleBroadcastError
     //      checks the discrimination BEFORE the forceAmbiguousOutcome branch.
@@ -1755,12 +1754,12 @@ async function withOrcidBindingLock(
     // outer /callback catch's 500 INTERNAL_ERROR — the OAuth state token is
     // already consumed, so a 500 hard-blocks the user on a retry path that
     // may also duplicate-broadcast. handleBroadcastErrorAmbiguous (the
-    // dedicated entry point — round-2 hold item #4) collapses
+    // dedicated entry point) collapses
     // BroadcastTimeoutError AND any other throw into the same 504
     // BROADCAST_TIMEOUT shape (retriable:false, verify_before_retry:true,
     // outcome:'uncertain'). The discriminated-union opts type
     // (HandleBroadcastErrorAmbiguousOpts) requires `ambiguousMsg` so the
-    // round-1 `ambiguousMsg ?? failMsg` silent-regression class cannot
+    // earlier `ambiguousMsg ?? failMsg` silent-regression class cannot
     // reappear. See convention doc
     // agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md.
     //
@@ -1775,11 +1774,11 @@ async function withOrcidBindingLock(
     try {
       await fn('unavailable');
     } catch (err) {
-      // Round-2 hold item #4: dedicated ambiguous entry point — wrapper does
+      // Dedicated ambiguous entry point — wrapper does
       // not know the helper's internal `forceAmbiguousOutcome` flag name. The
       // narrowed `HandleBroadcastErrorAmbiguousOpts` type guarantees
-      // `ambiguousMsg` is set (item #1's discriminated union closes the
-      // round-1 `ambiguousMsg ?? failMsg` silent-regression class).
+      // `ambiguousMsg` is set (the discriminated union closes the
+      // earlier `ambiguousMsg ?? failMsg` silent-regression class).
       handleBroadcastErrorAmbiguous(res, err, ambiguousOutcomeOpts);
     }
   } else {
@@ -1971,7 +1970,7 @@ async function getExistingAccreditation(username: string): Promise<{
 
   // Filter by accreditationAuthorities so a self-broadcast custom_json (signed
   // by the target account's own posting key) cannot masquerade as a real
-  // accreditation and unlock the /link flow. See SEC-AUTH-BYPASS.
+  // accreditation and unlock the /link flow.
   // `cj.id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
   // id) per the custom-json hive-primitive design-rules convention, so a
   // same-block accredit/revoke resolves to the later op.
@@ -2005,7 +2004,7 @@ async function getExistingAccreditation(username: string): Promise<{
  * Classify a thrown DB error as permanent (operator-actionable, deploy
  * regression) or transient (single-blip, recoverable on retry).
  *
- * BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS — the cascade fns
+ * Cascade-fn permanent-error rethrow convention: the cascade fns
  * (`updateAccountOrcid`, `seedAccreditationBonus`) re-throw permanent errors
  * so the post-broadcast discrimination machinery surfaces real 502
  * POST_BROADCAST_FAILED envelopes for operator alerting; transient errors
@@ -2083,7 +2082,7 @@ async function updateAccountOrcid(username: string, orcidId: string): Promise<vo
   }
 }
 
-// Test-only seam (round-2 hold item #2): handleAccredit/handleLink call
+// Test-only seam: handleAccredit/handleLink call
 // updateAccountOrcid through this object so a unit spec can replace it via
 // `vi.spyOn(__test_seams, 'updateAccountOrcid').mockRejectedValueOnce(...)`
 // to deterministically inject a post-broadcast throw without depending on the
@@ -2098,11 +2097,11 @@ export const __test_seams = {
   // Routed through __test_seams so a unit spec can pin the ordering
   // invariant — the helper MUST run BEFORE handleBroadcastError writes the
   // response (a malicious caller dropping the connection mid-write could
-  // otherwise escape fn before the lock-TTL extend lands). Round-1 hold #7.
-  // Also lets a spec assert the helper was called for both routes (round-1
-  // hold #5 — drift surface between handleAccredit/handleLink callers).
+  // otherwise escape fn before the lock-TTL extend lands).
+  // Also lets a spec assert the helper was called for both routes
+  // (drift surface between handleAccredit/handleLink callers).
   extendBindingLockOnTimeoutOrLog,
-  // Round-3 hold item #2: exported so the success-path matrix spec can
+  // Exported so the success-path matrix spec can
   // assert `newTtl: HAF_INDEXING_LAG_CEILING_SECONDS` instead of the bare
   // literal `120`. A future tuning that lowers/raises the constant per the
   // derivation comment block must not turn into a red test for the same
@@ -2113,8 +2112,8 @@ export const __test_seams = {
 // Export the in-memory verified map so auth.ts signup can consume nonces
 export { orcidVerified };
 
-// Test-only exports: SEC-002-TOCTOU-LOCK Lua CAS multi-holder correctness is
-// the primary safety property of the Redlock release path, but the other
+// Test-only exports: the Lua CAS multi-holder correctness of the lock release
+// is the primary safety property of the Redlock release path, but the other
 // specs only exercise it indirectly (self-release on success, self-release on
 // broadcast throw, TTL expiry). Expose the release helper so a unit spec can
 // assert that releaseBindingLock(orcidId, wrongNonce) refuses to delete a lock

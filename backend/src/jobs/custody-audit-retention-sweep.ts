@@ -134,7 +134,7 @@ export async function readRetentionMonths(runner: QueryRunner): Promise<number> 
  *
  * The first call after deploy naturally drops all pre-existing rows older
  * than the retention period in a single DELETE — no separate backfill code
- * is needed (acceptance #3).
+ * is needed.
  */
 export async function runSweep(
   pool: pg.Pool,
@@ -221,10 +221,10 @@ export function startRetentionSweepTicker(pool: pg.Pool | null): void {
   if (!pool) {
     return;
   }
-  // First-tick gating design (round-3 item 6): the immediate first sweep is
+  // First-tick gating design: the immediate first sweep is
   // fired un-awaited, deliberately, for three reasons:
   //   1. Backfill semantics: the first DELETE after deploy must drop pre-
-  //      existing rows older than the retention period (acceptance #3).
+  //      existing rows older than the retention period.
   //      Awaiting it would block the listen-callback chain that registers
   //      sibling jobs (signup-cleanup, batch-reputation, etc.) — none of
   //      those need to wait for a backfill DELETE that may scan a large

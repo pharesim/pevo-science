@@ -281,8 +281,8 @@ type GatedOpScan =
   | { kind: 'malformed'; action: string; field: string };
 
 /** Type guard: a Hive operation is a [type, params] tuple where params is a
- *  non-null object. Replaces the round-3 `as { json?: unknown }` cast at
- *  this site (round-4 hold #8). */
+ *  non-null object. Used in place of an `as { json?: unknown }` cast at the
+ *  scan site so the narrowing is checked rather than asserted. */
 function isOpTuple(op: unknown): op is [string, Record<string, unknown>] {
   return (
     Array.isArray(op) &&
@@ -424,21 +424,20 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
 
   // Optional `idempotency_key` (per-broadcast UUID from the SPA) closes the
   // retry-amplification class documented in
-  // `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`
-  // Option A.4. When the key is present + HAF is reachable + the bundle has at
-  // least one comment or custom_json op, a pre-broadcast HAF check returns the
-  // existing tx_id with `outcome:'already_landed'` instead of re-broadcasting.
-  // Today's SPA does NOT yet send the field; the corresponding UI task
-  // (`ui-custody-broadcast-idempotency-key.md`) wires it up. The backend
-  // accepts requests without the field with a structured-warn so the
-  // amplification window is observable while the SPA migrates.
+  // `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`.
+  // When the key is present + HAF is reachable + the bundle has at least one
+  // comment or custom_json op, a pre-broadcast HAF check returns the existing
+  // tx_id with `outcome:'already_landed'` instead of re-broadcasting. Today's
+  // SPA does NOT yet send the field; the backend accepts requests without it
+  // with a structured-warn so the amplification window is observable while the
+  // SPA migrates.
   const rawIdempotencyKey = (req.body as { idempotency_key?: unknown })?.idempotency_key;
   let idempotencyKey: string | null = null;
   if (rawIdempotencyKey !== undefined) {
-    // F11: discriminated result eliminates the prior `string | null` shape
-    // where success (`null`) shared a type with failure (the error message
-    // string). The narrowed `value` is the validated key — no `as string`
-    // cast at the assignment site.
+    // `validateIdempotencyKey` returns a discriminated result, eliminating a
+    // `string | null` shape where success (`null`) shared a type with failure
+    // (the error message string). The narrowed `value` is the validated key —
+    // no `as string` cast at the assignment site.
     const validation = validateIdempotencyKey(rawIdempotencyKey);
     if (!validation.ok) {
       return sendError(res, 400, 'VALIDATION_ERROR', validation.error);
@@ -495,9 +494,9 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
           'claim_authorship',
           'approve_authorship',
           'revoke_authorship',
-          // Round-3 of BACKEND-COAUTHOR-TRUST-MODEL: consent ops gate
-          // continuation-chain admit. Light-account broadcast is allowed,
-          // but each call also requires a fresh-auth proof (gated below).
+          // Consent ops gate continuation-chain admit. Light-account
+          // broadcast is allowed, but each call also requires a fresh-auth
+          // proof (gated below).
           'author_accept',
           'author_resign',
         ];
@@ -560,15 +559,15 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     );
   }
 
-  // Fresh-auth verification hoisted ABOVE the idempotency check (round-2 F2).
-  // Pre-fix order ran idempotency first so a retry of a confirmed consent op
-  // wouldn't burn a fresh proof, but that ordering also let a key-collision
-  // bypass the fresh-auth gate: if a prior op for the same (username, key,
-  // op_type) was found, the route short-circuited to 200 WITHOUT verifying
-  // the SPA could prove fresh re-auth. The architect's call: fresh-auth
-  // proofs are single-use anyway — a SPA retry must re-derive the proof,
-  // and the substitution-attack closure (target-hash binding from round-5)
-  // is more important than retry ergonomics on consent ops specifically.
+  // Fresh-auth verification hoisted ABOVE the idempotency check. Running
+  // idempotency first would avoid burning a fresh proof on a retry of a
+  // confirmed consent op, but that ordering also let a key-collision bypass
+  // the fresh-auth gate: if a prior op for the same (username, key, op_type)
+  // was found, the route short-circuited to 200 WITHOUT verifying the SPA
+  // could prove fresh re-auth. Fresh-auth proofs are single-use anyway — a
+  // SPA retry must re-derive the proof, and the substitution-attack closure
+  // (the target-hash binding) is more important than retry ergonomics on
+  // consent ops specifically.
   //
   // The non-gated branch requires `fresh_auth_proof` too (consumed via
   // the session-kind path, no per-op binding check). This closes ARCH.md
@@ -661,10 +660,11 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
 
   // Idempotency check + embed. Runs AFTER per-op validation, multi-consent
   // rejection, AND fresh-auth verification (so a key-collision cannot bypass
-  // the fresh-auth gate — see round-2 F2 reasoning above).
+  // the fresh-auth gate — see the hoist rationale on the fresh-auth block
+  // above).
   //
-  // Embed-first ordering (F2 continued): we run `embedIdempotencyKey` BEFORE
-  // the HAF lookup so the resolved `embedded.opType` plumbs through to the
+  // Embed-first ordering: we run `embedIdempotencyKey` BEFORE the HAF lookup
+  // so the resolved `embedded.opType` plumbs through to the
   // lookup. The HAF probe is then scoped to the SAME op surface the embed
   // picks, closing the cross-op-type shadowing class. Pure-vote bundles
   // (no embed surface) fall through to an unscoped two-arm probe so the
@@ -695,7 +695,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     if (hafPool) {
       try {
         // Pass the resolved opType (when present) so the HAF lookup probes
-        // ONLY the matching arm (F2). Pure-vote bundles fall through to the
+        // ONLY the matching arm. Pure-vote bundles fall through to the
         // unscoped two-arm probe with `opType: undefined`.
         const probedOpType = embedded.embedded ? embedded.opType : undefined;
         const existing = await lookupCustodyBroadcastIdempotency(
@@ -718,7 +718,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
           );
           return sendOk(res, {
             tx_id: existing.tx_id,
-            // F13: coerce null to undefined so the SPA's arithmetic on a
+            // Coerce null to undefined so the SPA's arithmetic on a
             // missing block_num produces NaN (visible failure), not 0
             // (silent coercion). The fresh-broadcast envelope sets
             // block_num to the on-chain value; the idempotency-hit path
@@ -732,7 +732,6 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         // HAF lookup failure degrades to "no idempotency layer"; the broadcast
         // proceeds. A 5xx here would be over-cautious — the dedup check is
         // best-effort, and a HAF blip should not block a legitimate broadcast.
-        // F22: inlined from the prior `logIdempotencySkip` helper.
         logger.warn(
           {
             event: 'custody.broadcast.idempotency_lookup_failed',
@@ -745,11 +744,11 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         );
       }
     } else {
-      // F10: event renamed from `idempotency_haf_unavailable` to
-      // `idempotency_haf_unconfigured` because `isHafConfigured()` tests
-      // configuration presence, not live reachability. The prior name led
-      // operators to mis-read this branch as an outage signal; the new name
-      // makes the config-only semantics explicit. `_lookup_failed` (above)
+      // Event named `idempotency_haf_unconfigured` (not
+      // `idempotency_haf_unavailable`) because `isHafConfigured()` tests
+      // configuration presence, not live reachability. The unavailable-style
+      // name leads operators to mis-read this branch as an outage signal; the
+      // config-only name makes the semantics explicit. `_lookup_failed` (above)
       // remains the real-outage discriminator.
       logger.warn(
         {
@@ -782,13 +781,13 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  // Hoisted to the outer try-scope (round-2 hold #5): both the inner
-  // (broadcast-path) and outer (db / decrypt / key-parse) catch reference the
-  // same operation context. A pre-fix outer catch only logged `{ err, username }`
-  // — operators investigating a `decryptKey` throw lost the operation context.
-  // Computed up-front from the validated `operations` array; the structured
-  // `op_types` (string[]) and `op_count` (number) are what dashboards key on
-  // (round-2 hold #5: a comma-joined string can't be filtered by a single op
+  // Hoisted to the outer try-scope so both the inner (broadcast-path) and
+  // outer (db / decrypt / key-parse) catch reference the same operation
+  // context. An outer catch logging only `{ err, username }` would leave
+  // operators investigating a `decryptKey` throw without the operation
+  // context. Computed up-front from the validated `operations` array; the
+  // structured `op_types` (string[]) and `op_count` (number) are what
+  // dashboards key on (a comma-joined string can't be filtered by a single op
   // type in JSON-log queries, and a multi-op transaction's chain rejection at
   // op[1] can't be correlated with the bundle without the array shape).
   // `opTypes` (legacy comma-joined) stays threaded into `logCustodyBroadcast`
@@ -798,17 +797,17 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   const op_count = op_types.length;
   const opTypes = op_types.join(',');
 
-  // Per-attempt audit-log signal (round-2 hold #4 — close audit-log blind
-  // spot). The DB-side `logCustodyBroadcast` writes only on success; this
+  // Per-attempt audit-log signal that closes the success-only audit-log blind
+  // spot. The DB-side `logCustodyBroadcast` writes only on success; this
   // pino-side structured event fires on EVERY attempt with
   // outcome ∈ {success, failure, timeout}. Operators correlate
   // `event:'custody.broadcast.attempt'` to spot retry-amplification across
   // the idempotency-gated request path.
   //
-  // Round-3 hold #1: `attempt_n` is INTENTIONALLY OMITTED. The idempotency
-  // layer landed (`embedIdempotencyKey` + `lookupCustodyBroadcastIdempotency`
-  // above wire the dedup gate against HAF), but that arc did NOT add a
-  // per-attempt counter — the gate either short-circuits with the prior
+  // `attempt_n` is INTENTIONALLY OMITTED. The idempotency layer
+  // (`embedIdempotencyKey` + `lookupCustodyBroadcastIdempotency` above wire the
+  // dedup gate against HAF) does NOT maintain a per-attempt counter — the gate
+  // either short-circuits with the prior
   // tx_id on a hit or proceeds with no retry-history state. So a hardcoded
   // `attempt_n: 1` would still silently report "no retries" to dashboards
   // keyed on the field for retry-amplification alerts — masking the very
@@ -816,11 +815,11 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // per-key counter mechanism exists; alerts fire on missing-field rather
   // than reading a constant 1 as ground truth.
   //
-  // BACKEND-BROADCAST-ATTEMPT-HELPER-EXTRACTION: the closure-shape factor
-  // out to `lib/broadcast-error.ts` so the bridge `/register` audit-log
-  // site shares the same shape (event-label literal + spread-after-literal
-  // for outcome/event). The factory does NOT declare an `attempt_n` param;
-  // the field stays absent until a per-key counter mechanism is added.
+  // The closure shape is factored out to `lib/broadcast-error.ts` so the
+  // bridge `/register` audit-log site shares the same shape (event-label
+  // literal + spread-after-literal for outcome/event). The factory does NOT
+  // declare an `attempt_n` param; the field stays absent until a per-key
+  // counter mechanism is added.
   const logBroadcastAttempt = makeLogBroadcastAttempt(
     'custody.broadcast.attempt',
     { route: 'custody.broadcast', username, op_types, op_count },
@@ -865,12 +864,11 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       const result = await broadcastSendOperationsWithTimeout(operations, key);
 
       // Audit log (DB write, non-blocking) — captures only the success path.
-      // Round-3: consent-op broadcasts also persist auth-mechanism + session
+      // Consent-op broadcasts also persist auth-mechanism + session
       // + user-agent per ARCH.md "Light-account signing of consent ops".
-      // Round-4 hold #9: `auditExtras` is typed as `CustodyAuditExtras`;
-      // the constructor below pins `auth_mechanism` + `fresh_auth_outcome`
-      // together (TS no longer admits the half-populated shape that
-      // motivated the convention).
+      // `auditExtras` is typed as `CustodyAuditExtras`; the constructor below
+      // pins `auth_mechanism` + `fresh_auth_outcome` together (TS no longer
+      // admits the half-populated shape that motivated the convention).
       //
       // `freshAuthMechanism` is non-null on the success path:
       // `consumeFreshAuthToken` and `consumeSessionFreshAuthToken` early-
@@ -885,8 +883,8 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         user_agent: hashUserAgentForAudit(req.headers['user-agent']),
       };
       logCustodyBroadcast(username, opTypes, result.id, result.block_num, auditExtras).catch(() => {});
-      // Pino-side per-attempt signal (round-2 hold #4 — every attempt logged).
-      // See hold #6 note above: `freshAuthMechanism` is non-null here.
+      // Pino-side per-attempt signal — every attempt logged. As noted on the
+      // `auditExtras` constructor above, `freshAuthMechanism` is non-null here.
       logBroadcastAttempt('success', {
         tx_id: result.id,
         block_num: result.block_num,
@@ -912,10 +910,10 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       });
     }
   } catch (err) {
-    // Outer catch: db / decrypt / PrivateKey.fromString errors. Round-2 hold
-    // #5: include the structured `op_types` + `op_count` so operators don't
-    // lose the operation context when the failure is upstream of the
-    // broadcast. `event:'custody.broadcast.internal_error'` discriminates
+    // Outer catch: db / decrypt / PrivateKey.fromString errors. Include the
+    // structured `op_types` + `op_count` so operators don't lose the operation
+    // context when the failure is upstream of the broadcast.
+    // `event:'custody.broadcast.internal_error'` discriminates
     // this branch from the broadcast-path event so dashboards filter cleanly.
     logger.error(
       {
@@ -934,9 +932,9 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/custody/fresh-auth — Mint a per-op fresh-auth proof (password path).
-// Round-3 of BACKEND-COAUTHOR-TRUST-MODEL. The ORCID issuance path lives in
-// `routes/orcid.ts` under `mode: 'fresh_auth'` (parallel issuance flow that
-// completes a real OAuth round-trip).
+// The ORCID issuance path lives in `routes/orcid.ts` under
+// `mode: 'fresh_auth'` (parallel issuance flow that completes a real OAuth
+// round-trip).
 // ─────────────────────────────────────────────────────────────
 router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, freshAuthLimiter, async (req: Request, res: Response) => {
   const abortSignal = requestAbortSignal(req, res);
@@ -961,7 +959,7 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
   const passwordResult = requireStringField(body, 'password', PASSWORD_MAX_LEN, 'Password is required');
   if (!passwordResult.ok) return sendError(res, 400, 'VALIDATION_ERROR', passwordResult.error);
   const password = passwordResult.value;
-  // Round-5 hold #3: per-op target binding. The proof binds to the
+  // Per-op target binding. The proof binds to the
   // (action, root_author, root_permlink) triple of the consent op the user
   // intends to authorize. Closed-default: consent-op callers must supply
   // all three fields; legacy callers that omit them get a 400 rather than
@@ -1194,9 +1192,9 @@ router.post('/session-auth', verifyHiveSignature, validateSessionAuthBodyShape, 
 // POST /api/custody/upgrade — Notify backend that key upgrade completed (LA12)
 // ─────────────────────────────────────────────────────────────
 //
-// BACKEND-CUSTODY-UPGRADE-SEED-PHRASE-REAUTH: per ARCHITECTURE.md § 6.4, the
-// re-auth proof for the light→self upgrade is the seed-phrase-derived pubkey,
-// NOT a password. The UI derives keys client-side from the BIP39 mnemonic,
+// Per ARCHITECTURE.md § 6.4, the re-auth proof for the light→self upgrade is
+// the seed-phrase-derived pubkey, NOT a password. The UI derives keys
+// client-side from the BIP39 mnemonic,
 // broadcasts an `account_update` on-chain with the new pubkeys, then calls
 // this route with proof that it holds the corresponding private key.
 //

@@ -80,7 +80,7 @@ export function isValidIpfsCid(cid: unknown): boolean {
  * Rationale. The two-phase shape (validate + warn-on-reject + clear-to-null)
  * lets us:
  *   1. Stop malformed CIDs from reaching the API response (the integrity
- *      goal of this task).
+ *      goal).
  *   2. Surface abuse patterns to operators without flooding logs (warn,
  *      not error).
  *   3. Avoid log-injection: the raw value is prefix-truncated to 32 chars

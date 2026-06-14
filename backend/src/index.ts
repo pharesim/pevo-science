@@ -27,7 +27,6 @@ import type { Server } from 'http';
 
 // ── Boot-fatal flush+exit watchdog ──────────────────────────
 //
-// Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
 // `flushAndExit` lives in `src/lib/flush-and-exit.ts` so the boot path AND
 // the unit-test canary at `tests/lib/flush-and-exit.test.ts` share the
 // exact same implementation. The watchdog ensures `process.exit(1)` is
@@ -109,7 +108,7 @@ if (app) {
         // Warm expensive shared HAF caches in the background (non-blocking).
         // repairAbandonedBatchState fires unconditionally at boot so a HAF
         // outage or lock contention does not delay crash detection on the
-        // reputation batch path (BACKEND-REPUTATION-SSOT round-2 hold #2).
+        // reputation batch path.
         Promise.all([
           startReputationWeightsCache(),
           startWotThresholdCache(),

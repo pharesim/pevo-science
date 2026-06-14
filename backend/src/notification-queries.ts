@@ -157,6 +157,34 @@ export function filterEventsAfter(events: NotificationEvent[], sinceBlock: numbe
 }
 
 /**
+ * CASE-WHEN array guard for the `citations` set-returning-function argument,
+ * mirroring `imageSrfGuardExpr` in `lib/ipfs-shared.ts`. Without it, a chain
+ * post broadcasting a non-array `metadata.<appTag>.citations` (null, string,
+ * integer, object) crashes the entire /api/notifications GET for the recipient
+ * with "cannot extract elements from a scalar". The CASE-WHEN absorbs the
+ * non-array case to `'[]'::jsonb` AT THE `jsonb_array_elements` ARGUMENT SITE,
+ * because Postgres evaluates the CROSS JOIN LATERAL before the surrounding
+ * WHERE, so a WHERE-clause type guard would fire too late. See
+ * `agents/docs/solutions/conventions/pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md`.
+ *
+ * Shared verbatim by the native-paper (arm 6a) and bridge-paper (arm 6b)
+ * citation arms so the two guard expressions cannot drift apart.
+ *
+ * `citingAlias` is a SQL relation alias and is identifier-validated. `appTagParam`
+ * is a positional bind placeholder (`$N`) for the appTag JSON key and is
+ * interpolated verbatim — it must NOT be identifier-validated.
+ */
+export function citationsArrayGuardSql(citingAlias: string, appTagParam: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(citingAlias)) {
+    throw new Error(`citationsArrayGuardSql: invalid SQL relation alias ${JSON.stringify(citingAlias)}`);
+  }
+  return `CASE WHEN jsonb_typeof(${citingAlias}.json_metadata -> ${appTagParam} -> 'citations') = 'array'
+            THEN ${citingAlias}.json_metadata -> ${appTagParam} -> 'citations'
+            ELSE '[]'::jsonb
+          END`;
+}
+
+/**
  * Fetch a window batch of notification events for `account` in `(floor, head]`,
  * capped at `cap` rows.
  *
@@ -270,8 +298,8 @@ export async function fetchNotificationsFromHaf(
       -- write a (type=review, rating={1,1,1,1}) reply to ANY of the
       -- recipient Hive content (a blog post, a non-paper comment, a
       -- peakd reply) and trigger a new_review notification with an empty
-      -- title (the LEFT JOIN-to-a-non-paper bug surfaced by the round-1
-      -- review item #3). Mirrors arm 1b tighter user_bridge_papers gate.
+      -- title (the LEFT-JOIN-to-a-non-paper bug: a non-paper parent yields a
+      -- null/empty title). Mirrors arm 1b tighter user_bridge_papers gate.
       -- source=all is the safe choice — for native papers
       -- co.parent_author = $1 matches the chain author (recipient);
       -- bridge papers can never satisfy co.parent_author = $1 because
@@ -641,19 +669,11 @@ export async function fetchNotificationsFromHaf(
           citing.id AS op_id
         FROM ${T.commentOps} citing
         JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
-        -- CASE-WHEN array-guard at SRF argument position. Without it, a chain
-        -- post broadcasting non-array pevo.citations (null, string, integer,
-        -- object) would crash the entire /api/notifications GET for the
-        -- recipient with "cannot extract elements from a scalar". The
-        -- CASE-WHEN absorbs the non-array case to '[]'::jsonb at the
-        -- argument site so jsonb_array_elements never sees a scalar. See
-        -- agents/docs/solutions/conventions/
-        -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
+        -- citations SRF array-guard (see citationsArrayGuardSql): absorbs a
+        -- non-array metadata.<appTag>.citations to '[]'::jsonb at the argument
+        -- site so jsonb_array_elements never sees a scalar.
         CROSS JOIN LATERAL jsonb_array_elements(
-          CASE WHEN jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
-            THEN citing.json_metadata -> ${at} -> 'citations'
-            ELSE '[]'::jsonb
-          END
+          ${citationsArrayGuardSql('citing', at)}
         ) AS cite_elem
         CROSS JOIN LATERAL (
           SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
@@ -702,15 +722,10 @@ export async function fetchNotificationsFromHaf(
           citing.id AS op_id
         FROM ${T.commentOps} citing
         JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
-        -- CASE-WHEN array-guard at SRF argument position. Same defensive
-        -- shape as arm 6a above. See
-        -- agents/docs/solutions/conventions/
-        -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
+        -- citations SRF array-guard, shared verbatim with arm 6a (see
+        -- citationsArrayGuardSql).
         CROSS JOIN LATERAL jsonb_array_elements(
-          CASE WHEN jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
-            THEN citing.json_metadata -> ${at} -> 'citations'
-            ELSE '[]'::jsonb
-          END
+          ${citationsArrayGuardSql('citing', at)}
         ) AS cite_elem
         CROSS JOIN LATERAL (
           SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink

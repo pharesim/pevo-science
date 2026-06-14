@@ -468,7 +468,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
       // wall-time below. Without this, unknown-email returns in ~1ms while the
       // known-email-in-confirmed-signup-state branch pays argon2.verify (~50ms),
       // an enumeration oracle that leaks which emails sit in a resumable state.
-      // Mirrors the pattern applied across auth.ts under SEC-LOGIN-UNKNOWN-USER-TIMING.
+      // Mirrors the timing-equalization pattern applied across auth.ts.
       await burnSentinel(password, abortSignal);
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
