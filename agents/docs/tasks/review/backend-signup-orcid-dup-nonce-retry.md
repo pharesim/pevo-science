@@ -57,3 +57,46 @@ unless option 1's deterministic-retry is judged worth the nonce-lifecycle comple
 - The deeper sole-guard / chain-binding gaps tracked under
   `backend-orcid-unique-index-boot-assertion` and
   `backend-signup-confirm-orcid-binding-guard`.
+
+## Backend resolution — Option 2 chosen (2026-06-14, user decision)
+
+The user selected **Option 2 (terminal 409)** over Option 1 (re-seed nonce for
+deterministic retry). Rationale confirmed against the code: a `/signup`
+`ORCID_ALREADY_LINKED` 409 means the supplied ORCID is already bound to another
+account row (the `accounts_orcid_unique` partial index). That ORCID is genuinely
+taken, so a same-ORCID resubmit can **never** succeed regardless of nonce state —
+the real recovery is for the user to log into the existing account, not to retry
+signup. Option 1's deterministic-409-on-retry would therefore re-seed a nonce only
+to reproduce a rejection that can never become a success: cosmetic, and not worth
+the nonce-lifecycle complexity. Option 2 also mirrors the existing
+`/orcid/callback` durable-binding 409 client behavior.
+
+**Backend code change: none.** The 23505 / `accounts_orcid_unique` → 409
+`ORCID_ALREADY_LINKED` mapping already lands correctly in the `/signup` handler
+(`backend/src/routes/auth.ts`, in the catch block that gates on the constraint
+name). The nonce-del-before-INSERT ordering is left as-is by design: the SPA owns
+recovery, so the backend deliberately does not extend the single-use nonce's
+lifetime. AC1 is satisfied by the SPA behavior below plus the already-terminal 409;
+AC2 (Option 1 tests) does not apply; AC3 is the architect/UI handoff below.
+
+## [TODO Architect] — Option 2 contract + UI-task split
+
+Two architect-owned deliverables remain before archive (backend cannot edit
+`api-contracts/*.md`, and the `tasks/` tree + UI-task creation are architect-owned):
+
+1. **Contract (extend, do not duplicate).** `api-contracts/auth.md` already
+   documents the `/signup` `ORCID_ALREADY_LINKED` (409) entry with its terminal
+   *wire shape* (no `retriable`, no `Retry-After`, same as the callback durable-bind
+   409). What it does NOT yet state is the *recovery contract*: the 409 is terminal,
+   a same-`orcid_token` resubmit will not reproduce it (the verification nonce is
+   single-use and already consumed, so a resubmit falls through to the
+   missing/invalid-token 422), and clients must restart the ORCID OAuth flow from
+   `/api/orcid/start` (or route the user to log into the existing account, since the
+   ORCID is already linked). Extend the existing entry with that recovery semantics.
+
+2. **UI task split.** Spawn a `ui-*` task so the SPA treats the `/signup`
+   `ORCID_ALREADY_LINKED` 409 as terminal: surface a clear "this ORCID is already
+   linked to a PEvO account — log in instead" path (and/or restart the ORCID OAuth
+   flow), mirroring how the SPA already handles the `/orcid/callback`
+   durable-binding 409. The SPA must not blindly resubmit the same `orcid_token`
+   (that yields the confusing 422 this task is about).
