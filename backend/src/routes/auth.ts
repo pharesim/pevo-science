@@ -551,6 +551,22 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
+    // A duplicate-ORCID signup (the same ORCID on a different account row) trips
+    // the accounts_orcid_unique partial index (007_accounts_orcid_unique.sql) and
+    // Postgres raises 23505. Map it to the same 409 ORCID_ALREADY_LINKED the
+    // /orcid/callback accredit and link paths return, instead of leaking a
+    // generic 500. Gate on the constraint name so an unrelated unique violation
+    // (a future constraint) is not mislabeled as an ORCID collision. The
+    // email-duplicate path returns 409 DUPLICATE before the INSERT, so it never
+    // reaches this branch.
+    if (
+      err !== null &&
+      typeof err === 'object' &&
+      (err as { code?: string }).code === '23505' &&
+      (err as { constraint?: string }).constraint === 'accounts_orcid_unique'
+    ) {
+      return sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
+    }
     logger.error(
       { event: 'auth.signup.failed', route: 'auth.signup', err },
       'Signup failed',

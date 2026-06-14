@@ -54,3 +54,27 @@ In the `POST /api/signup` handler (`backend/src/routes/auth.ts`):
   fix only.
 - The `ORCID_ALREADY_LINKED` code already exists in the `ErrorCode` union and the
   `orcid.md` contract; reuse it rather than introducing a new code.
+
+## Backend implementation note (2026-06-14, working tree)
+
+- **Mapping (item 1).** The `/signup` catch in `backend/src/routes/auth.ts` now
+  detects `err.code === '23505'` AND `err.constraint === 'accounts_orcid_unique'`
+  and returns `409 ORCID_ALREADY_LINKED` ("This ORCID is already linked to another
+  account", the exact string the `/orcid/callback` accredit/link 409s use), before
+  the generic 500. Verified empirically against the live index that a partial-index
+  violation populates `err.constraint = 'accounts_orcid_unique'` (not only the
+  message), so the constraint-name gate is reliable and an unrelated future unique
+  violation will not be mislabeled.
+- **Email path unchanged (item 2).** The email-duplicate path still returns
+  `409 DUPLICATE` before the INSERT; the new branch only fires on the orcid-index
+  collision, which `ON CONFLICT (email)` does not intercept.
+- **Coverage (item 3).** Real-path tests added to `backend/tests/routes/auth.test.ts`
+  ("duplicate ORCID maps 23505 to 409") under the existing `dbReachable` skip-guard.
+  A prior row holds the ORCID; the second `/signup` (ORCID-only and ORCID+email
+  branches) reaches the real index, raises 23505, and asserts `409`,
+  `ORCID_ALREADY_LINKED`, and the terminal shape (no `retriable`, no `Retry-After`).
+  Real argon/index path; only the upstream ORCID-verification nonce is seeded
+  directly. No mocked-pool variant was needed.
+- Full `auth.test.ts` green (23). `npm run typecheck` + `npm run lint` clean (the
+  lone lint warning is a pre-existing unused-eslint-disable in
+  `src/lib/author-supersession.ts`, untouched).

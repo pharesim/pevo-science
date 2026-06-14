@@ -23,6 +23,7 @@ import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { logger } from '../../src/logger.js';
 import { getAppPool } from '../../src/app-db.js';
+import { getRedis, isRedisAvailable } from '../../src/redis.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 import { signRequestBound as signRequestBoundShared } from '../support/sign-request.js';
 
@@ -413,5 +414,88 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH: /signup SMTP-not-configure
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe.skipIf(!dbReachable)('POST /api/auth/signup — duplicate ORCID maps 23505 to 409 (not 500)', () => {
+  // Real-path: a prior accounts row already holds the ORCID, so the second
+  // signup's INSERT trips the accounts_orcid_unique partial index
+  // (007_accounts_orcid_unique.sql) and Postgres raises 23505. The handler must
+  // surface the clean 409 ORCID_ALREADY_LINKED (the same wire shape the
+  // /orcid/callback accredit and link paths return), not a generic 500. Both
+  // the ORCID-only and ORCID+email INSERT branches are exercised; ON CONFLICT
+  // (email) targets the email constraint, not the orcid index, so both reach
+  // the catch. The real argon/verification paths run; only the upstream
+  // ORCID-verification nonce is seeded directly (the OAuth round-trip is not
+  // reproducible per-test), which is downstream-irrelevant to the 23505->409
+  // mapping under test.
+  const RUN = Date.now();
+  const suffix = String(RUN % 10000).padStart(4, '0');
+  const EMAIL_PREFIX = `dup_orcid_${RUN}_`;
+
+  async function seedOrcidVerified(nonce: string, orcidId: string): Promise<void> {
+    const payload = { orcid_id: orcidId, works_count: 5, name: 'Dup Guard' };
+    const redis = getRedis();
+    if (redis && isRedisAvailable()) {
+      await redis.set(
+        `${config.appTag}:orcid_verified:${nonce}`,
+        JSON.stringify(payload),
+        'EX',
+        600,
+      );
+    }
+    // Seed the in-memory fallback too so the spec holds whether or not Redis is
+    // reachable — the handler reads Redis first and only consults the map when
+    // Redis is down.
+    const { orcidVerified } = await import('../../src/routes/orcid.js');
+    orcidVerified.set(nonce, { ...payload, expires: Date.now() + 600_000 });
+  }
+
+  beforeAll(async () => {
+    await clearRateLimitKeys(['auth-signup']);
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query(`DELETE FROM accounts WHERE orcid LIKE $1 OR email LIKE $2`, [
+      `0000-0002-${suffix}-%`,
+      `${EMAIL_PREFIX}%`,
+    ]);
+  });
+
+  it('ORCID-only signup whose ORCID already exists on another row → 409 ORCID_ALREADY_LINKED', async () => {
+    const pool = getAppPool()!;
+    const orcid = `0000-0002-${suffix}-0001`;
+    await pool.query(`INSERT INTO accounts (email, orcid) VALUES (NULL, $1)`, [orcid]);
+    const nonce = `dupguard-only-${suffix}`;
+    await seedOrcidVerified(nonce, orcid);
+
+    const res = await request(app).post('/api/auth/signup').send({ orcid_token: nonce });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
+    // Terminal wire shape, matching the /orcid/callback 409s: no retriable hint.
+    expect(res.body.error.details?.retriable).toBeUndefined();
+    expect(res.headers['retry-after']).toBeUndefined();
+  });
+
+  it('ORCID+email signup whose ORCID already exists on another row → 409 ORCID_ALREADY_LINKED', async () => {
+    const pool = getAppPool()!;
+    const orcid = `0000-0002-${suffix}-0002`;
+    await pool.query(`INSERT INTO accounts (email, orcid) VALUES (NULL, $1)`, [orcid]);
+    const nonce = `dupguard-email-${suffix}`;
+    await seedOrcidVerified(nonce, orcid);
+
+    const res = await request(app).post('/api/auth/signup').send({
+      orcid_token: nonce,
+      email: `${EMAIL_PREFIX}new@example.com`,
+      password: 'DupGuardPass1',
+      full_name: 'Dup Guard',
+      field: 'CS',
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
   });
 });
