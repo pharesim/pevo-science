@@ -75,3 +75,78 @@ profile/accreditation; "accredited since" fixed across an edit) deferred per the
 task until the backend half lands. Moving to review/.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES
+
+`/ce-code-review` on commit 65a9f938 (10 personas: correctness, security,
+adversarial, testing, maintainability, project-standards, api-contract,
+julik-frontend-races, reliability, + learnings). Verified clean: the fresh-auth
+wiring (byte-for-byte the `handleEmailSubmit` pattern, distinct action string,
+proof threaded, no JWT-only bypass), client validation (trim-before-empty, `<=`
+boundary, UTF-16 consistent with the Zod schema), the synchronous double-submit
+guard, the `x-text` (no-XSS) rendering, the optimistic-merge field carry-forward
+(orcid/method/timestamp preserved), and i18n (12 keys × 16 locales, no emdashes,
+STUBS swept). The "type-before-store-loads clobbers" race is structurally blocked
+by the `x-if` gate (inputs do not exist until accredited).
+
+**RESOLVED in this commit (architect) — contract ratified.** The cross-agent
+contract this UI was built against is now pinned in ARCHITECTURE.md, so the
+assumed names are no longer unilateral. Build the fixes below against these
+canonical names:
+- Tenure anchor response field: **`accredited_since`** (§ 2 "Tenure anchor").
+- Endpoint / action / body: **`PATCH /api/accreditation/metadata`**, fresh-auth
+  action **`edit_accreditation_metadata`**, body `{ full_name?, institution?,
+  field? }` (§ 6.4 new row). Authorization is the owner's own current
+  accreditation (self-service), admin-key-signed — not roster-gated.
+
+**UI fixes required before archive:**
+1. **(P2) Third tenure surface missed — `frontend/src/pages/researchers.js`.**
+   The accredited-researchers directory card renders the accreditation date via
+   `formatDate(r.timestamp)` (latest-op), so it was NOT repointed and the
+   commit's "no other frontend surface reads accreditation.timestamp as tenure"
+   audit is incomplete. Repoint to `formatDate(r.accredited_since || r.timestamp)`
+   for parity with accreditation.js / profile.js. The `|| r.timestamp` fallback
+   keeps current rendering correct until the directory endpoint exposes the anchor.
+2. **(P2) Extract a shared `accredited_since` accessor.** The anchor is now read
+   in three templates (accreditation.js, profile.js, researchers.js). Factor a
+   single helper (e.g. `getAccreditedSince(acc)`) so the field name lives in one
+   place — the silent `|| timestamp` fallback otherwise masks a rename across
+   three files.
+3. **(P2) Poll-clobbers-optimistic-write race (`settings.js`).** A background
+   accreditation poll in flight when the optimistic store write lands can resolve
+   with pre-edit values and revert the display on /profile and /accreditation.
+   After a successful edit, bump the polling generation (or re-fetch / write from
+   the response's canonical metadata) so the in-flight stale poll drops itself.
+4. **(P2) Success toast fires when the store update is skipped (`settings.js`).**
+   When `auth.accreditation` is null at success, the `if (auth.accreditation)`
+   guard skips the refresh but the "saved" toast still shows — misleading success
+   with stale display. Guard the toast on the update having happened.
+5. **(P3) Tenure-fallback + outcome test coverage** (`pages-settings.test.js`
+   plus accreditation/profile tests). Add a test asserting the rendered date
+   reads `accredited_since` and FAILS if only `timestamp` is present (so a
+   wrong-name backend landing breaks CI instead of shipping silently). Add the
+   missing cases: `field` > 100 bound, `institution` > 200 bound, `cancelled` /
+   `sessionInconsistent` outcomes, the null-accreditation success branch, and the
+   `metadataSubmitting` reset on the non-error paths.
+6. **(P3) Bind template `maxlength` to METADATA_MAX (`settings.js`).** The
+   `maxlength="200"/"100"` attributes are hardcoded literals while the
+   METADATA_MAX comment claims a bound change is "a one-line edit." Bind
+   `:maxlength` to the constant, or drop the claim.
+7. **(P3) De-rot the api.js comment.** Replace the deployment-state note
+   ("integration-verify once the backend edit endpoint lands (the endpoint does
+   not exist yet)") and the `§ 2` section-number cite with the behavioral
+   invariant (latest-op metadata, earliest-op `accredited_since` tenure) so the
+   comment survives the backend landing and a doc renumber.
+
+Integration verification (real admin-signed edit, no user signature; edit shows
+on profile / accreditation / researchers; "accredited since" fixed across an
+edit) stays deferred until backend-editable-accreditation-metadata lands.
+
+When fixes 1–7 are in, `git mv` this file back to `tasks/review/` for re-review
+(scoped to the post-hold commits).
+
+Note for the admin-roster task owner: this ratification also corrected
+ARCHITECTURE.md § "Authorization enforcement" — the self-service metadata-edit
+endpoint was wrongly listed among roster-gated admin authority actions; it is now
+documented as owner-authorized (not roster-gated). Reconcile if
+backend-admin-roster touches that endpoint.
