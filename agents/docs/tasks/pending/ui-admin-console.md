@@ -109,3 +109,94 @@ authority broadcasts, and `issued_by`) deferred until the backend admin-roster
 task lands. Moving to review/.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+## Architect re-review (2026-06-14) — HELD PENDING FIXES
+
+Reviewed the build-ahead console (`ea48d8e0`) via `/ce-code-review` (correctness,
+security, adversarial, api-contract, reliability, frontend-races, testing,
+maintainability, project-standards, learnings) reconciled against the now-landed
+backend (`routes/admin.ts`, `validation.ts`, `lib/fresh-auth.ts`,
+`admin-roster.ts`). Contract reconciliation is otherwise clean — endpoint paths,
+payload field names (`full_name` correct), all six `admin_*` fresh-auth action
+strings, the tier/lockout matrix, the fresh-auth mint co-land, and `issued_by`
+attribution all match. Security cleared the gate (per-action fresh proof,
+per-actor target binding, server-attributed `issued_by`, no XSS). The items below
+block archive.
+
+**Required fixes:**
+
+1. `method:'admin'` breaks every grant-accreditation. `requestGrantAccreditation`
+   (`admin.js`) sends `method: 'admin'`, not in the backend enum
+   `['manual','email','orcid']` (`adminAccreditationGrantSchema`) — the request
+   422s before the handler. Send `'manual'` (or omit; backend defaults to
+   `'manual'`). The unit test (`pages-admin.test.js`) asserts `method: 'admin'`,
+   pinning the bug — fix the assertion in the same change so the suite would catch
+   a regression.
+2. Surface backend rejections instead of a blanket toast. `runConfirmed` and
+   `loadRoster` map every non-fresh-auth error to the generic
+   `admin.actionFailed`/`loadFailed` string. This is what hid fix #1 and would
+   hide non-bridge-author (422), already-retracted (422), not-in-roster (422), and
+   root-not-demotable (422). Render the backend `error.message`/`code` in
+   `actionError`.
+3. Gate the action forms while a confirm is staged/in-flight. The authority-action
+   forms and the demote button render outside any `pendingConfirm`/`submitting`
+   gate, and `_stageConfirm` does not early-return while busy, so a second submit
+   overwrites `pendingConfirm` while the first `run` closure executes.
+   Early-return from `_stageConfirm` when `submitting || pendingConfirm` is set
+   (and/or add `submitting` to the form buttons' `:disabled`).
+4. Don't swallow the post-success roster re-read. After a successful action,
+   `runConfirmed` calls `loadRoster()` whose rejection lands in the action catch,
+   leaving a stale roster with no indicator. Route a re-read failure to `loadError`
+   so the roster panel shows its Try-again affordance.
+5. Close the self-downgrade lockout via promote. `requestPromote` accepts any
+   account incl. the viewer's own; a super_admin granting themselves `admin`
+   self-downgrades out of roster controls (the self-lockout guard exists only on
+   demote, in `canDemoteRow` and the backend revoke handler). Mirror the
+   self-check in `requestPromote` and warn when the target already holds an
+   equal-or-higher tier (a grant rewrites/downgrades them).
+6. Add the missing tests. Three of five authority actions (retract, revoke,
+   approve) have no confirm-staging or payload-pin tests, and the
+   `cancelled`/`sessionInconsistent` `runConfirmed` branches plus
+   `canSubmitRetract`/`canSubmitRevoke` are untested. Add staging + exact-payload
+   assertions for the three actions (the payload-pin test is specifically what
+   would have caught #1) and the missing outcome branches.
+7. Drop the redundant `root` guard in `canDemoteRow`. The `member.level !== 'root'`
+   clause is dead — `manageableLevels` never contains `root` — and contradicts the
+   documented "root excluded via manageableLevels" model in-body.
+8. Integration-verify (now unblocked). The backend admin-roster endpoints have
+   landed. Run the deferred end-to-end verification: real tier gate
+   (admin/super_admin/root + null), roster read, promote/demote, each authority
+   broadcast, and `issued_by` attribution.
+
+**Recommended (non-blocking — address in this pass or note for follow-up):**
+
+- ORCID-factor form loss. The ORCID fresh-auth redirect wipes Alpine form state;
+  the cached consent-op proof lets a re-entered action complete, but there is no
+  resume/re-enter affordance, so an ORCID-factor admin must re-type the whole form
+  after the round-trip. Preserve form state across the redirect or show a resume
+  hint. Password-factor and self-custody admins are unaffected.
+- `canSubmit*` stricter than contract. `canSubmitGrant` requires
+  `institution`+`field` and `canSubmitApprove` requires `author_index`, all
+  optional server-side; `adminRevokeAuthorship` sends no `reason` so the op records
+  the default `'Revoked'`. Relax the getters to the contract, or keep as deliberate
+  UX and leave a one-line note.
+- Broadcast-timeout UX. A 504 `BROADCAST_TIMEOUT` shows as a definite failure;
+  latest-op-wins makes a re-broadcast harmless on chain, but a distinct
+  "uncertain — verify before retry" message avoids confusing the operator.
+
+**Dismissed (no action):**
+
+- Concurrent `loadRoster` (init + `$watch`): the `_mounted` guard plus the admin
+  surface's low traffic make the last-write-wins window negligible; an in-flight
+  boolean is optional polish, not required.
+- Non-integer `approveAuthorIndex` and the demote `level` field the backend
+  re-derives: the backend rejects/ignores them safely; no live breakage.
+- Maintainability nits (`api.js` proof-spread dedup, settings/admin import
+  coupling, repeated Tailwind input class, cross-module comment reference): out of
+  scope for the deliberately-lean console.
+- Pre-existing em-dashes in `router.js` `ROUTE_TITLES` (`settings`,
+  `settings-verify-email`, `my-imports`): not introduced by this task; the new
+  `admin` entry is compliant. Separate standards cleanup if desired.
+
+Moving to `pending/` for the UI agent. Land the required fixes, then `git mv` back
+to `review/` (the move is the re-review signal).
