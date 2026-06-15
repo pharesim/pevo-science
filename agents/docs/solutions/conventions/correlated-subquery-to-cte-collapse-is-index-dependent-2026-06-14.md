@@ -1,6 +1,7 @@
 ---
 title: Collapsing a per-row correlated subquery into a corpus-wide aggregate CTE is an index-dependent optimization, not a universal win
 date: 2026-06-14
+last_updated: 2026-06-15
 category: conventions
 module: backend/src/routes/papers.ts + backend/src/hafsql.ts
 problem_type: convention
@@ -53,3 +54,13 @@ The general trap: "correlated subqueries are slow, collapse them into a CTE" rea
 ## When to Apply
 
 Whenever a perf task or review proposes replacing a per-row correlated subquery / per-row LATERAL with a page-keyed aggregate or group-by CTE over a HAF view. Check whether the correlated probe is index-backed first; if it is, the correlated form is likely already optimal for a bounded page and the collapse is a pessimization. Treat "the aggregate executes once per request" as necessary-but-not-sufficient: once-per-request at corpus-scan cost is worse than N-per-page at indexed-lookup cost. Always EXPLAIN both shapes on real data before committing — and record the EXPLAIN verdict durably (the plan files are ephemeral). A candidate-paper-scoped aggregate (group only over the page's filtered key set, so the index is usable) is the middle option, but it trades N indexed subplans for one indexed semi-join + group-by and rarely beats the already-indexed correlated form materially — bake it off before assuming it helps. Note that HAF indexes are fixed external infrastructure and cannot be added to make a chosen shape faster.
+
+## Follow-on: batching ONLY the revote arm is the safe inverse case (and its votes-sort hazard)
+
+The guidance above keeps the **native** vote arm per-row index-backed. The **revote** arm of `accreditedVoteCount` (the `custom_json`-namespace form that takes an app-tag param) is the opposite case, and it IS a legitimate batch candidate once scale demands it. Its only index-backed predicate is `custom_id`; the residual filter on the JSON-extracted `author`/`permlink`/`action` is a scan. While the APP_TAG `custom_json` namespace stays small (accreditations + vouches + revotes + param-updates, platform-wide) that residual is sub-ms; once it grows, the per-row revote subquery becomes an O(namespace × rows) cost on the per-row callsites — most exposed: the comment-tree walk (`fetchCommentsTreeFromHaf`, no LIMIT, depth-bounded) and the paper-detail enrichment reviews-list (inside `fetchEnrichmentFromHaf`'s walker time budget).
+
+The correct optimization is to collapse ONLY the revote arm to a single `custom_id = <app_tag> AND action = 'revote'` scan per request plus a JS latest-signal-per-`(voter, author, permlink)` merge. This does NOT contradict the index-dependence rule above: the regression case was collapsing the **native** arm (an indexed point-lookup); the revote arm's residual is NOT index-backed, so one corpus scan + a JS merge beats N residual scans. The proven shape already exists in the same codebase — `batchResolveVotes` (one native scan + one revote scan per request, merged in JS) and the `revoteMap` block inside `fetchEnrichmentFromHaf`.
+
+**Watch-out — the votes-sort path does not convert cleanly.** The profile votes-sort callsite lets Postgres `ORDER BY net_votes` reflect revotes *inside SQL*, with correct `LIMIT`/`OFFSET` pagination. A JS revote merge breaks SQL-side ordering: the revote-adjusted count is no longer a column the `ORDER BY` can key on. Converting it requires either (a) fetch-all → merge → sort → slice in JS (which forfeits SQL pagination), or (b) a precomputed revote-adjusted-count CTE the `ORDER BY` keys on. Resolve this before converting the votes-sort path, or leave that one callsite on the per-row helper if it stays cheap. The other revote-aware callsites (single-doc reviews, the comment-tree walk, the enrichment reviews-list) carry no SQL-side ordering dependency and convert cleanly.
+
+This is why the batched form is a deferred optimization rather than the shipped default: the per-row helper is correct and sub-ms at current scale (single-digit namespace, near-zero revotes), and the votes-sort ordering hazard makes a blanket conversion non-trivial. Trigger the batch only when an EXPLAIN shows the revote `custom_json` scan dominating one of the per-row endpoints, or the enrichment endpoint brushes its walker time budget. The durable in-code pointer is the `PERF / scaling note` in `accreditedVoteCount`.
