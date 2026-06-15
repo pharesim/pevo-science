@@ -1319,12 +1319,16 @@ setInterval(() => {
 // ──────────────────────────────────────────────
 // An accredited account edits its own name/institution/field by re-broadcasting
 // a merged admin-signed accredit op. Authorization is the caller's OWN current
-// accreditation (currently accredited AND not sanctioned — both implied by the
-// sanction-aware getAccreditedSet), NOT an admin roster level. Critical action
-// per ARCHITECTURE.md §6.4 / §6.5 invariant #1: a fresh re-auth proof is
-// required, NOT a JWT alone. The tenure anchor ("accredited since") is unaffected
-// — it derives from the EARLIEST accredit op's block time, which this later
-// re-broadcast does not move.
+// accreditation, NOT an admin roster level. Eligibility is checked in three
+// steps before any proof is consumed or broadcast: (1) the latest accredit op
+// loads (also the upstream HAF-reachability gate — a HAF outage here is a
+// retriable 503, not a misleading 403); (2) currently-accredited membership via
+// getAccreditedSet; (3) a non-cached hasUnliftedSanction check that closes the
+// membership cache's staleness window so a freshly-sanctioned account cannot
+// self-lift. Critical action per ARCHITECTURE.md §6.4 / §6.5 invariant #1: a
+// fresh re-auth proof is required, NOT a JWT alone. The tenure anchor
+// ("accredited since") is unaffected — it derives from the EARLIEST accredit
+// op's block time, which this later re-broadcast does not move.
 router.patch(
   '/metadata',
   verifyHiveSignature,
@@ -1339,10 +1343,40 @@ router.patch(
       return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required to edit accreditation metadata');
     }
 
-    // Guard: the caller must be CURRENTLY accredited. getAccreditedSet is
-    // sanction-aware, so membership here also implies not-sanctioned and (for a
-    // WoT account) at-or-above threshold. Checked BEFORE consuming the single-use
-    // fresh-auth proof so a non-eligible caller cannot burn a valid proof.
+    // Load the current accredit op FIRST. It is BOTH the merge source AND the
+    // upstream HAF-reachability gate. Reading it before consuming the single-use
+    // fresh-auth proof means a transient HAF read failure surfaces as a retriable
+    // 503 with the proof NOT burned. getLatestAccreditOp THROWS on a HAF outage
+    // and returns null only for a genuine "no accredit op", so this one read
+    // distinguishes HAF-unavailable (-> 503, fail closed: no broadcast) from a
+    // not-accredited account (-> 403) — the same distinction the sibling /verify
+    // path gets from its existing-accreditation gate. Because HAF is confirmed
+    // reachable here, the fail-closed eligibility checks below (getAccreditedSet
+    // -> empty, hasUnliftedSanction -> refuse) can be trusted as genuine
+    // "not a member / sanctioned" 403s rather than HAF blips.
+    let prior: Awaited<ReturnType<typeof getLatestAccreditOp>>;
+    try {
+      prior = await getLatestAccreditOp(username);
+    } catch {
+      res.set('Retry-After', '30');
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Could not load the current accreditation. Please retry.', {
+        retriable: true,
+      });
+    }
+    if (!prior) {
+      // HAF was reachable (no throw) but there is no accredit op for this account:
+      // it is not accredited, so there is nothing to edit.
+      return sendError(
+        res,
+        403,
+        'FORBIDDEN',
+        'Only a currently-accredited, non-sanctioned account can edit its accreditation metadata',
+      );
+    }
+
+    // Currently-accredited membership check. HAF is confirmed reachable (the op
+    // load above did not throw), so an empty result is a genuine "not a current
+    // member" (below-threshold WoT, legacy-revoked, or sanction-suppressed) -> 403.
     const accreditedSet = await getAccreditedSet([username]);
     if (!accreditedSet.has(username)) {
       return sendError(
@@ -1353,9 +1387,22 @@ router.patch(
       );
     }
 
+    // Non-cached sanction check. getAccreditedSet's fast path reads the
+    // accredited_accounts_all cache (10-min TTL), so a freshly-sanctioned account
+    // can still pass the membership check during the staleness window. The
+    // uncached, fail-closed hasUnliftedSanction closes that window: a sanctioned
+    // account is refused before any proof is consumed or op broadcast, so a later
+    // self-service accredit cannot lift its own sticky sanction. Placed AFTER the
+    // currently-accredited check and BEFORE consuming the proof.
+    if (await hasUnliftedSanction(username)) {
+      return sendError(res, 403, 'ACCREDITATION_SANCTIONED', SANCTIONED_ACCREDIT_MESSAGE);
+    }
+
     // Fresh re-auth gate (NOT JWT-only). Self-custody/Keychain (signature) is
     // fresh at the middleware; the JWT path demands a single-use proof bound to
-    // (edit_accreditation_metadata, <username>, ''). Mirrors requireFreshAdminAuth.
+    // (edit_accreditation_metadata, <username>, ''). Consumed only after the
+    // eligibility checks above, so an ineligible caller never burns a valid proof.
+    // Mirrors requireFreshAdminAuth.
     if (req.hiveAuthMethod === 'jwt') {
       const proofRaw = (req.body as { fresh_auth_proof?: unknown }).fresh_auth_proof;
       const proofToken = typeof proofRaw === 'string' ? proofRaw : undefined;
@@ -1378,17 +1425,6 @@ router.patch(
       }
     }
 
-    // Load the latest accredit op to merge against (carries method/orcid/evidence_hash,
-    // which the active_accreditations view does not all expose).
-    const prior = await getLatestAccreditOp(username);
-    if (!prior) {
-      // The account is in getAccreditedSet, so an accredit op exists; a null here
-      // is a transient HAF read failure between the membership and op reads.
-      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Could not load the current accreditation. Please retry.', {
-        retriable: true,
-      });
-    }
-
     const { full_name, institution, field } = req.body;
     const merged = {
       action: 'accredit' as const,
@@ -1396,21 +1432,27 @@ router.patch(
       name: full_name ?? prior.name,
       institution: institution ?? prior.institution,
       field: field ?? prior.field,
-      // Preserve method/orcid/evidence_hash from the prior op — a metadata edit
-      // changes only name/institution/field. Carrying orcid forward keeps the
-      // ORCID binding intact; carrying evidence_hash forward avoids fabricating
-      // a new attestation hash.
+      // Preserve method/orcid/evidence_hash/issued_by from the prior op — a
+      // metadata edit changes only name/institution/field. Carrying orcid forward
+      // keeps the ORCID binding intact; carrying evidence_hash forward avoids
+      // fabricating a new attestation hash; carrying issued_by forward keeps the
+      // accreditation's ORIGIN attribution (a WoT 'wot' marker stays 'wot' rather
+      // than flipping to the admin account on every edit). A legacy op with no
+      // issued_by falls back to the admin-account marker (this edit IS admin-key
+      // signed, just owner-authorized).
       method: prior.method,
       orcid: prior.orcid,
       evidence_hash: prior.evidence_hash,
-      // Self-service edit: the op is admin-key-signed (single signer) but
-      // authorized by the account owner, so issued_by is the admin account
-      // marker, consistent with the other self-service accredit paths
-      // (email /verify, ORCID, signup-verify) per the admin-roster design.
-      issued_by: config.hiveAdminAccount,
+      issued_by: prior.issued_by || config.hiveAdminAccount,
       timestamp: new Date().toISOString(),
     };
 
+    // The single-use fresh-auth proof (JWT path) was consumed ABOVE, before this
+    // broadcast — re-broadcasting after a failure requires a fresh re-auth (the
+    // per-op rule). On a broadcast TIMEOUT the outcome is ambiguous (the op may
+    // have landed); handleBroadcastError emits the 504 outcome:'uncertain' /
+    // verify_before_retry envelope (retriable:false) so the client verifies on
+    // chain and re-mints rather than blind-retrying with the now-spent proof.
     try {
       const result = await broadcastAdminCustomJson(merged);
 

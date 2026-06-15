@@ -78,12 +78,21 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
 
 /**
  * Load the latest authority-signed `accredit` op for `account`, returning its
- * full payload metadata INCLUDING `evidence_hash` and `method`/`orcid` — fields
- * the membership `active_accreditations` view does not all carry. Used by the
- * self-service metadata edit to merge new name/institution/field over the
- * current op while PRESERVING method/orcid/evidence_hash (the edit carries the
- * prior evidence forward; it does not fabricate a new hash). Returns null when
- * the account has no accredit op or HAF is unavailable.
+ * full payload metadata INCLUDING `evidence_hash`, `method`/`orcid`, and
+ * `issued_by` — fields the membership `active_accreditations` view does not all
+ * carry. Used by the self-service metadata edit to merge new
+ * name/institution/field over the current op while PRESERVING
+ * method/orcid/evidence_hash/issued_by (the edit carries the prior evidence and
+ * origin attribution forward; it does not fabricate a new hash, nor flip a WoT
+ * accreditation's `issued_by` to the admin account).
+ *
+ * Error contract: returns `null` ONLY for a genuine "no accredit op for this
+ * account" (the caller maps that to a not-accredited 403). THROWS when HAF is
+ * unavailable (no pool) or the query errors, so the caller can distinguish a
+ * transient outage (-> 503 retriable, fail closed: no broadcast) from a real
+ * no-op. This is the single-account analogue of `getAccreditedOrcidsByAccount`'s
+ * throw-on-outage / null-on-empty split, and lets the metadata-edit handler use
+ * this one read as its upstream HAF-reachability gate.
  */
 export async function getLatestAccreditOp(account: string): Promise<{
   name: string;
@@ -92,9 +101,10 @@ export async function getLatestAccreditOp(account: string): Promise<{
   method: string;
   orcid: string;
   evidence_hash: string;
+  issued_by: string;
 } | null> {
   const pool = getPool();
-  if (!pool) return null;
+  if (!pool) throw new Error('HAF pool unavailable for latest-accredit-op read');
 
   try {
     const result = await pool.query<{ json: string | Record<string, unknown> }>(
@@ -118,10 +128,11 @@ export async function getLatestAccreditOp(account: string): Promise<{
       method: str(p.method, 'manual'),
       orcid: str(p.orcid),
       evidence_hash: str(p.evidence_hash),
+      issued_by: str(p.issued_by),
     };
   } catch (err) {
     logger.error({ err, account }, 'HAF latest-accredit-op read failed');
-    return null;
+    throw err;
   }
 }
 
