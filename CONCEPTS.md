@@ -358,7 +358,7 @@ On a fresh system with no batch scores yet, on-demand reads also fall back to th
 The process that computes reputation for all target accounts in a single pass per cycle and writes the results to a shared store, as opposed to recomputing any account's score on read.
 *Avoid:* batch job, batch run.
 
-Only one instance may run a cycle at a time; the batch periodically checks for new cycles and catches up sequentially if it has fallen behind. The batch is the single source of truth for displayed reputation: readers parse the stored value defensively and surface a zero score on failure, never recomputing at head block.
+Only one instance may run a cycle at a time; the batch periodically checks for new cycles and catches up sequentially if it has fallen behind. Catch-up is forward-only: a completed cycle is finalized and never revisited, so changing the scoring logic does not retroactively re-score already-completed cycles — corrected scores appear only as new cycles are computed, unless a full recompute is deliberately forced. The batch is the single source of truth for displayed reputation: readers parse the stored value defensively and surface a zero score on failure, never recomputing at head block.
 
 ### Reputation Breakdown
 

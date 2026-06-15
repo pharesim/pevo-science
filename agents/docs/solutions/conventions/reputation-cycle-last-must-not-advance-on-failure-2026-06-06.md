@@ -79,3 +79,7 @@ if (!results || results.some(([err]) => err !== null)) {
 ```
 
 The one intentional advance-on-empty: a cycle with zero accredited users advances `cycle:last` as a no-op. That is settled behavior — an elapsed empty cycle is complete, not failed. Do not "fix" it to stop advancing.
+
+## Related
+
+- `agents/docs/solutions/conventions/reputation-scores-frozen-after-calc-deploy-reset-cycle-last-2026-06-15.md` — the operator-facing other half of the same `cycle:last` invariant: because a finalized cycle is never recomputed, deploying a corrected reputation calc leaves already-stored scores frozen until the cursor is deliberately reset (`DEL cycle:last` + restart) or the next cycle elapses. This doc keeps the cursor from advancing wrongly; that one covers rolling it back on purpose.
