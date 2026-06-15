@@ -67,7 +67,11 @@ not a data-integrity bug.
 - The duplicate-bind protection itself (the lock + extend-on-timeout) is correct and stays.
 - The cross-account durable-binding 409 wire shape is unchanged.
 
-## [BLOCKED by Architect] (2026-06-15, backend) — wire-shape decision required before landing
+## [BLOCKED by Architect] (2026-06-15, backend) — RESOLVED 2026-06-15 by architect
+
+Wire-shape **(c)** chosen (see "Architect decision" at the bottom of this file). The
+analysis below is retained for context. The task is unblocked and moved to `pending/` for
+backend implementation.
 
 Acceptance item 1 mandates "Confirm the wire-shape choice with the architect before
 landing" and offers three candidate shapes. The choice also drives the
@@ -144,3 +148,90 @@ discriminator vs `onHeld`) is acceptable. The architect makes the `api-contracts
 `api-contracts/orcid.md` edits for the chosen shape in the same change that lands the code
 (per the same-commit-as-code contract discipline); backend lands only the code. Then move
 back to `pending/` for implementation.
+
+## Architect decision (2026-06-15) — wire-shape (c), unblocked to pending/
+
+Decision (confirmed with the user): **(c)** — the signup-finalize caller's `'held'` branch
+returns the existing ambiguous-outcome envelope (HTTP 504 `BROADCAST_TIMEOUT`,
+`retriable: false`, `outcome: 'uncertain'`, `verify_before_retry: true`, NO
+`verify_location`) instead of the terminal `409 ORCID_ALREADY_LINKED`. The `/orcid/callback`
+callers keep the terminal 409 (their OAuth state token is consumed pre-lock, so terminal is
+correct there).
+
+**Wrapper-option approach: approved.** Add a per-caller held-shape discriminator to
+`withOrcidBindingLock` — `heldShape: 'terminal-409' | 'ambiguous'` defaulting to
+`'terminal-409'` so the callback callers are untouched (satisfies item 2). The signup caller
+passes `'ambiguous'`, which routes the `'held'` branch through `handleBroadcastErrorAmbiguous`
+with the signup `ambiguousOutcomeOpts` (the same envelope the signup path already emits on its
+timeout / `unavailable` branches). Keep the wrapper's "sends its own response" contract intact.
+(An `onHeld` callback is acceptable if it reads cleaner, but the discriminator is preferred —
+fewer moving parts and it keeps the response-sending inside the wrapper.)
+
+Anchor any new code comment on behavioral semantics (e.g. "held lock = in-flight bind, outcome
+uncertain — verify before retry"), NOT on this task's slug or a round number (the pre-commit
+anchor gate will reject the latter).
+
+Why (c) over the others (independently verified against the code):
+- **(a)** would put `retriable: true` on the SHARED `ORCID_ALREADY_LINKED` 409; the callback
+  client (`frontend/src/pages/orcid-callback.js`) treats every `ORCID_ALREADY_LINKED` as durable
+  → /recover, so a retriable flag bleeds into the callback contract and contradicts the
+  documented terminal-409 invariant. Rejected.
+- **(b)** would perturb the `LOCK_NONCE_RE` (`/^[0-9a-f]{32}$/`) shape invariant and the
+  `RELEASE_LOCK_LUA` byte-equality CAS — a load-bearing lock-stomp primitive. Highest risk for a
+  rare-timeout UX nicety. Rejected.
+- **(c)** leaves the lock encoding / Lua CAS untouched and unifies the held case with the signup
+  path's existing ambiguous-outcome handling under one client branch. The 504 status is slightly
+  off-label for a held lock (nothing timed out on THIS request), but the body is honest: the
+  holder's broadcast outcome IS uncertain from this request's view, and verify-before-retry IS
+  the right user action (the timed-out broadcast may have landed → the user may already be
+  accredited).
+
+### Corrections to the analysis above (verified against the code)
+1. **`auth_token` is functionally consumed, not "preserved".** The signup `auth_token` IS the
+   `verify_token`; the `/confirm` and `/link` finalize UPDATE sets `verify_token = NULL` BEFORE
+   the broadcast runs, so on a 504 the token is already NULL. Retry within the window does NOT
+   re-find a row by `verify_token`; it enters the username-keyed resume branch
+   (`resumeStuck` / `resumeChainExists`, gated on a posting-key ownership proof for `/confirm` or
+   a fresh signature for `/link`), which re-enters `broadcastAccreditationAndSeed` →
+   `withOrcidBindingLock` → `'held'`. The fix is correctly placed at that `'held'` branch. The
+   conclusion (signup retry IS recoverable, unlike the OAuth flow) stands; the "token preserved"
+   rationale does not — recovery is via the resume branch.
+2. **The ambiguous 504 is NOT documented per-endpoint today.** `auth.md`'s `/confirm` and `/link`
+   error lists do not enumerate a 504 `BROADCAST_TIMEOUT` entry at all (only `common.md` documents
+   it globally). So this is NOT a no-op doc reuse — see the doc-edit spec below.
+
+### Doc edits the architect lands with the code (same-commit-as-code discipline)
+Backend lands ONLY the code; the architect makes these `api-contracts` edits in the same change:
+- **`auth.md` `/confirm`:** ADD a `BROADCAST_TIMEOUT (504)` bullet to the error list:
+  `retriable: false`, `outcome: 'uncertain'`, `verify_before_retry: true`, NO `verify_location`
+  (recovery is in the message: retry `POST /api/auth/confirm` with the same auth_token / username
+  / keys). State the three triggers it now covers — genuine broadcast timeout, Redis-`unavailable`
+  forced-ambiguous, AND a self-held binding lock from this account's own prior timed-out attempt
+  within the ~120s HAF-indexing-lag window — and that it is distinct from the terminal
+  cross-account `409 ORCID_ALREADY_LINKED` because the signup token semantics make it recoverable.
+- **`auth.md` `/link`:** mirror the same bullet with the `/link` recovery wording (fresh signed
+  request).
+- **`orcid.md` `/orcid/callback` 409 block: UNCHANGED.** Callback `'held'` stays terminal.
+  Optionally one coherence line noting the signup-finalize caller routes its own `'held'` to the
+  ambiguous 504 (a server-side cause, not a callback wire change).
+- Keep ASCII `--` / `-`; do not introduce the U+2014 emdash glyph (api-contracts ban).
+
+### Scope split — frontend is a SEPARATE UI task
+The backend change is necessary-but-insufficient. The signup client
+(`submitCreateAccount` / `handleLinkAccount` in `frontend/src/pages/signup-verify.js`) has a
+code-blind catch that collapses ALL errors (today's terminal 409, the existing genuine-timeout
+504, AND this new held 504) into a generic failure message and bounces to the entry phase.
+Shipping (c) backend-only yields zero user-visible improvement (verified firsthand: those catch
+blocks ignore `err.code` / `err.details`). The frontend handling is filed as a companion UI task,
+`ui-signup-broadcast-timeout-affordance` (`pending/`). The two tasks are parallelizable: the
+backend already emits `BROADCAST_TIMEOUT` on its genuine-timeout branch today, so the UI branch
+can be built / tested against that shape now; the held-lock-specific assertion lands once (c)
+ships.
+
+This task's **AC #3 stays backend-scoped**: a real-path test that a signup finalize whose first
+attempt timed out (lock extended, `skipRelease`) and is retried within the window receives the
+ambiguous 504 envelope, NOT the terminal cross-account 409; plus a callback-path test pinning the
+terminal 409 is preserved. The "client renders a verify/retry affordance" assertion belongs to the
+UI task.
+
+Moving to `pending/` for backend implementation.
