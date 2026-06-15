@@ -164,3 +164,69 @@ document, or direct the widening with a precedence rule (chain binding vs. pendi
 
 Unblock by resolving A1/A2 + B (and making any § 6.1 / contract edits); then move
 back to `pending/` for backend to implement.
+
+## [Architect] (2026-06-15) — UNBLOCKED: A1/A2/B resolved, moving to `pending/`
+
+Reviewed at the architect blocked-task sweep. The gap was re-verified live against
+current code: `broadcastAccreditationAndSeed` (`signup-verify.ts`) still broadcasts
+`accredit` with `orcid: account.orcid` and its only dedup is the account-keyed
+`getAccreditedSet([username])` probe gated on `isResume` — no ORCID-binding check,
+no lock — while `handleAccredit`/`handleLink` (`orcid.ts`) still guard via
+`findAccreditedAccountWithOrcid` + `withOrcidBindingLock` (both module-private).
+The two sibling cluster tasks (`backend-signup-orcid-duplicate-409`,
+`backend-orcid-unique-index-boot-assertion`) have landed and archived, so the only
+thing keeping this blocked was the two architect decisions. Both are resolved
+below; the file moves to `pending/` for backend implementation.
+
+### Decision A2 — NOT a new § 6.1 state (no doc edit required)
+§ 6 already states ("Accreditation status is an on-chain dimension orthogonal to
+the § 6.1 `accounts`-table state machine ... adds no column to the `accounts`
+table"): accreditation is computed from chain ops, not a row dimension. A
+finalized-but-unaccredited account is therefore an existing State A/B/C, NOT a new
+state — already reachable today via the `if (!config.pevoAdminPostingKey) return
+'ok'` finalize branch (finalizes the row, broadcasts nothing). § 6.5 invariant #4's
+"update § 6.1 first" gate is already satisfied; no § 6.1 edit is needed. The
+refusal outcome adds no row state.
+
+### Decision A1 — refusal UX = 409 ORCID_ALREADY_LINKED, account stays finalized
+When `account.orcid` is non-empty and the ORCID-binding check resolves to a
+DIFFERENT account, refuse the broadcast with `409 ORCID_ALREADY_LINKED` — same
+terminal wire shape as the `/orcid/callback` durable-binding 409 and the `/signup`
+DB-index 409 (no `retriable` field, no `Retry-After`). The account stays finalized
+and recoverable: the user can log in; they are simply unaccredited until the ORCID
+conflict is resolved out of band. Do NOT silently finalize (the admin-key-absent
+path) — that hides a real ORCID collision from the user. Do NOT roll the finalize
+back — keys/row are already persisted and the user has a usable account.
+
+### Decision B — chain-only binding check is sufficient (document, do not widen)
+`findAccreditedAccountWithOrcid` reading chain + Redis binding cache (NOT
+`accounts.orcid`) is sufficient here. The `accounts_orcid_unique` index (migration
+007, now boot-asserted) forbids two `accounts` rows sharing an ORCID, and a second
+same-ORCID `/signup` now 409s. So the only multi-account-same-ORCID path is a
+no-`accounts`-row self-custody chain accredit (the repro's account B), which the
+chain check DOES see. The pending-ORCID-only-row blind spot (item 3) cannot coexist
+with a second same-ORCID row. Keep chain as SSoT; the index is the row-level
+backstop. Do not widen the query to `accounts.orcid`. (Item 3 = "document chain-only
+as sufficient", not "widen".)
+
+### Lock — finalize broadcast runs under `withOrcidBindingLock` (parity with callback)
+This resolves the open "if the architect wants" clause to YES. Factor BOTH
+`findAccreditedAccountWithOrcid` AND `withOrcidBindingLock` from `orcid.ts`
+(currently module-private) into a shared module both routes import — no behavior
+change to the callback path. The finalize binding-check + broadcast MUST run under
+the lock, mirroring the callback path: without it the chain check is a TOCTOU (check
+passes, a concurrent bind for the same ORCID lands before this broadcast). Apply on
+`/confirm`, `/link`, and the resume path (the existing probe only guards the account
+key, not the ORCID).
+
+### Contract update — defer to code-landing
+The `/api/auth/confirm` and `/api/auth/link` error lists in `api-contracts/auth.md`
+gain a chain-binding cause for `409 ORCID_ALREADY_LINKED`, distinct from the
+existing `/signup` DB-index cause already documented at the top of `auth.md`. The
+architect updates `auth.md` in the same change that lands the code (per § 6.6
+same-commit-as-code discipline), NOT now — so the contract never describes
+unimplemented behavior. Backend: flag the architect at review intake.
+
+### Implementation (now actionable)
+The "Proposed implementation (pending A/B sign-off)" block above stands as written;
+the lock decision resolves its open clause to "yes, factor the lock too."
