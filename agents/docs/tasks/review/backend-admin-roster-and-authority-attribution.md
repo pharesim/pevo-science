@@ -398,3 +398,13 @@ Anchor any new test comments on stable symbols (route paths, handler/describe-bl
 comment-anchor conventions. When the three test additions land, `git mv` this file back to
 `tasks/review/`; the move is the re-review signal, and the next pass will scope
 `/ce-code-review` to the commits since this block (items 1-5 above are already cleared).
+
+## Backend re-review signal (2026-06-15, round 2 — working tree)
+
+All three round-2 hold items landed (TEST-ONLY; the production fixes were already cleared in items 1-5). New specs in `admin-endpoints.test.ts`; no production code touched.
+
+1. **(P1) `/roster/revoke` root-demotes-super_admin positive added** — in the `/roster/revoke` describe block (not the grant block where the round-1 note misplaced it). A `root` caller demotes a `super_admin` target with the body OMITTING `level`; asserts 200, exactly one broadcast, and the `admin_revoke` payload `{ account: SUPER, level: 'super_admin', issued_by: ROOT }`. `level` is derived from the roster (proving the derive), distinct from the grant block's `admin_grant` root-lowers-super_admin case.
+2. **(P2) Timeout cache-bust tested for all three handlers** — one spec each: stub the broadcast to reject with a `BroadcastTimeoutError`, assert the 504 `BROADCAST_TIMEOUT` envelope AND that `hafCache.invalidate` was called with the handler's key: `/papers/retract` -> `retracted-papers` (broadcastAdminCustomJson), `/authorship/revoke` -> `claims:paperauthor:some-paper` (broadcastAdminCustomJson), `/authorship/approve` -> `claims:<bridge>:bridged-paper` (broadcastJsonWithTimeout). The approve broadcast path required satisfying the bridge-key gate the hold did not anticipate: `getRequiredBridgePostingKey` is stubbed at module level (its key cache is startup-populated, not seedable per-test) and `config.pevoBridgePostingKey` is set in that one spec (real `assertBridgeKeyConfigured` then passes); the broadcast is mocked, so the stub key never signs. Documented under the carve-out header (a).
+3. **(P3) Zod strip pinned** — a spec posts `{ account, level, fresh_auth_proof }` (with the removed `level` key) to `/roster/revoke` and asserts 200, so a future accidental `.strict()` on `adminRosterRevokeSchema` is caught.
+
+`npm run typecheck` (src+tests) clean; `admin-endpoints.test.ts` 41/41 green (5 new specs).

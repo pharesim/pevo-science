@@ -33,6 +33,11 @@
  *       fresh-auth functions (`computeFreshAuthTargetHash`,
  *       `adminActionFreshAuthTarget`) are preserved real. The JWT-NO-PROOF case
  *       lets the real consume run (a missing token returns invalid regardless).
+ *     - `getRequiredBridgePostingKey` (`startup-checks.js`) is stubbed so the
+ *       authorship/approve broadcast path is reachable (the bridge key cache is
+ *       startup-populated, not seedable per-test); the broadcast is mocked, so the
+ *       stub key never signs. `assertBridgeKeyConfigured` runs real, satisfied by
+ *       setting `config.pevoBridgePostingKey` in the one approve-timeout spec.
  *
  *     Cryptographic signature verification is bypassed by `MOCK_VERIFY_SIGNATURE`;
  *     only the 401-on-missing-header gate, the username-extraction, and the
@@ -104,9 +109,26 @@ vi.mock('../../src/lib/fresh-auth.js', async () => {
   };
 });
 
+// The authorship/approve handler signs with the bridge posting key, whose cache
+// is populated at startup (not in tests). Stub getRequiredBridgePostingKey to a
+// throwaway value so the approve broadcast path is REACHABLE; the broadcast
+// itself is mocked, so the stub is never used to sign. assertBridgeKeyConfigured
+// (config-only) is satisfied per-test by setting config.pevoBridgePostingKey.
+vi.mock('../../src/startup-checks.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/startup-checks.js')>('../../src/startup-checks.js');
+  return {
+    ...actual,
+    getRequiredBridgePostingKey: () =>
+      'stub-bridge-key' as unknown as ReturnType<typeof actual.getRequiredBridgePostingKey>,
+  };
+});
+
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
 const { hafCache } = await import('../../src/cache.js');
+// Real class (the hive.js mock spreads `...actual`) so handleBroadcastError's
+// `instanceof BroadcastTimeoutError` discrimination fires on the rejected stub.
+const { BroadcastTimeoutError } = await import('../../src/hive.js');
 
 const app = createApp();
 
@@ -384,6 +406,36 @@ describe('POST /api/admin/roster/revoke — lockout', () => {
     const payload = broadcastAdminMock.mock.calls[0][0];
     expect(payload).toMatchObject({ action: 'admin_revoke', account: ADMIN2, level: 'admin', issued_by: SUPER });
   });
+
+  it('root demotes a super_admin (root-only branch); body omits level, payload level derived from roster', async () => {
+    // The root-only positive branch of /roster/revoke. Distinct from the grant
+    // block's "root lowers a super_admin" (that is admin_grant on a different
+    // endpoint). The body omits `level`; the handler derives the target's current
+    // tier from the roster, so payload.level === 'super_admin' proves the derive.
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/roster/revoke'), ROOT).send({
+      account: SUPER,
+    });
+    expect(res.status).toBe(200);
+    expect(broadcastAdminMock).toHaveBeenCalledTimes(1);
+    const payload = broadcastAdminMock.mock.calls[0][0];
+    expect(payload).toMatchObject({ action: 'admin_revoke', account: SUPER, level: 'super_admin', issued_by: ROOT });
+  });
+
+  it('strips a stray (removed) `level` field from the revoke body — 200, not 400', async () => {
+    // The admin console still posts { account, level, fresh_auth_proof }. The
+    // removed `level` must be STRIPPED by adminRosterRevokeSchema (Zod default),
+    // not rejected — a future accidental `.strict()` would 400 this and break the
+    // console.
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/roster/revoke'), SUPER).send({
+      account: ADMIN2,
+      level: 'admin',
+      fresh_auth_proof: 'ignored-on-signature-path',
+    });
+    expect(res.status).toBe(200);
+    expect(broadcastAdminMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -556,6 +608,24 @@ describe('POST /api/admin/papers/retract', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
     expect(broadcastAdminMock).not.toHaveBeenCalled();
   });
+
+  it('on a broadcast timeout, busts the retracted-papers cache (ambiguous outcome)', async () => {
+    stubDefaultRoster();
+    broadcastAdminMock.mockRejectedValueOnce(new BroadcastTimeoutError(30_000));
+    const invalidateSpy = vi.spyOn(hafCache, 'invalidate');
+    try {
+      const res = await asSignature(request(app).post('/api/admin/papers/retract'), ADMIN).send({
+        author: 'paperauthor',
+        permlink: 'some-paper',
+        reason: 'plagiarism',
+      });
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+      expect(invalidateSpy).toHaveBeenCalledWith('retracted-papers');
+    } finally {
+      invalidateSpy.mockRestore();
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -580,6 +650,25 @@ describe('POST /api/admin/authorship/revoke', () => {
       paper_permlink: 'some-paper',
       issued_by: ADMIN,
     });
+  });
+
+  it('on a broadcast timeout, busts the claims cache for the paper (ambiguous outcome)', async () => {
+    stubDefaultRoster();
+    broadcastAdminMock.mockRejectedValueOnce(new BroadcastTimeoutError(30_000));
+    const invalidateSpy = vi.spyOn(hafCache, 'invalidate');
+    try {
+      const res = await asSignature(request(app).post('/api/admin/authorship/revoke'), ADMIN).send({
+        author: 'paperauthor',
+        permlink: 'some-paper',
+        claimer: 'falseclaimer',
+        reason: 'not a real co-author',
+      });
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+      expect(invalidateSpy).toHaveBeenCalledWith('claims:paperauthor:some-paper');
+    } finally {
+      invalidateSpy.mockRestore();
+    }
   });
 });
 
@@ -610,6 +699,32 @@ describe('POST /api/admin/authorship/approve', () => {
     });
     expect(res.status).toBe(403);
     expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('on a broadcast timeout, busts the claims cache for the paper (ambiguous outcome)', async () => {
+    // approve broadcasts via broadcastJsonWithTimeout (the bridge account signs),
+    // not broadcastAdminCustomJson — so the timeout is injected on broadcastJsonMock.
+    // The bridge-key gate (assertBridgeKeyConfigured) is satisfied via config;
+    // getRequiredBridgePostingKey is stubbed at module level (see the mock).
+    stubDefaultRoster();
+    const prevBridgeKey = config.pevoBridgePostingKey;
+    (config as { pevoBridgePostingKey: unknown }).pevoBridgePostingKey = 'fake-bridge-key';
+    broadcastJsonMock.mockRejectedValueOnce(new BroadcastTimeoutError(30_000));
+    const invalidateSpy = vi.spyOn(hafCache, 'invalidate');
+    try {
+      const res = await asSignature(request(app).post('/api/admin/authorship/approve'), ADMIN).send({
+        author: BRIDGE,
+        permlink: 'bridged-paper',
+        claimer: 'realauthor',
+        author_index: 0,
+      });
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+      expect(invalidateSpy).toHaveBeenCalledWith(`claims:${BRIDGE}:bridged-paper`);
+    } finally {
+      invalidateSpy.mockRestore();
+      (config as { pevoBridgePostingKey: unknown }).pevoBridgePostingKey = prevBridgeKey;
+    }
   });
 });
 
