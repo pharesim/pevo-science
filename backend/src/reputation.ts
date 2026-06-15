@@ -5,6 +5,7 @@
  * Voter weighting, decay, and vote resolution live entirely in SQL.
  */
 import pg from 'pg';
+import { createHash } from 'node:crypto';
 import { getPool } from './db.js';
 import { config } from './config.js';
 import { getAllAccreditedAccounts } from './accreditation.js';
@@ -487,6 +488,44 @@ export async function startReputationWeightsCache(): Promise<void> {
   logger.info('Reputation weights cache loaded');
 }
 
+// ─── Calc version (auto-recompute trigger) ───────────────────────
+
+/**
+ * Explicit reputation calc-version. BUMP THIS WHENEVER THE SCORING BEHAVIOR
+ * CHANGES — any edit to `computeReputationBatch`'s SQL that alters the scores it
+ * produces, OR to the JS batch orchestration that feeds it (how `prev_scores`
+ * thread into voter weights, how the active-author set is gated, the cycle
+ * boundary math). On the next batch run a changed version forces a full
+ * recompute of all finalized cycles (`runBatchComputation`), so a corrected calc
+ * never leaves stale scores frozen until an operator manually clears
+ * `reputation:cycle:last`.
+ *
+ * You do NOT need to bump this for an on-chain `update_weights` change: the
+ * active weight set is folded into the version automatically by
+ * `computeCalcVersion`'s weights hash. This constant is the manual lever for the
+ * parts of scoring that live in code rather than in the weights row.
+ */
+export const CALC_VERSION = 1;
+
+/**
+ * The recompute-trigger fingerprint stored beside `reputation:cycle:last`: the
+ * explicit `CALC_VERSION` (covers code changes a content hash could not see)
+ * joined with a stable hash of the sanitized active weights (so an on-chain
+ * `update_weights` auto-triggers a backfill). When this string differs from the
+ * value persisted in Redis, the batch loop replays every cycle from 0.
+ *
+ * The weights are serialized key-sorted so JS property-insertion order can never
+ * change the hash for an identical weight set (which would spuriously force a
+ * full recompute on a no-op deploy).
+ */
+export function computeCalcVersion(weights: ReputationWeights): string {
+  const canonical = JSON.stringify(
+    Object.entries(weights).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  const weightsHash = createHash('sha256').update(canonical).digest('hex').slice(0, 16);
+  return `${CALC_VERSION}:${weightsHash}`;
+}
+
 // ─── SQL Reputation Computation ───────────────────────────────
 
 /**
@@ -569,6 +608,12 @@ export async function computeReputationBatch(
   usernames: string[],
   prevScores?: Record<string, number>,
   cycleEndBlock?: number,
+  // Optional weights snapshot. The batch orchestrator reads the weights ONCE
+  // per run (to compute the calc-version fingerprint) and threads that same
+  // object through every cycle so the persisted fingerprint always matches the
+  // weights actually applied to scoring — the WEIGHTS_TTL periodic refresh
+  // cannot swap them mid-run. Standalone callers omit it and fetch the live set.
+  weightsArg?: ReputationWeights,
 ): Promise<Map<string, ReputationScore>> {
   const results = new Map<string, ReputationScore>();
   if (usernames.length === 0) return results;
@@ -579,7 +624,7 @@ export async function computeReputationBatch(
   try {
     const [accreditedAccounts, weights] = await Promise.all([
       getAllAccreditedAccounts(),
-      getReputationWeights(),
+      weightsArg ? Promise.resolve(weightsArg) : getReputationWeights(),
     ]);
 
     const accreditedArr = [...accreditedAccounts];

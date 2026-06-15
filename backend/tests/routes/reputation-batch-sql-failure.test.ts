@@ -74,6 +74,11 @@ const TEST_USER = 'pevo-sql-failure-active';
 
 const GENESIS = 1_000_000;
 const CYCLE_BLOCKS = 100;
+const STUB_WEIGHTS = { ...DEFAULT_REPUTATION_WEIGHTS, cycle_blocks: CYCLE_BLOCKS };
+// The calc-version fingerprint runBatchComputation computes for the stubbed
+// weights. Arms that want a RESUME (startCycle > 0) pin this so the calc-version
+// auto-recompute sees no change and does not reset startCycle to 0.
+const STUB_VERSION = reputationModule.computeCalcVersion(STUB_WEIGHTS);
 
 function stubCycleConfig(headBlock: number): void {
   // getHeadBlock() is the only live pool consumer once the helpers below are
@@ -85,10 +90,7 @@ function stubCycleConfig(headBlock: number): void {
     query: async () => ({ rows: [{ head: headBlock }] }),
     connect: async () => ({ query: async () => ({ rows: [{ head: headBlock }] }), release: () => undefined }),
   });
-  vi.spyOn(reputationModule, 'getReputationWeights').mockResolvedValue({
-    ...DEFAULT_REPUTATION_WEIGHTS,
-    cycle_blocks: CYCLE_BLOCKS,
-  });
+  vi.spyOn(reputationModule, 'getReputationWeights').mockResolvedValue(STUB_WEIGHTS);
   vi.spyOn(hafsqlModule, 'getCachedGenesisBlock').mockReturnValue(GENESIS);
 }
 
@@ -100,6 +102,21 @@ async function clearKeys() {
   await redis.del(`${__test_seams.REDIS_KEY_STAGING_PREFIX}${TEST_USER}`);
   const sentinels = await redis.keys(`${__test_seams.REDIS_KEY_IN_PROGRESS_PREFIX}*`);
   if (sentinels.length > 0) await redis.del(...sentinels);
+}
+
+// Make a run immune to the cross-file-shared calc:version key: intercept ONLY
+// the calc:version read and return the stub fingerprint, so calcVersionChanged
+// is false. The run then neither replays from cycle 0 (preserving each arm's
+// documented startCycle geometry) nor PERSISTS calc:version (so it cannot leak
+// the stub fingerprint into shared Redis and force a concurrent sibling into a
+// full replay). Every other key delegates to the real client. Returns the spy;
+// the caller restores it in finally.
+function pinCalcVersionRead(redis: NonNullable<ReturnType<typeof getRedis>>) {
+  const realGet = redis.get.bind(redis);
+  return vi
+    .spyOn(redis, 'get')
+    .mockImplementation(((key: string) =>
+      key === __test_seams.REDIS_KEY_CALC_VERSION ? Promise.resolve(STUB_VERSION) : realGet(key)) as never);
 }
 
 beforeEach(clearKeys);
@@ -137,6 +154,10 @@ describe('reputation batch: a SQL failure does not advance cycle:last', () => {
 
     const priorCycle = await redis.get(__test_seams.REDIS_KEY_LAST_CYCLE);
     await redis.set(__test_seams.REDIS_KEY_LAST_CYCLE, '0');
+    // Pin the calc:version READ so the auto-recompute sees no change and
+    // preserves the documented startCycle=1 resume-from-prod path (an
+    // unset/clobbered stamp would force a full replay from cycle 0).
+    const calcVersionGetSpy = pinCalcVersionRead(redis);
 
     try {
       // runBatchComputation handles the throw internally (outer catch); it does
@@ -152,6 +173,7 @@ describe('reputation batch: a SQL failure does not advance cycle:last', () => {
       // No in-progress sentinel leaked (the throw fired before the sentinel SET).
       expect(await redis.keys(`${__test_seams.REDIS_KEY_IN_PROGRESS_PREFIX}*`)).toEqual([]);
     } finally {
+      calcVersionGetSpy.mockRestore();
       if (priorCycle !== null) {
         await redis.set(__test_seams.REDIS_KEY_LAST_CYCLE, priorCycle);
       } else {
@@ -180,6 +202,10 @@ describe('reputation batch: an empty accredited set completes cleanly', () => {
 
     const priorCycle = await redis.get(__test_seams.REDIS_KEY_LAST_CYCLE);
     await redis.del(__test_seams.REDIS_KEY_LAST_CYCLE);
+    // Pin the calc:version READ so this run does not treat the stamp as changed
+    // and persist the stub fingerprint (which would leak into shared Redis). The
+    // empty-cycle no-op-advance behavior under test is unaffected.
+    const calcVersionGetSpy = pinCalcVersionRead(redis);
 
     try {
       await expect(runBatchComputation(60_000)).resolves.toBeUndefined();
@@ -189,6 +215,7 @@ describe('reputation batch: an empty accredited set completes cleanly', () => {
       // behavior); the in-progress cycle 1 did not. cycle:last lands at 0.
       expect(await redis.get(__test_seams.REDIS_KEY_LAST_CYCLE)).toBe('0');
     } finally {
+      calcVersionGetSpy.mockRestore();
       if (priorCycle !== null) {
         await redis.set(__test_seams.REDIS_KEY_LAST_CYCLE, priorCycle);
       } else {
@@ -250,6 +277,10 @@ describe('reputation batch: a per-command staging error does not advance cycle:l
 
     const priorCycle = await redis.get(__test_seams.REDIS_KEY_LAST_CYCLE);
     await redis.set(__test_seams.REDIS_KEY_LAST_CYCLE, '0');
+    // Pin the calc:version READ so the auto-recompute sees no change and
+    // preserves the documented startCycle=1 geometry (cycle 1 reaches the
+    // staging step); an unset/clobbered stamp would force a replay from cycle 0.
+    const calcVersionGetSpy = pinCalcVersionRead(redis);
 
     try {
       await expect(runBatchComputation(60_000)).resolves.toBeUndefined();
@@ -265,6 +296,7 @@ describe('reputation batch: a per-command staging error does not advance cycle:l
       // so the atomic Lua swap never ran.
       expect(await redis.keys(`${__test_seams.REDIS_KEY_IN_PROGRESS_PREFIX}*`)).toEqual([]);
     } finally {
+      calcVersionGetSpy.mockRestore();
       if (priorCycle !== null) {
         await redis.set(__test_seams.REDIS_KEY_LAST_CYCLE, priorCycle);
       } else {

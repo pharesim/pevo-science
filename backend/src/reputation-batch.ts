@@ -28,6 +28,7 @@ import {
   STAGING_SEGMENT,
   batchKey,
   batchMapToScoreRecord,
+  computeCalcVersion,
   computeReputationBatch,
   getBatchReputationMap,
   getReputationWeights,
@@ -48,6 +49,16 @@ const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
 const DEFAULT_MAX_DURATION_MS = 30 * 60_000; // 30 minutes
 
 const REDIS_KEY_LAST_CYCLE = `${config.appTag}:reputation:cycle:last`;
+/**
+ * Calc-version stamp sitting beside `cycle:last`. Holds the fingerprint
+ * (`computeCalcVersion`) the stored scores were computed under. When the
+ * running code's fingerprint differs (a bumped CALC_VERSION or an on-chain
+ * weights change), the batch loop forces a full replay from cycle 0 so a
+ * corrected calc backfills finalized cycles without an operator manual
+ * `DEL cycle:last`. Lives OUTSIDE BATCH_KEY_PREFIX so it cannot collide with a
+ * user-keyed batch entry under getBatchReputationMap's prefix glob.
+ */
+const REDIS_KEY_CALC_VERSION = `${config.appTag}:reputation:calc:version`;
 /**
  * In-progress sentinel: written by the orchestrator immediately before a
  * cycle's atomic Lua swap and deleted INSIDE the same Lua. If Redis (or the
@@ -335,12 +346,41 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
     const lastCycleStr = await redis.get(REDIS_KEY_LAST_CYCLE);
     const lastComputedCycle = lastCycleStr !== null ? Number(lastCycleStr) : -1;
 
-    if (lastComputedCycle >= currentCycle) {
+    // Calc-version auto-recompute. If the scoring logic (CALC_VERSION) or the
+    // active weights changed since the stored scores were computed, force a full
+    // replay from cycle 0 so finalized cycles re-score without an operator manual
+    // `DEL cycle:last`. The reset is IN-MEMORY (effectiveLastCycle) — cycle:last
+    // in Redis is moved solely by the per-cycle atomic swap and the empty-cycle
+    // no-op, so a failed/partial run neither advances NOR corrupts the persisted
+    // cursor. The new version is persisted (after the loop) only once the replay
+    // durably reaches the latest fully-elapsed cycle, so a crash/time-cap
+    // mid-replay keeps retrying rather than freezing at a half-applied version.
+    // (A time-capped partial run re-replays from 0 on the next run; harmless and
+    // idempotent, and the 30-min budget fits the full cycle range many times
+    // over at this scale. If the cycle count ever outgrows one run's budget,
+    // switch to an eager atomic version+cursor reset to make the replay resume
+    // from cycle:last instead of redoing from 0.)
+    const currentCalcVersion = computeCalcVersion(weights);
+    const storedCalcVersion = await redis.get(REDIS_KEY_CALC_VERSION);
+    const calcVersionChanged = storedCalcVersion !== currentCalcVersion;
+    if (calcVersionChanged) {
+      logger.info(
+        { storedCalcVersion, currentCalcVersion, lastComputedCycle },
+        'Reputation calc-version changed; forcing full recompute from cycle 0',
+      );
+    }
+    const effectiveLastCycle = calcVersionChanged ? -1 : lastComputedCycle;
+
+    if (effectiveLastCycle >= currentCycle) {
       logger.debug({ currentCycle, lastComputedCycle }, 'Batch reputation: already up to date');
       return;
     }
 
-    const startCycle = lastComputedCycle + 1;
+    const startCycle = effectiveLastCycle + 1;
+    // Whether the catch-up loop durably reached the latest fully-elapsed cycle
+    // (the not-fully-elapsed break is the success exit; time-cap and failure
+    // breaks leave this false). Gates the calc-version persist below.
+    let reachedFullyElapsed = false;
     const totalCycles = currentCycle - startCycle + 1;
     logger.info({ startCycle, currentCycle, totalCycles, genesisBlock, cycleBlocks }, 'Batch reputation: computing cycles');
 
@@ -374,6 +414,10 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       // every later cycle has a strictly larger end block, so none qualify.
       if (cycleEndBlock > headBlock) {
         logger.info({ cycle, cycleEndBlock, headBlock }, 'Cycle not fully elapsed; stopping before scoring it');
+        // Success exit: every cycle through the latest fully-elapsed one has
+        // been computed (or no-op-advanced for empty cycles). This is the only
+        // exit that lets the calc-version persist below run.
+        reachedFullyElapsed = true;
         break;
       }
 
@@ -406,7 +450,11 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       }, `Computing cycle ${cycle} of ${currentCycle}`);
 
       // Single query computes all users at once
-      const batchResults = await computeReputationBatch(users, prevScores, cycleEndBlock);
+      // Thread the run's single weights snapshot (the one fed to
+      // computeCalcVersion) into every cycle so the persisted calc-version
+      // fingerprint always matches the weights actually applied to scoring,
+      // even if the WEIGHTS_TTL periodic refresh swaps the cache mid-run.
+      const batchResults = await computeReputationBatch(users, prevScores, cycleEndBlock, weights);
 
       // Belt-and-suspenders: a non-empty user list always yields one scored
       // row per user (the totals CTE CROSS JOINs every target_user), so an
@@ -494,6 +542,18 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       if (timeCapped) break;
     }
 
+    // Persist the calc-version stamp ONLY after a version-triggered replay
+    // durably reached the latest fully-elapsed cycle. A time-capped or failed
+    // partial run leaves the stamp unchanged, so the next run still sees a
+    // version mismatch and keeps replaying until it converges — it never marks a
+    // half-applied version "done" and re-freezes. Idempotent: re-persisting the
+    // same value on a subsequent complete run is a harmless no-op. Inside the
+    // batch lock (multi-instance safe).
+    if (calcVersionChanged && reachedFullyElapsed) {
+      await redis.set(REDIS_KEY_CALC_VERSION, currentCalcVersion);
+      logger.info({ currentCalcVersion }, 'Reputation calc-version recompute complete; version stamp updated');
+    }
+
     logger.info({
       totalDurationMs: Date.now() - startTime,
     }, 'Batch reputation computation complete');
@@ -569,6 +629,7 @@ export const __test_seams = {
   CYCLE_SWAP_PROD_SUBSTRING,
   REDIS_KEY_STAGING_PREFIX,
   REDIS_KEY_LAST_CYCLE,
+  REDIS_KEY_CALC_VERSION,
   REDIS_KEY_IN_PROGRESS_PREFIX,
   REDIS_KEY_BATCH_LOCK,
   REDIS_KEY_BATCH_MEMBERS,

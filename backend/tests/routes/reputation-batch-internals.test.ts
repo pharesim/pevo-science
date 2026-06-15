@@ -396,6 +396,20 @@ describe('reputation-batch internals: prev_scores rehydration uses batchMapToSco
     // restore cycle:last so other tests aren't perturbed.
     const priorCycle = await redis.get(__test_seams.REDIS_KEY_LAST_CYCLE);
     await redis.set(__test_seams.REDIS_KEY_LAST_CYCLE, '0');
+    // Make this run immune to the cross-file-shared calc:version key: intercept
+    // ONLY the calc:version read and return the fingerprint runBatchComputation
+    // computes for the live weights, so calcVersionChanged is false and
+    // startCycle stays 1 (the prev-scores resume path this test pins). Without
+    // this, a concurrent sibling writing calc:version mid-run would force a
+    // replay from cycle 0 and skip the batchMapToScoreRecord call. The spy
+    // delegates every other key to the real client, and the run never WRITES
+    // calc:version (calcVersionChanged is false), so it cannot leak the stamp.
+    const matchingVersion = reputationModule.computeCalcVersion(await reputationModule.getReputationWeights());
+    const realGet = redis.get.bind(redis);
+    const calcVersionGetSpy = vi
+      .spyOn(redis, 'get')
+      .mockImplementation(((key: string) =>
+        key === __test_seams.REDIS_KEY_CALC_VERSION ? Promise.resolve(matchingVersion) : realGet(key)) as never);
 
     const batchMapSpy = vi.spyOn(reputationModule, 'batchMapToScoreRecord');
     // Short-circuit the SQL so the cycle loop doesn't burn the budget.
@@ -415,6 +429,7 @@ describe('reputation-batch internals: prev_scores rehydration uses batchMapToSco
       // getBatchReputationMap(); guard it has the expected interface.
       expect(firstCallArg).toBeInstanceOf(Map);
     } finally {
+      calcVersionGetSpy.mockRestore();
       batchMapSpy.mockRestore();
       computeSpy.mockRestore();
       accSpy.mockRestore();

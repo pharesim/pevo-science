@@ -138,6 +138,19 @@ describe('reputation batch: only fully-elapsed cycles are scored', () => {
     // cycle:last so sibling suites are not perturbed.
     const priorCycle = await redis.get(__test_seams.REDIS_KEY_LAST_CYCLE);
     await redis.del(__test_seams.REDIS_KEY_LAST_CYCLE);
+    // Make this run immune to the cross-file-shared calc:version key: intercept
+    // ONLY the calc:version read and return the fingerprint runBatchComputation
+    // computes for the stubbed weights, so calcVersionChanged is false. This
+    // keeps the run from PERSISTING calc:version (which would otherwise leak the
+    // stub fingerprint into shared Redis) and from being knocked off its
+    // geometry by a concurrent sibling's calc:version write. Other keys delegate
+    // to the real client.
+    const matchingVersion = reputationModule.computeCalcVersion({ ...DEFAULT_REPUTATION_WEIGHTS, cycle_blocks: CYCLE_BLOCKS });
+    const realGet = redis.get.bind(redis);
+    const calcVersionGetSpy = vi
+      .spyOn(redis, 'get')
+      .mockImplementation(((key: string) =>
+        key === __test_seams.REDIS_KEY_CALC_VERSION ? Promise.resolve(matchingVersion) : realGet(key)) as never);
 
     try {
       await runBatchComputation(60_000);
@@ -159,6 +172,7 @@ describe('reputation batch: only fully-elapsed cycles are scored', () => {
       expect(parsed.breakdown.reviews).toBeGreaterThan(0);
       expect(parsed.breakdown.citations).toBeGreaterThan(0);
     } finally {
+      calcVersionGetSpy.mockRestore();
       if (priorCycle !== null) {
         await redis.set(__test_seams.REDIS_KEY_LAST_CYCLE, priorCycle);
       } else {
