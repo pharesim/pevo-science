@@ -227,9 +227,9 @@ afterEach(() => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// /api/auth/confirm — the pending-signup-row repro from the task: a fresh
-// ORCID signup (pending row L) finalizing an ORCID already bound on chain to a
-// different account (self-custody B) must be refused with 409 ORCID_ALREADY_LINKED.
+// /api/auth/confirm — a fresh ORCID signup (pending `accounts` row, no username
+// yet) finalizing an ORCID already accredited on chain to a DIFFERENT
+// (self-custody) account must be refused with 409 ORCID_ALREADY_LINKED.
 // ──────────────────────────────────────────────────────────────────────────
 describe.skipIf(!dbReachable || !redisReachable)('/api/auth/confirm ORCID-binding guard', () => {
   const username = `obgcf${SUFFIX}`;
