@@ -325,3 +325,76 @@ suites green: `admin-endpoints` (36), `fresh-auth` lib (71), `orcid` (108).
    `/roster/revoke` test: root demotes a super_admin (body omits `level` per item 2),
    asserting `200` + the `admin_revoke` payload (`account`, `level: 'super_admin'`,
    `issued_by: ROOT`).
+
+## Architect re-review (2026-06-15) — HELD PENDING FIXES (round 2):
+
+`/ce-code-review` ran on the re-review diff (commit `fad7ca56`, the single hold-fix
+commit) with the full persona fleet (correctness, security, adversarial, testing,
+maintainability, project-standards, reliability, api-contract, learnings;
+`ce-agent-native-reviewer` skipped per project policy).
+
+**Five of the six prior hold items are verified FIXED and clean** — no further work:
+- Item 1 (grant-demote guards): correctness/security/adversarial traced every
+  `(caller, target, requested)` tier combination; the self-downgrade 422 and
+  peer-super_admin 403 guards close the bypass and preserve the root-only legitimate
+  demotion. The three grant-block tests assert status AND no-broadcast on the deny paths.
+- Item 2 (dead `level` removed): no handler reads `req.body.level`; the revoke handler
+  re-resolves the live tier from `getAdminLevel`; Zod strips the console's extra key
+  (non-breaking, confirmed against the `/admin/roster/revoke` client).
+- Item 3 (timeout cache-bust): code is correct — `outcome === 'timeout'` matches
+  `handleBroadcastError`'s contract and the busted keys match each handler's success-path
+  key. (Test coverage gap below.)
+- Item 4 (derived valid-action message): `validFreshAuthActionsMessage` reproduces the
+  prior lists exactly and correctly surfaces `admin_sanction` (the old hand-copied
+  strings wrongly omitted it). Emdash-clean.
+- Item 5 (WoT `issued_by:'wot'`): satisfied on main — the cascade test is gone and
+  `wot-broadcast-timeout`'s happy path asserts the marker.
+
+No P0. Security, correctness, adversarial, and project-standards returned no findings.
+Comment anchors are clean (guards anchor on `/roster/revoke`, `getAdminLevel`, and
+behavioral semantics) and the mock carve-out header + real-path companion are documented.
+
+Archive is held on the following (user-triaged 2026-06-15):
+
+1. **(P1) Prior item 6 is NOT actually fixed — the claimed test does not exist.** The
+   round-1 re-review note states a positive `/roster/revoke` "root demotes a super_admin"
+   test was added, but `fad7ca56` added exactly three `it()` cases and all three are in
+   the `POST /api/admin/roster/grant` describe block (the item-1 guards). The
+   `POST /api/admin/roster/revoke` block received no new test; its only positive case is
+   the pre-existing `super_admin demotes an admin`. The root-only positive branch — root
+   successfully demoting a current `super_admin` via `/roster/revoke` — is uncovered.
+   Add it to the `/roster/revoke` describe block: a `root` caller demotes a `super_admin`
+   target (body omits `level` per item 2), asserting `200`, exactly one broadcast, and the
+   `admin_revoke` payload (`account`, `level: 'super_admin'`, `issued_by` = the root
+   account). The grant-block "root CAN lower a super_admin" test is a different endpoint
+   and op (`admin_grant`) and does not cover this branch.
+
+2. **(P2) Item-3 timeout cache-bust is correct but untested (4-reviewer corroborated:
+   correctness, reliability, testing, adversarial).** The new
+   `if (outcome === 'timeout') void hafCache.invalidate(...)` on `/papers/retract`,
+   `/authorship/revoke`, and `/authorship/approve` has no test. The broadcast is already
+   mocked in `admin-endpoints.test.ts`, so this is mechanical (no live chain): stub the
+   admin broadcast to reject with a `BroadcastTimeoutError`, then assert the ambiguous
+   `'timeout'` response envelope AND that `hafCache.invalidate` was called with the
+   matching key for that handler (`retracted-papers` for retract; `claims:<author>:<permlink>`
+   for revoke/approve). One test per handler (or a shared table) is enough.
+
+3. **(P3, folded in) Pin the Zod strip-not-reject guarantee for the removed revoke
+   `level` field.** Item 2 relies on Zod's default strip behavior so the console's
+   `{ account, level, fresh_auth_proof }` body still parses. Add a test posting that body
+   (with the now-removed `level` key) to `/api/admin/roster/revoke` and asserting `200`
+   (not `400`), so a future accidental `.strict()` on `adminRosterRevokeSchema` is caught.
+
+**Dismissed (no action):** the maintainability suggestion to unify the new
+`PER_USER_CRITICAL_ACTION_TUPLE` with the per-action membership OR-chains in
+`routes/custody.ts` / `routes/orcid.ts` (a residual third enumeration of the same four
+actions). This is pre-existing duplication that the commit REDUCED — it collapsed three
+hand-copied error strings into one derivation; the OR-chains predate it. Out of scope for
+hold-item 4 (which asked only to derive the error string, done correctly) and not a defect
+introduced here.
+
+Anchor any new test comments on stable symbols (route paths, handler/describe-block names,
+`hafCache` key strings), not line numbers, task slugs, round numbers, or SHAs, per the
+comment-anchor conventions. When the three test additions land, `git mv` this file back to
+`tasks/review/`; the move is the re-review signal, and the next pass will scope
+`/ce-code-review` to the commits since this block (items 1-5 above are already cleared).
