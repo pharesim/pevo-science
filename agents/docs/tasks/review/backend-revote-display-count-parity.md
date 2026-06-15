@@ -89,3 +89,48 @@ Surfaced while reproducing reputation for `pevo.science`: the reputation calc an
 were never extended, leaving the review/comment count surfaces native-only. Low
 severity (display-count drift, not a reputation or auth defect); the score itself
 is computed from the correct native+revote stream.
+
+## Implementation note (backend)
+
+`accreditedVoteCount` (`backend/src/hafsql.ts`) gained an optional `appTagParam`.
+When supplied, it emits a native + `revote` UNION-ALL form resolving the latest
+signal per voter across both arms by `block_num DESC, op_id DESC` (parity with the
+`*_vote_signals` CTEs in `reputation.ts`). The native-only form (no `appTagParam`)
+is byte-identical to before, for the papers-list path that `batchResolveVotes`
+overwrites. Threaded through FOUR display surfaces:
+
+- `routes/reviews.ts` (single-review `net_votes`)
+- `routes/comments.ts` (comment-tree `accredited_votes`)
+- `routes/profile.ts` (votes-sort `net_votes`, collapsing the inline twin)
+- `routes/papers.ts` `fetchPaperDetailFromHaf` reviews-list `net_votes` — a FOURTH
+  surface NOT in the original "Affected surfaces" list above. It is the
+  paper-detail/enrichment embedded `reviews[].net_votes`, an inline native-only
+  twin of the same bug class; the paper's own count there is already revote-aware
+  via the JS `revoteMap`, but the embedded reviews' counts were native-only.
+  Approved for in-scope inclusion (same review showed divergent counts on the
+  paper page vs its single-review page).
+
+Performance: the revote arm is a per-row correlated scan whose only index-backed
+predicate is `custom_id` (HAF cannot index the JSON-extracted author/permlink), so
+it is O(namespace x rows). Cheap at current scale (single-digit namespace, ~zero
+revotes), documented inline with a collapse-to-batched threshold. Follow-up task
+`backend-revote-count-batched-scan-on-namespace-growth` filed for the batched
+single-scan refactor if/when the custom_json namespace grows.
+
+## [TODO Architect] — contract-doc updates (backend cannot edit api-contracts)
+
+The displayed `net_votes` / `accredited_votes` count semantics are now revote-aware
+on the review, comment, profile-votes-sort, and paper-detail-embedded-review
+surfaces. The integrator-facing contracts still frame these counts as native-Hive
+only and need the parallel update the paper-level `voters[]` already has:
+
+1. `api-contracts/reviews.md` — the `net_votes` field note: state the count folds
+   the latest accredited signal across native votes and post-payout `revote`
+   `custom_json` (parity with reputation and the paper-detail `voters[]` note).
+2. `api-contracts/common.md` — the Accredited-Only Data Policy `net_votes` sentence
+   likewise.
+3. `api-contracts/papers.md` — optionally a per-field note on the paper-detail
+   embedded `reviews[].net_votes` making its revote-awareness explicit alongside
+   the existing paper-level `voters[]` revote note.
+
+(No emdashes in the contract prose, per the project rule for integrator-facing docs.)
