@@ -675,10 +675,12 @@ export default tseslint.config(
     //     production members set. A production importer could silently divert the
     //     index off the real key.
     //   - reputation-batch `__test_seams` exposes the cycle-swap Lua script (and
-    //     its staging/prod substrings), the batch Redis key constants, and the
+    //     its staging/prod substrings), the batch Redis key constants, the
     //     staging/sentinel cleanup helpers (clearStagingKeys,
-    //     clearInProgressSentinels). A production importer could run the
-    //     destructive staging/sentinel cleanup or divert the batch keys.
+    //     clearInProgressSentinels), and the de-accredited-member prune
+    //     (pruneDeAccreditedMembers). A production importer could run the
+    //     destructive staging/sentinel cleanup, divert the batch keys, or
+    //     blanket-delete score keys via the prune.
     files: ['src/**/*.ts'],
     rules: {
       'no-restricted-imports': [
@@ -707,7 +709,7 @@ export default tseslint.config(
               group: ['**/reputation-batch', '**/reputation-batch.js'],
               importNames: ['__test_seams'],
               message:
-                'Do not import __test_seams from reputation-batch in production code. It exposes the cycle-swap Lua script (and its staging/prod substrings), the batch Redis key constants (staging prefix, last-cycle, in-progress sentinel prefix, batch lock, batch members), and the staging/sentinel cleanup helpers (clearStagingKeys, clearInProgressSentinels). The seam is for tests/ only.',
+                'Do not import __test_seams from reputation-batch in production code. It exposes the cycle-swap Lua script (and its staging/prod substrings), the batch Redis key constants (staging prefix, last-cycle, in-progress sentinel prefix, batch lock, batch members), the staging/sentinel cleanup helpers (clearStagingKeys, clearInProgressSentinels), and the de-accredited-member prune (pruneDeAccreditedMembers). The seam is for tests/ only.',
             },
           ],
         },

@@ -7,9 +7,16 @@
  * prune is the backstop for op-less WoT threshold drops, which have no handler
  * to invalidate on.)
  *
- * Uses real Redis (no mocked client); vacuous pass when Redis is unavailable.
+ * Most specs use real Redis (no mocked client; vacuous pass when Redis is
+ * unavailable). The single "per-command error" prune spec is the exception
+ * (carve-out: deterministic edge-case + observability spy): a per-command DEL
+ * failure cannot be induced on real Redis (DEL succeeds on any key/type), so it
+ * passes a FAKE client whose prune pipeline `exec()` returns an SREM-ok/DEL-fail
+ * tuple, and spies on the logger to assert the partial-apply is surfaced. The
+ * real-Redis prune spec above it covers the integrated path; no auth/permission
+ * middleware is involved here.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { getRedis } from '../../src/redis.js';
 import {
   batchKey,
@@ -18,6 +25,7 @@ import {
   invalidateOnRevocation,
 } from '../../src/reputation.js';
 import { __test_seams as batchSeams } from '../../src/reputation-batch.js';
+import { logger } from '../../src/logger.js';
 
 describe('reputation invalidate-on-sanction', () => {
   it('collapses a member score to ZERO and prunes the member on invalidateOnRevocation', async () => {
@@ -87,5 +95,36 @@ describe('reputation batch per-cycle prune', () => {
 
     // Cleanup (tests/setup.ts also flushes the appTag namespace).
     await redis.del(batchKey(live), membersKey);
+  });
+
+  it('warns (does not silently orphan a score key) when the prune pipeline returns a per-command error', async () => {
+    // A per-command DEL failure cannot be induced on real Redis, so drive a fake
+    // client whose pipeline exec() returns an SREM-ok/DEL-fail tuple. The prune
+    // must inspect the tuple and warn — otherwise the member leaves the index
+    // (never re-pruned) while its prod score key survives.
+    const exec = vi.fn().mockResolvedValue([
+      [null, 1], // SREM ok
+      [new Error('DEL failed'), null], // DEL per-command error
+    ]);
+    const prunePipe = { srem: vi.fn().mockReturnThis(), del: vi.fn().mockReturnThis(), exec };
+    const fakeRedis = {
+      smembers: vi.fn().mockResolvedValue([batchKey('orphan-fixture-user')]),
+      pipeline: vi.fn().mockReturnValue(prunePipe),
+    } as unknown as Parameters<typeof batchSeams.pruneDeAccreditedMembers>[0];
+
+    const warnSpy = vi.spyOn(logger, 'warn');
+    try {
+      // Empty live set => the single member is stale => SREM + DEL pipelined.
+      await batchSeams.pruneDeAccreditedMembers(fakeRedis, 'test:prune:partial-failure', new Set<string>(), 7);
+      expect(exec).toHaveBeenCalledTimes(1);
+      // The partial-failure warn carries `pruned` (the outer-catch warn does not),
+      // so a warn with that field is the per-command-error branch firing.
+      const warnedPartial = warnSpy.mock.calls.some(
+        ([ctx]) => !!ctx && typeof ctx === 'object' && 'pruned' in (ctx as Record<string, unknown>),
+      );
+      expect(warnedPartial).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

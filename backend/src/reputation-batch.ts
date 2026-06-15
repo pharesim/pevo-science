@@ -184,8 +184,27 @@ export async function repairAbandonedBatchState(): Promise<void> {
  * UP through `batchKey` before the set-difference (rather than stripping the
  * index entries down) so the comparison happens in one space and the stale
  * entries — already full keys — are SREM'd and DEL'd directly, with no
- * double-prefix. Best-effort: a failure reconciles at the next cycle (the stale
- * key is harmless until then — getBatchReputationMap MGET-null-skips it).
+ * double-prefix.
+ *
+ * Failure modes: a connection-level `exec()` REJECTION applies nothing (the
+ * pipeline fails at the transport before any command lands), so the outer catch
+ * just retries the whole prune next cycle — harmless. A PER-COMMAND error is
+ * different: ioredis still applies the commands that succeeded, so an
+ * SREM-ok/DEL-fail removes the member from the index while its prod score key
+ * survives. That orphan is NOT re-pruned next cycle (the member is already gone
+ * from the index, so SMEMBERS never re-targets it) and `getReputationScore`
+ * keeps reading the surviving key. The per-command-error check below makes that
+ * case observable via a warn (mirrors the staging pipeline's tuple inspection).
+ *
+ * Accepted window: `seedAccreditationBonus` writes a provisional NX score + an
+ * index entry for a just-accredited account, but the live set
+ * (`getAllAccreditedAccounts`) is cache-/ingestion-lagged, so a cycle firing
+ * inside that window can transiently prune the just-seeded provisional score. It
+ * self-heals once the account enters `scoredUsers` and the next cycle recomputes
+ * — consistent with the accepted <=10-min membership-cache staleness window. The
+ * DEL is REQUIRED regardless: a de-accredited account's `getReputationScore`
+ * must collapse to ZERO, and that read hits the prod key directly, so SREM-only
+ * would leave a stale positive score.
  *
  * `membersKey` is a parameter (production passes REDIS_KEY_BATCH_MEMBERS) so a
  * test can point the blanket "remove everything not in scoredUsers" prune at a
@@ -205,8 +224,20 @@ async function pruneDeAccreditedMembers(
       const prunePipe = redis.pipeline();
       prunePipe.srem(membersKey, ...stale);
       for (const m of stale) prunePipe.del(m);
-      await prunePipe.exec();
-      logger.info({ cycle, pruned: stale.length }, 'Pruned de-accredited members from the reputation index');
+      // ioredis pipeline.exec() resolves with a [err, res] tuple per command and
+      // rejects only on a connection-level fault. Inspect every tuple so a
+      // partial apply (SREM lands, a DEL fails) is surfaced rather than silently
+      // orphaning a prod score key the index no longer points at.
+      const results = await prunePipe.exec();
+      const failed = results?.find(([err]) => err !== null);
+      if (failed) {
+        logger.warn(
+          { cycle, pruned: stale.length, err: failed[0]?.message },
+          'Reputation members prune pipeline returned a per-command error; an SREM-ok/DEL-fail orphans a stale score key (the index entry is already gone, so it is not re-pruned next cycle)',
+        );
+      } else {
+        logger.info({ cycle, pruned: stale.length }, 'Pruned de-accredited members from the reputation index');
+      }
     }
   } catch (pruneErr) {
     logger.warn({ err: pruneErr, cycle }, 'Reputation members prune failed; reconciles next cycle');
