@@ -95,9 +95,16 @@ router.patch(
       );
     }
 
-    // Currently-accredited membership check. HAF is confirmed reachable (the op
-    // load above did not throw), so an empty result is a genuine "not a current
-    // member" (below-threshold WoT, legacy-revoked, or sanction-suppressed) -> 403.
+    // Currently-accredited membership check. Unlike the op-read above, this does
+    // NOT confirm HAF reachability: getAccreditedSet may answer from the
+    // accredited_accounts_all cache (10-min TTL) or safe-fail to empty on a HAF
+    // blip, so an empty result can be either a genuine "not a current member"
+    // (below-threshold WoT, legacy-revoked, or sanction-suppressed) OR a transient
+    // HAF artifact. Both resolve to a fail-closed 403 under the same ACCEPTED,
+    // self-correcting tradeoff the op-read block documents above: no broadcast, the
+    // proof is not consumed, and a real member's next retry succeeds once HAF
+    // recovers. The hasUnliftedSanction check below shares this tradeoff (it
+    // fail-closes to "sanctioned", likewise a fail-closed 403 on a HAF blip).
     const accreditedSet = await getAccreditedSet([username]);
     if (!accreditedSet.has(username)) {
       return sendError(
