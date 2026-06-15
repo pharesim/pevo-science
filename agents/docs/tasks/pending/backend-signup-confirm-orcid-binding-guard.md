@@ -273,3 +273,66 @@ above, `api-contracts/auth.md` needs a chain-binding cause for `409 ORCID_ALREAD
 added to the `/api/auth/confirm` and `/api/auth/link` error lists (distinct from the
 existing `/signup` DB-index cause). Backend cannot edit contract files (architect-owned);
 flagged here at review intake.
+
+## Architect review (2026-06-15) — HELD PENDING FIXES (commit 63ebde27)
+
+Reviewed via `/ce-code-review` (correctness, security, adversarial, testing,
+maintainability, project-standards, api-contract, reliability, performance, learnings).
+The implementation is sound on substance: correctness, security, reliability, and
+performance returned clean. The `orcid.ts` → `lib/orcid-binding.ts` extraction is
+byte-equivalent; the TOCTOU lock is correctly closed (binding check + broadcast + cache
+under `withOrcidBindingLock`); the Redis-down path fails CLOSED on the HAF check (only
+same-instant serialization is lost, acceptable for single-instance); and the guarded
+account-state transition aligns with `ARCHITECTURE.md` § 6. Decisions A1/A2/B and the
+lock-parity requirement are all implemented as directed.
+
+Two items must land before archive:
+
+1. **Comment-anchor rot — "decision A1" citation (P2).** The new test file
+   `backend/tests/routes/signup-verify-orcid-binding-guard.test.ts` cites "Per
+   ARCHITECTURE.md decision A1" and "Finalized-but-unaccredited (A1)" in test comments.
+   `ARCHITECTURE.md` has NO "A1" label — "decision A1" is a coordination label coined in
+   THIS task file, which becomes a dead pointer when the task archives into
+   `tasks-archive.md` (trimmed at 250 lines). This violates root `CLAUDE.md` "Comment
+   anchors" (coordination-label citations rot on archive). Fix: replace both citations
+   with the stable behavioral anchor — accreditation is an on-chain dimension orthogonal
+   to the § 6.1 `accounts`-table state machine, so a finalized-but-unaccredited account is
+   an existing State A/B/C and the row stays finalized + recoverable. Anchor on the § 6
+   behavioral fact, NOT on the "A1" label and NOT on a task slug or round number (the
+   replacement must not itself introduce a rotting anchor).
+
+2. **Test coverage gaps (P2).** The new test file covers the 409 via `/confirm`
+   (pending-row repro), the 409 via `/link` (real signed request, real
+   `verifyHiveSignature`), and the `/confirm` same-account allowance — good. Add real-path
+   coverage for: (a) the resume / stuck-recovery flavor (`isResume`) with a conflicting
+   ORCID binding — the guard fires at the same site on resume but no resume-flavor conflict
+   is exercised; (b) the `/link` same-account allowance (only `/confirm` is covered today)
+   — a regression that 409s the link route on a same-account re-finalize would currently be
+   silent.
+
+Dismissed (no action):
+- **409-message divergence** (`'held'` branch "currently being linked by another request"
+  vs durable "already linked to another account"): pre-existing (the wrapper was moved
+  byte-equivalent; the message was already in `orcid.ts`), intentional, and documented as
+  wire-indistinguishable-by-design at the durable-binding `sendError` in `routes/orcid.ts`.
+  The pinned wire shape (status + code + no-`retriable`) matches; the message is
+  server-side cause telemetry only. Not a contract violation.
+- **P3 maintainability nits** — the test-seam relay exports (`releaseBindingLock` +
+  `HAF_INDEXING_LAG_CEILING_SECONDS` re-exported through `orcid.ts`) and the inline
+  `orcidBindingKey` duplicate in the new test — both mirror the established
+  `orcid.ts` / `orcid.test.ts` convention; not worth the churn.
+
+Resolved by the architect (no backend action):
+- **`api-contracts/auth.md` contract update — DONE** in this same review pass: the
+  chain-binding `409 ORCID_ALREADY_LINKED` cause is now documented on `/api/auth/confirm`
+  and `/api/auth/link`, distinct from the `/signup` DB-index cause. The `[TODO Architect]`
+  note above is discharged.
+
+Spun off (no action on this task):
+- The broadcast-timeout extended-lock interaction that turns a legitimate signup retry
+  into a misleading terminal 409 (adversarial finding, conf 75) is filed as
+  `backend-signup-finalize-timeout-extended-lock-409` in `tasks/pending/`. It needs an
+  architect wire-shape decision and is independent of this task's guard.
+
+When items 1-2 land, `git mv` this file back to `tasks/review/` — the move is the
+re-review signal; re-review will scope to the commits since this block.
