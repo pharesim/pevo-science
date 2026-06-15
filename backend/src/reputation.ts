@@ -514,13 +514,15 @@ export const CALC_VERSION = 1;
  * `update_weights` auto-triggers a backfill). When this string differs from the
  * value persisted in Redis, the batch loop replays every cycle from 0.
  *
- * The weights are serialized key-sorted so JS property-insertion order can never
- * change the hash for an identical weight set (which would spuriously force a
- * full recompute on a no-op deploy).
+ * The weights are serialized key-sorted by Unicode codepoint (a locale-independent
+ * comparator, NOT localeCompare, so an identical weight set hashes identically
+ * regardless of the deploy process's locale) so JS property-insertion order can
+ * never change the hash for an identical weight set (which would spuriously force
+ * a full recompute on a no-op deploy).
  */
 export function computeCalcVersion(weights: ReputationWeights): string {
   const canonical = JSON.stringify(
-    Object.entries(weights).sort(([a], [b]) => a.localeCompare(b)),
+    Object.entries(weights).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   );
   const weightsHash = createHash('sha256').update(canonical).digest('hex').slice(0, 16);
   return `${CALC_VERSION}:${weightsHash}`;
@@ -669,6 +671,9 @@ export async function computeReputationBatch(
     }>(
       pool,
       BATCH_QUERY_TIMEOUT_MS,
+      // BUMP CALC_VERSION (see its docblock) when changing scoring behavior in this
+      // SQL: an unbumped change deploys silently-stale scores into the forward-only
+      // batch loop. computeCalcVersion folds the weights row automatically, not this SQL.
       `WITH RECURSIVE
 
       -- Cast weight parameters once

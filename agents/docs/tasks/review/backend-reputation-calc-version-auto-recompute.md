@@ -171,3 +171,43 @@ Dismissed (recorded, no action):
 When the three items land, `git mv` this file back to `tasks/review/` for
 re-review and archive. (The `/ce-compound` test-isolation candidate noted above
 stays open for the archive checkpoint.)
+
+## Backend re-review signal (2026-06-15)
+
+All three held items landed (working tree, this commit):
+
+1. **CALC_VERSION bump reminder at the scoring SQL** (`computeReputationBatch`,
+   `backend/src/reputation.ts`). Added a comment immediately above the
+   `WITH RECURSIVE` scoring SQL string pointing back to `CALC_VERSION` /
+   `computeCalcVersion`: an unbumped scoring change deploys silently-stale scores
+   into the forward-only loop, and `computeCalcVersion` folds the weights row
+   automatically but not the SQL logic. The bump obligation is now visible at the
+   point of edit, not only on the constant's far-away docblock.
+
+2. **Locale-independent key comparator in `computeCalcVersion`**
+   (`backend/src/reputation.ts`). Replaced `a.localeCompare(b)` in the weight-key
+   sort with `(a, b) => (a < b ? -1 : a > b ? 1 : 0)` (Unicode codepoint order), so
+   an identical weight set hashes identically regardless of the deploy process's
+   locale. The docblock now states the comparator is deliberately codepoint-based,
+   NOT localeCompare, to guard against a future tidy-up reintroducing the locale
+   dependency. Fingerprint is byte-identical for today's ASCII weight keys (the
+   recompute test's dynamically-computed CURRENT_VERSION still matches the run's
+   stamp), so no spurious recompute and no test churn.
+
+3. **weightsArg-threading assertion in the recompute test**
+   (`backend/tests/routes/reputation-calc-version-recompute.test.ts`). The
+   "changed calc-version forces a full replay" case now asserts every compute call's
+   4th positional arg equals the run's `TEST_WEIGHTS`, so a regression dropping the
+   single-snapshot thread (reverting to a per-cycle `getReputationWeights()` and
+   reopening the mid-run WEIGHTS_TTL-swap race) is caught.
+
+Verification (against the real HAF endpoint, not a local-DB stand-in):
+`npm run typecheck` (src + tests) clean; `npm run lint` clean for the touched src
+file (the single pre-existing warning is in `author-supersession.ts`, untouched);
+the four calc-version-touching test files (`reputation-calc-version-recompute`,
+`reputation-batch-internals`, `reputation-batch-cycle-boundary`,
+`reputation-batch-sql-failure`) are green (24/24), including the new fix-3
+assertion. Note `reputation-batch-internals`'s default-param case calls the real
+`getReputationWeights()`, so it needs the real HAF node (it red-herrings as a
+failure when HAF_DATABASE_URL points at the local app DB, which lacks the hafsql
+schema).

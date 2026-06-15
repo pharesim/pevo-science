@@ -137,6 +137,10 @@ describe('reputation calc-version: auto-recompute on change', () => {
     // Full replay: cycles 0,1,2 recomputed (3 calls) despite cycle:last=2.
     expect(computeSpy).toHaveBeenCalledTimes(3);
     expect(computeSpy.mock.calls.map((c) => c[2])).toEqual([cycleEnd(0), cycleEnd(1), cycleEnd(2)]);
+    // Every cycle gets the run's single weights snapshot (4th arg), so a regression
+    // reverting to a per-cycle getReputationWeights() (reopening the mid-run
+    // WEIGHTS_TTL-swap race) is caught.
+    expect(computeSpy.mock.calls.map((c) => c[3])).toEqual([TEST_WEIGHTS, TEST_WEIGHTS, TEST_WEIGHTS]);
     // cycle:last lands at the last fully-elapsed cycle (2); the new version is stamped.
     expect(await redis.get(__test_seams.REDIS_KEY_LAST_CYCLE)).toBe('2');
     expect(await redis.get(__test_seams.REDIS_KEY_CALC_VERSION)).toBe(CURRENT_VERSION);
