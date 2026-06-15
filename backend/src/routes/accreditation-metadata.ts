@@ -52,17 +52,29 @@ router.patch(
       return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required to edit accreditation metadata');
     }
 
-    // Load the current accredit op FIRST. It is BOTH the merge source AND the
-    // upstream HAF-reachability gate. Reading it before consuming the single-use
-    // fresh-auth proof means a transient HAF read failure surfaces as a retriable
-    // 503 with the proof NOT burned. getLatestAccreditOp THROWS on a HAF outage
-    // and returns null only for a genuine "no accredit op", so this one read
-    // distinguishes HAF-unavailable (-> 503, fail closed: no broadcast) from a
-    // not-accredited account (-> 403) — the same distinction the sibling /verify
-    // path gets from its existing-accreditation gate. Because HAF is confirmed
-    // reachable here, the fail-closed eligibility checks below (getAccreditedSet
-    // -> empty, hasUnliftedSanction -> refuse) can be trusted as genuine
-    // "not a member / sanctioned" 403s rather than HAF blips.
+    // Load the current accredit op FIRST. It is BOTH the merge source AND a
+    // HAF-reachability gate for the COMMON outage case. Reading it before
+    // consuming the single-use fresh-auth proof means a transient HAF read failure
+    // surfaces as a retriable 503 with the proof NOT burned: getLatestAccreditOp
+    // THROWS on a HAF outage and returns null only for a genuine "no accredit op",
+    // so this one read distinguishes HAF-unavailable (-> 503, fail closed: no
+    // broadcast) from a not-accredited account (-> 403) — the same distinction the
+    // sibling /verify path gets from its existing-accreditation gate.
+    //
+    // It does NOT prove the membership/sanction reads below hit a reachable HAF.
+    // getAccreditedSet's warm-cache fast path (accredited_accounts_all, 10-min
+    // TTL) can answer WITHOUT touching HAF at all, and the reads run as
+    // independent queries — a HAF blip (or a reaped pgbouncer connection) AFTER
+    // this op-read succeeds can fail a later read. getAccreditedSet then
+    // safe-fails to empty and hasUnliftedSanction fail-closes to "sanctioned", so
+    // a legitimately-eligible caller transiently gets a misleading 403 (FORBIDDEN
+    // or ACCREDITATION_SANCTIONED) instead of the retriable 503 the op-read path
+    // returns. This is an ACCEPTED, self-correcting tradeoff: it stays fail-closed
+    // (no broadcast, the proof is not consumed) and resolves on the client's next
+    // retry once HAF recovers. Surfacing the 503 distinction on these reads would
+    // require throwing variants of getAccreditedSet / hasUnliftedSanction, whose
+    // safe-fail / fail-closed contracts are relied on broadly by other callers and
+    // are deliberately left unchanged.
     let prior: Awaited<ReturnType<typeof getLatestAccreditOp>>;
     try {
       prior = await getLatestAccreditOp(username);

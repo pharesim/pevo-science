@@ -134,3 +134,13 @@ Preferred: extend the outage -> 503 distinction to the membership/sanction reads
 - Testing P3s (legacy `issued_by=''` -> admin-marker fallback unexercised; method-carry-forward not pinned as the self-lift vector): optional, batchable if the handler is touched for item 1.
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Do not edit this hold block — the commit diff is the evidence.
+
+## Backend re-review signal (2026-06-15, round 2 — working tree)
+
+Round-2 hold item 1 landed (the only blocker; all 6 round-1 items were verified resolved).
+
+**1. [P2] HAF-reachable inference comment corrected (floor).** The handler moved to `routes/accreditation-metadata.ts` (the cleanup-task split). Its comment claimed "Because HAF is confirmed reachable here, the fail-closed eligibility checks below can be trusted as genuine 403s" — which is wrong: `getAccreditedSet`'s warm-cache fast path answers WITHOUT touching HAF, and the op-read / membership / sanction reads are independent queries, so a HAF blip after the op-read succeeds makes `getAccreditedSet` safe-fail-to-empty and `hasUnliftedSanction` fail-close-to-true resolve to a misleading 403 instead of the retriable 503. The comment now describes the actual cache-or-query behavior and records the fail-closed-to-403 as an ACCEPTED, self-correcting tradeoff (no broadcast, proof not consumed, resolves on the client's retry once HAF recovers).
+
+**Floor chosen over the preferred fuller fix.** Extending the outage->503 distinction to the membership/sanction reads would require throwing variants of the SHARED `getAccreditedSet` (whose safe-fail-to-empty contract the hold explicitly scoped out of change) and `hasUnliftedSanction`, or duplicating their queries handler-locally — disproportionate for a SAFE, self-correcting, narrow-window edge (a HAF blip strictly between two back-to-back reads, and for the membership half only on a cold `accredited_accounts_all` cache). Comment-only; no behavior change.
+
+`npm run typecheck` (src+tests) + `npm run lint` clean.
