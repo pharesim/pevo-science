@@ -336,3 +336,42 @@ Spun off (no action on this task):
 
 When items 1-2 land, `git mv` this file back to `tasks/review/` — the move is the
 re-review signal; re-review will scope to the commits since this block.
+
+## Backend re-review signal (2026-06-15) — hold items 1-2 landed, moving to `review/`
+
+Both held items landed in `backend/tests/routes/signup-verify-orcid-binding-guard.test.ts`
+only (no production code touched, so the substance the architect already cleared —
+extraction byte-equivalence, the TOCTOU lock, the Redis-down fail-closed, the guarded
+state transition — is unchanged).
+
+- **Item 1 (comment-anchor rot — fixed).** Both `decision A1` / `(A1)` citations are gone.
+  Replaced with the stable behavioral anchor the hold prescribed: accreditation is an
+  on-chain dimension orthogonal to the `accounts`-table state machine (`ARCHITECTURE.md`
+  § 6.1), so a refused-broadcast account is an existing finalized state and stays
+  recoverable + unaccredited, not rolled back. No `A1` label, no task slug, no round
+  number, no line-number/SHA in the replacement. `grep "A1\|decision A"` on the file is
+  clean.
+
+- **Item 2 (test coverage gaps — added).** Two new real-path `describe.skipIf` blocks:
+  - (a) `/api/auth/confirm` ORCID-binding guard fires on the **stuck-recovery resume**
+    path (`isResume=true`): a post-finalize light-custody row whose ORCID is now bound to
+    a different account 409s on a `/confirm`-retry, no duplicate accredit broadcast and no
+    chain re-create; the row stays finalized (username, custody=light, verify_token NULL).
+    A new `seedStuckLightRowWithOrcid` helper mirrors `seedStuckAccount` in
+    `signup-verify-stuck-recovery.test.ts` but carries an ORCID so the guard runs.
+  - (b) `/api/auth/link` **same-account allowance** (the `/link` counterpart to the
+    already-covered `/confirm` same-account case): when the ORCID resolves to the same
+    Hive account being linked, the guard does NOT 409 — the link finalizes (200,
+    custody=self) and the accreditation broadcast fires. Asserts the cache resolves to the
+    linking account (a real cache hit, not an unbound passthrough that would also 200).
+
+Verification (real Postgres + Redis per project test policy):
+- `npm run typecheck` (src + tests) clean; `npm run lint` 0 errors (the one pre-existing
+  `author-supersession.ts` warning is unrelated).
+- `signup-verify-orcid-binding-guard.test.ts` 5/5 (3 prior + 2 new).
+- Siblings `signup-verify.test.ts` + `signup-verify-stuck-recovery.test.ts` 21/21 (no
+  regression; the 502/500 lines in the run are the deliberate broadcast-timeout /
+  injected-failure scenarios asserting error paths).
+
+The two new ORCID fixtures (`...-0004`, `...-0005`) are unique across the test tree (no
+`accounts_orcid_unique` collision on concurrent runs).
