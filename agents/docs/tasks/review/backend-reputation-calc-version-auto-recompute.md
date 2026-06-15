@@ -87,3 +87,33 @@ Surfaced while diagnosing why beta reputation stayed at the pre-fix value after 
 correct calc was deployed (the frozen-cycle gotcha). Low urgency — the manual
 `DEL cycle:last` + restart fix is known and fast — but this removes the operator
 footgun for good.
+
+## Implementation note (backend)
+
+- `CALC_VERSION` constant + `computeCalcVersion(weights)` in `reputation.ts`
+  (explicit version joined with a key-sorted sha256 of the sanitized weights, so
+  an on-chain `update_weights` auto-triggers a backfill without a code bump).
+- `runBatchComputation` reads `${appTag}:reputation:calc:version` inside the
+  batch lock; on mismatch it forces an IN-MEMORY `lastComputedCycle = -1`
+  (replay from 0) and persists the new version ONLY after the loop durably
+  reaches the latest fully-elapsed cycle (`reachedFullyElapsed`). The reset never
+  writes `cycle:last`, so the must-not-advance-on-failure invariant is intact (a
+  failed/partial run leaves both `cycle:last` and the version stamp untouched and
+  retries on the next run). A time-capped partial run re-replays from 0 next run
+  (idempotent; the 30-min budget fits the full cycle range many times over at
+  this scale) — inline comment documents the eager-atomic upgrade path if cycle
+  counts ever outgrow one run.
+- The run's single weights snapshot is threaded into `computeReputationBatch`
+  (new optional arg) so the persisted fingerprint always matches the weights
+  actually applied to scoring, even if the WEIGHTS_TTL periodic refresh swaps the
+  cache mid-run (review finding; also removes redundant per-cycle weights fetches).
+- No API-contract surface: `runBatchComputation` is a scheduler internal.
+
+Test-isolation learning (candidate for `/ce-compound`): `calc:version` is a NEW
+cross-file-shared singleton Redis key. Sibling batch tests that need a resume
+(`startCycle > 0`) or must avoid leaking a stub fingerprint now spy ONLY the
+`calc:version` READ (returning the matching fingerprint) instead of writing the
+shared key — this makes them immune to concurrent-file clobbering and writes
+nothing to leak. All affected files pass in isolation; the remaining combined-run
+flakiness is the pre-existing batch-lock contention (e.g. `stats-profile-parity`
+acquires the lock to guard against concurrent runs), not introduced here.
