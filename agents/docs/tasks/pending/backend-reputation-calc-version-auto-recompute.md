@@ -117,3 +117,57 @@ shared key — this makes them immune to concurrent-file clobbering and writes
 nothing to leak. All affected files pass in isolation; the remaining combined-run
 flakiness is the pre-existing batch-lock contention (e.g. `stats-profile-parity`
 acquires the lock to guard against concurrent runs), not introduced here.
+
+## Architect review (2026-06-15) — HELD PENDING FIXES:
+
+`/ce-code-review` (8 personas; correctness/adversarial at Opus) found the shipped
+code correct and well-tested: all batch-loop invariants verified (the in-memory
+`effectiveLastCycle=-1` reset never advances `cycle:last`; the `cycle:last` rewind
+during replay is safe under the held lock; persist-only-on-`reachedFullyElapsed`
+gates convergence). Conforms to all three cited convention docs, and the new tests
+cover every acceptance criterion with exact-value assertions. Three cheap,
+risk-tied items hold archive:
+
+1. **CALC_VERSION bump reminder at the scoring SQL (`computeReputationBatch` in
+   `backend/src/reputation.ts`).** The "BUMP THIS" obligation lives only on the
+   `CALC_VERSION` constant's docblock, far from the scoring SQL it governs. A
+   developer editing the scoring SQL without bumping the constant deploys silently
+   stale scores into the forward-only loop — the exact footgun this task exists to
+   close. Add a one-line reminder comment immediately above the SQL string inside
+   `computeReputationBatch` pointing back to `CALC_VERSION` / `computeCalcVersion`,
+   so the bump obligation is visible at the point of edit.
+
+2. **Locale-independent key comparator in `computeCalcVersion`
+   (`backend/src/reputation.ts`).** The weight-key sort uses `localeCompare` with no
+   pinned locale, so the fingerprint's stability depends on the process locale
+   (harmless for today's ASCII weight keys, latent if a key ever carries a
+   locale-sensitive character). Switch to a locale-independent comparator
+   (`(a, b) => (a < b ? -1 : a > b ? 1 : 0)`) so an identical weight set always
+   hashes identically regardless of deploy environment.
+
+3. **Assert the `weightsArg` threading in the recompute test
+   (`backend/tests/routes/reputation-calc-version-recompute.test.ts`).** The
+   "changed calc-version forces a full replay" case inspects the compute spy's call
+   count and `cycleEndBlock` arg but never the weights snapshot. Add an assertion
+   that the threaded weights argument equals the run's `TEST_WEIGHTS`, so a
+   regression dropping the snapshot thread (reverting to a per-cycle
+   `getReputationWeights()` and reopening the mid-run WEIGHTS_TTL-swap race) is
+   caught.
+
+Dismissed (recorded, no action):
+- Replay-from-0 is non-resumable, so a calc bump would freeze convergence IF the
+  finalized-cycle count ever exceeds one run's time budget. Real correctness-class
+  risk but far from current scale (single-instance, ~100 cycles, seconds each), and
+  the eager atomic version+cursor reset fix is already named inline in
+  `runBatchComputation`. Relying on the inline escape-hatch note; no follow-up task
+  filed (revisit only if cycle count approaches the per-run budget).
+- No test for the time-cap-leaves-version-unstamped path (preemptive; correct by
+  inspection). The four `as never` casts in the mock files (test idiom for the
+  overloaded `redis.get` / partial compute stub). The duplicated calc:version-read
+  spy block across three test files (DRY; `pinCalcVersionRead` could move to
+  fixtures). The optional 4th-positional `weightsArg` shape (existing codebase
+  pattern). All dismissed as polish.
+
+When the three items land, `git mv` this file back to `tasks/review/` for
+re-review and archive. (The `/ce-compound` test-isolation candidate noted above
+stays open for the archive checkpoint.)
