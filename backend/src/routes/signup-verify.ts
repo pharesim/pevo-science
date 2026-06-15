@@ -8,7 +8,7 @@ import { sendOk, sendError } from '../response.js';
 import { config } from '../config.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { getAppPool } from '../app-db.js';
-import { hiveClient, broadcastAdminCustomJson } from '../hive.js';
+import { hiveClient, broadcastAdminCustomJson, BroadcastTimeoutError } from '../hive.js';
 import { encryptKey } from '../custody-crypto.js';
 import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
@@ -24,8 +24,15 @@ import {
   PostBroadcastWriteError,
   classifyPostBroadcastSeverity,
   type HandleBroadcastErrorOpts,
+  type HandleBroadcastErrorAmbiguousOpts,
   type PostBroadcastFailedStep,
 } from '../lib/broadcast-error.js';
+import {
+  findAccreditedAccountWithOrcid,
+  withOrcidBindingLock,
+  cacheOrcidBinding,
+  extendBindingLockOnTimeoutOrLog,
+} from '../lib/orcid-binding.js';
 import {
   mintBinding,
   setBindingCookie,
@@ -190,83 +197,182 @@ async function broadcastAccreditationAndSeed(
       postBroadcastSuccessCopy(routeFlavor, failedStep),
   };
 
-  // HAF probe BEFORE broadcasting on a resume path. If the user is already
-  // accredited on chain (a prior attempt's broadcast landed), skip the
-  // broadcast and proceed to the (idempotent SET NX) seed. A probe error does
-  // NOT fail the resume — fall through to re-broadcast; the read-time dedup and
-  // seed SET NX backstop a duplicate custom_json.
-  let probeFoundAccreditation = false;
-  if (isResume) {
-    try {
-      const accredSet = await getAccreditedSet([username]);
-      probeFoundAccreditation = accredSet.has(username);
-    } catch (probeErr) {
-      logger.warn(
-        { err: probeErr, username },
-        `${routeLabel} HAF probe for existing accreditation failed; falling through to broadcast retry`,
-      );
+  // The probe -> broadcast -> cache -> seed cascade. Shared by the ORCID path
+  // (run inside `withOrcidBindingLock`) and the email-only path (run bare with
+  // `lockState: 'none'`). Sends NO response on success — the route issues the
+  // JWT after this returns. Error handling matches the signup error model
+  // (`handleBroadcastError`, NOT the ambiguous variant) on every branch EXCEPT
+  // a non-timeout broadcast error under `lockState: 'unavailable'` (Redis
+  // down), which is re-thrown so `withOrcidBindingLock`'s outer catch emits the
+  // 504 ambiguous-outcome envelope — with no lock-TTL margin and no binding
+  // cache, that outcome is genuinely uncertain and a blind retry could
+  // double-broadcast. Mirrors orcid.ts handleAccredit / handleLink.
+  const runAccreditCascade = async (
+    lockState: 'acquired' | 'unavailable' | 'none',
+  ): Promise<void | { skipRelease: true }> => {
+    // HAF probe BEFORE broadcasting on a resume path. If the user is already
+    // accredited on chain (a prior attempt's broadcast landed), skip the
+    // broadcast and proceed to the (idempotent SET NX) seed. A probe error does
+    // NOT fail the resume — fall through to re-broadcast; the read-time dedup and
+    // seed SET NX backstop a duplicate custom_json.
+    let probeFoundAccreditation = false;
+    if (isResume) {
+      try {
+        const accredSet = await getAccreditedSet([username]);
+        probeFoundAccreditation = accredSet.has(username);
+      } catch (probeErr) {
+        logger.warn(
+          { err: probeErr, username },
+          `${routeLabel} HAF probe for existing accreditation failed; falling through to broadcast retry`,
+        );
+      }
     }
-  }
 
-  let txId: string;
-  if (probeFoundAccreditation) {
-    // Skip broadcast — already on chain. Sentinel tx_id so a
-    // PostBroadcastWriteError envelope still carries a greppable reference if
-    // the seed throws below.
-    txId = 'haf-probe-already-accredited';
-    logger.info(
-      { username },
-      `${routeLabel} stuck-resume: HAF probe found existing accreditation; skipping broadcast`,
-    );
-  } else {
-    const evidenceHash = crypto
-      .createHash('sha256')
-      .update(`${account.email}:${username}:${evidenceSuffix}`)
-      .digest('hex');
+    let txId: string;
+    if (probeFoundAccreditation) {
+      // Skip broadcast — already on chain. Sentinel tx_id so a
+      // PostBroadcastWriteError envelope still carries a greppable reference if
+      // the seed throws below.
+      txId = 'haf-probe-already-accredited';
+      logger.info(
+        { username },
+        `${routeLabel} stuck-resume: HAF probe found existing accreditation; skipping broadcast`,
+      );
+    } else {
+      const evidenceHash = crypto
+        .createHash('sha256')
+        .update(`${account.email}:${username}:${evidenceSuffix}`)
+        .digest('hex');
 
-    let result: Awaited<ReturnType<typeof broadcastAdminCustomJson>>;
+      let result: Awaited<ReturnType<typeof broadcastAdminCustomJson>>;
+      try {
+        result = await broadcastAdminCustomJson({
+          action: 'accredit',
+          account: username,
+          name: account.full_name || username,
+          institution: account.institution || '',
+          field: account.field || '',
+          orcid: account.orcid || '',
+          method: 'email',
+          evidence_hash: evidenceHash,
+          // Issued by the admin account (the accreditor); see AccreditAction.
+          issued_by: config.hiveAdminAccount,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        if (err instanceof BroadcastTimeoutError && account.orcid) {
+          // Lock held (or degraded) + ambiguous timeout: extend the lock TTL to
+          // the HAF-lag ceiling so a concurrent bind for THIS ORCID cannot
+          // acquire a fresh lock while our broadcast may still land + before HAF
+          // indexes it, then surface the 504 timer-fire envelope. skipRelease
+          // leaves the extended lock in place. `account.orcid` truthiness here
+          // ⟺ we are inside `withOrcidBindingLock` (lockState != 'none'); the
+          // extend is a logged no-op on the 'unavailable' branch (no lock).
+          // Mirrors orcid.ts handleAccredit / handleLink.
+          await extendBindingLockOnTimeoutOrLog(account.orcid, routeLabel);
+          handleBroadcastError(res, err, broadcastErrOpts);
+          return { skipRelease: true };
+        }
+        if (lockState === 'unavailable') {
+          // Redis down: no lock-TTL margin, no binding cache to dedup a retry.
+          // Re-throw the non-timeout broadcast error so withOrcidBindingLock's
+          // outer catch emits the 504 ambiguous-outcome envelope.
+          throw err;
+        }
+        // 'none' (email-only, no lock) OR 'acquired' non-timeout: the signup
+        // error model — 502 BROADCAST_FAILED / 504 BROADCAST_TIMEOUT via
+        // handleBroadcastError (it discriminates the timeout internally).
+        handleBroadcastError(res, err, broadcastErrOpts);
+        return;
+      }
+      txId = result.id;
+    }
+
+    // Cache the ORCID binding so a concurrent bind in the HAF-lag window sees it
+    // via findAccreditedAccountWithOrcid() before the chain op is indexed
+    // (parity with orcid.ts handleAccredit / handleLink). Best-effort; never
+    // throws. No-op for email-only signups (orcid null) — nothing to bind.
+    if (account.orcid) {
+      await cacheOrcidBinding(account.orcid, username);
+    }
+
+    // Post-broadcast cascade. Chain op confirmed (or already on chain); any throw
+    // here is a downstream failure, not an ambiguous-outcome class. Discriminate
+    // via PostBroadcastWriteError so the catch emits 502 POST_BROADCAST_FAILED
+    // (outcome:'confirmed' + tx_id + failed_step) instead of 504 / 502
+    // BROADCAST_FAILED. Pass severity explicitly so a permanent-class
+    // (TypeError) failure routes through the operator-required path rather than
+    // the default 'transient' "automatic reconciliation" copy. seedAccreditation-
+    // Bonus re-throws only permanent-class errors. Mirrors orcid.ts handleAccredit.
+    const currentStep: PostBroadcastFailedStep = 'reputation_seed';
     try {
-      result = await broadcastAdminCustomJson({
-        action: 'accredit',
-        account: username,
-        name: account.full_name || username,
-        institution: account.institution || '',
-        field: account.field || '',
-        orcid: account.orcid || '',
-        method: 'email',
-        evidence_hash: evidenceHash,
-        // Issued by the admin account (the accreditor); see AccreditAction.
-        issued_by: config.hiveAdminAccount,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err) {
-      handleBroadcastError(res, err, broadcastErrOpts);
+      await seedAccreditationBonus(username);
+    } catch (postErr) {
+      handleBroadcastError(
+        res,
+        new PostBroadcastWriteError(txId, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
+        broadcastErrOpts,
+      );
+      return;
+    }
+  };
+
+  // ORCID-binding uniqueness guard. The accredit op binds `account.orcid` to
+  // `username` on chain; refuse to bind an ORCID already accredited to a
+  // DIFFERENT account (the one-ORCID-one-account invariant on the chain layer,
+  // which the `accounts_orcid_unique` DB index alone does not enforce — it
+  // constrains only the denormalized column, never the chain). Mirrors orcid.ts
+  // handleAccredit / handleLink: a pre-lock durable-binding check (cache-first,
+  // then HAF) plus a lock-guarded broadcast that serializes concurrent binds
+  // for the same ORCID. Email-only signups (orcid null) carry no binding, so
+  // they skip the check and the lock entirely (behavior unchanged).
+  if (account.orcid) {
+    const orcidId = account.orcid;
+    let existingBinding: string | null;
+    try {
+      existingBinding = await findAccreditedAccountWithOrcid(orcidId);
+    } catch (bindingErr) {
+      // HAF unavailable: cannot verify uniqueness, so fail closed — do NOT
+      // broadcast. No broadcast was attempted, so this is not an ambiguous
+      // on-chain outcome; re-throw to the activation-lock onError path (500),
+      // leaving the account finalized + recoverable (retry once HAF is back).
+      logger.error(
+        { event: 'signup_verify.orcid_binding_check_failed', route: routeLabel, username, err: bindingErr },
+        `${routeLabel} ORCID-binding uniqueness check failed; refusing to broadcast accreditation`,
+      );
+      throw bindingErr;
+    }
+    if (existingBinding && existingBinding !== username) {
+      // Bound to a different account: terminal 409, same wire shape as the
+      // /orcid/callback durable-binding 409 and the /signup DB-index 409 (no
+      // `retriable`, no `Retry-After`). The account stays finalized and
+      // recoverable; the user is simply unaccredited until the ORCID conflict
+      // is resolved out of band.
+      sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
       return 'handled';
     }
-    txId = result.id;
+
+    // Lock-guarded broadcast. The lock (keyed on orcidId) serializes concurrent
+    // binds so the pre-lock check + broadcast is not a TOCTOU. On 'held' the
+    // wrapper sends a terminal 409 itself; on 'unavailable' (Redis down) an
+    // ambiguous broadcast outcome routes through `ambiguousOutcomeOpts`.
+    const ambiguousOutcomeOpts: HandleBroadcastErrorAmbiguousOpts = {
+      ...broadcastErrOpts,
+      forceAmbiguousOutcome: true,
+      ambiguousMsg: `Accreditation broadcast outcome uncertain. Verify your accreditation before retrying. ${recoveryHint}`,
+    };
+    await withOrcidBindingLock(res, orcidId, (lockState) => runAccreditCascade(lockState), ambiguousOutcomeOpts);
+    // withOrcidBindingLock sends a response on every non-success path (409 held,
+    // handleBroadcastError inside the cascade, or the ambiguous-outcome catch);
+    // the success path sends nothing. res.headersSent therefore discriminates:
+    // a sent response => 'handled', none => 'ok' (the caller issues the JWT).
+    return res.headersSent ? 'handled' : 'ok';
   }
 
-  // Post-broadcast cascade. Chain op confirmed (or already on chain); any throw
-  // here is a downstream failure, not an ambiguous-outcome class. Discriminate
-  // via PostBroadcastWriteError so the catch emits 502 POST_BROADCAST_FAILED
-  // (outcome:'confirmed' + tx_id + failed_step) instead of 504 / 502
-  // BROADCAST_FAILED. Pass severity explicitly so a permanent-class
-  // (TypeError) failure routes through the operator-required path rather than
-  // the default 'transient' "automatic reconciliation" copy. seedAccreditation-
-  // Bonus re-throws only permanent-class errors. Mirrors orcid.ts handleAccredit.
-  const currentStep: PostBroadcastFailedStep = 'reputation_seed';
-  try {
-    await seedAccreditationBonus(username);
-  } catch (postErr) {
-    handleBroadcastError(
-      res,
-      new PostBroadcastWriteError(txId, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
-      broadcastErrOpts,
-    );
-    return 'handled';
-  }
-
-  return 'ok';
+  // Email-only signup (no ORCID to bind): run the cascade without a lock,
+  // preserving the prior lock-free behavior exactly.
+  await runAccreditCascade('none');
+  return res.headersSent ? 'handled' : 'ok';
 }
 
 /**
