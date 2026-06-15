@@ -83,6 +83,10 @@ import { encryptKey } from '../../src/custody-crypto.js';
 import { getRedis, isRedisAvailable } from '../../src/redis.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 import { SIGNUP_BINDING_COOKIE_NAME } from '../../src/signup-session-binding.js';
+// The mocked hive.js (above) re-exports BroadcastTimeoutError; importing it
+// here yields the SAME class signup-verify.ts checks `instanceof` against, so a
+// simulated timeout reaches the lock-extend branch.
+import { BroadcastTimeoutError } from '../../src/hive.js';
 
 if (!process.env.CUSTODY_ENCRYPTION_KEY || process.env.CUSTODY_ENCRYPTION_KEY.length < 32) {
   process.env.CUSTODY_ENCRYPTION_KEY = 'test-custody-encryption-key-32chars!';
@@ -175,6 +179,16 @@ async function clearOrcidBinding(orcidId: string) {
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
     await redis.del(orcidBindingKey(orcidId)).catch(() => {});
+  }
+}
+
+function orcidBindingLockKey(orcidId: string): string {
+  return `${config.appTag}:orcid_binding_lock:${orcidId}`;
+}
+async function clearOrcidBindingLock(orcidId: string) {
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    await redis.del(orcidBindingLockKey(orcidId)).catch(() => {});
   }
 }
 
@@ -618,3 +632,133 @@ describe.skipIf(!dbReachable || !redisReachable)('/api/auth/link ORCID-binding g
     expect(row.rows[0].verify_token).toBeNull();
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// /api/auth/confirm — a held binding lock on the signup-finalize path is
+// RECOVERABLE, not a terminal cross-account 409. When this account's OWN prior
+// finalize attempt times out, the broadcast-timeout branch extends the binding
+// lock to the HAF-indexing-lag ceiling and skips its release (the timed-out
+// broadcast may still land + index). A retry WITHIN that window finds the lock
+// held. Because the signup auth_token is not consumed on a held lock (recovery
+// is the username-keyed resume branch), the wrapper's heldShape:'ambiguous'
+// surfaces the verify-before-retry 504 envelope (BROADCAST_TIMEOUT,
+// outcome:'uncertain', verify_before_retry:true) instead of the terminal
+// 409 ORCID_ALREADY_LINKED.
+//
+// Both requests take the stuck-recovery resume path; the binding cache is seeded
+// to the SAME username so the pre-lock findAccreditedAccountWithOrcid resolves
+// via its cache-first branch (carve-out clause (c)) without the read-only HAF
+// node — and same-username is the apt representation of the "timed-out broadcast
+// may have already accredited this account" sub-case that makes the retry's
+// outcome genuinely uncertain. The held lock is produced for real by request 1's
+// timeout (not pre-seeded), exercising the full
+// extend-on-timeout -> retry-within-window -> ambiguous-504 path.
+//
+// The callback-path counterpart — a held lock stays a terminal 409 because the
+// OAuth state token IS consumed pre-lock — is covered in
+// tests/routes/orcid.test.ts; heldShape defaults to 'terminal-409' so those
+// callers are untouched by this change.
+// ──────────────────────────────────────────────────────────────────────────
+describe.skipIf(!dbReachable || !redisReachable)(
+  '/api/auth/confirm held binding lock returns the ambiguous 504, not the terminal 409, on a same-window retry',
+  () => {
+    const username = `obghld${SUFFIX}`;
+    const email = `orcid_bind_held_${RUN_ID}@example.com`;
+    const orcidId = '0000-0002-7777-0006';
+    const posting = PrivateKey.fromSeed(`${username}-p`);
+    const memo = PrivateKey.fromSeed(`${username}-m`);
+
+    beforeAll(async () => {
+      await cleanupByUsername(username);
+      await cleanupByEmail(email);
+    });
+    afterAll(async () => {
+      await cleanupByUsername(username);
+      await cleanupByEmail(email);
+      await clearOrcidBinding(orcidId);
+      await clearOrcidBindingLock(orcidId);
+    });
+
+    it('first finalize times out (lock extended) -> retry within the window gets the ambiguous 504 (verify_before_retry), not 409', async () => {
+      await seedStuckLightRowWithOrcid({
+        username,
+        email,
+        orcidId,
+        postingPrivate: posting.toString(),
+        memoPrivate: memo.toString(),
+      });
+
+      // Pre-lock check resolves to THIS account (same-account allowance), so it
+      // passes via the cache-first branch without the read-only HAF node, and
+      // models the "timed-out broadcast may have already accredited this
+      // account" sub-case that makes the retry genuinely uncertain.
+      await seedOrcidBinding(orcidId, username);
+      expect(await getRedis()!.get(orcidBindingKey(orcidId))).toBe(username);
+
+      // Hive advertises the matching posting key so the stuck-recovery ownership
+      // proof admits both requests (constant across the two).
+      getAccountsMock.mockImplementation(async (names: string[]) =>
+        names.includes(username)
+          ? [{ name: username, posting: { key_auths: [[posting.createPublic().toString(), 1]] } }]
+          : [],
+      );
+
+      // The accreditation broadcast times out — this is what extends the lock
+      // and skips its release on attempt 1.
+      broadcastJsonMock.mockReset();
+      broadcastJsonMock.mockRejectedValue(new BroadcastTimeoutError(30_000));
+
+      const body = {
+        // No row carries this verify_token → verify_token-NULL stuck-recovery
+        // fallback (isResume=true), reaching broadcastAccreditationAndSeed.
+        auth_token: `confirmed:${'b9'.repeat(32)}`,
+        username,
+        keys: {
+          owner_public: PrivateKey.fromSeed(`${username}-o`).createPublic().toString(),
+          active_public: PrivateKey.fromSeed(`${username}-a`).createPublic().toString(),
+          posting_public: posting.createPublic().toString(),
+          memo_public: memo.createPublic().toString(),
+          posting_private: posting.toString(),
+          memo_private: memo.toString(),
+        },
+      };
+
+      // Attempt 1: the broadcast times out. The timer-fire branch extends the
+      // lock to the HAF-lag ceiling and skipReleases, surfacing the genuine
+      // timeout 504 (BROADCAST_TIMEOUT WITH timeout_ms).
+      await clearRateLimitKeys(['signup-confirm', 'signup-confirm-token']);
+      const first = await request(app).post('/api/auth/confirm').send(body);
+      expect(first.status).toBe(504);
+      expect(first.body.error?.code).toBe('BROADCAST_TIMEOUT');
+      expect(first.body.error?.details?.timeout_ms).toBe(30_000);
+
+      // The lock is held (and extended) after the timeout: a 32-char hex nonce
+      // with a TTL above the base 35s lock TTL (extended toward the 120s ceiling).
+      const heldValue = await getRedis()!.get(orcidBindingLockKey(orcidId));
+      expect(heldValue).toMatch(/^[0-9a-f]{32}$/);
+      const ttl = await getRedis()!.ttl(orcidBindingLockKey(orcidId));
+      expect(ttl).toBeGreaterThan(35);
+
+      // Attempt 2 (retry within the window): the lock is still held, so the
+      // wrapper's 'held' branch fires. heldShape:'ambiguous' must surface the
+      // verify-before-retry 504, NOT the terminal cross-account 409.
+      await clearRateLimitKeys(['signup-confirm', 'signup-confirm-token']);
+      const retry = await request(app).post('/api/auth/confirm').send(body);
+
+      expect(retry.status).toBe(504);
+      expect(retry.body.error?.code).toBe('BROADCAST_TIMEOUT');
+      // The terminal cross-account shape is explicitly NOT used.
+      expect(retry.body.error?.code).not.toBe('ORCID_ALREADY_LINKED');
+      // Ambiguous-outcome envelope: verify before retry, not retriable, and no
+      // timeout_ms (nothing timed out on THIS request — the lock was held).
+      expect(retry.body.error?.details?.outcome).toBe('uncertain');
+      expect(retry.body.error?.details?.verify_before_retry).toBe(true);
+      expect(retry.body.error?.details?.retriable).toBe(false);
+      expect(retry.body.error?.details?.timeout_ms).toBeUndefined();
+
+      // The held branch returned before fn ran on attempt 2 → no second
+      // broadcast; exactly the one attempt-1 broadcast fired.
+      expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+    });
+  },
+);

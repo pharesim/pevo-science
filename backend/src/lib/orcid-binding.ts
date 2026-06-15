@@ -367,12 +367,17 @@ export async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabe
  * accidentally call releaseBindingLock with the wrong nonce.
  *
  * Behavior per lock state:
- *   'held'        — wrapper sends 409 ORCID_ALREADY_LINKED (terminal: no
- *                   `retriable` flag, no `Retry-After` header — the OAuth
- *                   state token was consumed at /callback entry, so the
- *                   client must restart the ORCID flow); callback is NOT run.
- *                   Rationale: the OAuth state token is consumed before the
- *                   lock check, so the 409 is terminal rather than retriable.
+ *   'held'        — wrapper sends a response itself (callback is NOT run); the
+ *                   wire shape is selected by `heldShape`. Default
+ *                   `'terminal-409'`: 409 ORCID_ALREADY_LINKED (terminal: no
+ *                   `retriable` flag, no `Retry-After` header — the OAuth state
+ *                   token was consumed at /callback entry, so the client must
+ *                   restart the ORCID flow). `'ambiguous'` (the signup-finalize
+ *                   caller): the same 504 ambiguous-outcome envelope as the
+ *                   'unavailable'/timeout branches, because the signup
+ *                   auth_token is not consumed on a held lock — a held lock is
+ *                   an in-flight bind whose outcome is uncertain (verify before
+ *                   retry), not a terminal cross-account conflict.
  *   'acquired'    — callback runs inside try/catch/finally; release happens
  *                   under nonce CAS in finally on both success and caught
  *                   throw paths. The wrapper catches every throw escaping fn
@@ -403,7 +408,8 @@ export async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabe
  *                   agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md.
  *
  * IMPORTANT — response-sending contract: on the 'held' state the wrapper sends
- * the 409 response itself. Callers MUST NOT send another response after the
+ * the response itself (terminal 409 or the ambiguous 504, per `heldShape`).
+ * Callers MUST NOT send another response after the
  * await returns, regardless of lock state. Today both orcid.ts callers
  * (handleAccredit, handleLink) have no code after `await withOrcidBindingLock(...)`;
  * the signup-verify caller (broadcastAccreditationAndSeed) discriminates on
@@ -412,7 +418,7 @@ export async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabe
  * post-await `sendOk`/`sendError` logic risks a double-send / "Cannot set
  * headers after they are sent" crash. If post-await work that writes a response
  * is ever needed, move it INSIDE the `fn` callback, or refactor the wrapper to
- * return a discriminator instead of sending the 409 directly.
+ * return a discriminator instead of sending the response directly.
  */
 export async function withOrcidBindingLock(
   res: Response,
@@ -450,15 +456,49 @@ export async function withOrcidBindingLock(
   // helper's internal flag name); calls handleBroadcastErrorAmbiguous, which
   // accepts only this narrowed shape.
   ambiguousOutcomeOpts: HandleBroadcastErrorAmbiguousOpts,
+  // Wire shape for the `'held'` branch. Defaults to the terminal
+  // 409 ORCID_ALREADY_LINKED — correct for the /orcid/callback callers
+  // (handleAccredit / handleLink), whose OAuth state token is consumed at
+  // /callback entry, so a held lock is terminal and the client must restart the
+  // OAuth flow. The signup-finalize caller passes `'ambiguous'` instead: its
+  // auth_token is NOT consumed on a held lock (recovery is the username-keyed
+  // resume branch), so a held lock there is an in-flight bind whose outcome is
+  // uncertain from this request's view — routed through the same
+  // ambiguous-outcome 504 the signup path already emits on its timeout /
+  // `'unavailable'` branches, rather than the terminal cross-account 409.
+  // Defaulting to `'terminal-409'` keeps the callback callers byte-identical.
+  heldShape: 'terminal-409' | 'ambiguous' = 'terminal-409',
 ): Promise<void> {
   const lock = await acquireBindingLock(orcidId);
   if (lock.state === 'held') {
-    // Same-tick lock contention: state token has already been consumed at the
-    // /callback entry, so the wire shape here is terminal from the user's
-    // perspective. Restart the ORCID flow rather than retry. Matches the
-    // durable on-chain binding 409 envelope (no `retriable`, no `Retry-After`).
-    // Rationale: the OAuth state token is consumed before this lock check, so
-    // the 409 is terminal rather than retriable.
+    if (heldShape === 'ambiguous') {
+      // Signup-finalize caller: a held lock means a concurrent in-flight bind
+      // for this ORCID whose outcome is uncertain from this request's view —
+      // typically this account's OWN prior finalize attempt timed out and
+      // extended the lock across the HAF-indexing-lag window, and that
+      // broadcast may yet land. The signup auth_token is not consumed on this
+      // path (recovery is the username-keyed resume branch), so the honest wire
+      // shape is verify-before-retry, NOT the terminal cross-account 409: the
+      // timed-out broadcast may have already accredited this account. Route
+      // through the same ambiguous-outcome 504 envelope the signup path emits on
+      // its timeout / `'unavailable'` branches (504 BROADCAST_TIMEOUT,
+      // retriable:false, outcome:'uncertain', verify_before_retry:true). The
+      // helper's own `event:'broadcast_ambiguous'` error log carries the
+      // forensic trail (routeLabel + the cause below); no separate contention
+      // log on this branch keeps the rare-event log volume to one line.
+      handleBroadcastErrorAmbiguous(
+        res,
+        new Error('ORCID binding lock held by an in-flight bind; broadcast outcome uncertain'),
+        ambiguousOutcomeOpts,
+      );
+      return;
+    }
+    // terminal-409 (the /orcid/callback callers): the OAuth state token has
+    // already been consumed at /callback entry, so the wire shape here is
+    // terminal from the user's perspective. Restart the ORCID flow rather than
+    // retry. Matches the durable on-chain binding 409 envelope (no `retriable`,
+    // no `Retry-After`). Rationale: the OAuth state token is consumed before
+    // this lock check, so the 409 is terminal rather than retriable.
     //
     // Operator-alert anchor: structured `event:'lock_contention_held'` so
     // contention frequency is dashboard-keyable. Sibling lock-helper anchors

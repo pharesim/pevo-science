@@ -353,15 +353,22 @@ async function broadcastAccreditationAndSeed(
     }
 
     // Lock-guarded broadcast. The lock (keyed on orcidId) serializes concurrent
-    // binds so the pre-lock check + broadcast is not a TOCTOU. On 'held' the
-    // wrapper sends a terminal 409 itself; on 'unavailable' (Redis down) an
-    // ambiguous broadcast outcome routes through `ambiguousOutcomeOpts`.
+    // binds so the pre-lock check + broadcast is not a TOCTOU. On 'unavailable'
+    // (Redis down) an ambiguous broadcast outcome routes through
+    // `ambiguousOutcomeOpts`. On 'held' the wrapper uses `heldShape: 'ambiguous'`
+    // (below) rather than a terminal 409: the signup auth_token is NOT consumed
+    // on a held lock (recovery is the username-keyed resume branch), so a held
+    // lock here is this account's own in-flight bind whose outcome is uncertain
+    // (e.g. a prior finalize attempt timed out and extended the lock across the
+    // HAF-indexing-lag window) — verify-before-retry, not a terminal
+    // cross-account conflict. The /orcid/callback callers keep the default
+    // terminal 409 (their OAuth state token IS consumed pre-lock).
     const ambiguousOutcomeOpts: HandleBroadcastErrorAmbiguousOpts = {
       ...broadcastErrOpts,
       forceAmbiguousOutcome: true,
       ambiguousMsg: `Accreditation broadcast outcome uncertain. Verify your accreditation before retrying. ${recoveryHint}`,
     };
-    await withOrcidBindingLock(res, orcidId, (lockState) => runAccreditCascade(lockState), ambiguousOutcomeOpts);
+    await withOrcidBindingLock(res, orcidId, (lockState) => runAccreditCascade(lockState), ambiguousOutcomeOpts, 'ambiguous');
     // withOrcidBindingLock sends a response on every non-success path (409 held,
     // handleBroadcastError inside the cascade, or the ambiguous-outcome catch);
     // the success path sends nothing. res.headersSent therefore discriminates:
