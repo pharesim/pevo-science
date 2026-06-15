@@ -82,6 +82,7 @@ import {
   isFreshAuthMechanism,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
+  validFreshAuthActionsMessage,
   _getInFlightConsumesSetReferenceForTests,
   _getInFlightConsumesSizeForTests,
   _resetFreshAuthMemStoreForTests,
@@ -191,6 +192,47 @@ describe('isFreshAuthMechanism — type guard', () => {
     expect(isFreshAuthMechanism('PASSWORD')).toBe(false);
     expect(isFreshAuthMechanism('webauthn')).toBe(false);
     expect(isFreshAuthMechanism(42)).toBe(false);
+  });
+});
+
+describe('validFreshAuthActionsMessage — tuple-derived 400 copy', () => {
+  // The issuance routes' "action must be one of: ..." 400 string is derived
+  // from the action tuples rather than hand-copied at each route, so a new
+  // tuple member propagates to every route's error copy automatically. These
+  // pin the derivation so a tuple edit that should surface in the message
+  // (and a regression that drops a family) is caught.
+  it('lists every consent / credit / per-user-critical / admin action', () => {
+    const msg = validFreshAuthActionsMessage({ includeSetPassword: false });
+    for (const a of [
+      'author_accept',
+      'author_resign',
+      'claim_authorship',
+      'approve_authorship',
+      'revoke_authorship',
+      'change_email',
+      'delete_account',
+      'ipfs_upload',
+      'edit_accreditation_metadata',
+      'admin_grant_role',
+      'admin_revoke_role',
+      'admin_grant_accreditation',
+      'admin_retract_paper',
+      'admin_revoke_authorship',
+      'admin_approve_authorship',
+      'admin_sanction',
+    ]) {
+      expect(msg).toContain(a);
+    }
+  });
+
+  it('folds in set_password only for the ORCID path (includeSetPassword)', () => {
+    expect(validFreshAuthActionsMessage({ includeSetPassword: true })).toContain('set_password');
+    // The password (custody) path has no password-mechanism set_password proof.
+    expect(validFreshAuthActionsMessage({ includeSetPassword: false })).not.toContain('set_password');
+  });
+
+  it('starts with the canonical prefix', () => {
+    expect(validFreshAuthActionsMessage({ includeSetPassword: false })).toMatch(/^action must be one of: /);
   });
 });
 

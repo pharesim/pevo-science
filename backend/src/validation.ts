@@ -70,9 +70,13 @@ export const adminRosterGrantSchema = z.object({
   fresh_auth_proof: adminFreshAuthProof,
 });
 
+// The revoke handler destructures only { account } and re-resolves the target's
+// live tier from getAdminLevel (chain is SSoT), so an incoming `level` is dead
+// input and an attractor for a future TOCTOU guard reading req.body.level. Omit
+// it; Zod strips unknown keys, so the console's existing { account, level } body
+// still parses.
 export const adminRosterRevokeSchema = z.object({
   account: hiveAccount,
-  level: z.enum(['admin', 'super_admin']),
   fresh_auth_proof: adminFreshAuthProof,
 });
 

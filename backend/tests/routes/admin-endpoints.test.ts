@@ -267,6 +267,47 @@ describe('POST /api/admin/roster/grant — tier gating', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
     expect(broadcastAdminMock).not.toHaveBeenCalled();
   });
+
+  it('403s a super_admin granting "admin" to a peer super_admin (demotion-in-disguise; only root may lower)', async () => {
+    stubRoster([
+      { account: SUPER, level: 'super_admin' },
+      { account: 'othersuper', level: 'super_admin' },
+    ]);
+    const res = await asSignature(request(app).post('/api/admin/roster/grant'), SUPER).send({
+      account: 'othersuper',
+      level: 'admin',
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
+
+  it('422s a super_admin self-downgrade via grant', async () => {
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/roster/grant'), SUPER).send({
+      account: SUPER,
+      level: 'admin',
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+  });
+
+  it('root CAN lower a super_admin via grant (the legitimate demotion path)', async () => {
+    stubRoster([{ account: SUPER, level: 'super_admin' }]);
+    const res = await asSignature(request(app).post('/api/admin/roster/grant'), ROOT).send({
+      account: SUPER,
+      level: 'admin',
+    });
+    expect(res.status).toBe(200);
+    expect(broadcastAdminMock).toHaveBeenCalledTimes(1);
+    expect(broadcastAdminMock.mock.calls[0][0]).toMatchObject({
+      action: 'admin_grant',
+      account: SUPER,
+      level: 'admin',
+      issued_by: ROOT,
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

@@ -175,6 +175,33 @@ export function isAdminFreshAuthAction(action: string): action is AdminFreshAuth
   return ADMIN_FRESH_AUTH_ACTIONS.has(action);
 }
 
+/** Per-user (non-paper) critical actions BOTH fresh-auth issuance paths accept.
+ *  `set_password` is deliberately excluded here — it is ORCID-mechanism-only (a
+ *  passwordless account has no password to mint a password-mechanism proof), so
+ *  `validFreshAuthActionsMessage` folds it in only for the ORCID path. */
+const PER_USER_CRITICAL_ACTION_TUPLE = [
+  'change_email',
+  'delete_account',
+  'ipfs_upload',
+  'edit_accreditation_metadata',
+] as const;
+
+/** Canonical "action must be one of: ..." 400 string for the fresh-auth issuance
+ *  routes, DERIVED from the action tuples (consent / credit / per-user-critical /
+ *  admin) so a new tuple member (e.g. `admin_sanction`) propagates to every
+ *  issuance route's error copy without a hand-edit. The ORCID path additionally
+ *  mints `set_password`; the password (custody) path does not. */
+export function validFreshAuthActionsMessage(opts: { includeSetPassword: boolean }): string {
+  const actions = [
+    ...CONSENT_OP_ACTION_TUPLE,
+    ...CREDIT_OP_ACTION_TUPLE,
+    ...(opts.includeSetPassword ? (['set_password'] as const) : []),
+    ...PER_USER_CRITICAL_ACTION_TUPLE,
+    ...ADMIN_FRESH_AUTH_ACTION_TUPLE,
+  ];
+  return `action must be one of: ${actions.join(', ')}`;
+}
+
 export type FreshAuthMechanism = 'password' | 'orcid';
 
 /** Action component of the per-op target binding. The fresh-auth proof

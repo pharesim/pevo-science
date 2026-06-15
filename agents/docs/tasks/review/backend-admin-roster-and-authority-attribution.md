@@ -275,3 +275,53 @@ names), not line numbers, task slugs, round numbers, or SHAs, per the
 comment-anchor conventions. When fixed, `git mv` this file back to `tasks/review/`;
 the move is the re-review signal, and the re-review will scope `/ce-code-review` to
 the commits since this hold block.
+
+## Backend re-review (2026-06-15) — all 6 hold items landed; ready for re-review
+
+All six items addressed in one focused commit (`routes/admin.ts`, `routes/custody.ts`,
+`routes/orcid.ts`, `lib/fresh-auth.ts`, `validation.ts`, `tests/lib/fresh-auth.test.ts`,
+`tests/routes/admin-endpoints.test.ts`). `npm run typecheck:src` + `npm run lint`
+clean (one pre-existing unrelated `author-supersession.ts` warning). Affected
+suites green: `admin-endpoints` (36), `fresh-auth` lib (71), `orcid` (108).
+
+1. **(P1) grant-demote bypass — FIXED.** `POST /roster/grant` now resolves
+   `getAdminLevel(account)` and applies two guards before broadcast: a self-downgrade
+   guard (checked first → clearer 422 `You cannot downgrade your own admin level`)
+   mirroring the revoke handler's no-self-demote, then a peer-super_admin-lower guard
+   (`targetCurrentLevel === 'super_admin' && level !== 'super_admin' && req.adminLevel
+   !== 'root'` → 403 `Only root can lower a super_admin`). Three route tests added:
+   super_admin → peer super_admin admin = 403; super_admin self-downgrade = 422;
+   root lowers a super_admin = 200 (the legitimate demotion path, payload asserted).
+
+2. **(P2) dead `level` on revoke schema — FIXED.** `adminRosterRevokeSchema` is now
+   `{ account, fresh_auth_proof }`; the handler re-resolves the live tier from
+   `getAdminLevel`. Schema docblock records why `level` was removed (TOCTOU
+   attractor). Zod strips the console's extra `level` key, so no frontend change.
+
+3. **(P2) cache stale on broadcast-timeout — FIXED.** `/papers/retract`,
+   `/authorship/revoke`, `/authorship/approve` now capture `handleBroadcastError`'s
+   outcome and bust their cache (`retracted-papers`, `claims:<author>:<permlink>`) on
+   the ambiguous `'timeout'` branch, mirroring `/roster/grant|revoke`.
+
+4. **(P2) hand-copied valid-action strings — FIXED.** New
+   `validFreshAuthActionsMessage({ includeSetPassword })` in `lib/fresh-auth.ts`
+   derives the "action must be one of: ..." copy from the consent / credit /
+   per-user-critical / admin tuples (new `PER_USER_CRITICAL_ACTION_TUPLE`). Both
+   `custody.ts` sites (`includeSetPassword: false`) and the `orcid.ts` site
+   (`includeSetPassword: true`, ORCID-only `set_password`) call it; no literal copies
+   remain in `src/`. `admin_sanction` (already in `ADMIN_FRESH_AUTH_ACTION_TUPLE`) now
+   propagates automatically. Three lib tests pin the derivation + the set_password
+   toggle.
+
+5. **(P2) WoT marker uncovered — SATISFIED by the sibling rewrite.** The sibling
+   `backend-revoke-sanction-wot-membership` rewrite removed the revocation cascade
+   (so `wot-retract-cascaderevocation.test.ts` no longer exists / no longer broadcasts
+   a revoke) and the surviving `wot-broadcast-timeout.test.ts` happy-path now asserts
+   `issued_by: 'wot'` on the captured accredit payload. No additional change needed
+   here; this item's intent is covered against the final WoT shape, as the hold note
+   anticipated.
+
+6. **(P2) root-demotes-super_admin happy path — FIXED.** Added a positive
+   `/roster/revoke` test: root demotes a super_admin (body omits `level` per item 2),
+   asserting `200` + the `admin_revoke` payload (`account`, `level: 'super_admin'`,
+   `issued_by: ROOT`).

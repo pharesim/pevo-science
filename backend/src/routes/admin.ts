@@ -197,6 +197,20 @@ router.post(
     if (account === config.rootAdminAccount) {
       return sendError(res, 422, 'VALIDATION_ERROR', 'The root account holds authority from bootstrap config and cannot be granted a chain level');
     }
+    const targetCurrentLevel = await getAdminLevel(account);
+    // No self-downgrade: you cannot grant yourself a level below the one you hold
+    // (parity with the revoke handler's no-self-demote guard). Checked first so a
+    // self-targeted downgrade surfaces as the clearer 422.
+    if (account === actor && targetCurrentLevel !== null && targetCurrentLevel !== level && levelMeets(targetCurrentLevel, level)) {
+      return sendError(res, 422, 'VALIDATION_ERROR', 'You cannot downgrade your own admin level');
+    }
+    // A grant that LOWERS a current (peer) super_admin is a demotion in disguise
+    // (latest-op-wins). Only root may lower a super_admin, mirroring the
+    // /roster/revoke root-only super_admin demotion; a peer super_admin must not
+    // bypass that gate via grant.
+    if (targetCurrentLevel === 'super_admin' && level !== 'super_admin' && req.adminLevel !== 'root') {
+      return sendError(res, 403, 'FORBIDDEN', 'Only root can lower a super_admin');
+    }
     const payload = {
       action: 'admin_grant',
       account,
@@ -429,12 +443,15 @@ router.post(
       logger.info({ event: 'admin.papers.retract', actor, author, permlink, tx_id: result.id }, 'admin paper retract');
       sendOk(res, { message: 'Paper retracted', tx_id: result.id });
     } catch (err) {
-      handleBroadcastError(res, err, {
+      const outcome = handleBroadcastError(res, err, {
         timeoutMsg: 'Broadcasting the retraction timed out',
         failMsg: 'Failed to broadcast the retraction',
         logContext: { username: actor, author, permlink },
         routeLabel: 'admin.papers.retract',
       });
+      // Timeout is ambiguous (the op may have landed): bust so a landed retraction
+      // becomes visible instead of going stale until TTL (mirrors /roster/grant).
+      if (outcome === 'timeout') void hafCache.invalidate('retracted-papers');
     }
   },
 );
@@ -469,12 +486,14 @@ router.post(
       logger.info({ event: 'admin.authorship.revoke', actor, author, permlink, claimer, tx_id: result.id }, 'admin authorship revoke');
       sendOk(res, { message: 'Authorship revoked', tx_id: result.id });
     } catch (err) {
-      handleBroadcastError(res, err, {
+      const outcome = handleBroadcastError(res, err, {
         timeoutMsg: 'Broadcasting the authorship revocation timed out',
         failMsg: 'Failed to broadcast the authorship revocation',
         logContext: { username: actor, author, permlink, claimer },
         routeLabel: 'admin.authorship.revoke',
       });
+      // Ambiguous timeout: bust so a landed revocation becomes visible (mirrors /roster/grant).
+      if (outcome === 'timeout') void hafCache.invalidate(`claims:${author}:${permlink}`);
     }
   },
 );
@@ -522,12 +541,14 @@ router.post(
       logger.info({ event: 'admin.authorship.approve', actor, author, permlink, claimer, tx_id: result.id }, 'admin authorship approve');
       sendOk(res, { message: 'Authorship claim approved', tx_id: result.id });
     } catch (err) {
-      handleBroadcastError(res, err, {
+      const outcome = handleBroadcastError(res, err, {
         timeoutMsg: 'Broadcasting the authorship approval timed out',
         failMsg: 'Failed to broadcast the authorship approval',
         logContext: { username: actor, author, permlink, claimer },
         routeLabel: 'admin.authorship.approve',
       });
+      // Ambiguous timeout: bust so a landed approval becomes visible (mirrors /roster/grant).
+      if (outcome === 'timeout') void hafCache.invalidate(`claims:${author}:${permlink}`);
     }
   },
 );

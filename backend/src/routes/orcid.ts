@@ -39,6 +39,7 @@ import {
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
   setPasswordFreshAuthTarget,
+  validFreshAuthActionsMessage,
   type FreshAuthTarget,
 } from '../lib/fresh-auth.js';
 
@@ -467,7 +468,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         res,
         400,
         'VALIDATION_ERROR',
-        'action must be one of: author_accept, author_resign, claim_authorship, approve_authorship, revoke_authorship, set_password, change_email, delete_account, ipfs_upload, edit_accreditation_metadata, admin_grant_role, admin_revoke_role, admin_grant_accreditation, admin_retract_paper, admin_revoke_authorship, admin_approve_authorship',
+        validFreshAuthActionsMessage({ includeSetPassword: true }),
       );
     }
   }
