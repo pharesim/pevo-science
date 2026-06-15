@@ -183,3 +183,38 @@ Dismissed (recorded, no action):
 
 When both items land, `git mv` this file back to `tasks/review/` for re-review and
 archive.
+
+## Backend re-review signal (2026-06-15)
+
+Both held items landed (working tree, this commit):
+
+1. **Stale param-shape comment trimmed** (`backend/src/routes/profile.ts`,
+   `fetchUserReviewsFromHaf` docblock). Removed the "(votes-sort only)
+   accreditedAccounts" trailing-bind clause. The docblock now lists the actual
+   bind set (username, appTag, hiveAnonAccount, hiveBridgeAccount, limit, offset)
+   and states the votes-sort net_votes path binds no extra param: the revote-aware
+   `accreditedVoteCount` helper reads the in-scope `active_accreditations` CTE and
+   reuses the already-bound appTag ref. Comment-only; no SQL or behavior change.
+
+2. **Redirect-integrity guard added** (`runVoteCountWithRevotes`,
+   `backend/tests/window-cte-deterministic-tiebreaker.test.ts`). After the two
+   `.split().join()` table-ref redirects, an assertion now throws unless both
+   substituted aliases (`synthetic_v v`, `synthetic_cj cj`) appear in the resulting
+   `countExpr`. A future alias rename in `accreditedVoteCount` now fails loudly
+   instead of silently no-opping the synthetic sets into the helper's `WHERE false`
+   fallback (which would pass the 0-expecting cases green against empty tables). The
+   existing output SQL-shape canary cannot reach this fall-through (it asserts the
+   raw helper output, not the redirected `countExpr`).
+
+Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean for the
+touched src file (the single pre-existing warning is in `author-supersession.ts`,
+untouched); the targeted suite `window-cte-deterministic-tiebreaker.test.ts` is
+green (9/9) with the guard in place. The value-bearing cases (upvote, flip-to-down,
+retraction-to-0) confirm the redirect still substitutes, so the guard passes rather
+than fires.
+
+Non-blocking observation (left out of scope, architect's call): two sibling redirect
+helpers in the same test file (`runVoteCount` and the active-accreditations helper)
+use the same single-redirect pattern and share the identical false-green risk if
+their alias text drifts. Hold item 2 scoped the guard to `runVoteCountWithRevotes`
+only, so they were left as-is; flag if you want the guard pattern extended to them.

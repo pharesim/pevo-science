@@ -532,7 +532,9 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // Param shape: the active_accreditations + authorship_claims CTEs consume the
     // leading params; the per-bind counter below (paramIdx++ from
     // accredCte.nextIdx) then resolves $N for username, appTag, hiveAnonAccount,
-    // hiveBridgeAccount, limit, offset, and (votes-sort only) accreditedAccounts.
+    // hiveBridgeAccount, limit, offset. The votes-sort net_votes path binds no
+    // extra param: the revote-aware accreditedVoteCount helper reads the in-scope
+    // active_accreditations CTE and reuses the already-bound appTag ref.
     // The counter is the source of truth; do not hard-cite positions (they shift
     // whenever a CTE is added — authorship_claims was added for the claimer
     // self-review display exclusion).

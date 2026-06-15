@@ -174,6 +174,19 @@ function runVoteCountWithRevotes(
   let countExpr = accreditedVoteCount("'paper-author'", "'paper-permlink'", '$1');
   countExpr = countExpr.split(`${T.voteOps} v`).join('synthetic_v v');
   countExpr = countExpr.split(`${T.customJson} cj`).join('synthetic_cj cj');
+  // Redirect-integrity guard. If accreditedVoteCount's table-alias text ever
+  // changes, the two splits above silently no-op, the synthetic VALUES fall
+  // through to the helper's `WHERE false` fallback, and the cases that
+  // legitimately expect 0 (retraction, self-vote, malformed weight) pass green
+  // against empty tables: a false-green the output SQL-shape canary does not
+  // reach (it asserts the raw helper output, not this redirected countExpr).
+  // Assert both substituted aliases landed so an alias rename fails loudly.
+  if (!countExpr.includes('synthetic_v v') || !countExpr.includes('synthetic_cj cj')) {
+    throw new Error(
+      'runVoteCountWithRevotes: table-ref redirect no-op (accreditedVoteCount alias text changed). ' +
+        'Update the .split() targets so the synthetic sets are substituted, else cases fall through to WHERE false and pass as false-green.',
+    );
+  }
 
   // $1 = APP_TAG, matched by both the helper's `cj.custom_id = $1` and each
   // synthetic revote row's custom_id.
