@@ -79,6 +79,25 @@ function enterChooseState(comp, { authToken = 'tok' } = {}) {
   comp.phase = 'choose';
 }
 
+// Mirrors the ApiRequestError shape api.js throws for the signup-finalize 504
+// ambiguous-outcome envelope (genuine broadcast timeout, degrade
+// forced-ambiguous, or self-held binding lock). The component branches on
+// err.code; details is carried for fidelity with the real wire shape.
+function broadcastTimeoutError() {
+  const err = new Error('Accreditation broadcast outcome uncertain. Verify your accreditation before retrying.');
+  err.code = 'BROADCAST_TIMEOUT';
+  err.details = { retriable: false, outcome: 'uncertain', verify_before_retry: true };
+  return err;
+}
+
+// A coded-but-terminal error (the cross-account durable-binding 409): must NOT
+// borrow the ambiguous-outcome affordance — it stays on the generic path.
+function codedError(code) {
+  const err = new Error(`terminal error ${code}`);
+  err.code = code;
+  return err;
+}
+
 describe('signupVerifyPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -428,6 +447,53 @@ describe('signupVerifyPage', () => {
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       warnSpy.mockRestore();
     });
+
+    // Ambiguous broadcast outcome (504): the account is already finalized and
+    // the bind may have landed. The client must surface the verify/retry
+    // affordance, NOT the terminal "creation failed" copy, and must NOT bounce
+    // back to the username entry phase (a blind retry could double-bind).
+    it('renders broadcast-pending affordance on BROADCAST_TIMEOUT instead of generic failure', async () => {
+      mockConfirmAccount.mockRejectedValue(broadcastTimeoutError());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+
+      await comp.submitCreateAccount();
+
+      expect(comp.phase).toBe('broadcast-pending');
+      expect(comp.phase).not.toBe('create-username');
+      expect(comp.error).toBeNull();
+      expect(comp.error).not.toBe('seedPhrase.createAccountFailed');
+      expect(comp.isSubmitting).toBe(false);
+      // Expected wire shape, not an unexpected failure: no console.warn noise.
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    // Discriminator guard: a coded-but-terminal error (cross-account durable
+    // binding 409) must still take the generic failure path + bounce, not the
+    // ambiguous affordance.
+    it('keeps terminal ORCID_ALREADY_LINKED on the generic failure path', async () => {
+      mockConfirmAccount.mockRejectedValue(codedError('ORCID_ALREADY_LINKED'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+
+      await comp.submitCreateAccount();
+
+      expect(comp.phase).toBe('create-username');
+      expect(comp.error).toBe('seedPhrase.createAccountFailed');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
   });
 
   describe('handleLinkAccount', () => {
@@ -558,6 +624,29 @@ describe('signupVerifyPage', () => {
       expect(comp.isSubmitting).toBe(false);
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
+    });
+
+    // Ambiguous broadcast outcome (504) on the link path: the account is
+    // already activated; surface the verify/retry affordance, not the terminal
+    // "link failed" copy.
+    it('renders broadcast-pending affordance on BROADCAST_TIMEOUT instead of generic failure', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      mockLinkExistingAccount.mockRejectedValue(broadcastTimeoutError());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseLink();
+      comp.hiveUsername = 'Bob';
+
+      await comp.handleLinkAccount();
+
+      expect(comp.phase).toBe('broadcast-pending');
+      expect(comp.error).toBeNull();
+      expect(comp.error).not.toBe('seedPhrase.linkAccountFailed');
+      expect(comp.isSubmitting).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });
   });

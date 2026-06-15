@@ -997,7 +997,10 @@
     "createAccountFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
     "linkAccountFailed": "Could not link your Hive account. Please try again. If the problem persists, contact support.",
     "resumeFailed": "Could not resume your signup. Please check your credentials and try again.",
-    "resumeFromLogin": "Your account is verified but signup was not finished. Enter your password to pick up where you left off."
+    "resumeFromLogin": "Your account is verified but signup was not finished. Enter your password to pick up where you left off.",
+    "broadcastPendingTitle": "Confirming your accreditation",
+    "broadcastPendingDescription": "This can take a moment. Your account is set up. Log in shortly to check your accreditation status.",
+    "broadcastPendingLogin": "Go to login"
   },
   "confirm": {
     "publishTitle": "פרסום מאמר",

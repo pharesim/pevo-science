@@ -214,6 +214,17 @@ const template = `
             </button>
           </div>
 
+          <!-- Accreditation broadcast outcome uncertain: account finalized,
+               verify before retry (genuine timeout, degrade, or self-held bind lock) -->
+          <div x-show="phase === 'broadcast-pending'" class="text-center py-16">
+            <div class="w-16 h-16 bg-pevo-teal/10 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg class="w-8 h-8 text-pevo-teal" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.broadcastPendingTitle')"></h2>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.broadcastPendingDescription')"></p>
+            <button @click="navigate('/login')" class="btn-primary" x-text="$t('seedPhrase.broadcastPendingLogin')"></button>
+          </div>
+
           <!-- Done -->
           <div x-show="phase === 'done'" class="text-center py-16">
             <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
@@ -253,7 +264,7 @@ function isValidUsername(u) {
 export function initSignupVerifyPage() {
   Alpine.data('signupVerifyPage', () => ({
     ...createTimerGuard(),
-    // Phases: 'verifying' | 'choose' | 'create-seed' | 'create-confirm' | 'create-username' | 'create-submitting' | 'link-keychain' | 'done' | 'error'
+    // Phases: 'verifying' | 'choose' | 'create-seed' | 'create-confirm' | 'create-username' | 'create-submitting' | 'link-keychain' | 'broadcast-pending' | 'done' | 'error'
     phase: 'verifying',
     error: null,
 
@@ -465,6 +476,10 @@ export function initSignupVerifyPage() {
         this.phase = 'done';
       } catch (err) {
         if (!this._mounted) return;
+        // Ambiguous broadcast outcome takes precedence over the generic
+        // failure path: the account is already finalized, so do not bounce to
+        // the username entry phase or imply creation failed.
+        if (this._handleAmbiguousBroadcastOutcome(err)) return;
         // Sanitization pattern (see executeUpgrade() in settings.js). The
         // create-account path derives keys from the BIP39 mnemonic, so
         // surfacing raw err.message risks leaking key-adjacent material
@@ -475,6 +490,21 @@ export function initSignupVerifyPage() {
       } finally {
         if (this._mounted) this.isSubmitting = false;
       }
+    },
+
+    // Ambiguous broadcast outcome: the accreditation broadcast may have landed
+    // but its result is unconfirmed from this request's view (a genuine
+    // broadcast timeout, a degrade forced-ambiguous response, or a self-held
+    // binding lock from this account's own prior timed-out attempt). The
+    // account itself is already finalized, so a blind retry risks a duplicate
+    // bind and the terminal "creation failed" copy + bounce to the entry phase
+    // is misleading. Surface a calm verify-before-retry affordance instead.
+    // Mirrors the orcid-callback.js BROADCAST_TIMEOUT branch. Returns true when
+    // it handled the error (caller must skip its generic-failure handling).
+    _handleAmbiguousBroadcastOutcome(err) {
+      if (err?.code !== 'BROADCAST_TIMEOUT') return false;
+      this.phase = 'broadcast-pending';
+      return true;
     },
 
     // ─── Link flow ─────────────────────────────────────────────
@@ -515,6 +545,10 @@ export function initSignupVerifyPage() {
         this.phase = 'done';
       } catch (err) {
         if (!this._mounted) return;
+        // Ambiguous broadcast outcome takes precedence over the generic
+        // failure path: the account is already activated, so do not imply the
+        // link failed. See _handleAmbiguousBroadcastOutcome.
+        if (this._handleAmbiguousBroadcastOutcome(err)) return;
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[signup verify link account]', err);
         this.error = this.$t('seedPhrase.linkAccountFailed');
