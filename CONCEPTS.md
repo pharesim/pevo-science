@@ -7,7 +7,7 @@
 ### Hive-native
 
 PEvO's foundational design stance that its content objects ARE native Hive operations (papers are Hive posts, reviews and comments are Hive comments, votes are Hive votes) used as the chain was designed, rather than custom records that wrap or merely store data on chain.
-*Avoid:* Hive-native not Hive-wrapped, chain-native.
+*Avoid:* chain-native.
 
 PEvO-specific structure is layered on as app-tagged metadata and platform operations on top of native operations, never as a replacement for them; this is why content stays broadcastable and readable from any Hive client and why the chain is the single source of truth.
 
@@ -79,7 +79,7 @@ A paper counts as a PEvO object by author vouching (an accredited author) plus b
 A paper-class PEvO object that mirrors an existing external preprint (arXiv, bioRxiv, CrossRef, and similar) registered on PEvO for evaluation, distinguished from a native paper by identifying itself as a bridge paper, by a record of its external origin, and by being posted under the platform bridge account rather than by the registering researcher.
 *Avoid:* bridged paper, imported paper, preprint mirror.
 
-Bridge papers are immutable after publication (no edit, sync, or update flow) and have no continuations; they never host the PDF and instead link to the external source. The bridge account is the sole consented author, and named author credits that carry no Hive account are display-only credits for original-preprint authors who lack a Hive identity. Such name-only or ORCID-only credits bind a Hive identity only through an explicit, deliberate claim flow, never through fuzzy name or ORCID auto-matching.
+Bridge papers are immutable after publication (no edit, sync, or update flow) and have no continuations; they never host the PDF and instead link to the external source. The bridge account is the sole consented author, and named author credits that carry no Hive account are hive-less display credits for original-preprint authors who lack a Hive identity. Such name-only or ORCID-only credits bind a Hive identity only through an explicit, deliberate claim flow, never through fuzzy name or ORCID auto-matching.
 
 ### Bridge Account
 
@@ -97,7 +97,7 @@ Review identity is gated on accreditation, not on the APP_TAG: an accredited rev
 
 ### Rating
 
-The required multi-dimension scored block (currently methodology, novelty, clarity, and significance, each a bounded integer) carried by a review that turns a Hive comment into a structured review rather than a plain discussion comment.
+The required multi-dimension scored block (the dimensions methodology, novelty, clarity, and significance, each a bounded integer) carried by a review that turns a Hive comment into a structured review rather than a plain discussion comment.
 *Avoid:* score block, rating dimensions.
 
 Every rating dimension is mandatory and must be a well-formed integer in range; a comment that presents as a review but lacks a well-formed rating across all dimensions is not a valid review. The structural gate protects downstream reputation math from malformed values.
@@ -211,7 +211,7 @@ It confers zero credit on its own and must be confirmed by an approve-authorship
 
 ### Approve Authorship
 
-The platform operation the paper's original post author (or the bridge account for bridge papers) broadcasts to confirm a pending name-only claim, binding the claimant's Hive account to the named slot and conferring credit (the second step of the name-only route).
+The platform operation the paper's original post author (or the bridge account for bridge papers, or the platform authority as a backstop) broadcasts to confirm a pending name-only claim, binding the claimant's Hive account to the named slot and conferring credit (the second step of the name-only route).
 *Avoid:* approve op.
 
 It binds an account to a slot named at posting; it never inserts or appends a new author. Crediting someone not named at posting requires a continuation post that names them first, then a consent route.
@@ -219,7 +219,7 @@ It binds an account to a slot named at posting; it never inserts or appends a ne
 ### Revoke Authorship
 
 The platform operation that demotes a consented co-author of a name-only, approved claim back to claimed-but-unconsented, usable either by the claimant on their own claim or by the paper author, the bridge account, or the platform authority as a backstop against a bad self-accept.
-*Avoid:* revoke op.
+*Avoid:* revoke-authorship op, co-author revoke.
 
 It is a remedy, never a consent gate: it strips credit going forward, but a later valid consent operation can re-confer credit. It is the only mechanism that lets a third party remove someone else's consented status; no author's continuation can remove another. The anchored-route counterpart for self-withdrawal is author resign.
 
@@ -265,7 +265,7 @@ It is the mechanism for peer-attested accreditation, complementing authority-pin
 An on-chain endorsement broadcast by one accredited researcher attesting to another researcher's credentials, forming an edge in the web of trust.
 *Avoid:* endorsement.
 
-A voucher must currently be accredited and cannot vouch for themselves; only vouches from currently accredited researchers count, validated against the live membership view rather than against the authority-signer whitelist. A vouch can be retracted, and accumulating enough distinct accredited vouches triggers an automatic vouch-derived accreditation grant.
+A voucher must currently be accredited and cannot vouch for themselves; only vouches from currently accredited researchers count, validated against the live membership view rather than against the accreditation authority whitelist. A vouch can be retracted, and accumulating enough distinct accredited vouches triggers an automatic vouch-derived accreditation grant.
 
 ### Retract Vouch
 
@@ -298,7 +298,7 @@ A sanction is sticky: while un-lifted, the account is unaccredited no matter wha
 ### Revocation
 
 The on-chain operation that withdraws an accreditation, broadcast only as a sanction (a deliberate moderation action) rather than for routine loss of standing.
-*Avoid:* revoke op.
+*Avoid:* accreditation revoke op.
 
 A revocation carrying the sanction marker is sticky and suppresses membership; a revocation lacking that marker is a legacy revoke, treated as a non-sanction and ignored for stickiness. Routine loss of web-of-trust standing produces no revocation at all, so a revocation here always signals deliberate intent or a historical artifact.
 
@@ -582,7 +582,7 @@ The current roster is computed from these operations by taking the latest non-re
 ### Operation Attribution
 
 A record carried inside every authority operation naming the human roster member who triggered it (or a system marker when none did), kept for on-chain transparency and audit rather than as a cryptographic authorization proof.
-*Avoid:* issued_by, issuer field, attribution field.
+*Avoid:* issuer field, attribution field.
 
 It is a platform-attributed claim, not an independent proof: the operation is still signed by the single signer, and the actual authorization happened at the platform's roster-and-re-auth gate, so its trustworthiness reduces to trusting the operator's platform. Auto-grants from the web-of-trust path carry a fixed system marker instead of a person, letting readers distinguish operator-driven attestations from graph-derived ones.
 

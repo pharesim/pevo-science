@@ -26,7 +26,7 @@ related_components:
 
 PEvO uses worktree fan-outs to parallelize implementation across worker subagents (per root `CLAUDE.md` "Worktree Cleanup" and the per-agent `agents/<role>/CLAUDE.md` "Parallel task execution" sections). Four agent roles each own a distinct zone:
 
-- **architect** — `agents/docs/`, per-agent `agents/<role>/CLAUDE.md`, root `CLAUDE.md`, `README.md`, `LICENSE`, `.gitignore`, `.dockerignore`, `.env.example`, `Dockerfile`, `docker-compose*.yml`, `deploy.sh`, `.githooks/`, plus any-slug task files under `agents/docs/tasks/` (rule #8 hold-block & review→pending moves are architect-driven for any agent's tasks).
+- **architect** — `agents/docs/`, per-agent `agents/<role>/CLAUDE.md`, root `CLAUDE.md`, `CONCEPTS.md`, `README.md`, `LICENSE`, `.gitignore`, `.dockerignore`, `.env.example`, `Dockerfile`, `docker-compose*.yml`, `deploy.sh`, `.githooks/`, plus any-slug task files under `agents/docs/tasks/` (rule #8 hold-block & review→pending moves are architect-driven for any agent's tasks).
 - **backend** — `backend/`, plus `backend-<slug>` task files (own slug only, pending→review direction only).
 - **ui** — `frontend/`, plus `ui-<slug>` task files (own slug only, pending→review direction only).
 - **pinner** — `pinner/`, plus `pinner-<slug>` task files (own slug only, pending→review direction only).
