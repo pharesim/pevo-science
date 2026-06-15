@@ -180,7 +180,7 @@ async function fetchCommentsTreeFromHaf(
       SELECT
         dc.author, dc.permlink, dc.body, dc.created,
         dc.parent_author, dc.parent_permlink,
-        ${accreditedVoteCount('dc.author', 'dc.permlink')} AS accredited_votes
+        ${accreditedVoteCount('dc.author', 'dc.permlink', `$${appTagIdx}`)} AS accredited_votes
       FROM comment_tree dc
       ${accreditedJoin}`;
 

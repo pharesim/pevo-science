@@ -1647,7 +1647,6 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
     const drAuthorIdx = drIdx++;
     const drPermlinkIdx = drIdx++;
     const drAppTagIdx = drIdx++;
-    const drAccreditedIdx = drIdx++;
     const drReviewAuthorsIdx = drIdx++;
     const drBridgeIdx = drIdx++;
     // The vote query binds only 3 trailing params (author, permlink, accreditedArr),
@@ -1675,9 +1674,12 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
         [...detailCte.params, author, permlink, accreditedArr],
       ),
       // Reviews from accredited reviewers (+ anon account) with accredited vote count.
-      // $4 = accreditedArr (used for net_votes voter gate), $5 = reviewAuthors
-      // (used for c.author gate on the review row itself, includes anon proxy),
-      // $6 = hiveBridgeAccount (for validPevoPaperWhere bridge-author pin).
+      // Trailing binds after the detailCte params: author, permlink, appTag
+      // (drAppTagIdx — reused by the revote-aware net_votes helper's revote arm),
+      // reviewAuthors (drReviewAuthorsIdx — the c.author gate on the review row
+      // itself, includes the anon proxy), hiveBridgeAccount (drBridgeIdx — the
+      // validPevoPaperWhere bridge-author pin). The net_votes voter gate no longer
+      // binds an accredited array: the helper reads the active_accreditations CTE.
       // The JOIN against `p` materializes the parent paper row so the
       // excludeSelfReviewWhere helper can read p.json_metadata -> authors[].
       // The JOIN is a single-row lookup keyed on (author, permlink) — the
@@ -1695,15 +1697,15 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
       pool.query(
         `${detailCte.sql}
          SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
-                (SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int FROM (
-                   SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
-                   WHERE v.author = c.author AND v.permlink = c.permlink
-                     AND v.voter = ANY($${drAccreditedIdx}::text[]) AND v.voter != v.author
-                   -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
-                   -- v.id is the monotonic HAF op id) per
-                   -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
-                   ORDER BY v.voter, v.block_num DESC, v.id DESC
-                 ) lv WHERE lv.weight != 0) AS net_votes
+                -- Revote-aware: each review's displayed net_votes must fold
+                -- post-payout revote custom_json into the latest-signal-per-voter
+                -- stream, same as the single-review fetch (routes/reviews.ts) and
+                -- reputation.ts. The shared helper reads active_accreditations
+                -- (in scope via detailCte) for the voter gate and reuses the bound
+                -- APP_TAG ref for the revote arm, so no per-row accredited-array
+                -- bind is needed. A native-only count here diverged from the same
+                -- review's count on its single-doc page once a voter revoted.
+                ${accreditedVoteCount('c.author', 'c.permlink', `$${drAppTagIdx}`)} AS net_votes
          FROM ${T.comments} c
          JOIN ${T.comments} p ON p.author = $${drAuthorIdx} AND p.permlink = $${drPermlinkIdx}
          WHERE c.parent_author = $${drAuthorIdx} AND c.parent_permlink = $${drPermlinkIdx}
@@ -1714,7 +1716,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?:
            AND ${excludeClaimedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: `$${drAuthorIdx}`, paperPermlinkExpr: `$${drPermlinkIdx}` })}
            AND ${excludeConsentedSelfWhere({ authorExpr: 'c.author', paperAuthorExpr: `$${drAuthorIdx}`, paperPermlinkExpr: `$${drPermlinkIdx}` })}
          ORDER BY c.created DESC`,
-        [...detailCte.params, author, permlink, config.appTag, accreditedArr, reviewAuthors, config.hiveBridgeAccount || ''],
+        [...detailCte.params, author, permlink, config.appTag, reviewAuthors, config.hiveBridgeAccount || ''],
       ),
       // Version history (needed for review outdated computation)
       resolveVersionsFromHaf(author, permlink, headAuthorsMemo, signal),

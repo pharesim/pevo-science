@@ -15,7 +15,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, buildWith, buildRecursiveWith, activeAccreditationsCteBody, firstAccreditedAnchorCteBody, authorshipClaimsCteBody, consentStackCteBody } from '../hafsql.js';
+import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, excludeClaimedSelfWhere, excludeConsentedSelfWhere, buildWith, buildRecursiveWith, activeAccreditationsCteBody, firstAccreditedAnchorCteBody, authorshipClaimsCteBody, consentStackCteBody, accreditedVoteCount } from '../hafsql.js';
 
 const router = Router();
 
@@ -583,7 +583,6 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     const bridgeIdx = paramIdx++;
     const limitIdx = paramIdx++;
     const offsetIdx = paramIdx++;
-    const accreditedParamIdx = paramIdx++; // votes-sort only; param appended conditionally below
 
     const at = `$${appTagIdx}`;
     const bridgeParam = `$${bridgeIdx}`;
@@ -617,24 +616,21 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     );
     const total = countResult.rows[0]?.total ?? 0;
 
-    // For sort-by-votes, compute accredited net_votes per review.
-    const accreditedAccounts = sort === 'votes' ? [...(await getAllAccreditedAccounts())] : [];
+    // For sort-by-votes, compute accredited net_votes per review via the shared
+    // helper, which folds native votes + post-payout `revote` custom_json into
+    // one latest-signal-per-voter stream (parity with reputation.ts). Skipped
+    // for date-sort, where the column is unused — '0 AS net_votes' avoids the
+    // per-row correlated subquery. The helper reads `active_accreditations`
+    // (in scope via `accredCte`), so no pre-fetched accredited-account array is
+    // needed; the revote arm reuses the already-bound `appTagIdx` ref.
     const netVotesSubquery = sort === 'votes'
-      ? `(SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int
-          FROM (SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
-                WHERE v.author = c.author AND v.permlink = c.permlink
-                  AND v.voter = ANY($${accreditedParamIdx}::text[]) AND v.voter != v.author
-                -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
-                -- v.id is the monotonic HAF op id) per
-                -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
-                ORDER BY v.voter, v.block_num DESC, v.id DESC) lv WHERE lv.weight != 0) AS net_votes`
+      ? `${accreditedVoteCount('c.author', 'c.permlink', at)} AS net_votes`
       : '0 AS net_votes';
     const orderClause = sort === 'votes'
       ? `net_votes ${order === 'asc' ? 'ASC' : 'DESC'}, c.created DESC`
       : `c.created ${order === 'asc' ? 'ASC' : 'DESC'}`;
 
     const dataParams: unknown[] = [...baseParams, limit, offset];
-    if (sort === 'votes') dataParams.push(accreditedAccounts);
 
     const dataResult = await pool.query(
       `${accredCte.sql}

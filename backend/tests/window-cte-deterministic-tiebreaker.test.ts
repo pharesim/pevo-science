@@ -153,6 +153,67 @@ function runVoteCount(
   return pool.query<{ net: number }>(sql, params).then((res) => Number(res.rows[0]?.net ?? 0));
 }
 
+function emptyOr(lines: string[], typedEmpty: string): string {
+  return lines.length ? `VALUES\n        ${lines.join(',\n        ')}` : `${typedEmpty} WHERE false`;
+}
+
+function runVoteCountWithRevotes(
+  // Native Hive votes and post-payout `revote` custom_json ops, both targeting
+  // (paper-author, paper-permlink). Every voter is pre-seeded as accredited.
+  // A revote weight is what the chain carries in json.weight (number or the
+  // string/garbage forms the {1,9}-guard must tolerate).
+  nativeRows: Array<{ voter: string; weight: number; blockNum: number; id: number }>,
+  revoteRows: Array<{ voter: string; weight: number | string; blockNum: number; id: number }>,
+): Promise<number> {
+  const pool = getPool();
+  if (!pool) throw new Error('no pool');
+
+  // The real revote-aware fragment, FROMs redirected to synthetic sets. The
+  // cross-arm `DISTINCT ON (s.voter) ... ORDER BY s.voter, s.block_num DESC,
+  // s.op_id DESC` UNION ALL clause under test is the production clause verbatim.
+  let countExpr = accreditedVoteCount("'paper-author'", "'paper-permlink'", '$1');
+  countExpr = countExpr.split(`${T.voteOps} v`).join('synthetic_v v');
+  countExpr = countExpr.split(`${T.customJson} cj`).join('synthetic_cj cj');
+
+  // $1 = APP_TAG, matched by both the helper's `cj.custom_id = $1` and each
+  // synthetic revote row's custom_id.
+  const params: unknown[] = [config.appTag];
+  const voters = new Set<string>();
+
+  const nativeLines = nativeRows.map((r) => {
+    voters.add(r.voter);
+    const voterIdx = params.push(r.voter);
+    const weightIdx = params.push(r.weight);
+    return `('paper-author'::text, 'paper-permlink'::text, $${voterIdx}::text, $${weightIdx}::int, ${r.blockNum}::bigint, ${r.id}::bigint)`;
+  });
+  const revoteLines = revoteRows.map((r) => {
+    voters.add(r.voter);
+    const json = JSON.stringify({ action: 'revote', author: 'paper-author', permlink: 'paper-permlink', weight: r.weight });
+    const jsonIdx = params.push(json);
+    const authsIdx = params.push(JSON.stringify([r.voter]));
+    return `($1::text, $${jsonIdx}::text, $${authsIdx}::jsonb, ${r.blockNum}::bigint, ${r.id}::bigint)`;
+  });
+  const accredLines = [...voters].map((v) => {
+    const idx = params.push(v);
+    return `($${idx}::text)`;
+  });
+
+  const sql = `
+    WITH synthetic_v(author, permlink, voter, weight, block_num, id) AS (
+      ${emptyOr(nativeLines, 'SELECT NULL::text, NULL::text, NULL::text, NULL::int, NULL::bigint, NULL::bigint')}
+    ),
+    synthetic_cj(custom_id, json, required_posting_auths, block_num, id) AS (
+      ${emptyOr(revoteLines, 'SELECT NULL::text, NULL::text, NULL::jsonb, NULL::bigint, NULL::bigint')}
+    ),
+    active_accreditations(account) AS (
+      ${emptyOr(accredLines, 'SELECT NULL::text')}
+    )
+    SELECT ${countExpr} AS net
+  `;
+
+  return pool.query<{ net: number }>(sql, params).then((res) => Number(res.rows[0]?.net ?? 0));
+}
+
 describe('window CTE / vote DISTINCT ON — same-block deterministic tie-breaker', () => {
   it.skipIf(!isHafConfigured())(
     'membership resolves deterministically: legacy revoke ignored, sanction sticky, latest-accredit method wins on id tie-break',
@@ -267,6 +328,12 @@ describe('window CTE / vote DISTINCT ON — same-block deterministic tie-breaker
     expect(accreditedVoteCount('a', 'b')).toContain(
       'ORDER BY v.voter, v.block_num DESC, v.id DESC',
     );
+    // Revote-aware form (appTagParam supplied): the UNION ALL revote arm and
+    // the cross-arm latest-wins ordering. Dropping either silently re-opens the
+    // native-only display/score parity gap.
+    const revoteForm = accreditedVoteCount('a', 'b', '$1');
+    expect(revoteForm).toContain("cj.json::jsonb ->> 'action' = 'revote'");
+    expect(revoteForm).toContain('ORDER BY s.voter, s.block_num DESC, s.op_id DESC');
     // Coverage limitation: the three reputation union CTEs (paper_latest_votes,
     // review_latest_votes, citing_latest_votes in reputation.ts) carry the same
     // `block_num DESC, op_id DESC` tie-breaker but are inlined, NOT exported as
@@ -274,4 +341,108 @@ describe('window CTE / vote DISTINCT ON — same-block deterministic tie-breaker
     // end-to-end by the real-HAF reputation-lifecycle suite, which executes the
     // assembled union SQL against live Postgres.
   });
+});
+
+describe('accreditedVoteCount — native + revote display/score parity', () => {
+  // The revote-aware form folds post-payout `revote` custom_json into the
+  // latest-signal-per-voter stream the reputation cycle uses, so the
+  // review/comment/profile display counts no longer diverge from the score
+  // when an accredited voter flipped or retracted via revote. Same carve-out
+  // clauses (a)/(b)/(c) as runVoteCount above: synthetic VALUES exercise the
+  // production union SQL verbatim through the real getPool() connection because
+  // the chain mirror cannot be seeded with the multi-state vote histories these
+  // cases require.
+
+  it.skipIf(!isHafConfigured())(
+    'revote-only upvote counts (native-only would show 0)',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      // A voter whose ONLY accredited signal is a post-payout revote upvote.
+      const net = await runVoteCountWithRevotes([], [{ voter: 'carol', weight: 10000, blockNum: 300, id: 50 }]);
+      expect(net).toBe(1);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'native upvote retracted by a later weight:0 revote counts 0',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const net = await runVoteCountWithRevotes(
+        [{ voter: 'dave', weight: 10000, blockNum: 100, id: 10 }],
+        [{ voter: 'dave', weight: 0, blockNum: 300, id: 50 }],
+      );
+      expect(net).toBe(0);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'native upvote flipped to a downvote by a later revote flips the sign',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const net = await runVoteCountWithRevotes(
+        [{ voter: 'erin', weight: 10000, blockNum: 100, id: 10 }],
+        [{ voter: 'erin', weight: -10000, blockNum: 300, id: 50 }],
+      );
+      expect(net).toBe(-1);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'an OLDER revote does not override a LATER native vote (cross-arm latest-wins by block then op id)',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      // Revote retraction at block 100, then a (hypothetical same-window)
+      // native upvote at block 300: the later native vote is the latest signal.
+      const net = await runVoteCountWithRevotes(
+        [{ voter: 'frank', weight: 10000, blockNum: 300, id: 60 }],
+        [{ voter: 'frank', weight: 0, blockNum: 100, id: 10 }],
+      );
+      expect(net).toBe(1);
+      // Same block, revote has the higher op id -> revote wins (retracts).
+      const sameBlock = await runVoteCountWithRevotes(
+        [{ voter: 'grace', weight: 10000, blockNum: 200, id: 30 }],
+        [{ voter: 'grace', weight: 0, blockNum: 200, id: 31 }],
+      );
+      expect(sameBlock).toBe(0);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'a self-revote by the author is excluded',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      const net = await runVoteCountWithRevotes(
+        [],
+        [{ voter: 'paper-author', weight: 10000, blockNum: 300, id: 50 }],
+      );
+      expect(net).toBe(0);
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'a malformed-weight latest revote drops the voter (NULL weight, not a crash)',
+    { timeout: 30_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) { ctx.skip('no pool available'); return; }
+      // Non-numeric weight -> {1,9}-guard yields SQL NULL; as the latest signal
+      // it drops the voter (NULL != 0 is NULL), matching reputation.ts. The
+      // query must not abort on the bad cast.
+      const net = await runVoteCountWithRevotes(
+        [{ voter: 'heidi', weight: 10000, blockNum: 100, id: 10 }],
+        [{ voter: 'heidi', weight: 'not-a-number', blockNum: 300, id: 50 }],
+      );
+      expect(net).toBe(0);
+    },
+  );
 });

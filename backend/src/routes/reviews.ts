@@ -77,10 +77,9 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     // refs via `paramIdx++` or literal `'$2'`/`'$3'` strings. Offset
     // arithmetic silently mis-binds if any bind between the lines is
     // added/removed — see the helper's docstring example for the
-    // canonical shape. Adding `accreditedVoteCount(...)` as a column
-    // here doesn't consume params (it expands to a correlated subquery
-    // with no binds), so the counter only advances for actual `$N`
-    // refs.
+    // canonical shape. `accreditedVoteCount(...)` adds no new bind of its
+    // own — its revote arm REUSES the already-counted `appTagIdx` ref — so
+    // the counter only advances for the actual `$N` refs declared below.
     let paramIdx = accredCte.nextIdx;
     const authorIdx = paramIdx++;
     const permlinkIdx = paramIdx++;
@@ -112,7 +111,7 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
        SELECT c.author, c.permlink, c.body, c.json_metadata,
               c.parent_author, c.parent_permlink, c.created,
               p.title AS paper_title,
-              ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes
+              ${accreditedVoteCount('c.author', 'c.permlink', `$${appTagIdx}`)} AS net_votes
        FROM ${T.comments} c
        JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
        WHERE c.author = $${authorIdx} AND c.permlink = $${permlinkIdx}

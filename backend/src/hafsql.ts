@@ -1878,24 +1878,98 @@ export function getCachedGenesisBlock(): number {
 // ─── Vote count subquery ─────────────────────────────────────────
 
 /**
- * Subquery that counts accredited upvotes for a given (author, permlink).
- * Returns an int. Use as a scalar subquery in SELECT.
+ * Subquery that counts accredited net votes for a given (author, permlink).
+ * Returns an int (sum of sign-of-latest-weight per accredited voter). Use as a
+ * scalar subquery in SELECT.
  *
  * Requires `active_accreditations` CTE to be in scope.
  *
+ * Two forms, selected by whether `appTagParam` is supplied:
+ *
+ * - **Native-only** (no `appTagParam`): counts the latest native Hive vote per
+ *   accredited voter. Use only where a revote-aware resolver overwrites this
+ *   column downstream — the papers list/detail `net_votes` is replaced by
+ *   `batchResolveVotes` (routes/papers.ts) before the response is built, so the
+ *   native-only column there is a placeholder, not the served value.
+ *
+ * - **Native + revote** (with `appTagParam`): folds post-payout `revote`
+ *   `custom_json` ops into one latest-signal-per-voter stream, matching the
+ *   `*_vote_signals` resolution in `computeReputationBatch` (reputation.ts). This
+ *   is the form every directly-served count surface (review/comment net_votes,
+ *   profile votes-sort) must use so the display count stays at parity with the
+ *   reputation the same data produces. After the 7-day Hive payout window a
+ *   voter cannot recast a native vote, so a flip or retraction arrives only as a
+ *   `revote` op; a native-only count would show a stale value that contradicts
+ *   the score.
+ *
  * @param authorExpr - SQL expression for the author (e.g., 'c.author')
  * @param permlinkExpr - SQL expression for the permlink (e.g., 'c.permlink')
+ * @param appTagParam - bound `$N` ref to APP_TAG (`config.appTag`). Supplying it
+ *   switches to the revote-aware form. Omit only where the column is overwritten
+ *   downstream.
  */
-export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): string {
+export function accreditedVoteCount(authorExpr: string, permlinkExpr: string, appTagParam?: string): string {
+  if (!appTagParam) {
+    return `(SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int FROM (
+      SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
+      JOIN active_accreditations aa ON aa.account = v.voter
+      WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr}
+        AND v.voter != ${authorExpr}
+      -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
+      -- v.id is the monotonic HAF op id) per
+      -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
+      ORDER BY v.voter, v.block_num DESC, v.id DESC
+    ) lv WHERE lv.weight != 0)`;
+  }
   return `(SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int FROM (
-    SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
-    JOIN active_accreditations aa ON aa.account = v.voter
-    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr}
-      AND v.voter != ${authorExpr}
-    -- Same-block tie-breaker: v.id (operation_vote_view has no trx_in_block;
-    -- v.id is the monotonic HAF op id) per
+    SELECT DISTINCT ON (s.voter) s.weight FROM (
+      SELECT v.voter AS voter, v.weight AS weight, v.block_num AS block_num, v.id AS op_id
+      FROM ${T.voteOps} v
+      JOIN active_accreditations aa ON aa.account = v.voter
+      WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr}
+        AND v.voter != ${authorExpr}
+      UNION ALL
+      -- PERF / scaling note: this revote arm is a per-row correlated scan. Its
+      -- only index-backed predicate is cj.custom_id (the JSON-extracted
+      -- author/permlink/action stay residual filters; HAF indexes are fixed
+      -- external infra and cannot be added), so each outer row scans the whole
+      -- APP_TAG custom_json namespace. Cost is therefore O(namespace x rows),
+      -- vs the native arm above which is an index-backed point lookup and stays
+      -- correctly per-row. At current scale (single-digit namespace, negligible
+      -- revote volume) this is sub-millisecond and cache-fronted, verified by
+      -- live EXPLAIN (custom_id index scan, ~15 rows removed by residual filter).
+      -- THRESHOLD: once the custom_json namespace grows large (platform-wide
+      -- accreditations / vouches / revotes / param-updates), collapse THIS arm to
+      -- a single batched revote scan + JS latest-signal merge per request (the
+      -- shape batchResolveVotes and fetchEnrichmentFromHaf's revoteMap already
+      -- use) instead of per row; keep the native arm correlated. Per
+      -- agents/docs/solutions/conventions/correlated-subquery-to-cte-collapse-is-index-dependent-2026-06-14.md
+      SELECT
+        cj.required_posting_auths ->> 0 AS voter,
+        -- {1,9} bounds the digit count for overflow safety: an unbounded match
+        -- admits a value that overflows ::int and aborts the query (max Hive
+        -- vote weight is 10000). A non-matching/malformed weight yields SQL NULL,
+        -- which the outer lv.weight != 0 drops (NULL != 0 is NULL), so a
+        -- malformed latest revote retracts the voter, matching reputation.ts.
+        CASE WHEN (cj.json::jsonb ->> 'weight') ~ '^-?[0-9]{1,9}$' THEN (cj.json::jsonb ->> 'weight')::int END AS weight,
+        cj.block_num AS block_num,
+        cj.id AS op_id
+      FROM ${T.customJson} cj
+      JOIN active_accreditations aa ON aa.account = (cj.required_posting_auths ->> 0)
+      WHERE cj.custom_id = ${appTagParam}
+        AND cj.json::jsonb ->> 'action' = 'revote'
+        AND cj.json::jsonb ->> 'author' = ${authorExpr}
+        AND cj.json::jsonb ->> 'permlink' = ${permlinkExpr}
+        AND (cj.required_posting_auths ->> 0) != ${authorExpr}
+    ) s
+    -- Cross-arm latest-wins: op_id is the GLOBAL haf_operations PK (v.id for
+    -- native votes, cj.id for revotes) on one monotonic sequence shared across
+    -- operation_vote_view and operation_custom_json_view (neither has
+    -- trx_in_block), so block_num DESC then op_id DESC is genuine cross-arm
+    -- latest-signal resolution. Do NOT namespace op_id per arm (that breaks the
+    -- cross-arm ordering) per
     -- agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md Rule 2
-    ORDER BY v.voter, v.block_num DESC, v.id DESC
+    ORDER BY s.voter, s.block_num DESC, s.op_id DESC
   ) lv WHERE lv.weight != 0)`;
 }
 
