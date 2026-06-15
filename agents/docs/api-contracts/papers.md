@@ -222,6 +222,7 @@ Lazy-loaded enrichment data for a paper (votes, reviews). Separated from the mai
 **Field notes:**
 - `vote_strength` — qualitative tier derived from average effective vote weight: `"strong endorsement"`, `"endorsement"`, `"mild endorsement"`, `"neutral"`, `"mild concerns"`, `"reject"`, `"strong reject"`, or `null` if no effective voters.
 - `voters[]` — per-voter breakdown. `effective_weight` reflects the voter's signal weight (vote strength). `voted_version` indicates which paper version the vote was cast on (inferred from block number for native votes, explicit for revotes). Votes persist across paper revisions and are never invalidated by edits. A credited authorship-claimer's self-vote on their own paper (an `accepted`-claim claimer, including ORCID-matched or name-only-slot claimers absent from `authors[].hive`) is excluded from both this list and the top-level `net_votes`, across the native-vote and revote channels alike, mirroring the chain-poster / named-co-author exclusion and the reputation cycle's claimer gate. The listing surface (`PaperSummary.net_votes`) applies the same exclusion via `batchResolveVotes`.
+- `reviews[].net_votes` is the net sum of the latest accredited signal per voter for each embedded review, folding native Hive votes and post-payout `revote` `custom_json` operations (the same resolution as `GET /api/reviews/:author/:permlink`). Before this parity fix a voter who revoted after the payout window could make this embedded count diverge from the same review's count on its single-review page.
 - `reviews[].reviewer_reputation` — always `0` (not yet computed per-review; reserved for future use).
 - `reviews[].outdated` — `true` if the review was written against an older version than the current paper.
 - `reviews[].addressed_by_version` — version number of a paper revision that explicitly addresses this review, or `null`.
@@ -398,7 +399,7 @@ Discussion comments on a paper (threaded). Returns a flat list of all comments; 
 - The API returns a **flat list**. The frontend builds the thread tree client-side using `parent_author`/`parent_permlink` fields.
 - Top-level comments have `parent_author` = paper author and `parent_permlink` = paper permlink.
 - Replies to comments have `parent_author` = parent commenter and `parent_permlink` = parent comment permlink.
-- `net_votes` reflects accredited votes only.
+- `net_votes` reflects the latest accredited signal per voter, combining native Hive votes and post-payout `revote` `custom_json` operations (the same resolution as the review surfaces). It is not the raw Hive vote count.
 
 **Errors:**
 - `NOT_FOUND` — paper does not exist (preflight `paperExistsInHaf` returned no rows).

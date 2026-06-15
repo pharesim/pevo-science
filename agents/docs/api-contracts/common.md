@@ -29,7 +29,7 @@ PEvO only surfaces data from accredited users by default:
 
 Accreditation is a hard gate: there is no `accredited_only=false` opt-out on any endpoint. The bridge-paper exemption is **author-and-type-gated**: only posts authored by `config.hiveBridgeAccount` with `json_metadata.type === 'bridge_paper'` are admitted. A type claim alone is not an exemption — PEvO object identity is determined by author vouching, not by self-declared metadata. See `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
 
-The `net_votes` field in API responses reflects **accredited votes only**, not the raw Hive vote count. The `review_count` and `citation_count` fields similarly reflect accredited-only data.
+The `net_votes` field in API responses reflects the latest accredited signal per voter, combining native Hive votes and post-payout `revote` `custom_json` operations into a net sum of +1/-1 per accredited voter (self-votes excluded), at parity with the reputation cycle. It is not the raw Hive vote count. The `review_count` and `citation_count` fields similarly reflect accredited-only data.
 
 ## Common Response Envelope
 

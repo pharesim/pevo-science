@@ -36,7 +36,7 @@ Single review with full details.
 ```
 
 **Field notes:**
-- `net_votes` — counts only votes from accredited users (net sum of +1/-1 per accredited voter), not all Hive votes.
+- `net_votes` is the net sum of the latest accredited signal per voter (+1 or -1), counting both native Hive votes and post-payout `revote` `custom_json` operations. A voter who flipped or retracted via a revote after the 7-day Hive payout window is reflected here, at parity with the reputation cycle. Self-votes are excluded, and unaccredited signals are never counted.
 
 **Errors:**
 - `NOT_FOUND` — review does not exist, is not a PEvO review (fails `validReviewWhere()` in `backend/src/hafsql.ts`), is authored by a credited authorship-claimer holding an `accepted` claim on the reviewed paper (the display self-review exclusion drops it via `excludeClaimedSelfWhere()`, so this endpoint now returns 404 for a credited claimer's self-review where it previously returned 200), or its parent post is not a valid PEvO paper (fails `validPevoPaperWhere(source:'all')` in `backend/src/hafsql.ts`; covers both native pevo paper posts and `bridge_paper` posts authored by `config.hiveBridgeAccount`)
