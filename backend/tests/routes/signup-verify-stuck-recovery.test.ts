@@ -17,9 +17,11 @@
  *       fall inside the window.
  *
  * **Carve-out clause-(a)/(c) justification.** Mocks
- * `broadcastJsonWithTimeout`, `seedAccreditationBonus`, and
- * `getAccreditedSet` at module level so the broadcast-outcome path can be
- * driven deterministically per-test.
+ * `broadcastJsonWithTimeout`, `seedAccreditationBonus`, `getAccreditedSet`, and
+ * `hasUnliftedSanction` at module level so the broadcast-outcome path and the
+ * ever-sanctioned refusal can be driven deterministically per-test.
+ * `SANCTIONED_ACCREDIT_MESSAGE` flows from the real module (the accreditation.js
+ * mock spreads `...actual`), so it cannot drift from the source export.
  *
  *   (a) Real path impractical: broadcast outcomes are non-deterministic
  *       at unit test scope; the timeout-ambiguous path requires inducing

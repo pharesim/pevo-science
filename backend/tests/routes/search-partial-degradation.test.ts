@@ -56,11 +56,17 @@ vi.mock('../../src/redis.js', () => ({
   disconnectRedis: async () => {},
 }));
 
-vi.mock('../../src/accreditation.js', () => ({
-  getAccreditedSet: async (_usernames: string[]) => new Set<string>(),
-  hasUnliftedSanction: async (_account: string) => false,
-  SANCTIONED_ACCREDIT_MESSAGE: 'This account is not eligible for accreditation at this time.',
-}));
+vi.mock('../../src/accreditation.js', async () => {
+  // SANCTIONED_ACCREDIT_MESSAGE is pulled from the real module rather than
+  // hardcoded so it cannot drift from the source export — a truncated copy
+  // would silently diverge from what the live endpoints return.
+  const actual = await vi.importActual<typeof import('../../src/accreditation.js')>('../../src/accreditation.js');
+  return {
+    getAccreditedSet: async (_usernames: string[]) => new Set<string>(),
+    hasUnliftedSanction: async (_account: string) => false,
+    SANCTIONED_ACCREDIT_MESSAGE: actual.SANCTIONED_ACCREDIT_MESSAGE,
+  };
+});
 
 const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');

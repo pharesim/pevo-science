@@ -166,6 +166,54 @@ export async function repairAbandonedBatchState(): Promise<void> {
 }
 
 /**
+ * Remove members no longer in the live accredited set from the batch index.
+ *
+ * The CYCLE_SWAP Lua SADDs each renamed prod key — a FULL
+ * `${BATCH_KEY_PREFIX}<username>` path — into `membersKey`, and never removes
+ * prior cycles' entries. A member whose username is NOT in this cycle's live
+ * accredited set (`scoredUsers`, which holds BARE usernames) is sanctioned,
+ * below-threshold WoT, or otherwise de-accredited: SREM it from the index and
+ * DEL its stale prod score key so its displayed reputation collapses to zero
+ * and the index stays bounded by the live accredited set (its stated
+ * invariant). A WoT threshold drop has no op/handler to invalidate on, so this
+ * cycle-time prune is its only cleanup; the sanction path also invalidates
+ * immediately.
+ *
+ * Key-space contract: the index entries and the prod score keys are BOTH full
+ * prod paths, while `scoredUsers` holds bare usernames. The live set is mapped
+ * UP through `batchKey` before the set-difference (rather than stripping the
+ * index entries down) so the comparison happens in one space and the stale
+ * entries — already full keys — are SREM'd and DEL'd directly, with no
+ * double-prefix. Best-effort: a failure reconciles at the next cycle (the stale
+ * key is harmless until then — getBatchReputationMap MGET-null-skips it).
+ *
+ * `membersKey` is a parameter (production passes REDIS_KEY_BATCH_MEMBERS) so a
+ * test can point the blanket "remove everything not in scoredUsers" prune at a
+ * test-unique key and not race a sibling file's writes to the shared set.
+ */
+async function pruneDeAccreditedMembers(
+  redis: Redis,
+  membersKey: string,
+  scoredUsers: Set<string>,
+  cycle: number,
+): Promise<void> {
+  try {
+    const currentMembers = await redis.smembers(membersKey);
+    const liveKeys = new Set([...scoredUsers].map(batchKey));
+    const stale = currentMembers.filter((m) => !liveKeys.has(m));
+    if (stale.length > 0) {
+      const prunePipe = redis.pipeline();
+      prunePipe.srem(membersKey, ...stale);
+      for (const m of stale) prunePipe.del(m);
+      await prunePipe.exec();
+      logger.info({ cycle, pruned: stale.length }, 'Pruned de-accredited members from the reputation index');
+    }
+  } catch (pruneErr) {
+    logger.warn({ err: pruneErr, cycle }, 'Reputation members prune failed; reconciles next cycle');
+  }
+}
+
+/**
  * Run batch computation, catching up from the last computed cycle to the current one.
  *
  * Multi-instance safety: gates the body on a Redis SET NX EX 1800 lock so two
@@ -392,30 +440,11 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
         [String(cycle), REDIS_KEY_LAST_CYCLE, CYCLE_SWAP_STAGING_SUBSTRING, CYCLE_SWAP_PROD_SUBSTRING],
       );
 
-      // Prune de-accredited members. The swap SADDs this cycle's accredited
-      // accounts but never removes prior cycles' entries, so a member NOT in
-      // this cycle's live accredited set (`scoredUsers`) is sanctioned,
-      // below-threshold WoT, or otherwise no longer accredited. SREM it from the
-      // index and DEL its stale prod score key so its displayed reputation
-      // collapses to zero and the members index stays bounded by the live
-      // accredited set (its stated invariant). A WoT threshold drop has no
-      // op/handler to invalidate on, so this cycle-time prune is its only
-      // cleanup; the sanction path also invalidates immediately. Best-effort: a
-      // failure reconciles at the next cycle (the stale key is harmless until
-      // then — getBatchReputationMap tolerates the brief overlap).
-      try {
-        const currentMembers = await redis.smembers(REDIS_KEY_BATCH_MEMBERS);
-        const stale = currentMembers.filter((m) => !scoredUsers.has(m));
-        if (stale.length > 0) {
-          const prunePipe = redis.pipeline();
-          prunePipe.srem(REDIS_KEY_BATCH_MEMBERS, ...stale);
-          for (const m of stale) prunePipe.del(batchKey(m));
-          await prunePipe.exec();
-          logger.info({ cycle, pruned: stale.length }, 'Pruned de-accredited members from the reputation index');
-        }
-      } catch (pruneErr) {
-        logger.warn({ err: pruneErr, cycle }, 'Reputation members prune failed; reconciles next cycle');
-      }
+      // Prune de-accredited members from the membership index so a sanctioned /
+      // below-threshold-WoT / otherwise-de-accredited account's stale score
+      // collapses to zero and the index stays bounded by the live accredited
+      // set. See pruneDeAccreditedMembers for the key-space contract.
+      await pruneDeAccreditedMembers(redis, REDIS_KEY_BATCH_MEMBERS, scoredUsers, cycle);
 
       // Use this cycle's scores as prev scores for the next cycle (score-only
       // for the SQL `prev_scores` jsonb parameter).
@@ -514,4 +543,5 @@ export const __test_seams = {
   REDIS_KEY_BATCH_MEMBERS,
   clearStagingKeys,
   clearInProgressSentinels,
+  pruneDeAccreditedMembers,
 } as const;

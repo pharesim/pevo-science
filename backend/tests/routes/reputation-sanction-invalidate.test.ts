@@ -17,6 +17,7 @@ import {
   getReputationScore,
   invalidateOnRevocation,
 } from '../../src/reputation.js';
+import { __test_seams as batchSeams } from '../../src/reputation-batch.js';
 
 describe('reputation invalidate-on-sanction', () => {
   it('collapses a member score to ZERO and prunes the member on invalidateOnRevocation', async () => {
@@ -47,5 +48,44 @@ describe('reputation invalidate-on-sanction', () => {
 
     // Defensive cleanup (tests/setup.ts also flushes the appTag namespace).
     await redis.del(batchKey(account));
+  });
+});
+
+describe('reputation batch per-cycle prune', () => {
+  it('removes a de-accredited member and its score key while the still-accredited member survives', async () => {
+    const redis = getRedis();
+    if (!redis) return; // Redis-unavailable env: vacuous pass
+
+    // Test-unique members key: the prune does a blanket "remove every member
+    // NOT in the live set", so it must not run against the shared production
+    // index (that would nuke a sibling file's members under the concurrent
+    // runner). Lives under the appTag namespace so tests/setup.ts flushes it.
+    const membersKey = `${REDIS_KEY_BATCH_MEMBERS}:prune-test`;
+    const live = 'prune-test-accredited-user';
+    const stale = 'prune-test-deaccredited-user';
+
+    // Seed both as a completed cycle would: a non-zero prod score key plus a
+    // FULL-batchKey entry in the members index (the Lua SADDs the post-RENAME
+    // prod path, not the bare username).
+    await redis.set(batchKey(live), JSON.stringify({ score: 10, breakdown: { papers: 10, reviews: 0, citations: 0, accreditation: 0 } }));
+    await redis.set(batchKey(stale), JSON.stringify({ score: 99, breakdown: { papers: 99, reviews: 0, citations: 0, accreditation: 0 } }));
+    await redis.sadd(membersKey, batchKey(live), batchKey(stale));
+
+    // The live accredited set holds BARE usernames; only `live` is still in it.
+    // The fix maps it UP through batchKey before the set-difference, so the
+    // full-key members compare correctly and the stale full key is DEL'd
+    // directly (no double-prefix). The pre-fix code classed BOTH members stale
+    // (bare-vs-full mismatch) and DEL'd batchKey(fullKey) (a no-op).
+    await batchSeams.pruneDeAccreditedMembers(redis, membersKey, new Set([live]), 1);
+
+    const members = await redis.smembers(membersKey);
+    expect(members).toContain(batchKey(live)); // still-accredited survives
+    expect(members).not.toContain(batchKey(stale)); // de-accredited pruned
+
+    expect(await redis.exists(batchKey(live))).toBe(1); // score key survives
+    expect(await redis.exists(batchKey(stale))).toBe(0); // stale score key removed
+
+    // Cleanup (tests/setup.ts also flushes the appTag namespace).
+    await redis.del(batchKey(live), membersKey);
   });
 });

@@ -98,11 +98,14 @@ import { PrivateKey } from '@hiveio/dhive';
 // broadcastJsonWithTimeout, broadcastAdminCustomJson — all routed through
 // the one broadcastJsonMock) plus the hiveClient.database.getAccounts -> []
 // read stub and the BroadcastTimeoutError / DEFAULT_BROADCAST_TIMEOUT_MS
-// stand-ins; and accreditation.js getAccreditedSet, stubbed to an empty
-// accredited set. (The fifth vi.mock, verifyHiveSignature.js, is a
-// delegating wrapper, not a stub — see the verifyHiveSignature.js vi.mock
-// factory's note.) That scope matches the SEC-002-BE carve-out and does not
-// widen here.
+// stand-ins; and accreditation.js getAccreditedSet (stubbed to an empty
+// accredited set) plus hasUnliftedSanction (stubbed false by default; one spec
+// drives it true for the sanctioned-refusal path), with
+// SANCTIONED_ACCREDIT_MESSAGE pulled from the real module via importActual so
+// the message assertions track the live export. (The fifth vi.mock,
+// verifyHiveSignature.js, is a delegating wrapper, not a stub — see the
+// verifyHiveSignature.js vi.mock factory's note.) That scope keeps the real
+// verifyHiveSignature auth gate unmocked and does not widen the mock set here.
 // vi.hoisted keeps these references alive across the hoisted vi.mock factories below.
 // MockBroadcastTimeoutError mirrors the real class's constructor signature (timeoutMs
 // property) so handlers discriminating via `err instanceof BroadcastTimeoutError`
@@ -178,12 +181,20 @@ vi.mock('../../src/hive.js', () => ({
   DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
 
-// handleAccredit asks whether the caller is already accredited before broadcasting.
-vi.mock('../../src/accreditation.js', () => ({
-  getAccreditedSet: vi.fn().mockResolvedValue(new Set()),
-  hasUnliftedSanction: hasUnliftedSanctionMock,
-  SANCTIONED_ACCREDIT_MESSAGE: 'This account is not eligible for accreditation at this time.',
-}));
+// handleAccredit asks whether the caller is already accredited (and whether it
+// carries an un-lifted sanction) before broadcasting.
+vi.mock('../../src/accreditation.js', async () => {
+  // Pull SANCTIONED_ACCREDIT_MESSAGE from the real module so the
+  // `not.toContain('sanction')` assertions track the live export. A hardcoded
+  // copy could drift (e.g. be truncated) and let a future leak in the real
+  // message pass silently while the live endpoint returns the leaking string.
+  const actual = await vi.importActual<typeof import('../../src/accreditation.js')>('../../src/accreditation.js');
+  return {
+    getAccreditedSet: vi.fn().mockResolvedValue(new Set()),
+    hasUnliftedSanction: hasUnliftedSanctionMock,
+    SANCTIONED_ACCREDIT_MESSAGE: actual.SANCTIONED_ACCREDIT_MESSAGE,
+  };
+});
 
 // NOTE: verifyHiveSignature is wrapped, NOT replaced. The wrapper delegates to
 // the real middleware (preserving the SEC-002-BE invariant — fixtures/mock-auth
