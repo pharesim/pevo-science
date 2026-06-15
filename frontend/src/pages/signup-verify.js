@@ -214,14 +214,18 @@ const template = `
             </button>
           </div>
 
-          <!-- Accreditation broadcast outcome uncertain: account finalized,
-               verify before retry (genuine timeout, degrade, or self-held bind lock) -->
+          <!-- Accreditation broadcast outcome uncertain OR app-side cascade failed:
+               either way the account is finalized and the chain bind may already be
+               durable, so verify before retry (never blind-retry). The title/description
+               keys are reactive: BROADCAST_TIMEOUT and POST_BROADCAST_FAILED keep the
+               give-it-a-moment copy; POST_BROADCAST_OPERATOR_REQUIRED (permanent app-side
+               failure) swaps in the contact-support copy. -->
           <div x-show="phase === 'broadcast-pending'" class="text-center py-16">
             <div class="w-16 h-16 bg-pevo-teal/10 rounded-full flex items-center justify-center mx-auto mb-6">
               <svg class="w-8 h-8 text-pevo-teal" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             </div>
-            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.broadcastPendingTitle')"></h2>
-            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.broadcastPendingDescription')"></p>
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t(broadcastPendingTitleKey)"></h2>
+            <p class="text-ink-muted mb-6" x-text="$t(broadcastPendingDescriptionKey)"></p>
             <button @click="navigate('/login')" class="btn-primary" x-text="$t('seedPhrase.broadcastPendingLogin')"></button>
           </div>
 
@@ -267,6 +271,13 @@ export function initSignupVerifyPage() {
     // Phases: 'verifying' | 'choose' | 'create-seed' | 'create-confirm' | 'create-username' | 'create-submitting' | 'link-keychain' | 'broadcast-pending' | 'done' | 'error'
     phase: 'verifying',
     error: null,
+
+    // i18n keys rendered by the broadcast-pending phase. Default to the
+    // give-it-a-moment-to-sync copy (BROADCAST_TIMEOUT + POST_BROADCAST_FAILED
+    // confirmed); the permanent POST_BROADCAST_OPERATOR_REQUIRED confirmed case
+    // swaps in the contact-support copy via _handleAmbiguousBroadcastOutcome.
+    broadcastPendingTitleKey: 'seedPhrase.broadcastPendingTitle',
+    broadcastPendingDescriptionKey: 'seedPhrase.broadcastPendingDescription',
 
     // Mnemonic (generated client-side)
     mnemonic: null,
@@ -476,9 +487,10 @@ export function initSignupVerifyPage() {
         this.phase = 'done';
       } catch (err) {
         if (!this._mounted) return;
-        // Ambiguous broadcast outcome takes precedence over the generic
-        // failure path: the account is already finalized, so do not bounce to
-        // the username entry phase or imply creation failed.
+        // Post-broadcast outcomes (timeout-ambiguous or chain-confirmed cascade
+        // failure) take precedence over the generic failure path: the account
+        // is already finalized, so do not bounce to the username entry phase or
+        // imply creation failed. See _handleAmbiguousBroadcastOutcome.
         if (this._handleAmbiguousBroadcastOutcome(err)) return;
         // Sanitization pattern (see executeUpgrade() in settings.js). The
         // create-account path derives keys from the BIP39 mnemonic, so
@@ -492,17 +504,61 @@ export function initSignupVerifyPage() {
       }
     },
 
-    // Ambiguous broadcast outcome: the accreditation broadcast may have landed
-    // but its result is unconfirmed from this request's view (a genuine
-    // broadcast timeout, a degrade forced-ambiguous response, or a self-held
-    // binding lock from this account's own prior timed-out attempt). The
-    // account itself is already finalized, so a blind retry risks a duplicate
-    // bind and the terminal "creation failed" copy + bounce to the entry phase
-    // is misleading. Surface a calm verify-before-retry affordance instead.
-    // Mirrors the orcid-callback.js BROADCAST_TIMEOUT branch. Returns true when
-    // it handled the error (caller must skip its generic-failure handling).
+    // Post-broadcast outcome where a blind retry is wrong and the generic
+    // "creation/link failed" copy + bounce to the entry phase is misleading.
+    // Three contract codes route here; all mean the account is already
+    // finalized, so the affordance is verify-before-retry, never retry:
+    //
+    //   - BROADCAST_TIMEOUT: outcome uncertain (genuine broadcast timeout, a
+    //     degrade forced-ambiguous response, or a self-held binding lock from
+    //     this account's own prior timed-out attempt). The bind may or may not
+    //     have landed; a retry risks a duplicate bind.
+    //   - POST_BROADCAST_FAILED (outcome 'confirmed'): chain bind durable; only
+    //     a transient downstream cascade write failed. Auto-reconciles, so the
+    //     give-it-a-moment-to-sync copy fits.
+    //   - POST_BROADCAST_OPERATOR_REQUIRED (outcome 'confirmed'): chain bind
+    //     durable; a downstream cascade write failed permanently and will NOT
+    //     auto-reconcile. The "give it a moment to sync" framing is misleading
+    //     here, so swap in the contact-support copy.
+    //
+    // Branch ONLY on the contract code plus the outcome === 'confirmed'
+    // discriminator (never on details.failed_step or err.message) -- the same
+    // discipline orcid-callback.js uses. Per common.md's cross-resource MUST, a
+    // client handling POST_BROADCAST_FAILED MUST also handle its
+    // POST_BROADCAST_OPERATOR_REQUIRED sibling, so both are covered here.
+    // Returns true when it handled the error (caller must skip its
+    // generic-failure handling).
     _handleAmbiguousBroadcastOutcome(err) {
-      if (err?.code !== 'BROADCAST_TIMEOUT') return false;
+      const code = err?.code;
+      const confirmed = err?.details?.outcome === 'confirmed';
+
+      let operatorRequired;
+      if (code === 'BROADCAST_TIMEOUT') {
+        operatorRequired = false;
+      } else if (code === 'POST_BROADCAST_FAILED' && confirmed) {
+        operatorRequired = false;
+      } else if (code === 'POST_BROADCAST_OPERATOR_REQUIRED' && confirmed) {
+        operatorRequired = true;
+      } else {
+        return false;
+      }
+
+      // Leaving the username-entry flow: clear the debounce timer so a stale
+      // _checkUsername dhive call cannot fire ~400ms after the phase transition.
+      // Mirrors destroy(). The link path never arms the timer, so this is a
+      // harmless no-op there.
+      if (this._usernameTimer) {
+        clearTimeout(this._usernameTimer);
+        this._usernameTimer = null;
+      }
+
+      this.broadcastPendingTitleKey = operatorRequired
+        ? 'seedPhrase.broadcastOperatorTitle'
+        : 'seedPhrase.broadcastPendingTitle';
+      this.broadcastPendingDescriptionKey = operatorRequired
+        ? 'seedPhrase.broadcastOperatorDescription'
+        : 'seedPhrase.broadcastPendingDescription';
+
       this.phase = 'broadcast-pending';
       return true;
     },
@@ -545,9 +601,10 @@ export function initSignupVerifyPage() {
         this.phase = 'done';
       } catch (err) {
         if (!this._mounted) return;
-        // Ambiguous broadcast outcome takes precedence over the generic
-        // failure path: the account is already activated, so do not imply the
-        // link failed. See _handleAmbiguousBroadcastOutcome.
+        // Post-broadcast outcomes (timeout-ambiguous or chain-confirmed cascade
+        // failure) take precedence over the generic failure path: the account
+        // is already activated, so do not imply the link failed. See
+        // _handleAmbiguousBroadcastOutcome.
         if (this._handleAmbiguousBroadcastOutcome(err)) return;
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[signup verify link account]', err);

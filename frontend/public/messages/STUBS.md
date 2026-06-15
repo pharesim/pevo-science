@@ -3715,3 +3715,36 @@ pt: seedPhrase.broadcastPendingLogin
 sv: seedPhrase.broadcastPendingLogin
 tr: seedPhrase.broadcastPendingLogin
 zh: seedPhrase.broadcastPendingLogin
+
+### Added 2026-06-15 (ui-signup-post-broadcast-confirmed-affordance)
+
+ar: seedPhrase.broadcastOperatorTitle
+cs: seedPhrase.broadcastOperatorTitle
+da: seedPhrase.broadcastOperatorTitle
+de: seedPhrase.broadcastOperatorTitle
+es: seedPhrase.broadcastOperatorTitle
+fa: seedPhrase.broadcastOperatorTitle
+fr: seedPhrase.broadcastOperatorTitle
+he: seedPhrase.broadcastOperatorTitle
+it: seedPhrase.broadcastOperatorTitle
+nl: seedPhrase.broadcastOperatorTitle
+pl: seedPhrase.broadcastOperatorTitle
+pt: seedPhrase.broadcastOperatorTitle
+sv: seedPhrase.broadcastOperatorTitle
+tr: seedPhrase.broadcastOperatorTitle
+zh: seedPhrase.broadcastOperatorTitle
+ar: seedPhrase.broadcastOperatorDescription
+cs: seedPhrase.broadcastOperatorDescription
+da: seedPhrase.broadcastOperatorDescription
+de: seedPhrase.broadcastOperatorDescription
+es: seedPhrase.broadcastOperatorDescription
+fa: seedPhrase.broadcastOperatorDescription
+fr: seedPhrase.broadcastOperatorDescription
+he: seedPhrase.broadcastOperatorDescription
+it: seedPhrase.broadcastOperatorDescription
+nl: seedPhrase.broadcastOperatorDescription
+pl: seedPhrase.broadcastOperatorDescription
+pt: seedPhrase.broadcastOperatorDescription
+sv: seedPhrase.broadcastOperatorDescription
+tr: seedPhrase.broadcastOperatorDescription
+zh: seedPhrase.broadcastOperatorDescription

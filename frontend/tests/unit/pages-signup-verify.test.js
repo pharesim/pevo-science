@@ -98,6 +98,18 @@ function codedError(code) {
   return err;
 }
 
+// Mirrors the ApiRequestError shape api.js throws for the POST_BROADCAST_* 502
+// envelopes on signup finalize (auth.md /confirm + /link error lists). With
+// outcome:'confirmed' the chain bind is durable and only a downstream cascade
+// write failed, so the account is already finalized. The component branches on
+// the (code, details.outcome) pair only — never on failed_step or err.message.
+function postBroadcastError(code, { outcome = 'confirmed' } = {}) {
+  const err = new Error(`post-broadcast ${code}`);
+  err.code = code;
+  err.details = { retriable: false, outcome, tx_id: 'a'.repeat(40), failed_step: 'reputation_seed' };
+  return err;
+}
+
 describe('signupVerifyPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -469,8 +481,89 @@ describe('signupVerifyPage', () => {
       expect(comp.error).toBeNull();
       expect(comp.error).not.toBe('seedPhrase.createAccountFailed');
       expect(comp.isSubmitting).toBe(false);
+      // BROADCAST_TIMEOUT keeps the give-it-a-moment-to-sync copy (the default),
+      // NOT the operator-contact copy. Non-regression guard for the existing
+      // affordance now that the phase renders reactive copy keys.
+      expect(comp.broadcastPendingTitleKey).toBe('seedPhrase.broadcastPendingTitle');
+      expect(comp.broadcastPendingDescriptionKey).toBe('seedPhrase.broadcastPendingDescription');
       // Expected wire shape, not an unexpected failure: no console.warn noise.
       expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    // POST_BROADCAST_FAILED with outcome:'confirmed': the chain bind is durable
+    // and only a transient downstream cascade write failed. Route to the
+    // verify-before-retry affordance with the give-it-a-moment-to-sync copy, NOT
+    // the generic "creation failed" + bounce. Per common.md the chain state is
+    // canonical, so implying creation failed is plainly wrong here.
+    it('renders broadcast-pending (sync copy) on POST_BROADCAST_FAILED outcome:confirmed', async () => {
+      mockConfirmAccount.mockRejectedValue(postBroadcastError('POST_BROADCAST_FAILED'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+
+      await comp.submitCreateAccount();
+
+      expect(comp.phase).toBe('broadcast-pending');
+      expect(comp.phase).not.toBe('create-username');
+      expect(comp.error).toBeNull();
+      expect(comp.broadcastPendingTitleKey).toBe('seedPhrase.broadcastPendingTitle');
+      expect(comp.broadcastPendingDescriptionKey).toBe('seedPhrase.broadcastPendingDescription');
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    // POST_BROADCAST_OPERATOR_REQUIRED with outcome:'confirmed': chain bind
+    // durable, but the downstream cascade failed PERMANENTLY and will not
+    // auto-reconcile. Route to broadcast-pending but swap in the
+    // contact-support copy — the "give it a moment to sync" framing would be
+    // misleading. Sibling of POST_BROADCAST_FAILED; common.md requires handling
+    // both wherever one is handled.
+    it('renders broadcast-pending (operator-contact copy) on POST_BROADCAST_OPERATOR_REQUIRED outcome:confirmed', async () => {
+      mockConfirmAccount.mockRejectedValue(postBroadcastError('POST_BROADCAST_OPERATOR_REQUIRED'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+
+      await comp.submitCreateAccount();
+
+      expect(comp.phase).toBe('broadcast-pending');
+      expect(comp.phase).not.toBe('create-username');
+      expect(comp.error).toBeNull();
+      expect(comp.broadcastPendingTitleKey).toBe('seedPhrase.broadcastOperatorTitle');
+      expect(comp.broadcastPendingDescriptionKey).toBe('seedPhrase.broadcastOperatorDescription');
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    // Discriminator guard: the outcome:'confirmed' field is load-bearing. A
+    // POST_BROADCAST_FAILED whose outcome is anything other than 'confirmed'
+    // (legacy/malformed envelope, future variant) must NOT borrow the
+    // confirmed-outcome affordance — it falls through to the generic failure +
+    // bounce. Branch is on the contract enum, never failed_step / err.message.
+    it('keeps POST_BROADCAST_FAILED with non-confirmed outcome on the generic failure path', async () => {
+      mockConfirmAccount.mockRejectedValue(postBroadcastError('POST_BROADCAST_FAILED', { outcome: 'uncertain' }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+
+      await comp.submitCreateAccount();
+
+      expect(comp.phase).toBe('create-username');
+      expect(comp.error).toBe('seedPhrase.createAccountFailed');
+      expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
 
@@ -492,6 +585,34 @@ describe('signupVerifyPage', () => {
       expect(comp.phase).toBe('create-username');
       expect(comp.error).toBe('seedPhrase.createAccountFailed');
       expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    // Entering the affordance clears the username debounce timer so a stale
+    // _checkUsername dhive call cannot fire ~400ms after the phase transition.
+    // The clear lives in the shared helper, so it covers every routed code; the
+    // BROADCAST_TIMEOUT path exercises it here.
+    it('clears the username debounce timer when routing to broadcast-pending', async () => {
+      mockConfirmAccount.mockRejectedValue(broadcastTimeoutError());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+      // Simulate an armed debounce timer (watchUsername's $watch is mocked, so
+      // set the handle directly).
+      const handle = setTimeout(() => {}, 100000);
+      comp._usernameTimer = handle;
+
+      await comp.submitCreateAccount();
+
+      expect(comp.phase).toBe('broadcast-pending');
+      expect(clearSpy).toHaveBeenCalledWith(handle);
+      expect(comp._usernameTimer).toBeNull();
+      clearSpy.mockRestore();
       warnSpy.mockRestore();
     });
   });
@@ -646,6 +767,54 @@ describe('signupVerifyPage', () => {
       expect(comp.error).toBeNull();
       expect(comp.error).not.toBe('seedPhrase.linkAccountFailed');
       expect(comp.isSubmitting).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    // POST_BROADCAST_FAILED with outcome:'confirmed' on the link path: chain
+    // bind durable, transient cascade failure. Verify-before-retry affordance
+    // with the sync copy, not the generic "link failed".
+    it('renders broadcast-pending (sync copy) on POST_BROADCAST_FAILED outcome:confirmed', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      mockLinkExistingAccount.mockRejectedValue(postBroadcastError('POST_BROADCAST_FAILED'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseLink();
+      comp.hiveUsername = 'Bob';
+
+      await comp.handleLinkAccount();
+
+      expect(comp.phase).toBe('broadcast-pending');
+      expect(comp.error).toBeNull();
+      expect(comp.error).not.toBe('seedPhrase.linkAccountFailed');
+      expect(comp.broadcastPendingTitleKey).toBe('seedPhrase.broadcastPendingTitle');
+      expect(comp.broadcastPendingDescriptionKey).toBe('seedPhrase.broadcastPendingDescription');
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    // POST_BROADCAST_OPERATOR_REQUIRED with outcome:'confirmed' on the link
+    // path: chain bind durable, permanent cascade failure. Swap in the
+    // contact-support copy.
+    it('renders broadcast-pending (operator-contact copy) on POST_BROADCAST_OPERATOR_REQUIRED outcome:confirmed', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      mockLinkExistingAccount.mockRejectedValue(postBroadcastError('POST_BROADCAST_OPERATOR_REQUIRED'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseLink();
+      comp.hiveUsername = 'Bob';
+
+      await comp.handleLinkAccount();
+
+      expect(comp.phase).toBe('broadcast-pending');
+      expect(comp.error).toBeNull();
+      expect(comp.error).not.toBe('seedPhrase.linkAccountFailed');
+      expect(comp.broadcastPendingTitleKey).toBe('seedPhrase.broadcastOperatorTitle');
+      expect(comp.broadcastPendingDescriptionKey).toBe('seedPhrase.broadcastOperatorDescription');
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });

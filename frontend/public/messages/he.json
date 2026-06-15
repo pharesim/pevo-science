@@ -1000,6 +1000,8 @@
     "resumeFromLogin": "Your account is verified but signup was not finished. Enter your password to pick up where you left off.",
     "broadcastPendingTitle": "Confirming your accreditation",
     "broadcastPendingDescription": "This can take a moment. Your account is set up. Log in shortly to check your accreditation status.",
+    "broadcastOperatorTitle": "Account set up",
+    "broadcastOperatorDescription": "Your account is ready and your accreditation is recorded. A follow-up step needs manual attention. Please contact support if your accreditation does not appear after you log in.",
     "broadcastPendingLogin": "Go to login"
   },
   "confirm": {
