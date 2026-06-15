@@ -1,3 +1,11 @@
+## BACKEND-SIGNUP-GUARD-TEST-COMMENT-ANCHOR-REANCHOR — re-anchor pre-existing coordination-redirect comment in the ORCID-binding guard test (archived 2026-06-15) — clean ✓
+
+**Owner:** backend
+
+`signup-verify-orcid-binding-guard.test.ts` carried a `/api/auth/confirm` describe-block comment with a "from the task" coordination redirect plus bare `pending row L` / `self-custody B` repro labels (pre-existing from `63ebde27`, so out of scope for the parent task's `e33384af`-scoped hold-fix diff; the diff-gated pre-commit anchor gate does not catch the softer "from the task" phrasing on a pre-existing line). Re-anchored (`358cb6d0`) on the self-contained behavioral scenario ("a fresh ORCID signup, pending accounts row no username yet, finalizing an ORCID already accredited on chain to a DIFFERENT self-custody account must be refused with 409 ORCID_ALREADY_LINKED"). Comment-only; no logic change.
+
+**Architect review (2026-06-15) — ARCHIVED clean.** `/ce-code-review` on `358cb6d0` (project-standards + maintainability — the relevant lenses for a comment-only re-anchor). The replacement anchors on stable symbols (entity state / route / error code), introduces no new rot class (self-auditing-clean per the convention-enforcing-fix rule), and accurately describes the test below it. Whole-file re-grep found no other redirect / repro-label / ordinal residue.
+
 ## BACKEND-SIGNUP-FINALIZE-TIMEOUT-EXTENDED-LOCK-409 — signup-finalize held binding lock returns ambiguous 504, not terminal 409 (archived 2026-06-15) — clean ✓
 
 **Owner:** backend
