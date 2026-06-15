@@ -34,11 +34,14 @@ List accredited researchers.
   "field": "neuroscience",
   "method": "email",
   "orcid": "0000-0001-2345-6789",
-  "timestamp": "2026-01-15T10:00:00Z"
+  "timestamp": "2026-01-15T10:00:00Z",
+  "accredited_since": "2026-01-15T10:00:00Z"
 }
 ```
 
 `orcid` is present when the researcher has a verified ORCID, otherwise absent/null.
+
+`accredited_since` (ISO-8601 UTC) is the chain block time of the EARLIEST authority `accredit` op for the account, counting all history across sanction gaps (it does not reset on a revoke/sanction). It is the value UIs render for "accredited since" and is stable across metadata edits: a metadata re-broadcast (see `PATCH /api/accreditation/metadata`) moves `timestamp` to the edit time but leaves `accredited_since` unchanged. The list still sorts by the latest-op `timestamp`, not by `accredited_since`; the field is additive and does not change the sort contract.
 
 **Response `meta`:** Pagination metadata: `{ "page": 1, "limit": 50, "total": 142 }`
 
@@ -61,6 +64,7 @@ Accreditation status for a single user.
     "method": "email",
     "orcid": "0000-0001-2345-6789",
     "timestamp": "2026-01-15T10:00:00Z",
+    "accredited_since": "2026-01-15T10:00:00Z",
     "tx_id": "5123456789"
   } | null
 }
@@ -68,6 +72,7 @@ Accreditation status for a single user.
 
 - `is_accredited`: reflects live membership (sanction-aware, live-WoT-threshold-gated). It is `false` when the account is sanctioned (an un-lifted `type:"sanction"` `revoke`, sticky until a later authority `accredit`) or is a `wot`-method account currently below the live vouch threshold. A legacy (non-sanction) `revoke` no longer suppresses membership: a WoT account reverts to live-threshold evaluation and an authority-pinned account reverts to its latest `accredit`. See ARCHITECTURE.md § 2 "Accreditation Lifecycle & Sanctions".
 - `accreditation.tx_id`: the HAF `customJson.id` of the latest authority-signed `accredit` custom_json for this account, as a decimal string. `null` (and `accreditation` itself `null`) when the account has never been accredited or is currently sanctioned. Shape matches `/api/profile/:username` exactly. Note `accreditation` may be non-`null` while `is_accredited` is `false` for a WoT account below threshold (it carries the latest `accredit` metadata even when live standing has lapsed).
+- `accreditation.accredited_since`: the tenure anchor, defined under `GET /api/accreditations` above (earliest-op chain block time; stable across metadata edits; latest-op `timestamp` still carries the most recent op's time). Additive field.
 
 The `accredit` row is filtered server-side to only include events signed by `config.accreditationAuthorities` (via `required_posting_auths ?|` on HAF). Self-broadcast fake `accredit` ops do not surface here.
 
@@ -155,6 +160,59 @@ Both short-circuit branches return the same envelope shape (`{ message, username
 - `BROADCAST_TIMEOUT` (504): Backend aborted the broadcast at 30s. Outcome uncertain. `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: 30000`. The on-chain `idempotency_key` field (see Response notes above) means a blind retry within the token's 24h life is now SAFE: the retry's pre-broadcast HAF lookup will find the landed op (if it did land) and short-circuit to `outcome: 'already_landed'`. The historical "blind retry produces duplicate `accredit` ops" hazard is closed by the idempotency layer for this endpoint.
 - `SERVICE_UNAVAILABLE` (503): Backend Redis dependency was unavailable when the per-token broadcast-attempts counter could not be primed before reaching the broadcast site. `details.retriable: true`. Emits `Retry-After: 30` (server-driven backoff floor for the SPA's `retryAfterSeconds` accessor). No `details.reason` discriminator. The broadcast was never invoked and no chain-side or token-side state changed, so clients can safely retry. See the `details.retriable` note in `common.md` for the cross-endpoint convention.
 - `ACCREDITATION_GATE_UNAVAILABLE` (503): The user-level existing-accreditation HAF gate query (run before the per-token idempotency check on every `/verify` invocation) failed — e.g., HAF outage, query timeout, helper-internal error. `details.retriable: true`. Emits `Retry-After: 30` (server-driven backoff floor; matches the sibling `SERVICE_UNAVAILABLE` cadence so both retriable 503 branches on `/verify` share one floor). The token is **preserved** (no `deleteToken` on this branch, deliberately distinct from the gate-hit and idempotency-hit cleanup branches) so the user can retry once HAF recovers. The pre-INCR broadcast-attempts counter is NOT incremented on this path; broadcast was not invoked. Distinct from the sibling `SERVICE_UNAVAILABLE` above so operators can dashboard gate-unavailable rate separately from the Redis-pre-INCR class. **Note on cache visibility:** during the same HAF outage, per-token cache hits (`outcome: 'already_landed'`) are also unreachable because the gate runs first and 503s before the cache lookup runs. Retries during outage will get 503 even if the prior broadcast already landed; the cached answer becomes visible again once HAF recovers and the next gate query succeeds. This is the operator-only-reversible revoke semantic trade-off (preventing override of a chain-recorded revoke takes precedence over preserving idempotency-cache visibility during outage).
+
+---
+
+### PATCH /api/accreditation/metadata
+
+Self-service edit of the caller's OWN accreditation metadata (`full_name`, `institution`, `field`). Re-broadcasts a MERGED admin-signed `accredit` op that preserves `method`, `orcid`, `evidence_hash`, and the origin `issued_by` marker from the prior op; only the supplied metadata fields change (a WoT account stays a WoT account, its `issued_by:"wot"` marker is not flipped). Authorization is the caller's OWN current accreditation, NOT an admin roster level: the op is admin-key-signed (single signer) but human-authorized by the account owner editing their own profile. The tenure anchor (`accredited_since`) is unaffected: this later re-broadcast moves the latest-op `timestamp` but not the earliest-op block time.
+
+This is the canonical path for filling in metadata that first-accreditation left empty (e.g., an ORCID- or WoT-accredited account with a placeholder `institution` and empty `field`). The `/verify` email-confirm path stays idempotent and does NOT update metadata; all metadata changes route through here.
+
+**Headers:** `X-Hive-Username`, `X-Hive-Signature` (same as other authenticated endpoints).
+
+**Authorization:** a fresh re-auth proof for action `edit_accreditation_metadata`, NOT a JWT alone. This is a critical action (ARCHITECTURE.md § 6.4 / § 6.5 invariant #1) because it triggers an admin-signed on-chain broadcast. The proof is bound to `(edit_accreditation_metadata, <username>, "")` (the caller's own username, empty permlink) so a proof minted for user A cannot edit user B, and it is consumed single-use. Mint it via `POST /api/custody/fresh-auth` with `action="edit_accreditation_metadata"` (password) or `POST /api/orcid/start mode="fresh_auth" action="edit_accreditation_metadata"` (ORCID), the same per-action issuance pair as `ipfs_upload` (see [ipfs.md](ipfs.md)). Self-custody (Keychain) callers satisfy the requirement with the request signature and omit `fresh_auth_proof`. Eligibility (currently accredited AND not sanctioned) is checked BEFORE the proof is consumed, so an ineligible caller never burns a valid proof.
+
+**Request Body:**
+
+```json
+{
+  "full_name": "Dr. Jane A. Smith",
+  "institution": "MIT Media Lab",
+  "field": "computational neuroscience",
+  "fresh_auth_proof": "<single-use proof token; JWT path only>"
+}
+```
+
+At least one of `full_name`, `institution`, `field` is required (an all-empty body is rejected). Bounds mirror `accreditationRequestSchema`: `full_name` and `institution` 1 to 200 chars, `field` 1 to 100 chars. Each supplied field overlays the prior op's value; omitted fields carry forward unchanged. `fresh_auth_proof` is required only on the JWT/light-account path.
+
+**Response `data`:**
+
+```json
+{
+  "message": "Accreditation metadata updated",
+  "tx_id": "<Hive custom_json transaction ID>",
+  "accreditation": {
+    "name": "Dr. Jane A. Smith",
+    "institution": "MIT Media Lab",
+    "field": "computational neuroscience",
+    "method": "email",
+    "orcid": "0000-0001-2345-6789"
+  }
+}
+```
+
+`accreditation.method` and `accreditation.orcid` reflect the PRESERVED prior-op values, not new input; `orcid` is `null` when the prior op carried none.
+
+**Errors:**
+- `UNAUTHORIZED` (401): missing or invalid Hive signature.
+- `BAD_REQUEST` (400): body fails validation (all three fields absent, or a field over its length bound).
+- `FRESH_AUTH_REQUIRED` (401|403): missing, expired, or mismatched fresh-auth proof on the JWT path. 401 when no usable proof is present; 403 on a binding violation (proof for a different user or action). `details.reason` discriminates; status mapping per [custody.md](custody.md).
+- `FORBIDDEN` (403): the caller is not currently accredited (no authority `accredit` op on chain, or a WoT account below the live vouch threshold). There is nothing to edit.
+- `ACCREDITATION_SANCTIONED` (403): the account carries an un-lifted `type:"sanction"` `revoke`. A self-service metadata edit cannot lift a moderation sanction (it would otherwise re-broadcast a fresh `accredit` op and self-clear the sanction); only a deliberate admin `accredit` restores the account. Same refusal and message as the sibling `/verify` path. This check is non-cached and closes the membership-cache staleness window.
+- `SERVICE_UNAVAILABLE` (503): HAF was unavailable when loading the current accreditation op (the upstream reachability gate). `details.retriable: true`; emits `Retry-After: 30`. No broadcast was attempted and the proof was not consumed, so the caller can retry once HAF recovers. A HAF blip striking the downstream membership/sanction reads after this gate passes fails closed to a `403` rather than a `503`; that is an accepted, self-correcting edge that also resolves on retry.
+- `RATE_LIMITED` (429): per-account edit limiter exceeded (each successful edit triggers an admin-signed re-broadcast).
+- `BROADCAST_FAILED` (502) / `BROADCAST_TIMEOUT` (504): the chain rejected the broadcast or it timed out. Wire shape per [common.md](common.md). On a timeout the outcome is uncertain (`details.outcome: 'uncertain'`, `details.verify_before_retry: true`); the single-use proof is already spent, so the caller verifies on chain and re-mints rather than blind-retrying with a dead token.
 
 ---
 

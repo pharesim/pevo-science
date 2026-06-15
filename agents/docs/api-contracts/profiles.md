@@ -21,6 +21,7 @@ Researcher profile with reputation breakdown.
     "method": "email",
     "orcid": "0000-0001-2345-6789",
     "timestamp": "2026-01-15T10:00:00Z",
+    "accredited_since": "2026-01-15T10:00:00Z",
     "tx_id": "abc123..."
   } | null,
   "reputation": {
@@ -40,6 +41,8 @@ Researcher profile with reputation breakdown.
   }
 }
 ```
+
+`accreditation.accredited_since` (ISO-8601 UTC) is the tenure anchor: the chain block time of the EARLIEST authority `accredit` op, counting all history across sanction gaps. UIs render it for "accredited since". It is stable across metadata edits (a `PATCH /api/accreditation/metadata` re-broadcast moves the latest-op `timestamp` but not `accredited_since`). The accreditation object shape matches `GET /api/accreditations/:username` exactly; the field is additive and is `null` alongside `accreditation` when the account has never been accredited or is currently sanctioned.
 
 ---
 
