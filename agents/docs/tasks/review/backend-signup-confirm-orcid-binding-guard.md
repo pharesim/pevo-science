@@ -230,3 +230,46 @@ unimplemented behavior. Backend: flag the architect at review intake.
 ### Implementation (now actionable)
 The "Proposed implementation (pending A/B sign-off)" block above stands as written;
 the lock decision resolves its open clause to "yes, factor the lock too."
+
+## [Backend] (2026-06-15) — implemented, moving to `review/`
+
+Landed at commit `63ebde27` (branch `main`). Files:
+- `backend/src/lib/orcid-binding.ts` (NEW) — extracted the binding-lock + binding-check
+  dependency closure from `routes/orcid.ts`: `findAccreditedAccountWithOrcid`,
+  `withOrcidBindingLock`, `cacheOrcidBinding`, `getCachedOrcidBinding`,
+  `acquireBindingLock`, `releaseBindingLock`, `extendBindingLockOnTimeoutOrLog`, the
+  two key builders, `BindingLockState`, and the HAF-lag constants. Moved bodies are
+  byte-equivalent (only `export` added where needed).
+- `backend/src/routes/orcid.ts` — imports the moved symbols from the lib; `__test_seams`
+  (updateAccountOrcid local + extendBindingLockOnTimeoutOrLog/HAF_INDEXING_LAG_CEILING_SECONDS
+  imported) and `__test_releaseBindingLock` re-export shapes preserved verbatim. Zero
+  behavior change to the callback path.
+- `backend/src/routes/signup-verify.ts` — ORCID-binding guard in
+  `broadcastAccreditationAndSeed`: pre-lock `findAccreditedAccountWithOrcid` →
+  `409 ORCID_ALREADY_LINKED` on a different-account binding, then broadcast + cache under
+  `withOrcidBindingLock`. Applies to `/confirm`, `/link`, and the resume path. Email-only
+  (orcid null) keeps the prior lock-free behavior.
+- `backend/tests/routes/signup-verify-orcid-binding-guard.test.ts` (NEW) — real-path
+  coverage: 409 via `/confirm` (pending-signup-row repro) and `/link` (real signed
+  request); same-account-allowance.
+
+Decisions implemented: A1 (409 + finalized-but-unaccredited; account stays recoverable),
+A2 (no § 6.1 state added), B (chain-only check, no widening to `accounts.orcid`), lock
+(both functions factored; check + broadcast under the lock; timeout → extend-TTL +
+skipRelease; Redis-down → 504 ambiguous-outcome via the wrapper). The `'unavailable'`
+branch re-throws non-timeout broadcast errors to the ambiguous envelope; the success path
+sends nothing and `res.headersSent` discriminates `'ok'` vs `'handled'`.
+
+Verification: `typecheck:src`, `typecheck:tests`, `lint` (0 errors) all clean.
+`orcid.test.ts` 108/108 (callback path preserved); `signup-verify*` + `auth.test.ts`
+group 91/91 (no regressions); new guard tests 3/3. An adversarial multi-lens verification
+pass (callback-preservation, signup-integration, concurrency/TOCTOU, test-false-green)
+returned zero confirmed defects; one minor test-pinning note was addressed in the same
+commit (the same-account test now asserts the binding resolves to the username, not a
+cache miss).
+
+**[TODO Architect] (contract):** per the "Contract update — defer to code-landing" note
+above, `api-contracts/auth.md` needs a chain-binding cause for `409 ORCID_ALREADY_LINKED`
+added to the `/api/auth/confirm` and `/api/auth/link` error lists (distinct from the
+existing `/signup` DB-index cause). Backend cannot edit contract files (architect-owned);
+flagged here at review intake.
