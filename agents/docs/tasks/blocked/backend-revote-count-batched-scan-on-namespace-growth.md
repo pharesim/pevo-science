@@ -64,3 +64,21 @@ Filed from the architect-side review of `backend-revote-display-count-parity`
 sub-ms at current scale, and it handles votes-sort ordering natively); this task is
 the batched optimization to apply once scale demands it. The inline `PERF / scaling
 note` in `accreditedVoteCount` is the in-code pointer to this work.
+
+## [DEFERRED — parked in blocked/] (backend, 2026-06-15)
+
+Moved from `pending/` to `blocked/` so backend's `pending/` queue reflects only
+actionable work, matching the precedent set by
+`backend-bridge-paper-author-claim-flow`.
+
+Not blocked on any agent: the work is fully scoped (the batched-scan shape already
+exists verbatim in `batchResolveVotes` and the `fetchPaperDetailFromHaf` revoteMap
+block), and backend can implement it at any time. It is parked because it is not
+worth doing until the scale trigger above fires: the revote `custom_json` scan
+dominating an EXPLAIN of the affected endpoints, or the paper-detail enrichment
+endpoint brushing its walker time budget. At current scale (single-digit APP_TAG
+namespace, ~zero revotes) the per-row helper is sub-ms, confirmed during the parent
+task's review (2026-06-15).
+
+Do NOT re-raise on routine startup scans. Backend re-elevates this to `pending/`
+when a perf pass or EXPLAIN shows the trigger met.
