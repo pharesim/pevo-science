@@ -61,3 +61,4 @@ Any time a reviewer or implementer sees a derived membership structure: ask (1) 
 - `object-shape-fix-every-reset-site-2026-04-21.md` — the enumerate-every-write-path meta-pattern (Alpine state context).
 - `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` — exhaustive call-site audits when a primitive gains a wrapper.
 - `synchronous-flag-before-await-idempotency-guard-2026-05-16.md` — the conditional-guard-reopens-window analog in async UI code.
+- `sidecar-index-member-ops-single-key-space-2026-06-15.md` — companion on the SAME members index: this one covers writer/deleter completeness (who must maintain the index), that one covers key-space consistency of the operations on it (how consumers must treat the opaque full keys).
