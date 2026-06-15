@@ -134,3 +134,52 @@ only and need the parallel update the paper-level `voters[]` already has:
    the existing paper-level `voters[]` revote note.
 
 (No emdashes in the contract prose, per the project rule for integrator-facing docs.)
+
+**[RESOLVED 2026-06-15 by architect]** Contract docs updated this pass: the
+`net_votes` field note in `api-contracts/reviews.md`, the Accredited-Only Data
+Policy `net_votes` sentence in `api-contracts/common.md`, the comments-endpoint
+`net_votes` note and a new paper-detail embedded `reviews[].net_votes` field note
+in `api-contracts/papers.md` all now describe the count as folding the latest
+accredited signal across native votes and post-payout `revote` `custom_json`
+(emdash-free). No further architect doc work pending.
+
+## Architect review (2026-06-15) — HELD PENDING FIXES:
+
+`/ce-code-review` (10 personas; correctness/security/adversarial at Opus tier) found
+the implementation correct and complete: callsite completeness, cross-arm
+latest-signal resolution, weight-0 retraction, self-vote exclusion, overflow-guard,
+and reputation.ts parity all verified (adversarial ran live HAF probes and could not
+break it; security clean). Two backend-owned items hold archive:
+
+1. **Stale param-shape comment in `fetchUserReviewsFromHaf` (`backend/src/routes/profile.ts`).**
+   The param-shape docblock above the query still lists "(votes-sort only)
+   accreditedAccounts" as a trailing bind. The votes-sort path no longer binds an
+   accredited-accounts array — the revote-aware `accreditedVoteCount` helper reads
+   the `active_accreditations` CTE and reuses the already-bound appTag ref. Trim the
+   stale clause so the comment matches the actual bind list (username, appTag,
+   hiveAnonAccount, hiveBridgeAccount, limit, offset). Found by correctness +
+   maintainability.
+
+2. **Redirect-integrity guard in `runVoteCountWithRevotes`
+   (`backend/tests/window-cte-deterministic-tiebreaker.test.ts`).** The helper
+   redirects the production SQL's table refs to synthetic CTEs via
+   `.split(...).join('synthetic_v v')` / `.join('synthetic_cj cj')`. If the helper's
+   table-alias text ever changes, the split silently no-ops, the synthetic VALUES
+   fall through to the `WHERE false` fallback, and the cases that legitimately expect
+   0 (retraction, self-vote, malformed-weight) pass green against empty tables — a
+   false-green. Add a guard after the two redirects asserting that both substituted
+   aliases appear in the resulting expression, so a future alias rename fails loudly.
+   The existing shape-canary on the helper output does not catch this fall-through.
+
+Dismissed (recorded, no action):
+- Optional `appTagParam` "silent native-only" misuse risk (maintainability, advisory):
+  the two-branch helper is deliberate and documented in its docstring; the one
+  legitimate native-only caller (papers-list placeholder, overwritten by
+  `batchResolveVotes`) is intentional.
+- `cj.json::jsonb` cast-throw on malformed JSON (reliability, conf 50, pre-existing):
+  shared verbatim with the deployed reputation.ts revote arms; Hive consensus
+  validates `custom_json` as JSON, so it is effectively unreachable. Not introduced
+  here.
+
+When both items land, `git mv` this file back to `tasks/review/` for re-review and
+archive.
