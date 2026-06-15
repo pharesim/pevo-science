@@ -58,10 +58,12 @@
  * ops".
  */
 
+import type { Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { logger } from '../logger.js';
+import { sendError } from '../response.js';
 import { requireStringField } from './body-record.js';
 import { HIVE_PERMLINK_MAX_LEN } from './hive-permlink.js';
 
@@ -1063,6 +1065,65 @@ export async function consumeFreshAuthToken(
   } finally {
     inFlightConsumes.delete(token);
   }
+}
+
+/**
+ * Reason -> HTTP status for a failed fresh-auth consume, in ONE place so the
+ * binding-violation vs no-proof-present distinction cannot drift between
+ * consumers. `username_mismatch` / `target_mismatch` / `kind_mismatch` are
+ * binding violations (a proof minted for a different user or action, or a
+ * target-less session proof redirected here) -> 403; `missing` / `expired` /
+ * `malformed` are "no valid proof present" -> 401.
+ */
+function freshAuthFailureStatus(reason: FreshAuthVerifyFailureReason): 401 | 403 {
+  return reason === 'username_mismatch' || reason === 'target_mismatch' || reason === 'kind_mismatch' ? 403 : 401;
+}
+
+/**
+ * Consume the JWT-path fresh-auth proof on `req` against `targetFn(username)`,
+ * returning a binding-aware pass/fail decision (the reason->status mapping lives
+ * in `freshAuthFailureStatus`, the single source of truth). On the per-request
+ * signature path (`hiveAuthMethod !== 'jwt'`) the request is already fresh, so
+ * this returns `{ ok: true }` without requiring a proof.
+ *
+ * Returns the decision rather than sending a response so a handler that must run
+ * its OWN eligibility checks BEFORE burning the single-use proof (e.g. the
+ * accreditation metadata edit, which checks currently-accredited + not-sanctioned
+ * first) can call it inline at the correct point. Handlers whose fresh-auth gate
+ * is the first thing they do use the `requireFreshAuth` middleware wrapper.
+ */
+export async function consumeFreshAuthProof(
+  req: Request,
+  targetFn: (username: string) => FreshAuthTarget,
+): Promise<{ ok: true } | { ok: false; status: 401 | 403; reason: FreshAuthVerifyFailureReason }> {
+  if (req.hiveAuthMethod !== 'jwt') return { ok: true };
+  const username = req.hiveUsername;
+  if (!username) return { ok: false, status: 401, reason: 'missing' };
+  const proofRaw = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
+  const proofToken = typeof proofRaw === 'string' ? proofRaw : undefined;
+  const expectedTargetHash = computeFreshAuthTargetHash(targetFn(username));
+  const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
+  if (result.valid) return { ok: true };
+  return { ok: false, status: freshAuthFailureStatus(result.reason), reason: result.reason };
+}
+
+/**
+ * Express-middleware form of `consumeFreshAuthProof` for handlers whose
+ * fresh-auth gate is the first thing they do (no eligibility check that must
+ * precede the single-use proof consume). Mirrors `requireFreshAdminAuth`.
+ * `message` is the user-facing FRESH_AUTH_REQUIRED string for this action.
+ * Handlers that must verify eligibility before burning the proof call
+ * `consumeFreshAuthProof` inline instead.
+ */
+export function requireFreshAuth(targetFn: (username: string) => FreshAuthTarget, message: string) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const decision = await consumeFreshAuthProof(req, targetFn);
+    if (decision.ok) {
+      next();
+      return;
+    }
+    sendError(res, decision.status, 'FRESH_AUTH_REQUIRED', message, { reason: decision.reason });
+  };
 }
 
 async function consumeFreshAuthTokenLocked(

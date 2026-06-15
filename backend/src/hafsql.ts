@@ -337,10 +337,22 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
  * `timestamp without time zone`) as an ISO-8601 UTC string, matching the shape
  * of the payload `timestamp` field clients already render.
  *
+ * Single-account vs all-accounts: pass `account` for a single-account read (the
+ * STATUS and profile call sites) so the `MIN(block_num)` aggregate scans one
+ * account's ops instead of GROUP BY-ing over EVERY accredit op before the outer
+ * `WHERE account = ...` narrows. Omit it for the LIST route, which legitimately
+ * needs every account's anchor. The account filter is an additional equality
+ * predicate on the SAME `custom_id = $appTag` index scan — it does NOT add a
+ * `block_num >=` floor, so the BitmapAnd-avoidance property above is preserved.
+ *
  * @param startIdx - first available $N parameter index
+ * @param account - optional: narrow the anchor scan to this single account
  */
-export function firstAccreditedAnchorCteBody(startIdx = 1): SqlFragment {
+export function firstAccreditedAnchorCteBody(startIdx = 1, account?: string): SqlFragment {
   const p = startIdx;
+  const accountFilter = account !== undefined ? `\n      AND cj.json::jsonb ->> 'account' = $${p + 2}` : '';
+  const params: unknown[] = [config.appTag, config.accreditationAuthorities];
+  if (account !== undefined) params.push(account);
   return {
     sql: `
   first_accredit_block AS (
@@ -348,7 +360,7 @@ export function firstAccreditedAnchorCteBody(startIdx = 1): SqlFragment {
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' = 'accredit'
-      AND cj.required_posting_auths ?| $${p + 1}::text[]
+      AND cj.required_posting_auths ?| $${p + 1}::text[]${accountFilter}
     GROUP BY 1
   ),
   first_accredited_at AS (
@@ -357,8 +369,8 @@ export function firstAccreditedAnchorCteBody(startIdx = 1): SqlFragment {
     FROM first_accredit_block fab
     JOIN ${T.blocks} b ON b.block_num = fab.first_block
   )`,
-    params: [config.appTag, config.accreditationAuthorities],
-    nextIdx: p + 2,
+    params,
+    nextIdx: account !== undefined ? p + 3 : p + 2,
   };
 }
 

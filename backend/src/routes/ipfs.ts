@@ -10,7 +10,7 @@ import { getPool, isHafConfigured } from '../db.js';
 import { getAppPool } from '../app-db.js';
 import { logger } from '../logger.js';
 import { type PinBackend, cidReferencedByAppTag, unpinFromIpfs } from '../lib/ipfs-shared.js';
-import { consumeFreshAuthToken, computeFreshAuthTargetHash, ipfsUploadFreshAuthTarget } from '../lib/fresh-auth.js';
+import { requireFreshAuth, ipfsUploadFreshAuthTarget } from '../lib/fresh-auth.js';
 import { issueUploadToken, consumeUploadToken } from '../lib/ipfs-upload-token.js';
 import multer from 'multer';
 
@@ -227,61 +227,46 @@ const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 //    (session proofs fail the consent-op kind check; wrong-action proofs fail
 //    the target-hash compare). The per-request signature path is itself fresh
 //    and needs no extra proof. ARCH.md § 6.4/§ 6.5 invariant #1.
-router.post('/upload-token', verifyHiveSignature, ipfsUploadTokenLimiter, async (req: Request, res: Response) => {
-  const username = req.hiveUsername!;
+router.post(
+  '/upload-token',
+  verifyHiveSignature,
+  ipfsUploadTokenLimiter,
+  // JWT path requires a single-use `ipfs_upload`-bound fresh-auth proof (a
+  // Bearer JWT is replayable); the per-request signature path is itself fresh.
+  // The gate is the first thing this route does (no prior eligibility check that
+  // must precede the proof consume), so the middleware form applies. The
+  // reason->status mapping lives once in `consumeFreshAuthProof`.
+  requireFreshAuth(
+    ipfsUploadFreshAuthTarget,
+    'Re-authentication required to request an upload token. Please complete the fresh-auth challenge and retry.',
+  ),
+  async (req: Request, res: Response) => {
+    const username = req.hiveUsername!;
+    const body = (req.body ?? {}) as { file_sha256?: unknown; mimetype?: unknown; size?: unknown };
+    const fileSha256 = typeof body.file_sha256 === 'string' ? body.file_sha256.toLowerCase() : '';
+    const mimetype = typeof body.mimetype === 'string' ? body.mimetype : '';
+    const size = typeof body.size === 'number' ? body.size : NaN;
 
-  if (req.hiveAuthMethod === 'jwt') {
-    const proofRaw = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
-    const proofToken = typeof proofRaw === 'string' ? proofRaw : undefined;
-    const expectedTargetHash = computeFreshAuthTargetHash(ipfsUploadFreshAuthTarget(username));
-    const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
-    if (!result.valid) {
-      // Mirror the consent-op consume on the custody broadcast path:
-      // `username_mismatch` / `target_mismatch` / `kind_mismatch` are binding
-      // violations (proof issued for a different user, action, or as a
-      // target-less session proof) and are "forbidden" → 403; the remaining
-      // outcomes (`missing`, `expired`, `malformed`) are "no valid proof
-      // present" → 401.
-      const status =
-        result.reason === 'username_mismatch' ||
-        result.reason === 'target_mismatch' ||
-        result.reason === 'kind_mismatch'
-          ? 403
-          : 401;
-      return sendError(
-        res,
-        status,
-        'FRESH_AUTH_REQUIRED',
-        'Re-authentication required to request an upload token. Please complete the fresh-auth challenge and retry.',
-        { reason: result.reason },
-      );
+    if (!SHA256_HEX_RE.test(fileSha256)) {
+      return sendError(res, 400, 'BAD_REQUEST', 'file_sha256 must be a 64-character hex SHA-256 digest');
     }
-  }
+    if (!ACCEPTED_MIMES.has(mimetype)) {
+      return sendError(res, 422, 'INVALID_FILE_TYPE', ACCEPTED_TYPES_MSG);
+    }
+    if (!Number.isInteger(size) || size <= 0 || size > MAX_FILE_SIZE) {
+      return sendError(res, 413, 'FILE_TOO_LARGE', `File exceeds ${Math.round(MAX_FILE_SIZE / (1024 * 1024))}MB limit`);
+    }
 
-  const body = (req.body ?? {}) as { file_sha256?: unknown; mimetype?: unknown; size?: unknown };
-  const fileSha256 = typeof body.file_sha256 === 'string' ? body.file_sha256.toLowerCase() : '';
-  const mimetype = typeof body.mimetype === 'string' ? body.mimetype : '';
-  const size = typeof body.size === 'number' ? body.size : NaN;
+    // Same accreditation gate as the upload itself — fail fast at the pre-flight.
+    const accreditation = await getAccreditation(username);
+    if (!accreditation) {
+      return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can upload files');
+    }
 
-  if (!SHA256_HEX_RE.test(fileSha256)) {
-    return sendError(res, 400, 'BAD_REQUEST', 'file_sha256 must be a 64-character hex SHA-256 digest');
-  }
-  if (!ACCEPTED_MIMES.has(mimetype)) {
-    return sendError(res, 422, 'INVALID_FILE_TYPE', ACCEPTED_TYPES_MSG);
-  }
-  if (!Number.isInteger(size) || size <= 0 || size > MAX_FILE_SIZE) {
-    return sendError(res, 413, 'FILE_TOO_LARGE', `File exceeds ${Math.round(MAX_FILE_SIZE / (1024 * 1024))}MB limit`);
-  }
-
-  // Same accreditation gate as the upload itself — fail fast at the pre-flight.
-  const accreditation = await getAccreditation(username);
-  if (!accreditation) {
-    return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can upload files');
-  }
-
-  const token = await issueUploadToken({ account: username, file_sha256: fileSha256, mimetype, size });
-  sendOk(res, { upload_token: token, expires_in: 60 });
-});
+    const token = await issueUploadToken({ account: username, file_sha256: fileSha256, mimetype, size });
+    sendOk(res, { upload_token: token, expires_in: 60 });
+  },
+);
 
 // ──────────────────────────────────────────────
 // POST /api/ipfs/upload

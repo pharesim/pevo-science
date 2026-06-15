@@ -124,7 +124,9 @@ async function fetchAccreditationStatusFromHaf(username: string) {
     // legacy-revoked account resolves to NOT accredited / accredited per the
     // membership rule, not the old "latest op is a revoke" check. The row, when
     // present, carries the latest accredit op's metadata.
-    const cte = buildWith(1, activeAccreditationsCteBody, firstAccreditedAnchorCteBody);
+    // Single-account read: scope the anchor CTE to this account (avoids the
+    // all-accounts MIN(block_num) GROUP BY on a hot per-account read path).
+    const cte = buildWith(1, activeAccreditationsCteBody, (idx) => firstAccreditedAnchorCteBody(idx, username));
     const userParam = `$${cte.nextIdx}`;
     const result = await pool.query(
       `${cte.sql}

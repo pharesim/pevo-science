@@ -1,0 +1,31 @@
+# Accreditation Metadata-Edit Cleanup (perf + maintainability)
+
+**Owner:** backend
+**Created:** 2026-06-15
+
+Non-blocking cleanups split out of the editable-accreditation-metadata review (2026-06-15) so they stay off that task's critical fix pass. None of these change behavior. Do them AFTER the held editable-metadata fixes land — they touch the same handler.
+
+## Items
+
+- [ ] **Anchor CTE per-account predicate.** `firstAccreditedAnchorCteBody` (`hafsql.ts`) has no account filter, so the single-account STATUS read (`fetchAccreditationStatusFromHaf` in `routes/accreditations.ts`) and the profile read (`getAccreditationFromHaf` in `routes/profile.ts`) aggregate `MIN(block_num)` over EVERY accredit op before the outer `WHERE account = $username` narrows. It is BitmapAnd-safe and ~0 cost at the current single-digit-row namespace, but it is a latent O(all-accredit-ops) on a hot read path. Add an optional account-filter parameter to the builder (or a single-account variant) so the STATUS and profile call sites scan one account; the LIST route legitimately needs all accounts and stays as-is. Preserve the no-`block_num`-floor / BitmapAnd-avoidance property (do not add a `block_num >= genesis` floor to the custom_json scan).
+
+- [ ] **Extract a reusable `requireFreshAuth` middleware.** The inline JWT fresh-auth gate in the PATCH `/metadata` handler duplicates the same block in `routes/ipfs.ts`. Add `requireFreshAuth(targetFn)` to `lib/fresh-auth.ts` returning an Express middleware (mirroring `requireFreshAdminAuth`), and replace both inline copies. The reason-to-status mapping (`username_mismatch` / `target_mismatch` / `kind_mismatch` -> 403, else 401) is security-relevant and should live in ONE place so it cannot drift between consumers. This also removes the redundant `(req.body as { fresh_auth_proof?: unknown })` cast in the PATCH handler.
+
+- [ ] **Split `routes/accreditation.ts`.** The file is ~1450 lines. Extract the metadata-edit handler (and its per-account limiter) into its own module / sub-router mounted at the same express prefix; it shares none of the OTP / verify / token-cleanup machinery that fills the rest of the file.
+
+## Notes
+- Sequence after the held editable-metadata fixes. If the `requireFreshAuth` extraction lands first, the held items 1-3 should be implemented on top of the extracted middleware rather than the inline block.
+
+## Backend completion (2026-06-15) — ready for review
+
+All three cleanup items landed (none change behavior; verified by the existing suites). Sequenced AFTER the editable-metadata round-1 holds, which had already landed.
+
+**Item 1 — anchor CTE per-account predicate.** `firstAccreditedAnchorCteBody` (`hafsql.ts`) gains an optional `account?` param: when supplied, a `cj.json::jsonb ->> 'account' = $N` equality narrows the `MIN(block_num)` GROUP BY to one account. The STATUS read (`fetchAccreditationStatusFromHaf`, `routes/accreditations.ts`) and the profile read (`getAccreditationFromHaf`, `routes/profile.ts`) now pass the account via a `(idx) => firstAccreditedAnchorCteBody(idx, username)` closure; the LIST route (`fetchAccreditationsFromHaf`) legitimately needs all accounts and stays on the no-account form. The account filter is an additional equality predicate on the SAME `custom_id = $appTag` index scan — NO `block_num >=` floor — so the BitmapAnd-avoidance property holds. (EXPLAIN not re-gathered; the hold's "BitmapAnd-safe, ~0 cost at the single-digit-row namespace" assessment stands. Correctness pinned by `accreditation-membership-cte` real-Postgres + `accreditations-status-route`.)
+
+**Item 2 — reusable fresh-auth proof gate.** Extracted into `lib/fresh-auth.ts`: `consumeFreshAuthProof(req, targetFn)` returns a binding-aware `{ ok:true } | { ok:false, status, reason }` decision (the reason->status 403/401 mapping now lives ONCE, in `freshAuthFailureStatus`), and `requireFreshAuth(targetFn, message)` is the Express-middleware wrapper (mirrors `requireFreshAdminAuth`).
+
+  **Design note (middleware vs inline):** `routes/ipfs.ts` /upload-token uses the `requireFreshAuth` MIDDLEWARE — its proof gate is the first thing the route does. The PATCH /metadata handler calls `consumeFreshAuthProof` INLINE (not the middleware) because the round-1 fix requires its eligibility checks (op-read / currently-accredited / not-sanctioned) to run BEFORE the single-use proof is consumed; a pre-handler middleware would burn the proof before eligibility, re-opening exactly what the round-1 P2 closed. Both call sites consume the SAME single-source mapping, so the security-relevant 403/401 distinction cannot drift — which is the item's stated goal. The redundant `(req.body as { fresh_auth_proof?: unknown })` cast is gone from the PATCH handler (now inside the helper). The third copy of the mapping (`requireFreshAdminAuth`, `admin-roster.ts`) was left untouched: out of this task's scope (PATCH + ipfs) and a different (admin) target shape. `fresh-auth.ts` gains `express` type-only imports + a `sendError` import for the middleware — flagging in case a reviewer prefers the middleware live at the route layer instead of in the primitive module.
+
+**Item 3 — split `routes/accreditation.ts`.** The PATCH /metadata handler + its per-account `accred-edit` limiter moved to a new `routes/accreditation-metadata.ts` (own Router), composed into the main accreditation router via `router.use(metadataRouter)` so it stays under the same `/api/accreditation` prefix. `accreditation.ts` drops ~165 lines and the now-unused imports (`getAccreditedSet`, `getLatestAccreditOp`, `getAppPool`, `accreditationMetadataEditSchema`, `consumeFreshAuthProof`, `editAccreditationMetadataFreshAuthTarget`); the new file imports only what it needs. `byAccount` / `rateLimit` stay in `accreditation.ts` (still used by the `accred-req` / `accred-verify` limiters).
+
+`npm run typecheck` (src+tests) + `npm run lint` clean (the one lint warning is pre-existing in `author-supersession.ts`, untouched). Verified green: `accreditation-metadata-edit` (11, route reachable via the mount), `ipfs-upload-token` (18, middleware path), `accreditation-membership-cte` (11), `accreditations-status-route`, `fresh-auth` (lib). `accreditation.test.ts` 102 pass / 2 fail (the known pre-existing broadcast-attempts-cap specs — `/verify` intact after the import trim + split, per project memory).
