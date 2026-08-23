@@ -183,6 +183,12 @@ export const config = {
   blogAuthor: process.env.BLOG_AUTHOR || 'pevo.science',
   blogTag: process.env.BLOG_TAG || 'pevo-blog',
 
+  // Operator-only Discord webhook for the beta registration watch. Distinct
+  // from `discordUrl` (the public invite link injected into the frontend):
+  // this one is a secret endpoint and is never sent to the client. Unset
+  // disables `jobs/registration-watch.ts` entirely.
+  discordRegistrationWebhookUrl: process.env.DISCORD_REGISTRATION_WEBHOOK_URL || '',
+
   // Public URLs (injected into frontend via __PEVO_CONFIG__)
   discordUrl: process.env.DISCORD_URL || '',
   githubUrl: process.env.GITHUB_URL || '',

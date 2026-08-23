@@ -19,6 +19,7 @@ import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
 import { startRecoveryPurge, stopRecoveryPurge } from './recovery-purge.js';
 import { validateRetentionSweepConfig, startRetentionSweepTicker, stopRetentionSweep } from './jobs/custody-audit-retention-sweep.js';
 import { startBridgeWorker, stopBridgeWorker } from './bridge-worker.js';
+import { startRegistrationWatch, stopRegistrationWatch } from './jobs/registration-watch.js';
 import { drainArgon2Queue, startArgon2AbortReporter, stopArgon2AbortReporter } from './lib/argon2-semaphore.js';
 import { startDecrementQueueDrainer, stopDecrementQueueDrainer } from './lib/pending-decrement-queue.js';
 import { logger } from './logger.js';
@@ -173,6 +174,12 @@ if (app) {
         // bypass the cooldown by losing the in-memory timestamp.
         void startBridgeWorker();
 
+        // Start the beta registration watch (Discord webhook, every 2m).
+        // No-ops unless DISCORD_REGISTRATION_WEBHOOK_URL is set. Polls the
+        // app DB and HAF rather than hooking the signup routes, keeping
+        // outbound HTTP off the argon2-timing-equalized auth path.
+        startRegistrationWatch();
+
         // Non-blocking: check Hive API node connectivity at startup
         void checkHiveNodes();
       });
@@ -231,6 +238,7 @@ async function shutdown(signal: string): Promise<void> {
   stopDecrementQueueDrainer();
   stopRetentionSweep();
   stopBridgeWorker();
+  stopRegistrationWatch();
 
   // Reject any auth requests parked in the argon2 semaphore queue. Without
   // this, `server.close()` waits for them until the 30s force-timeout fires,
