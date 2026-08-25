@@ -360,6 +360,30 @@ proofs end too.
 **`settings.md`**: DO NOT EDIT. The settings consume surfaces are not widened and keep
 rejecting session proofs with 403 `kind_mismatch`; their text stays correct.
 
+### [TODO Architect] One solutions entry went stale
+
+`agents/docs/solutions/conventions/concurrency-wire-shape-assertions-mutation-blind-under-microtask-fifo-2026-05-19.md`
+builds its entire Guidance section
+and its mutation-killing example on `_getInFlightConsumesSetReferenceForTests`, and cross-references
+the Set-identity anchor spec in `tests/lib/fresh-auth.test.ts`. Both are gone: the hook existed to
+pin that BOTH consume helpers locked on the same Set instance, and scoping the lock to the
+consent-op burn made that invariant false by design, so the hook and its spec were removed rather
+than reworded. The entry's prescribed fix is now unimplementable as written, and its microtask
+analysis ("both helpers' catch blocks run synchronously with no intervening await") describes a
+per-helper code shape that no longer exists.
+
+Not fixed here: `agents/docs/solutions/` is architect-owned and `/ce-compound-refresh` is the
+architect's tool. Narrow scope hint for that run:
+`/ce-compound-refresh concurrency-wire-shape-assertions-mutation-blind-under-microtask-fifo`. The
+underlying lesson (wire-shape assertions are mutation-blind under microtask FIFO, so pin by
+reference identity or by sampling state from inside the call) is still correct and still applied in
+the current tests, which now sample the lock-set size from inside the burn and from inside the
+slide; only the named anchor changed.
+
+A new entry landed in the same pass:
+`conventions/atomic-getdel-split-into-read-then-delete-reopens-replay-2026-08-25.md`, written via
+`/ce-compound` for the burn-atomicity regression described above.
+
 **Pre-existing drift surfaced while surveying** (architect's call whether to fold in or file
 separately): the `ipfs_upload` and `edit_accreditation_metadata` fresh-auth actions are live
 in `backend/src/lib/fresh-auth.ts`, `routes/custody.ts`, and `routes/orcid.ts` but appear in
