@@ -1,68 +1,84 @@
 /**
  * Library-level unit tests for `lib/fresh-auth.ts`.
  *
- * Properties under test:
- *  - TTL-expiry on in-memory fallback. The `cached.expiresAt > Date.now()`
- *    guard inside `consumeFreshAuthToken`'s memStore branch must return
- *    `'expired'` past the TTL; a mutation that drops the guard must fail.
- *    A fake-timer test advances `Date.now()` past the TTL and asserts
- *    `consume` returns `'expired'`.
- *  - Redis-issuance success + memStore backup write. The issuance path
- *    writes to memStore as a backup whenever Redis-issuance succeeds, so
- *    a Redis flap between issue and consume falls through cleanly via
- *    memStore.get(token) rather than spuriously returning `'expired'`.
- *    Test pins the recovery semantic by simulating a Redis.getdel throw
- *    on consume after a Redis-issuance success.
- *  - memStore-fallback compensating Redis.del. The dual-tier deletion is
- *    symmetric: the memStore-fallback success leg issues a paired
- *    `redis.del` of the canonical entry, so a Redis flap mid-getdel that
- *    didn't actually delete the entry cannot leave the canonical Redis
- *    copy alive to admit a same-process replay once Redis recovered
- *    within the TTL. Test pins the compensating del.
- *  - Per-op target binding. The proof binds to a SHA-256 of
- *    `(action, root_author, root_permlink)`, not just `(token, username)`,
- *    so a compromised SPA cannot swap action/paper between the user's
- *    auth ceremony and the consume side under the 5-min TTL. Tests pin
- *    (a) target X / target Y → mismatch, (b) target X / target X → valid,
- *    (c) consume without target → closed-default reject.
- *  - Redis-absence visibility. `it.skipIf(...)` replaces silent
- *    `if (!redis) return;` early-bails so the absence of Redis is visibly
- *    reported by the runner instead of silently passing an assertion-free
- *    body.
+ * The module serves two proof kinds with deliberately different lifetimes, and
+ * most of what is pinned here is the boundary between them.
  *
- * Concurrent dual-consume race:
- *  - Concurrent dual-consume tests for both `consumeFreshAuthToken` and
- *    `consumeSessionFreshAuthToken`. Two variants per helper:
- *    (a) Redis-up (real Redis GETDEL atomicity + in-process lock layered
- *        defense), (b) Redis stubbed to throw on both `getdel` calls,
- *    forcing the widest race window where both consumes fall through to
- *    memStore. The in-process lock is the only thing that closes the (b)
- *    variant; the (a) variant validates that the lock layers cleanly with
- *    Redis GETDEL without false-rejecting valid sequential consumes. A
- *    no-Redis real-path companion runs without mocks for each helper to
- *    satisfy clause (c) (real-path coverage of the race class). A
- *    cross-helper Redis-stubbed test pins the shared-lock-domain
- *    invariant: a per-helper lock split would let both helpers race to
- *    memStore.get under Redis-down and both win.
+ * Consent-op kind (target-bound, single-use):
+ *  - TTL-expiry on the in-memory tier. The `cached.expiresAt > Date.now()` guard
+ *    must report `'expired'` past the TTL; a mutation that drops the guard must
+ *    fail. A fake-timer test advances `Date.now()` past the boundary.
+ *  - Redis-issuance success + in-memory backup write, so a Redis flap between
+ *    issue and consume recovers from the backup rather than spuriously
+ *    reporting `'expired'` on a proof the user just minted.
+ *  - Symmetric burn across both tiers. A consume served from the backup tier
+ *    still clears the canonical Redis entry, so a replay once Redis recovers
+ *    inside the TTL cannot succeed.
+ *  - Per-op target binding over `(action, root_author, root_permlink)`, so a
+ *    compromised client cannot swap action or paper between the user's auth
+ *    ceremony and the consume. Tests pin target X/Y mismatch, X/X valid, and the
+ *    closed-default reject when no well-formed target is supplied.
+ *
+ * Session kind (target-less, multi-use inside a bounded window):
+ *  - Multi-use: three consecutive consumes all succeed. Two would only prove
+ *    "double-use".
+ *  - Sliding idle deadline: a consume moves the deadline forward, so a working
+ *    stretch is never interrupted. The mutation this kills is a consume that
+ *    validates the window without sliding it.
+ *  - Absolute cap: the window dies at the cap no matter how often it was slid,
+ *    and the slide is clamped to the cap rather than pushed past it. Because the
+ *    storage TTL normally expires such an entry on its own, the cap is easy to
+ *    implement so it silently never fires — so planted entries exercise the
+ *    check directly, in both directions (cap passed with idle in the future, and
+ *    idle passed with the cap far away).
+ *  - Persistence rules for a slide: written back to Redis with `XX` when Redis
+ *    answered the read, and NOT written to Redis at all when the in-memory tier
+ *    answered, since writing there would recreate a key Redis has dropped.
+ *  - Closed-default stored shapes: a session entry without deadlines is
+ *    malformed rather than unbounded, and a consent-op entry that acquired
+ *    deadlines is malformed rather than a window.
+ *  - Cross-kind direction. A consent-op proof is accepted on the session surface
+ *    and is still SPENT there, never converted into a window; a session proof on
+ *    the consent surface is `kind_mismatch` and is NOT spent, because burning it
+ *    would let anyone holding the token close the owner's window.
+ *  - `invalidateSessionFreshAuthTokens` closes every window for one user,
+ *    leaves other accounts and the same user's consent-op proofs alone, and
+ *    never throws, so a Redis failure cannot turn a completed password reset
+ *    into a 500.
+ *
+ * Concurrency, which the two kinds also invert:
+ *  - Consent-op dual-consume must produce exactly ONE winner. Two variants per
+ *    path: Redis-up (the delete-reply count arbitrates, with the in-process lock
+ *    layered on) and Redis stubbed down (both callers reach the in-memory tier,
+ *    where the lock is what closes the race), plus a no-mock companion. A
+ *    cross-helper variant pins that the lock domain is the TOKEN, not the
+ *    calling helper: a consent-op proof reaches the session surface through the
+ *    cross-kind accept, so both helpers can burn the same entry at once.
+ *  - Session dual-consume must produce TWO winners. Serializing them would turn
+ *    ordinary client behaviour (two votes in one tick, an upload-token mint
+ *    racing a broadcast) into a spurious 401. Structural pins sample the
+ *    in-flight lock set from inside the burn and from inside the slide, because
+ *    a dropped `add` and a reinstated lock are both invisible to outcome
+ *    assertions on a single call.
+ *  - Redis-absence visibility. `it.skipIf(...)` replaces silent early-bails so
+ *    the absence of Redis is reported by the runner instead of quietly passing
+ *    an assertion-free body.
  *
  * Carve-out per root CLAUDE.md "Carve-out for deterministic edge-case
  * coverage" clause (a):
- *  - The `redis` module is partial-mocked via `vi.spyOn(getRedis())` to
- *    exercise the Redis-up-on-issue / Redis-down-on-consume race window.
- *    Inducing this race against real Redis would require coordinated
- *    fault injection mid-call (the local dev Redis is reliable; transient
- *    drops mid-call require network-level mocks). The risk class —
- *    "fresh-auth token recovery on Redis flap" — is exercised by the
- *    spy. A real-path companion exercises the no-Redis path end-to-end
- *    via the standard custody-consent-ops broadcast tests where
- *    `_resetFreshAuthMemStoreForTests` is the mode of operation. For the
- *    concurrent-consume tests, the Redis-stubbed variant exercises the
- *    widest race window (both consumes through memStore); the matching
- *    no-Redis real-path `Promise.all` test in the same describe block
- *    exercises the same race class against real infrastructure when Redis
- *    is absent.
- *  - `verifyHiveSignature` is NOT mocked anywhere in this suite (the
- *    library functions don't reach middleware).
+ *  - The `redis` module is partial-mocked via `vi.spyOn(getRedis())` to exercise
+ *    the Redis-up-on-issue / Redis-down-on-consume race window. Inducing that
+ *    race against real Redis would require coordinated fault injection mid-call.
+ *    The risk class, "fresh-auth proof recovery on Redis flap", is exercised by
+ *    the spy; the matching no-Redis real-path tests in the same describe blocks
+ *    exercise the same class against real infrastructure when Redis is absent,
+ *    and the custody broadcast route tests cover it end-to-end.
+ *  - Fake timers stand in for wall-clock waits on the window boundaries. The
+ *    idle deadline is 15 minutes out and the cap is 2 hours out, so real waits
+ *    are impractical; only `Date.now()` is faked, and Redis stays real, so the
+ *    persistence leg is still exercised for every slide.
+ *  - `verifyHiveSignature` is NOT mocked anywhere in this suite (the library
+ *    functions don't reach middleware).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -70,6 +86,8 @@ import {
   CONSENT_OP_ACTIONS,
   CREDIT_OP_ACTIONS,
   FRESH_AUTH_TTL_SECONDS,
+  SESSION_FRESH_AUTH_ABSOLUTE_SECONDS,
+  SESSION_FRESH_AUTH_IDLE_SECONDS,
   computeFreshAuthTargetHash,
   consentOpFreshAuthTarget,
   consumeFreshAuthToken,
@@ -81,9 +99,9 @@ import {
   isCreditOpAction,
   isFreshAuthMechanism,
   issueFreshAuthToken,
+  invalidateSessionFreshAuthTokens,
   issueSessionFreshAuthToken,
   validFreshAuthActionsMessage,
-  _getInFlightConsumesSetReferenceForTests,
   _getInFlightConsumesSizeForTests,
   _resetFreshAuthMemStoreForTests,
   _restartCleanupForTests,
@@ -92,6 +110,7 @@ import {
   type FreshAuthTarget,
 } from '../../src/lib/fresh-auth.js';
 import { getRedis, isRedisAvailable } from '../../src/redis.js';
+import { config } from '../../src/config.js';
 
 // Fixture target reused across the suite. The (action, root_author,
 // root_permlink) triple is what the proof binds to; tests that exercise
@@ -608,7 +627,7 @@ describe('TTL-expiry on in-memory fallback', () => {
     // is recoverable from memStore).
     const redis = getRedis();
     const spy = redis && isRedisAvailable()
-      ? vi.spyOn(redis, 'getdel').mockRejectedValue(new Error('forced flap for TTL test'))
+      ? vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced flap for TTL test'))
       : null;
     try {
       // Advance just before the TTL boundary (issuance time + TTL - 1s).
@@ -635,7 +654,7 @@ describe('TTL-expiry on in-memory fallback', () => {
 
     const redis = getRedis();
     if (redis && isRedisAvailable()) {
-      const spy = vi.spyOn(redis, 'getdel').mockRejectedValue(new Error('forced flap for TTL test'));
+      const spy = vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced flap for TTL test'));
       try {
         vi.setSystemTime(t0 + (FRESH_AUTH_TTL_SECONDS + 1) * 1000);
         const result = await consumeFreshAuthToken(issued.token, 'bob', TH);
@@ -661,17 +680,16 @@ describe('Redis-flap recovery via memStore backup', () => {
   // `it.skipIf` replaces the silent `if (!redis) return;` bail-out so a
   // Redis-less CI surface explicitly reports these as skipped instead of
   // silently passing an assertion-free body.
-  it.skipIf(!redisAvailable)('Redis-issuance success + Redis.getdel throws on consume → memStore backup recovers the token', async () => {
-    // Under fake Redis-flap shape: issue against a healthy Redis, then
-    // make `redis.getdel` throw on consume. Issuance writes a backup to
-    // memStore on Redis-issuance success; consume recovers via the
-    // fallback rather than returning `'expired'`.
+  it.skipIf(!redisAvailable)('Redis-issuance success + Redis read throws on consume → memStore backup recovers the token', async () => {
+    // Under fake Redis-flap shape: issue against a healthy Redis, then make the
+    // consume-side Redis read throw. Issuance writes a backup to memStore on
+    // Redis-issuance success; consume recovers via the fallback rather than
+    // returning `'expired'`.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('carol', 'password', T);
-    // Force the consume-side getdel to throw. Single-call mock: the
-    // consume falls through to memStore (which has the backup written
-    // at issuance) and recovers.
-    const getdelSpy = vi.spyOn(redis, 'getdel').mockRejectedValueOnce(new Error('simulated Redis flap'));
+    // Single-call mock: the consume falls through to memStore (which has the
+    // backup written at issuance) and recovers.
+    const getdelSpy = vi.spyOn(redis, 'get').mockRejectedValueOnce(new Error('simulated Redis flap'));
     try {
       const result = await consumeFreshAuthToken(issued.token, 'carol', TH);
       expect(result.valid).toBe(true);
@@ -683,21 +701,21 @@ describe('Redis-flap recovery via memStore backup', () => {
     }
   });
 
-  it.skipIf(!redisAvailable)('Redis-issuance success + healthy Redis.getdel on consume → memStore backup is also deleted (no replay window)', async () => {
-    // Mutation-kill: a regression that wrote the memStore backup at
-    // issuance but did NOT clear it on a successful Redis GETDEL would
-    // admit a replay attack via the fallback path. Pin the symmetric
-    // delete: after a successful Redis consume, a follow-up consume
-    // (now Redis-down) MUST not find the entry in memStore.
+  it.skipIf(!redisAvailable)('Redis-issuance success + healthy Redis consume → memStore backup is also deleted (no replay window)', async () => {
+    // Mutation-kill: a regression that wrote the memStore backup at issuance
+    // but did NOT clear it on a successful Redis burn would admit a replay
+    // attack via the fallback path. Pin the symmetric delete: after a
+    // successful Redis consume, a follow-up consume whose Redis read comes back
+    // empty MUST not find the entry in memStore either.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('dave', 'orcid', T);
     const first = await consumeFreshAuthToken(issued.token, 'dave', TH);
     expect(first.valid).toBe(true);
 
-    // Now simulate Redis flapping out and check that the memStore copy
-    // is gone (a successful Redis GETDEL deletes the memStore backup,
-    // so the symmetric-deletion pin holds).
-    const getdelSpy = vi.spyOn(redis, 'getdel').mockResolvedValueOnce(null);
+    // Now simulate the Redis read coming back empty and check that the memStore
+    // copy is gone too (a successful Redis burn deletes the memStore backup, so
+    // the symmetric-deletion pin holds).
+    const getdelSpy = vi.spyOn(redis, 'get').mockResolvedValueOnce(null);
     try {
       const replay = await consumeFreshAuthToken(issued.token, 'dave', TH);
       expect(replay.valid).toBe(false);
@@ -711,25 +729,19 @@ describe('Redis-flap recovery via memStore backup', () => {
 });
 
 describe('Symmetric dual-tier deletion', () => {
-  // The pre-fix asymmetric variant deleted memStore on the Redis-success
-  // leg but did not issue a compensating `redis.del` on the
-  // memStore-fallback leg. A Redis blip mid-getdel that threw BEFORE
-  // Redis actually deleted the entry left the canonical Redis copy alive
-  // — the user's consume succeeded via memStore, but a same-process
-  // replay within the TTL hit Redis getdel and returned valid AGAIN.
-  // The symmetric design: the memStore-fallback success path issues a
-  // best-effort `redis.del` of the canonical entry to close the replay
-  // window.
-  it.skipIf(!redisAvailable)('memStore-fallback success path issues a compensating redis.del so a subsequent Redis-recovered consume cannot replay', async () => {
+  // A consent-op burn must clear BOTH tiers, not just the one that answered the
+  // read. A variant that burned only the tier it read from would leave the other
+  // copy alive: a consume served from the memStore backup during a Redis blip
+  // would leave the canonical Redis entry standing, and a same-process replay
+  // once Redis recovered inside the TTL would return valid AGAIN.
+  it.skipIf(!redisAvailable)('a memStore-served consume still clears the canonical Redis entry, so a Redis-recovered replay cannot succeed', async () => {
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('eve', 'password', T);
 
-    // Step 1: stub Redis to throw on the first getdel. This forces the
-    // fallback to memStore on consume — which succeeds via the memStore
-    // backup written at issuance.
-    const getdelSpy = vi.spyOn(redis, 'getdel').mockRejectedValueOnce(new Error('simulated Redis flap on getdel'));
-    // We allow the compensating del to land — the test asserts replay
-    // rejection by the canonical `redis.del`'s effect on the next consume.
+    // Step 1: stub the Redis read to throw once. This forces the fallback to
+    // memStore on consume — which succeeds via the memStore backup written at
+    // issuance. The burn is NOT stubbed, so it still reaches Redis.
+    const getdelSpy = vi.spyOn(redis, 'get').mockRejectedValueOnce(new Error('simulated Redis flap on read'));
 
     let firstResult;
     try {
@@ -739,17 +751,13 @@ describe('Symmetric dual-tier deletion', () => {
     }
     expect(firstResult.valid).toBe(true);
 
-    // Step 2: Redis is "recovered" (default behavior, no spy). A second
-    // consume with the same token must return `expired` because:
-    //   (a) memStore was deleted at the start of the fallback path (the
-    //       fallback path itself burns the memStore copy),
-    //   (b) the compensating redis.del cleared the canonical Redis entry
-    //       so the Redis branch returns nil → 'expired'.
-    // A pre-fix variant (no compensating del) would have left the Redis
-    // entry alive: this second consume's Redis.getdel would have
-    // returned the entry → the narrowing would have parsed it →
-    // returned `valid: true` → DOUBLE-CONSUME. The test fails on that
-    // mutation.
+    // Step 2: Redis is "recovered" (default behavior, no spy). A second consume
+    // with the same token must return `expired` because the burn cleared both
+    // tiers: the memStore copy AND the canonical Redis entry. A variant that
+    // burned only the answering tier would have left the Redis entry alive, so
+    // this second consume's read would have returned it, the narrowing would
+    // have parsed it, and the result would be `valid: true` — a DOUBLE-CONSUME.
+    // The test fails on that mutation.
     const replay = await consumeFreshAuthToken(issued.token, 'eve', TH);
     expect(replay.valid).toBe(false);
     if (!replay.valid) {
@@ -757,16 +765,46 @@ describe('Symmetric dual-tier deletion', () => {
     }
   });
 
-  it.skipIf(!redisAvailable)('memStore-fallback compensating del is best-effort (a throwing redis.del does not break the consume)', async () => {
-    // The compensating `redis.del` runs inside a try/catch in
-    // consumeFreshAuthToken: if Redis is still flaky on the del side,
-    // the user's broadcast must still proceed (we already consumed the
-    // memStore copy). Pin that the consume reports valid even when the
-    // compensating del also throws.
+  it.skipIf(!redisAvailable)('a burn whose Redis leg fails still clears the canonical entry, so a replay after recovery is refused', async () => {
+    // The burn's Redis leg is the one that can silently half-apply: the read
+    // that discovered the entry already succeeded, so a rejecting delete leaves
+    // the canonical copy alive while the in-memory delete still reports a win.
+    // The consume returns valid, and the SAME proof authorizes a second critical
+    // action once the client reconnects inside the TTL. A compensating delete is
+    // what closes that, and this test is its mutation-kill: without it the second
+    // consume below comes back valid.
+    const redis = getRedis()!;
+    const issued = await issueFreshAuthToken('flap-burn', 'password', T);
+
+    const burnSpy = vi
+      .spyOn(redis, 'getdel')
+      .mockRejectedValueOnce(new Error('simulated flap on the burn'));
+    let first;
+    try {
+      first = await consumeFreshAuthToken(issued.token, 'flap-burn', TH);
+    } finally {
+      burnSpy.mockRestore();
+    }
+    expect(first.valid).toBe(true);
+
+    // Redis is "recovered": the entry must be gone from it, not merely from the
+    // in-memory backup.
+    const replay = await consumeFreshAuthToken(issued.token, 'flap-burn', TH);
+    expect(replay.valid).toBe(false);
+    if (!replay.valid) {
+      expect(replay.reason).toBe('expired');
+    }
+  });
+
+  it.skipIf(!redisAvailable)('a throwing Redis del does not break the consume — the in-memory tier arbitrates the burn', async () => {
+    // The Redis leg of the burn runs inside a try/catch: if Redis is flaky on
+    // the del side too, the in-memory delete's return value decides whether this
+    // caller won, and the user's broadcast must still proceed. Pin that the
+    // consume reports valid even when both Redis legs throw.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('frank', 'password', T);
 
-    const getdelSpy = vi.spyOn(redis, 'getdel').mockRejectedValueOnce(new Error('flap on getdel'));
+    const getdelSpy = vi.spyOn(redis, 'get').mockRejectedValueOnce(new Error('flap on read'));
     const delSpy = vi.spyOn(redis, 'del').mockRejectedValueOnce(new Error('flap persists on del'));
     try {
       const result = await consumeFreshAuthToken(issued.token, 'frank', TH);
@@ -899,15 +937,35 @@ describe('session-kind issue / consume — issueSessionFreshAuthToken + consumeS
     }
   });
 
-  it('single-use semantic on session consume: second consume → expired', async () => {
+  it('multi-use inside the window: three consecutive consumes all succeed', async () => {
+    // Three, not two: two consumes prove "double-use", which a regression that
+    // spends the proof on its SECOND use would also satisfy.
     const issued = await issueSessionFreshAuthToken('alice', 'password');
-    const first = await consumeSessionFreshAuthToken(issued.token, 'alice');
-    expect(first.valid).toBe(true);
-    const second = await consumeSessionFreshAuthToken(issued.token, 'alice');
-    expect(second.valid).toBe(false);
-    if (!second.valid) {
-      expect(second.reason).toBe('expired');
+    for (let i = 0; i < 3; i++) {
+      const result = await consumeSessionFreshAuthToken(issued.token, 'alice');
+      expect(result.valid).toBe(true);
     }
+  });
+
+  it('issuance reports both deadlines as ISO-8601 strings', async () => {
+    const before = Date.now();
+    const issued = await issueSessionFreshAuthToken('alice', 'password');
+    const idleMs = new Date(issued.expires_at).getTime();
+    const capMs = new Date(issued.absolute_expires_at).getTime();
+    // ISO-8601 strings, not epoch numbers: the SPA reads these with
+    // `new Date(...).getTime()`, and an epoch-seconds number would be read as
+    // milliseconds and resolve to 1970, making the client-side cache useless.
+    expect(typeof issued.expires_at).toBe('string');
+    expect(typeof issued.absolute_expires_at).toBe('string');
+    expect(issued.expires_at).toBe(new Date(idleMs).toISOString());
+    expect(issued.absolute_expires_at).toBe(new Date(capMs).toISOString());
+    // The idle deadline is the one the client treats as authoritative, and at
+    // mint time it is the nearer of the two.
+    expect(idleMs).toBeLessThan(capMs);
+    expect(idleMs - before).toBeGreaterThan((SESSION_FRESH_AUTH_IDLE_SECONDS - 5) * 1000);
+    expect(idleMs - before).toBeLessThanOrEqual(SESSION_FRESH_AUTH_IDLE_SECONDS * 1000);
+    expect(capMs - before).toBeGreaterThan((SESSION_FRESH_AUTH_ABSOLUTE_SECONDS - 5) * 1000);
+    expect(capMs - before).toBeLessThanOrEqual(SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000);
   });
 
   it('cross-account: session token for bob consumed with alice → username_mismatch', async () => {
@@ -1000,14 +1058,14 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     // reached `memStore.delete`, returning two valids.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('race-bob', 'password', T);
-    // Stub getdel to throw on BOTH calls. mockImplementation, not
+    // Stub the Redis read to throw on BOTH calls. mockImplementation, not
     // mockRejectedValueOnce — Promise.all may fire both calls before either
     // resolves.
-    const getdelSpy = vi.spyOn(redis, 'getdel').mockImplementation(() => {
+    const getdelSpy = vi.spyOn(redis, 'get').mockImplementation(() => {
       return Promise.reject(new Error('forced Redis-down for race test'));
     });
-    // Also stub the compensating `redis.del` so the test isolates the
-    // race-window assertion (the del is best-effort and tested elsewhere).
+    // Stub the Redis leg of the burn to report "removed nothing" so the
+    // in-memory tier is the only arbiter — that is the window the lock closes.
     const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
     try {
       const [a, b] = await Promise.all([
@@ -1030,9 +1088,9 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     // runs (the memStore-fallback shape is achievable by skipping the Redis
     // populate at issue time — but `issueFreshAuthToken` writes to BOTH
     // tiers, so the memStore branch only fires when Redis read fails).
-    // For the Redis-available case, this test is functionally equivalent to
-    // the Redis-up test above (Redis GETDEL is atomic and the lock is
-    // additionally enforced); under no-Redis it is the real-path companion.
+    // For the Redis-available case, this test is functionally equivalent to the
+    // Redis-up test above (the Redis delete-reply count arbitrates and the lock
+    // is additionally enforced); under no-Redis it is the real-path companion.
     const issued = await issueFreshAuthToken('race-carol', 'password', T);
     const [a, b] = await Promise.all([
       consumeFreshAuthToken(issued.token, 'race-carol', TH),
@@ -1042,25 +1100,32 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     expect(winners).toHaveLength(1);
   });
 
-  it.skipIf(!redisAvailable)('consumeSessionFreshAuthToken Redis-up: Promise.all dual consume → exactly one winner', async () => {
+  // The session kind inverts the acceptance above: a window is multi-use, so
+  // serializing concurrent consumes would turn ordinary SPA behaviour (two votes
+  // fired in the same tick, an upload-token mint racing a broadcast) into a
+  // spurious 401 the client reads as "re-auth needed". Both callers must win.
+
+  it.skipIf(!redisAvailable)('consumeSessionFreshAuthToken Redis-up: Promise.all dual consume → BOTH succeed', async () => {
     const issued = await issueSessionFreshAuthToken('race-dave', 'password');
     const [a, b] = await Promise.all([
       consumeSessionFreshAuthToken(issued.token, 'race-dave'),
       consumeSessionFreshAuthToken(issued.token, 'race-dave'),
     ]);
     const winners = [a, b].filter((r) => r.valid);
-    expect(winners).toHaveLength(1);
-    const losers = [a, b].filter((r) => !r.valid);
-    expect(losers).toHaveLength(1);
-    if (!losers[0].valid) {
-      expect(losers[0].reason).toBe('expired');
-    }
+    // Mutation kill for a regression back to a destructive read: a GETDEL-shaped
+    // session consume would still produce exactly one winner here, which is
+    // precisely the behaviour this assertion forbids.
+    expect(winners).toHaveLength(2);
+    expect([a, b].filter((r) => !r.valid)).toHaveLength(0);
   });
 
-  it.skipIf(!redisAvailable)('consumeSessionFreshAuthToken Redis-stubbed-to-throw: Promise.all dual consume → exactly one winner', async () => {
+  it.skipIf(!redisAvailable)('consumeSessionFreshAuthToken Redis-stubbed-to-throw: Promise.all dual consume → BOTH succeed', async () => {
+    // Widest window: both consumes fall through to the in-memory tier. Mutation
+    // kill for a stray `memStore.delete` surviving on the session path — the
+    // second caller would find nothing and report `expired`.
     const redis = getRedis()!;
     const issued = await issueSessionFreshAuthToken('race-eve', 'orcid');
-    const getdelSpy = vi.spyOn(redis, 'getdel').mockImplementation(() => {
+    const getdelSpy = vi.spyOn(redis, 'get').mockImplementation(() => {
       return Promise.reject(new Error('forced Redis-down for race test'));
     });
     const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
@@ -1069,39 +1134,33 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
         consumeSessionFreshAuthToken(issued.token, 'race-eve'),
         consumeSessionFreshAuthToken(issued.token, 'race-eve'),
       ]);
-      const winners = [a, b].filter((r) => r.valid);
-      expect(winners).toHaveLength(1);
+      expect([a, b].filter((r) => r.valid)).toHaveLength(2);
     } finally {
       getdelSpy.mockRestore();
       delSpy.mockRestore();
     }
   });
 
-  it('consumeSessionFreshAuthToken no-Redis real-path: Promise.all dual consume → exactly one winner', async () => {
-    // No-Redis real-path companion to the stubbed-Redis variant above.
+  it('consumeSessionFreshAuthToken no-Redis real-path: Promise.all dual consume → BOTH succeed', async () => {
+    // No-mock companion to the stubbed-Redis variant above, so the concurrency
+    // claim is covered against real infrastructure and not only through a spy.
     const issued = await issueSessionFreshAuthToken('race-frank', 'password');
     const [a, b] = await Promise.all([
       consumeSessionFreshAuthToken(issued.token, 'race-frank'),
       consumeSessionFreshAuthToken(issued.token, 'race-frank'),
     ]);
-    const winners = [a, b].filter((r) => r.valid);
-    expect(winners).toHaveLength(1);
+    expect([a, b].filter((r) => r.valid)).toHaveLength(2);
   });
 
-  it('lock cleanup: a thrown consume releases the in-flight set entry (structural pin)', async () => {
-    // Pin the try/finally cleanup discipline structurally via the
-    // in-flight set size, not via wire codes. The lock-held branch and
-    // the consumed-token branch both return `expired`, so a wire-shape
-    // assertion is mutation-blind to removing the `finally` block. The
-    // set-size assertion isn't: a mutation that replaces
-    // `finally { inFlightConsumes.delete(token) }` with plain post-await
-    // cleanup leaks the lock entry on the throw path.
+  it('lock hygiene: a consume that throws while reading leaves the in-flight set clean', async () => {
+    // The lock is acquired AFTER the store read, so a throw during the read must
+    // never leave a lock entry behind. Pin that structurally via the set size
+    // rather than via wire codes: the lock-held branch and the already-burned
+    // branch both return `expired`, so a wire-shape assertion cannot see a leak.
     //
-    // Mechanism: plant a memStore entry whose `entry` field has a circular
-    // reference so `JSON.stringify(cached.entry)` throws inside the locked
-    // critical section. Force Redis-down on consume so the helper falls
-    // through to memStore. The throw propagates out of the inner
-    // `consumeFreshAuthTokenLocked` and the outer `finally` MUST fire.
+    // Mechanism: plant an in-memory entry whose value has a circular reference
+    // so `JSON.stringify` throws while the read is serializing it, and force the
+    // Redis read to fail so the helper reaches that entry.
     const token = 'lock-cleanup-throw-token';
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const circular: any = { username: 'lock-cleanup', mechanism: 'password' };
@@ -1114,76 +1173,88 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     const redis = getRedis();
     const getdelSpy =
       redis && isRedisAvailable()
-        ? vi.spyOn(redis, 'getdel').mockRejectedValue(new Error('forced Redis-down for cleanup test'))
+        ? vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced Redis-down for cleanup test'))
         : null;
     try {
       await expect(
         consumeFreshAuthToken(token, 'lock-cleanup', TH),
       ).rejects.toThrow();
-      // Mutation kill: removing the `finally { inFlightConsumes.delete }`
-      // would leave the entry behind. The wire-shape assertion above only
-      // confirms the throw propagated; this confirms cleanup ran.
       expect(_getInFlightConsumesSizeForTests()).toBe(0);
     } finally {
       getdelSpy?.mockRestore();
     }
   });
 
-  it('shared-lock-domain invariant: both helpers consult the same inFlightConsumes Set (identity anchor)', async () => {
-    // Structural identity anchor for the shared-lock-domain design — pins
-    // that `consumeFreshAuthToken` and `consumeSessionFreshAuthToken` both
-    // call `.has` / `.add` on the SAME `Set<string>` instance. A mutation
-    // that splits the lock into per-helper Sets (e.g.,
-    // `inFlightConsumesByConsentHelper` + `inFlightConsumesBySessionHelper`)
-    // would cause one of the two helpers' invocations to bypass the spied
-    // Set, failing the "both helpers touched this Set" assertion.
-    //
-    // Independent of microtask ordering and Redis availability — runs in
-    // every environment (no skipIf) because the assertion examines only
-    // the lock-set call surface, not the Redis fallback path. The wire-
-    // shape cross-helper test below complements this with end-to-end
-    // coverage when Redis is available.
-    const sharedSet = _getInFlightConsumesSetReferenceForTests();
-    const hasSpy = vi.spyOn(sharedSet, 'has');
+  it.skipIf(!redisAvailable)('the lock is held across the consent-op burn and released after it (structural pin)', async () => {
+    // Complements the hygiene test above by pinning the acquire side. Sampling
+    // the set size from inside the Redis burn is the only way to distinguish
+    // "the lock was taken" from "the burn happened to be atomic anyway": both
+    // shapes produce the same wire result for a single consume, which is what
+    // makes a dropped `inFlightConsumes.add` invisible to outcome assertions.
+    const redis = getRedis()!;
+    const issued = await issueFreshAuthToken('lock-window', 'password', T);
+    const sizesDuringBurn: number[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const delSpy = vi.spyOn(redis, 'getdel').mockImplementation((async () => {
+      sizesDuringBurn.push(_getInFlightConsumesSizeForTests());
+      return '{}';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any);
     try {
-      const issuedA = await issueFreshAuthToken('lock-identity-a', 'password', T);
-      await consumeFreshAuthToken(issuedA.token, 'lock-identity-a', TH);
-      const consentHelperCalls = hasSpy.mock.calls.length;
-      expect(consentHelperCalls).toBeGreaterThan(0);
-
-      const issuedB = await issueSessionFreshAuthToken('lock-identity-b', 'password');
-      await consumeSessionFreshAuthToken(issuedB.token, 'lock-identity-b');
-      const sessionHelperCalls = hasSpy.mock.calls.length - consentHelperCalls;
-      // Mutation kill: a per-helper Set split would route the session
-      // helper's `has` check to a sibling Set; sessionHelperCalls would
-      // stay at 0 even though the helper ran.
-      expect(sessionHelperCalls).toBeGreaterThan(0);
+      const result = await consumeFreshAuthToken(issued.token, 'lock-window', TH);
+      expect(result.valid).toBe(true);
+      expect(sizesDuringBurn).toEqual([1]);
     } finally {
-      hasSpy.mockRestore();
+      delSpy.mockRestore();
+    }
+    expect(_getInFlightConsumesSizeForTests()).toBe(0);
+  });
+
+  it('the session slide runs WITHOUT the lock, which is what lets concurrent consumes both win', async () => {
+    // The inverse structural pin: sampling the set size from inside the slide
+    // write proves the session path never enters the critical section. A
+    // mutation that reinstated a shared lock would still pass the "both win"
+    // race assertions whenever the event loop happened to serialize them, so
+    // the observation has to be made from inside the call.
+    const redis = getRedis();
+    if (!redis || !isRedisAvailable()) {
+      // No Redis: the slide only touches the in-memory tier, and the lock claim
+      // is then covered by the no-Redis dual-consume test above.
+      const issued = await issueSessionFreshAuthToken('slide-nolock', 'password');
+      await consumeSessionFreshAuthToken(issued.token, 'slide-nolock');
+      expect(_getInFlightConsumesSizeForTests()).toBe(0);
+      return;
+    }
+    const issued = await issueSessionFreshAuthToken('slide-nolock', 'password');
+    const sizesDuringSlide: number[] = [];
+    const setSpy = vi.spyOn(redis, 'set').mockImplementation((() => {
+      sizesDuringSlide.push(_getInFlightConsumesSizeForTests());
+      return Promise.resolve('OK');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any);
+    try {
+      const result = await consumeSessionFreshAuthToken(issued.token, 'slide-nolock');
+      expect(result.valid).toBe(true);
+      expect(sizesDuringSlide).toEqual([0]);
+    } finally {
+      setSpy.mockRestore();
     }
   });
 
-  it.skipIf(!redisAvailable)('cross-helper Redis-stubbed Promise.all → exactly one winner (shared-lock-domain invariant)', async () => {
-    // Pins the shared-lock-domain design: `inFlightConsumes` is a single
-    // module-scoped set spanning both consume helpers. A mutation that
-    // splits the set per helper (e.g., `inFlightConsumesByConsentHelper`
-    // and `inFlightConsumesBySessionHelper`) would let a `Promise.all`
-    // across both helpers race to the memStore fallback under Redis-down
-    // and both win — silently regressing the cross-kind race protection.
+  it.skipIf(!redisAvailable)('cross-helper Redis-stubbed Promise.all on a consent-op token → exactly one winner', async () => {
+    // The lock domain is the TOKEN, not the calling helper. A consent-op proof
+    // reaches the session surface through the cross-kind accept, so both helpers
+    // can be burning the same entry at once; a lock split per helper would let a
+    // `Promise.all` across the two race to the in-memory tier under Redis-down
+    // and both win, double-spending a single-use proof.
     //
-    // The session-helper accepts both kinds (cross-kind accept — see
-    // `consumeSessionFreshAuthToken` docstring), so a consent_op-kind
-    // token consumed via the session helper returns valid: true if it
-    // wins. Either helper as winner is acceptable; the load-bearing
-    // claim is "exactly one winner."
-    //
-    // Redis-stubbed (not Redis-up) because Redis GETDEL atomicity alone
-    // would also produce exactly one winner under the mutation — the
-    // mutation kill requires forcing both helpers onto the memStore
-    // fallback path.
+    // Either helper as winner is acceptable; the load-bearing claim is "exactly
+    // one winner". Redis-stubbed rather than Redis-up because the delete-reply
+    // count alone would also produce one winner under the mutation — the kill
+    // requires forcing both helpers onto the in-memory tier.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('race-cross', 'password', T);
-    const getdelSpy = vi.spyOn(redis, 'getdel').mockImplementation(() => {
+    const getdelSpy = vi.spyOn(redis, 'get').mockImplementation(() => {
       return Promise.reject(new Error('forced Redis-down for cross-helper race test'));
     });
     const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
@@ -1197,6 +1268,393 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     } finally {
       getdelSpy.mockRestore();
       delSpy.mockRestore();
+    }
+  });
+});
+
+
+// ─── session-proof window: sliding idle deadline + absolute cap ───
+
+describe('session-proof window', () => {
+  // Fake timers are the carve-out class root CLAUDE.md names for deterministic
+  // edge cases: the sliding deadline is 15 minutes out and the cap is 2 hours
+  // out, so exercising either against the wall clock is impractical. Redis, when
+  // present, is REAL here — only `Date.now()` is faked. That is deliberate: the
+  // stored deadlines are what the consume compares against, so a real Redis
+  // round-trip still exercises the persistence leg while the clock moves.
+  beforeEach(() => {
+    _resetFreshAuthMemStoreForTests();
+  });
+
+  /** Plant a session entry directly in the in-memory tier with chosen deadlines.
+   *  Used for the boundary cases where minting cannot produce the shape under
+   *  test (a window already past its cap, a cap nearer than the idle deadline).
+   *  The token is absent from Redis, so the read falls through to this tier. */
+  function plantSessionEntry(
+    token: string,
+    username: string,
+    idleExpiresAt: number,
+    absoluteExpiresAt: number,
+  ): void {
+    _setMemStoreEntryForTests(
+      token,
+      {
+        username,
+        mechanism: 'password',
+        issued_at: absoluteExpiresAt - SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+        kind: 'session',
+        idle_expires_at: idleExpiresAt,
+        absolute_expires_at: absoluteExpiresAt,
+      },
+      Math.max(idleExpiresAt, absoluteExpiresAt) + 60_000,
+    );
+  }
+
+  it('idle beyond the window with no intervening use → expired', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t0 = new Date('2026-03-01T00:00:00Z').getTime();
+    vi.setSystemTime(t0);
+    const issued = await issueSessionFreshAuthToken('idle-user', 'password');
+
+    vi.setSystemTime(t0 + (SESSION_FRESH_AUTH_IDLE_SECONDS + 1) * 1000);
+    const result = await consumeSessionFreshAuthToken(issued.token, 'idle-user');
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('expired');
+    }
+  });
+
+  it('a consume slides the idle deadline forward, so a working stretch is never interrupted', async () => {
+    // Mutation kill for a consume that validates the window but does not slide
+    // it: the second consume lands well past the ORIGINAL idle deadline and
+    // would report `expired`.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t0 = new Date('2026-03-01T00:00:00Z').getTime();
+    vi.setSystemTime(t0);
+    const issued = await issueSessionFreshAuthToken('slide-user', 'password');
+    const idleMs = SESSION_FRESH_AUTH_IDLE_SECONDS * 1000;
+
+    vi.setSystemTime(t0 + idleMs - 60_000);
+    expect((await consumeSessionFreshAuthToken(issued.token, 'slide-user')).valid).toBe(true);
+
+    // Past the original deadline, inside the slid one.
+    vi.setSystemTime(t0 + idleMs + 60_000);
+    expect((await consumeSessionFreshAuthToken(issued.token, 'slide-user')).valid).toBe(true);
+  });
+
+  it('the window dies at the absolute cap no matter how often it was slid', async () => {
+    // Slide repeatedly across the cap. The loop is the shape the cap exists to
+    // defend against: an attacker holding the proof keeps it alive by using it.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t0 = new Date('2026-03-01T00:00:00Z').getTime();
+    vi.setSystemTime(t0);
+    const issued = await issueSessionFreshAuthToken('cap-user', 'password');
+
+    const stepMs = (SESSION_FRESH_AUTH_IDLE_SECONDS - 60) * 1000;
+    const capMs = SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000;
+    let elapsed = 0;
+    let lastValidElapsed = 0;
+    let deniedElapsed: number | null = null;
+    // One step past the cap so the loop is guaranteed to cross it.
+    while (elapsed <= capMs + stepMs) {
+      elapsed += stepMs;
+      vi.setSystemTime(t0 + elapsed);
+      const result = await consumeSessionFreshAuthToken(issued.token, 'cap-user');
+      if (result.valid) {
+        lastValidElapsed = elapsed;
+      } else {
+        expect(result.reason).toBe('expired');
+        deniedElapsed = elapsed;
+        break;
+      }
+    }
+    expect(deniedElapsed).not.toBeNull();
+    // Fails closed AT the cap, not merely eventually: the last accepted consume
+    // was inside the cap and the first denial is at or past it.
+    expect(lastValidElapsed).toBeLessThan(capMs);
+    expect(deniedElapsed as number).toBeGreaterThanOrEqual(capMs);
+  });
+
+  it('a window already past its cap is rejected even when its idle deadline is in the future', async () => {
+    // Mutation kill aimed squarely at the cap check. The storage TTL normally
+    // expires such an entry on its own, which is exactly why the cap can be
+    // implemented so that it silently never fires; planting the shape directly
+    // is the only way to observe the check itself.
+    const now = Date.now();
+    plantSessionEntry('cap-past-token', 'cap-past-user', now + 600_000, now - 1_000);
+    const result = await consumeSessionFreshAuthToken('cap-past-token', 'cap-past-user');
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('expired');
+    }
+  });
+
+  it('a window past its idle deadline is rejected even when the cap is far away', async () => {
+    // The mirror-image mutation kill: dropping the idle check would leave a
+    // proof usable for the full two hours after a single use.
+    const now = Date.now();
+    plantSessionEntry('idle-past-token', 'idle-past-user', now - 1_000, now + 3_600_000);
+    const result = await consumeSessionFreshAuthToken('idle-past-token', 'idle-past-user');
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('expired');
+    }
+  });
+
+  it('the slide is clamped to the cap rather than pushed past it', async () => {
+    // A cap nearer than one idle period. The consume must succeed, and the
+    // window must still end at the cap. Without the clamp the slide would set
+    // the idle deadline a full idle period out and outlive the cap.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t0 = new Date('2026-03-01T00:00:00Z').getTime();
+    vi.setSystemTime(t0);
+    plantSessionEntry('clamp-token', 'clamp-user', t0 + 10_000, t0 + 60_000);
+
+    expect((await consumeSessionFreshAuthToken('clamp-token', 'clamp-user')).valid).toBe(true);
+
+    vi.setSystemTime(t0 + 61_000);
+    const afterCap = await consumeSessionFreshAuthToken('clamp-token', 'clamp-user');
+    expect(afterCap.valid).toBe(false);
+    if (!afterCap.valid) {
+      expect(afterCap.reason).toBe('expired');
+    }
+  });
+
+  it.skipIf(!redisAvailable)('a slide served from Redis is written back with XX so it cannot resurrect a lapsed key', async () => {
+    // `XX` is the guard for the gap between this consume's read and its write:
+    // the key can lapse in between, and a plain SET would recreate it for
+    // another full window.
+    const redis = getRedis()!;
+    const issued = await issueSessionFreshAuthToken('xx-user', 'password');
+    const setSpy = vi.spyOn(redis, 'set');
+    try {
+      expect((await consumeSessionFreshAuthToken(issued.token, 'xx-user')).valid).toBe(true);
+      expect(setSpy).toHaveBeenCalledTimes(1);
+      expect(setSpy.mock.calls[0]).toContain('XX');
+    } finally {
+      setSpy.mockRestore();
+    }
+  });
+
+  it.skipIf(!redisAvailable)('a slide served from the in-memory tier is NOT written back to Redis', async () => {
+    // The in-memory tier answers precisely when Redis did not. Writing the slid
+    // entry to Redis from there would recreate a key Redis has already dropped.
+    const redis = getRedis()!;
+    const issued = await issueSessionFreshAuthToken('nowrite-user', 'password');
+    const getSpy = vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced Redis-down'));
+    const setSpy = vi.spyOn(redis, 'set');
+    try {
+      expect((await consumeSessionFreshAuthToken(issued.token, 'nowrite-user')).valid).toBe(true);
+      expect(setSpy).not.toHaveBeenCalled();
+    } finally {
+      getSpy.mockRestore();
+      setSpy.mockRestore();
+    }
+  });
+
+  it.skipIf(!redisAvailable)('a slide whose write is declined removes the in-memory copy instead of resurrecting the window', async () => {
+    // The race this closes: an invalidation (a password reset) sweeps both tiers
+    // while a consume is already in flight, having read the entry from Redis
+    // microseconds earlier. That consume then validates and slides, and its
+    // unconditional in-memory write re-plants the entry the sweep had just
+    // removed. Every later consume reads Redis (miss), falls through to the
+    // re-planted copy, succeeds, and slides again, so the window outlives the
+    // reset that was supposed to close it.
+    //
+    // Simulated precisely: the read returns the real stored value while the key
+    // vanishes underneath it, which is what the sweep does. The `XX` flag on the
+    // write is then declined, and that declined reply is the signal that the
+    // canonical tier is gone.
+    const redis = getRedis()!;
+    const issued = await issueSessionFreshAuthToken('sweep-race', 'password');
+    const raw = await redis.get(`${config.appTag}:fresh_auth:token:${issued.token}`);
+    expect(raw).toBeTruthy();
+
+    const getSpy = vi.spyOn(redis, 'get').mockImplementationOnce(async () => {
+      await redis.del(`${config.appTag}:fresh_auth:token:${issued.token}`);
+      return raw;
+    });
+    try {
+      // The in-flight consume still succeeds; it was authorized before the sweep
+      // landed. What must not happen is the window surviving it.
+      expect((await consumeSessionFreshAuthToken(issued.token, 'sweep-race')).valid).toBe(true);
+    } finally {
+      getSpy.mockRestore();
+    }
+
+    const afterSweep = await consumeSessionFreshAuthToken(issued.token, 'sweep-race');
+    expect(afterSweep.valid).toBe(false);
+    if (!afterSweep.valid) {
+      expect(afterSweep.reason).toBe('expired');
+    }
+  });
+
+  it('a slide served from the in-memory tier is not lost — the next consume sees it', async () => {
+    // The flap-recovery property has to survive the window change: a consume
+    // that recovers from the backup tier must still move the deadline, or a
+    // Redis outage would silently shorten every window to a single use.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t0 = new Date('2026-03-01T00:00:00Z').getTime();
+    vi.setSystemTime(t0);
+    const issued = await issueSessionFreshAuthToken('memslide-user', 'password');
+    const idleMs = SESSION_FRESH_AUTH_IDLE_SECONDS * 1000;
+
+    const redis = getRedis();
+    const getSpy =
+      redis && isRedisAvailable()
+        ? vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced Redis-down'))
+        : null;
+    try {
+      vi.setSystemTime(t0 + idleMs - 60_000);
+      expect((await consumeSessionFreshAuthToken(issued.token, 'memslide-user')).valid).toBe(true);
+      vi.setSystemTime(t0 + idleMs + 60_000);
+      expect((await consumeSessionFreshAuthToken(issued.token, 'memslide-user')).valid).toBe(true);
+    } finally {
+      getSpy?.mockRestore();
+    }
+  });
+
+  it('a stored session entry without window deadlines is malformed, not unbounded', async () => {
+    // Closed-default for a shape written by a deploy that predates the window.
+    // Reading it as "no deadlines, therefore no expiry" is the failure mode this
+    // pins against; one extra re-auth during a deploy is the correct trade.
+    _setMemStoreEntryForTests(
+      'legacy-session-token',
+      { username: 'legacy-user', mechanism: 'password', issued_at: Date.now(), kind: 'session' },
+      Date.now() + 600_000,
+    );
+    const result = await consumeSessionFreshAuthToken('legacy-session-token', 'legacy-user');
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('malformed');
+    }
+  });
+
+  it('a stored consent-op entry carrying window deadlines is malformed', async () => {
+    // The inverse shape guard. A consent-op entry that acquired deadlines is a
+    // kind/field combination this module never mints, and treating it as valid
+    // would be the exact route by which the strictest proof kind turns into the
+    // loosest one.
+    const now = Date.now();
+    _setMemStoreEntryForTests(
+      'hybrid-token',
+      {
+        username: 'hybrid-user',
+        mechanism: 'password',
+        issued_at: now,
+        kind: 'consent_op',
+        target_hash: TH,
+        idle_expires_at: now + 600_000,
+        absolute_expires_at: now + 3_600_000,
+      },
+      now + 600_000,
+    );
+    const result = await consumeFreshAuthToken('hybrid-token', 'hybrid-user', TH);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('malformed');
+    }
+  });
+
+  it('a cross-kind-accepted consent-op proof is still spent on the session surface, never turned into a window', async () => {
+    // The cross-kind accept is the path by which a single-use target-bound proof
+    // reaches the multi-use surface. If the slide ran unconditionally it would
+    // rewrite that entry with deadlines and hand the caller a two-hour window.
+    const issued = await issueFreshAuthToken('crosskind-user', 'password', T);
+    const first = await consumeSessionFreshAuthToken(issued.token, 'crosskind-user');
+    expect(first.valid).toBe(true);
+    const second = await consumeSessionFreshAuthToken(issued.token, 'crosskind-user');
+    expect(second.valid).toBe(false);
+    if (!second.valid) {
+      expect(second.reason).toBe('expired');
+    }
+  });
+
+  it('a session proof on the consent surface is rejected without being spent', async () => {
+    // Burning it there would let anyone holding the token close the owner's
+    // window by presenting it on the wrong surface.
+    const issued = await issueSessionFreshAuthToken('kindmiss-user', 'password');
+    const rejected = await consumeFreshAuthToken(issued.token, 'kindmiss-user', TH);
+    expect(rejected.valid).toBe(false);
+    if (!rejected.valid) {
+      expect(rejected.reason).toBe('kind_mismatch');
+    }
+    expect((await consumeSessionFreshAuthToken(issued.token, 'kindmiss-user')).valid).toBe(true);
+  });
+});
+
+// ─── session invalidation closes open windows ───
+
+describe('invalidateSessionFreshAuthTokens', () => {
+  beforeEach(() => {
+    _resetFreshAuthMemStoreForTests();
+  });
+
+  it('closes every open window for the named user', async () => {
+    const first = await issueSessionFreshAuthToken('invalidate-me', 'password');
+    const second = await issueSessionFreshAuthToken('invalidate-me', 'orcid');
+
+    await invalidateSessionFreshAuthTokens('invalidate-me');
+
+    for (const issued of [first, second]) {
+      const result = await consumeSessionFreshAuthToken(issued.token, 'invalidate-me');
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.reason).toBe('expired');
+      }
+    }
+  });
+
+  it('leaves another account’s window alone', async () => {
+    // Blast-radius pin: a sweep keyed on something other than the username (or a
+    // sweep that clears the whole store) would take out unrelated sessions.
+    const victim = await issueSessionFreshAuthToken('bystander', 'password');
+    const target = await issueSessionFreshAuthToken('invalidate-me-too', 'password');
+
+    await invalidateSessionFreshAuthTokens('invalidate-me-too');
+
+    expect((await consumeSessionFreshAuthToken(target.token, 'invalidate-me-too')).valid).toBe(false);
+    expect((await consumeSessionFreshAuthToken(victim.token, 'bystander')).valid).toBe(true);
+  });
+
+  it('leaves the same user’s consent-op proofs alone', async () => {
+    // Deliberately scoped to the session kind. Consent-op proofs are
+    // target-bound, single-use, and outlive the reset by at most their own short
+    // TTL, so sweeping them would add churn without adding a guarantee.
+    const consentProof = await issueFreshAuthToken('mixed-kinds', 'password', T);
+    const sessionProof = await issueSessionFreshAuthToken('mixed-kinds', 'password');
+
+    await invalidateSessionFreshAuthTokens('mixed-kinds');
+
+    expect((await consumeSessionFreshAuthToken(sessionProof.token, 'mixed-kinds')).valid).toBe(false);
+    expect((await consumeFreshAuthToken(consentProof.token, 'mixed-kinds', TH)).valid).toBe(true);
+  });
+
+  it('never throws when Redis fails, so a password reset cannot be turned into a 500', async () => {
+    const redis = getRedis();
+    if (!redis || !isRedisAvailable()) {
+      await expect(invalidateSessionFreshAuthTokens('no-redis-user')).resolves.toBeUndefined();
+      return;
+    }
+    const smembersSpy = vi
+      .spyOn(redis, 'smembers')
+      .mockRejectedValue(new Error('forced Redis failure during invalidation'));
+    try {
+      const issued = await issueSessionFreshAuthToken('redis-down-user', 'password');
+      await expect(invalidateSessionFreshAuthTokens('redis-down-user')).resolves.toBeUndefined();
+      // The in-memory sweep still ran even though the Redis leg failed. Reading
+      // with Redis forced down is how that is observed: the canonical Redis copy
+      // does survive a failed sweep, and the honest statement of the guarantee
+      // is that the tier this process owns is always cleared.
+      const getSpy = vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced Redis-down'));
+      try {
+        const result = await consumeSessionFreshAuthToken(issued.token, 'redis-down-user');
+        expect(result.valid).toBe(false);
+      } finally {
+        getSpy.mockRestore();
+      }
+    } finally {
+      smembersSpy.mockRestore();
     }
   });
 });

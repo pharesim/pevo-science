@@ -4,13 +4,14 @@
  * usable mint path for non-consent broadcasts: `/api/custody/fresh-auth`
  * mints consent_op-kind proofs that require per-op target binding (hostile
  * for vote/comment flows); `/api/orcid/start { mode: 'session_auth' }` needs
- * ORCID linkage State A users don't have. This route mints a target-less
- * session-kind proof via the same argon2 password path; the consume side on
- * the non-consent surface of `/api/custody/broadcast` accepts it.
+ * ORCID linkage State A users don't have. This route opens a target-less
+ * session WINDOW via the same argon2 password path; the consume side on the
+ * non-consent surface of `/api/custody/broadcast` accepts it, repeatedly, until
+ * the window's sliding idle deadline or its absolute cap arrives.
  *
  * Acceptance shape (real-DB + real argon2 + real fresh-auth + real verifyHiveSignature):
- *   1. State A happy path: mint → broadcast vote → 200; mint → broadcast comment → 200
- *      (proofs are single-use, so each broadcast consumes one).
+ *   1. State A happy path: one mint covers a vote AND a comment, because the
+ *      session proof is multi-use inside its window.
  *   2. Wrong password → 401.
  *   3. No-password account (State C, password_hash IS NULL) → 401 uniform
  *      envelope (avoids password-existence oracle).
@@ -85,7 +86,11 @@ vi.mock('../../src/custody-crypto.js', () => ({
 const { createApp } = await import('../../src/app.js');
 const { getAppPool } = await import('../../src/app-db.js');
 const { config } = await import('../../src/config.js');
-const { _resetFreshAuthMemStoreForTests } = await import('../../src/lib/fresh-auth.js');
+const {
+  SESSION_FRESH_AUTH_ABSOLUTE_SECONDS,
+  SESSION_FRESH_AUTH_IDLE_SECONDS,
+  _resetFreshAuthMemStoreForTests,
+} = await import('../../src/lib/fresh-auth.js');
 const { clearRateLimitKeys } = await import('../support/redis-helpers.js');
 
 const app = createApp();
@@ -237,27 +242,32 @@ describe.skipIf(!dbReachable)('POST /api/custody/session-auth — password-mecha
       expect(typeof mint.body.data.fresh_auth_proof).toBe('string');
       expect(mint.body.data.fresh_auth_proof.length).toBeGreaterThan(0);
       expect(mint.body.data.mechanism).toBe('password');
-      // expires_at convention matches `/api/custody/fresh-auth` and
-      // `/api/orcid/start mode=session_auth`: ISO-8601 string per the
-      // documented wire contract (api-contracts/custody.md:108,
-      // api-contracts/orcid.md:208,239). Frontend reads via
-      // `new Date(expiresAt).getTime()`; a numeric epoch-seconds value
-      // would be silently interpreted as milliseconds and resolve to 1970,
-      // making the SPA fresh-auth cache 100% non-functional. P0 deploy-
-      // blocker fixed in 2026-05-16 (backend-expires-at-iso-conformance).
+      // Both deadlines are ISO-8601 strings, matching the convention on
+      // `/api/custody/fresh-auth` and the ORCID session-auth callback. The
+      // frontend reads them via `new Date(value).getTime()`; a numeric
+      // epoch-seconds value would be silently interpreted as milliseconds and
+      // resolve to 1970, making the SPA's proof cache useless and sending the
+      // user through a full re-auth on every write.
       expect(typeof mint.body.data.expires_at).toBe('string');
+      expect(typeof mint.body.data.absolute_expires_at).toBe('string');
       const parsedExpiresAtMs = Date.parse(mint.body.data.expires_at);
+      const parsedCapMs = Date.parse(mint.body.data.absolute_expires_at);
       expect(Number.isFinite(parsedExpiresAtMs)).toBe(true);
+      expect(Number.isFinite(parsedCapMs)).toBe(true);
       const nowMs = Date.now();
-      expect(parsedExpiresAtMs).toBeGreaterThan(nowMs);
-      // ~5 min in the future (FRESH_AUTH_TTL_SECONDS = 300), ±2s.
+      // `expires_at` is the sliding idle deadline, the one the client treats as
+      // authoritative; `absolute_expires_at` is the cap no slide can pass. Bands
+      // are the two window constants with a couple of seconds of slack for the
+      // real argon2 hash this route performs before minting.
       expect(parsedExpiresAtMs).toBeGreaterThan(nowMs + 60_000);
-      expect(parsedExpiresAtMs).toBeLessThanOrEqual(nowMs + 302_000);
+      expect(parsedExpiresAtMs).toBeLessThanOrEqual(nowMs + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000 + 2_000);
+      expect(parsedCapMs).toBeGreaterThan(parsedExpiresAtMs);
+      expect(parsedCapMs).toBeLessThanOrEqual(nowMs + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000 + 2_000);
 
       const proof = mint.body.data.fresh_auth_proof;
 
-      // Cross-kind accept on the non-consent broadcast surface — the
-      // session-kind proof admits a vote op without per-op binding.
+      // One mint, two broadcasts. This is the property the window exists for:
+      // before it, every vote and comment cost the user a fresh re-auth act.
       const broadcast = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE_A))
@@ -268,24 +278,12 @@ describe.skipIf(!dbReachable)('POST /api/custody/session-auth — password-mecha
 
       expect(broadcast.status).toBe(200);
       expect(broadcast.body.data.tx_id).toBe('session-auth-tx-id');
-    });
-
-    it('mint → broadcast comment also works (each broadcast consumes one single-use proof)', async () => {
-      // Proofs are single-use, so the pattern is mint-vote-mint-comment, not
-      // single-mint-multi-broadcast. This canary pins the comment branch of
-      // the non-consent surface.
-      const mintForComment = await request(app)
-        .post('/api/custody/session-auth')
-        .set('Authorization', bearerFor(ALICE_A))
-        .send({ password: ALICE_PASSWORD });
-
-      expect(mintForComment.status).toBe(200);
 
       const commentBroadcast = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE_A))
         .send({
-          fresh_auth_proof: mintForComment.body.data.fresh_auth_proof,
+          fresh_auth_proof: proof,
           operations: [COMMENT_OP(ALICE_A)],
         });
 

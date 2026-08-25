@@ -17,6 +17,7 @@ import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js'
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { createSmtpTransporter } from '../lib/smtp.js';
 import { maskEmail, sha256HexDigest } from '../lib/log-pii.js';
+import { invalidateSessionFreshAuthTokens } from '../lib/fresh-auth.js';
 import { burnSentinel, SESSION_EXPIRY, SESSION_EXPIRY_MS } from './auth.js';
 
 const router = Router();
@@ -404,6 +405,15 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
         [passwordHash, normalizedEmail, invalidatedAt, account.id],
       );
 
+      // Close any open session-proof window alongside the JWT revocation the
+      // UPDATE above just stamped, BEFORE the reissued token is built, so no
+      // proof outlives the reissue (ARCH.md § 6.4.1, § 6.7). Never throws; the
+      // account mutation has already committed and the caller must still
+      // receive its token. `reissuedAt` below reads the pre-UPDATE
+      // `invalidatedAt` const, so this await cannot desynchronize the
+      // round-trip identity.
+      await invalidateSessionFreshAuthTokens(account.username);
+
       pool.query(
         'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
         [account.username, 'account_recovery'],
@@ -563,6 +573,14 @@ router.post('/recover/verify', recoverLimiter, async (req: Request, res: Respons
     } finally {
       client.release();
     }
+
+    // Outside the transaction on purpose: Redis is not enlisted in it, so a
+    // rollback could not undo this, and a throw inside the BEGIN/COMMIT block
+    // would abort an otherwise-committable swap. Placed before the reissued
+    // token is built so no session-proof window outlives the reissue (ARCH.md
+    // § 6.4.1, § 6.7). Never throws; `reissuedAt` below reads the pre-transaction
+    // `invalidatedAt` const, so this await cannot desynchronize the round-trip.
+    await invalidateSessionFreshAuthTokens(account.username);
 
     const custody = account.upgraded_at ? 'self' : (account.custody || 'light');
     const sessionJwt = jwt.sign(

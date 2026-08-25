@@ -24,6 +24,7 @@ import {
   consentOpFreshAuthTarget,
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
+  freshAuthFailureStatus,
   CREDIT_OP_ACCOUNT_MAX_LEN,
   creditOpFreshAuthTarget,
   deleteAccountFreshAuthTarget,
@@ -577,7 +578,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // confirmed consent op, but that ordering also let a key-collision bypass
   // the fresh-auth gate: if a prior op for the same (username, key, op_type)
   // was found, the route short-circuited to 200 WITHOUT verifying the SPA
-  // could prove fresh re-auth. Fresh-auth proofs are single-use anyway — a
+  // could prove fresh re-auth. Consent-op proofs are single-use anyway — a
   // SPA retry must re-derive the proof, and the substitution-attack closure
   // (the target-hash binding) is more important than retry ergonomics on
   // consent ops specifically.
@@ -586,10 +587,14 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // the session-kind path, no per-op binding check). This closes ARCH.md
   // § 6.5 invariant #1 on the non-consent surface — without it, only the
   // JWT would be required, making a stolen JWT a one-step takeover vector
-  // for vote/comment broadcasts. State A/B users mint via
-  // `/api/custody/fresh-auth` (password, per-op proof — accepted via the
-  // cross-kind-accept on session consume); State B/C users mint via
-  // `/api/orcid/callback mode='session_auth'` (ORCID, session-kind proof).
+  // for vote/comment broadcasts. Unlike the consent branch this consume does
+  // not spend the proof: a session-kind proof is multi-use inside its window
+  // and each consume slides that window forward, so one re-auth act covers a
+  // working stretch of votes, comments, reviews, and posts (ARCH.md § 6.4.1).
+  // Accounts with a password mint via `/api/custody/session-auth`; ORCID-linked
+  // accounts mint via `/api/orcid/callback mode='session_auth'`. A per-op proof
+  // from `/api/custody/fresh-auth` is still cross-kind-accepted here, and stays
+  // single-use.
   const gatedAction = gatedScan.kind === 'single' ? gatedScan.target.action : null;
   let freshAuthMechanism: FreshAuthMechanism | null = null;
   const proofRaw = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
@@ -621,21 +626,14 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         },
         'custody.broadcast rejected — fresh-auth proof invalid',
       );
-      // Discriminate the status code on the failure reason. Binding
-      // violations are forbidden proofs and return 403: `username_mismatch`
-      // and `target_mismatch` (proof issued for a different user / target),
-      // plus `kind_mismatch` (a session-kind proof on the consent surface).
-      // The remaining outcomes (`missing`, `expired`, `malformed`) mean no
-      // valid proof is present and return 401.
-      const status =
-        result.reason === 'username_mismatch' ||
-        result.reason === 'target_mismatch' ||
-        result.reason === 'kind_mismatch'
-          ? 403
-          : 401;
+      // Discriminate the status code on the failure reason via the shared
+      // mapping in `freshAuthFailureStatus`: binding violations are forbidden
+      // proofs and return 403 (`username_mismatch` / `target_mismatch`, plus
+      // `kind_mismatch` for a session-kind proof on the consent surface); the
+      // remaining outcomes mean no valid proof is present and return 401.
       return sendError(
         res,
-        status,
+        freshAuthFailureStatus(result.reason),
         'FRESH_AUTH_REQUIRED',
         'Re-authentication required to broadcast this operation. Please complete the fresh-auth challenge and retry.',
         { reason: result.reason },
@@ -643,10 +641,11 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     }
     freshAuthMechanism = result.mechanism;
   } else {
-    // Non-consent path: require a session-kind proof (or cross-kind-accept
-    // a consent_op-kind proof). No per-op binding check. The same status
-    // discrimination applies — `username_mismatch` → 403, everything else
-    // → 401.
+    // Non-consent path: require a session-kind proof inside its window (or
+    // cross-kind-accept a consent_op-kind proof, which is spent). No per-op
+    // binding check, so `target_mismatch` and `kind_mismatch` are unreachable
+    // here; the shared status mapping applies regardless, which is what keeps
+    // the two branches from drifting apart.
     const result = await consumeSessionFreshAuthToken(proofToken, username);
     if (!result.valid) {
       logger.warn(
@@ -659,10 +658,9 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         },
         'custody.broadcast rejected — fresh-auth proof invalid (non-consent path)',
       );
-      const status = result.reason === 'username_mismatch' ? 403 : 401;
       return sendError(
         res,
-        status,
+        freshAuthFailureStatus(result.reason),
         'FRESH_AUTH_REQUIRED',
         'Re-authentication required to broadcast this operation. Please complete the fresh-auth challenge and retry.',
         { reason: result.reason },
@@ -1132,10 +1130,14 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
 // target binding (action + root_author + root_permlink) — hostile UX for
 // vote/comment flows. `/api/orcid/start { mode: 'session_auth' }` needs ORCID
 // linkage which State A users don't have. This route mints a target-less
-// session-kind proof via the same argon2 password path; consumed by the non-
-// consent surface of `/api/custody/broadcast` (cross-kind accept already wired
-// via `consumeSessionFreshAuthToken`). Kind isolation: the session-kind proof
-// is REJECTED on the consent-op surface with `details.reason: 'kind_mismatch'`.
+// session-kind proof via the same argon2 password path, opening a WINDOW rather
+// than a one-shot proof: the returned token authorizes the non-consent surface
+// of `/api/custody/broadcast` and `POST /api/ipfs/upload-token` repeatedly until
+// its sliding idle deadline or its absolute cap arrives, whichever is first
+// (ARCH.md § 6.4.1). The response carries both deadlines so the SPA can re-auth
+// ahead of a submit instead of discovering the window closed mid-flow.
+// Kind isolation is unchanged: the session-kind proof is REJECTED on the
+// consent-op surface with `details.reason: 'kind_mismatch'`.
 // ─────────────────────────────────────────────────────────────
 router.post('/session-auth', verifyHiveSignature, validateSessionAuthBodyShape, sessionAuthLimiter, async (req: Request, res: Response) => {
   const abortSignal = requestAbortSignal(req, res);
@@ -1206,6 +1208,7 @@ router.post('/session-auth', verifyHiveSignature, validateSessionAuthBodyShape, 
     return sendOk(res, {
       fresh_auth_proof: issued.token,
       expires_at: issued.expires_at,
+      absolute_expires_at: issued.absolute_expires_at,
       mechanism: issued.mechanism,
     });
   } catch (err) {

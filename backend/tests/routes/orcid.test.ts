@@ -234,6 +234,8 @@ import {
   __test_seams,
 } from '../../src/routes/orcid.js';
 import {
+  SESSION_FRESH_AUTH_ABSOLUTE_SECONDS,
+  SESSION_FRESH_AUTH_IDLE_SECONDS,
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   ipfsUploadFreshAuthTarget,
@@ -3330,16 +3332,27 @@ describe('POST /api/orcid/callback — session_auth mode (BACKEND-CUSTODY-BROADC
     expect(res.body.data.mode).toBe('session_auth');
     expect(res.body.data.mechanism).toBe('orcid');
     expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
-    // ISO-8601 string per the documented wire contract (P0
-    // backend-expires-at-iso-conformance, 2026-05-16). See the
-    // fresh_auth-mode assertion above for the full rationale.
+    // Both deadlines are ISO-8601 strings per the documented wire contract. See
+    // the fresh_auth-mode assertion above for the full rationale.
+    //
+    // This mode opens a WINDOW rather than minting a one-shot proof, and the
+    // SPA needs both of its deadlines: `expires_at` is the sliding idle deadline
+    // it treats as authoritative for "do I need to re-auth", and
+    // `absolute_expires_at` is the cap no amount of activity can push past.
+    // Without the cap on the wire the client cannot re-auth ahead of a submit,
+    // which for this mode means discovering the window closed mid-flow and
+    // losing the page to a full-page OAuth redirect.
     expect(typeof res.body.data.expires_at).toBe('string');
+    expect(typeof res.body.data.absolute_expires_at).toBe('string');
     const parsedExpiresAtMs = Date.parse(res.body.data.expires_at);
+    const parsedCapMs = Date.parse(res.body.data.absolute_expires_at);
     expect(Number.isFinite(parsedExpiresAtMs)).toBe(true);
+    expect(Number.isFinite(parsedCapMs)).toBe(true);
     const nowMs = Date.now();
-    expect(parsedExpiresAtMs).toBeGreaterThan(nowMs);
     expect(parsedExpiresAtMs).toBeGreaterThan(nowMs + 60_000);
-    expect(parsedExpiresAtMs).toBeLessThanOrEqual(nowMs + 302_000);
+    expect(parsedExpiresAtMs).toBeLessThanOrEqual(nowMs + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000 + 2_000);
+    expect(parsedCapMs).toBeGreaterThan(parsedExpiresAtMs);
+    expect(parsedCapMs).toBeLessThanOrEqual(nowMs + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000 + 2_000);
     // session_auth proofs do NOT carry target binding — no target fields
     // sent or returned. Pin the wire shape stays target-less.
     expect(res.body.data.target_hash).toBeUndefined();

@@ -217,28 +217,39 @@ const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 //    this JSON pre-flight into the signed envelope, so a captured signature is
 //    bound to one file_sha256. The upload re-checks sha256(file.buffer) against
 //    the token, so a captured pre-flight cannot pin a different file.
-//  - **No JWT-only pinning, per-action bound.** A Bearer JWT is replayable, so
-//    the JWT path additionally requires a single-use fresh-auth proof minted
-//    for the `ipfs_upload` action (target = (ipfs_upload, <username>, '')),
-//    consumed via `consumeFreshAuthToken`. Binding to the action (vs accepting
-//    a target-less session proof) is load-bearing: a session proof the victim
-//    minted for a vote/comment, or a consent-op proof for a different action,
-//    cannot be redirected here to mint an upload token under a stolen JWT
-//    (session proofs fail the consent-op kind check; wrong-action proofs fail
-//    the target-hash compare). The per-request signature path is itself fresh
-//    and needs no extra proof. ARCH.md § 6.4/§ 6.5 invariant #1.
+//  - **No JWT-only pinning.** A Bearer JWT is replayable, so the JWT path
+//    additionally requires a fresh-auth proof: EITHER a single-use consent-op
+//    proof minted for the `ipfs_upload` action (target = (ipfs_upload,
+//    <username>, '')), OR a session-kind proof inside its window. A consent-op
+//    proof for a DIFFERENT action still fails the target-hash compare, so a
+//    proof minted for `change_email` cannot be redirected here.
+//
+//    Accepting the session kind is what makes inline upload reachable for a
+//    passwordless account, whose only re-auth factor is a full-page OAuth
+//    redirect that a selected `File` cannot survive: it acquires its window
+//    before touching the file picker, then spends one act on both the upload and
+//    the post. It is not a widening of what the holder can already do — a live
+//    session proof authorizes arbitrary non-consent broadcasts for the rest of
+//    its window — and the per-file integrity binding lives in the returned
+//    upload token rather than in the fresh-auth proof: the subsequent
+//    `POST /upload` is rejected unless `sha256(file)` matches the declared hash.
+//
+//    The per-request signature path is itself fresh and needs no extra proof.
+//    ARCH.md § 6.4/§ 6.4.1/§ 6.5 invariant #1.
 router.post(
   '/upload-token',
   verifyHiveSignature,
   ipfsUploadTokenLimiter,
-  // JWT path requires a single-use `ipfs_upload`-bound fresh-auth proof (a
-  // Bearer JWT is replayable); the per-request signature path is itself fresh.
+  // JWT path requires an `ipfs_upload`-bound consent-op proof or a live
+  // session-kind window (a Bearer JWT alone is replayable); the per-request
+  // signature path is itself fresh.
   // The gate is the first thing this route does (no prior eligibility check that
   // must precede the proof consume), so the middleware form applies. The
   // reason->status mapping lives once in `consumeFreshAuthProof`.
   requireFreshAuth(
     ipfsUploadFreshAuthTarget,
     'Re-authentication required to request an upload token. Please complete the fresh-auth challenge and retry.',
+    { acceptSession: true },
   ),
   async (req: Request, res: Response) => {
     const username = req.hiveUsername!;

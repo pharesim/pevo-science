@@ -17,6 +17,7 @@ import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 import { runWithArgon2Slot, ShuttingDownError, isArgonSemaphoreError } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
+import { invalidateSessionFreshAuthTokens } from '../lib/fresh-auth.js';
 import {
   hashEmailForLogs,
   maskEmail,
@@ -1080,8 +1081,16 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
       [passwordHash, account.id],
     );
 
-    // Audit log (non-blocking)
     if (account.username) {
+      // Close any open session-proof window alongside the JWT revocation the
+      // UPDATE above just stamped. Revoking bearer tokens without this leaves a
+      // live broadcast window standing, which is not actually cutting off the
+      // compromised session (ARCH.md § 6.4.1, § 6.7). The helper never throws:
+      // the password change has already committed and the caller has earned its
+      // 200, so a Redis blip must not surface as a reset failure.
+      await invalidateSessionFreshAuthTokens(account.username);
+
+      // Audit log (non-blocking)
       pool.query(
         'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
         [account.username, 'password_reset'],

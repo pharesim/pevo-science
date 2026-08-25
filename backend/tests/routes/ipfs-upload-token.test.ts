@@ -12,12 +12,14 @@
  *       and the Kubo `fetch` (real IPFS node) are stubbed so the binding logic
  *       is exercised deterministically. The upload-token store AND the
  *       fresh-auth store both run REAL (in-memory + Redis tiers): the JWT path
- *       consumes a real per-action (`ipfs_upload`-targeted) proof, so single-use
- *       / sha256-binding / the kind+target binding are all genuinely exercised.
+ *       consumes a real proof, so sha256-binding and the kind/target/username
+ *       bindings are all genuinely exercised.
  *   (b) The fresh-auth requirement runs real on the JWT path: tests mint real
- *       proofs and assert a session proof is rejected (kind_mismatch) while an
- *       ipfs_upload proof is accepted. The jwt/signature discriminator is the
- *       real fixture's, not bypassed.
+ *       proofs and assert that BOTH accepted shapes work (an
+ *       `ipfs_upload`-targeted consent-op proof and a live session-kind proof)
+ *       while a proof targeted at a different action, and another account's
+ *       proof, are rejected. The jwt/signature discriminator is the real
+ *       fixture's, not bypassed.
  *   (c) Real-path companion: the real verifyHiveSignature upload + upload-token
  *       paths are pinned in
  *       tests/routes/ipfs-upload-real-path-verifyhivesignature.test.ts.
@@ -31,10 +33,11 @@ vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
   return MOCK_VERIFY_SIGNATURE;
 });
 
-// fresh-auth is NOT mocked: the JWT path now consumes a REAL per-action
-// (`ipfs_upload`-targeted) proof via consumeFreshAuthToken, so the tests mint
-// real proofs through the real store and exercise the genuine kind/target
-// binding (a session proof must be rejected; only an ipfs_upload proof works).
+// fresh-auth is NOT mocked: the JWT path consumes a REAL proof, so the tests
+// mint real proofs through the real store and exercise the genuine bindings.
+// Two shapes are accepted here — an `ipfs_upload`-targeted consent-op proof and
+// a live session-kind proof — and a consent-op proof aimed at a different action
+// is still refused.
 
 const { accred } = vi.hoisted(() => ({ accred: { value: true } }));
 vi.mock('../../src/routes/profile.js', async (importActual) => {
@@ -59,6 +62,7 @@ const { config } = await import('../../src/config.js');
 const uploadTokenStore = await import('../../src/lib/ipfs-upload-token.js');
 const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
 const {
+  changeEmailFreshAuthTarget,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
   ipfsUploadFreshAuthTarget,
@@ -237,21 +241,66 @@ describe('POST /api/ipfs/upload-token', () => {
     expect(typeof res.body.data.upload_token).toBe('string');
   });
 
-  it('rejects a target-less session proof redirected to the JWT upload-token path', async () => {
-    // A session proof the victim minted for a vote/comment must NOT be
-    // redirectable to /upload-token: consumeFreshAuthToken rejects a
-    // session-kind entry on the consent-op consume path (kind_mismatch). The
-    // kind mismatch is a binding violation, so it is forbidden (403) — the same
-    // discrimination the custody consent-op consume applies, not a "no proof
-    // present" 401.
+  it('mints a token on the JWT path with a live session proof', async () => {
+    // The route accepts the session kind as well as the targeted consent-op
+    // kind. This is what makes inline upload reachable for an account whose only
+    // re-auth factor is a full-page OAuth redirect: it acquires the window
+    // before touching the file picker, then spends one act on both the upload
+    // and the post. It is not a widening of what the holder can already do — a
+    // live session proof authorizes arbitrary non-consent broadcasts for the
+    // rest of its window — and the per-file binding lives in the upload token
+    // returned below, which /upload still checks against sha256(file).
     const { token: sessionProof } = await issueSessionFreshAuthToken(user, 'password');
     const res = await preflight(
       { file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length, fresh_auth_proof: sessionProof },
       { Authorization: 'Bearer header.eyJzdWIiOiJ0ZXN0dXNlciJ9.sig' },
     );
+    expect(res.status).toBe(200);
+    expect(typeof res.body.data.upload_token).toBe('string');
+  });
+
+  it('a session proof survives an upload-token mint, so one window covers several files', async () => {
+    // A multi-file paper needs one pre-flight per file. Spending the window on
+    // the first would put the user back where they started.
+    const { token: sessionProof } = await issueSessionFreshAuthToken(user, 'password');
+    for (let i = 0; i < 2; i++) {
+      const res = await preflight(
+        { file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length, fresh_auth_proof: sessionProof },
+        { Authorization: 'Bearer header.eyJzdWIiOiJ0ZXN0dXNlciJ9.sig' },
+      );
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it('rejects a consent-op proof minted for a DIFFERENT action', async () => {
+    // The widening admits the target-LESS kind, not any target. A consent-op
+    // proof still has to be the ipfs_upload-targeted one, so a proof the user
+    // minted to change their email cannot be redirected here.
+    const { token: wrongTargetProof } = await issueFreshAuthToken(
+      user,
+      'password',
+      changeEmailFreshAuthTarget(user),
+    );
+    const res = await preflight(
+      { file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length, fresh_auth_proof: wrongTargetProof },
+      { Authorization: 'Bearer header.eyJzdWIiOiJ0ZXN0dXNlciJ9.sig' },
+    );
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
-    expect(res.body.error.details.reason).toBe('kind_mismatch');
+    expect(res.body.error.details.reason).toBe('target_mismatch');
+  });
+
+  it('rejects another account’s session proof', async () => {
+    // The username binding is what stops a stolen window being spent by whoever
+    // holds a different JWT.
+    const { token: otherUsersProof } = await issueSessionFreshAuthToken('someone-else', 'password');
+    const res = await preflight(
+      { file_sha256: PDF_SHA, mimetype: 'application/pdf', size: PDF.length, fresh_auth_proof: otherUsersProof },
+      { Authorization: 'Bearer header.eyJzdWIiOiJ0ZXN0dXNlciJ9.sig' },
+    );
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+    expect(res.body.error.details.reason).toBe('username_mismatch');
   });
 
   it('rejects a malformed file_sha256', async () => {

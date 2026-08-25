@@ -107,9 +107,12 @@ const ORCID_RE = /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;
 // or `author_resign` ops. Sibling endpoint to POST /api/custody/fresh-auth
 // (the password-mechanism issuance path).
 // `session_auth` is a sibling of `fresh_auth` for the non-consent broadcast
-// surface; mints a target-less session-kind proof. Consent ops use
-// `fresh_auth` (per-op binding); non-consent ops use `session_auth` (no
-// target). Both require an authenticated session and complete a fresh
+// surface; it opens a target-less session WINDOW rather than minting a one-shot
+// proof, so an ORCID-only account pays one full-page OAuth round-trip per
+// working stretch instead of one per broadcast (ARCH.md § 6.4.1). Consent ops
+// use `fresh_auth` (per-op binding, single-use); non-consent ops and
+// `POST /api/ipfs/upload-token` use `session_auth` (no target, multi-use inside
+// the window). Both require an authenticated session and complete a fresh
 // OAuth round-trip. See `handleSessionAuth` below and ARCH.md § 6.5
 // invariant #1 for the JWT-alone-as-takeover-vector closure this enables.
 type OrcidMode = 'signup' | 'login' | 'accredit' | 'link' | 'fresh_auth' | 'session_auth';
@@ -1283,6 +1286,7 @@ async function handleSessionAuth(
     mode: 'session_auth',
     fresh_auth_proof: issued.token,
     expires_at: issued.expires_at,
+    absolute_expires_at: issued.absolute_expires_at,
     mechanism: issued.mechanism,
   });
 }

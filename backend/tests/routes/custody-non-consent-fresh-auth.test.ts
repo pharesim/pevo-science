@@ -2,15 +2,19 @@
  * BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — non-consent broadcast fresh-auth
  * coverage. State A/B/C/D acceptance per `agents/docs/ARCHITECTURE.md` § 6.
  *
- * The non-consent branch of `POST /api/custody/broadcast` now requires a
+ * The non-consent branch of `POST /api/custody/broadcast` requires a
  * `fresh_auth_proof` (closes ARCH.md § 6.5 invariant #1 on the non-consent
  * surface). Consume side is `consumeSessionFreshAuthToken` from
  * `src/lib/fresh-auth.ts`, which accepts either:
  *   - a session-kind proof (target-less, minted by
- *     `issueSessionFreshAuthToken` — used by ORCID `mode='session_auth'`), or
+ *     `issueSessionFreshAuthToken`). It is MULTI-USE inside its window
+ *     (ARCH.md § 6.4.1): each consume validates the window and slides its idle
+ *     deadline forward instead of spending the proof, so one re-auth act covers
+ *     a working stretch of votes, comments, reviews, and posts.
  *   - a consent_op-kind proof (target-bound, minted by `issueFreshAuthToken`
- *     — cross-kind accept for State A/B users who already mint per-op
- *     proofs via the existing `/custody/fresh-auth` path).
+ *     — cross-kind accept for users who already mint per-op proofs via the
+ *     existing `/custody/fresh-auth` path). That one stays SINGLE-USE here: the
+ *     cross-kind accept must not convert the strictest proof kind into a window.
  *
  * Coverage shape (real-DB + mocked-dhive):
  *   - State A (password-only): broadcast with password-mechanism session-kind
@@ -26,7 +30,9 @@
  *   - Missing proof → 401 FRESH_AUTH_REQUIRED + reason 'missing'.
  *   - Cross-account proof (Bob's proof, Alice's JWT) → 403 + reason
  *     'username_mismatch'.
- *   - Replay (same proof used twice) → second call 401 + reason 'expired'.
+ *   - Reuse (same session proof used twice) → both calls 200, which is the
+ *     window's whole point. A consent_op proof reused on the same surface is
+ *     still spent after the first call.
  *
  * Justification per root CLAUDE.md "Carve-out for deterministic edge-case
  * coverage" clause (a):
@@ -387,8 +393,32 @@ describe.skipIf(!dbReachable)('BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — no
       expect(sendOperationsMock).not.toHaveBeenCalled();
     });
 
-    it('replay: same proof used twice → second call 401 + reason expired', async () => {
+    it('reuse: the same session proof authorizes a second broadcast → both 200', async () => {
+      // The window is the deliverable: before it, every vote and comment sent
+      // the user through a fresh re-auth act, which for an ORCID-only account
+      // meant a full-page redirect that destroyed whatever they were composing.
       const proof = await issueSessionFreshAuthToken(ALICE_A, 'password');
+      for (let i = 0; i < 2; i++) {
+        const res = await request(app)
+          .post('/api/custody/broadcast')
+          .set('Authorization', bearerFor(ALICE_A))
+          .send({
+            fresh_auth_proof: proof.token,
+            operations: [VOTE_OP(ALICE_A)],
+          });
+        expect(res.status).toBe(200);
+      }
+    });
+
+    it('a cross-kind-accepted consent-op proof is still spent → second call 401 + reason expired', async () => {
+      // The other half of the reuse contract. A consent-op proof reaching this
+      // surface through the cross-kind accept must NOT be turned into a window
+      // by the slide; it stays single-use, exactly as it is on its own surface.
+      const proof = await issueFreshAuthToken(ALICE_A, 'password', {
+        action: 'author_accept',
+        root_author: ALICE_A,
+        root_permlink: 'cross-kind-single-use',
+      });
       const first = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE_A))

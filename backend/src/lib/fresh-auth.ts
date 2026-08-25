@@ -20,9 +20,26 @@
  * in-memory fallback). The key prefix is kind-neutral — both
  * consent-op-kind and session-kind entries share it, discriminated by
  * the `kind` field inside the stored JSON value (not by key namespace).
- * TTL: `FRESH_AUTH_TTL_SECONDS` (5 min). Stored value:
- * `{ username, mechanism, issued_at }` JSON. Consumption is single-use via
- * Redis `GETDEL` (or `delete()` on the in-memory map).
+ *
+ * The two kinds have deliberately different lifetimes because they defend
+ * different things (`agents/docs/ARCHITECTURE.md` § 6.4.1):
+ *
+ * - `consent_op` — target-bound, SINGLE-USE, `FRESH_AUTH_TTL_SECONDS` (5 min).
+ *   Its job is to stop a proof minted for one paper/slot/co-author being
+ *   redirected onto another, which is structurally incompatible with reuse.
+ *   The burn is arbitrated by the storage tier (Redis `DEL` reply count, or
+ *   the in-memory `Map.delete` return value), so exactly one concurrent
+ *   caller can win.
+ * - `session` — target-less, MULTI-USE inside a bounded window. A sliding
+ *   idle deadline (`SESSION_FRESH_AUTH_IDLE_SECONDS`) moves forward on every
+ *   successful consume; an absolute cap (`SESSION_FRESH_AUTH_ABSOLUTE_SECONDS`)
+ *   fixed at first mint bounds the window no matter how much it is slid.
+ *   Whichever deadline arrives first ends the window and reports `expired`.
+ *   Consume validates and slides; it does not delete.
+ *
+ * Stored value: `{ username, mechanism, issued_at, kind }` JSON, plus
+ * `target_hash` on consent-op entries and `idle_expires_at` /
+ * `absolute_expires_at` (epoch ms) on session entries.
  *
  * Binding
  * -------
@@ -349,13 +366,30 @@ export function isFreshAuthMechanism(value: unknown): value is FreshAuthMechanis
   return value === 'password' || value === 'orcid';
 }
 
-/** Token TTL in seconds. 5 minutes — bounded enough to limit replay risk
- *  if the token leaks, generous enough for a "re-auth then broadcast" UX
+/** Consent-op token TTL in seconds. 5 minutes — bounded enough to limit replay
+ *  risk if the token leaks, generous enough for a "re-auth then broadcast" UX
  *  without forcing the user to re-prompt mid-flow.
+ *
+ *  Applies to the `consent_op` kind ONLY. The session kind is windowed and uses
+ *  the two constants below; the constants are deliberately separate so tuning
+ *  one cannot silently move the other.
  *
  *  Kept exported for tests: the in-memory TTL-expiry fake-timer test in
  *  `tests/lib/fresh-auth.test.ts` advances `Date.now()` past this boundary. */
 export const FRESH_AUTH_TTL_SECONDS = 300;
+
+/** Session-kind sliding idle window in seconds. 15 minutes of inactivity ends
+ *  the window; every successful consume slides the deadline forward, so an
+ *  active working stretch of votes, comments, reviews, and posts is never
+ *  interrupted by a re-auth prompt (`agents/docs/ARCHITECTURE.md` § 6.4.1). */
+export const SESSION_FRESH_AUTH_IDLE_SECONDS = 900;
+
+/** Session-kind absolute cap in seconds, measured from first mint. 2 hours.
+ *  Enforced server-side and NOT extendable by any client action: the slide is
+ *  clamped to this deadline, so a proof exfiltrated alongside a JWT is worth at
+ *  most this much broadcasting rather than the full session lifetime. Reaching
+ *  the cap costs one re-auth act. */
+export const SESSION_FRESH_AUTH_ABSOLUTE_SECONDS = 7200;
 
 const TOKEN_BYTES = 32;
 // Kind-neutral key prefix. Both consent-op-kind (issueFreshAuthToken) and
@@ -363,6 +397,13 @@ const TOKEN_BYTES = 32;
 // namespace; discrimination is by the `kind` JSON field inside the stored
 // value, not by key namespace.
 const KEY_PREFIX = `${config.appTag}:fresh_auth:token:`;
+// Per-user index of outstanding session-kind tokens, so
+// `invalidateSessionFreshAuthTokens` can close every open window for one
+// account without scanning the keyspace. Redis SET; each member is a raw token
+// (the `KEY_PREFIX` is re-applied when deleting). The index key carries its own
+// expiry equal to the session absolute cap, so a crashed process cannot leave it
+// growing forever.
+const USER_SESSION_INDEX_PREFIX = `${config.appTag}:fresh_auth:user_sessions:`;
 
 /** Discriminates per-op consent proofs (target-bound) from session-level
  *  broadcast proofs (target-less). State C ORCID-only accounts have no
@@ -389,6 +430,19 @@ interface StoredEntry {
    *  bound to a per-op target. Consent-op-kind entries MUST carry a
    *  well-shaped hash; absence is malformed-on-consume. */
   target_hash?: string;
+  /** Session-kind only. Epoch ms sliding idle deadline: every successful
+   *  consume rewrites this to `now + SESSION_FRESH_AUTH_IDLE_SECONDS`, clamped
+   *  to `absolute_expires_at`. Absent on consent-op entries; a session entry
+   *  missing it is malformed-on-consume (closed-default, so a stored shape
+   *  written before the window existed cannot be replayed as an unbounded one).
+   */
+  idle_expires_at?: number;
+  /** Session-kind only. Epoch ms absolute cap, fixed at first mint and never
+   *  rewritten. Stored ALONGSIDE the sliding deadline rather than recomputed
+   *  from `issued_at`, so the cap is carried by the entry itself and survives
+   *  every slide. Absent on consent-op entries; a session entry missing it is
+   *  malformed-on-consume for the same closed-default reason. */
+  absolute_expires_at?: number;
 }
 
 /**
@@ -460,6 +514,15 @@ function isFreshAuthKind(value: unknown): value is FreshAuthKind {
   return value === 'consent_op' || value === 'session';
 }
 
+/** Type guard for a stored epoch-ms deadline. Session-kind entries carry two
+ *  of them and both are load-bearing: the sliding idle deadline and the
+ *  absolute cap. A non-finite or non-positive value would compare falsely
+ *  against `Date.now()` and could hand out an unbounded window, so the consume
+ *  side rejects the entry as malformed rather than coercing. */
+function isEpochMs(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
 /** Target-binding helper for the `change_email` critical action.
  *  Change-email is a per-user (not per-broadcast) critical action — it
  *  transitions the address that receives password-reset tokens, which
@@ -493,19 +556,28 @@ export function deleteAccountFreshAuthTarget(username: string): FreshAuthTarget 
 
 /** Target-binding helper for the `ipfs_upload` critical action.
  *  Issuing an IPFS upload token (`POST /api/ipfs/upload-token`) lets the holder
- *  pin arbitrary content under their account — an illegal-content-liability
- *  surface — so the JWT path binds a per-action proof instead of accepting a
- *  target-less session proof. Like the other non-broadcast criticals it is
- *  per-user (not per-paper): the proof binds to `(ipfs_upload, <username>, '')`;
- *  empty `root_permlink` keeps the target-hash domain collision-free against
+ *  pin arbitrary content under their account, so a replayable JWT alone must not
+ *  reach it. Like the other non-broadcast criticals the target is per-user (not
+ *  per-paper): the proof binds to `(ipfs_upload, <username>, '')`; empty
+ *  `root_permlink` keeps the target-hash domain collision-free against
  *  consent-op proofs (which require non-empty `root_permlink` at the route
- *  layer). The distinct `action` value is load-bearing: it is what stops a
- *  vote/comment SESSION proof, or a consent-op proof minted for a different
- *  action, from being redirected to `/upload-token` under a stolen JWT (a
- *  session proof fails the consent-op `kind` check; a wrong-action consent-op
- *  proof fails the target-hash compare). Issuance side: `POST
- *  /api/custody/fresh-auth { action: 'ipfs_upload' }` (password) and `POST
- *  /api/orcid/start { mode: 'fresh_auth', action: 'ipfs_upload' }` (ORCID). */
+ *  layer).
+ *
+ *  SCOPE OF THE BIND. This target constrains CONSENT-OP-kind proofs only. The
+ *  distinct `action` value is what stops a consent-op proof minted for
+ *  `change_email`, an admin action, or a consent op from being redirected here
+ *  under a stolen JWT: it fails the target-hash compare. It does NOT stop a
+ *  session-kind proof, because the route deliberately admits one inside its
+ *  window (`agents/docs/ARCHITECTURE.md` § 6.4.1). That is not a weakening: a
+ *  live session proof already authorizes arbitrary non-consent broadcasts for
+ *  the rest of its window, so an upload is not a wider grant than the holder
+ *  already has, and it is what makes inline upload reachable for a passwordless
+ *  account whose only re-auth factor is a page navigation a selected file cannot
+ *  survive. The per-file integrity binding lives in the returned upload token.
+ *
+ *  Issuance side: `POST /api/custody/fresh-auth { action: 'ipfs_upload' }`
+ *  (password) and `POST /api/orcid/start { mode: 'fresh_auth', action:
+ *  'ipfs_upload' }` (ORCID). */
 export function ipfsUploadFreshAuthTarget(username: string): FreshAuthTarget {
   return { action: 'ipfs_upload', root_author: username, root_permlink: '' };
 }
@@ -774,32 +846,38 @@ export function extractConsentOpFields(
  *  `routes/orcid.ts`). */
 const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
 
-/** In-process lock set for the consume helpers. Closes the concurrent
- *  dual-consume race on the memStore fallback path.
+/** In-process lock set for the CONSENT-OP burn only. Closes the concurrent
+ *  dual-consume race across the two storage tiers.
  *
- *  The race: `consumeFreshAuthToken` / `consumeSessionFreshAuthToken` do a
- *  Redis GETDEL (atomic) followed by a memStore fallback `get` + `delete`
- *  (synchronous, but separated by an await on the GETDEL itself plus any
- *  future intervening awaits). On a concurrent `Promise.all` dual-consume
- *  for the same token, the second caller's GETDEL returns null (consumed
- *  by the first), falls through to memStore — which still holds the entry
- *  if the first caller hasn't yet executed its post-GETDEL `memStore.delete`.
- *  On Redis-down (both GETDELs throw), both fall through to memStore and
- *  the same widens. Worse, any future `await` between `memStore.get` and
- *  `memStore.delete` widens the window silently.
+ *  The race: a consume reads the entry, then burns it. The burn is arbitrated
+ *  by the storage tier it lands on — the Redis `DEL` reply count, or the
+ *  in-memory `Map.delete` return value — so two callers hitting the SAME tier
+ *  already resolve to exactly one winner. What the tier arbitration cannot
+ *  cover is a Redis flap that splits two concurrent callers across BOTH tiers:
+ *  caller A burns the canonical Redis entry while caller B's Redis command
+ *  throws and B burns the in-memory backup. Both would see a successful burn.
  *
- *  Mechanism: the consume helpers `inFlightConsumes.has(token)` synchronously
- *  on entry. If the token is already in-flight, the loser returns
- *  `{ valid: false, reason: 'expired' }` — same outcome a stale-replay
- *  caller observes, no new reason code on the wire. The winner adds the
- *  token to the set BEFORE any awaits, removes it in a `finally` so a
- *  throwing consume cleans up. Because JS is single-threaded, the
- *  `has` → `add` pair is an uninterruptible synchronous critical section.
+ *  Mechanism: the burn path checks `inFlightConsumes.has(token)` synchronously
+ *  on entry. If the token is already in flight, the loser returns
+ *  `{ valid: false, reason: 'expired' }` — the same outcome a stale-replay
+ *  caller observes, no new reason code on the wire. The winner adds the token
+ *  to the set BEFORE any awaits and removes it in a `finally` so a throwing
+ *  burn cleans up. Because JS is single-threaded, the `has` -> `add` pair is an
+ *  uninterruptible synchronous critical section. A loser that arrives after the
+ *  winner released the lock still fails closed: its own burn finds the entry
+ *  already gone in both tiers and reports `expired`.
  *
- *  Single-instance scope: this deployment is single-process, so the
- *  in-process lock is a complete guard; a multi-instance topology would
- *  re-open the race and require a Redis-side SETNX sentinel, which the
- *  in-process lock is not a substitute for. */
+ *  Deliberately NOT applied to the session kind. Session proofs are multi-use
+ *  inside their window, so serializing them would turn legitimate concurrency
+ *  (two votes fired in the same tick, or an upload-token mint racing a
+ *  broadcast) into a spurious 401 the SPA reads as "re-auth needed". Session
+ *  consumes slide rather than burn, and a slide is idempotent: concurrent
+ *  slides converge on the same deadline, so there is nothing to serialize.
+ *
+ *  Single-instance scope: this deployment is single-process, so the in-process
+ *  lock is a complete guard; a multi-instance topology would re-open the
+ *  split-tier race and require a Redis-side sentinel, which the in-process lock
+ *  is not a substitute for. */
 const inFlightConsumes = new Set<string>();
 
 /** Periodic cleanup so the map doesn't grow unbounded under no-Redis ops.
@@ -834,6 +912,21 @@ interface IssuedFreshAuth {
    *  invariant. */
   expires_at: string;
   mechanism: FreshAuthMechanism;
+}
+
+/** Issuance shape for a session-kind mint. Carries BOTH window deadlines so the
+ *  SPA can decide to re-auth ahead of a submit rather than discovering the
+ *  window closed mid-flow.
+ *
+ *  `expires_at` keeps its meaning from {@link IssuedFreshAuth}: the deadline the
+ *  client should treat as authoritative for "do I need to re-auth". For a
+ *  session mint that is the sliding idle deadline, which is the earlier of the
+ *  two at mint time and the only one that moves. `absolute_expires_at` is the
+ *  cap the slide can never push past; a client that keeps working sees
+ *  `expires_at` advance toward it and stop there. Same ISO-8601 string
+ *  convention, for the same reason. */
+interface IssuedSessionFreshAuth extends IssuedFreshAuth {
+  absolute_expires_at: string;
 }
 
 /**
@@ -908,53 +1001,71 @@ export async function issueFreshAuthToken(
 
 /**
  * Mint a session-kind fresh-auth token (no per-op target binding) for
- * `username` with the given mechanism. Mirrors the storage primitives of
- * `issueFreshAuthToken` but produces a `kind: 'session'` entry consumed by
- * `consumeSessionFreshAuthToken` on the non-consent `/api/custody/broadcast`
- * path.
+ * `username` with the given mechanism. Opens a WINDOW rather than issuing a
+ * one-shot proof: the returned token authorizes non-consent broadcasts and
+ * upload-token mints repeatedly until the window closes
+ * (`agents/docs/ARCHITECTURE.md` § 6.4.1).
  *
- * Rationale: non-consent ops (vote, comment, non-consent custom_json) do
- * not have the action/paper substitution-attack surface that motivated the
- * per-op target binding. Forcing State C users (ORCID-only, passwordless) to
- * fabricate a target to mint an ORCID proof would be UX friction without
- * security benefit. Session-kind proofs encode "the user re-authed via this
- * mechanism in the last 5 minutes" — enough to close the JWT-only-takeover
- * gap on the non-consent path per ARCH.md § 6.5 invariant #1.
+ * Two deadlines are fixed here and stored with the entry:
+ *   - the sliding idle deadline, `SESSION_FRESH_AUTH_IDLE_SECONDS` out, which
+ *     every successful consume moves forward;
+ *   - the absolute cap, `SESSION_FRESH_AUTH_ABSOLUTE_SECONDS` out, which
+ *     nothing moves.
+ * The storage TTL tracks whichever is nearer, so the window cannot outlive the
+ * cap even if the slide logic were to regress.
  *
- * The caller (route handler) is responsible for verifying the user
- * actually proved control via that mechanism BEFORE calling this function,
- * same contract as `issueFreshAuthToken`. Single-use semantics, TTL, and
- * Redis-fallback shape are identical.
+ * Rationale for multi-use: the alternative that preserves single-use in form is
+ * for the client to hold the user's password in memory and mint a fresh proof
+ * per broadcast. That is the same posture — one authentication act authorizing
+ * many broadcasts over a stretch of time — with the long-lived secret moved to
+ * the worse location. A held password has no server-side expiry, cannot be
+ * revoked, and unlocks the settings critical actions too; a windowed proof
+ * expires on a schedule the client cannot extend, dies with the session
+ * (`invalidateSessionFreshAuthTokens`), and grants only broadcasting and
+ * uploads.
+ *
+ * Only an explicit re-auth act may call this: the password branch of
+ * `POST /api/custody/session-auth` and the ORCID branch of
+ * `POST /api/orcid/callback mode='session_auth'`. No login, token-refresh, or
+ * signup-finalization path may mint or extend a window as a side effect of
+ * establishing a session — that is § 6.5 invariant #9, and it is what keeps the
+ * fresh-auth layer from collapsing into the session layer. The caller is
+ * responsible for verifying the user actually proved control via `mechanism`
+ * BEFORE calling, same contract as `issueFreshAuthToken`.
  */
 export async function issueSessionFreshAuthToken(
   username: string,
   mechanism: FreshAuthMechanism,
-): Promise<IssuedFreshAuth> {
+): Promise<IssuedSessionFreshAuth> {
   const token = crypto.randomBytes(TOKEN_BYTES).toString('hex');
   const issuedAt = Date.now();
+  const idleExpiresAt = issuedAt + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000;
+  const absoluteExpiresAt = issuedAt + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000;
   const entry: StoredEntry = {
     username,
     mechanism,
     issued_at: issuedAt,
     kind: 'session',
+    idle_expires_at: idleExpiresAt,
+    absolute_expires_at: absoluteExpiresAt,
   };
-  const memExpiresAtMs = issuedAt + FRESH_AUTH_TTL_SECONDS * 1000;
-  // ISO-8601 string per the documented wire contract — see IssuedFreshAuth
+  // The storage tier expires the entry at whichever deadline lands first, so
+  // the cap is enforced by the tier as well as by the consume-side check.
+  const effectiveExpiresAtMs = Math.min(idleExpiresAt, absoluteExpiresAt);
+  // ISO-8601 strings per the documented wire contract — see IssuedFreshAuth
   // doc-comment above for why epoch-seconds breaks the SPA cache.
-  const expiresAt = new Date(memExpiresAtMs).toISOString();
+  const expiresAt = new Date(effectiveExpiresAtMs).toISOString();
+  const absoluteExpiresAtIso = new Date(absoluteExpiresAt).toISOString();
 
   // Write to memStore as a backup whenever Redis-issuance succeeds (same
   // recovery rationale as `issueFreshAuthToken`). Storing the token only in
   // Redis on the happy path means that if Redis flaps between issue and
   // consume, the consume side falls through to memStore.get(token) → empty →
   // spurious 'expired' 401 (the user just authenticated). With the backup
-  // write, a Redis-down consume can recover the entry from
-  // memStore. Single-use semantics are preserved: a successful Redis GETDEL
-  // deletes the canonical entry; the mem-store fallback path also calls
-  // memStore.delete() so the entry is consumed exactly once across the
-  // storage tiers. This block is NOT dead code in the Redis-success branch
-  // — it is the recovery path for a flap between issue and consume.
-  memStore.set(token, { entry, expiresAt: memExpiresAtMs });
+  // write, a Redis-down consume can recover the entry from memStore. This block
+  // is NOT dead code in the Redis-success branch — it is the recovery path for
+  // a flap between issue and consume.
+  memStore.set(token, { entry, expiresAt: effectiveExpiresAtMs });
 
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
@@ -962,10 +1073,9 @@ export async function issueSessionFreshAuthToken(
       await redis.set(
         KEY_PREFIX + token,
         JSON.stringify(entry),
-        'EX',
-        FRESH_AUTH_TTL_SECONDS,
+        'PX',
+        Math.max(1, effectiveExpiresAtMs - issuedAt),
       );
-      return { token, expires_at: expiresAt, mechanism };
     } catch (err) {
       logger.warn(
         { err, username, event: 'fresh_auth.redis_set_failed' },
@@ -973,11 +1083,111 @@ export async function issueSessionFreshAuthToken(
       );
       // memStore was already populated above — the token survives the
       // Redis-write failure.
-      return { token, expires_at: expiresAt, mechanism };
+      return { token, expires_at: expiresAt, absolute_expires_at: absoluteExpiresAtIso, mechanism };
+    }
+    // Index the token under its owner so session invalidation can find it. Best
+    // effort and deliberately AFTER the entry write: a missing index costs a
+    // window that outlives a password reset by at most the cap, whereas failing
+    // the mint on an index error costs the user their re-auth outright. The
+    // index key's own expiry matches the cap so a crashed process cannot leave
+    // it accumulating.
+    try {
+      // One round-trip, so the pair cannot half-apply. An `SADD` that lands
+      // while a following `EXPIRE` times out would leave the index key with no
+      // TTL at all, growing without bound for the life of the deployment.
+      const indexKey = USER_SESSION_INDEX_PREFIX + username;
+      await redis
+        .multi()
+        .sadd(indexKey, token)
+        .expire(indexKey, SESSION_FRESH_AUTH_ABSOLUTE_SECONDS)
+        .exec();
+    } catch (err) {
+      logger.warn(
+        { err, username, event: 'fresh_auth.session_index_write_failed' },
+        'Session fresh-auth token not indexed for invalidation',
+      );
     }
   }
 
-  return { token, expires_at: expiresAt, mechanism };
+  return { token, expires_at: expiresAt, absolute_expires_at: absoluteExpiresAtIso, mechanism };
+}
+
+/**
+ * Close every open session-kind window for `username`.
+ *
+ * `accounts.sessions_invalidated_at` (`agents/docs/ARCHITECTURE.md` § 6.7)
+ * revokes bearer JWTs. On its own that leaves a live broadcast window standing:
+ * a password reset or recovery that does not also close the window has not
+ * actually cut off the compromised session. Every writer of
+ * `sessions_invalidated_at` MUST call this.
+ *
+ * Both storage tiers are swept. The in-memory tier is scanned directly (the map
+ * is process-local and small). The Redis tier is swept via the per-user index
+ * written at mint; consent-op proofs are deliberately NOT swept — they are
+ * target-bound, single-use, and outlive the reset by at most
+ * `FRESH_AUTH_TTL_SECONDS`.
+ *
+ * Never throws. A Redis failure here must not fail the password reset that
+ * triggered it: the in-memory sweep has already run, the revoked JWT alone
+ * makes a surviving proof inert (the consume binds the proof to the
+ * authenticated username), and the absolute cap bounds what survives. The
+ * failure is logged so an operator can correlate it.
+ */
+export async function invalidateSessionFreshAuthTokens(username: string): Promise<void> {
+  // Redis first, the in-memory tier last. Both orders close the window in the
+  // quiet case, but a consume already in flight can re-plant an entry in the
+  // in-memory tier after this function has passed it, so the in-process delete
+  // has to be the final act. What closes the residual race is the `XX` reply
+  // check in `persistSessionSlide`: once Redis has dropped the entry, the next
+  // slide's write is declined and the re-planted copy is removed.
+  //
+  // The Redis leg carries its own catch so a failure there cannot skip the
+  // in-memory sweep below. Ordering the tiers is a narrowing; letting an
+  // unreachable Redis abort the one tier this process fully controls would be a
+  // regression.
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      const indexKey = USER_SESSION_INDEX_PREFIX + username;
+      const tokens = await redis.smembers(indexKey);
+      if (tokens.length > 0) {
+        await redis.del(...tokens.map((t) => KEY_PREFIX + t));
+      }
+      await redis.del(indexKey);
+    } catch (err) {
+      logger.warn(
+        { err, username, event: 'fresh_auth.session_invalidate_failed' },
+        'Failed to invalidate outstanding session fresh-auth windows in Redis',
+      );
+    }
+  } else {
+    // Not a successful no-op. A process that restarted since the window was
+    // minted holds no in-memory copy either, so nothing is swept anywhere and
+    // the canonical entry keeps authorizing until its cap. The operator
+    // investigating a reset that did not stick needs this line to exist.
+    logger.warn(
+      { username, event: 'fresh_auth.session_invalidate_skipped' },
+      'Redis unavailable during session fresh-auth invalidation; only the in-process tier was swept',
+    );
+  }
+
+  // Never throws. The callers are password-reset and recovery handlers whose
+  // account mutation has already committed: rejecting here would tell the user
+  // the reset failed when it succeeded, and they would retry with a password
+  // that is no longer current. The catch spans the sweep rather than guarding
+  // individual lines, so the contract is structural.
+  try {
+    for (const [token, stored] of memStore) {
+      if (stored.entry.kind === 'session' && stored.entry.username === username) {
+        memStore.delete(token);
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      { err, username, event: 'fresh_auth.session_invalidate_failed' },
+      'Failed to sweep in-process session fresh-auth windows',
+    );
+  }
 }
 
 /** Reasons for a non-valid fresh-auth verify outcome.
@@ -1012,31 +1222,77 @@ type FreshAuthVerifyResult =
       reason: FreshAuthVerifyFailureReason;
     };
 
+/** What one consume surface will accept. Every surface reads the same storage
+ *  and runs the same structural validation; they differ only in which kinds are
+ *  admissible and whether a consent-op entry's target is checked.
+ *
+ *  The three surfaces in use:
+ *  - Consent-op broadcast and the per-user critical actions (settings, admin,
+ *    accreditation metadata): `{ expectedTargetHash: <hash>, acceptSession:
+ *    false }`. Strict — a target-less session proof cannot be redirected onto a
+ *    consent op.
+ *  - Non-consent broadcast: `{ expectedTargetHash: null, acceptSession: true }`.
+ *    Session proofs are the intended factor; a consent-op proof is
+ *    cross-kind-accepted because it is strictly MORE proof for the same user.
+ *  - Upload-token: `{ expectedTargetHash: <ipfs_upload hash>, acceptSession:
+ *    true }`. A live session proof already authorizes arbitrary broadcasts for
+ *    the rest of its window, so an upload is not a wider grant than the holder
+ *    already has; the per-file integrity binding lives in the returned upload
+ *    token rather than in the fresh-auth proof. A consent-op proof still has to
+ *    be the `ipfs_upload`-targeted one, so a proof minted for `change_email`
+ *    cannot be redirected here. */
+interface FreshAuthConsumeSurface {
+  expectedUsername: string;
+  /** A 64-char lowercase hex hash the consent-op entry's `target_hash` must
+   *  equal, or `null` to accept a consent-op entry without a target check.
+   *  `null` is the deliberate cross-kind accept; a malformed string is a caller
+   *  bug and rejects with `target_mismatch` (closed-default) rather than
+   *  skipping the bind. */
+  expectedTargetHash: string | null;
+  /** Whether a session-kind entry is admissible here. When false a session
+   *  entry rejects with `kind_mismatch` and is left intact — burning it would
+   *  let anyone holding the token close the owner's window. */
+  acceptSession: boolean;
+}
+
+/** A stored entry after structural validation, with the per-kind fields
+ *  narrowed to what that kind guarantees. */
+type ValidatedEntry =
+  | {
+      kind: 'consent_op';
+      username: string;
+      mechanism: FreshAuthMechanism;
+      target_hash: string;
+    }
+  | {
+      kind: 'session';
+      username: string;
+      mechanism: FreshAuthMechanism;
+      issued_at: number;
+      idle_expires_at: number;
+      absolute_expires_at: number;
+    };
+
 /**
- * Single-use consume of a fresh-auth token. Returns `{ valid: true,
- * mechanism }` exactly once per issued token; subsequent calls return
- * `{ valid: false, reason: 'expired' }` (already consumed by the GETDEL /
- * map.delete()).
+ * Consume a consent-op fresh-auth token. Returns `{ valid: true, mechanism }`
+ * exactly once per issued token; subsequent calls return
+ * `{ valid: false, reason: 'expired' }` because the entry was burned.
  *
- * Dual-tier deletion is SYMMETRIC across both legs. The Redis-success leg
- * deletes the memStore backup (so a sibling consume can't replay the token via
- * the fallback path). The memStore-fallback leg issues a best-effort
- * `redis.del` of the canonical entry (so a Redis flap mid-call that consumed
- * the memStore copy doesn't leave the canonical entry behind for a replay once
- * Redis recovers within the TTL window). An asymmetric variant — only the
- * Redis-success leg clearing the other tier — would admit a same-process
- * double-consume under a Redis blip mid-`getdel`.
+ * The burn is arbitrated by the storage tier that holds the entry (Redis `DEL`
+ * reply count, or the in-memory `Map.delete` return value), and serialized
+ * across tiers by `inFlightConsumes` so a Redis flap cannot split two
+ * concurrent callers into two winners.
  *
- * The Redis-flap fallback recovery path (memStore backup written at issuance)
- * makes the consume side resilient to mid-call Redis failures without
- * sacrificing single-use semantics.
+ * Consume requires `expectedTargetHash` (computed by the caller from the actual
+ * gated op being authorized). A token minted for one (action, paper) target
+ * cannot authorize a different target. Closed-default: a missing or non-hex
+ * `expectedTargetHash` rejects with `target_mismatch` rather than skipping the
+ * check, so a caller that doesn't supply a well-formed hash cannot accidentally
+ * bypass the bind.
  *
- * Consume requires `expectedTargetHash` (computed by the caller from the
- * actual gated op being authorized). A token minted for one (action, paper)
- * target cannot authorize a different target. Closed-default: a missing or
- * non-hex `expectedTargetHash` rejects with `target_mismatch` rather than
- * skipping the check, so a caller that doesn't supply a well-formed hash
- * cannot accidentally bypass the bind.
+ * A session-kind entry presented here rejects with `kind_mismatch` and is left
+ * intact: session proofs do NOT authorize consent ops. The reverse direction is
+ * accepted, see {@link consumeSessionFreshAuthToken}.
  *
  * The route layer rejects the broadcast on any non-valid outcome.
  */
@@ -1045,26 +1301,39 @@ export async function consumeFreshAuthToken(
   expectedUsername: string,
   expectedTargetHash: string,
 ): Promise<FreshAuthVerifyResult> {
-  if (!token || typeof token !== 'string' || token.length === 0) {
-    return { valid: false, reason: 'missing' };
-  }
+  return consumeFreshAuthTokenForSurface(token, {
+    expectedUsername,
+    expectedTargetHash,
+    acceptSession: false,
+  });
+}
 
-  // In-process lock check. Synchronous `has` → `add` is atomic under the JS
-  // event loop; a concurrent dual-consume for the same token has exactly one
-  // caller reach the body, the loser returns `expired` immediately. The lock
-  // is released in a `finally` below so a throwing consume cleans up. The
-  // loser's `expired` is indistinguishable from a stale replay, preserving
-  // the single-use contract as the user perceives it.
-  if (inFlightConsumes.has(token)) {
-    return { valid: false, reason: 'expired' };
-  }
-  inFlightConsumes.add(token);
-
-  try {
-    return await consumeFreshAuthTokenLocked(token, expectedUsername, expectedTargetHash);
-  } finally {
-    inFlightConsumes.delete(token);
-  }
+/**
+ * Session-surface consume for the non-consent `/api/custody/broadcast` path.
+ * Accepts EITHER:
+ *
+ *   - a `kind: 'session'` entry (target-less, minted by
+ *     `issueSessionFreshAuthToken`) that is still inside its window — validated
+ *     and SLID forward, not spent, so one re-auth act covers a working stretch;
+ *     OR
+ *   - a `kind: 'consent_op'` entry (target-bound, minted by
+ *     `issueFreshAuthToken`), consumed single-use with no target check.
+ *
+ * The cross-kind accept is intentional: a consent-op proof is strictly MORE
+ * proof than a session proof for the same user (it binds a target on top of
+ * proving recent re-auth). Non-consent ops don't need the per-op binding, so
+ * the binding is just informational here. The strict direction — session proof
+ * on a consent-op surface — is NOT accepted.
+ */
+export async function consumeSessionFreshAuthToken(
+  token: string | undefined,
+  expectedUsername: string,
+): Promise<FreshAuthVerifyResult> {
+  return consumeFreshAuthTokenForSurface(token, {
+    expectedUsername,
+    expectedTargetHash: null,
+    acceptSession: true,
+  });
 }
 
 /**
@@ -1072,10 +1341,12 @@ export async function consumeFreshAuthToken(
  * binding-violation vs no-proof-present distinction cannot drift between
  * consumers. `username_mismatch` / `target_mismatch` / `kind_mismatch` are
  * binding violations (a proof minted for a different user or action, or a
- * target-less session proof redirected here) -> 403; `missing` / `expired` /
- * `malformed` are "no valid proof present" -> 401.
+ * target-less session proof redirected onto a consent op) -> 403;
+ * `missing` / `expired` / `malformed` are "no valid proof present" -> 401. A
+ * window that reached either of its deadlines reports `expired`, so a closed
+ * window is a 401 the SPA can treat as "re-auth and retry".
  */
-function freshAuthFailureStatus(reason: FreshAuthVerifyFailureReason): 401 | 403 {
+export function freshAuthFailureStatus(reason: FreshAuthVerifyFailureReason): 401 | 403 {
   return reason === 'username_mismatch' || reason === 'target_mismatch' || reason === 'kind_mismatch' ? 403 : 401;
 }
 
@@ -1086,8 +1357,14 @@ function freshAuthFailureStatus(reason: FreshAuthVerifyFailureReason): 401 | 403
  * signature path (`hiveAuthMethod !== 'jwt'`) the request is already fresh, so
  * this returns `{ ok: true }` without requiring a proof.
  *
+ * `acceptSession` widens the surface to also admit a session-kind proof inside
+ * its window. Off by default: the per-user critical actions (set-password,
+ * change-email, delete-account, accreditation-metadata edit, the admin
+ * authority actions) each demand their own targeted proof, and a session proof
+ * must not be redirected onto them. The upload-token route opts in.
+ *
  * Returns the decision rather than sending a response so a handler that must run
- * its OWN eligibility checks BEFORE burning the single-use proof (e.g. the
+ * its OWN eligibility checks BEFORE burning a single-use proof (e.g. the
  * accreditation metadata edit, which checks currently-accredited + not-sanctioned
  * first) can call it inline at the correct point. Handlers whose fresh-auth gate
  * is the first thing they do use the `requireFreshAuth` middleware wrapper.
@@ -1095,6 +1372,7 @@ function freshAuthFailureStatus(reason: FreshAuthVerifyFailureReason): 401 | 403
 export async function consumeFreshAuthProof(
   req: Request,
   targetFn: (username: string) => FreshAuthTarget,
+  opts: { acceptSession?: boolean } = {},
 ): Promise<{ ok: true } | { ok: false; status: 401 | 403; reason: FreshAuthVerifyFailureReason }> {
   if (req.hiveAuthMethod !== 'jwt') return { ok: true };
   const username = req.hiveUsername;
@@ -1102,7 +1380,11 @@ export async function consumeFreshAuthProof(
   const proofRaw = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
   const proofToken = typeof proofRaw === 'string' ? proofRaw : undefined;
   const expectedTargetHash = computeFreshAuthTargetHash(targetFn(username));
-  const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
+  const result = await consumeFreshAuthTokenForSurface(proofToken, {
+    expectedUsername: username,
+    expectedTargetHash,
+    acceptSession: opts.acceptSession === true,
+  });
   if (result.valid) return { ok: true };
   return { ok: false, status: freshAuthFailureStatus(result.reason), reason: result.reason };
 }
@@ -1110,14 +1392,19 @@ export async function consumeFreshAuthProof(
 /**
  * Express-middleware form of `consumeFreshAuthProof` for handlers whose
  * fresh-auth gate is the first thing they do (no eligibility check that must
- * precede the single-use proof consume). Mirrors `requireFreshAdminAuth`.
+ * precede the proof consume). Mirrors `requireFreshAdminAuth`.
  * `message` is the user-facing FRESH_AUTH_REQUIRED string for this action.
  * Handlers that must verify eligibility before burning the proof call
- * `consumeFreshAuthProof` inline instead.
+ * `consumeFreshAuthProof` inline instead. `opts.acceptSession` has the same
+ * meaning as on `consumeFreshAuthProof`.
  */
-export function requireFreshAuth(targetFn: (username: string) => FreshAuthTarget, message: string) {
+export function requireFreshAuth(
+  targetFn: (username: string) => FreshAuthTarget,
+  message: string,
+  opts: { acceptSession?: boolean } = {},
+) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const decision = await consumeFreshAuthProof(req, targetFn);
+    const decision = await consumeFreshAuthProof(req, targetFn, opts);
     if (decision.ok) {
       next();
       return;
@@ -1126,266 +1413,281 @@ export function requireFreshAuth(targetFn: (username: string) => FreshAuthTarget
   };
 }
 
-async function consumeFreshAuthTokenLocked(
-  token: string,
-  expectedUsername: string,
-  expectedTargetHash: string,
-): Promise<FreshAuthVerifyResult> {
-  let raw: string | null = null;
-  let consumedFromMemStore = false;
-
-  const redis = getRedis();
-  if (redis && isRedisAvailable()) {
-    try {
-      // GETDEL: atomic single-use semantic. Available since Redis 6.2; ioredis
-      // exposes it as `getdel`. Falls through to in-memory on error so a
-      // Redis flap mid-session doesn't lock out a legitimate user with a
-      // pending mem-store fallback token (issuance race window).
-      raw = await redis.getdel(KEY_PREFIX + token);
-    } catch (err) {
-      logger.warn(
-        { err, event: 'fresh_auth.redis_getdel_failed' },
-        'Falling back to in-memory lookup for fresh-auth verify',
-      );
-    }
-  }
-
-  if (raw) {
-    // Redis GETDEL succeeded. Also drop the memStore backup so a sibling
-    // consume can't replay the token via the fallback path.
-    memStore.delete(token);
-  } else {
-    const cached = memStore.get(token);
-    if (cached) {
-      memStore.delete(token); // single-use even on the fallback path
-      if (cached.expiresAt > Date.now()) {
-        raw = JSON.stringify(cached.entry);
-        consumedFromMemStore = true;
-      }
-    }
-  }
-
-  if (!raw) return { valid: false, reason: 'expired' };
-
-  // When we consumed from the memStore fallback path (Redis was unavailable
-  // or threw on getdel), issue a best-effort `redis.del` of the canonical
-  // Redis entry. Without this, a transient Redis flap mid-getdel that didn't
-  // actually delete the entry would leave the canonical Redis copy alive — and
-  // a replay within the TTL window once Redis recovered would hit Redis getdel
-  // and return valid a second time (double-consume). The redis.del here is
-  // best-effort: we already consumed the memStore copy, so the user's
-  // broadcast is good to proceed regardless of whether this paired delete
-  // lands. Logging on error correlates the recovery attempt with the flap.
-  if (consumedFromMemStore && redis) {
-    try {
-      await redis.del(KEY_PREFIX + token);
-    } catch (err) {
-      logger.warn(
-        { err, event: 'fresh_auth.redis_compensating_del_failed' },
-        'Compensating Redis del after memStore-fallback consume failed; replay window remains until TTL',
-      );
-    }
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    // Stored value parse failure — treat as malformed-but-consumed.
-    return { valid: false, reason: 'malformed' };
-  }
-
-  // Structural narrowing rather than an unsafe `JSON.parse(raw) as
-  // StoredEntry`. Adding a new field to StoredEntry requires extending this
-  // guard; a future refactor that relaxes the schema is forced to update the
-  // consume path explicitly. The `target_hash` field MUST be present and
-  // well-shaped on consent-op entries — a consent-op entry without it is a
-  // pre-target-binding stored shape (e.g., a token written before redeploy and
-  // consumed after) and is rejected as malformed (checked below).
-  if (
-    typeof parsed !== 'object' ||
-    parsed === null ||
-    typeof (parsed as { username?: unknown }).username !== 'string' ||
-    !isFreshAuthMechanism((parsed as { mechanism?: unknown }).mechanism)
-  ) {
-    return { valid: false, reason: 'malformed' };
-  }
-
-  // Legacy entries (predating the `kind` discriminator) do not carry the
-  // field — treat them as 'consent_op' so the target-bind check below still
-  // fires (closed-default for the original security property). Explicit
-  // mismatch on unknown kind shapes (a future variant not understood by
-  // this version) → malformed.
-  const rawKind = (parsed as { kind?: unknown }).kind;
-  let kind: FreshAuthKind;
-  if (rawKind === undefined) {
-    kind = 'consent_op';
-  } else if (isFreshAuthKind(rawKind)) {
-    kind = rawKind;
-  } else {
-    return { valid: false, reason: 'malformed' };
-  }
-
-  // A consent-op entry MUST carry a well-shaped target_hash; absence is a
-  // pre-target-binding stored shape. A session-kind entry MUST NOT carry one
-  // (its target field is forbidden at issuance); presence on a session entry
-  // is malformed because someone wrote a kind/target combo this code never
-  // mints.
-  const rawTargetHash = (parsed as { target_hash?: unknown }).target_hash;
-  if (kind === 'consent_op') {
-    if (!isValidTargetHash(rawTargetHash)) {
-      return { valid: false, reason: 'malformed' };
-    }
-  } else if (rawTargetHash !== undefined) {
-    return { valid: false, reason: 'malformed' };
-  }
-
-  const entry: {
-    username: string;
-    mechanism: FreshAuthMechanism;
-    kind: FreshAuthKind;
-    target_hash?: string;
-  } = {
-    username: (parsed as { username: string }).username,
-    mechanism: (parsed as { mechanism: FreshAuthMechanism }).mechanism,
-    kind,
-    target_hash: kind === 'consent_op' ? (rawTargetHash as string) : undefined,
-  };
-
-  if (entry.username !== expectedUsername) {
-    return { valid: false, reason: 'username_mismatch' };
-  }
-
-  // Consent-op consume requires a consent_op-kind entry. A session-kind
-  // entry consumed here is a kind mismatch — the caller (consent-op
-  // broadcast) expects the per-op binding the session proof does not
-  // carry. This is the strict-isolation direction of the consume contract:
-  // session proofs do NOT authorize consent ops, only the looser non-
-  // consent broadcast surface. (The reverse — consent_op proof on a
-  // session-consume call — IS accepted via `consumeSessionFreshAuthToken`
-  // because non-consent ops don't need binding; a per-op proof for the
-  // same user is strictly more proof, not less.)
-  if (entry.kind !== 'consent_op') {
-    return { valid: false, reason: 'kind_mismatch' };
-  }
-
-  // Closed-default — the caller MUST supply a well-formed expected hash. An
-  // empty / malformed argument rejects rather than bypasses the bind, so a
-  // caller that doesn't compute the hash can't accidentally re-enable the
-  // 1-fold substitution attack.
-  if (!isValidTargetHash(expectedTargetHash)) {
-    return { valid: false, reason: 'target_mismatch' };
-  }
-  if (entry.target_hash !== expectedTargetHash) {
-    return { valid: false, reason: 'target_mismatch' };
-  }
-
-  return { valid: true, mechanism: entry.mechanism };
-}
-
 /**
- * Session-kind consume: single-use consume of a fresh-auth token for the
- * non-consent `/api/custody/broadcast` path. Accepts EITHER:
+ * The one consume implementation. Reads the entry NON-destructively, validates
+ * its stored shape, then dispatches on kind:
  *
- *   - a `kind: 'session'` entry (target-less, minted by
- *     `issueSessionFreshAuthToken`), OR
- *   - a `kind: 'consent_op'` entry (target-bound, minted by
- *     `issueFreshAuthToken`).
+ *   - `consent_op` -> burn (serialized by `inFlightConsumes`, arbitrated by the
+ *     storage tier), then check username and target. Burn-before-check
+ *     preserves the previous `GETDEL` ordering exactly: a proof presented under
+ *     the wrong JWT subject or against the wrong target is spent, not retryable.
+ *   - `session` -> check username, check both window deadlines, then SLIDE the
+ *     idle deadline forward. Nothing is burned, so the same proof authorizes the
+ *     next action.
  *
- * The cross-kind accept is intentional: a consent-op proof is strictly
- * MORE proof than a session proof for the same user (binds the target +
- * proves recent re-auth). Non-consent ops don't need the per-op binding,
- * so the binding is just informational here. Reusing a single proof for
- * both surfaces during the same session is good UX and does not weaken the
- * security model — the consent-op consume side still enforces the binding
- * on the consent-op surface itself.
- *
- * The strict direction — session proof on a consent-op surface — is NOT
- * accepted (see `consumeFreshAuthToken`'s `kind_mismatch` branch above).
- *
- * Storage + single-use + Redis-flap-recovery semantics mirror
- * `consumeFreshAuthToken` exactly; the only behavioral difference is the
- * absence of target-hash verification.
+ * The non-destructive read is what makes the two kinds coexist: the kind is only
+ * knowable after reading the stored value, and a `GETDEL`-first read would spend
+ * a session window just to discover it was a session window.
  */
-export async function consumeSessionFreshAuthToken(
+async function consumeFreshAuthTokenForSurface(
   token: string | undefined,
-  expectedUsername: string,
+  surface: FreshAuthConsumeSurface,
 ): Promise<FreshAuthVerifyResult> {
   if (!token || typeof token !== 'string' || token.length === 0) {
     return { valid: false, reason: 'missing' };
   }
 
-  // In-process lock check — mirrors the lock from `consumeFreshAuthToken`.
-  // The race + mitigation are identical; only the kind-acceptance contract
-  // differs (session consume accepts both kinds — see docstring). The same
-  // `inFlightConsumes` set is shared across both consume helpers because a
-  // single token is uniquely bound to ONE kind at issuance (either
-  // `issueFreshAuthToken` => consent_op or `issueSessionFreshAuthToken` =>
-  // session). Two concurrent consumes targeting the same token from
-  // different helpers is the same race surface as two consumes through the
-  // same helper, so the lock domain is "token", not "(token, helper)".
+  const read = await readFreshAuthEntry(token);
+  if (!read) return { valid: false, reason: 'expired' };
+
+  const entry = validateStoredEntry(read.raw);
+  if (!entry) return { valid: false, reason: 'malformed' };
+
+  if (entry.kind === 'session') {
+    // Username binding is checked before the kind verdict so the outcome
+    // ordering matches the consent-op path: a proof belonging to someone else
+    // is a `username_mismatch` whichever surface it lands on.
+    if (entry.username !== surface.expectedUsername) {
+      return { valid: false, reason: 'username_mismatch' };
+    }
+    if (!surface.acceptSession) return { valid: false, reason: 'kind_mismatch' };
+    return consumeSessionWindow(token, entry, read.fromMemStore);
+  }
+
+  // Consent-op: single-use. The lock makes the read-then-burn pair
+  // non-overlapping so a Redis flap cannot hand two concurrent callers a
+  // successful burn each; the loser sees the same `expired` a stale replay does.
   if (inFlightConsumes.has(token)) {
     return { valid: false, reason: 'expired' };
   }
   inFlightConsumes.add(token);
-
+  let burned: boolean;
   try {
-    return await consumeSessionFreshAuthTokenLocked(token, expectedUsername);
+    burned = await burnConsentOpEntry(token);
   } finally {
     inFlightConsumes.delete(token);
   }
+  if (!burned) return { valid: false, reason: 'expired' };
+
+  if (entry.username !== surface.expectedUsername) {
+    return { valid: false, reason: 'username_mismatch' };
+  }
+
+  if (surface.expectedTargetHash !== null) {
+    // Closed-default — a surface that binds a target MUST supply a well-formed
+    // expected hash. An empty / malformed argument rejects rather than bypasses
+    // the bind, so a caller that doesn't compute the hash can't accidentally
+    // re-enable the substitution attack.
+    if (!isValidTargetHash(surface.expectedTargetHash)) {
+      return { valid: false, reason: 'target_mismatch' };
+    }
+    if (entry.target_hash !== surface.expectedTargetHash) {
+      return { valid: false, reason: 'target_mismatch' };
+    }
+  }
+
+  return { valid: true, mechanism: entry.mechanism };
 }
 
-async function consumeSessionFreshAuthTokenLocked(
+/** Non-destructive read across both storage tiers. Redis is canonical; the
+ *  in-memory map is the flap backup written at issuance, so a Redis outage
+ *  between issue and consume does not produce a spurious `expired` on a proof
+ *  the user just minted. Returns which tier answered, because a slide served
+ *  from the backup tier must not be written back to Redis. */
+async function readFreshAuthEntry(
   token: string,
-  expectedUsername: string,
-): Promise<FreshAuthVerifyResult> {
-  let raw: string | null = null;
-  let consumedFromMemStore = false;
-
+): Promise<{ raw: string; fromMemStore: boolean } | null> {
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
     try {
-      raw = await redis.getdel(KEY_PREFIX + token);
+      const raw = await redis.get(KEY_PREFIX + token);
+      if (raw) return { raw, fromMemStore: false };
     } catch (err) {
       logger.warn(
-        { err, event: 'fresh_auth.redis_getdel_failed' },
-        'Falling back to in-memory lookup for session fresh-auth verify',
+        { err, event: 'fresh_auth.redis_get_failed' },
+        'Falling back to in-memory lookup for fresh-auth verify',
       );
     }
   }
+  const cached = memStore.get(token);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { raw: JSON.stringify(cached.entry), fromMemStore: true };
+  }
+  return null;
+}
 
-  if (raw) {
-    memStore.delete(token);
-  } else {
-    const cached = memStore.get(token);
-    if (cached) {
-      memStore.delete(token);
-      if (cached.expiresAt > Date.now()) {
-        raw = JSON.stringify(cached.entry);
-        consumedFromMemStore = true;
-      }
+/** Burn a consent-op entry across both tiers. Returns whether THIS call was the
+ *  one that removed it — the caller treats `false` as `expired`.
+ *
+ *  The Redis leg is `GETDEL`, not `GET`-then-`DEL`. The read that discovered the
+ *  entry's kind is deliberately non-destructive, but the BURN must stay atomic:
+ *  with a separate `DEL`, a command that rejects mid-flight (connection drop,
+ *  command timeout, retry ceiling) leaves the canonical entry alive while the
+ *  in-memory delete still reports a win, and the same proof authorizes a second
+ *  critical action once the client reconnects inside the TTL. A non-nil `GETDEL`
+ *  reply proves this call is the one that removed it.
+ *
+ *  The in-memory delete runs unconditionally so a Redis-side burn also clears
+ *  the backup (otherwise a sibling consume could replay through the fallback
+ *  tier), and so its own return value arbitrates when Redis is down or never
+ *  held the entry.
+ *
+ *  When the Redis leg did not run at all — the client exists but is mid-flap, so
+ *  `isRedisAvailable()` is false — and the in-memory tier is what arbitrated the
+ *  win, a compensating `DEL` is issued anyway. It is guarded on the client's
+ *  existence ONLY, never on readiness: ioredis queues the command while offline
+ *  and flushes it on reconnect, which is the whole point. Without it a burn that
+ *  happened during a flap leaves the canonical copy standing for the rest of its
+ *  TTL. */
+async function burnConsentOpEntry(token: string): Promise<boolean> {
+  let burnedInRedis = false;
+  let redisLegRan = false;
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      burnedInRedis = (await redis.getdel(KEY_PREFIX + token)) !== null;
+      redisLegRan = true;
+    } catch (err) {
+      logger.warn(
+        { err, event: 'fresh_auth.redis_getdel_failed' },
+        'Redis burn of a consent-op fresh-auth proof failed; the in-memory tier arbitrates and a compensating delete follows',
+      );
     }
   }
+  const burnedInMemStore = memStore.delete(token);
 
-  if (!raw) return { valid: false, reason: 'expired' };
-
-  if (consumedFromMemStore && redis) {
+  if (!redisLegRan && burnedInMemStore && redis) {
     try {
       await redis.del(KEY_PREFIX + token);
     } catch (err) {
       logger.warn(
         { err, event: 'fresh_auth.redis_compensating_del_failed' },
-        'Compensating Redis del after memStore-fallback session consume failed; replay window remains until TTL',
+        'Compensating Redis delete after an in-memory-arbitrated burn failed; the canonical copy lapses at its TTL',
       );
     }
   }
 
+  return burnedInRedis || burnedInMemStore;
+}
+
+/** Validate one stored session window and slide its idle deadline forward.
+ *
+ *  Both deadlines are checked explicitly even though the storage TTL already
+ *  tracks whichever is nearer. The TTL is a second-granular derived value; the
+ *  cap is the security-relevant half of the design and the easiest thing to
+ *  implement in a way that silently never fires, so it gets its own check
+ *  against the stored value.
+ *
+ *  The slide is clamped to the cap, so no amount of activity moves the window
+ *  past it. Whichever deadline arrives first ends the window, reported as
+ *  `expired` — the same 401 a client sees for a proof it never had, which is
+ *  what lets the SPA treat "window closed" as "re-auth and retry". */
+async function consumeSessionWindow(
+  token: string,
+  entry: Extract<ValidatedEntry, { kind: 'session' }>,
+  fromMemStore: boolean,
+): Promise<FreshAuthVerifyResult> {
+  const now = Date.now();
+  if (now >= entry.absolute_expires_at || now >= entry.idle_expires_at) {
+    return { valid: false, reason: 'expired' };
+  }
+
+  const slidIdle = Math.min(
+    now + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000,
+    entry.absolute_expires_at,
+  );
+  const slid: StoredEntry = {
+    username: entry.username,
+    mechanism: entry.mechanism,
+    // Carried through unchanged. The cap lives in `absolute_expires_at`, which
+    // the slide never rewrites, so `issued_at` stays purely informational.
+    issued_at: entry.issued_at,
+    kind: 'session',
+    idle_expires_at: slidIdle,
+    absolute_expires_at: entry.absolute_expires_at,
+  };
+  await persistSessionSlide(token, slid, now, fromMemStore);
+  return { valid: true, mechanism: entry.mechanism };
+}
+
+/** Persist a slid window.
+ *
+ *  The in-memory backup is always refreshed, so a slide served from Redis is not
+ *  lost if Redis flaps before the next consume.
+ *
+ *  The Redis write is skipped entirely when the read came from the in-memory
+ *  tier: that tier answers precisely when Redis did not, and writing there would
+ *  recreate a key Redis has already expired. For the same reason the write uses
+ *  `XX` (set only if the key still exists) rather than a plain `SET` — the key
+ *  can lapse between this consume's read and its write, and a plain `SET` would
+ *  resurrect it for another full window.
+ *
+ *  A failed persist is logged and swallowed: the caller already authorized this
+ *  action, and the worst case is that the window does not slide and closes at
+ *  its previous idle deadline, which fails closed. */
+async function persistSessionSlide(
+  token: string,
+  entry: StoredEntry,
+  now: number,
+  fromMemStore: boolean,
+): Promise<void> {
+  const effectiveExpiresAtMs = Math.min(
+    entry.idle_expires_at as number,
+    entry.absolute_expires_at as number,
+  );
+  memStore.set(token, { entry, expiresAt: effectiveExpiresAtMs });
+  if (fromMemStore) return;
+
+  const redis = getRedis();
+  if (!redis || !isRedisAvailable()) return;
+  try {
+    const reply = await redis.set(
+      KEY_PREFIX + token,
+      JSON.stringify(entry),
+      'PX',
+      Math.max(1, effectiveExpiresAtMs - now),
+      'XX',
+    );
+    if (reply === null) {
+      // `XX` declined: the canonical entry is gone. It lapsed, was evicted, or
+      // an invalidation swept it between this consume's read and its write. The
+      // in-memory copy this function just refreshed would otherwise outlive it
+      // and keep re-authorizing, self-renewing on every consume, so drop it and
+      // let the tiers converge on "closed". This is the branch that stops a
+      // password reset racing an in-flight broadcast from leaving the window it
+      // was supposed to close alive in the backup tier.
+      memStore.delete(token);
+    }
+  } catch (err) {
+    logger.warn(
+      { err, event: 'fresh_auth.session_slide_failed' },
+      'Failed to persist a session fresh-auth window slide; the window keeps its previous idle deadline',
+    );
+  }
+}
+
+/** Structural narrowing of a stored value, rather than an unsafe
+ *  `JSON.parse(raw) as StoredEntry`. Returns `null` for anything this version
+ *  does not recognize, which the caller reports as `malformed`. Adding a field
+ *  to `StoredEntry` requires extending this guard, so a future refactor that
+ *  relaxes the schema is forced to update the consume path explicitly.
+ *
+ *  Per-kind requirements, all closed-default so a stored shape written by an
+ *  older deploy cannot be replayed with a weaker contract:
+ *   - `consent_op` MUST carry a well-shaped `target_hash` and MUST NOT carry
+ *     window deadlines.
+ *   - `session` MUST carry both window deadlines and MUST NOT carry a
+ *     `target_hash`. A session entry predating the window (no deadlines) is
+ *     rejected rather than treated as unbounded; it costs the user one re-auth
+ *     during a deploy and cannot hand out an uncapped window.
+ *   - An entry with no `kind` at all predates the discriminator and is read as
+ *     `consent_op`, so the target-bind check still fires. */
+function validateStoredEntry(raw: string): ValidatedEntry | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { valid: false, reason: 'malformed' };
+    return null;
   }
 
   if (
@@ -1394,8 +1696,10 @@ async function consumeSessionFreshAuthTokenLocked(
     typeof (parsed as { username?: unknown }).username !== 'string' ||
     !isFreshAuthMechanism((parsed as { mechanism?: unknown }).mechanism)
   ) {
-    return { valid: false, reason: 'malformed' };
+    return null;
   }
+  const username = (parsed as { username: string }).username;
+  const mechanism = (parsed as { mechanism: FreshAuthMechanism }).mechanism;
 
   const rawKind = (parsed as { kind?: unknown }).kind;
   let kind: FreshAuthKind;
@@ -1404,33 +1708,34 @@ async function consumeSessionFreshAuthTokenLocked(
   } else if (isFreshAuthKind(rawKind)) {
     kind = rawKind;
   } else {
-    return { valid: false, reason: 'malformed' };
+    return null;
   }
 
-  // Schema consistency: same kind/target-hash invariants as the consent-op
-  // consume. A consent-op entry must have a target_hash; a session entry
-  // must not.
   const rawTargetHash = (parsed as { target_hash?: unknown }).target_hash;
+  const rawIdle = (parsed as { idle_expires_at?: unknown }).idle_expires_at;
+  const rawAbsolute = (parsed as { absolute_expires_at?: unknown }).absolute_expires_at;
+
   if (kind === 'consent_op') {
-    if (!isValidTargetHash(rawTargetHash)) {
-      return { valid: false, reason: 'malformed' };
-    }
-  } else if (rawTargetHash !== undefined) {
-    return { valid: false, reason: 'malformed' };
+    if (!isValidTargetHash(rawTargetHash)) return null;
+    if (rawIdle !== undefined || rawAbsolute !== undefined) return null;
+    return { kind, username, mechanism, target_hash: rawTargetHash };
   }
 
-  const entry = {
-    username: (parsed as { username: string }).username,
-    mechanism: (parsed as { mechanism: FreshAuthMechanism }).mechanism,
+  if (rawTargetHash !== undefined) return null;
+  if (!isEpochMs(rawIdle) || !isEpochMs(rawAbsolute)) return null;
+  const rawIssuedAt = (parsed as { issued_at?: unknown }).issued_at;
+  return {
     kind,
+    username,
+    mechanism,
+    // Informational, so a missing or malformed value falls back to the cap
+    // minus one full window rather than rejecting the entry: nothing reads it
+    // as a deadline, and refusing a live window over a cosmetic field would be
+    // a re-auth prompt for no gain.
+    issued_at: isEpochMs(rawIssuedAt) ? rawIssuedAt : rawAbsolute - SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+    idle_expires_at: rawIdle,
+    absolute_expires_at: rawAbsolute,
   };
-
-  if (entry.username !== expectedUsername) {
-    return { valid: false, reason: 'username_mismatch' };
-  }
-
-  // Session consume accepts both kinds (see docstring) — no kind check.
-  return { valid: true, mechanism: entry.mechanism };
 }
 
 /** Test-only hook: clears the in-memory fallback store. Not exposed to
@@ -1439,30 +1744,18 @@ export function _resetFreshAuthMemStoreForTests(): void {
   memStore.clear();
 }
 
-/** Test-only hook: returns the current size of the in-flight consume lock
- *  set. Used by the lock-cleanup test to pin the `try/finally` discipline
- *  structurally: after a throwing consume, the set MUST be empty. Without
- *  this hook, the test can only assert wire-shape outcomes, which collapse
- *  the lock-held branch into the consumed-token branch (both return
- *  `expired`) and admit a `finally`-removal mutation. */
+/** Test-only hook: returns the current size of the in-flight consume lock set.
+ *  Used by the consent-op concurrency test to pin the `try/finally` discipline
+ *  structurally: after the burn resolves — including when it throws — the set
+ *  MUST be empty. Without this hook the test can only assert wire-shape
+ *  outcomes, which collapse the lock-held branch into the already-burned branch
+ *  (both return `expired`) and admit a `finally`-removal mutation.
+ *
+ *  The lock is consent-op-only by design, so this hook is also how the session
+ *  path proves it does NOT serialize: concurrent session consumes leave the set
+ *  untouched and both succeed. */
 export function _getInFlightConsumesSizeForTests(): number {
   return inFlightConsumes.size;
-}
-
-/** Test-only hook: returns the live `inFlightConsumes` Set reference so
- *  tests can pin the shared-lock-domain invariant by identity. Both
- *  `consumeFreshAuthToken` and `consumeSessionFreshAuthToken` MUST consult
- *  the same Set instance — a mutation that splits the lock into per-helper
- *  Sets would regress the cross-kind dual-consume race protection. Wire-
- *  shape assertions can't catch that mutation because JS microtask FIFO
- *  ordering serializes the first-resolving helper's `get` -> `delete`
- *  chain before the second's `catch` runs on Redis-down, so the second
- *  helper sees an empty memStore and returns `expired` regardless of
- *  whether the lock domain is shared or split. Reference equality is the
- *  only mutation-killing anchor. Read-only by convention — tests must not
- *  mutate the returned Set. */
-export function _getInFlightConsumesSetReferenceForTests(): ReadonlySet<string> {
-  return inFlightConsumes;
 }
 
 /** Test-only hook: plants a memStore entry directly so tests can exercise
