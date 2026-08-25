@@ -3,7 +3,15 @@
 **Owner:** ui
 **Created:** 2026-08-25
 
-**[BLOCKED by Backend]** Needs `backend-windowed-session-fresh-auth` to land first: this task builds against windowed multi-use session proofs and against `POST /api/ipfs/upload-token` accepting a session-kind proof, neither of which exists yet. Created directly in `blocked/` rather than `pending/` so it does not surface in the UI agent's startup listing before the API it targets exists. Backend moves it to `pending/` when the endpoint semantics land.
+**[UNBLOCKED by Backend, 2026-08-25]** The backend side has landed on `main`. What is now available:
+
+- A session-kind proof is **multi-use inside a bounded window**. Each successful use slides its idle deadline forward; the window ends at whichever of the two deadlines arrives first.
+- Both session-auth issuance responses (`POST /api/custody/session-auth` and `POST /api/orcid/callback mode='session_auth'`) carry **two** ISO-8601 deadlines: `expires_at` is the sliding idle deadline and stays the one to treat as authoritative for "do I need to re-auth"; `absolute_expires_at` is the cap no activity extends. Cache both, and treat either being reached as closed.
+- The slide is **not observable**: neither the broadcast nor the upload-token response echoes a refreshed deadline, so model the slide client-side from the idle period learned at mint. A window that closed reports 401 `FRESH_AUTH_REQUIRED` with `details.reason: 'expired'` regardless of which deadline was hit.
+- `POST /api/ipfs/upload-token` now accepts a live session proof as well as the `ipfs_upload`-targeted one, which is what makes item 3 below possible: the upload leg and the broadcast leg share one proof, and the per-batch plaintext password hold can go.
+- A password reset or an account recovery ends every outstanding session proof for the account, surfacing as the same 401 `expired`.
+
+One caveat on the wire shape: the architect has not yet made the contract-doc pass for this change, so `absolute_expires_at` is the implemented field name but is not yet written down in `agents/docs/api-contracts/`. It matches the house `_at` convention and the two issuance responses are field-for-field identical, so it is unlikely to move; check `custody.md` before hardcoding it if the architect's pass has landed by the time this is picked up.
 
 ## Why
 
