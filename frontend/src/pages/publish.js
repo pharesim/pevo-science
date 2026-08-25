@@ -1,6 +1,10 @@
 import Alpine from 'alpinejs';
-import { createUploadSession, describeUploadError } from '../lib/ipfs-upload.js';
-import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
+import { uploadFile, describeUploadError } from '../lib/ipfs-upload.js';
+import {
+  broadcastWithFreshAuth,
+  freshAuthWindowReady,
+  FRESH_AUTH_REDIRECT_PENDING,
+} from '../lib/fresh-auth.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { loadAccreditedDirectory, lookupAccredited, applyHiveChangePrefill, applyAccreditedPrefill } from '../lib/accredited-directory.js';
@@ -707,17 +711,38 @@ export function initPublishPage() {
       this.dragIndex = null;
     },
 
-    handlePdfChange(e) {
-      const file = e.target.files?.[0];
-      if (file) {
-        this.pdfFile = file;
-        this.pdfFileName = file.name;
-        this.pdfFileSize = (file.size / 1024 / 1024).toFixed(2);
-      }
+    // Acquire-before-commit (ARCHITECTURE.md § 6.4.1). A light account needs a
+    // re-auth window before work whose loss would cost the user, and for a
+    // passwordless account acquiring one is a full-page navigation. Doing it at
+    // file-selection time means the worst case is re-picking a file, instead of
+    // discarding an attached file and a completed IPFS upload at broadcast time.
+    // This is why neither the file nor its CID is persisted into the draft.
+    //
+    // Gated on accreditation: an unaccredited visitor can reach this form and
+    // fill it in, but never submit it, so making them re-authenticate to attach
+    // a file would buy nothing and cost a passwordless one a round-trip.
+    async _windowReady() {
+      if (!this.isAccredited) return true;
+      return freshAuthWindowReady();
     },
 
-    handleSupplementaryFiles(e) {
+    async handlePdfChange(e) {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      if (!await this._windowReady()) return;
+      if (!this._mounted) return;
+      this.pdfFile = file;
+      this.pdfFileName = file.name;
+      this.pdfFileSize = (file.size / 1024 / 1024).toFixed(2);
+    },
+
+    async handleSupplementaryFiles(e) {
       const files = Array.from(e.target.files || []);
+      if (files.length > 0 && !await this._windowReady()) {
+        e.target.value = '';
+        return;
+      }
+      if (!this._mounted) return;
       const remaining = 5 - this.supplementaryFiles.length;
       if (remaining <= 0) {
         Alpine.store('toast').show(this.$t('publish.maxSupplementaryFiles'), 'error');
@@ -772,6 +797,13 @@ export function initPublishPage() {
         return;
       }
 
+      // Enter the submit sequence with a window already in hand, and with
+      // enough of it left that a hash + upload + broadcast run does not race the
+      // closing deadline. Discovering the window closed after the upload has
+      // been paid for is exactly the loss this ordering exists to prevent.
+      if (!await this._windowReady()) return;
+      if (!this._mounted) return;
+
       this.step = 'hashing';
       this.errorMessage = '';
 
@@ -782,62 +814,56 @@ export function initPublishPage() {
         let documentHash = null;
         const supplementaryFiles = [];
 
-        // One upload batch per publish: light accounts are prompted for their
-        // password once inside the session (held only for this batch), then a
-        // fresh single-use proof is minted per file. dispose() wipes it.
-        const uploadSession = createUploadSession();
-        try {
-          if (this.pdfFile) {
-            documentHash = await sha256File(this.pdfFile);
-            if (!this._mounted) return;
-            this.step = 'uploading';
-            let uploadRes;
-            try {
-              uploadRes = await uploadSession.upload(this.pdfFile);
-            } catch (err) {
-              // The PDF row has no inline error slot; surface the actionable
-              // message (e.g. "set a password") as a toast before aborting.
-              console.warn('[publish pdf upload]', err);
-              Alpine.store('toast').show(this.$t(describeUploadError(err)), 'error');
-              throw err;
-            }
-            if (!this._mounted) return;
-            ipfsCid = uploadRes.data.cid;
-            ipfsFilename = uploadRes.data.filename;
+        // Every file rides the session window acquired above, so a publish with
+        // a PDF and supplementary files costs one re-auth act in total.
+        if (this.pdfFile) {
+          documentHash = await sha256File(this.pdfFile);
+          if (!this._mounted) return;
+          this.step = 'uploading';
+          let uploadRes;
+          try {
+            uploadRes = await uploadFile(this.pdfFile);
+          } catch (err) {
+            // The PDF row has no inline error slot; surface the reason as a
+            // toast before aborting.
+            console.warn('[publish pdf upload]', err);
+            Alpine.store('toast').show(this.$t(describeUploadError(err)), 'error');
+            throw err;
           }
+          if (!this._mounted) return;
+          ipfsCid = uploadRes.data.cid;
+          ipfsFilename = uploadRes.data.filename;
+        }
 
-          // Upload supplementary files
-          if (this.supplementaryFiles.length > 0) {
-            this.step = 'uploading';
-            for (const sf of this.supplementaryFiles) {
-              sf.uploading = true;
-              sf.error = null;
-              try {
-                const res = await uploadSession.upload(sf.file);
-                if (!this._mounted) return;
-                sf.cid = res.data.cid;
-                supplementaryFiles.push({
-                  cid: res.data.cid,
-                  filename: res.data.filename,
-                  type: res.data.type || sf.file.type,
-                  size: res.data.size || sf.file.size,
-                  description: sf.description || undefined,
-                });
-              } catch (err) {
-                // Sanitization pattern (see executeUpgrade() in settings.js).
-                // Inline error shows the generic "upload failed" for transport
-                // failures and the actionable message for State-C / cancel; the
-                // thrown Error (swallowed by the outer catch) just aborts.
-                console.warn('[publish supplementary upload]', err);
-                sf.error = this.$t(describeUploadError(err));
-                throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
-              } finally {
-                sf.uploading = false;
-              }
+        // Upload supplementary files
+        if (this.supplementaryFiles.length > 0) {
+          this.step = 'uploading';
+          for (const sf of this.supplementaryFiles) {
+            sf.uploading = true;
+            sf.error = null;
+            try {
+              const res = await uploadFile(sf.file);
+              if (!this._mounted) return;
+              sf.cid = res.data.cid;
+              supplementaryFiles.push({
+                cid: res.data.cid,
+                filename: res.data.filename,
+                type: res.data.type || sf.file.type,
+                size: res.data.size || sf.file.size,
+                description: sf.description || undefined,
+              });
+            } catch (err) {
+              // Sanitization pattern (see executeUpgrade() in settings.js).
+              // Inline error shows the generic "upload failed" for transport
+              // failures and the specific reason for a cancelled or failed
+              // re-auth; the thrown Error (swallowed by the outer catch) aborts.
+              console.warn('[publish supplementary upload]', err);
+              sf.error = this.$t(describeUploadError(err));
+              throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
+            } finally {
+              sf.uploading = false;
             }
           }
-        } finally {
-          uploadSession.dispose();
         }
 
         const permlink = slugify(this.title) + '-' + Date.now().toString(36);

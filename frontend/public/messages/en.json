@@ -776,7 +776,6 @@
     "confirm": "Confirm",
     "loading": "Loading...",
     "uploadFailed": "Upload failed",
-    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
     "uploadCancelled": "Upload cancelled.",
     "publishingFailed": "Publishing failed",
     "loadVersionFailed": "Failed to load version",

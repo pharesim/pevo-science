@@ -4,10 +4,11 @@ import Alpine from 'alpinejs';
  * Broadcast operations to Hive, routing to either Keychain or the
  * custodial broadcast endpoint based on the session's custody claim.
  *
- * For light accounts the backend requires a single-use `fresh_auth_proof`
- * on every call (consent and non-consent). Callers MUST mint one via
- * `mintNonConsentProof()` (non-consent bundles) or the consent-op flow
- * (consent bundles) and pass it as `opts.freshAuthProof`. The optionality
+ * For light accounts the backend requires a `fresh_auth_proof` on every call
+ * (consent and non-consent). Callers MUST obtain one via `ensureSessionWindow()`
+ * / `broadcastWithFreshAuth()` (non-consent bundles, where the proof is a
+ * multi-use window) or the consent-op flow (consent bundles, where it is
+ * single-use and target-bound) and pass it as `opts.freshAuthProof`. The optionality
  * at the JS API level is a migration affordance and will tighten once all
  * call sites are wired; Keychain (self-custody) does not need a proof.
  *

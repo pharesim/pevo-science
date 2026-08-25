@@ -451,10 +451,16 @@ export function initOrcidCallbackPage() {
 
     _handleSessionAuth(data) {
       if (!this._mounted) return;
-      // Backend returns `fresh_auth_proof` + `expires_at`. Cache for re-use
-      // within the 5-minute TTL, then bounce the user back to where they
-      // initiated the broadcast so they can retry it.
-      cacheSessionProof(data.fresh_auth_proof, data.expires_at);
+      // Backend returns `fresh_auth_proof` plus both window deadlines:
+      // `expires_at` is the sliding idle deadline, `absolute_expires_at` the cap
+      // no activity extends. Cache the whole window so every action the user
+      // takes until it closes reuses this one re-auth act, then bounce them back
+      // to where they started so they can carry on.
+      cacheSessionProof(
+        data.fresh_auth_proof,
+        data.expires_at,
+        data.absolute_expires_at,
+      );
       const returnPath = getReturnPath() || '/';
       clearReturnPath();
       Alpine.store('toast')?.show(this.$t('orcid.reauthSuccess'), 'success');

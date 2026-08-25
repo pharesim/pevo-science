@@ -321,8 +321,8 @@ export function initAccreditationPage() {
       this.orcidLoading = true;
       this.errorMessage = '';
 
-      // sessionStorage (not localStorage) — see fresh-auth.js mintNonConsentProof
-      // for the cross-tab-interference rationale.
+      // sessionStorage (not localStorage) — see fresh-auth.js
+      // beginOrcidFreshAuthRedirect for the cross-tab-interference rationale.
       sessionStorage.setItem('pevo_orcid_mode', 'accredit');
 
       try {

@@ -255,7 +255,8 @@ export function initRecoverPage() {
 
       // Signal to orcid-callback to return here. Both `pevo_orcid_mode` and
       // `pevo_orcid_return_to` live in sessionStorage to avoid cross-tab
-      // interference; see fresh-auth.js mintNonConsentProof for the rationale.
+      // interference; see fresh-auth.js beginOrcidFreshAuthRedirect for the
+      // rationale.
       sessionStorage.setItem('pevo_orcid_return_to', 'recover');
       sessionStorage.setItem('pevo_orcid_mode', 'signup');
 

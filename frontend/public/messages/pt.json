@@ -786,7 +786,6 @@
     "alreadySignedIn": "Já tem sessão iniciada.",
     "goToPapers": "Ir para publicações",
     "confirm": "Confirm",
-    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
     "uploadCancelled": "Upload cancelled."
   },
   "reauth": {

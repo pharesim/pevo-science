@@ -786,7 +786,6 @@
     "alreadySignedIn": "Již jste přihlášeni.",
     "goToPapers": "Přejít na články",
     "confirm": "Confirm",
-    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
     "uploadCancelled": "Upload cancelled."
   },
   "reauth": {

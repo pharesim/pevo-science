@@ -183,9 +183,9 @@ export function fetchDisciplines() {
 // 401 UNAUTHORIZED (no password-existence oracle), so callers must route State-C
 // accounts to the ORCID factor instead of relying on this. The proof is
 // single-use with a 5-minute TTL; callers re-mint on retry. Returns the proof
-// string. Shared by the IPFS upload pre-flight and the settings critical-action
-// flow (change_email / delete_account); `set_password` is NOT mintable here (it
-// transitions a passwordless account, so the route rejects the password factor).
+// string. Used by the settings critical-action flow (change_email /
+// delete_account); `set_password` is NOT mintable here (it transitions a
+// passwordless account, so the route rejects the password factor).
 async function mintPasswordFreshAuthProof(action, password) {
   const res = await authenticatedRequest('/custody/fresh-auth', {
     method: 'POST',
@@ -195,12 +195,26 @@ async function mintPasswordFreshAuthProof(action, password) {
   return res.data.fresh_auth_proof;
 }
 
-// Mint a fresh-auth proof for the light-account (JWT) upload-token pre-flight,
-// bound to (ipfs_upload, <username>, ''). The proof is consumed by the first
-// step of the two-step upload below: `POST /api/ipfs/upload-token` mints a
-// single-use token, then `POST /api/ipfs/upload` carries it in `X-Upload-Token`.
-export function mintIpfsUploadProof(password) {
-  return mintPasswordFreshAuthProof('ipfs_upload', password);
+// Open a session-kind fresh-auth WINDOW via the PASSWORD factor. Unlike the
+// per-action proofs above, the token this returns is target-less and multi-use:
+// it authorizes the non-consent `POST /api/custody/broadcast` surface AND
+// `POST /api/ipfs/upload-token` repeatedly until the window closes. Two
+// deadlines come back and the window ends at whichever arrives first:
+// `expires_at` slides forward on every successful use, `absolute_expires_at`
+// is the cap no activity extends. The slide is not observable on the wire, so
+// the client models it from the idle period learned here (see
+// `lib/fresh-auth.js`). A passwordless (State C) account gets the same 401
+// UNAUTHORIZED as a wrong password, so callers route by `hasPassword` from the
+// account status rather than probing this route. Returns the full issuance
+// envelope, not just the token, because both deadlines are needed to cache the
+// window. The ORCID-factor sibling is `startOrcid('session_auth')`.
+export async function mintSessionAuthProof(password) {
+  const res = await authenticatedRequest('/custody/session-auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  return res.data;
 }
 
 // Two-step IPFS upload for one file: (1) a pre-flight that binds the file's
@@ -211,7 +225,7 @@ export function mintIpfsUploadProof(password) {
 // descriptor — the signature body-hashes the declared SHA-256, so no fresh-auth
 // proof is needed (one Keychain prompt per file). Light accounts (JWT) cannot
 // sign per request, so the pre-flight carries a per-action `fresh_auth_proof`
-// (mint via `mintIpfsUploadProof`), supplied by the caller. The upload itself
+// (a live session-kind window proof), supplied by the caller. The upload itself
 // is gated by the single-use token, not the auth method, so both custody types
 // authenticate it with their session JWT — self-custody therefore pays no
 // second signature. The upload orchestration (credential prompt, State-C

@@ -786,7 +786,6 @@
     "alreadySignedIn": "أنت مسجّل الدخول بالفعل.",
     "goToPapers": "تصفح الأوراق البحثية",
     "confirm": "Confirm",
-    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
     "uploadCancelled": "Upload cancelled."
   },
   "reauth": {

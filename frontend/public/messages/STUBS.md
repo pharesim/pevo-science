@@ -799,7 +799,6 @@ sv: upgrade.keychainImportFailed
 tr: upgrade.keychainImportFailed
 zh: upgrade.keychainImportFailed
 
-
 ### Added 2026-05-06 (UI-AUTHOR-INPUT-ACCREDITED-PREFILL)
 
 ar: publish.coAuthorAccreditedHint
@@ -1405,7 +1404,6 @@ pt: orcid.discrepancyAriaLabel
 sv: orcid.discrepancyAriaLabel
 tr: orcid.discrepancyAriaLabel
 zh: orcid.discrepancyAriaLabel
-
 
 ### Added 2026-05-21 (UI-BRIDGE-IMPORT-QUEUE-UX)
 
@@ -2046,22 +2044,6 @@ pt: common.confirm
 sv: common.confirm
 tr: common.confirm
 zh: common.confirm
-
-ar: common.uploadReauthRequired
-cs: common.uploadReauthRequired
-da: common.uploadReauthRequired
-de: common.uploadReauthRequired
-es: common.uploadReauthRequired
-fa: common.uploadReauthRequired
-fr: common.uploadReauthRequired
-he: common.uploadReauthRequired
-it: common.uploadReauthRequired
-nl: common.uploadReauthRequired
-pl: common.uploadReauthRequired
-pt: common.uploadReauthRequired
-sv: common.uploadReauthRequired
-tr: common.uploadReauthRequired
-zh: common.uploadReauthRequired
 
 ar: common.uploadCancelled
 cs: common.uploadCancelled

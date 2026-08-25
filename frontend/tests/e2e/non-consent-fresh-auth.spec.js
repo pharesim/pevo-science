@@ -53,7 +53,9 @@ test('orcid-callback session_auth caches the issued proof in sessionStorage', as
   await seedLightSession(page);
 
   const issuedProof = 'stub-issued-proof-XYZ999';
-  const expiresAt = new Date(Date.now() + 4 * 60_000).toISOString();
+  // Both window deadlines: the sliding idle deadline and the absolute cap.
+  const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+  const absoluteExpiresAt = new Date(Date.now() + 120 * 60_000).toISOString();
 
   await page.route('**/api/orcid/callback', async (route) => {
     await route.fulfill({
@@ -65,13 +67,14 @@ test('orcid-callback session_auth caches the issued proof in sessionStorage', as
           mode: 'session_auth',
           fresh_auth_proof: issuedProof,
           expires_at: expiresAt,
+          absolute_expires_at: absoluteExpiresAt,
           mechanism: 'orcid',
         },
       }),
     });
   });
 
-  // Pre-seed the in-flight context the way `mintNonConsentProof` would:
+  // Pre-seed the in-flight context the way `beginSessionAuthOrcidRedirect` would:
   // sessionStorage holds both the orcid_mode (migrated from localStorage
   // 2026-05-17 to avoid cross-tab interference) and the return path the
   // handler should bounce the user back to after success.
@@ -98,7 +101,12 @@ test('orcid-callback session_auth caches the issued proof in sessionStorage', as
   expect(cached, 'session-kind proof should be cached after session_auth callback').not.toBeNull();
   const parsed = JSON.parse(cached);
   expect(parsed.token).toBe(issuedProof);
+  // The whole window is cached, not just a token: dropping the absolute cap
+  // would leave the client honouring a proof past the deadline no activity
+  // extends, and dropping the learned idle period would break the slide.
   expect(parsed.expiresAt).toBe(expiresAt);
+  expect(parsed.absoluteExpiresAt).toBe(absoluteExpiresAt);
+  expect(Number.isFinite(parsed.idlePeriodMs)).toBe(true);
 
   // Mode + return path are cleared after the handler runs (both now in
   // sessionStorage after the 2026-05-17 cross-tab-interference migration).

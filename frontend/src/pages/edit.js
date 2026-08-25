@@ -1,7 +1,11 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache } from '../api.js';
-import { createUploadSession, describeUploadError } from '../lib/ipfs-upload.js';
-import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
+import { uploadFile, describeUploadError } from '../lib/ipfs-upload.js';
+import {
+  broadcastWithFreshAuth,
+  freshAuthWindowReady,
+  FRESH_AUTH_REDIRECT_PENDING,
+} from '../lib/fresh-auth.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { loadAccreditedDirectory, lookupAccredited, applyHiveChangePrefill, applyAccreditedPrefill } from '../lib/accredited-directory.js';
@@ -832,8 +836,18 @@ export function initEditPage() {
     },
 
     // Supplementary files
-    handleSupplementaryFiles(event) {
+    // Acquire-before-commit (ARCHITECTURE.md § 6.4.1). A light account needs a
+    // re-auth window before work whose loss would cost the user, and for a
+    // passwordless account acquiring one is a full-page navigation. Doing it at
+    // file-selection time means the worst case is re-picking a file, instead of
+    // discarding an attached file and a completed IPFS upload at broadcast time.
+    async handleSupplementaryFiles(event) {
       const files = Array.from(event.target.files || []);
+      if (files.length > 0 && !await freshAuthWindowReady()) {
+        event.target.value = '';
+        return;
+      }
+      if (!this._mounted) return;
       const remaining = 5 - this.supplementaryFiles.length - this.existingSupplementaryFiles.length;
       if (remaining <= 0) {
         Alpine.store('toast').show(this.$t('publish.maxSupplementaryFiles'), 'error');
@@ -969,6 +983,13 @@ export function initEditPage() {
       const isContinuation = this.isContinuation;
       const ownPost = this.userPostInChain;
 
+      // Enter the submit sequence with a window already in hand, and with enough
+      // of it left that an upload + broadcast run does not race the closing
+      // deadline. Discovering the window closed after the upload has been paid
+      // for is exactly the loss this ordering exists to prevent.
+      if (!await freshAuthWindowReady()) return;
+      if (!this._mounted) return;
+
       this.step = 'diffing';
       this.errorMessage = '';
 
@@ -1027,35 +1048,30 @@ export function initEditPage() {
         const uploadedSupplementary = [...this.existingSupplementaryFiles];
         if (this.supplementaryFiles.length > 0) {
           this.step = 'uploading';
-          // One upload batch: the session prompts a light account for its
-          // password once, then mints a fresh proof per file. dispose() wipes it.
-          const uploadSession = createUploadSession();
-          try {
-            for (const sf of this.supplementaryFiles) {
-              sf.uploading = true;
-              try {
-                const res = await uploadSession.upload(sf.file);
-                if (!this._mounted) return;
-                sf.cid = res.data.cid;
-                uploadedSupplementary.push({
-                  cid: res.data.cid,
-                  filename: sf.fileName,
-                  size: sf.file.size,
-                  description: sf.description,
-                  type: sf.file.type,
-                });
-              } catch (err) {
-                // Inline error shows the actionable message for State-C / cancel
-                // and the generic per-file message otherwise; the thrown Error
-                // (swallowed by the outer catch) just aborts.
-                sf.error = this.$t(describeUploadError(err));
-                throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
-              } finally {
-                sf.uploading = false;
-              }
+          // Every file rides the session window acquired above, so a whole batch
+          // costs no re-auth act of its own.
+          for (const sf of this.supplementaryFiles) {
+            sf.uploading = true;
+            try {
+              const res = await uploadFile(sf.file);
+              if (!this._mounted) return;
+              sf.cid = res.data.cid;
+              uploadedSupplementary.push({
+                cid: res.data.cid,
+                filename: sf.fileName,
+                size: sf.file.size,
+                description: sf.description,
+                type: sf.file.type,
+              });
+            } catch (err) {
+              // Inline error shows the specific reason for a cancelled or
+              // failed re-auth and the generic per-file message otherwise; the
+              // thrown Error (swallowed by the outer catch) just aborts.
+              sf.error = this.$t(describeUploadError(err));
+              throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
+            } finally {
+              sf.uploading = false;
             }
-          } finally {
-            uploadSession.dispose();
           }
         }
 

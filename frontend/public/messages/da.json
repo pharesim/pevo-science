@@ -786,7 +786,6 @@
     "alreadySignedIn": "Du er allerede logget ind.",
     "goToPapers": "Gå til publikationer",
     "confirm": "Confirm",
-    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
     "uploadCancelled": "Upload cancelled."
   },
   "reauth": {

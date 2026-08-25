@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mocked createEditor for the dynamic `await import('../editor.js')` inside
 // _mountEditors. The test for the teardown-during-init guard asserts that
@@ -15,22 +15,31 @@ vi.mock('../../src/editor.js', () => ({
   createEditor: (...args) => mockCreateEditor(...args),
 }));
 
-// Upload now goes through the batch session in lib/ipfs-upload.js. The page
-// drives `createUploadSession().upload(file)`; route every upload through one
-// controllable fn so tests set per-case resolve/reject.
+// Uploads go through `uploadFile` in lib/ipfs-upload.js, which acquires the
+// shared session window itself; route every upload through one controllable fn
+// so tests set per-case resolve/reject.
 const mockSessionUpload = vi.fn();
 vi.mock('../../src/lib/ipfs-upload.js', () => ({
-  createUploadSession: () => ({ upload: (...a) => mockSessionUpload(...a), dispose: vi.fn() }),
   uploadFile: (...a) => mockSessionUpload(...a),
   describeUploadError: (err) =>
-    err?.code === 'UPLOAD_REAUTH_UNAVAILABLE' ? 'common.uploadReauthRequired'
-      : err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+    err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+      : err?.code === 'UPLOAD_REAUTH_FAILED' ? 'settings.reauthFailed'
         : 'common.uploadFailed',
 }));
 
+// The real lib/fresh-auth.js runs in these tests (only its api.js dependencies
+// are stubbed), so the acquire-before-commit ordering the page relies on is
+// exercised end to end rather than asserted against a stubbed gate.
+const mockFetchEmailStatus = vi.fn(() => Promise.resolve({ data: { hasPassword: true } }));
+const mockMintSessionAuthProof = vi.fn();
+const mockStartOrcid = vi.fn();
 vi.mock('../../src/api.js', () => ({
   fetchDisciplines: vi.fn(() => Promise.resolve({ data: [] })),
   fetchAccreditations: vi.fn(() => Promise.resolve({ data: [] })),
+  fetchEmailStatus: (...a) => mockFetchEmailStatus(...a),
+  mintSessionAuthProof: (...a) => mockMintSessionAuthProof(...a),
+  startOrcid: (...a) => mockStartOrcid(...a),
+  consentOpRequestFields: (t) => t,
 }));
 
 vi.mock('../../src/signer.js', () => ({
@@ -58,6 +67,8 @@ const mockStores = {
   auth: { isConnected: true, isAccredited: true, username: 'alice', accreditation: { name: 'Alice', institution: 'MIT' } },
   toast: { show: vi.fn() },
   broadcastConfirm: { request: vi.fn(() => Promise.resolve(true)) },
+  reauthModal: { request: vi.fn(() => Promise.resolve('hunter2')) },
+  i18n: { messages: {} },
 };
 
 vi.mock('alpinejs', () => ({
@@ -248,10 +259,10 @@ describe('publishPage', () => {
   });
 
   describe('handlePdfChange', () => {
-    it('extracts file info', () => {
+    it('extracts file info', async () => {
       const comp = createComponent();
       const file = { name: 'paper.pdf', size: 2 * 1024 * 1024 };
-      comp.handlePdfChange({ target: { files: [file] } });
+      await comp.handlePdfChange({ target: { files: [file] } });
       expect(comp.pdfFile).toBe(file);
       expect(comp.pdfFileName).toBe('paper.pdf');
       expect(comp.pdfFileSize).toBe('2.00');
@@ -489,15 +500,140 @@ describe('publishPage', () => {
       broadcastOps.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
       const comp = validComponent();
       const pending = comp.handleSubmit();
-      // Let the flow progress past the broadcastConfirm await into broadcastOps.
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      // Drain microtasks until the flow reaches broadcastOps rather than
+      // counting ticks: the number of awaits ahead of the broadcast (window
+      // acquisition, confirm dialog, upload legs) is an implementation detail
+      // this assertion does not care about.
+      for (let i = 0; i < 50 && !rejectFn; i += 1) await Promise.resolve();
+      expect(rejectFn).toBeTypeOf('function');
       comp.destroy();
       rejectFn(new Error('post-teardown boom'));
       await pending;
       expect(comp.step).not.toBe('error');
       expect(comp.errorMessage).toBe('');
+    });
+  });
+
+  // Acquire-before-commit (ARCHITECTURE.md § 6.4.1). The ORCID factor acquires
+  // by full-page navigation, so a light account must hold a re-auth window
+  // BEFORE it attaches a file or enters the submit sequence. Acquiring after
+  // either point throws away the attached file and any completed upload, which
+  // is what made "attach a PDF and publish" unreachable for a passwordless
+  // account and what forced the retired per-batch plaintext password hold.
+  describe('re-auth window ordering', () => {
+    function lightComponent() {
+      const comp = createComponent();
+      comp.title = 'My Paper';
+      comp.abstract = 'Paper abstract';
+      comp.body = 'Body text';
+      comp.discipline = 'Physics';
+      comp.authorName = 'Alice';
+      return comp;
+    }
+
+    beforeEach(() => {
+      mockStores.auth.custody = 'light';
+      mockStores.auth.isConnected = true;
+      mockStores.auth.isAccredited = true;
+      mockStores.auth.username = `user-${Math.random().toString(36).slice(2)}`;
+      mockStores.reauthModal.request.mockResolvedValue('hunter2');
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: true } });
+      mockMintSessionAuthProof.mockResolvedValue({
+        fresh_auth_proof: 'window-proof',
+        expires_at: new Date(Date.now() + 900_000).toISOString(),
+        absolute_expires_at: new Date(Date.now() + 7_200_000).toISOString(),
+        mechanism: 'password',
+      });
+      sessionStorage.clear();
+    });
+
+    afterEach(() => {
+      delete mockStores.auth.custody;
+      sessionStorage.clear();
+    });
+
+    it('acquires the window before recording a selected PDF', async () => {
+      const comp = lightComponent();
+      const file = { name: 'paper.pdf', size: 1024 };
+
+      await comp.handlePdfChange({ target: { files: [file] } });
+
+      expect(mockMintSessionAuthProof).toHaveBeenCalledTimes(1);
+      expect(comp.pdfFile).toBe(file);
+    });
+
+    it('does not record a selected PDF when acquisition is declined', async () => {
+      // A dismissed modal (or, for a passwordless account, a redirect in
+      // flight) leaves the form untouched rather than half-committed.
+      mockStores.reauthModal.request.mockResolvedValue(null);
+      const comp = lightComponent();
+
+      await comp.handlePdfChange({ target: { files: [{ name: 'paper.pdf', size: 1024 }] } });
+
+      expect(comp.pdfFile).toBeNull();
+    });
+
+    it('acquires the window before the upload leg, not after it', async () => {
+      const order = [];
+      mockMintSessionAuthProof.mockImplementation(async () => {
+        order.push('acquire');
+        return {
+          fresh_auth_proof: 'window-proof',
+          expires_at: new Date(Date.now() + 900_000).toISOString(),
+          absolute_expires_at: new Date(Date.now() + 7_200_000).toISOString(),
+          mechanism: 'password',
+        };
+      });
+      mockSessionUpload.mockImplementation(async () => {
+        order.push('upload');
+        return { data: { cid: 'bafy', filename: 'paper.pdf' } };
+      });
+      broadcastOps.mockImplementation(async () => {
+        order.push('broadcast');
+        return { tx_id: 'tx' };
+      });
+
+      const comp = lightComponent();
+      comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+      await comp.handleSubmit();
+
+      expect(order).toEqual(['acquire', 'upload', 'broadcast']);
+    });
+
+    it('one re-auth act covers both the upload and the broadcast', async () => {
+      mockSessionUpload.mockResolvedValue({ data: { cid: 'bafy', filename: 'paper.pdf' } });
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+
+      const comp = lightComponent();
+      await comp.handlePdfChange({ target: { files: [{ name: 'paper.pdf', size: 1024 }] } });
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('success');
+      // Selecting the file opened the window; the submit, the upload and the
+      // broadcast all rode it. One prompt, one mint.
+      expect(mockStores.reauthModal.request).toHaveBeenCalledTimes(1);
+      expect(mockMintSessionAuthProof).toHaveBeenCalledTimes(1);
+    });
+
+    it('never navigates on the password factor', async () => {
+      const comp = lightComponent();
+      await comp.handlePdfChange({ target: { files: [{ name: 'paper.pdf', size: 1024 }] } });
+
+      // The whole point of adopting the password factor: no ORCID round-trip
+      // out of the page the user is working on.
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+    });
+
+    it('leaves an unaccredited visitor alone', async () => {
+      // They can fill the form but never submit it, so a re-auth act at file
+      // selection would buy nothing and cost a passwordless one a round-trip.
+      mockStores.auth.isAccredited = false;
+      const comp = lightComponent();
+
+      await comp.handlePdfChange({ target: { files: [{ name: 'paper.pdf', size: 1024 }] } });
+
+      expect(mockFetchEmailStatus).not.toHaveBeenCalled();
+      expect(mockStores.reauthModal.request).not.toHaveBeenCalled();
     });
   });
 

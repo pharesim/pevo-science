@@ -790,7 +790,6 @@
     "alreadySignedIn": "Zaten giriş yapmış durumdasınız.",
     "goToPapers": "Makalelere Git",
     "confirm": "Confirm",
-    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
     "uploadCancelled": "Upload cancelled."
   },
   "reauth": {

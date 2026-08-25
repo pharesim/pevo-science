@@ -786,7 +786,6 @@
     "alreadySignedIn": "Sie sind bereits angemeldet.",
     "goToPapers": "Zu den Artikeln",
     "confirm": "Confirm",
-    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
     "uploadCancelled": "Upload cancelled."
   },
   "reauth": {

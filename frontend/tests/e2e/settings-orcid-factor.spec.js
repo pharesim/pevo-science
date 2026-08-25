@@ -215,7 +215,7 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
     // Simulate the state beginSettingsActionOrcidFreshAuth wrote just before it
     // redirected to ORCID: the per-tab fresh_auth mode marker and the return
     // path. The real callback page reads both. (sessionStorage, per-tab — see
-    // mintNonConsentProof's cross-tab rationale.)
+    // beginOrcidFreshAuthRedirect's cross-tab rationale.)
     await page.addInitScript(() => {
       window.sessionStorage.setItem('pevo_orcid_mode', 'fresh_auth');
       window.sessionStorage.setItem('pevo_fresh_auth_return_to', '/settings');

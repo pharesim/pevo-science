@@ -792,9 +792,9 @@ export function initSettingsPage() {
       this.orcidLinking = true;
       this.orcidError = null;
 
-      // sessionStorage (not localStorage) — see fresh-auth.js mintNonConsentProof
-      // for the cross-tab-interference rationale that scopes `pevo_orcid_mode`
-      // to the originating tab.
+      // sessionStorage (not localStorage) — see fresh-auth.js
+      // beginOrcidFreshAuthRedirect for the cross-tab-interference rationale that
+      // scopes `pevo_orcid_mode` to the originating tab.
       sessionStorage.setItem('pevo_orcid_mode', 'link');
 
       try {

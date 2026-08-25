@@ -41,7 +41,7 @@ import {
   resumeSignup,
   confirmAccount,
   linkExistingAccount,
-  mintIpfsUploadProof,
+  mintSessionAuthProof,
   uploadFileToIpfs,
   promoteAdmin,
 } from '../../src/api.js';
@@ -541,24 +541,41 @@ describe('settings critical-action proof threading', () => {
   });
 });
 
-describe('mintIpfsUploadProof', () => {
+describe('mintSessionAuthProof', () => {
   let fetchSpy;
   afterEach(() => { fetchSpy?.mockRestore(); });
 
-  it('POSTs /api/custody/fresh-auth with the ipfs_upload action + password and returns the proof', async () => {
+  it('POSTs the password to /api/custody/session-auth and returns the whole issuance envelope', async () => {
     authStore = { token: 'jwt-light', username: 'alice', custody: 'light' };
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      mockJsonResponse(200, { status: 'ok', data: { fresh_auth_proof: 'proof-xyz', expires_at: 't' } }),
+      mockJsonResponse(200, {
+        status: 'ok',
+        data: {
+          fresh_auth_proof: 'proof-xyz',
+          expires_at: '2026-08-25T12:15:00.000Z',
+          absolute_expires_at: '2026-08-25T14:00:00.000Z',
+          mechanism: 'password',
+        },
+      }),
     );
 
-    const proof = await mintIpfsUploadProof('hunter2');
-    expect(proof).toBe('proof-xyz');
+    const issued = await mintSessionAuthProof('hunter2');
+    // Both deadlines must survive the client boundary: the caller models the
+    // window from them, and dropping either collapses it back to a single-use
+    // proof or an unbounded one.
+    expect(issued).toEqual({
+      fresh_auth_proof: 'proof-xyz',
+      expires_at: '2026-08-25T12:15:00.000Z',
+      absolute_expires_at: '2026-08-25T14:00:00.000Z',
+      mechanism: 'password',
+    });
 
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe('/api/custody/fresh-auth');
+    expect(url).toBe('/api/custody/session-auth');
     expect(init.method).toBe('POST');
     expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-light', 'Content-Type': 'application/json' });
-    expect(JSON.parse(init.body)).toEqual({ action: 'ipfs_upload', password: 'hunter2' });
+    // Target-less by construction: no `action` field travels with the password.
+    expect(JSON.parse(init.body)).toEqual({ password: 'hunter2' });
   });
 });
 

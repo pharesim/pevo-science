@@ -790,7 +790,6 @@
     "alreadySignedIn": "Je bent al ingelogd.",
     "goToPapers": "Naar publicaties",
     "confirm": "Confirm",
-    "uploadReauthRequired": "To upload files, set a password in your account settings first.",
     "uploadCancelled": "Upload cancelled."
   },
   "reauth": {

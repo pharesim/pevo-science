@@ -4,10 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockUploadFile = vi.fn();
 vi.mock('../../src/lib/ipfs-upload.js', () => ({
   uploadFile: (...a) => mockUploadFile(...a),
-  createUploadSession: () => ({ upload: (...a) => mockUploadFile(...a), dispose: vi.fn() }),
   describeUploadError: (err) =>
-    err?.code === 'UPLOAD_REAUTH_UNAVAILABLE' ? 'common.uploadReauthRequired'
-      : err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+    err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+      : err?.code === 'UPLOAD_REAUTH_FAILED' ? 'settings.reauthFailed'
         : 'common.uploadFailed',
 }));
 
