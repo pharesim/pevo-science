@@ -512,7 +512,9 @@ A re-auth or recovery proof authenticates only if it matches a factor the accoun
 A per-critical-action cryptographic proof that the acting user controls a currently registered auth factor, required on top of (never replaced by) the session token, so that a stolen session alone can never perform a critical action.
 *Avoid:* re-auth proof, step-up auth.
 
-The required factor is chosen by what kind of control the action transfers or uses, not by whatever factors the account happens to hold, and it must match a factor the account has actually registered. For credit, consent, and upload actions the proof is target-bound (tied to the specific operation and subject) so a proof minted for one action cannot be redirected to another. A bare bearer session token never satisfies this requirement.
+The required factor is chosen by what kind of control the action transfers or uses, not by whatever factors the account happens to hold, and it must match a factor the account has actually registered. A bare bearer session token never satisfies this requirement, and establishing a session is never itself the re-auth act.
+
+Proofs come in two kinds. A **consent-op proof** is target-bound (tied to the specific operation, paper, slot, and subject) and spent once, so a proof minted for one co-author or slot cannot be redirected onto another. A **session proof** is target-less and stays valid for a bounded window of broadcasting and uploading, so one re-auth act covers a working stretch instead of a single action. The window slides on use, expires after a period of inactivity, and dies at a hard cap regardless of activity.
 
 ### Critical Action
 
