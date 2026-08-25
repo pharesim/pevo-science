@@ -68,3 +68,85 @@ Eight call sites funnel through `broadcastWithFreshAuth`: `pages/publish.js`, `p
 ## Testing notes
 
 Nothing currently covers this because the ORCID redirect is what the existing tests assert. Worth covering: the factor branch on `hasPassword` true / false / unknown, that the password path performs no `window.location` assignment, that acquisition happens before the upload leg rather than after, and that a closed window surfaces re-auth rather than a generic failure.
+
+---
+
+## UI implementation signal (2026-08-25, commit e9512840)
+
+**Wire shape:** the architect's contract-doc pass had not landed at pickup
+(`api-contracts/custody.md` still documents `expires_at` only), so the
+implemented field name `absolute_expires_at` is what the SPA reads. Verified
+against `backend/src/routes/custody.ts` and `backend/src/routes/orcid.ts`.
+
+### Scope
+
+1. **Factor selection.** `acquireSessionProof` in `lib/fresh-auth.js` picks by
+   `hasPassword` from `fetchEmailStatus()`: only an explicit `false` routes to
+   the ORCID round-trip; unknown / failed status falls through to the password
+   prompt. A positive answer is memoized per username for the tab (an account
+   cannot lose a password; the memo is username-keyed so a re-login as a
+   different account cannot inherit it). The password mint goes through the
+   shared `mintViaPasswordFactor` and the new `mintSessionAuthProof` in
+   `api.js`. Concurrent acquisitions coalesce onto one prompt.
+2. **Acquire before commit.** `ensureSessionWindow` / `freshAuthWindowReady` are
+   the gate. Wired at `publish.js` `handlePdfChange`, both supplementary-file
+   handlers, and the submit entry of `publish.js` and `edit.js`. Default
+   pre-flight margin is 2 minutes, so a submit about to begin re-auths rather
+   than racing the deadline. The margin is a preference, not an eviction: a
+   cancelled proactive re-auth leaves the still-live window usable. Publish
+   gates acquisition on accreditation so an unaccredited visitor filling the
+   form is not made to re-authenticate for nothing. Nothing was added to the
+   draft.
+3. **One act covers uploads.** `lib/ipfs-upload.js` is rewritten around the
+   shared window. Gone: the per-batch password hold, `credentialResolved`,
+   `repromptUsed`, the `disposed` flag, the cross-session `promptChain` gate and
+   its `resetPromptChain` test seam, `createUploadSession`, and
+   `UPLOAD_REAUTH_UNAVAILABLE`. The prompt-serialization gate is unnecessary
+   now that acquisition itself coalesces. `common.uploadReauthRequired` removed
+   from all 16 locales and from `STUBS.md`; `UPLOAD_REAUTH_FAILED` maps to the
+   existing `settings.reauthFailed`, so no new key.
+4. **Window cache.** Entries hold `{ token, expiresAt, absoluteExpiresAt,
+   idlePeriodMs }`. The idle period is learned at issuance (the backend
+   publishes no period field) and `slideSessionWindow()` replays the slide after
+   each successful consume, capped at the absolute deadline. Either deadline
+   reached closes the window. NaN handling extended to both deadlines and the
+   period. Success no longer clears the cache; a 401 does, and re-acquisition is
+   a real re-auth act.
+5. **Call sites.** All eight untouched. Every failed acquisition (redirect,
+   cancel, spent re-auth) still returns `FRESH_AUTH_REDIRECT_PENDING`; the spent
+   case toasts from the helper so no call site grows its own branch.
+
+### Acceptance criteria
+
+1-6 implemented; 7 verified (the false comment is deleted, and the pre-commit
+anchor gate passed on the commit). See the caveat below on AC 2.
+
+**AC 2 caveat.** "The round-trip never fires with unsaved form state" holds for
+every file-bearing flow (publish, edit, inline editor images) and for votes.
+For `review.js` and `comment-composer.js` a passwordless account's first write
+of a window still redirects at submit, because those forms have no draft
+persistence and adding it is outside this task's scope. Every later action in
+that window is free, which is the change from today's redirect-per-action.
+Worth a follow-up decision: draft the review/comment composers, or acquire on
+compose-start.
+
+### Tests
+
+New `tests/unit/lib-fresh-auth-session-window.test.js` (17): factor branch on
+`hasPassword` true/false/unknown/missing, no `window.location` assignment on the
+password path, coalescing, one prompt per window, upload+broadcast sharing a
+window, slide, cap, corrupt-deadline eviction, pre-flight margin.
+`fresh-auth-401-retry.test.js` rewritten around real re-auth (the old
+`patchProtoOnRemove` re-seed hack is gone). `lib-ipfs-upload.test.js` rewritten.
+New ordering coverage in `pages-publish.test.js` (acquire before upload leg,
+one act for upload+broadcast, unaccredited left alone). `api.test.js` covers
+`mintSessionAuthProof`. E2E `non-consent-fresh-auth.spec.js` updated to assert
+the full cached window.
+
+Full frontend unit suite green: 78 files, 1627 tests. `npm run build` clean.
+
+**E2E not run.** `./deploy.sh restart` rebuilt the backend, which now crash-loops
+on `HIVE_BRIDGE_ACCOUNT (pevotest.bridge) differs from HIVE_ADMIN_ACCOUNT
+(pevotest.admin) but PEVO_BRIDGE_POSTING_KEY is not set` -- the key is a
+commented-out placeholder with no value in `.env`. Pre-existing environment gap,
+unrelated to this change, but it blocks the Playwright run.
