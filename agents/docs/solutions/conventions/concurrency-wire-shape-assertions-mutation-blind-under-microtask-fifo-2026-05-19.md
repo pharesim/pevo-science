@@ -1,22 +1,23 @@
 ---
-title: Concurrency wire-shape assertions can be mutation-blind under microtask FIFO ordering — anchor shared-singleton invariants on reference equality, not on outcome counts
+title: Concurrency wire-shape assertions can be mutation-blind under microtask FIFO ordering — anchor on synchronously observed structural state, not on outcome counts
 date: 2026-05-19
+last_updated: 2026-08-26
 category: conventions
 module: backend
 problem_type: convention
 component: testing_framework
 severity: medium
 applies_when:
-  - Writing a test that pins a "shared singleton" invariant — module-scoped `Set`, `Map`, ref-counting cache, dedup table, in-process lock — consulted by two or more async helpers
-  - The candidate assertion uses `Promise.all` (or sequential awaits) to assert a single-winner outcome (`winners.length === 1`, "exactly one consumer wins", etc.) and attributes that single-winner property to the shared singleton
-  - The named mutation class is a structural split of the singleton into per-helper instances (or any topology change that the outcome assertion claims to detect)
-  - Both helpers' relevant code paths run synchronously between `await` boundaries (the singleton access is in a `catch`, a `.then` continuation, or another segment with no intervening `await`)
+  - Writing a test that pins a structural invariant about module-scoped shared state — a `Set`, `Map`, ref-counting cache, dedup table, or in-process lock — that async helper code is supposed to consult
+  - The candidate assertion uses `Promise.all` (or sequential awaits) to assert a single-winner outcome (`winners.length === 1`, "exactly one consumer wins") and attributes that single-winner property to the shared state
+  - The named mutation class is structural — a dropped `add`, a lock that is never taken, a singleton split into per-helper instances — rather than a change in returned values
+  - The relevant code paths run synchronously between `await` boundaries (the access is in a `catch`, a `.then` continuation, or another segment with no intervening `await`)
 tags:
   - mutation-testing
   - concurrency
   - microtask
   - shared-singleton
-  - reference-equality
+  - structural-assertions
   - test-only-exports
 related_components:
   - testing_framework
@@ -25,96 +26,171 @@ related_components:
 
 ## Context
 
-A test in `backend/tests/lib/fresh-auth.test.ts` claimed to pin the "shared-lock-domain invariant" for `inFlightConsumes` — the module-scoped `Set<string>` consulted by both `consumeFreshAuthToken` (consent-op kind) and `consumeSessionFreshAuthToken` (session kind) as an in-process lock. The invariant: both helpers consult the SAME `Set` instance. A mutation that splits the lock into per-helper instances (`inFlightConsumesByConsentHelper` + `inFlightConsumesBySessionHelper`) would silently regress cross-kind dual-consume race protection.
+A test in `backend/tests/lib/fresh-auth.test.ts` claimed to pin a structural invariant
+about `inFlightConsumes`, the module-scoped `Set<string>` used as an in-process lock in
+`backend/src/lib/fresh-auth.ts`. The test used a Redis-stubbed `Promise.all` race across
+two consume helpers and asserted `winners.length === 1`, on the reasoning that the
+shared lock would block the second helper from winning.
 
-The original test used a Redis-stubbed `Promise.all` race across the two helpers and asserted `winners.length === 1`, on the reasoning that the shared Set would block the second helper from winning. During architect re-review of round-2, the architect traced the microtask ordering and found that the wire-shape assertion passes equally under the correct code AND under the per-helper-Set split mutation. The test was structurally mutation-blind for the very mutation class it named.
+During architect re-review, tracing the microtask ordering showed the assertion passes
+equally under the correct code AND under the structural mutation it named. The test was
+mutation-blind for the very mutation class its kill claim cited.
 
-This is a specific failure mode within the broader principle in `mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md`: the kill claim was false, but the mechanism that defeated it was JS engine scheduling rather than corpus idempotency or assertion-vs-corpus mismatch.
+**The specific invariant that motivated the original write-up no longer exists.** At the
+time, the lock was consulted by both the consent-op and session consume paths, and the
+invariant was that both consult the same `Set` instance. The session kind has since
+become windowed and multi-use by design, and the lock was deliberately scoped to the
+consent-op burn alone precisely so concurrent session consumes both succeed. There is no
+longer a two-helpers-share-one-instance question to ask, and the reference-equality
+mechanism this entry originally prescribed has no target.
+
+The underlying lesson survives that change intact, and the current tests apply it in a
+form that suits the new shape. This entry has been updated to prescribe that form.
+
+This is a specific failure mode within the broader principle in
+`mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md`: the kill claim was
+false, but the mechanism that defeated it was JS engine scheduling rather than corpus
+idempotency or assertion-vs-corpus mismatch.
 
 ## Guidance
 
-When a test claims to kill a structural mutation involving a shared singleton (module-scoped `Set`, `Map`, ref-counting cache, dedup table, in-process lock), trace the microtask ordering before trusting the kill claim. If every observable branch in both helpers runs synchronously between `await` boundaries, FIFO scheduling makes the winner/loser split deterministic regardless of whether the structural invariant holds — the first helper atomically completes its read-and-mutate chain before the second helper's continuation begins, so the second always loses, shared singleton or split.
+When a test claims to kill a **structural** mutation involving shared in-process state,
+trace the microtask ordering before trusting the kill claim. If every observable branch
+runs synchronously between `await` boundaries, FIFO scheduling makes the winner/loser
+split deterministic whether or not the structural invariant holds — the first path
+atomically completes its read-and-mutate chain before the second path's continuation
+begins, so the second always loses either way.
 
-Replace the wire-shape outcome assertion with a structural reference-equality anchor:
+The fix is not a particular accessor. It is a change of vantage point: **observe the
+structural state from inside the call, while it is happening, rather than inferring it
+from the outcome afterwards.**
 
-1. Export a test-only accessor that returns the live singleton reference directly. Type it as a read-only view so callers can't mutate it through the typed surface (the conventional escape hatch via cast is documented and acceptable for a single-instance Node process):
+The practical mechanism is to export a test-only accessor for the state you need to
+observe, then sample it from inside a `mockImplementation` on a dependency the code
+awaits mid-operation. That callback fires *during* the operation, so it sees the state
+at the moment the invariant is supposed to hold:
 
 ```typescript
-/** Test-only hook: returns the live `inFlightConsumes` Set reference so
- *  tests can pin the shared-lock-domain invariant by identity. Read-only
- *  by convention — tests must not mutate the returned Set. */
-export function _getInFlightConsumesSetReferenceForTests(): ReadonlySet<string> {
-  return inFlightConsumes;
+/** Test-only hook: the current size of the in-process consume lock, so tests
+ *  can observe whether the lock is held at a chosen moment rather than
+ *  inferring it from a race outcome. */
+export function _getInFlightConsumesSizeForTests(): number {
+  return inFlightConsumes.size;
 }
 ```
 
-2. In the test, spy on the live reference's read method (`.has` for a `Set`, `.get` for a `Map`, etc.) and assert that BOTH helpers' invocations register on the same instance. Run the helpers sequentially — concurrency was incidental to the original wire-shape framing; reference equality is what the test pins, and it does not depend on race conditions:
-
 ```typescript
-it('shared-lock-domain invariant: both helpers consult the same inFlightConsumes Set (identity anchor)', async () => {
-  const sharedSet = _getInFlightConsumesSetReferenceForTests();
-  const hasSpy = vi.spyOn(sharedSet, 'has');
-  try {
-    const issuedA = await issueFreshAuthToken('lock-identity-a', 'password', T);
-    await consumeFreshAuthToken(issuedA.token, 'lock-identity-a', TH);
-    const consentHelperCalls = hasSpy.mock.calls.length;
-    expect(consentHelperCalls).toBeGreaterThan(0);
-
-    const issuedB = await issueSessionFreshAuthToken('lock-identity-b', 'password');
-    await consumeSessionFreshAuthToken(issuedB.token, 'lock-identity-b');
-    const sessionHelperCalls = hasSpy.mock.calls.length - consentHelperCalls;
-    expect(sessionHelperCalls).toBeGreaterThan(0);
-  } finally {
-    hasSpy.mockRestore();
-  }
+// The lock IS held while the guarded operation runs.
+const sizesDuringBurn: number[] = [];
+vi.spyOn(redis, 'getdel').mockImplementation(async () => {
+  sizesDuringBurn.push(_getInFlightConsumesSizeForTests());
+  return null;
 });
+await consumeFreshAuthToken(issued.token, user, targetHash);
+expect(sizesDuringBurn).toEqual([1]);   // dropped `add` -> [0] -> fails
+expect(_getInFlightConsumesSizeForTests()).toBe(0);  // leaked lock -> 1 -> fails
 ```
 
-If the singleton is split into two per-helper instances, the exported accessor points at one of them. The spy records the consent-helper's invocations. When the session helper runs and consults its OWN (sibling) instance, the spy never sees those calls. `sessionHelperCalls` stays `0`. `expect(sessionHelperCalls).toBeGreaterThan(0)` fails. Mutation killed by identity, not by outcome — independent of microtask ordering, independent of whether external dependencies (Redis, HAF, etc.) are reachable.
+Pair it with the **inverse** pin wherever "not locked" is itself the designed behaviour.
+An invariant asserting a lock is taken is only half the specification; without the other
+half, a lock reinstated where it does not belong passes unnoticed:
+
+```typescript
+// The unguarded path runs WITHOUT the lock, which is what lets concurrent calls both win.
+const sizesDuringSlide: number[] = [];
+vi.spyOn(redis, 'set').mockImplementation(async () => {
+  sizesDuringSlide.push(_getInFlightConsumesSizeForTests());
+  return 'OK';
+});
+await consumeSessionFreshAuthToken(issued.token, user);
+expect(sizesDuringSlide).toEqual([0]);
+```
+
+Both directions are immune to microtask ordering, need no race, and need no reasoning
+about which continuation runs first. A size accessor is usually enough; reach for a
+richer accessor (or a live reference) only when size cannot distinguish the mutation you
+are trying to kill.
 
 ## Why This Matters
 
-Wire-shape concurrency tests are an attractive vehicle for shared-singleton invariant assertions because the invariant was usually discovered IN a race context — "two consumers raced and both won" is exactly the kind of bug that motivates writing the singleton in the first place. But microtask FIFO ordering collapses the mutation difference before it can propagate to an observable outcome. The first helper's `catch` block (or `.then` continuation) runs to completion synchronously — `get → mutate → return` — before the second helper's continuation begins. The second always sees post-mutation state. Shared singleton or split, the second always loses.
+Wire-shape concurrency tests are an attractive vehicle for shared-state invariants
+because the invariant was usually discovered IN a race context — "two consumers raced and
+both won" is exactly the kind of bug that motivates the lock. But microtask FIFO ordering
+collapses the mutation difference before it can propagate to an observable outcome. The
+first path's `catch` block or `.then` continuation runs to completion synchronously,
+`get -> mutate -> return`, before the second path's continuation begins. The second always
+sees post-mutation state, locked or not.
 
-A false-positive concurrency test gives a false sense that a structurally important invariant is test-guarded. The per-helper-singleton split is a silent regression: cross-helper race protection is gone, but the test stays green. By the time the regression is discovered (typically: a real race surfaces in production, the offending mutation is found via `git blame`), the cost of recovery is much higher than the cost of writing a structural anchor in the first place.
+A false-positive concurrency test gives a false sense that a structurally important
+invariant is test-guarded. The structural regression is silent: race protection is gone,
+the test stays green, and discovery usually waits for a real race in production.
 
-The sibling convention `mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md` covers the general case ("verify the assertion actually catches what the kill claim says it does"). This is the specific failure mode where the masking mechanism is JS microtask scheduling rather than corpus shape or assertion-vs-corpus mismatch.
+The general shape recurs beyond concurrency: **an assertion can only detect what its
+vantage point can distinguish.** An outcome assertion cannot see a structural change that
+does not alter outcomes, in the same way a source-scanning test that collects file paths
+cannot see a second offender inside a file it already allows.
 
 ## When to Apply
 
-- Writing or reviewing a test for a module-scoped shared singleton (`Set`, `Map`, counter, queue, cache, in-process lock) where the invariant is that two or more code paths share the SAME instance.
-- A candidate test uses `Promise.all`, sequential `await` calls, or any concurrency primitive to assert a single-winner outcome and attributes the single-winner property to the shared singleton.
-- Before accepting the kill claim: trace whether any `await` boundary separates the two code paths' access to the singleton. If both access points run synchronously within their respective `catch` / `then` continuations — common when the test stubs an async dependency to reject so the helper falls through to a synchronous fallback path — FIFO ordering masks structural mutations.
-- During architect re-review of a hold-block item that names a structural mutation in its kill claim: if the proposed test is a `Promise.all` outcome check on a shared singleton, anchor the kill claim on reference equality instead.
+- Writing or reviewing a test for module-scoped shared state (`Set`, `Map`, counter,
+  queue, cache, in-process lock) where the invariant is structural rather than about
+  returned values.
+- A candidate test uses `Promise.all`, sequential `await` calls, or any concurrency
+  primitive to assert a single-winner outcome and attributes that property to the shared
+  state.
+- Before accepting a kill claim: check whether any `await` boundary separates the code
+  paths' access to the state. If both access points run synchronously within their
+  respective continuations — common when a test stubs an async dependency to reject so the
+  helper falls through to a synchronous fallback — FIFO ordering masks structural
+  mutations.
+- Whenever "this path is deliberately NOT guarded" is part of the design. Pin that
+  direction too, or a lock reinstated where it does not belong will pass silently.
 
 ## Examples
 
 **Before — wire-shape assertion (mutation-blind):**
 
 ```typescript
-it.skipIf(!redisAvailable)('cross-helper Redis-stubbed Promise.all → exactly one winner (shared-lock-domain invariant)', async () => {
-  const redis = getRedis()!;
-  vi.spyOn(redis, 'getdel').mockImplementation(() => Promise.reject(new Error('stubbed redis-down')));
+it('cross-helper Redis-stubbed Promise.all -> exactly one winner', async () => {
+  vi.spyOn(redis, 'getdel').mockImplementation(() => Promise.reject(new Error('stubbed')));
   const issued = await issueFreshAuthToken('race-cross', 'password', T);
-  const [a, b] = await Promise.all([
-    consumeFreshAuthToken(issued.token, 'race-cross', TH),
-    consumeSessionFreshAuthToken(issued.token, 'race-cross'),
-  ]);
-  const winners = [a, b].filter((r) => r.valid);
-  expect(winners).toHaveLength(1); // passes under per-helper-Set split mutation too
+  const [a, b] = await Promise.all([ /* two consume calls on the same token */ ]);
+  expect([a, b].filter((r) => r.valid)).toHaveLength(1); // passes under the mutation too
 });
 ```
 
-Both helpers' `catch` blocks run synchronously (`memStore.get → memStore.delete → return`) with no intervening `await`. Microtask FIFO serializes them: the first helper completes its mutation before the second begins. The second sees an empty `memStore` and returns `expired` — regardless of whether `inFlightConsumes` is one Set or two.
+Both fallback paths run synchronously (`memStore.get -> memStore.delete -> return`) with no
+intervening `await`. Microtask FIFO serializes them: the first completes its mutation
+before the second begins, so the second sees an empty store and returns `expired`
+regardless of the lock's structure.
 
-**After — reference-equality anchor (mutation-killing):**
+**After — structural sampling from inside the call (mutation-killing):**
 
-The test in the Guidance section above. Exports the live `inFlightConsumes` reference, spies on `.has`, runs both helpers sequentially, asserts both invocations register on the same instance. A per-helper split routes one helper's `.has` to a sibling Set; that helper's calls never appear on the spy; `sessionHelperCalls` stays `0`; assertion fails. No `skipIf`, no Redis stubs, no race needed — the structural invariant is verified by identity.
+The two pins in the Guidance section above. The forward pin fails if the `add` is ever
+dropped; the release assertion fails if the lock leaks; the inverse pin fails if a lock is
+introduced on the path that is designed to run without one. No `skipIf`, no Redis-down
+stubs, no race.
 
 ## Cross-references
 
-- `agents/docs/solutions/conventions/mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md` — parent convention. This learning is a specific failure mode within its general case: the kill claim is false because the masking mechanism is JS microtask scheduling rather than corpus shape.
-- `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` — grandparent principle. Every load-bearing assertion must fail on mutation of the code under test; this convention names the specific mechanism that defeats the revert-verify check when the code under test is a shared singleton accessed across helpers.
-- `agents/docs/solutions/conventions/test-seams-export-shape-as-const-2026-05-04.md` — adjacent on solution shape. Test-only-exported live references are the canonical PEvO mechanism for reaching module-private state in tests; the reference-equality anchor here is a specialization for shared-singleton identity.
-- `backend/src/lib/fresh-auth.ts` — the `inFlightConsumes` Set and the `_getInFlightConsumesSetReferenceForTests` export.
-- `backend/tests/lib/fresh-auth.test.ts` — the Set-identity anchor test (describe `concurrent dual-consume produces exactly one winner (in-process lock)`, spec `shared-lock-domain invariant: both helpers consult the same inFlightConsumes Set (identity anchor)`).
+- `agents/docs/solutions/conventions/mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md`
+  — parent convention. This learning is a specific failure mode within its general case:
+  the kill claim is false because the masking mechanism is JS microtask scheduling rather
+  than corpus shape.
+- `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`
+  — grandparent principle. Every load-bearing assertion must fail on mutation of the code
+  under test; this convention names a specific mechanism that defeats the revert-verify
+  check.
+- `agents/docs/solutions/conventions/source-discipline-canaries-must-assert-at-call-site-not-file-granularity-2026-08-26.md`
+  — the static-analysis sibling. Same root theme from the other direction: an assertion's
+  shape decides what it can detect. There, a source-scanning canary collects containers
+  and so cannot see a second offender inside an allowed one; here, an outcome assertion
+  cannot see a structural change that leaves outcomes identical.
+- `agents/docs/solutions/conventions/test-seams-export-shape-as-const-2026-05-04.md`
+  — adjacent on solution shape. Test-only exports are the canonical PEvO mechanism for
+  reaching module-private state in tests; the structural sampling here is a specialization
+  for observing that state mid-operation.
+- `backend/src/lib/fresh-auth.ts` — the `inFlightConsumes` lock and the
+  `_getInFlightConsumesSizeForTests` export.
+- `backend/tests/lib/fresh-auth.test.ts` — the forward and inverse structural pins, which
+  sample the lock size from inside the burn and from inside the slide respectively.
