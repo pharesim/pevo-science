@@ -514,7 +514,7 @@ A per-critical-action cryptographic proof that the acting user controls a curren
 
 The required factor is chosen by what kind of control the action transfers or uses, not by whatever factors the account happens to hold, and it must match a factor the account has actually registered. A bare bearer session token never satisfies this requirement, and establishing a session is never itself the re-auth act.
 
-Proofs come in two kinds. A **consent-op proof** is target-bound (tied to the specific operation, paper, slot, and subject) and spent once, so a proof minted for one co-author or slot cannot be redirected onto another. A **session proof** is target-less and stays valid for a bounded window of broadcasting and uploading, so one re-auth act covers a working stretch instead of a single action. The window slides on use, expires after a period of inactivity, and dies at a hard cap regardless of activity.
+Proofs come in two kinds. A **consent-op proof** is target-bound (tied to the specific operation, paper, slot, and subject) and spent once, so a proof minted for one co-author or slot cannot be redirected onto another. A **session proof** is target-less and stays valid for a bounded window of broadcasting and uploading, so one re-auth act covers a working stretch instead of a single action. The window slides on use, expires after a period of inactivity, and dies at a hard cap regardless of activity. A window also ends the moment the account's sessions are invalidated: any window opened before that cutoff stops authorizing, whether or not the platform's cached copy of it was cleared.
 
 ### Critical Action
 
@@ -532,10 +532,12 @@ Because every request is independently signed by a key the user controls, this p
 
 ### Session Invalidation
 
-The mechanism that revokes a light account's outstanding bearer session tokens after a security-sensitive event (password reset, seed-phrase recovery, ORCID recovery), so that pre-event tokens stop authenticating.
+The mechanism that revokes a light account's outstanding bearer session tokens and open fresh-auth session windows after a security-sensitive event (password reset, seed-phrase recovery, ORCID recovery), so that nothing minted before the event still authenticates.
 *Avoid:* JWT revocation, bearer-token revocation.
 
 Each outstanding session token records when it was issued; the platform stores a cutoff time, and any token issued before the cutoff stops authenticating. The token freshly issued by the triggering event is exempted so the user is not logged out by their own action. A session token whose issue time is missing or malformed is rejected outright rather than skipping the check.
+
+The same cutoff governs session proofs, and it is the authoritative test for them: a window opened before the cutoff is refused on its next use because the stored cutoff says so, not because the platform managed to find and delete the window. Sweeping the cached copies is a storage-reclamation step that can miss one and must never be relied on as the guarantee. Revoking bearer tokens while leaving an open broadcast window standing has not actually cut off the compromised session, which is why the two are one mechanism rather than two.
 
 ## Admin Authority
 
