@@ -145,8 +145,24 @@ the full cached window.
 
 Full frontend unit suite green: 78 files, 1627 tests. `npm run build` clean.
 
-**E2E not run.** `./deploy.sh restart` rebuilt the backend, which now crash-loops
-on `HIVE_BRIDGE_ACCOUNT (pevotest.bridge) differs from HIVE_ADMIN_ACCOUNT
-(pevotest.admin) but PEVO_BRIDGE_POSTING_KEY is not set` -- the key is a
-commented-out placeholder with no value in `.env`. Pre-existing environment gap,
-unrelated to this change, but it blocks the Playwright run.
+**E2E: no regression.** Playwright full suite, one worker, against the test-mode
+stack. Baseline (this task's parent commit, built into the same backend image so
+only the frontend bundle differed): 24 failed / 45 passed. With the change: 23
+failed / 45 passed / 1 flaky. Same failure set modulo run-to-run flake -- the
+two specs failing only in the after-run (`custody-upgrade` upgrade wizard,
+`bridge-import-queue` 202-enqueue) were re-run against the change bundle:
+`custody-upgrade` passed on retry (a mnemonic word-visibility timing flake) and
+all three `bridge-import-queue` specs fail on both sides. The dominant
+pre-existing failure class (12 specs) is a strict-mode violation where
+`form button[type="submit"]` matches both the page's own submit button and the
+global reauth modal's Confirm button in `frontend/index.html` -- the modal uses
+`x-show`, so its node is always in the DOM. Unrelated to this task; worth a
+follow-up to tighten those locators.
+
+**Environment note.** The backend would not boot on rebuild:
+`HIVE_BRIDGE_ACCOUNT (pevotest.bridge) differs from HIVE_ADMIN_ACCOUNT
+(pevotest.admin) but PEVO_BRIDGE_POSTING_KEY is not set`, and the key is a
+commented-out placeholder with no value in `.env`. On the user's instruction,
+`HIVE_BRIDGE_ACCOUNT` in `.env` was set to the admin account so the guard
+passes. Bridge papers now post under the admin account locally; revert once a
+real bridge posting key is available.
