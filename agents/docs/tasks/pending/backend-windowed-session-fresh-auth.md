@@ -392,3 +392,165 @@ orcid `/start` and `fresh_auth` response enums. `ipfs.md` actively instructs int
 pass `action='ipfs_upload'` to both endpoints, so an integrator following it today is passing
 a value the other two contracts call invalid. The `ipfs.md` sentence that points at those
 enums is being rewritten anyway, which makes this the natural moment to close the gap.
+
+---
+
+## Architect re-review (2026-08-26) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `51ecba19` (backend paths only), nine reviewer
+personas plus a seven-finding independent validation wave. **The design is sound and
+all eight acceptance criteria were independently verified as met** (a reviewer re-ran
+`tsc --noEmit` clean and the touched suites green rather than taking the completion
+signal's word for it). The absolute cap genuinely fails closed, the consent-op burn
+held single-use under every constructed interleaving, rolling deploy and rollback both
+fail closed, exactly one surface was widened, and project-standards came back clean
+(the diff also removes two pre-existing task-slug anchor-rot citations, which is
+credited). Nothing below invalidates the architecture; these are durability and
+enforcement gaps found on top of it.
+
+Five items. Items 1 and 2 are the ones that block archive.
+
+### Item 1 — Session invalidation must be authoritative from Postgres, not best-effort via Redis
+
+Three separate race windows and one silent failure mode all share a single root fix,
+and this task's own "Residuals surfaced by adversarial verification" section already
+named it: a revocation epoch compared at consume time. Triaged with the user, who
+chose the epoch approach over the narrower per-race patches.
+
+`middleware/verifyHiveSignature.ts` already SELECTs `accounts.sessions_invalidated_at`
+on every authenticated request but does not plumb it onto `req`. Attach it, and have
+the session consume reject a window whose `issued_at` predates it. `issued_at` is
+carried through every slide unchanged, so it is a stable anchor for the comparison.
+
+This supersedes the narrower memStore-ordering patch. It closes:
+
+- **The memStore re-plant.** In `persistSessionSlide`, `memStore.set` runs one line
+  before the `fromMemStore` early return, so a consume served by the in-memory tier
+  re-plants the entry and never reaches the `SET ... XX` whose declined reply is what
+  removes it. Confirmed by an independent validator.
+- **The swallowed index write.** ioredis wraps per-command errors into `[err]` tuples
+  inside a RESOLVED array, so `multi().exec()` does not reject and the surrounding
+  catch plus its `fresh_auth.session_index_write_failed` log are dead code for that
+  error class. Verified against installed ioredis 5.10.1. Because there is no
+  keyspace-scan fallback and the in-memory tier is empty after any restart, a window
+  whose index write failed is unreachable by EVERY invalidation path until its cap.
+- Residuals (ii) and (iii) as this file already describes them.
+
+**Also required, independent of the mechanism chosen:** two docblocks currently assert
+a guarantee the code does not provide. `persistSessionSlide`'s own docblock and the one
+on `invalidateSessionFreshAuthTokens` both claim the `XX` reply check closes the
+sweep-versus-in-flight-consume race. It provably cannot reach the memStore-served leg.
+Rewrite both to describe whatever the landed control actually is.
+
+Not an escalation path: a session proof is inert without a live JWT and the JWT is
+revoked by the same overlay. This is defence in depth plus two false docblocks.
+
+### Item 2 — Both standing canaries assert at file granularity and are blind at their own named worst case
+
+`backend/tests/eslint/no-session-proof-mint-outside-reauth-routes.test.ts` collects a
+Set of FILE paths and compares it to `['routes/custody.ts', 'routes/orcid.ts']`. Adding
+`issueSessionFreshAuthToken` inside `handleLogin` leaves that Set unchanged, so the
+canary stays green. `routes/orcid.ts` cannot go in the forbidden list because it is in
+the allowed list. This is the exact scenario the file's own docblock names as most
+likely, and the claim in this task's completion signal that the canary "matches call
+sites rather than files" is not accurate: detection is call-SHAPED, but the assertion
+compares files. A validator confirmed no other test in the suite catches it either, so
+this is the sole mechanical enforcement of invariant #9.
+
+The same canary also `continue`s past `lib/fresh-auth.ts` by path before scanning, so a
+window-minting helper added there under a different name is unscanned, not merely
+unmatched.
+
+`backend/tests/routes/session-proof-invalidation.test.ts` has the identical defect:
+it tests each WHOLE FILE for a sweep call over a NON-RECURSIVE `readdirSync` of
+`src/routes`, so a second `sessions_invalidated_at` writer in `recover.ts` (which
+already calls the sweep) passes, as does any writer under `src/lib` or a subdirectory.
+
+Fix both to assert at occurrence / call-site granularity rather than container
+granularity: scan upward from each match to the nearest enclosing function or route
+handler and assert on `file#symbol` pairs. Make the invalidation canary's scan
+recursive. Keep the planted-positive/negative self-tests; they are good and should be
+extended to cover the new granularity.
+
+**Add a behavioural backstop for AC 8.** It currently has zero dynamic coverage: the
+only enforcement is the static scan above. Add a test asserting a login and a
+signup-finalize response carry no `fresh_auth_proof`, so the invariant is not defended
+by one regex alone.
+
+### Item 3 — Bound the per-user session index
+
+No `SREM` exists anywhere in the module, and `EXPIRE` re-arms the full cap on every
+mint, so an account re-authenticating at least once per window keeps the key alive
+indefinitely while members only accumulate. Past roughly 125k members
+`redis.del(...tokens.map(...))` spreads every member into one call and throws
+`RangeError` (verified empirically by a reviewer: 100k args succeed, 130k throw), so
+the sweep BREAKS rather than degrades. Three independent changes:
+
+1. `EXPIRE ... NX` so the index TTL is armed at creation, not pushed forward by every
+   later mint.
+2. Batch the sweep's delete into fixed-size chunks (500 is a defensible default) so a
+   large index cannot blow the call stack.
+3. `SREM` the token where a window is already known dead.
+
+### Item 4 — Stop awaiting the slide persist on the broadcast critical path
+
+`consumeSessionWindow` awaits `persistSessionSlide`'s Redis write before returning,
+even though the authorization decision is already final and the write's failure path is
+already fail-closed. With `commandTimeout: 5000`, a connected-but-stalled Redis adds up
+to five seconds to every vote, comment, post, and review. Make the persist
+fire-and-forget, keeping its existing catch.
+
+A validator specifically cleared this as safe: `memStore.set` runs synchronously before
+any await, so a racing concurrent read still observes the slid deadline, and any Redis
+staleness can only SHORTEN the effective window, never lengthen it.
+
+### Item 5 — Pin the literal window values
+
+Every assertion in all three test files derives its expected bounds from the same
+`SESSION_FRESH_AUTH_IDLE_SECONDS` / `SESSION_FRESH_AUTH_ABSOLUTE_SECONDS` constants the
+production code defines, so changing `7200` to `72000` leaves the entire suite green.
+ACs 2 and 3 state those numbers as literal requirements and nothing verifies them. Two
+lines:
+
+```ts
+expect(SESSION_FRESH_AUTH_IDLE_SECONDS).toBe(15 * 60);
+expect(SESSION_FRESH_AUTH_ABSOLUTE_SECONDS).toBe(2 * 60 * 60);
+```
+
+### Routed elsewhere, deliberately NOT in this round
+
+- **Module split.** `fresh-auth.ts` at 1797 lines carrying two proof lifecycles, plus
+  the `as number` casts in `persistSessionSlide` (provably sound today, a
+  type-expressiveness gap). Both go to their own task so a structural split runs
+  against a settled, green suite instead of mixing large-scale code movement into a
+  diff that is already reworking the consume path.
+- **Consent-op compensating DEL.** Pre-existing, so it does not gate this task, but a
+  real single-use violation: the compensating delete is guarded on client existence on
+  the stated assumption that ioredis flushes it on reconnect, and
+  `maxRetriesPerRequest: 3` force-rejects queued commands after roughly two seconds.
+  Its own task, which must also correct the convention entry that currently prescribes
+  that guard shape.
+- **Dropped by validation.** The cap-crossing loop test's ~14-minute resolution was
+  raised and then rejected: sibling tests already bound the cap to single-digit seconds
+  from both the issuance and consume sides, and the loop test does catch the risk the
+  task named. No action.
+- **Below threshold.** The thrice-repeated `Math.min` clamp, and the change whereby a
+  malformed entry no longer self-burns (reason stabilises at `malformed` instead of
+  degrading to `expired`; status unchanged). Recorded, no action.
+
+### Architect follow-ups, tracked separately
+
+The `[TODO Architect]` contract-docs sweep in this file is **deferred until this hold
+block lands**. Item 1 changes the very wire behaviour those passages describe: "a
+password reset ends every outstanding session proof" becomes a durable Postgres-backed
+guarantee rather than a best-effort Redis sweep, and that is one of the passages the
+sweep flags as needing the most careful rewording. Writing it now would document a
+mechanism about to be replaced. The itemised survey in this file stays valid and will
+be worked from, with the invalidation passages rewritten against the landed behaviour.
+
+The stale `concurrency-wire-shape-assertions-mutation-blind-under-microtask-fifo`
+entry and the new canary-granularity learning are architect-owned and in hand.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.
