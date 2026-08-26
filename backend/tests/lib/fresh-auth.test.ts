@@ -1669,3 +1669,112 @@ describe('invalidateSessionFreshAuthTokens', () => {
     }
   });
 });
+
+// ─── session-proof window: the per-user invalidation index ───
+
+describe('the per-user session index stays bounded', () => {
+  const INDEX_PREFIX = `${config.appTag}:fresh_auth:user_sessions:`;
+  const TOKEN_PREFIX = `${config.appTag}:fresh_auth:token:`;
+
+  beforeEach(() => {
+    _resetFreshAuthMemStoreForTests();
+  });
+
+  it.skipIf(!redisAvailable)('a later mint does not push the index TTL forward', async () => {
+    // The unbounded-growth mechanism this closes: with a plain EXPIRE, every
+    // mint re-arms the full absolute cap, so an account that re-authenticates
+    // at least once per window keeps the index key alive forever while its
+    // members only accumulate. The TTL that was meant to bound the index is
+    // then never reached by exactly the accounts whose index grows.
+    const redis = getRedis()!;
+    const username = `idx-ttl-${Date.now()}`;
+    const indexKey = INDEX_PREFIX + username;
+    try {
+      await issueSessionFreshAuthToken(username, 'password');
+      // Age the key so a re-arm would be unmistakable rather than a rounding
+      // difference: a plain EXPIRE would restore the full cap.
+      await redis.expire(indexKey, 60);
+      await issueSessionFreshAuthToken(username, 'password');
+      const ttl = await redis.ttl(indexKey);
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(60);
+      // Both windows are indexed; only the TTL is left alone.
+      expect(await redis.scard(indexKey)).toBe(2);
+    } finally {
+      const members = await redis.smembers(indexKey);
+      if (members.length > 0) await redis.del(...members.map((t) => TOKEN_PREFIX + t));
+      await redis.del(indexKey);
+    }
+  });
+
+  it.skipIf(!redisAvailable)('an index far past one DEL argument batch still sweeps completely', async () => {
+    // The sweep used to spread every member into a single `del(...members)`.
+    // Past roughly 125k members that reaches the engine argument limit and
+    // throws RangeError, so the sweep BROKE rather than degrading — and it
+    // broke for the accounts with the most open windows. Testing at 125k is
+    // impractical; testing across several chunk boundaries pins the property
+    // that matters, which is that chunking happens at all and loses nothing.
+    const redis = getRedis()!;
+    const username = `idx-chunk-${Date.now()}`;
+    const indexKey = INDEX_PREFIX + username;
+    const planted = Array.from({ length: 1201 }, (_, i) => `chunkprobe${i}`);
+    try {
+      await redis.sadd(indexKey, ...planted);
+      // A real entry behind EVERY member. Spot-checking a few would be
+      // mutation-blind: SMEMBERS returns hash order, so a sweep that processed
+      // only the first batch and dropped the rest could leave any given sample
+      // deleted by luck. Counting survivors across the whole set cannot.
+      const pipeline = redis.pipeline();
+      for (const t of planted) pipeline.set(TOKEN_PREFIX + t, '{}', 'EX', 300);
+      await pipeline.exec();
+      const live = await issueSessionFreshAuthToken(username, 'password');
+
+      await expect(invalidateSessionFreshAuthTokens(username)).resolves.toBeUndefined();
+
+      let survivors = 0;
+      for (let i = 0; i < planted.length; i += 500) {
+        survivors += await redis.exists(
+          ...planted.slice(i, i + 500).map((t) => TOKEN_PREFIX + t),
+        );
+      }
+      expect(survivors, 'every indexed window must be deleted, not just the first batch').toBe(0);
+      expect(await redis.exists(indexKey)).toBe(0);
+      expect(await redis.exists(TOKEN_PREFIX + live.token)).toBe(0);
+    } finally {
+      await redis.del(indexKey);
+      for (let i = 0; i < planted.length; i += 500) {
+        await redis.del(...planted.slice(i, i + 500).map((t) => TOKEN_PREFIX + t));
+      }
+    }
+  });
+
+  it.skipIf(!redisAvailable)('a window found dead at consume is removed from the index', async () => {
+    // Without an SREM anywhere in the module the index only ever grows for an
+    // account that keeps re-authenticating. A consume that has just decided a
+    // window is dead is the one moment the module knows a specific member is
+    // worthless, so that is where the member is dropped.
+    const redis = getRedis()!;
+    const username = `idx-srem-${Date.now()}`;
+    const indexKey = INDEX_PREFIX + username;
+    try {
+      const issued = await issueSessionFreshAuthToken(username, 'password');
+      expect(await redis.scard(indexKey)).toBe(1);
+
+      // Revoked by an epoch after the mint: the window is dead, but nothing has
+      // swept it.
+      const result = await consumeSessionFreshAuthToken(issued.token, username, Date.now());
+      expect(result.valid).toBe(false);
+
+      // Fire-and-forget cleanup, so poll rather than assume it landed inline.
+      for (let i = 0; i < 50 && (await redis.scard(indexKey)) > 0; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(await redis.scard(indexKey)).toBe(0);
+      expect(await redis.exists(TOKEN_PREFIX + issued.token)).toBe(0);
+    } finally {
+      const members = await redis.smembers(indexKey);
+      if (members.length > 0) await redis.del(...members.map((t) => TOKEN_PREFIX + t));
+      await redis.del(indexKey);
+    }
+  });
+});
