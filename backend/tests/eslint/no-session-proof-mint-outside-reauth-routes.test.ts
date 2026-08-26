@@ -61,21 +61,8 @@
  * enclosing symbols of that literal are pinned too.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { enclosingSymbol, occurrencesOf } from '../support/enclosing-symbol.js';
-
-const srcRoot = path.resolve(__dirname, '..', '..', 'src');
-
-function tsFilesUnder(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...tsFilesUnder(full));
-    else if (entry.isFile() && entry.name.endsWith('.ts')) out.push(full);
-  }
-  return out;
-}
+import { enclosingSymbol, occurrencesOf, sourcesUnder } from '../support/enclosing-symbol.js';
 
 /** A CALL to the session-proof mint: the identifier followed by an open paren,
  *  optionally across whitespace so a wrapped call still matches. An import
@@ -124,10 +111,7 @@ const FORBIDDEN_MINT_FILES = [
   'middleware/verifyHiveSignature.ts',
 ];
 
-const sources = tsFilesUnder(srcRoot).map((file) => ({
-  rel: path.relative(srcRoot, file).split(path.sep).join('/'),
-  lines: readFileSync(file, 'utf8').split('\n'),
-}));
+const sources = sourcesUnder(path.resolve(__dirname, '..', '..', 'src'));
 
 describe('invariant #9 — no session-proof mint outside the two re-auth routes', () => {
   it('walks a plausible number of source files (guards against a broken walker)', () => {

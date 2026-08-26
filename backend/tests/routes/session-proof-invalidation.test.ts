@@ -54,9 +54,8 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import request from 'supertest';
 import crypto from 'node:crypto';
 import argon2 from 'argon2';
-import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { occurrencesOf } from '../support/enclosing-symbol.js';
+import { occurrencesOf, sourcesUnder } from '../support/enclosing-symbol.js';
 
 const { createApp } = await import('../../src/app.js');
 const { getAppPool } = await import('../../src/app-db.js');
@@ -282,7 +281,6 @@ describe('every writer of the revocation column also closes session-proof window
   //     "this file contains a write" against "this file contains a sweep" means
   //     a second, unswept writer added to `recover.ts` — which already sweeps
   //     from two other handlers — passes untouched.
-  const srcRoot = path.resolve(__dirname, '..', '..', 'src');
 
   /** A WRITE to the revocation column: the column name followed by `=`, which
    *  matches both the SQL `SET sessions_invalidated_at = NOW()` form and the
@@ -291,20 +289,7 @@ describe('every writer of the revocation column also closes session-proof window
   const REVOCATION_WRITE_RE = /sessions_invalidated_at\s*=/;
   const SWEEP_CALL_RE = /invalidateSessionFreshAuthTokens\s*\(/;
 
-  function tsFilesUnder(dir: string): string[] {
-    const out: string[] = [];
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) out.push(...tsFilesUnder(full));
-      else if (entry.isFile() && entry.name.endsWith('.ts')) out.push(full);
-    }
-    return out;
-  }
-
-  const sources = tsFilesUnder(srcRoot).map((file) => ({
-    rel: path.relative(srcRoot, file).split(path.sep).join('/'),
-    lines: readFileSync(file, 'utf8').split('\n'),
-  }));
+  const sources = sourcesUnder(path.resolve(__dirname, '..', '..', 'src'));
 
   it('the scan reaches the whole source tree, not just the top of src/routes', () => {
     // Without this, a bad path or a non-recursive walk would make the assertion

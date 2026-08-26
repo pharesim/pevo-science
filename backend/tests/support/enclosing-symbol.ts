@@ -19,7 +19,19 @@
  * negatives in its own test file. The rule is: scan upward for the nearest
  * declaration, and reject it if its block demonstrably closed before the target
  * line (a `}` at or left of the declaration's own indentation).
+ *
+ * Known limitation, and why it is safe. A declaration whose block opens and
+ * closes on its own line (`const noop = () => {};`) has no closing brace on a
+ * LATER line, so a match below it can resolve to that declaration instead of
+ * the real enclosing scope. The consequence is a WRONG symbol, which is a new
+ * member of the occurrence set and therefore a red bar — never a silent pass.
+ * A silent pass would require a violating occurrence to resolve to one of the
+ * already-allowed keys, which means it is textually inside that allowed
+ * function's block, which is the case the allow entry covers.
  */
+
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 
 /** What a declaration line looks like, in the shapes this codebase writes.
  *  Ordered by specificity: an Express registration is recognized before the
@@ -93,16 +105,48 @@ export function enclosingSymbol(lines: string[], lineIndex: number): string {
   return MODULE_SCOPE;
 }
 
+/** One scanned source file: its label in assertion output, and its lines. */
+export interface ScannedSource {
+  rel: string;
+  lines: string[];
+}
+
+/**
+ * Every `.ts` file under `root`, recursively, labelled relative to `root` with
+ * forward slashes so an assertion reads `routes/custody.ts` on every platform.
+ *
+ * Recursive by default because the non-recursive alternative is the exact bug
+ * these canaries were written to stop having: a scan over the top of one
+ * directory silently visits none of its subdirectories, and everything it fails
+ * to visit passes vacuously.
+ */
+export function sourcesUnder(root: string): ScannedSource[] {
+  const out: ScannedSource[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith('.ts')) {
+        out.push({
+          rel: path.relative(root, full).split(path.sep).join('/'),
+          lines: readFileSync(full, 'utf8').split('\n'),
+        });
+      }
+    }
+  };
+  walk(root);
+  return out;
+}
+
 /**
  * Every `file#symbol` occurrence of `pattern` across `files`, plus a
  * human-readable site list for assertion messages.
  *
- * `relOf` maps an absolute path to the repo-relative label the assertion reads
- * in, so a red bar names `src/routes/custody.ts#POST /session-auth` rather than
- * an absolute path from the runner's checkout.
+ * `skipLine` drops a matched line before it is counted — for a definition site
+ * that necessarily matches the call pattern it defines, say.
  */
 export function occurrencesOf(
-  files: Array<{ rel: string; lines: string[] }>,
+  files: ScannedSource[],
   pattern: RegExp,
   skipLine?: (line: string) => boolean,
 ): { keys: string[]; sites: string[] } {
@@ -112,9 +156,9 @@ export function occurrencesOf(
     lines.forEach((line, i) => {
       if (!pattern.test(line)) return;
       if (skipLine?.(line)) return;
-      const key = `${rel}#${enclosingSymbol(lines, i)}`;
-      keys.add(key);
-      sites.push(`${rel}:${i + 1} (${enclosingSymbol(lines, i)}) — ${line.trim()}`);
+      const symbol = enclosingSymbol(lines, i);
+      keys.add(`${rel}#${symbol}`);
+      sites.push(`${rel}:${i + 1} (${symbol}) — ${line.trim()}`);
     });
   }
   return { keys: [...keys].sort(), sites };
