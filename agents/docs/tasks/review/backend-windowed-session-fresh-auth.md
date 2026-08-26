@@ -554,3 +554,171 @@ entry and the new canary-granularity learning are architect-owned and in hand.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit
 diff is the evidence and the architect updates the block at re-review.
+
+---
+
+## Backend re-review signal (2026-08-26)
+
+Round-2 fixes landed in three commits on `main`:
+
+- `0fad709d` — items 1, 2, 4, 5 (mechanism + canaries + behavioural AC 8 coverage).
+- `84af4477` — item 3's coverage, held back one commit so the mutation probes below
+  ran against a committed baseline.
+- `22849bc5` — simplify pass: the two canaries' duplicate source walkers folded into
+  the shared helper. Both granularity probes re-run and still kill.
+
+Every claim below was verified by disabling the fix and confirming the test goes red,
+not by reading the diff. The probe results are in the per-item notes.
+
+### Item 1 — revocation epoch
+
+`verifyHiveSignature` now publishes `req.hiveSessionsInvalidatedAt` (epoch ms, or
+`null`) from the `sessions_invalidated_at` SELECT it was already running, and
+`consumeSessionWindow` rejects any window whose `issued_at` is at or before it. The
+epoch is threaded through `FreshAuthConsumeSurface`, so both session surfaces get it:
+`consumeSessionFreshAuthToken` takes it as a third argument (passed by the custody
+broadcast handler) and `consumeFreshAuthProof` reads it off the request (the
+upload-token route). Consent-op surfaces leave it unset; a consent-op entry carries no
+window to revoke.
+
+`undefined` applies no cut-off. That is the no-app-pool case, where `verifyHiveSignature`
+already skips its own JWT revocation check for the same reason — there is nothing to ask.
+
+The two false docblocks are rewritten. `persistSessionSlide`'s now states that the `XX`
+declined branch is reachable only on the Redis-served leg and converges the tiers there,
+and names the epoch as what actually closes the sweep-versus-in-flight-consume race.
+`invalidateSessionFreshAuthTokens`'s now says outright that it is the
+storage-reclamation half and not the authoritative half, and enumerates the three ways
+it is best-effort. The inline comment inside the `reply === null` branch and the
+tier-ordering comment at the top of the sweep carry the same correction.
+
+The swallowed index write is fixed alongside: `multi().exec()` resolves with a
+`[err, reply]` tuple per queued command, so the surrounding catch never saw a
+per-command failure and `fresh_auth.session_index_write_failed` was dead code for that
+class. The replies are now inspected and the first per-command error is rethrown into
+the existing catch. No new log was added; an existing one became reachable.
+
+Coverage: `tests/routes/custody-non-consent-fresh-auth.test.ts` gains a
+`revocation epoch` describe that drives the real route, real `verifyHiveSignature`, and
+real Postgres. It stamps the column directly WITHOUT calling the sweep — reproducing
+exactly the state the sweep leaves behind when it cannot do its job — and asserts the
+broadcast is refused 401 `expired` while the proof is still fully present in the store.
+The JWT is minted with an `iat` after the stamp so it survives, which is the realistic
+shape: the user resets and logs back in, and what must not come back with the new
+session is the window they had open before. A control asserts a window minted AFTER the
+epoch still broadcasts, so a mutation that rejected on any non-null column value cannot
+pass.
+
+Probe: `if (false && ...)` on the epoch check turns the first test 200 (the vulnerable
+behaviour) while the control stays green.
+
+### Item 2 — canary granularity
+
+New shared helper `tests/support/enclosing-symbol.ts` resolves a matched line to its
+nearest enclosing function or route handler and returns `file#symbol` occurrence keys.
+Resolution is textual by design (a canary that needs the compiler is a canary people
+delete) and it carries its own planted positives/negatives, including the
+wrapped-parameter-list case that a naive "closing paren ends the block" rule gets wrong.
+
+Mint canary: assertion is now over `file#symbol`, expecting exactly
+`routes/custody.ts#POST /session-auth` and `routes/orcid.ts#handleSessionAuth`. It scans
+`lib/fresh-auth.ts` instead of skipping it by path — only the definition LINE is
+skipped, and by shape. It also gains a second, name-independent scan: session-kind
+entries are constructible only by writing the `kind: 'session'` discriminator, so the
+enclosing symbols of that object-literal field are pinned to
+`issueSessionFreshAuthToken` and `consumeSessionWindow`. That covers the case the
+name-based scan structurally cannot — a window-minting helper added inside the module
+under a different name.
+
+Probe: adding `issueSessionFreshAuthToken(...)` to `handleLogin` in `routes/orcid.ts` —
+the file's own docblock's most-likely scenario, and the case the file-set version stayed
+green for — now fails, naming `routes/orcid.ts#handleLogin`.
+
+Invalidation canary: the scan walks all of `src/` recursively instead of a flat
+`readdirSync` of `src/routes`, and pairs each column WRITE with a sweep call in the SAME
+enclosing symbol rather than testing whole file against whole file. A self-test on two
+synthetic handlers pins that a write and a sweep in different functions of one file no
+longer satisfy each other.
+
+Probes, both previously green under the whole-file form: a second unswept
+`sessions_invalidated_at` write inside `POST /recover/dispute` (a file that already
+sweeps from two other handlers) now fails, and a writer planted in `src/lib` — outside
+the old non-recursive scan entirely — now fails.
+
+AC 8 behavioural backstop: new
+`tests/routes/session-establishment-mints-no-window.test.ts` drives `POST /api/auth/login`
+and `POST /api/auth/confirm` for real and asserts no proof-shaped field appears anywhere
+in the response, at any depth, under any casing. A path-specific check on
+`data.fresh_auth_proof` would pass for a proof handed back one level deeper or renamed,
+so the detector is a deep walk with its own planted positives for five placements. The
+ORCID `mode='login'` branch gets the same assertion in `tests/routes/orcid.test.ts`,
+beside its `session_auth` sibling, since the two handlers sharing one dispatch is what
+makes that regression look like a consistency fix. Both halves kill the `handleLogin`
+mint probe above.
+
+### Item 3 — bounded index
+
+Three changes, each with a mutation-verified test in `tests/lib/fresh-auth.test.ts`:
+
+- `EXPIRE ... NX` so the index TTL is armed at creation. Probe: dropping `NX` re-arms
+  the full cap and the TTL test goes red. The cost of `NX` is that a window minted late
+  in the key's life loses index membership when the key expires — acceptable only
+  because item 1 moved the authoritative close off the index; noted in the code.
+- The sweep deletes in fixed 500-member chunks. The test plants a real entry behind
+  every one of 1201 members and counts survivors rather than spot-checking a few:
+  `SMEMBERS` returns hash order, and a three-key spot check passed against a truncating
+  sweep by luck on retry. That earlier version is what the probe caught. The current
+  test leaves 701 survivors against a 500-truncated sweep.
+- A window found dead at consume is `SREM`ed from the index (and dropped from both
+  tiers) by a new `dropSessionWindow`. Fire-and-forget, deliberately unlogged: it runs
+  on every consume of a closed window, which is an ordinary client condition. Probe:
+  removing the `SREM` leaves the member behind and the test goes red.
+
+### Item 4 — slide persist off the critical path
+
+`void persistSessionSlide(...)`, keeping its existing catch. The in-memory write inside
+it runs synchronously before the first await, so a concurrent read still observes the
+slid deadline. The three existing slide-persistence tests (`XX` flag present, no
+write-back on the memStore-served leg, declined write removes the in-memory copy) all
+still pass unchanged — the `redis.set` call is issued synchronously, and the single
+connection keeps the declined reply ordered ahead of the next consume's read.
+
+### Item 5 — window values pinned
+
+Two literal assertions in the `session-proof window` describe. Probe: `7200` -> `72000`
+turns it red, where previously the entire suite stayed green.
+
+### For the deferred contract sweep
+
+One wire-visible change beyond what the sweep already lists: a session proof presented
+after a password reset or recovery is now refused `401 FRESH_AUTH_REQUIRED` with
+`reason: 'expired'` even when the Redis sweep never reached it. The passage the hold
+flagged as needing the most careful rewording ("a password reset ends every outstanding
+session proof") is now a durable Postgres-backed guarantee rather than a best-effort
+one, and can be worded as such.
+
+### Not in this round, unchanged from the hold's routing
+
+The module split and the consent-op compensating `DEL` stay in their own task files. The
+`persistSessionSlide` `as number` casts are untouched — they ride with the split, per
+the hold.
+
+### Suite state
+
+`npx vitest run` (full backend, 15 min): **2496 passed, 20 failed across 8 files, 10
+skipped.** Every one of the eight is accounted for and none is in a surface this task
+touched:
+
+- Seven are the standing pre-existing failures — `accreditation.test.ts` (the two
+  broadcast-attempts-cap specs), `reviews.test.ts` (the two SQL-accreditation-gate
+  specs), `idempotency-real-haf`, `papers-enrichment-parity-gate`,
+  `accreditation-idempotency`, `profile-auth-bypass`,
+  `cast-hardening-author-index-weight`. Confirmed by spec name, not by file name.
+- One, `auth-concurrency.test.ts`, is the known load-induced class: its timing-oracle
+  assertion saw a 429 instead of a 401 under full-suite concurrency. It passes in
+  isolation, verified.
+
+Everything this task touches passed in the full run: `tests/lib/fresh-auth*.test.ts`,
+`tests/eslint/`, all `custody-*`, `session-*`, `settings-*-fresh-auth`, `orcid.test.ts`,
+and `tests/middleware/`. `npm run typecheck` clean; `npm run lint` clean apart from one
+pre-existing unrelated warning in `lib/author-supersession.ts`.
