@@ -404,6 +404,10 @@ const KEY_PREFIX = `${config.appTag}:fresh_auth:token:`;
 // expiry equal to the session absolute cap, so a crashed process cannot leave it
 // growing forever.
 const USER_SESSION_INDEX_PREFIX = `${config.appTag}:fresh_auth:user_sessions:`;
+/** How many index members one `DEL` in the invalidation sweep may carry. Each
+ *  member becomes its own argument, so an unbounded spread throws `RangeError`
+ *  on a large enough index and takes the whole sweep with it. */
+const INVALIDATE_DELETE_CHUNK = 500;
 
 /** Discriminates per-op consent proofs (target-bound) from session-level
  *  broadcast proofs (target-less). State C ORCID-only accounts have no
@@ -1095,12 +1099,31 @@ export async function issueSessionFreshAuthToken(
       // One round-trip, so the pair cannot half-apply. An `SADD` that lands
       // while a following `EXPIRE` times out would leave the index key with no
       // TTL at all, growing without bound for the life of the deployment.
+      //
+      // `NX` on the EXPIRE arms the TTL at creation and never pushes it
+      // forward. A plain EXPIRE re-arms the full cap on every mint, so an
+      // account that re-authenticates at least once per window keeps the key
+      // alive forever while its members only accumulate — the TTL that was
+      // supposed to bound the index would never be reached by exactly the
+      // accounts whose index grows. The cost of `NX` is that a window minted
+      // late in the key's life loses its index membership when the key expires,
+      // so the sweep will not find it — acceptable precisely because the sweep
+      // is no longer the authoritative half of invalidation (see
+      // `invalidateSessionFreshAuthTokens`); the revocation epoch closes that
+      // window on its next consume regardless.
       const indexKey = USER_SESSION_INDEX_PREFIX + username;
-      await redis
+      const replies = await redis
         .multi()
         .sadd(indexKey, token)
-        .expire(indexKey, SESSION_FRESH_AUTH_ABSOLUTE_SECONDS)
+        .expire(indexKey, SESSION_FRESH_AUTH_ABSOLUTE_SECONDS, 'NX')
         .exec();
+      // `exec()` RESOLVES with a `[err, reply]` tuple per queued command; a
+      // per-command failure does not reject, so the catch below never sees it.
+      // Surface it here or the whole error class is silent, and a window whose
+      // index write failed is unreachable by the invalidation sweep.
+      for (const [cmdErr] of replies ?? []) {
+        if (cmdErr) throw cmdErr;
+      }
     } catch (err) {
       logger.warn(
         { err, username, event: 'fresh_auth.session_index_write_failed' },
@@ -1121,6 +1144,19 @@ export async function issueSessionFreshAuthToken(
  * actually cut off the compromised session. Every writer of
  * `sessions_invalidated_at` MUST call this.
  *
+ * This sweep is the storage-reclamation half of invalidation, NOT the
+ * authoritative half. The authoritative close is the revocation-epoch check in
+ * `consumeSessionWindow`: the caller stamped `sessions_invalidated_at` in
+ * Postgres, `verifyHiveSignature` reads it back on every later request, and any
+ * window whose `issued_at` precedes it is rejected whether or not this function
+ * managed to remove it. That split is deliberate, because every leg of this
+ * sweep is best-effort in a way a security guarantee cannot be: the per-user
+ * index can be missing a token whose index write failed, a consume already in
+ * flight can re-plant an entry into the in-memory tier after the sweep has
+ * passed it, and an unreachable Redis leaves the canonical tier untouched
+ * entirely. What this function buys is that a dead window stops occupying
+ * storage, rather than lingering to its cap.
+ *
  * Both storage tiers are swept. The in-memory tier is scanned directly (the map
  * is process-local and small). The Redis tier is swept via the per-user index
  * written at mint; consent-op proofs are deliberately NOT swept — they are
@@ -1128,7 +1164,8 @@ export async function issueSessionFreshAuthToken(
  * `FRESH_AUTH_TTL_SECONDS`.
  *
  * Never throws. A Redis failure here must not fail the password reset that
- * triggered it: the in-memory sweep has already run, the revoked JWT alone
+ * triggered it: the in-memory sweep has already run, the revocation epoch
+ * closes every surviving window on its next consume, the revoked JWT alone
  * makes a surviving proof inert (the consume binds the proof to the
  * authenticated username), and the absolute cap bounds what survives. The
  * failure is logged so an operator can correlate it.
@@ -1137,9 +1174,10 @@ export async function invalidateSessionFreshAuthTokens(username: string): Promis
   // Redis first, the in-memory tier last. Both orders close the window in the
   // quiet case, but a consume already in flight can re-plant an entry in the
   // in-memory tier after this function has passed it, so the in-process delete
-  // has to be the final act. What closes the residual race is the `XX` reply
-  // check in `persistSessionSlide`: once Redis has dropped the entry, the next
-  // slide's write is declined and the re-planted copy is removed.
+  // has to be the final act. That narrows the race; it does not close it, and
+  // nothing in this function does. The re-planted copy is rejected on its next
+  // consume by the revocation-epoch check in `consumeSessionWindow`, which is
+  // the guarantee this sweep is not able to provide.
   //
   // The Redis leg carries its own catch so a failure there cannot skip the
   // in-memory sweep below. Ordering the tiers is a narrowing; letting an
@@ -1150,8 +1188,16 @@ export async function invalidateSessionFreshAuthTokens(username: string): Promis
     try {
       const indexKey = USER_SESSION_INDEX_PREFIX + username;
       const tokens = await redis.smembers(indexKey);
-      if (tokens.length > 0) {
-        await redis.del(...tokens.map((t) => KEY_PREFIX + t));
+      // Chunked rather than spread in one call. `del(...members)` turns every
+      // member into a separate argument, and a large enough index reaches the
+      // engine's argument limit and throws `RangeError` — the sweep would BREAK
+      // rather than degrade, precisely for the accounts with the most open
+      // windows. The chunk size is a plain constant: any value well under the
+      // limit works, and one round-trip per 500 members is negligible against a
+      // password reset.
+      for (let i = 0; i < tokens.length; i += INVALIDATE_DELETE_CHUNK) {
+        const chunk = tokens.slice(i, i + INVALIDATE_DELETE_CHUNK);
+        await redis.del(...chunk.map((t) => KEY_PREFIX + t));
       }
       await redis.del(indexKey);
     } catch (err) {
@@ -1253,6 +1299,27 @@ interface FreshAuthConsumeSurface {
    *  entry rejects with `kind_mismatch` and is left intact — burning it would
    *  let anyone holding the token close the owner's window. */
   acceptSession: boolean;
+  /** Epoch-ms of the account's `sessions_invalidated_at`, or `null` when the
+   *  account has never had its sessions revoked. A session window whose
+   *  `issued_at` is at or before this instant is dead regardless of what the
+   *  storage tiers still hold: it predates the reset or recovery that revoked
+   *  the account's sessions.
+   *
+   *  This is the authoritative half of session invalidation.
+   *  `invalidateSessionFreshAuthTokens` sweeps the tiers so a dead window stops
+   *  costing storage, but the sweep is best-effort — it can miss a window whose
+   *  index entry never landed, one re-planted by a consume that was already in
+   *  flight, or every window at all when Redis is unreachable. The epoch comes
+   *  from the same Postgres row the revoking mutation committed, so it cannot
+   *  be lost the same way.
+   *
+   *  `undefined` means "no epoch known" and applies no cut-off. That is the
+   *  no-app-pool case, where `verifyHiveSignature` skips its own JWT revocation
+   *  check for the same reason: there is nothing to ask. Consent-op surfaces
+   *  leave it unset — those proofs are single-use, target-bound, and lapse
+   *  within `FRESH_AUTH_TTL_SECONDS`, so they are deliberately outside the
+   *  sweep (see `invalidateSessionFreshAuthTokens`). */
+  sessionsInvalidatedAtMs?: number | null;
 }
 
 /** A stored entry after structural validation, with the per-kind fields
@@ -1324,15 +1391,24 @@ export async function consumeFreshAuthToken(
  * proving recent re-auth). Non-consent ops don't need the per-op binding, so
  * the binding is just informational here. The strict direction — session proof
  * on a consent-op surface — is NOT accepted.
+ *
+ * `sessionsInvalidatedAtMs` is the caller's copy of the account's revocation
+ * epoch (`req.hiveSessionsInvalidatedAt`, read from Postgres by
+ * `verifyHiveSignature` on the same request). A window minted at or before it
+ * is reported `expired`. Passing `undefined` applies no cut-off; see
+ * {@link FreshAuthConsumeSurface} for why that is the correct posture rather
+ * than a fail-open hole.
  */
 export async function consumeSessionFreshAuthToken(
   token: string | undefined,
   expectedUsername: string,
+  sessionsInvalidatedAtMs?: number | null,
 ): Promise<FreshAuthVerifyResult> {
   return consumeFreshAuthTokenForSurface(token, {
     expectedUsername,
     expectedTargetHash: null,
     acceptSession: true,
+    sessionsInvalidatedAtMs,
   });
 }
 
@@ -1384,6 +1460,9 @@ export async function consumeFreshAuthProof(
     expectedUsername: username,
     expectedTargetHash,
     acceptSession: opts.acceptSession === true,
+    // Only meaningful on a surface that admits session proofs; a consent-op
+    // entry never carries a window to revoke.
+    sessionsInvalidatedAtMs: req.hiveSessionsInvalidatedAt,
   });
   if (result.valid) return { ok: true };
   return { ok: false, status: freshAuthFailureStatus(result.reason), reason: result.reason };
@@ -1451,7 +1530,7 @@ async function consumeFreshAuthTokenForSurface(
       return { valid: false, reason: 'username_mismatch' };
     }
     if (!surface.acceptSession) return { valid: false, reason: 'kind_mismatch' };
-    return consumeSessionWindow(token, entry, read.fromMemStore);
+    return consumeSessionWindow(token, entry, read.fromMemStore, surface.sessionsInvalidatedAtMs);
   }
 
   // Consent-op: single-use. The lock makes the read-then-burn pair
@@ -1572,6 +1651,23 @@ async function burnConsentOpEntry(token: string): Promise<boolean> {
 
 /** Validate one stored session window and slide its idle deadline forward.
  *
+ *  Three ways a window fails here, all reported as `expired` — the same 401 a
+ *  client sees for a proof it never had, which is what lets the SPA treat
+ *  "window closed" as "re-auth and retry":
+ *
+ *   1. The revocation epoch. `sessionsInvalidatedAtMs` is the account's
+ *      `accounts.sessions_invalidated_at` as read from Postgres on this same
+ *      request; a window whose `issued_at` is at or before it predates the
+ *      reset or recovery that revoked the account's sessions. This check is
+ *      what makes invalidation authoritative rather than best-effort: it holds
+ *      for a window the Redis sweep never reached, one re-planted by a consume
+ *      that was in flight while the sweep ran, and one whose per-user index
+ *      entry was never written. `issued_at` is carried through every slide
+ *      unchanged, so it is a stable anchor for the comparison — the sliding
+ *      deadline is not.
+ *   2. The sliding idle deadline.
+ *   3. The absolute cap.
+ *
  *  Both deadlines are checked explicitly even though the storage TTL already
  *  tracks whichever is nearer. The TTL is a second-granular derived value; the
  *  cap is the security-relevant half of the design and the easiest thing to
@@ -1579,16 +1675,22 @@ async function burnConsentOpEntry(token: string): Promise<boolean> {
  *  against the stored value.
  *
  *  The slide is clamped to the cap, so no amount of activity moves the window
- *  past it. Whichever deadline arrives first ends the window, reported as
- *  `expired` — the same 401 a client sees for a proof it never had, which is
- *  what lets the SPA treat "window closed" as "re-auth and retry". */
+ *  past it. */
 async function consumeSessionWindow(
   token: string,
   entry: Extract<ValidatedEntry, { kind: 'session' }>,
   fromMemStore: boolean,
+  sessionsInvalidatedAtMs: number | null | undefined,
 ): Promise<FreshAuthVerifyResult> {
   const now = Date.now();
+  if (typeof sessionsInvalidatedAtMs === 'number' && entry.issued_at <= sessionsInvalidatedAtMs) {
+    // Known dead, and the tiers still hold it — drop it so a window the sweep
+    // missed stops occupying storage and index membership until its cap.
+    dropSessionWindow(token, entry.username);
+    return { valid: false, reason: 'expired' };
+  }
   if (now >= entry.absolute_expires_at || now >= entry.idle_expires_at) {
+    dropSessionWindow(token, entry.username);
     return { valid: false, reason: 'expired' };
   }
 
@@ -1600,14 +1702,51 @@ async function consumeSessionWindow(
     username: entry.username,
     mechanism: entry.mechanism,
     // Carried through unchanged. The cap lives in `absolute_expires_at`, which
-    // the slide never rewrites, so `issued_at` stays purely informational.
+    // the slide never rewrites, and the revocation-epoch comparison above reads
+    // this field, so a slide that rewrote it would hand a revoked window a way
+    // to age out of its own revocation.
     issued_at: entry.issued_at,
     kind: 'session',
     idle_expires_at: slidIdle,
     absolute_expires_at: entry.absolute_expires_at,
   };
-  await persistSessionSlide(token, slid, now, fromMemStore);
+  // Deliberately NOT awaited. The authorization decision is already final and
+  // the persist's failure path is already fail-closed (a lost slide leaves the
+  // previous, EARLIER idle deadline standing), so awaiting it only adds the
+  // Redis round-trip — up to `commandTimeout` against a connected-but-stalled
+  // server — to the latency of every vote, comment, post, and review. The
+  // in-memory write inside `persistSessionSlide` runs synchronously before its
+  // first await, so a concurrent read still observes the slid deadline; only
+  // the Redis leg is detached, and Redis staleness can shorten the effective
+  // window, never lengthen it.
+  void persistSessionSlide(token, slid, now, fromMemStore);
   return { valid: true, mechanism: entry.mechanism };
+}
+
+/** Remove one session window that is already known dead — revoked by the
+ *  account's invalidation epoch, or past one of its deadlines — from both
+ *  storage tiers and from its owner's index.
+ *
+ *  Fire-and-forget: the caller has already decided to reject, so nothing about
+ *  the response depends on this landing, and the entry lapses at its TTL
+ *  anyway. What this buys is the index membership: without an `SREM` the
+ *  per-user index only ever grows for an account that re-authenticates
+ *  regularly, and a sweep over a large index is the failure mode
+ *  `invalidateSessionFreshAuthTokens` chunks its deletes to survive. */
+function dropSessionWindow(token: string, username: string): void {
+  memStore.delete(token);
+  const redis = getRedis();
+  if (!redis || !isRedisAvailable()) return;
+  void redis
+    .multi()
+    .del(KEY_PREFIX + token)
+    .srem(USER_SESSION_INDEX_PREFIX + username, token)
+    .exec()
+    .catch(() => {
+      // Nothing to do: the entry lapses at its TTL and the index key at the
+      // cap. Deliberately unlogged — this runs on every consume of a closed
+      // window, which is an ordinary client-side condition, not an incident.
+    });
 }
 
 /** Persist a slid window.
@@ -1622,9 +1761,21 @@ async function consumeSessionWindow(
  *  can lapse between this consume's read and its write, and a plain `SET` would
  *  resurrect it for another full window.
  *
+ *  Scope of the `XX`-declined branch, stated precisely because it is easy to
+ *  over-claim: it removes the in-memory copy when the canonical Redis entry
+ *  turned out to be gone, and it is reachable ONLY on the Redis-served leg. A
+ *  consume served by the in-memory tier returns above without ever issuing the
+ *  write, so the declined reply cannot arbitrate that case and the unconditional
+ *  `memStore.set` above re-plants an entry a concurrent sweep may have just
+ *  removed. That re-plant is not what closes the sweep-versus-in-flight-consume
+ *  race; the revocation-epoch check in `consumeSessionWindow` is. A re-planted
+ *  window predates the invalidation that swept it, so the next consume rejects
+ *  it from Postgres regardless of which tier answered.
+ *
  *  A failed persist is logged and swallowed: the caller already authorized this
  *  action, and the worst case is that the window does not slide and closes at
- *  its previous idle deadline, which fails closed. */
+ *  its previous idle deadline, which fails closed. Callers do not await this —
+ *  see `consumeSessionWindow`. */
 async function persistSessionSlide(
   token: string,
   entry: StoredEntry,
@@ -1653,9 +1804,9 @@ async function persistSessionSlide(
       // an invalidation swept it between this consume's read and its write. The
       // in-memory copy this function just refreshed would otherwise outlive it
       // and keep re-authorizing, self-renewing on every consume, so drop it and
-      // let the tiers converge on "closed". This is the branch that stops a
-      // password reset racing an in-flight broadcast from leaving the window it
-      // was supposed to close alive in the backup tier.
+      // let the tiers converge on "closed". This converges the tiers on the
+      // Redis-served leg only; the authoritative close for a swept window is
+      // the revocation-epoch check in `consumeSessionWindow`.
       memStore.delete(token);
     }
   } catch (err) {

@@ -453,6 +453,79 @@ describe.skipIf(!dbReachable)('BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — no
       expect(res.body.error.details?.reason).toBe('missing');
     });
   });
+
+  // ─── Revocation epoch ──────────────────────────────────────────────────
+
+  describe('a window minted before the account revocation epoch cannot broadcast', () => {
+    /** Stamp `accounts.sessions_invalidated_at` directly, WITHOUT calling the
+     *  Redis sweep. That is the whole point of these two tests: they reproduce
+     *  the state the sweep leaves behind when it cannot do its job — the
+     *  per-user index entry never landed, a consume in flight re-planted the
+     *  entry after the sweep passed it, or Redis was unreachable at reset time.
+     *  The proof stays fully present and structurally valid in the store; only
+     *  Postgres knows it is dead. */
+    async function stampRevocationEpoch(username: string, atMs: number): Promise<void> {
+      await getAppPool()!.query(
+        'UPDATE accounts SET sessions_invalidated_at = to_timestamp($1) WHERE username = $2',
+        [atMs / 1000, username],
+      );
+    }
+
+    /** A bearer token whose `iat` is after `afterMs`, so the JWT itself
+     *  survives the same revocation stamp that kills the proof. This is the
+     *  realistic shape: the user resets their password and logs in again, so
+     *  they hold a valid session — what must not come back with it is the
+     *  broadcast window they had open before the reset. */
+    function bearerIssuedAfter(username: string, afterMs: number): string {
+      const token = jwt.sign(
+        { sub: username, custody: 'light', iat: Math.floor(afterMs / 1000) + 2 },
+        config.sessionSecret,
+        { expiresIn: '5m' },
+      );
+      return `Bearer ${token}`;
+    }
+
+    it('rejects with 401 + reason expired even though the proof is still in the store', async () => {
+      const proof = await issueSessionFreshAuthToken(ALICE_A, 'password');
+      const epochMs = Date.now();
+      await stampRevocationEpoch(ALICE_A, epochMs);
+
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerIssuedAfter(ALICE_A, epochMs))
+        .send({
+          fresh_auth_proof: proof.token,
+          operations: [VOTE_OP(ALICE_A)],
+        });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(res.body.error.details?.reason).toBe('expired');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+    });
+
+    it('a window minted AFTER the epoch still broadcasts', async () => {
+      // The control that keeps the check honest. Without it, a comparison that
+      // rejected every window whenever the column was non-null would pass the
+      // test above and lock every account out of broadcasting for good after
+      // their first password reset.
+      const epochMs = Date.now();
+      await stampRevocationEpoch(ALICE_A, epochMs);
+      // Past the epoch, so the new window's `issued_at` is strictly after it.
+      await new Promise((r) => setTimeout(r, 20));
+      const proof = await issueSessionFreshAuthToken(ALICE_A, 'password');
+
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerIssuedAfter(ALICE_A, epochMs))
+        .send({
+          fresh_auth_proof: proof.token,
+          operations: [VOTE_OP(ALICE_A)],
+        });
+
+      expect(res.status).toBe(200);
+    });
+  });
 });
 
 // Reference the timeout-error import so the unused-import lint rule stays

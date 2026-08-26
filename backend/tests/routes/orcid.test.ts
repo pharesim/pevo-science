@@ -909,6 +909,37 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
     },
   );
 
+  // ARCH.md § 6.5 invariant #9: the login branch of this same callback dispatch
+  // must NOT open a broadcast window. `handleLogin` and `handleSessionAuth` are
+  // sibling branches fed by one OAuth round-trip, which is exactly what makes
+  // "mint a proof here too, for consistency" a sympathetic-looking regression.
+  // The static canary in tests/eslint/ names the call shape; this asserts the
+  // observable half, on the successful login path where a proof would actually
+  // be handed to a client.
+  it(
+    'login mode returns a session token and no fresh-auth proof',
+    async () => {
+      const orcidId = '0000-0001-9002-0009';
+      installOrcidFetchStub({ orcid: orcidId });
+      appQueryMock.mockResolvedValue({ rows: [{ username: 'alice', custody: 'light' }] });
+      const state = await startUnauthed('login');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(200);
+      expect(res.body.data.mode).toBe('login');
+      // Positive half first: without it the absence assertions below would pass
+      // against any error response and prove nothing about a real login.
+      expect(res.body.data.token).toBeTruthy();
+      expect(res.body.data.username).toBe('alice');
+      expect(res.body.data.fresh_auth_proof).toBeUndefined();
+      // The session-auth branch returns these two alongside the proof; neither
+      // may appear on a login, or a window has been opened under another name.
+      expect(res.body.data.absolute_expires_at).toBeUndefined();
+      expect(res.body.data.mechanism).toBeUndefined();
+    },
+  );
+
   // Item 5 (cache hit): findAccreditedAccountWithOrcid consults the recent-bind
   // cache BEFORE HAF. A cached binding to a different account must trigger
   // 409 ORCID_ALREADY_LINKED without any HAF query running at all. This is the

@@ -24,11 +24,19 @@
  * the other direction: an unrelated account's window must survive.
  *
  * The static half of the guarantee lives in the last describe block: any future
- * route that starts writing `sessions_invalidated_at` must also sweep the
- * proofs. A wiring omission is the realistic failure here, not a bug inside the
- * helper (which `tests/lib/fresh-auth.test.ts` covers directly), and an
- * omission in a route written months from now is exactly what an end-to-end
- * test of today's three routes cannot catch.
+ * writer of `sessions_invalidated_at`, anywhere under `src/`, must also sweep
+ * the proofs from the same function. A wiring omission is the realistic failure
+ * here, not a bug inside the helper (which `tests/lib/fresh-auth.test.ts`
+ * covers directly), and an omission in a handler written months from now is
+ * exactly what an end-to-end test of today's three routes cannot catch.
+ *
+ * Note what the sweep is and is not. It reclaims storage; it is NOT the
+ * authoritative close. That is the revocation-epoch check inside the session
+ * consume, which rejects any window minted at or before
+ * `sessions_invalidated_at` straight from Postgres. The wiring canary still
+ * matters — a writer that skips the sweep leaves dead windows occupying Redis
+ * until their cap, and the sweep is what makes the end-to-end assertions below
+ * hold for a caller that never re-presents the proof through the middleware.
  *
  * Mocks (per root CLAUDE.md "Carve-out for deterministic edge-case coverage"):
  *   (a) None. Postgres, Redis, argon2, the fresh-auth store, and all three
@@ -48,6 +56,7 @@ import crypto from 'node:crypto';
 import argon2 from 'argon2';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { occurrencesOf } from '../support/enclosing-symbol.js';
 
 const { createApp } = await import('../../src/app.js');
 const { getAppPool } = await import('../../src/app-db.js');
@@ -256,13 +265,24 @@ describe('session invalidation closes outstanding session-proof windows', () => 
   });
 });
 
-describe('every route that revokes sessions also closes session-proof windows', () => {
+describe('every writer of the revocation column also closes session-proof windows', () => {
   // Standing wiring canary. The three routes above are today's writers; the
   // failure this guards against is a fourth one added later that stamps
   // `sessions_invalidated_at` and stops there, leaving a live broadcast window
   // attached to a session the operator believes they cut off. That omission is
   // invisible to every test in this file, because those tests name their routes.
-  const routesRoot = path.resolve(__dirname, '..', '..', 'src', 'routes');
+  //
+  // Two granularity properties this scan needs, both of which a
+  // whole-file-tests-whole-file version silently lacked:
+  //
+  //   - It walks ALL of `src/` recursively, not a flat listing of `src/routes`.
+  //     A writer added under `src/lib`, or in any subdirectory, was previously
+  //     not scanned at all.
+  //   - It pairs each WRITE with a sweep in the SAME enclosing symbol. Testing
+  //     "this file contains a write" against "this file contains a sweep" means
+  //     a second, unswept writer added to `recover.ts` — which already sweeps
+  //     from two other handlers — passes untouched.
+  const srcRoot = path.resolve(__dirname, '..', '..', 'src');
 
   /** A WRITE to the revocation column: the column name followed by `=`, which
    *  matches both the SQL `SET sessions_invalidated_at = NOW()` form and the
@@ -271,28 +291,46 @@ describe('every route that revokes sessions also closes session-proof windows', 
   const REVOCATION_WRITE_RE = /sessions_invalidated_at\s*=/;
   const SWEEP_CALL_RE = /invalidateSessionFreshAuthTokens\s*\(/;
 
-  it('the scan finds the routes it is supposed to scan', () => {
-    // Without this, a bad path would make the assertion below vacuously true.
-    const files = readdirSync(routesRoot).filter((f) => f.endsWith('.ts'));
-    expect(files.length).toBeGreaterThan(5);
-    expect(files).toContain('auth.ts');
-    expect(files).toContain('recover.ts');
+  function tsFilesUnder(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...tsFilesUnder(full));
+      else if (entry.isFile() && entry.name.endsWith('.ts')) out.push(full);
+    }
+    return out;
+  }
+
+  const sources = tsFilesUnder(srcRoot).map((file) => ({
+    rel: path.relative(srcRoot, file).split(path.sep).join('/'),
+    lines: readFileSync(file, 'utf8').split('\n'),
+  }));
+
+  it('the scan reaches the whole source tree, not just the top of src/routes', () => {
+    // Without this, a bad path or a non-recursive walk would make the assertion
+    // below vacuously true for everything it failed to visit.
+    expect(sources.length).toBeGreaterThan(20);
+    const rels = sources.map((s) => s.rel);
+    expect(rels).toContain('routes/auth.ts');
+    expect(rels).toContain('routes/recover.ts');
+    // A file in a subdirectory, proving the walk descends.
+    expect(rels).toContain('lib/fresh-auth.ts');
   });
 
-  it('no route stamps the revocation column without sweeping the proofs', () => {
-    const offenders: string[] = [];
-    for (const entry of readdirSync(routesRoot)) {
-      if (!entry.endsWith('.ts')) continue;
-      const source = readFileSync(path.join(routesRoot, entry), 'utf8');
-      if (!REVOCATION_WRITE_RE.test(source)) continue;
-      if (!SWEEP_CALL_RE.test(source)) offenders.push(`src/routes/${entry}`);
-    }
+  it('no writer of the revocation column skips the proof sweep', () => {
+    const writes = occurrencesOf(sources, REVOCATION_WRITE_RE);
+    const sweeps = new Set(occurrencesOf(sources, SWEEP_CALL_RE).keys);
+    // The middleware READS the column on every request; the pattern spares a
+    // SELECT, so it is not expected to appear here at all.
+    expect(writes.keys.length, `revocation-column writes:\n${writes.sites.join('\n')}`)
+      .toBeGreaterThan(0);
+    const offenders = writes.keys.filter((key) => !sweeps.has(key));
     expect(
       offenders,
-      'these routes write sessions_invalidated_at but never call ' +
+      'these functions write sessions_invalidated_at but never call ' +
         'invalidateSessionFreshAuthTokens, so they revoke bearer tokens while ' +
         'leaving an open broadcast window attached to the session they claim to ' +
-        `have cut off:\n${offenders.join('\n')}`,
+        `have cut off:\n${offenders.join('\n')}\n\nall writes:\n${writes.sites.join('\n')}`,
     ).toEqual([]);
   });
 
@@ -304,5 +342,31 @@ describe('every route that revokes sessions also closes session-proof windows', 
     expect(REVOCATION_WRITE_RE.test('SELECT sessions_invalidated_at FROM accounts')).toBe(false);
     expect(SWEEP_CALL_RE.test('await invalidateSessionFreshAuthTokens(account.username);')).toBe(true);
     expect(SWEEP_CALL_RE.test('  invalidateSessionFreshAuthTokens,')).toBe(false);
+  });
+
+  it('a write and a sweep in different functions of one file do not pair up', () => {
+    // The granularity the assertion above rests on. Under the previous
+    // whole-file form these two synthetic handlers passed, because the file
+    // contained both a write and a sweep somewhere.
+    const lines = [
+      "router.post('/sweeps', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
+      '  await invalidateSessionFreshAuthTokens(username);',
+      '});',
+      '',
+      "router.post('/forgets', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
+      '});',
+    ];
+    const file = [{ rel: 'routes/synthetic.ts', lines }];
+    const writes = occurrencesOf(file, REVOCATION_WRITE_RE);
+    const sweeps = new Set(occurrencesOf(file, SWEEP_CALL_RE).keys);
+    expect(writes.keys).toEqual([
+      'routes/synthetic.ts#POST /forgets',
+      'routes/synthetic.ts#POST /sweeps',
+    ]);
+    expect(writes.keys.filter((k) => !sweeps.has(k))).toEqual([
+      'routes/synthetic.ts#POST /forgets',
+    ]);
   });
 });

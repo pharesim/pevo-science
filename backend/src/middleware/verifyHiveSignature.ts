@@ -107,6 +107,28 @@ declare global {
        * middleware and are themselves fresh proof; JWTs are not.
        */
       hiveAuthMethod?: 'jwt' | 'signature';
+      /**
+       * Epoch-ms of `accounts.sessions_invalidated_at` for the authenticated
+       * account, or `null` when the account has never had its sessions revoked.
+       *
+       * The revocation epoch this middleware already reads to reject stale
+       * JWTs, plumbed onto the request so the fresh-auth layer can apply the
+       * SAME cut-off to a session-kind proof window. A password reset or an
+       * account recovery stamps the column; every session window minted at or
+       * before that instant is dead from that point on, whether or not the
+       * best-effort Redis sweep in `invalidateSessionFreshAuthTokens` managed
+       * to remove it. That makes revocation authoritative from Postgres — the
+       * store the mutation itself committed to — rather than from a cache
+       * write that can be lost to a flap, a dropped index entry, or a consume
+       * already in flight when the sweep ran.
+       *
+       * Set only on the JWT branch, and only when an app-DB pool exists (the
+       * same condition that gates the JWT revocation check itself). Left
+       * `undefined` otherwise, which the fresh-auth consume reads as "no epoch
+       * known, do not apply the cut-off" — matching the JWT check, which also
+       * skips when there is no pool to ask.
+       */
+      hiveSessionsInvalidatedAt?: number | null;
     }
   }
 }
@@ -146,8 +168,14 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
               'SELECT sessions_invalidated_at FROM accounts WHERE username = $1',
               [payload.sub],
             );
-            if (rows.length > 0 && rows[0].sessions_invalidated_at) {
-              const invalidatedAtMs = rows[0].sessions_invalidated_at.getTime();
+            const invalidatedAt = rows.length > 0 ? rows[0].sessions_invalidated_at : null;
+            // Published to the request before the revocation verdict below, so
+            // the fresh-auth session-window consume can apply the same cut-off
+            // to a proof the JWT itself survives (a window minted before a reset
+            // whose reissued token is spared by the `reissuedAt` identity match).
+            req.hiveSessionsInvalidatedAt = invalidatedAt ? invalidatedAt.getTime() : null;
+            if (invalidatedAt) {
+              const invalidatedAtMs = invalidatedAt.getTime();
               const invalidatedAtSec = Math.floor(invalidatedAtMs / 1000);
               // Same-second discrimination. A password reset sets
               // sessions_invalidated_at and reissues a fresh session token in the

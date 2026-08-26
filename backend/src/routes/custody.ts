@@ -646,7 +646,16 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     // binding check, so `target_mismatch` and `kind_mismatch` are unreachable
     // here; the shared status mapping applies regardless, which is what keeps
     // the two branches from drifting apart.
-    const result = await consumeSessionFreshAuthToken(proofToken, username);
+    // The account's revocation epoch travels with the request from
+    // `verifyHiveSignature`, which already read it from Postgres to decide the
+    // JWT's own fate. Passing it here is what makes a password reset close this
+    // window authoritatively rather than relying on the best-effort Redis sweep
+    // having reached it.
+    const result = await consumeSessionFreshAuthToken(
+      proofToken,
+      username,
+      req.hiveSessionsInvalidatedAt,
+    );
     if (!result.valid) {
       logger.warn(
         {

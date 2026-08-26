@@ -1286,6 +1286,17 @@ describe('session-proof window', () => {
     _resetFreshAuthMemStoreForTests();
   });
 
+  it('the window values are what the contract says they are', () => {
+    // Every other assertion in this file and in the two route suites derives its
+    // expected bounds from these same constants, so all of them stay green if
+    // the production values move. 15 minutes of inactivity and a 2-hour cap are
+    // stated requirements, not implementation details — pin them literally, or
+    // widening the cap by a factor of ten is a one-character change no test
+    // notices.
+    expect(SESSION_FRESH_AUTH_IDLE_SECONDS).toBe(15 * 60);
+    expect(SESSION_FRESH_AUTH_ABSOLUTE_SECONDS).toBe(2 * 60 * 60);
+  });
+
   /** Plant a session entry directly in the in-memory tier with chosen deadlines.
    *  Used for the boundary cases where minting cannot produce the shape under
    *  test (a window already past its cap, a cap nearer than the idle deadline).
