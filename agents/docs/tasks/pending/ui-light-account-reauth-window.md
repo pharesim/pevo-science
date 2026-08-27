@@ -122,7 +122,10 @@ against `backend/src/routes/custody.ts` and `backend/src/routes/orcid.ts`.
 anchor gate passed on the commit). See the caveat below on AC 2.
 
 **AC 2 caveat.** "The round-trip never fires with unsaved form state" holds for
-every file-bearing flow (publish, edit, inline editor images) and for votes.
+the publish and edit file flows and for votes. It does NOT hold for inline
+editor images: `_handleImageUpload` calls `uploadFile` with no window gate, so a
+passwordless account redirects mid-composition and loses the picked image. That
+claim is corrected here by the architect at review; the code gap is held below.
 For `review.js` and `comment-composer.js` a passwordless account's first write
 of a window still redirects at submit, because those forms have no draft
 persistence and adding it is outside this task's scope. Every later action in
@@ -166,3 +169,163 @@ commented-out placeholder with no value in `.env`. On the user's instruction,
 `HIVE_BRIDGE_ACCOUNT` in `.env` was set to the admin account so the guard
 passes. Bridge papers now post under the admin account locally; revert once a
 real bridge posting key is available.
+
+---
+
+## Architect re-review (2026-08-27) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `e9512840` (frontend paths only), ten reviewer
+personas. **The design is right and most of the work is verified sound.** Independently
+confirmed: ARCHITECTURE § 6.5 invariant #9 holds (`cacheSessionProof` has exactly two
+call sites, and `orcid-callback.js` dispatches on the backend-echoed
+`data.mode === 'session_auth'`, never `'login'`); `auth.disconnect()` clears the window
+cache; AC 7 is met and no replacement comment reintroduces the false claim; AC 5 holds
+(rapid votes coalesce); the wire shape is field-for-field identical across both issuance
+responses and the client branches on structured `details.reason`, not message strings;
+`_acquireInFlight` is cleared in a `finally`; a margin miss genuinely does not evict a
+live window; all eight broadcast call sites render fixed i18n strings rather than raw
+sentinels; the dead-symbol and `common.uploadReauthRequired` removals are complete
+tree-wide; and project-standards came back clean (no emdashes in user-facing text, no
+anchor rot, no added logging).
+
+Nothing below invalidates the architecture. Items 1 to 6 are one theme: **acquire-before-commit
+holds at the two surfaces the task named, but not at every surface that commits the user.**
+
+**1. `freshAuthWindowReady` fails open into silence.** Two paths, one root cause: the
+helper collapses `{ ready, proof }` to a boolean and wraps nothing in `try`.
+(a) A non-`UNAUTHORIZED` mint error (503, 429, transport) propagates by design from
+`mintViaPasswordFactor`, and the page gate call sits *outside* `handleSubmit`'s `try`,
+so the rejection escapes: `step` stays `'idle'`, no toast, no spinner. The user retypes
+their password and re-clicks indefinitely. The same 503 one layer later at
+`broadcastWithFreshAuth` *is* handled, so the new gate is strictly worse than the path
+it front-runs. (b) The gate discards `outcome.proof` and relies solely on
+`sessionStorage`, whose write failure `cacheSessionProof` swallows, so on blocked or
+quota-exhausted storage the gate returns `true` for a window nothing recorded: three
+acquisitions for one publish, and for state C a submit gate that can never be satisfied.
+Fix: make the gate unable to reject (catch, toast, return false), and add an in-memory
+mirror of the window that `readSessionWindow` falls back to when the storage read is
+empty. Same escape shape at `handlePdfChange`, the supplementary handler, and `edit.js`'s
+submit gate.
+
+**2. Client-anchor the window, then replay the slide on the upload leg. In that order.**
+Two defects that must be fixed together, skew first, because both mutate the same
+deadline arithmetic and fixing the second alone widens the divergence.
+(a) The stored deadlines are the server's absolute ISO timestamps but every liveness
+check compares them to `Date.now()`, and the inferred idle period absorbs clock skew
+plus latency. A client behind the server believes a closed window is open (mid-flow 401
+instead of the proactive re-auth the margin exists to guarantee); a client **13 or more
+minutes ahead** infers a period below `WINDOW_PREFLIGHT_MARGIN_MS`, so every acquisition
+instantly reads as a margin miss and state C enters an ORCID redirect loop. Fix by
+anchoring to the client clock at issuance (store `Date.now() + idlePeriodMs` and a
+client-anchored cap, compare those to `Date.now()`), so skew cancels and only latency
+shortens the window; additionally clamp the learned period to a client constant
+mirroring the backend's idle seconds, and refuse to cache a window already under the
+margin, so a badly skewed clock degrades to extra prompts rather than a lockout.
+(b) `POST /api/ipfs/upload-token` consumes a session proof and the backend consume
+*slides*, but `uploadFile` never calls `slideSessionWindow()` (the module does not even
+import it), so the client falls behind by the whole upload duration and then
+`readSessionWindow` **deletes** a token the server would still honour. For state C the
+re-acquisition is a full-page navigation that discards the completed pin; `ipfsCid` and
+`supplementaryFiles` are `handleSubmit` locals and are not persisted. Fix by sliding
+after every successful `uploadFileToIpfs`, both attempts, mirroring
+`broadcastWithFreshAuth`.
+
+**3. An expired upload token must not evict the session window.** The `uploadFile` catch
+treats `UNAUTHORIZED` and `FRESH_AUTH_REQUIRED` identically and unconditionally calls
+`clearCachedSessionProof()`. But `UNAUTHORIZED` at `/api/ipfs/upload` means the
+single-use upload token aged out (60 second TTL), which says nothing about the session
+window. A large file on a slow connection routinely straddles that, so the common case
+destroys a live window and charges a full re-auth act. The retired plaintext password
+hold used to absorb this silently; nothing replaced it. Fix: clear only on a mint-step
+`FRESH_AUTH_REQUIRED` with a remintable reason, and for a plain upload-leg
+`UNAUTHORIZED` just retry the two-step, which cache-hits the live window.
+
+**4. Gate the editor inline-image upload.** `_handleImageUpload` calls `uploadFile`
+with no window gate, checking only `auth?.username`. Acquisition therefore happens
+*inside* the upload, and for state C that is a full-page ORCID navigation fired
+mid-composition with an image already picked. Before this change `uploadFile` refused
+non-destructively via `UPLOAD_REAUTH_UNAVAILABLE`; retiring that block (correct per
+ARCHITECTURE § 6.4) turned a clean refusal into a destructive redirect on this surface.
+The existing comments about images passing through `_handleImageUpload` one at a time
+describe serialization, not acquisition ordering, and do not cover this.
+
+**5. Make mid-batch re-acquisition non-navigating.** Distinct from item 3: once the
+over-clearing is fixed, a genuine window closure mid-batch still re-acquires from inside
+the upload loop and still redirects state C away from completed pins. **Items 4 and 5
+share one fix** — a redirect-suppressed acquisition mode that reads an already-open
+window and, on a miss for a light account, throws a non-navigating error mapped to a
+"re-authenticate and resubmit" toast, leaving the form intact. Build the seam once. The
+password factor may still prompt inline; only the `hasPassword === false` branch needs
+suppressing.
+
+**6. Settle the margin policy: at the gates, not inside the legs.** Today `windowProof`
+inherits the default `WINDOW_PREFLIGHT_MARGIN_MS`, while `broadcastWithFreshAuth` uses
+`acquireSessionProof()` with `minRemainingMs = 0`. So the two legs of one submit
+sequence disagree: a window with 90 seconds left forces a re-auth at the upload leg that
+the broadcast leg would have accepted. `windowProof`'s own comment says it expects a
+cache hit, which the inherited margin defeats. Conversely the margin is validated once
+at submit entry and never re-checked before the broadcast, so a slow upload or a long
+dwell on the broadcast-confirm dialog can close the window after the uploads are paid
+for. Adopt one rule: **apply the margin at the gates (file selection, submit entry, and
+immediately before the broadcast) and never inside the legs.** Concretely, pass
+`minRemainingMs: 0` in `windowProof`, and prefer moving the broadcast-confirm ahead of
+the upload legs (it confirms intent to publish, not to upload, and confirming first also
+avoids paying for pins on a publish the user then cancels).
+
+**7. Refuse-while-open must be distinguishable from cancel.** Session acquisition now
+routes through the `reauthModal` store that the consent-op and settings orchestrators
+already use, and `request()` returns `Promise.resolve(null)` when a prompt is already
+open, which is exactly what `cancel()` returns. A co-author on a paper page who triggers
+a vote and an authorship action in the same window gets one silently dropped, with no
+feedback. `_acquireInFlight` does not help: it coalesces callers *within* session
+acquisition, and this collision is across two orchestrators that do not share it. Return
+a distinct sentinel (or reject) so the caller can queue or tell the user to finish the
+open prompt. Re-check the consent-op and settings call sites when changing the contract.
+
+**8. Restore the same-tick double-submit block.** `this.step = 'hashing'` (and `edit.js`'s
+`'diffing'`) now sits *after* `await this._windowReady()`, but `isSubmitting` derives
+from `step !== 'idle'` and drives the submit button's `:disabled`. Across that await the
+button stays enabled, and a second click re-enters `handleSubmit`; both calls coalesce
+onto the same acquisition, both resolve, and both run the full sequence, producing two
+uploads and two broadcasts. Hoist the step flip above the await and reset to `'idle'` on
+the abort branch. That also gives the user a spinner during re-auth instead of a
+dead-looking button.
+
+**9. Clear the file input when acquisition is refused.** `handlePdfChange` returns
+without clearing `e.target.value`, so the input still holds the file while `pdfFile` was
+never set. Browsers do not fire `change` for an unchanged selection, so the user cannot
+re-pick the same file: the UI shows nothing attached and the one file they want is
+unselectable without choosing a different file or reloading. The supplementary handler
+nine lines below already does this correctly; mirror it.
+
+**10. Two fixtures in `lib-fresh-auth-session-window.test.js` cannot fail.**
+(a) The absolute-cap slide test sets the idle deadline nearer than the cap, so
+`Math.min` never selects the cap: delete the cap clamp from `slideSessionWindow` and the
+assertion still passes. This is the only test covering the property its own comment calls
+the security property. Invert the fixture so the idle period exceeds the distance to the
+cap. (b) Every fixture mints with the same idle period the client is supposed to *infer*,
+so replacing the computation with a hardcoded constant keeps the suite green, and the
+client would then silently break if the backend's idle period ever changed. Add a case
+minting with a deliberately different period. (Note the sibling test covering a *reached*
+cap in `readSessionWindow` is fine; the gap is specific to the slide's clamp.)
+
+**11. (Low, fix while you are in the file.)** `broadcastWithFreshAuth` repeats
+`broadcastOps(...)` then `slideSessionWindow()` then return in both the first attempt and
+the 401 retry. Item 2(b) is exactly this bug class (a consume site missing its slide),
+and fixing it adds more consume sites. Extract a local `attemptOnce(proof)` closure so
+"consume without sliding" stops being something a reviewer has to notice.
+
+**12. (Low, fix while you are in the file.)** `edit.js` runs the full re-auth gate before
+the no-change detection roughly 190 lines further down, so submitting an unchanged form
+costs a password prompt, or for state C a full-page ORCID round-trip, only to be told
+nothing changed. Hoist the cheap no-op detection above the gate.
+
+Not held, routed elsewhere: the four-way duplication of `hasPassword` resolution (and the
+fact that `settings.js` / `admin.js` fall to ORCID on a failed status where this task
+correctly falls to the password prompt) is filed as its own task, because the divergence
+is pre-existing and the surfaces are outside this task's scope. Dismissed: splitting
+`fresh-auth.js` along a state-versus-orchestration seam, since the reviewer's own verdict
+was that no split is needed yet and PEvO has no file-length rule; the seam is recorded
+here for whenever the next responsibility lands. Separately, the architect is documenting
+`absolute_expires_at` and the window model in `api-contracts/custody.md` and `orcid.md`,
+which closes the wire-shape caveat this task opened with.
