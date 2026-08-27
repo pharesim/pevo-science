@@ -70,3 +70,24 @@ Both items came out of the `/ce-code-review` pass on `51ecba19`. The cast findin
 independently validated as a type-expressiveness gap rather than a live NaN or
 TTL-corruption risk, so there is no urgency to it beyond doing it while the types are
 already being moved.
+
+---
+
+## [BLOCKED by Architect] (2026-08-27)
+
+Not startable yet, per this task's own sequencing constraint: the split must
+wait until `backend-windowed-session-fresh-auth` has landed its held fixes and
+been archived. That task is still in `agents/docs/tasks/review/` awaiting the
+architect's re-review pass after its round-2 fixes, so the settled green
+baseline this task requires does not exist.
+
+Recorded here rather than left in `pending/` because startup protocols scan
+`blocked/` for `[BLOCKED by <self>]` and do not grep `pending/` for inline
+caveats. Move back to `pending/` once `backend-windowed-session-fresh-auth` is
+archived.
+
+Note for whoever picks this up: `fresh-auth.ts` has grown again since this task
+was written. The consent-op burn now also carries the `spentConsentOps` ledger
+and its drain, which belong with the consent-op lifecycle in the post-split
+layout, and `isConsentOpSpent` / `drainSpentConsentOps` are consent-op-only so
+they do not push anything into the shared store module.
