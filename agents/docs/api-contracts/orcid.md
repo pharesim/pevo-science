@@ -240,7 +240,7 @@ No `custom_json` broadcast on this mode. No min works check.
 
 #### session_auth
 
-Target-less ORCID session-kind proof issuance. Used by State C (passwordless ORCID-only) accounts that have no password mechanism to mint via `POST /api/custody/fresh-auth`, and by State B accounts that prefer the ORCID factor over their password. The mint flow is identical to `fresh_auth` except (a) no per-op target binding, (b) the issued proof is admitted only on the non-consent `POST /api/custody/broadcast` surface.
+Target-less ORCID session-kind proof issuance. Used by State C (passwordless ORCID-only) accounts that have no password mechanism to mint via `POST /api/custody/fresh-auth`, and by State B accounts that prefer the ORCID factor over their password. The mint flow is identical to `fresh_auth` except (a) no per-op target binding, (b) the issued proof is admitted only on the non-consent `POST /api/custody/broadcast` surface and on `POST /api/ipfs/upload-token`, and (c) it is multi-use within a bounded window rather than single-use.
 
 1. Exchange code for token, get ORCID iD.
 2. Verify the OAuth-returned ORCID iD format matches `/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/`. Mismatch returns 400 `BAD_REQUEST`.
@@ -255,13 +255,16 @@ No `custom_json` broadcast on this mode. No min works check.
 ```json
 {
   "mode": "session_auth",
-  "fresh_auth_proof": "<single-use token>",
-  "expires_at": "2026-05-06T12:05:00.000Z",
+  "fresh_auth_proof": "<multi-use token, bounded window>",
+  "expires_at": "2026-05-06T12:15:00.000Z",
+  "absolute_expires_at": "2026-05-06T14:00:00.000Z",
   "mechanism": "orcid"
 }
 ```
 
-`fresh_auth_proof` is a single-use bearer token bound to the JWT subject (no target binding). TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request whose bundle does NOT contain a consent op. Submitting a session-kind proof to a consent-op bundle returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "kind_mismatch"`.
+`fresh_auth_proof` is a bearer token bound to the JWT subject (no target binding). It is **multi-use inside a bounded window** described by two ISO-8601 deadlines, ending at whichever arrives first: `expires_at` is the sliding idle deadline (15 minutes, moved forward by every successful consume and clamped to the cap) and `absolute_expires_at` is the absolute cap (2 hours from first mint, not extendable). The slide is not echoed on the wire, so a client tracking the window models it locally from the idle period learned at mint. This response is field-for-field identical to the password-mechanism sibling at `POST /api/custody/session-auth` apart from `mode` and `mechanism`; see [custody.md](custody.md) for the full window contract.
+
+Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request whose bundle does NOT contain a consent op, or on `POST /api/ipfs/upload-token`. Submitting a session-kind proof to a consent-op bundle returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "kind_mismatch"`. A closed window returns 401 `FRESH_AUTH_REQUIRED` with `details.reason: "expired"` regardless of which deadline was reached.
 
 **Errors specific to `session_auth`:**
 - `BAD_REQUEST` (400) — invalid ORCID iD format returned by the OAuth round-trip.

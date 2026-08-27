@@ -21,7 +21,11 @@ Pre-flight that binds a declared file to the authenticated request before the ac
 
 **Auth:**
 - **Signature (Keychain) path:** the per-request Hive signature already body-hashes this JSON descriptor into the signed envelope, so the declared SHA-256 is bound to the signature. No `fresh_auth_proof` is needed.
-- **JWT (light-account) path:** a single-use per-action `fresh_auth_proof` bound to `action='ipfs_upload'` is required in addition to the JWT, per ARCHITECTURE.md § 6.5 invariant #1 (a replayable JWT alone must not reach a critical action). The per-action binding means a target-less session proof minted for a vote or comment cannot be redirected here. Mint one via `POST /api/custody/fresh-auth` with `action='ipfs_upload'` (password) or `POST /api/orcid/start mode='fresh_auth' action='ipfs_upload'` (ORCID). Note: the PEvO web client mints only the password-path proof, so it offers inline upload to password-holding accounts (states A and B) and asks passwordless ORCID-only accounts (state C) to set a password first, because a selected file cannot survive the full-page ORCID OAuth redirect. The route itself still accepts an ORCID-minted proof for any client that can complete the round-trip.
+- **JWT (light-account) path:** a `fresh_auth_proof` is required in addition to the JWT, per ARCHITECTURE.md § 6.5 invariant #1 (a replayable JWT alone must not reach a critical action). **Two proof kinds are accepted:**
+  - A single-use per-action proof bound to `action='ipfs_upload'`. Mint via `POST /api/custody/fresh-auth` with `action='ipfs_upload'` (password) or `POST /api/orcid/start mode='fresh_auth' action='ipfs_upload'` (ORCID).
+  - A **live session-kind proof within its window** (see [custody.md](custody.md)). The session kind is admitted here because a live session proof already authorizes arbitrary non-consent broadcasts for the remainder of its window, so an upload is not a wider grant than what the holder can already exercise. Per-file integrity binding lives in the returned upload token, not in the fresh-auth proof.
+
+  The PEvO web client satisfies this gate from the session proof it already holds for the broadcast leg, so one re-auth act covers both an upload and the post that carries it. Passwordless ORCID-only (state C) accounts are no longer blocked from inline upload: the client acquires the session window by an ORCID round-trip taken **before** any file is selected, per the acquire-before-commit rule in ARCHITECTURE.md § 6.4.1. The earlier carve-out that asked state C to set a password first is retired.
 
 **Validation:** `file_sha256` must be 64-char hex; `mimetype` must be in the accepted-types set below; `size` must be a positive integer within the upload limit. The account must be accredited (same gate as the upload itself, checked here so the pre-flight fails fast).
 
@@ -37,7 +41,7 @@ Pre-flight that binds a declared file to the authenticated request before the ac
 ```
 
 **Errors:**
-- `FRESH_AUTH_REQUIRED`: JWT path with a missing or invalid `fresh_auth_proof`. Returns 401 when no usable proof is present (missing, expired, or malformed), and 403 on a binding violation (a proof for a different username, a different action target, or the wrong proof kind such as a target-less session proof). The `details.reason` field distinguishes the sub-cases. Mirrors the consent-op consume on `POST /api/custody/broadcast`.
+- `FRESH_AUTH_REQUIRED`: JWT path with a missing or invalid `fresh_auth_proof`. Returns 401 when no usable proof is present (missing, expired, or malformed), and 403 on a binding violation (a proof for a different username, or a different action target). Note a target-less session proof is NOT a binding violation here: it is an accepted kind on this route, unlike on the consent-op surface. The `details.reason` field distinguishes the sub-cases. Mirrors the consent-op consume on `POST /api/custody/broadcast`.
 - `BAD_REQUEST` — `file_sha256` is not a valid 64-char hex digest.
 - `INVALID_FILE_TYPE` (422) — `mimetype` is not in the accepted set.
 - `FILE_TOO_LARGE` (413) — declared `size` exceeds the configured limit.

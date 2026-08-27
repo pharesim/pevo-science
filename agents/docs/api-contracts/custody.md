@@ -137,7 +137,7 @@ The response echoes the per-op target the proof was bound to at issuance (`actio
 
 ### POST /api/custody/session-auth
 
-Mint a target-less session-kind fresh-auth proof via password re-verification. Light-account-only. Used by State A accounts (light + password, no ORCID) to authorize non-consent `POST /api/custody/broadcast` bundles (vote, comment, non-consent `custom_json`). The ORCID-mechanism sibling lives at `POST /api/orcid/start { mode: "session_auth" }` (see [orcid.md](orcid.md)).
+Mint a target-less session-kind fresh-auth proof via password re-verification. Light-account-only. Used by State A accounts (light + password, no ORCID) and State B accounts (which have both factors and prefer the password, because a modal beats a full-page OAuth redirect) to authorize non-consent `POST /api/custody/broadcast` bundles (vote, comment, non-consent `custom_json`) and to mint IPFS upload tokens at `POST /api/ipfs/upload-token`. The ORCID-mechanism sibling lives at `POST /api/orcid/start { mode: "session_auth" }` (see [orcid.md](orcid.md)).
 
 **Headers:** `Authorization: Bearer <jwt>` or `X-Hive-Username`, `X-Hive-Signature` (account must have `custody: "light"`)
 
@@ -155,13 +155,25 @@ Mint a target-less session-kind fresh-auth proof via password re-verification. L
 
 ```json
 {
-  "fresh_auth_proof": "<single-use token>",
-  "expires_at": "2026-05-06T12:05:00.000Z",
+  "fresh_auth_proof": "<multi-use token, bounded window>",
+  "expires_at": "2026-05-06T12:15:00.000Z",
+  "absolute_expires_at": "2026-05-06T14:00:00.000Z",
   "mechanism": "password"
 }
 ```
 
-`fresh_auth_proof` is a single-use bearer token bound to the JWT subject (no target binding). TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request whose bundle does NOT contain a consent op.
+`fresh_auth_proof` is a bearer token bound to the JWT subject (no target binding). Unlike the consent-op kind, it is **multi-use inside a bounded window**, so one re-auth act covers a working stretch of votes, comments, reviews, posts and uploads rather than a single broadcast.
+
+The window is described by **two** ISO-8601 deadlines, and it ends at whichever arrives first:
+
+- `expires_at` is the **sliding idle deadline**, 15 minutes out. Every successful consume moves it forward to 15 minutes from that consume, clamped so it never passes `absolute_expires_at`. This is the field to treat as authoritative for "do I need to re-auth".
+- `absolute_expires_at` is the **absolute cap**, 2 hours from first mint. No activity extends it. Reaching it costs one re-auth act.
+
+**The slide is not observable on the wire.** Neither the broadcast response nor the upload-token response echoes a refreshed deadline, so a client that wants to track the window must model the slide locally from the idle period it learned at mint. Note that both deadlines are server clock values: a client comparing them against its own clock inherits any skew between the two, and should anchor the window to its own clock at issuance rather than storing the server timestamps raw.
+
+Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request whose bundle does NOT contain a consent op, or on `POST /api/ipfs/upload-token` (see [ipfs.md](ipfs.md)). The same live proof satisfies both, so an upload plus its post costs one re-auth act in total.
+
+A window that has closed reports 401 `FRESH_AUTH_REQUIRED` with `details.reason: "expired"`, regardless of which of the two deadlines was reached. A password reset or account recovery also ends outstanding session proofs for the account, surfacing as the same 401. (The durability of that invalidation is being tightened; this doc will state the exact guarantee once that lands.)
 
 **Rate limit:** 10 requests per account per minute.
 
