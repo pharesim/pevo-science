@@ -884,7 +884,84 @@ const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
  *  is not a substitute for. */
 const inFlightConsumes = new Set<string>();
 
-/** Periodic cleanup so the map doesn't grow unbounded under no-Redis ops.
+/** Consent-op proofs whose burn was won by the in-memory tier while the
+ *  canonical Redis copy could NOT be confirmed removed. Token -> that proof's
+ *  own expiry (epoch ms).
+ *
+ *  Why a ledger is needed at all: the compensating `DEL` issued after an
+ *  in-memory-arbitrated burn is not guaranteed to land. ioredis rejects the
+ *  entire offline queue with `MaxRetriesPerRequestError` on every reconnect
+ *  attempt divisible by `maxRetriesPerRequest + 1`, so on this client's backoff
+ *  curve a queued command survives roughly two seconds of downtime — well short
+ *  of an ordinary Redis restart. Past that point the canonical copy stands for
+ *  the remainder of its TTL, and a single-use proof that has ALREADY authorized
+ *  one critical action reads back out of Redis and authorizes a second. The
+ *  per-user targets bind `(action, actor, '')` and never the operation payload,
+ *  so the second use is not even constrained to the same effect as the first.
+ *
+ *  Membership means "spent, canonical fate unknown". The burn consults it before
+ *  reporting a win, so a proof in here is refused on every later presentation no
+ *  matter what Redis still holds — the guarantee no longer rests on a command
+ *  that may never flush. Entries leave on any of three events: the compensating
+ *  delete is confirmed to have landed, a later presentation's `GETDEL` proves
+ *  the canonical copy gone, or the proof's own expiry passes.
+ *
+ *  Process-local, like every other tier here. A restart drops the ledger, but it
+ *  drops `memStore` with it, which is already the point past which Redis is the
+ *  sole arbiter; the drain below is what keeps that window short. */
+const spentConsentOps = new Map<string, number>();
+
+/** Has this consent-op proof already been burned against an unconfirmed
+ *  canonical copy? Prunes on read so an expired ledger entry never outlives the
+ *  proof it guards. */
+function isConsentOpSpent(token: string): boolean {
+  const expiresAt = spentConsentOps.get(token);
+  if (expiresAt === undefined) return false;
+  if (expiresAt <= Date.now()) {
+    spentConsentOps.delete(token);
+    return false;
+  }
+  return true;
+}
+
+/** Retry the compensating deletes a flap left undone, and drop ledger entries
+ *  whose proof has lapsed anyway.
+ *
+ *  This is not what closes the replay hole — the ledger itself refuses the
+ *  replay whether or not a delete ever lands. What the drain buys is that an
+ *  orphaned canonical key does not outlive the process-local ledger entry
+ *  guarding it: once Redis is reachable again the key goes, so a later restart
+ *  finds nothing to replay. A restart BEFORE Redis returns is the residual this
+ *  cannot cover.
+ *
+ *  Deletes are fire-and-forget: a retry that fails leaves the entry in place for
+ *  the next tick, which is exactly the state it was already in. */
+function drainSpentConsentOps(now: number): void {
+  if (spentConsentOps.size === 0) return;
+  const redis = getRedis();
+  const client = redis !== null && isRedisAvailable() ? redis : null;
+  for (const [token, expiresAt] of spentConsentOps) {
+    if (expiresAt <= now) {
+      spentConsentOps.delete(token);
+      continue;
+    }
+    if (!client) continue;
+    void client
+      .del(KEY_PREFIX + token)
+      .then(() => {
+        // Confirmed gone from the canonical tier, and `memStore` lost it at
+        // burn time, so the proof is unreachable and the ledger entry has
+        // nothing left to guard.
+        spentConsentOps.delete(token);
+      })
+      .catch(() => {
+        // Still unreachable. Deliberately unlogged: the burn already warned
+        // once, and this runs on a timer for as long as the outage lasts.
+      });
+  }
+}
+
+/** Periodic cleanup so the maps don't grow unbounded under no-Redis ops.
  *  Same shape as the orcid_state cleaner in orcid.ts. Wrapped in a
  *  start/stop pair so tests can deterministically pause the cleaner during
  *  fake-timer scenarios. */
@@ -898,6 +975,7 @@ function startCleanup(): void {
     for (const [token, { expiresAt }] of memStore) {
       if (expiresAt <= now) memStore.delete(token);
     }
+    drainSpentConsentOps(now);
   }, CLEANUP_INTERVAL_MS);
   cleanupInterval.unref();
 }
@@ -1612,13 +1690,27 @@ async function readFreshAuthEntry(
  *  held the entry.
  *
  *  When the Redis leg did not run at all — the client exists but is mid-flap, so
- *  `isRedisAvailable()` is false — and the in-memory tier is what arbitrated the
- *  win, a compensating `DEL` is issued anyway. It is guarded on the client's
- *  existence ONLY, never on readiness: ioredis queues the command while offline
- *  and flushes it on reconnect, which is the whole point. Without it a burn that
- *  happened during a flap leaves the canonical copy standing for the rest of its
- *  TTL. */
+ *  `isRedisAvailable()` is false — the in-memory tier is what arbitrates the win,
+ *  and the canonical copy is left standing. A compensating `DEL` is issued to
+ *  remove it, guarded on the client's existence rather than its readiness so
+ *  ioredis can queue it and flush it on reconnect.
+ *
+ *  That delete is best-effort, NOT the single-use guarantee. ioredis rejects its
+ *  whole offline queue once the reconnect count reaches `maxRetriesPerRequest`,
+ *  which on this client's backoff curve is about two seconds — shorter than an
+ *  ordinary Redis restart — so a queued delete routinely never runs. The
+ *  guarantee therefore comes from `spentConsentOps`: the burn records the proof
+ *  as spent BEFORE attempting the delete and clears the record only once the
+ *  delete is confirmed, so a proof burned during an outage stays refused however
+ *  the delete resolves. `drainSpentConsentOps` retries the delete on a timer to
+ *  keep an orphaned key from outliving its ledger entry. */
 async function burnConsentOpEntry(token: string): Promise<boolean> {
+  // Both reads happen before the first await: `Map.delete` does not hand back
+  // the record it removed, and the spent check must observe the state as it was
+  // when this caller entered the (already serialized) critical section.
+  const memRecord = memStore.get(token);
+  const alreadySpent = isConsentOpSpent(token);
+
   let burnedInRedis = false;
   let redisLegRan = false;
   const redis = getRedis();
@@ -1635,13 +1727,32 @@ async function burnConsentOpEntry(token: string): Promise<boolean> {
   }
   const burnedInMemStore = memStore.delete(token);
 
+  if (alreadySpent) {
+    // Burned once already, during a flap that left the canonical copy's fate
+    // unknown. Whichever tier just answered, this presentation is a replay of a
+    // spent proof and must not authorize anything. A `GETDEL` that actually ran
+    // is proof the canonical copy is now gone, which retires the ledger entry;
+    // otherwise it stays for the drain to finish.
+    if (redisLegRan) spentConsentOps.delete(token);
+    return false;
+  }
+
   if (!redisLegRan && burnedInMemStore && redis) {
+    // Record the burn first. Ordering is the point: if the delete below is the
+    // thing that establishes single-use, an outage that outlives the offline
+    // queue reopens the replay, whereas a ledger entry written first survives
+    // the delete failing, timing out, or being flushed unsent.
+    // `burnedInMemStore` implies `memRecord` was present; the fallback is a
+    // type-level floor, and a fresh full TTL is the conservative direction
+    // (it can only over-guard, never under-guard).
+    spentConsentOps.set(token, memRecord?.expiresAt ?? Date.now() + FRESH_AUTH_TTL_SECONDS * 1000);
     try {
       await redis.del(KEY_PREFIX + token);
+      spentConsentOps.delete(token);
     } catch (err) {
       logger.warn(
         { err, event: 'fresh_auth.redis_compensating_del_failed' },
-        'Compensating Redis delete after an in-memory-arbitrated burn failed; the canonical copy lapses at its TTL',
+        'Compensating Redis delete after an in-memory-arbitrated burn failed; the proof is held spent in-process until the delete lands or it expires',
       );
     }
   }
@@ -1889,10 +2000,14 @@ function validateStoredEntry(raw: string): ValidatedEntry | null {
   };
 }
 
-/** Test-only hook: clears the in-memory fallback store. Not exposed to
- *  route handlers. */
+/** Test-only hook: clears the in-memory fallback store and the spent-consent-op
+ *  ledger. Not exposed to route handlers. The ledger is cleared alongside the
+ *  store because both are keyed by token and both outlive a single consume: a
+ *  suite that reuses a token across cases would otherwise inherit a previous
+ *  case's burn. */
 export function _resetFreshAuthMemStoreForTests(): void {
   memStore.clear();
+  spentConsentOps.clear();
 }
 
 /** Test-only hook: returns the current size of the in-flight consume lock set.
