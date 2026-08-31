@@ -1966,6 +1966,49 @@ describe('session-proof window', () => {
         expect(afterSlide.reason).toBe('expired');
       }
     });
+
+    it('the cut-off holds for an entry the in-memory tier serves during a Redis outage', async () => {
+      // Tier-independence, pinned explicitly rather than inherited from how
+      // the other cases happen to plant. Those cases are served from the
+      // in-memory tier only because their planted tokens are absent from
+      // Redis; a planting helper that ever wrote through to Redis would move
+      // every epoch case onto the Redis-served leg without failing anything.
+      // This case forces the read down the fallback leg by making the Redis
+      // read throw, the way a real outage does — which is exactly the
+      // condition the in-memory tier exists to serve, and therefore the leg a
+      // revocation check scoped to Redis-served reads would silently abandon.
+      const now = Date.now();
+      const issuedAt = now - 60_000;
+      plantSessionEntry(
+        'epoch-mem-token',
+        'epoch-mem-user',
+        now + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000,
+        now + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+        issuedAt,
+      );
+      const redis = getRedis();
+      const spy =
+        redis && isRedisAvailable()
+          ? vi.spyOn(redis, 'get').mockRejectedValue(new Error('simulated outage'))
+          : null;
+      try {
+        // Control first: with no epoch, the outage-served window is alive, so
+        // the rejection below is attributable to the cut-off and nothing else.
+        expect((await consumeSessionNoEpoch('epoch-mem-token', 'epoch-mem-user')).valid).toBe(true);
+
+        const result = await consumeSessionFreshAuthToken(
+          'epoch-mem-token',
+          'epoch-mem-user',
+          issuedAt,
+        );
+        expect(result.valid).toBe(false);
+        if (!result.valid) {
+          expect(result.reason).toBe('expired');
+        }
+      } finally {
+        spy?.mockRestore();
+      }
+    });
   });
 });
 

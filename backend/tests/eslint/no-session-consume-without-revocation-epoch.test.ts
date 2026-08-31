@@ -27,25 +27,54 @@
  * otherwise absorb a second, epoch-less consume added to a different handler
  * without changing the file set.
  *
- * TWO SEAMS, because the type system closes neither on its own. The exported
- * consume takes the epoch as a required argument, so an external caller cannot
- * omit it; but the internal surface literal that argument feeds into is
- * module-private, and making its field required only means an in-module literal
- * must MENTION the field. Nothing stops a fourth surface from mentioning it as a
- * literal `undefined`, and nothing outside this file can even name the type to
- * pin it. So both seams are scanned: the exported consume's call sites, and the
- * surface literals inside the module.
+ * MODULE SCOPE IS NEVER SATISFYING. A pairing scan has a vacuity a set-equality
+ * scan does not: `enclosingSymbol` resolves a declaration shape it cannot parse
+ * (an object-method shorthand, a class member) to the module-scope label, and
+ * when BOTH sides of a pair land on that one label they satisfy each other, so
+ * an epoch-less consume inside such a declaration passes green. Both pairings
+ * below therefore drop module-scope keys from their satisfying sets AND assert
+ * outright that no primary-side occurrence resolved to module scope, which
+ * turns "the resolver did not understand this declaration" into a red bar
+ * naming the line instead of a silent pass. The rule is stated once, in
+ * `tests/support/enclosing-symbol.ts`, and pinned here by a planted probe using
+ * exactly such a declaration shape.
+ *
+ * THREE SEAMS, because the type system closes none of them on its own. The
+ * exported consume takes the epoch as a required argument, so an external
+ * caller cannot omit it; but the internal surface literal that argument feeds
+ * into is module-private, and making its field required only means an in-module
+ * literal must MENTION the field. Nothing stops a fourth surface from
+ * mentioning it as a literal `undefined`, and nothing outside this file can
+ * even name the type to pin it. So three seams are scanned: the exported
+ * consume's call sites, the surface literals inside the module, and — because
+ * "mentions the field" is satisfiable by `sessionsInvalidatedAtMs: undefined`
+ * sitting beside `acceptSession: true` — the VALUE each session-accepting
+ * surface gives the field, which must be an epoch reference and never a
+ * literal.
  *
  * KNOWN TRADE. The pairing is textual. A caller that reads the epoch in one
  * function and consumes inside a nested arrow declared in another resolves to
  * two different symbols and fails here even though it is correct; the fix is to
  * keep the two in one scope. The reverse, an epoch-less consume inside a
  * function that mentions the epoch for an unrelated reason, passes. This is a
- * wiring pin, not a taint analysis.
+ * wiring pin, not a taint analysis. The same trade prices the value seam: a
+ * shorthand `sessionsInvalidatedAtMs` write is accepted as a pass-through of
+ * the same-named binding, so a local `const sessionsInvalidatedAtMs =
+ * undefined` shadowing the parameter would pass — visible in review, and the
+ * external-caller seam still forces every caller of the exported consume to
+ * hand over the request's epoch.
  */
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { isCommentLine, occurrencesOf, sourcesUnder } from '../support/enclosing-symbol.js';
+import {
+  MODULE_SCOPE,
+  enclosingSymbol,
+  isCommentLine,
+  isModuleScopeKey,
+  occurrencesOf,
+  sourcesUnder,
+  type ScannedSource,
+} from '../support/enclosing-symbol.js';
 
 /** A CALL to the session-surface consume: identifier followed by an open paren,
  *  optionally across whitespace so a wrapped call still matches. An import
@@ -73,7 +102,154 @@ const SURFACE_DEFINITION_RE = /function\s+consumeFreshAuthTokenForSurface\s*\(/;
  *  consume-side scan above is what makes the value it carries the request's. */
 const SURFACE_FIELD_RE = /\bsessionsInvalidatedAtMs\b/;
 
+/** A WRITE of the surface field: the name in key position (shorthand, or
+ *  followed by a colon), not a property access (`surface.sessionsInvalidatedAtMs`)
+ *  and not an optional type member (`sessionsInvalidatedAtMs?:`). The `$`
+ *  alternative admits a wrapped key whose value starts on the next line, so the
+ *  value seam cannot be stepped around by a line break — the same line-
+ *  orientation hole the construction scan in the sibling mint canary closed. */
+const SURFACE_FIELD_WRITE_RE = /(?<!\.)\bsessionsInvalidatedAtMs\b\s*(?:[,}]|:|$)/;
+
+/** A WRITE of the session-acceptance flag, same key-position discipline. The
+ *  optional type member (`acceptSession?: boolean`) does not match, so the
+ *  option-bag parameter declarations stay out of the classification. */
+const ACCEPT_SESSION_WRITE_RE = /(?<!\.)\bacceptSession\b\s*:/;
+
+/** The value shapes that disable the cut-off while compiling: `undefined`,
+ *  `null`, a number, or a string. Applied to the text AFTER the key's colon
+ *  (joined with the next line when the key is wrapped). */
+const LITERAL_VALUE_RE = /^\s*(?:undefined\b|null\b|[0-9]|['"`])/;
+
 const sources = sourcesUnder(path.resolve(__dirname, '..', '..', 'src'));
+
+/** The consume↔epoch pairing, factored so the planted probes below exercise the
+ *  same call the whole-tree scan does. Module-scope keys are excluded from the
+ *  satisfying set and reported separately for the primary side; see the file
+ *  docblock for why a pairing scan must never let module scope satisfy. */
+function epochlessConsumes(files: ScannedSource[]) {
+  const consumes = occurrencesOf(
+    files,
+    CONSUME_CALL_RE,
+    (line) => CONSUME_DEFINITION_RE.test(line) || isCommentLine(line),
+  );
+  const epochs = new Set(
+    occurrencesOf(files, EPOCH_REF_RE, isCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
+  );
+  return {
+    consumes,
+    moduleScoped: consumes.keys.filter(isModuleScopeKey),
+    offenders: consumes.keys.filter((key) => !epochs.has(key)),
+  };
+}
+
+/** The surface↔field pairing, same shape and same module-scope discipline. */
+function fieldlessSurfaces(files: ScannedSource[]) {
+  const surfaces = occurrencesOf(
+    files,
+    SURFACE_CALL_RE,
+    (line) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line),
+  );
+  const fields = new Set(
+    occurrencesOf(files, SURFACE_FIELD_RE, isCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
+  );
+  return {
+    surfaces,
+    moduleScoped: surfaces.keys.filter(isModuleScopeKey),
+    offenders: surfaces.keys.filter((key) => !fields.has(key)),
+  };
+}
+
+/** The text a key's value occupies: the remainder of the line after the first
+ *  colon following `name`, joined with the next non-comment line when the key
+ *  is wrapped (colon at end of line). Returns null when `name` is written in
+ *  shorthand position (no colon), which for the epoch field means a
+ *  pass-through of the same-named binding. */
+function valueTextAfterKey(lines: string[], lineIndex: number, name: string): string | null {
+  const line = lines[lineIndex];
+  const m = line.match(new RegExp(`(?<!\\.)\\b${name}\\b\\s*(:)?`));
+  if (!m || !m[1]) return null;
+  const after = line.slice((m.index ?? 0) + m[0].length);
+  if (after.trim() !== '') return after;
+  for (let j = lineIndex + 1; j < lines.length; j++) {
+    if (isCommentLine(lines[j]) || lines[j].trim() === '') continue;
+    return lines[j];
+  }
+  return '';
+}
+
+/** The value seam: no symbol may construct a session-accepting surface whose
+ *  epoch field is a literal, or one that never references the request's epoch
+ *  at all. Classification is per enclosing symbol, matching the pairing
+ *  granularity above:
+ *
+ *   - session-accepting: the symbol writes `acceptSession:` with anything but
+ *     the literal `false`. A conditional (`opts.acceptSession === true`) counts
+ *     as accepting, which is the conservative direction.
+ *   - epoch-referencing: the symbol writes the epoch field in shorthand (a
+ *     pass-through of the same-named required parameter) or with a value that
+ *     names the request epoch (`hiveSessionsInvalidatedAt`).
+ *   - literal-valued: the symbol writes the epoch field with a value opening as
+ *     `undefined`, `null`, a number, or a string.
+ *
+ *  A session-accepting surface symbol that is literal-valued or not
+ *  epoch-referencing is an offender. `acceptSession: false` beside
+ *  `sessionsInvalidatedAtMs: undefined` stays legitimate — that is the
+ *  consent-op surface stating its no-window posture explicitly. */
+function literalEpochSurfaces(files: ScannedSource[]) {
+  type SymbolFacts = {
+    accepting: boolean;
+    epochRef: boolean;
+    literal: boolean;
+    lines: string[];
+  };
+  const facts = new Map<string, SymbolFacts>();
+  const factFor = (key: string): SymbolFacts => {
+    let f = facts.get(key);
+    if (!f) {
+      f = { accepting: false, epochRef: false, literal: false, lines: [] };
+      facts.set(key, f);
+    }
+    return f;
+  };
+  for (const { rel, lines } of files) {
+    lines.forEach((line, i) => {
+      if (isCommentLine(line)) return;
+      const key = () => `${rel}#${enclosingSymbol(lines, i)}`;
+      if (ACCEPT_SESSION_WRITE_RE.test(line)) {
+        const value = valueTextAfterKey(lines, i, 'acceptSession');
+        if (value !== null && !/^\s*false\b/.test(value)) {
+          const f = factFor(key());
+          f.accepting = true;
+          f.lines.push(`${rel}:${i + 1} — ${line.trim()}`);
+        }
+      }
+      if (SURFACE_FIELD_WRITE_RE.test(line)) {
+        const value = valueTextAfterKey(lines, i, 'sessionsInvalidatedAtMs');
+        const f = factFor(key());
+        if (value === null || EPOCH_REF_RE.test(value)) {
+          f.epochRef = true;
+        } else if (LITERAL_VALUE_RE.test(value)) {
+          f.literal = true;
+          f.lines.push(`${rel}:${i + 1} — ${line.trim()}`);
+        }
+      }
+    });
+  }
+  const surfaces = occurrencesOf(
+    files,
+    SURFACE_CALL_RE,
+    (line) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line),
+  );
+  const offenders: string[] = [];
+  for (const key of surfaces.keys) {
+    const f = facts.get(key);
+    if (!f?.accepting) continue;
+    if (f.literal || !f.epochRef) {
+      offenders.push(`${key}\n  ${f.lines.join('\n  ')}`);
+    }
+  }
+  return { surfaces, offenders };
+}
 
 describe('every session-window consume carries the account revocation epoch', () => {
   it('walks a plausible number of source files (guards against a broken walker)', () => {
@@ -86,19 +262,22 @@ describe('every session-window consume carries the account revocation epoch', ()
   });
 
   it('no session-window consume runs without the request epoch', () => {
-    const consumes = occurrencesOf(
-      sources,
-      CONSUME_CALL_RE,
-      (line) => CONSUME_DEFINITION_RE.test(line) || isCommentLine(line),
-    );
-    const epochs = new Set(occurrencesOf(sources, EPOCH_REF_RE, isCommentLine).keys);
+    const { consumes, moduleScoped, offenders } = epochlessConsumes(sources);
     // Anti-vacuity: a rename of the consume would otherwise empty the set and
     // pass everything.
     expect(
       consumes.keys.length,
       `session-window consume call sites:\n${consumes.sites.join('\n')}`,
     ).toBeGreaterThan(0);
-    const offenders = consumes.keys.filter((key) => !epochs.has(key));
+    expect(
+      moduleScoped,
+      'these consume call sites resolved to module scope, which means the ' +
+        'enclosing-symbol resolver did not recognize the declaration shape ' +
+        'they sit in (an object method, a class member, a new syntax). The ' +
+        'pairing below cannot vouch for them — move the call into a ' +
+        'declaration shape the resolver names, or teach the resolver the ' +
+        `shape:\n${consumes.sites.join('\n')}`,
+    ).toEqual([]);
     expect(
       offenders,
       'these functions consume a session fresh-auth window without passing the ' +
@@ -116,17 +295,16 @@ describe('every session-window consume carries the account revocation epoch', ()
     // compiler at the literals inside that module, and a literal is exactly what
     // a future surface adds. Pairing each construction with a mention of the
     // field in the same function is the only check available from out here.
-    const surfaces = occurrencesOf(
-      sources,
-      SURFACE_CALL_RE,
-      (line) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line),
-    );
-    const fields = new Set(occurrencesOf(sources, SURFACE_FIELD_RE, isCommentLine).keys);
+    const { surfaces, moduleScoped, offenders } = fieldlessSurfaces(sources);
     expect(
       surfaces.keys.length,
       `consume surface construction sites:\n${surfaces.sites.join('\n')}`,
     ).toBeGreaterThan(0);
-    const offenders = surfaces.keys.filter((key) => !fields.has(key));
+    expect(
+      moduleScoped,
+      'these surface constructions resolved to module scope, where the pairing ' +
+        `cannot vouch for them (see the consume-side assertion):\n${surfaces.sites.join('\n')}`,
+    ).toEqual([]);
     expect(
       offenders,
       'these functions build a fresh-auth consume surface without naming ' +
@@ -134,6 +312,164 @@ describe('every session-window consume carries the account revocation epoch', ()
         `against no revocation epoch at all:\n${offenders.join('\n')}\n\n` +
         `all surface sites:\n${surfaces.sites.join('\n')}`,
     ).toEqual([]);
+  });
+
+  it('no session-accepting surface pins the epoch field to a literal', () => {
+    // The third seam. The field-presence pairing above is satisfied by
+    // `sessionsInvalidatedAtMs: undefined`, and the compiler is satisfied by it
+    // too, so a surface written that way beside `acceptSession: true` silently
+    // disables the authoritative half of revocation for every proof it serves.
+    // A session-accepting surface must hand the field an epoch reference; only
+    // a surface that refuses session proofs outright may state a no-window
+    // posture with a literal.
+    const { surfaces, offenders } = literalEpochSurfaces(sources);
+    expect(
+      surfaces.keys.length,
+      `consume surface construction sites:\n${surfaces.sites.join('\n')}`,
+    ).toBeGreaterThan(0);
+    expect(
+      offenders,
+      'these functions build a session-accepting consume surface whose ' +
+        'sessionsInvalidatedAtMs is a literal or never references the request ' +
+        'epoch, which disables the revocation cut-off while every test stays ' +
+        `green:\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('a declaration shape the resolver cannot parse is a red bar, not a satisfied pair', () => {
+    // Planted probe for the module-scope vacuity. An object-method shorthand is
+    // a declaration `enclosingSymbol` does not recognize, so both the consume
+    // and the epoch reference inside it resolve to module scope. Before the
+    // module-scope exclusions, the two module-scope keys satisfied each other
+    // and this exact shape passed green.
+    const evasion: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: [
+        'export const api = {',
+        '  async broadcast(req, res) {',
+        '    const epoch = req.hiveSessionsInvalidatedAt;',
+        '    return consumeSessionFreshAuthToken(token, user, undefined);',
+        '  },',
+        '};',
+      ],
+    };
+    // Pin the premise: the resolver really does not parse this shape. If it
+    // learns to, this probe stops modelling the vacuity and must move to a
+    // shape the resolver still cannot parse.
+    expect(enclosingSymbol(evasion.lines, 3)).toBe(MODULE_SCOPE);
+
+    const { moduleScoped, offenders } = epochlessConsumes([evasion]);
+    expect(moduleScoped).toEqual([`routes/synthetic.ts#${MODULE_SCOPE}`]);
+    expect(offenders).toEqual([`routes/synthetic.ts#${MODULE_SCOPE}`]);
+
+    // The same shape through the surface pairing.
+    const surfaceEvasion: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'export const store = {',
+        '  async consume(token) {',
+        '    const sessionsInvalidatedAtMs = undefined;',
+        '    return consumeFreshAuthTokenForSurface(token, surface);',
+        '  },',
+        '};',
+      ],
+    };
+    const surfaceResult = fieldlessSurfaces([surfaceEvasion]);
+    expect(surfaceResult.moduleScoped).toEqual([`lib/synthetic.ts#${MODULE_SCOPE}`]);
+    expect(surfaceResult.offenders).toEqual([`lib/synthetic.ts#${MODULE_SCOPE}`]);
+  });
+
+  it('a session-accepting surface with a literal epoch value is an offender', () => {
+    // Planted probes for the value seam, exercising the same classification the
+    // whole-tree scan runs. The first is the exact evasion: field present (the
+    // presence pairing passes), value a literal `undefined`, acceptance on.
+    const literalUndefined: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeBypassingRevocation(token, user) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    expectedUsername: user,',
+        '    expectedTargetHash: null,',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs: undefined,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([literalUndefined]).offenders).toHaveLength(1);
+
+    // A wrapped literal must not slip through the value classification the way
+    // wrapped keys once slipped through the construction scan.
+    const wrappedLiteral: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeWrappingTheLiteral(token, user) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    expectedUsername: user,',
+        '    expectedTargetHash: null,',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs:',
+        '      undefined,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([wrappedLiteral]).offenders).toHaveLength(1);
+
+    // A surface that mentions the field only as a literal zero — a "number is
+    // not undefined" dodge — is equally dead.
+    const numericLiteral: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeWithZeroEpoch(token, user) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs: 0,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([numericLiteral]).offenders).toHaveLength(1);
+
+    // Controls: the three legitimate postures.
+    const passThrough: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeSessionStyle(token, user, sessionsInvalidatedAtMs) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([passThrough]).offenders).toEqual([]);
+
+    const requestEpoch: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeProofStyle(req, token, user) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: opts.acceptSession === true,',
+        '    sessionsInvalidatedAtMs: req.hiveSessionsInvalidatedAt,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([requestEpoch]).offenders).toEqual([]);
+
+    const consentOpPosture: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeConsentStyle(token, user, hash) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: false,',
+        '    sessionsInvalidatedAtMs: undefined,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([consentOpPosture]).offenders).toEqual([]);
   });
 
   it('the matchers fire on a real call and spare imports, prose, and the definition', () => {
@@ -156,6 +492,21 @@ describe('every session-window consume carries the account revocation epoch', ()
     expect(SURFACE_DEFINITION_RE.test('  return consumeFreshAuthTokenForSurface(token, {')).toBe(false);
     expect(SURFACE_FIELD_RE.test('    sessionsInvalidatedAtMs: undefined,')).toBe(true);
     expect(SURFACE_FIELD_RE.test('    acceptSession: false,')).toBe(false);
+
+    // The value-seam write matchers: key position only, wrapped keys included.
+    expect(SURFACE_FIELD_WRITE_RE.test('    sessionsInvalidatedAtMs,')).toBe(true);
+    expect(SURFACE_FIELD_WRITE_RE.test('    sessionsInvalidatedAtMs: undefined,')).toBe(true);
+    expect(SURFACE_FIELD_WRITE_RE.test('    sessionsInvalidatedAtMs:')).toBe(true);
+    expect(SURFACE_FIELD_WRITE_RE.test('  consumeSessionWindow(token, entry, read.fromMemStore, surface.sessionsInvalidatedAtMs);')).toBe(false);
+    expect(ACCEPT_SESSION_WRITE_RE.test('    acceptSession: true,')).toBe(true);
+    expect(ACCEPT_SESSION_WRITE_RE.test('    acceptSession: opts.acceptSession === true,')).toBe(true);
+    expect(ACCEPT_SESSION_WRITE_RE.test('  opts: { acceptSession?: boolean } = {},')).toBe(false);
+    expect(ACCEPT_SESSION_WRITE_RE.test('  if (!surface.acceptSession) return;')).toBe(false);
+
+    // Value extraction: same-line, wrapped, and shorthand.
+    expect(valueTextAfterKey(['  sessionsInvalidatedAtMs: req.hiveSessionsInvalidatedAt,'], 0, 'sessionsInvalidatedAtMs')).toMatch(/hiveSessionsInvalidatedAt/);
+    expect(valueTextAfterKey(['  sessionsInvalidatedAtMs:', '    undefined,'], 0, 'sessionsInvalidatedAtMs')).toMatch(/undefined/);
+    expect(valueTextAfterKey(['  sessionsInvalidatedAtMs,'], 0, 'sessionsInvalidatedAtMs')).toBeNull();
 
     expect(isCommentLine(' * the epoch travels on req.hiveSessionsInvalidatedAt')).toBe(true);
     expect(isCommentLine('      req.hiveSessionsInvalidatedAt,')).toBe(false);

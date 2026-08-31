@@ -43,8 +43,10 @@
  * TOUCH of `sessions_invalidated_at` in executable source anywhere under
  * `src/`, matched on the bare column name so no SQL spelling of the write can
  * slip past, must also sweep the proofs from the same function, and the sweep
- * must be a live call rather than a commented-out one. The middleware's read is
- * exempted by exact line, not by pattern and not by enclosing symbol: under-
+ * must be a live call: not one commented out whole-line or inside a block
+ * toggle, not one surviving only in a trailing comment on a live line, and not
+ * the sweep's own definition vouching for its own body. The middleware's read
+ * is exempted by exact line, not by pattern and not by enclosing symbol: under-
  * matching a write is fail-open, so the scan over-matches on purpose and spares
  * three named lines explicitly, which leaves a write added beside them still
  * visible. A wiring omission is the realistic failure here, not a bug inside the
@@ -85,6 +87,7 @@ import path from 'node:path';
 import {
   isCommentLine,
   isCommentedOut,
+  isModuleScopeKey,
   occurrencesOf,
   sourcesUnder,
   type ScannedSource,
@@ -360,6 +363,32 @@ describe('every toucher of the revocation column also closes session-proof windo
    *  that had to be there anyway. */
   const SWEEP_CALL_RE = /invalidateSessionFreshAuthTokens\s*\(/;
 
+  /** The sweep's own definition line. Without this skip the definition
+   *  satisfies pairings for the symbol it names: a revocation-column write
+   *  added inside the sweep function's body would pair with the function's own
+   *  signature and never be asked for a live sweep call. Every sibling
+   *  occurrence scan skips its subject's definition by shape; this one now
+   *  does too. */
+  const SWEEP_DEFINITION_RE = /function\s+invalidateSessionFreshAuthTokens\s*\(/;
+
+  /** Line text with trailing comment content removed, for the sweep side only.
+   *  `isCommentedOut` spares whole-line and block-toggled comments, but a dead
+   *  call in a TRAILING comment rides a live line (`markDone(); // await
+   *  invalidateSessionFreshAuthTokens(u)`) and satisfied a live write's
+   *  pairing. The mint canary deliberately does NOT strip trailing comments —
+   *  there an over-match goes red, which is loud — but that reasoning inverts
+   *  on a REQUIRED-call scan, where an over-match is exactly what makes the
+   *  pairing pass. The strip is naive about comment markers inside string
+   *  literals (`'http://x'` truncates the line); on this scan that
+   *  direction is fail-closed — a real sweep sharing a line with such a
+   *  string goes unread and the bar turns red, naming the line — so the
+   *  naivety is accepted and the fix is to put the call on its own line. */
+  const stripTrailingComment = (line: string): string =>
+    line
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/.*$/, '')
+      .replace(/\/\*.*$/, ' ');
+
   /** Whitespace-normalized line text, so the read exemption below survives a
    *  reindent or a rewrapped call without surviving an edit to the statement. */
   const normalize = (line: string): string => line.trim().replace(/\s+/g, ' ');
@@ -404,7 +433,22 @@ describe('every toucher of the revocation column also closes session-proof windo
    *  today. */
   const unsweptWriters = (files: ScannedSource[]) => {
     const touches = occurrencesOf(files, REVOCATION_COLUMN_RE, skipColumnLine);
-    const sweeps = new Set(occurrencesOf(files, SWEEP_CALL_RE, isCommentedOut).keys);
+    // Three filters on the satisfying side, each closing a way a dead or
+    // self-referential mention could vouch for a live write: commented-out
+    // lines, the sweep's own definition, and a call that survives only inside
+    // a trailing comment. Module-scope keys are dropped as well — a pairing
+    // must never let the label every unresolvable declaration shares satisfy
+    // itself (see tests/support/enclosing-symbol.ts).
+    const sweeps = new Set(
+      occurrencesOf(
+        files,
+        SWEEP_CALL_RE,
+        (line, i, lines) =>
+          isCommentedOut(line, i, lines) ||
+          SWEEP_DEFINITION_RE.test(line) ||
+          !SWEEP_CALL_RE.test(stripTrailingComment(line)),
+      ).keys.filter((key) => !isModuleScopeKey(key)),
+    );
     return { touches, sweeps, offenders: touches.keys.filter((key) => !sweeps.has(key)) };
   };
 
@@ -492,6 +536,22 @@ describe('every toucher of the revocation column also closes session-proof windo
     // The pattern alone cannot tell a live call from a dead one, which is why
     // the scan above is the one that carries the filter.
     expect(SWEEP_CALL_RE.test('  // await invalidateSessionFreshAuthTokens(username);')).toBe(true);
+
+    // The trailing-comment strip: dead tails vanish, live calls survive their
+    // own comment tails, and the accepted string-literal naivety fails closed.
+    expect(SWEEP_CALL_RE.test(stripTrailingComment('  done(); // invalidateSessionFreshAuthTokens(u);'))).toBe(false);
+    expect(SWEEP_CALL_RE.test(stripTrailingComment('  done(); /* invalidateSessionFreshAuthTokens(u) */'))).toBe(false);
+    expect(SWEEP_CALL_RE.test(stripTrailingComment('  await invalidateSessionFreshAuthTokens(u); // done'))).toBe(true);
+    expect(SWEEP_CALL_RE.test(stripTrailingComment('  await invalidateSessionFreshAuthTokens(u);'))).toBe(true);
+    // A comment marker inside a string truncates the strip. On this scan that
+    // is the safe direction: the call after it goes unread, the pairing fails,
+    // and the red bar names the line; the fix is a line of its own.
+    expect(
+      SWEEP_CALL_RE.test(stripTrailingComment("  log('http://x'); await invalidateSessionFreshAuthTokens(u);")),
+    ).toBe(false);
+
+    expect(SWEEP_DEFINITION_RE.test('export async function invalidateSessionFreshAuthTokens(username: string): Promise<void> {')).toBe(true);
+    expect(SWEEP_DEFINITION_RE.test('  await invalidateSessionFreshAuthTokens(username);')).toBe(false);
     const dead = [
       '  /* restore before merge',
       '  await invalidateSessionFreshAuthTokens(username);',
@@ -587,5 +647,71 @@ describe('every toucher of the revocation column also closes session-proof windo
     expect(touches.keys).toEqual(['routes/synthetic.ts#POST /stale-block']);
     expect([...sweeps]).toEqual([]);
     expect(offenders).toEqual(['routes/synthetic.ts#POST /stale-block']);
+  });
+
+  it('a sweep in a trailing comment on a live line does not pair with a live write', () => {
+    // The third comment gesture, and the one the two filters above are blind
+    // to: the line itself is live code, so it is not comment-shaped and sits
+    // inside no block, yet the call exists only in its comment tail. Both
+    // trailing forms are planted — the line comment, and an inline block.
+    const lines = [
+      "router.post('/tail', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
+      '  markDone(); // await invalidateSessionFreshAuthTokens(username);',
+      '});',
+      '',
+      "router.post('/tail-block', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
+      '  markDone(); /* invalidateSessionFreshAuthTokens(username) */',
+      '});',
+      '',
+      "router.post('/tail-live', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
+      '  await invalidateSessionFreshAuthTokens(username); // closes every open window',
+      '});',
+    ];
+    const { sweeps, offenders } = unsweptWriters([{ rel: 'routes/synthetic.ts', lines }]);
+    // The live call keeps its pairing even with a comment tail of its own; the
+    // two dead tails vouch for nothing.
+    expect([...sweeps]).toEqual(['routes/synthetic.ts#POST /tail-live']);
+    expect(offenders).toEqual([
+      'routes/synthetic.ts#POST /tail',
+      'routes/synthetic.ts#POST /tail-block',
+    ]);
+  });
+
+  it('the sweep definition line does not vouch for a write in the sweep function itself', () => {
+    // Definition self-satisfaction. The definition line matches the call
+    // pattern, so without its shape skip a revocation-column write added
+    // INSIDE the sweep helper would pair with the function's own signature.
+    const lines = [
+      'export async function invalidateSessionFreshAuthTokens(username: string): Promise<void> {',
+      '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW() WHERE username = $1`);',
+      '}',
+    ];
+    const { sweeps, offenders } = unsweptWriters([{ rel: 'lib/synthetic.ts', lines }]);
+    expect([...sweeps]).toEqual([]);
+    expect(offenders).toEqual(['lib/synthetic.ts#invalidateSessionFreshAuthTokens']);
+  });
+
+  it('a declaration shape the resolver cannot parse is a red bar, not a satisfied pair', () => {
+    // Module-scope vacuity, the pairing-scan failure mode documented in
+    // tests/support/enclosing-symbol.ts: an object-method shorthand is a
+    // declaration the resolver does not recognize, so the write and the sweep
+    // it carries both resolve to module scope — one label satisfying itself.
+    // With module-scope keys dropped from the satisfying set, the write is an
+    // offender demanding a declaration shape the resolver can name.
+    const lines = [
+      'export const recovery = {',
+      '  async applySwap(username) {',
+      '    await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
+      '    await invalidateSessionFreshAuthTokens(username);',
+      '  },',
+      '};',
+    ];
+    const { touches, sweeps, offenders } = unsweptWriters([{ rel: 'routes/synthetic.ts', lines }]);
+    expect(touches.keys).toEqual(['routes/synthetic.ts#<module>']);
+    expect([...sweeps]).toEqual([]);
+    expect(offenders).toEqual(['routes/synthetic.ts#<module>']);
   });
 });

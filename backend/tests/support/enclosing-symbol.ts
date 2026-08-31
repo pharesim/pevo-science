@@ -20,14 +20,30 @@
  * declaration, and reject it if its block demonstrably closed before the target
  * line (a `}` at or left of the declaration's own indentation).
  *
- * Known limitation, and why it is safe. A declaration whose block opens and
+ * Known limitation, and where it is safe. A declaration whose block opens and
  * closes on its own line (`const noop = () => {};`) has no closing brace on a
  * LATER line, so a match below it can resolve to that declaration instead of
- * the real enclosing scope. The consequence is a WRONG symbol, which is a new
- * member of the occurrence set and therefore a red bar — never a silent pass.
- * A silent pass would require a violating occurrence to resolve to one of the
- * already-allowed keys, which means it is textually inside that allowed
- * function's block, which is the case the allow entry covers.
+ * the real enclosing scope; a declaration shape the patterns do not recognize
+ * at all (an object-method shorthand, a class member) resolves to
+ * {@link MODULE_SCOPE}. The consequence is a WRONG symbol — and how that fails
+ * depends on the assertion consuming it:
+ *
+ *  - SET-EQUALITY assertions (the occurrence keys compared to an exact allowed
+ *    set) fail closed: a wrong symbol is a new member and therefore a red bar,
+ *    never a silent pass. A silent pass would require a violating occurrence to
+ *    resolve to one of the already-allowed keys, which means it is textually
+ *    inside that allowed function's block, which is the case the allow entry
+ *    covers.
+ *
+ *  - PAIRING assertions (every occurrence of X must have a Y in the same
+ *    symbol) do NOT inherit that property. When both sides of a pair resolve to
+ *    the same wrong key — module scope, for a declaration shape the resolver
+ *    does not parse — they satisfy each other and the omission passes green.
+ *    The rule every pairing scan must follow: exclude {@link MODULE_SCOPE}
+ *    keys from the satisfying set (via {@link isModuleScopeKey}), and assert
+ *    that no primary-side occurrence resolved to module scope, so an
+ *    unresolvable declaration is a red bar naming the line rather than a pair
+ *    that vouches for itself.
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -35,8 +51,25 @@ import path from 'node:path';
 
 /** What a declaration line looks like, in the shapes this codebase writes.
  *  Ordered by specificity: an Express registration is recognized before the
- *  arrow function that is its final argument. */
-const DECLARATION_PATTERNS: Array<{ re: RegExp; label: (m: RegExpMatchArray) => string }> = [
+ *  arrow function that is its final argument.
+ *
+ *  The variable-assignment pattern carries a guard, because `= (` alone also
+ *  matches a parenthesized EXPRESSION (`const raw = (parsed as X).field;`),
+ *  and reading that as a function declaration hands every following line in
+ *  the real enclosing function a wrong symbol. A `(`-initialized declaration
+ *  counts as a function only when the line shows an arrow or a `function`
+ *  keyword, or leaves more parens open than closed (a parameter list wrapping
+ *  onto the next line). The paren count is naive about parens inside string
+ *  literals — a miscount yields a wrong symbol, which under a set-equality
+ *  assertion is a red bar, and under a pairing assertion is excluded from
+ *  satisfying by the module-scope rule below only when it lands at module
+ *  scope; the guard exists to make the common expression shape resolve past
+ *  the local instead of stopping at it. */
+const DECLARATION_PATTERNS: Array<{
+  re: RegExp;
+  label: (m: RegExpMatchArray) => string;
+  guard?: (line: string) => boolean;
+}> = [
   // `router.post('/session-auth', verifyHiveSignature, async (req, res) => {`
   {
     re: /\brouter\.(get|post|put|patch|delete|all)\(\s*'([^']*)'/,
@@ -51,20 +84,34 @@ const DECLARATION_PATTERNS: Array<{ re: RegExp; label: (m: RegExpMatchArray) => 
   {
     re: /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*(?::[^=]*)?=\s*(?:async\s*)?(?:\(|function\b|<)/,
     label: (m) => m[1],
+    guard: (line) => {
+      if (/\bfunction\b|=>/.test(line)) return true;
+      const opens = (line.match(/\(/g) ?? []).length;
+      const closes = (line.match(/\)/g) ?? []).length;
+      return opens > closes;
+    },
   },
 ];
 
 /** Label used when a match sits at module scope with no enclosing declaration. */
 export const MODULE_SCOPE = '<module>';
 
+/** Whether a `file#symbol` occurrence key resolved to module scope. Pairing
+ *  scans use this to drop such keys from their satisfying sets — module scope
+ *  is where every unresolvable declaration lands, so letting it satisfy a pair
+ *  lets an unparsed shape vouch for itself (see the file docblock). */
+export function isModuleScopeKey(key: string): boolean {
+  return key.endsWith(`#${MODULE_SCOPE}`);
+}
+
 function indentOf(line: string): number {
   return line.length - line.trimStart().length;
 }
 
 function declarationOn(line: string): string | null {
-  for (const { re, label } of DECLARATION_PATTERNS) {
+  for (const { re, label, guard } of DECLARATION_PATTERNS) {
     const m = line.match(re);
-    if (m) return label(m);
+    if (m && (guard === undefined || guard(line))) return label(m);
   }
   return null;
 }

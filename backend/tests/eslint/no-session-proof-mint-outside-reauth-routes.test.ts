@@ -62,7 +62,7 @@
  * sympathetic cases explicitly, so a red bar there reads as "this is invariant
  * #9" rather than "the allowlist needs updating".
  *
- * Two further scans cover what a name-based canary structurally cannot.
+ * Further scans cover what a name-based canary structurally cannot.
  *
  * A window minted inside `lib/fresh-auth.ts` by NEW code under a different name
  * writes the mint's name nowhere, but it cannot avoid writing the
@@ -71,20 +71,39 @@
  * nothing in this package enforces any of them (the ESLint config is
  * safety-only, with no `quotes` and no `comma-dangle` rule, and there is no
  * prettier config in the repo), so keying on them made a name-independent
- * backstop defeatable by a style choice. It remains line-oriented, so a session
- * entry assembled by spread or by shorthand property is outside its reach, a
- * residual worth knowing about since the shorthand shape is already idiomatic in
- * the module it guards.
+ * backstop defeatable by a style choice. Nor is it line-oriented: a wrapped
+ * literal (`kind:` at end of line, the value on the next) and a bare shorthand
+ * property (`kind,` forwarding a local binding) are both construction signals,
+ * because both were full evasions of the value-anchored form and this scan is
+ * the last line of defence behind a mint that calls nothing. The key-anchored
+ * signal cannot see the VALUE, so it also fires on a wrapped `consent_op`
+ * construction and on a bare destructure of `kind` — accepted false positives,
+ * loud rather than silent, and none exist under `src/` today. What remains out
+ * of reach is an entry assembled entirely by spread with no `kind` key of its
+ * own; that shape cannot reach storage without a storage write, which is what
+ * the write pins below close over.
  *
- * And a helper that spread-copies an already validated entry with a pushed-out
+ * A helper that spread-copies an already validated entry with a pushed-out
  * deadline extends a window while writing neither the mint's name nor the
- * discriminator. `persistSessionSlide` is the chokepoint every such helper must
- * reach, and the clamp to the cap plus the revocation-epoch check both live in
- * its one legitimate caller, so that caller set is pinned as well.
+ * discriminator. `persistSessionSlide` is the chokepoint every such helper
+ * SHOULD reach, and the clamp to the cap plus the revocation-epoch check both
+ * live in its one legitimate caller, so that caller set is pinned. But a
+ * chokepoint pin alone is stepped around by writing to the storage tiers
+ * directly, so the writes themselves are pinned too: every `memStore.set` and
+ * every Redis `SET` against the entry keyspace inside the module, the
+ * `fresh_auth:token` key-namespace literal across the whole tree (so the
+ * keyspace cannot be re-derived outside the module), and the test-only
+ * in-memory seeding hook, which must never acquire a production caller.
  *
  * Finally, a coverage registry. The scans above stop a mint that still LOOKS
  * like one; the registry stops the other half, a brand-new route that issues a
- * session and that nobody remembered to assert a proof-free response for.
+ * session and that nobody remembered to assert a proof-free response for. The
+ * registry attributes transitively: a call to `jwt.sign` marks its enclosing
+ * symbol, and every CALLER of a plain-function symbol that encloses a mint is
+ * marked as an issuing site as well, to a fixpoint. Without that, extracting
+ * the mint into a helper collapses the registry to the helper's one symbol —
+ * an edit that reads as ordinary maintenance — and every route calling the
+ * helper afterwards issues sessions invisibly.
  *
  * A checked non-issue, recorded so it is not "fixed" later: the sibling sweep
  * scan in `tests/routes/session-proof-invalidation.test.ts` is a REQUIRED-call
@@ -99,6 +118,7 @@ import {
   isCommentLine,
   occurrencesOf,
   sourcesUnder,
+  type ScannedSource,
 } from '../support/enclosing-symbol.js';
 
 /** ANY textual occurrence of the mint's name, not a call-shaped one. See the
@@ -137,13 +157,38 @@ const SESSION_MINT_IMPORT_SPECIFIER_RE =
  *  one case a file-granular import assertion structurally cannot see. */
 const SESSION_MINT_ALIAS_RE = /\bissueSessionFreshAuthToken\s+as\b/;
 
+/** The continuation of the statement a specifier line starts: the line joined
+ *  with the following lines up to and including the one that ends the import
+ *  clause (a `from`, a semicolon) or a small cap. The alias veto below runs
+ *  against this joined text rather than the single line, because
+ *  `issueSessionFreshAuthToken` on its own line followed by `as mint,` on the
+ *  next is a legal specifier whose alias the per-line veto never saw — the
+ *  specifier line matched the bare-name skip, the continuation line matched no
+ *  pattern at all, and the file held a working alias. The occurrence helper
+ *  already hands every skip predicate the surrounding lines; this is the scan
+ *  that needs them. */
+const jointImportStatement = (lines: string[], lineIndex: number): string => {
+  let joined = lines[lineIndex];
+  // A line that already carries its `from` or terminator is a complete
+  // statement; joining past it could only pull in unrelated neighbours.
+  if (/\bfrom\b|;/.test(joined)) return joined;
+  for (let j = lineIndex + 1; j < lines.length && j <= lineIndex + 6; j++) {
+    joined += '\n' + lines[j];
+    if (/\bfrom\b|;/.test(lines[j])) break;
+  }
+  return joined;
+};
+
 /** The three shapes that name the mint without holding a callable reference
  *  under a new name: its own definition, a whole-comment line, and an unaliased
- *  import specifier. Everything else that writes the name counts. */
-const skipMintLine = (line: string): boolean =>
+ *  import specifier. Everything else that writes the name counts. The alias
+ *  veto is applied to the JOINED statement, not the single line — see
+ *  {@link jointImportStatement}. */
+const skipMintLine = (line: string, lineIndex: number, lines: string[]): boolean =>
   SESSION_MINT_DEFINITION_RE.test(line) ||
   isCommentLine(line) ||
-  (SESSION_MINT_IMPORT_SPECIFIER_RE.test(line) && !SESSION_MINT_ALIAS_RE.test(line));
+  (SESSION_MINT_IMPORT_SPECIFIER_RE.test(line) &&
+    !SESSION_MINT_ALIAS_RE.test(jointImportStatement(lines, lineIndex)));
 
 /** A named import of the mint, matched against whole file text because both
  *  licensed imports are multi-line: no single line carries both the specifier
@@ -192,6 +237,30 @@ const SESSION_KIND_TYPE_OCCURRENCE_RE = /\bkind\b['"`\]\s]*:\s*(['"`])session\1\
 const constructsSessionEntry = (line: string): boolean =>
   !isCommentLine(line) && SESSION_KIND_RE.test(line.replace(SESSION_KIND_TYPE_OCCURRENCE_RE, ''));
 
+/** The discriminator KEY in a position whose VALUE the line does not show: a
+ *  bare shorthand property (`kind,` / `kind }`, forwarding a local binding) or
+ *  a wrapped key (`kind:` at end of line, the value on the next). Both shapes
+ *  construct an entry while writing no `'session'` literal on the matched line,
+ *  so both stepped around the value-anchored scan entirely — and this is the
+ *  backstop for a mint that calls nothing, so a shape it cannot see is a full
+ *  evasion, not a degradation.
+ *
+ *  Because the value is out of sight, this signal cannot discriminate: a
+ *  wrapped `consent_op` construction and a bare `{ kind }` destructure match
+ *  too. Accepted false positives, loud rather than silent — each is a red bar
+ *  naming a symbol, and none exist under `src/` today. The lookbehind keeps
+ *  property reads (`entry.kind`) and other identifiers merely ending in the
+ *  word (`operation_kind`) out; a comparison (`kind === ...`) never matches
+ *  because the character after the key is an equals sign, not a comma, brace,
+ *  colon-at-end, or line end. */
+const SESSION_KIND_BARE_KEY_RE = /(?<![.\w])['"`]?\bkind\b['"`]?\s*(?:[,}]|:\s*$)/;
+
+/** A line that either shows the full session discriminator or signals its key
+ *  with the value out of sight. This composed predicate is what the whole-tree
+ *  scan and the planted self-tests share. */
+const signalsSessionEntry = (line: string): boolean =>
+  constructsSessionEntry(line) || (!isCommentLine(line) && SESSION_KIND_BARE_KEY_RE.test(line));
+
 /** A reference to the private slide persister, and its definition line. */
 const SESSION_SLIDE_CALL_RE = /\bpersistSessionSlide\b/;
 const SESSION_SLIDE_DEFINITION_RE = /function\s+persistSessionSlide\s*\(/;
@@ -210,32 +279,113 @@ const ALLOWED_MINT_SITES = [
  *  `lib/fresh-auth.ts` defines it and therefore imports nothing. */
 const ALLOWED_MINT_IMPORTERS = ['routes/custody.ts', 'routes/orcid.ts'];
 
-/** The only two places a session-kind entry is constructed: the mint, and the
- *  slide that rewrites one entry into its successor. */
+/** The places the discriminator scan may fire: the mint and the slide, which
+ *  construct session entries outright, and `validateStoredEntry`, which
+ *  re-emits an already-stored entry's `kind` as a bare shorthand after
+ *  structural narrowing. The third member is the price of the key-anchored
+ *  signal, and it is legitimate because validation never invents a kind: the
+ *  shorthand forwards a value read back from the storage tiers, whose writers
+ *  are themselves pinned by the storage-write assertions below — an entry has
+ *  to have been minted or slid by a pinned writer before validation can echo
+ *  it. A visible allowlist member beats the blind spot it replaced: the old
+ *  value-anchored scan simply could not see a construction written as a
+ *  wrapped literal or a shorthand at all. */
 const ALLOWED_SESSION_ENTRY_SITES = [
   'lib/fresh-auth.ts#consumeSessionWindow',
   'lib/fresh-auth.ts#issueSessionFreshAuthToken',
+  'lib/fresh-auth.ts#validateStoredEntry',
 ];
 
 /** The slide persister's only legitimate caller: the windowed consume, where
  *  the clamp to the cap and the revocation-epoch check live. */
 const ALLOWED_SESSION_SLIDE_SITES = ['lib/fresh-auth.ts#consumeSessionWindow'];
 
-/** Every handler that mints or reissues a session JWT. Each one is covered by a
+/** Every toucher of the in-memory entry tier, pinned by the identifier rather
+ *  than by a call shape so a wrapped call, an aliased method, or a `.clear()`
+ *  cannot slip past. The map is module-private, so the scan is scoped to the
+ *  module that declares it; the exported seeding hook is the one road in from
+ *  outside and is pinned separately to zero production callers. Each member is
+ *  a function this file's other assertions already hold in place: the two
+ *  mints and the slide persister write entries, the burn and the sweeps and
+ *  the drop delete them, the read serves the fallback leg, the cleanup tick
+ *  expires them, and the two test hooks reset and seed under test control. */
+const MEMSTORE_TOUCH_RE = /\bmemStore\b/;
+const MEMSTORE_DEFINITION_RE = /^const memStore = new Map/;
+const ALLOWED_MEMSTORE_TOUCH_SITES = [
+  'lib/fresh-auth.ts#_resetFreshAuthMemStoreForTests',
+  'lib/fresh-auth.ts#_setMemStoreEntryForTests',
+  'lib/fresh-auth.ts#burnConsentOpEntry',
+  'lib/fresh-auth.ts#dropSessionWindow',
+  'lib/fresh-auth.ts#invalidateSessionFreshAuthTokens',
+  'lib/fresh-auth.ts#issueFreshAuthToken',
+  'lib/fresh-auth.ts#issueSessionFreshAuthToken',
+  'lib/fresh-auth.ts#persistSessionSlide',
+  'lib/fresh-auth.ts#readFreshAuthEntry',
+  'lib/fresh-auth.ts#startCleanup',
+];
+
+/** Every toucher of the canonical Redis entry keyspace, via the module-private
+ *  key-prefix constant. Pinned as an identifier for the same
+ *  cannot-be-stepped-around reason: the Redis writes are multi-line calls, so a
+ *  write-shaped line pattern misses them by construction. Same membership
+ *  story: mints and the slide write, the burn and sweeps and drop delete, the
+ *  read reads, the ledger drain retries compensating deletes. */
+const ENTRY_KEY_PREFIX_RE = /\bKEY_PREFIX\b/;
+const ENTRY_KEY_PREFIX_DEFINITION_RE = /^const KEY_PREFIX = /;
+const ALLOWED_ENTRY_KEY_PREFIX_SITES = [
+  'lib/fresh-auth.ts#burnConsentOpEntry',
+  'lib/fresh-auth.ts#drainSpentConsentOps',
+  'lib/fresh-auth.ts#dropSessionWindow',
+  'lib/fresh-auth.ts#invalidateSessionFreshAuthTokens',
+  'lib/fresh-auth.ts#issueFreshAuthToken',
+  'lib/fresh-auth.ts#issueSessionFreshAuthToken',
+  'lib/fresh-auth.ts#persistSessionSlide',
+  'lib/fresh-auth.ts#readFreshAuthEntry',
+];
+
+/** The entry keyspace's namespace literal. `KEY_PREFIX` is module-private, but
+ *  the string it derives from is not — a helper anywhere in the tree can write
+ *  `${config.appTag}:fresh_auth:token:${t}` and reach the same keyspace with no
+ *  identifier this file pins. So the literal itself is pinned to its one
+ *  definition, at module scope of the module that owns the store. */
+const ENTRY_KEYSPACE_LITERAL_RE = /fresh_auth:token/;
+
+/** The test-only in-memory seeding hook. It writes the entry tier directly, so
+ *  a production caller would be a mint with no licensed name, no discriminator
+ *  literal, and no slide — invisible to every scan above. Its caller set is
+ *  pinned to nothing: the hook exists for tests, tests live outside `src/`,
+ *  and the definition line is skipped by shape. */
+const SEEDING_HOOK_RE = /\b_setMemStoreEntryForTests\b/;
+const SEEDING_HOOK_DEFINITION_RE = /function\s+_setMemStoreEntryForTests\s*\(/;
+
+/** Every handler that mints or reissues a session JWT, plus every caller of a
+ *  plain-function symbol that does (attribution is transitive — see
+ *  {@link sessionIssuingSites}). Each minting handler is covered by a
  *  wire-level no-proof assertion against its real 200 response:
  *  `session-establishment-mints-no-window` (login, confirm, session),
  *  `session-proof-invalidation` (recover, recover/verify), `orcid` (login mode),
- *  `signup-verify` (link), `custody-upgrade` (upgrade). */
+ *  `signup-verify` (link), `custody-upgrade` (upgrade). `POST /callback` is an
+ *  indirect member: it dispatches to `handleLogin`, which mints, so it is an
+ *  issuing surface whether or not the mint's line moves. */
 const SESSION_ISSUING_SITES = [
   'routes/auth.ts#POST /login',
   'routes/auth.ts#POST /session',
   'routes/custody.ts#POST /upgrade',
+  'routes/orcid.ts#POST /callback',
   'routes/orcid.ts#handleLogin',
   'routes/recover.ts#POST /recover',
   'routes/recover.ts#POST /recover/verify',
   'routes/signup-verify.ts#POST /confirm',
   'routes/signup-verify.ts#POST /link',
 ];
+
+/** The registry's member-count floor. The exact-set assertion already goes red
+ *  on any change, but a shrink has a sympathetic cover story ("the mints were
+ *  consolidated, I updated the list") that a grow does not. Shrinking the
+ *  registry therefore has to be done twice, in two spellings — remove the
+ *  member AND lower this floor — so it cannot ride along inside a mechanical
+ *  list sync. */
+const SESSION_ISSUING_SITES_FLOOR = 9;
 
 /** Session-establishment and account-recovery surfaces, named explicitly so a
  *  mint landing in one produces a message that says what rule it broke. */
@@ -245,6 +395,53 @@ const FORBIDDEN_MINT_FILES = [
   'routes/recover.ts',
   'middleware/verifyHiveSignature.ts',
 ];
+
+/** Every `file#symbol` that issues a session JWT, directly or through a
+ *  helper, computed to a fixpoint: the enclosing symbols of `jwt.sign` calls
+ *  seed the set, and for every member whose symbol is a plain function name
+ *  (a route-registration label cannot be called), the callers of that name
+ *  join the set too, then THEIR callers if they are plain functions, until
+ *  nothing new appears.
+ *
+ *  The transitivity is the point. Keyed on the literal call shape alone,
+ *  extracting the mint into `mintSessionJwt()` collapses the registry to one
+ *  member — an edit that reads as ordinary maintenance — after which every
+ *  new route calling the helper issues sessions with no registry entry and no
+ *  wire-level no-proof assertion demanded of it. Under transitive attribution
+ *  the extraction keeps every caller in the set, and a new caller is a new
+ *  member.
+ *
+ *  A helper name is matched as `name(`, skipping its own definition line and
+ *  comments. A helper whose name collides with an unrelated identifier
+ *  elsewhere would over-match — a red bar naming the site, the loud
+ *  direction; rename the helper or account for the site. */
+function sessionIssuingSites(files: ScannedSource[]): { keys: string[]; sites: string[] } {
+  const direct = occurrencesOf(files, JWT_MINT_RE, isCommentLine);
+  const keys = new Set(direct.keys);
+  const sites = [...direct.sites];
+  const isPlainFunctionName = (sym: string): boolean => /^[A-Za-z_$][\w$]*$/.test(sym);
+  const seenNames = new Set<string>();
+  const pending = direct.keys.map((k) => k.split('#')[1]).filter(isPlainFunctionName);
+  while (pending.length > 0) {
+    const name = pending.pop()!;
+    if (seenNames.has(name)) continue;
+    seenNames.add(name);
+    const callRe = new RegExp(`\\b${name}\\s*\\(`);
+    const definitionRe = new RegExp(`\\bfunction\\s+${name}\\s*\\(`);
+    const calls = occurrencesOf(
+      files,
+      callRe,
+      (line) => definitionRe.test(line) || isCommentLine(line),
+    );
+    for (const key of calls.keys) {
+      keys.add(key);
+      const sym = key.split('#')[1];
+      if (isPlainFunctionName(sym)) pending.push(sym);
+    }
+    sites.push(...calls.sites);
+  }
+  return { keys: [...keys].sort(), sites };
+}
 
 const sources = sourcesUnder(path.resolve(__dirname, '..', '..', 'src'));
 
@@ -276,14 +473,16 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     ).toEqual([...ALLOWED_MINT_IMPORTERS].sort());
   });
 
-  it('only the mint and the slide construct a session-kind entry', () => {
+  it('only the mint, the slide, and stored-entry validation touch the session discriminator', () => {
     // Name-independent backstop. A helper added inside lib/fresh-auth.ts that
     // opens a window under some other name calls nothing this canary greps for,
-    // but it cannot avoid writing the discriminator.
+    // but it cannot avoid writing the discriminator — as a visible literal, a
+    // wrapped literal, or a shorthand forwarding, all of which the composed
+    // predicate fires on.
     const { keys, sites } = occurrencesOf(
       sources,
-      SESSION_KIND_RE,
-      (line) => !constructsSessionEntry(line),
+      /\bkind\b/,
+      (line) => !signalsSessionEntry(line),
     );
     expect(keys, `session-kind entry construction sites:\n${sites.join('\n')}`).toEqual(
       [...ALLOWED_SESSION_ENTRY_SITES].sort(),
@@ -326,11 +525,107 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // other half: a brand-new route that issues a session and that nobody
     // remembered to assert against. A new entry here is a red bar that says "add
     // the response assertion, then pin the site" — the set IS the registry, and
-    // it is deliberately unpleasant to extend without doing both.
-    const { keys, sites } = occurrencesOf(sources, JWT_MINT_RE, isCommentLine);
-    expect(keys, `session JWT mint sites:\n${sites.join('\n')}`).toEqual(
+    // it is deliberately unpleasant to extend without doing both. Attribution
+    // is transitive so the registry survives the mint being extracted into a
+    // helper; see sessionIssuingSites.
+    const { keys, sites } = sessionIssuingSites(sources);
+    expect(keys, `session JWT issuing sites:\n${sites.join('\n')}`).toEqual(
       [...SESSION_ISSUING_SITES].sort(),
     );
+    expect(SESSION_ISSUING_SITES.length).toBeGreaterThanOrEqual(SESSION_ISSUING_SITES_FLOOR);
+  });
+
+  it('extracting the JWT mint into a helper keeps every caller in the registry', () => {
+    // Planted probe for the transitive attribution. Under the literal
+    // call-shape scan this synthetic module contributed exactly one member
+    // (the helper), and the two routes calling it were invisible — the
+    // collapse that read as ordinary maintenance. The fixpoint walk must name
+    // all three, and the second-level wrapper's caller proves the walk does
+    // not stop at depth one.
+    const synthetic: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: [
+        'function mintSessionJwt(username) {',
+        '  return jwt.sign({ sub: username }, secret);',
+        '}',
+        '',
+        'function reissueSession(username) {',
+        '  return mintSessionJwt(username);',
+        '}',
+        '',
+        "router.post('/first', async (req, res) => {",
+        '  const token = mintSessionJwt(req.hiveUsername);',
+        '});',
+        '',
+        "router.post('/second', async (req, res) => {",
+        '  const token = reissueSession(req.hiveUsername);',
+        '});',
+      ],
+    };
+    expect(sessionIssuingSites([synthetic]).keys).toEqual([
+      'routes/synthetic.ts#POST /first',
+      'routes/synthetic.ts#POST /second',
+      'routes/synthetic.ts#mintSessionJwt',
+      'routes/synthetic.ts#reissueSession',
+    ]);
+  });
+
+  it('only the pinned functions touch the in-memory entry tier', () => {
+    const module = sources.filter((s) => s.rel === 'lib/fresh-auth.ts');
+    expect(module.length, 'the guarded module was renamed or removed').toBe(1);
+    const { keys, sites } = occurrencesOf(
+      module,
+      MEMSTORE_TOUCH_RE,
+      (line) => MEMSTORE_DEFINITION_RE.test(line) || isCommentLine(line),
+    );
+    expect(
+      keys,
+      'a new toucher of the in-memory entry store can plant or extend a ' +
+        'session window without calling the mint, writing the discriminator, ' +
+        `or reaching the slide persister:\n${sites.join('\n')}`,
+    ).toEqual([...ALLOWED_MEMSTORE_TOUCH_SITES].sort());
+  });
+
+  it('only the pinned functions touch the Redis entry keyspace', () => {
+    const module = sources.filter((s) => s.rel === 'lib/fresh-auth.ts');
+    expect(module.length, 'the guarded module was renamed or removed').toBe(1);
+    const { keys, sites } = occurrencesOf(
+      module,
+      ENTRY_KEY_PREFIX_RE,
+      (line) => ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) || isCommentLine(line),
+    );
+    expect(
+      keys,
+      'a new toucher of the canonical entry keyspace can write a window ' +
+        `directly to Redis past every caller pin above:\n${sites.join('\n')}`,
+    ).toEqual([...ALLOWED_ENTRY_KEY_PREFIX_SITES].sort());
+  });
+
+  it('the entry keyspace literal exists once, at the key-prefix definition', () => {
+    // KEY_PREFIX is module-private, but the namespace string is not: a helper
+    // anywhere under src/ can rebuild the key from the literal and reach the
+    // store with no identifier the scans above pin. Comments are spared (prose
+    // cannot address Redis); everything else is one definition line at module
+    // scope of the owning module.
+    const { keys, sites } = occurrencesOf(sources, ENTRY_KEYSPACE_LITERAL_RE, isCommentLine);
+    expect(
+      keys,
+      `the fresh-auth entry keyspace is addressed outside its defining constant:\n${sites.join('\n')}`,
+    ).toEqual([`lib/fresh-auth.ts#${MODULE_SCOPE}`]);
+  });
+
+  it('the test-only seeding hook has no production caller', () => {
+    const { keys, sites } = occurrencesOf(
+      sources,
+      SEEDING_HOOK_RE,
+      (line) => SEEDING_HOOK_DEFINITION_RE.test(line) || isCommentLine(line),
+    );
+    expect(
+      keys,
+      'the in-memory seeding hook writes the entry tier directly, so a ' +
+        'production caller is an unlicensed mint invisible to every other ' +
+        `scan in this file:\n${sites.join('\n')}`,
+    ).toEqual([]);
   });
 
   it('the occurrence scan fires on aliases and indirection and spares imports, prose, and the definition', () => {
@@ -340,7 +635,9 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // COMPOSED predicate, because under a name match the regex alone no longer
     // encodes the semantics.
     const counts = (line: string): boolean =>
-      SESSION_MINT_IDENT_RE.test(line) && !skipMintLine(line);
+      SESSION_MINT_IDENT_RE.test(line) && !skipMintLine(line, 0, [line]);
+    const countsAt = (lines: string[], i: number): boolean =>
+      SESSION_MINT_IDENT_RE.test(lines[i]) && !skipMintLine(lines[i], i, lines);
 
     expect(counts("const issued = await issueSessionFreshAuthToken(username, 'password');")).toBe(true);
     expect(counts('  issueSessionFreshAuthToken (username, mechanism)')).toBe(true);
@@ -380,6 +677,32 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // of reach here by construction, which is what the discriminator and slide
     // scans exist to cover.
     expect(counts("await issueSessionFreshAuthTokenV2(username, 'password');")).toBe(false);
+
+    // The alias split across a line break. The specifier line alone satisfies
+    // the bare-name skip and the per-line veto never saw the `as`, so the file
+    // held a working alias while the scan stayed green. The veto now runs
+    // against the joined statement.
+    const wrappedAlias = [
+      'import {',
+      '  issueSessionFreshAuthToken',
+      '    as mint,',
+      "} from '../lib/fresh-auth.js';",
+    ];
+    expect(countsAt(wrappedAlias, 1)).toBe(true);
+    // The same wrap without an alias stays a plain import and stays spared.
+    const wrappedPlain = [
+      'import {',
+      '  issueSessionFreshAuthToken,',
+      "} from '../lib/fresh-auth.js';",
+    ];
+    expect(countsAt(wrappedPlain, 1)).toBe(false);
+    // A complete single-line import is never joined with its neighbours, so an
+    // adjacent line cannot veto it into a false positive.
+    const completeThenNoise = [
+      "import { issueSessionFreshAuthToken } from '../lib/fresh-auth.js';",
+      "// prose: issueSessionFreshAuthToken as documented above",
+    ];
+    expect(countsAt(completeThenNoise, 0)).toBe(false);
 
     // The definition line matches the name and is skipped by shape, so the
     // module that defines the mint stays scanned for references to it.
@@ -446,8 +769,64 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     expect(constructsSessionEntry("    kind: 'consent_op',")).toBe(false);
     expect(constructsSessionEntry("  const operation_kind: 'session' = x;")).toBe(false);
 
+    // The key-anchored signal: shapes that construct while showing no value on
+    // the matched line. Both were full evasions of the value-anchored form.
+    expect(signalsSessionEntry('    kind:')).toBe(true);
+    expect(signalsSessionEntry('    kind,')).toBe(true);
+    expect(signalsSessionEntry('  return { kind, username, mechanism };')).toBe(true);
+    expect(signalsSessionEntry('  return { username, kind };')).toBe(true);
+    expect(signalsSessionEntry("    'kind':")).toBe(true);
+    // Accepted false positive, loud: a bare destructure of the key. None exist
+    // under src/ today; one added later is a red bar naming its symbol.
+    expect(signalsSessionEntry('  const { kind } = entry;')).toBe(true);
+    // Shapes the key-anchored signal must NOT fire on: property reads, type
+    // annotations with their type on the line, comparisons, assignments,
+    // other identifiers, prose.
+    expect(signalsSessionEntry("  if (entry.kind === 'session') {")).toBe(false);
+    expect(signalsSessionEntry('  kind: FreshAuthKind;')).toBe(false);
+    expect(signalsSessionEntry('  let kind: FreshAuthKind;')).toBe(false);
+    expect(signalsSessionEntry('  kind = rawKind;')).toBe(false);
+    expect(signalsSessionEntry("  if (kind === 'session') {")).toBe(false);
+    expect(signalsSessionEntry('    operation_kind,')).toBe(false);
+    expect(signalsSessionEntry(' * Stored value: `{ username, mechanism, issued_at, kind }` JSON, plus')).toBe(false);
+
     expect(isCommentLine(" *   - a `kind: 'session'` entry (target-less, minted by")).toBe(true);
     expect(isCommentLine("    kind: 'session',")).toBe(false);
+  });
+
+  it('a wrapped literal and a shorthand construction are occurrences of the discriminator scan', () => {
+    // End-to-end planted probes through the same occurrence walk the
+    // whole-tree assertion runs, not just the line predicate. Before the
+    // key-anchored signal, both of these produced an EMPTY occurrence set and
+    // the exact-set assertion had nothing to go red on.
+    const wrapped: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function mintWindowUnderAnotherName(username) {',
+        '  const entry = {',
+        '    username,',
+        '    kind:',
+        "      'session',",
+        '  };',
+        '}',
+      ],
+    };
+    expect(
+      occurrencesOf([wrapped], /\bkind\b/, (line) => !signalsSessionEntry(line)).keys,
+    ).toEqual(['lib/synthetic.ts#mintWindowUnderAnotherName']);
+
+    const shorthand: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function forwardKindShorthand(username) {',
+        "  const kind = 'session';",
+        '  return { username, kind };',
+        '}',
+      ],
+    };
+    expect(
+      occurrencesOf([shorthand], /\bkind\b/, (line) => !signalsSessionEntry(line)).keys,
+    ).toEqual(['lib/synthetic.ts#forwardKindShorthand']);
   });
 
   it('the slide and session-JWT matchers fire on a call and spare the definition and prose', () => {
@@ -481,6 +860,22 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // The wrapped parameter list must not read as the end of the block, and the
     // route handler above must not leak downward into the sibling function.
     expect(enclosingSymbol(lines, 7)).toBe('handleLogin');
+    // A parenthesized EXPRESSION is not a function declaration. Without the
+    // paren-arm guard, `const raw = (parsed as X).field;` swallowed every
+    // following occurrence in its real enclosing function under the local's
+    // name — which is how the discriminator scan once reported the shorthand
+    // returns inside stored-entry validation as sites named for two locals.
+    const expressionLocals = [
+      'function validateSomething(raw) {',
+      '  const rawAbsolute = (parsed as { absolute_expires_at?: unknown }).absolute_expires_at;',
+      '  return { kind, username };',
+      '}',
+    ];
+    expect(enclosingSymbol(expressionLocals, 2)).toBe('validateSomething');
+    // The guard keeps the true positives: an arrow with its `=>` visible, and
+    // a parameter list left open for the next line.
+    expect(enclosingSymbol(['const handler = async (req, res) => {', '  mint();'], 1)).toBe('handler');
+    expect(enclosingSymbol(['const handler = (', '  req: Request,', ') => {', '  mint();'], 3)).toBe('handler');
     // An aliased specifier is caught because it resolves to module scope, which
     // is never an allowed key. If the resolver ever labelled import lines with
     // the nearest declaration instead, that alias would acquire a symbol name
