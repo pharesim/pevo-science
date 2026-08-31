@@ -61,3 +61,53 @@ Found by probing the guards rather than the behaviour: the canary that enforces
 "every epoch writer sweeps" is one-directional, so a route that should stamp and
 does not is invisible to it. That asymmetry is the more general lesson and is
 why scope item 3 is in this task rather than left implicit.
+
+## Backend completion notes (2026-08-31)
+
+Landed in commits `79b57f8d` and `b1c700e2`. Per scope item:
+
+1. The upgrade handler stamps `sessions_invalidated_at` in the same UPDATE
+   that nulls the encrypted keys and sets `upgraded_at` (the same
+   single-statement boundary the reset and recovery writers use), then calls
+   `invalidateSessionFreshAuthTokens` before the reissue.
+2. Decided YES: prior bearer JWTs are invalidated, matching the reset and
+   recovery posture; the reason is stated in the route. The epoch is computed
+   in Node and embedded as the reissued JWT's `reissuedAt` claim so the
+   middleware's identity match spares exactly the token the upgrade response
+   hands back (the recover.ts mechanism, now shared); the middleware's
+   exemption-scope comment was widened accordingly.
+3. The inverse guard is a pinned set: `every credential-rotating route stamps
+   the revocation epoch` in the invalidation suite names the reset, both
+   recovery phases, and the upgrade, and requires each to touch the column;
+   the existing pairing then forces the sweep, so one membership buys both
+   halves. A general rule was weighed and rejected in place: "rotates
+   credentials" has no greppable signal that excludes signup's initial
+   `password_hash`/custody writes, and enumerating those exemptions would
+   restate the pinned list as its inverse.
+
+Acceptance criteria: (1) end-to-end in `custody-upgrade.test.ts` — a window
+minted before the real POST /upgrade is refused after it; (2) the epoch-only
+leg re-plants the swept window into the in-memory tier and shows the stored
+epoch alone refuses it, with a no-epoch control proving the re-plant was
+live; (3) the old JWT draws 401 SESSION_INVALIDATED, the reissued token
+survives its same-second revocation (403 at the custody gate), and its
+`reissuedAt` claim is compared byte-for-byte against the stored epoch; (4)
+removing the stamp from the route was verified to fail the pinned-set guard,
+and removing the sweep to fail the pairing guard, via mutation runs in
+isolated worktrees.
+
+**[TODO Architect]** Contract and architecture doc updates on archive:
+
+- `agents/docs/api-contracts/custody.md`, POST /api/custody/upgrade: the
+  endpoint now also invalidates every previously issued bearer JWT and every
+  open session-proof window for the account; the returned token is the only
+  surviving session. Worth a sentence in the endpoint prose (SPA-visible:
+  other tabs and devices are signed out and see `SESSION_INVALIDATED`).
+- `agents/docs/ARCHITECTURE.md` § 6.7 (and the § 6.4.1 phrasing that names
+  "a password reset or recovery" as the session-revoking events): custody
+  upgrade is the fourth writer of `sessions_invalidated_at`, and the
+  middleware's `reissuedAt` same-second exemption now covers its reissue
+  site alongside the two recover.ts ones.
+- Possibly UI-relevant: the cross-tab sign-out behavior above may interact
+  with the pending ui session-teardown work; routing that is the architect's
+  call.
