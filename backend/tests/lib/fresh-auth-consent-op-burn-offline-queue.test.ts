@@ -368,7 +368,7 @@ describe('consent-op burn across a Redis outage that outlives the offline queue'
     expect(await observer!.exists(key)).toBe(0);
   }, 60_000);
 
-  it.skipIf(!redisPresent)('drops a ledger entry past its deadline even with no reachable client', async () => {
+  it.skipIf(!redisPresent)('keeps a ledger entry past its deadline while no client is reachable', async () => {
     const client = proxied!;
     const issued = await issueFreshAuthToken('drain-expiry', 'password', TARGET);
 
@@ -379,22 +379,31 @@ describe('consent-op burn across a Redis outage that outlives the offline queue'
     expect(first.valid).toBe(true);
     expect(_getSpentConsentOpsSizeForTests()).toBe(1);
 
-    // First, the arm that carries the single-use guarantee: a drain pass that
-    // finds no reachable client must leave a LIVE entry alone. This is the arm
-    // the 60s tick takes for the whole of an outage, and dropping an entry here
-    // would retire the refusal while the orphaned key is still readable, which
-    // is precisely the replay the ledger exists to close.
+    // First, a LIVE entry: a drain pass that finds no reachable client must
+    // leave it alone. This is the arm the 60s tick takes for the whole of an
+    // outage, and dropping an entry here would retire the refusal while the
+    // orphaned key is still readable, which is precisely the replay the ledger
+    // exists to close.
     _drainSpentConsentOpsForTests(Date.now());
     expect(_getSpentConsentOpsSizeForTests()).toBe(1);
 
     // Then the expiry arm, still severed, so the drain holds no reachable
-    // client. The entry must be dropped regardless: chaining the drop onto a
-    // delete that cannot be issued would leak an entry per burn for the whole of
-    // an outage. Driven with a future clock rather than by waiting out a real
-    // TTL. Nothing is asserted about the canonical key here, because with no
-    // client there is no delete to observe; the sweep this arm issues when a
-    // client IS reachable is pinned in `fresh-auth-redis-unavailable-burn.test.ts`.
+    // client. The entry must be KEPT, not dropped: with no client there is no
+    // sweep to dispatch, and the deadline alone does not prove the canonical
+    // key unreadable — ioredis retains an issuing SET whose socket closed
+    // unreplied and resends it at recovery with a fresh full EX, so after an
+    // outage that outlasts the deadline the map entry can be the only thing
+    // left refusing the spent proof. A bare drop here hands that replay its
+    // trailing window. Driven with a future clock rather than by waiting out a
+    // real TTL. Retirement belongs to the first drain pass that holds a
+    // client; the expiry sweep-then-drop for the reachable-client case is
+    // pinned in `fresh-auth-redis-unavailable-burn.test.ts`.
     _drainSpentConsentOpsForTests(Date.now() + 400_000);
-    expect(_getSpentConsentOpsSizeForTests()).toBe(0);
+    expect(_getSpentConsentOpsSizeForTests()).toBe(1);
+
+    // And the refusal that retention exists to preserve: the proof stays
+    // refused past its own deadline while the outage lasts.
+    const replay = await consumeFreshAuthToken(issued.token, 'drain-expiry', TARGET_HASH);
+    expect(replay.valid).toBe(false);
   }, 60_000);
 });

@@ -951,8 +951,13 @@ function isConsentOpSpent(token: string): boolean {
   return spentConsentOps.has(token);
 }
 
-/** Retry the compensating deletes a flap left undone, and drop ledger entries
- *  whose own deadline has passed.
+/** Retry the compensating deletes a flap left undone, and retire ledger
+ *  entries whose own deadline has passed — but only when their sweep can be
+ *  dispatched. While no client is reachable, expired entries are KEPT and go
+ *  on refusing their proofs: the deadline does not prove the canonical key
+ *  unreadable (ioredis can resend an unreplied issuing `SET` at recovery with
+ *  a fresh full `EX`), so retirement waits for the first drain pass that holds
+ *  a client and can pair the drop with a delete.
  *
  *  This is not what closes the replay hole — the ledger itself refuses the
  *  replay whether or not a delete ever lands. What the drain buys is that an
@@ -989,21 +994,29 @@ function drainSpentConsentOps(now: number): void {
   const client = redis !== null && isRedisAvailable() ? redis : null;
   for (const [token, expiresAt] of spentConsentOps) {
     if (expiresAt <= now) {
-      // Belt-and-braces sweep, not an orphan collection: the entry's deadline
-      // is a full TTL from burn time and the canonical key's `EX` started
-      // strictly earlier, so Redis has already lapsed the key by the time this
-      // arm fires. It is issued anyway so the two deadlines are not silently
-      // load-bearing on each other — a future change that re-derives either one
-      // from a different basis, or a forward step of the app clock relative to
-      // the Redis server's, degrades to a redundant `DEL` rather than to a
-      // readable orphan. The drop is unconditional and NOT chained off the
-      // delete: chaining would leak entries for the whole of an outage, when
-      // `client` is null and nothing would ever retire them.
-      // The `catch` is load-bearing, not decorative: this runs from a timer
-      // callback with no surrounding handler, so an unhandled rejection ends
-      // the process under Node's default policy — during exactly the Redis
-      // outage this whole path exists to survive.
-      if (client) void client.del(KEY_PREFIX + token).catch(() => {});
+      // An entry past its deadline retires ONLY when its sweep can be
+      // dispatched. The deadline alone does not prove the canonical key
+      // unreadable: ioredis retains an issuing `SET` whose socket closed
+      // unreplied and resends it on recovery with a fresh full `EX`
+      // (`autoResendUnfulfilledCommands` defaults true, and a mid-outage TCP
+      // connect's `resetCommandQueue` decouples that deque from the
+      // retry-ceiling flush), so after an outage that outlasts the deadline
+      // the key can come back while the map entry is the only thing left
+      // refusing the spent proof. Dropping bare here would hand that replay
+      // exactly the trailing window this ledger exists to close. Keeping the
+      // entry is bounded: these are the same per-burn entries the live arm
+      // below already retains during an outage, each costing an argon2 verify
+      // or an ORCID round-trip to create, and all of them retire on the first
+      // drain pass that holds a client.
+      //
+      // With a client, the sweep is issued before the drop so a retiring entry
+      // never leaves an unswept key behind. The `catch` is load-bearing, not
+      // decorative: this runs from a timer callback with no surrounding
+      // handler, so an unhandled rejection ends the process under Node's
+      // default policy — during exactly the Redis outage this whole path
+      // exists to survive.
+      if (!client) continue;
+      void client.del(KEY_PREFIX + token).catch(() => {});
       spentConsentOps.delete(token);
       continue;
     }

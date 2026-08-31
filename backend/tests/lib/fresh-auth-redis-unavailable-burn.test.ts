@@ -199,6 +199,48 @@ describe('spent-proof ledger retirement', () => {
     expect(await redis.exists(key)).toBe(0);
   });
 
+  it.skipIf(!redisPresent)('a past-deadline ledger entry still refuses the consume itself', async () => {
+    // The membership-only read: `isConsentOpSpent` answers from `.has` alone
+    // and never prunes, and this is the consume-path case that makes that
+    // load-bearing. The planted state is what a replay finds when the
+    // compensating delete never landed and the entry's deadline lapsed before
+    // any drain ran: canonical key present, in-memory record absent, ledger
+    // entry expired. A prune-on-read variant drops the entry at the check, the
+    // same call's own GETDEL then finds the key the deadline said had lapsed,
+    // and the spent proof is reported a WIN — so this case is what dies if the
+    // predicate ever regains a prune.
+    _resetFreshAuthMemStoreForTests();
+    const redis = getRedis()!;
+    const token = 'ledger-stale-refusal-token';
+    const key = seedKey(token);
+    await redis.set(
+      key,
+      JSON.stringify({
+        username: 'stale-refusal-user',
+        mechanism: 'password',
+        issued_at: Date.now() - 60_000,
+        kind: 'consent_op',
+        target_hash: TARGET_HASH,
+      }),
+      'EX',
+      FRESH_AUTH_TTL_SECONDS,
+    );
+    _setSpentConsentOpForTests(token, Date.now() - 1);
+
+    // No drain runs first; the consume itself is the subject.
+    const replay = await consumeFreshAuthToken(token, 'stale-refusal-user', TARGET_HASH);
+    expect(replay.valid).toBe(false);
+    if (!replay.valid) {
+      expect(replay.reason).toBe('expired');
+    }
+
+    // The refused replay retires what it touched: its GETDEL proved the
+    // canonical copy gone, which clears both the key and the ledger entry, so
+    // the refusal does not leak state it no longer needs.
+    expect(_getSpentConsentOpsSizeForTests()).toBe(0);
+    expect(await redis.exists(key)).toBe(0);
+  });
+
   it.skipIf(!redisPresent)('retires an expired entry from the periodic cleanup tick', async () => {
     const token = 'ledger-tick-token';
     _setSpentConsentOpForTests(token, Date.now() + 1_000);
