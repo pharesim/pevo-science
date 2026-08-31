@@ -757,6 +757,29 @@ describe('teardown abandons in-flight acquisitions', () => {
     expect((await stale).usesPassword).toBe(true);
   });
 
+  it('a caller under a different subject does not join a pending factor resolution', async () => {
+    // The join is identity-keyed, independent of the teardown: even when a
+    // subject swap reaches the resolver without the scrub having run, the
+    // pending flight's answer stays with the subject whose JWT made the
+    // status read, and the new subject's caller spends its own fetch.
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStatus = resolve; }),
+    );
+
+    const firstSubject = resolvePasswordFactor();
+
+    mockAuthStore.username = 'bob';
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    const secondSubject = resolvePasswordFactor();
+
+    resolveStatus({ status: 'ok', data: { hasPassword: true } });
+    expect((await secondSubject).usesPassword).toBe(false);
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
+    // Each flight still answers the caller that started it.
+    expect((await firstSubject).usesPassword).toBe(true);
+  });
+
   it('an abandoned flight resolving late does not evict its successor from the in-flight slot', async () => {
     const promptResolvers = [];
     mockReauthModal.request.mockImplementation(

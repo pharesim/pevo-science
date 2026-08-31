@@ -511,7 +511,15 @@ let _passwordFactorMemoGeneration = 0;
 // spend the rate-limited status budget — nor land on different factors when
 // one request succeeds and its sibling transiently fails. Mirrors the
 // in-flight pattern of `_acquireInFlight` below.
+//
+// The join is identity-keyed: the flight records the authenticated subject it
+// was started for, and a caller shares it only when the current subject
+// matches. The status read is answered for the JWT that made it, so its
+// answer must stay with that subject. The subject scrub already nulls the
+// slot on every enumerated subject change; the key is the belt-and-braces
+// refusal for any path that swaps the subject without the scrub.
 let _factorResolutionInFlight = null;
+let _factorResolutionSubject = null;
 
 export function clearPasswordFactorMemo() {
   _passwordFactorMemo = null;
@@ -523,7 +531,9 @@ export async function resolvePasswordFactor() {
   if (username && _passwordFactorMemo === username) {
     return { usesPassword: true, assumed: false };
   }
-  if (_factorResolutionInFlight) return _factorResolutionInFlight;
+  if (_factorResolutionInFlight && _factorResolutionSubject === username) {
+    return _factorResolutionInFlight;
+  }
 
   const flight = (async () => {
     const generation = _passwordFactorMemoGeneration;
@@ -547,13 +557,17 @@ export async function resolvePasswordFactor() {
   })();
 
   _factorResolutionInFlight = flight;
+  _factorResolutionSubject = username;
   try {
     return await flight;
   } finally {
     // A teardown (abandonInFlightAcquisitions) may have cleared the slot and
     // a newer resolution may own it by now; only the flight that installed
     // itself may clear it.
-    if (_factorResolutionInFlight === flight) _factorResolutionInFlight = null;
+    if (_factorResolutionInFlight === flight) {
+      _factorResolutionInFlight = null;
+      _factorResolutionSubject = null;
+    }
   }
 }
 
@@ -624,6 +638,7 @@ export function abandonInFlightAcquisitions() {
   _acquireInFlight.permissive = null;
   _acquireInFlight.suppressed = null;
   _factorResolutionInFlight = null;
+  _factorResolutionSubject = null;
 }
 
 async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } = {}) {
