@@ -27,7 +27,19 @@ const QUEUE_WATCHDOG_INTERVAL_MS = 30_000;
 // command: without this, a command against a connected-but-stalled Redis
 // hangs the awaiting caller indefinitely. Timed-out commands reject (and
 // route through callers' existing catch handlers) instead of hanging.
-const REDIS_COMMAND_TIMEOUT_MS = 5_000;
+//
+// Exported, like `REDIS_MAX_RETRIES_PER_REQUEST` below and
+// `redisRetryStrategy`, so a test that has to stand its own client (because
+// the module singleton here cannot be severed without taking the rest of the
+// run's Redis down with it) carries the production value rather than a
+// hand-copied literal that drifts silently when this one is retuned.
+export const REDIS_COMMAND_TIMEOUT_MS = 5_000;
+
+// Bounded per-command retry budget. After N retries the command rejects with
+// `MaxRetriesPerRequestError`, freeing its slot in the offline queue. This is
+// ioredis's primary queue-growth bounder (no `commandsQueueMaxLength` option
+// exists in v5). Exported for the same reason as the timeout above.
+export const REDIS_MAX_RETRIES_PER_REQUEST = 3;
 
 // Reconnect backoff: linear ramp (200ms per attempt) capped at 5s,
 // returned for every retry count. Exported so the reconnect test can pin
@@ -102,11 +114,7 @@ export function getRedis(): Redis | null {
   if (!config.redisUrl) return null;
 
   const client = new Redis(config.redisUrl, {
-    // Bounded per-command retry budget. After N retries the command
-    // rejects with `MaxRetriesPerRequestError`, freeing its slot in
-    // the offline queue. This is ioredis's primary queue-growth
-    // bounder (no `commandsQueueMaxLength` option exists in v5).
-    maxRetriesPerRequest: 3,
+    maxRetriesPerRequest: REDIS_MAX_RETRIES_PER_REQUEST,
     commandTimeout: REDIS_COMMAND_TIMEOUT_MS,
     lazyConnect: true,
     // Indefinite reconnect backoff. ioredis handles transient

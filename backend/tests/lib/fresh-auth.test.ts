@@ -798,10 +798,13 @@ describe('Symmetric dual-tier deletion', () => {
     // the canonical copy alive while the in-memory delete still reports a win.
     // The consume returns valid, and the SAME proof authorizes a second critical
     // action once the client reconnects inside the TTL. A compensating delete is
-    // what closes that, and this test is its mutation-kill: without it the second
-    // consume below comes back valid.
+    // what closes that, and the key-absence assertion below is its mutation-kill:
+    // the replay assertions after it are NOT, because the spent-proof ledger
+    // refuses a replayed consent-op proof whether or not that delete ever runs.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('flap-burn', 'password', T);
+    const key = `${config.appTag}:fresh_auth:token:${issued.token}`;
+    expect(await redis.exists(key)).toBe(1);
 
     const burnSpy = vi
       .spyOn(redis, 'getdel')
@@ -813,6 +816,11 @@ describe('Symmetric dual-tier deletion', () => {
       burnSpy.mockRestore();
     }
     expect(first.valid).toBe(true);
+
+    // Taken before the replay, so it attributes the removal to the compensating
+    // delete. This is the real-path arm of that class: `isRedisAvailable()` is
+    // genuinely true here and only the `GETDEL` was made to reject.
+    expect(await redis.exists(key)).toBe(0);
 
     // Redis is "recovered": the entry must be gone from it, not merely from the
     // in-memory backup.

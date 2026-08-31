@@ -214,6 +214,12 @@ export const redisStubFactory: () => typeof import('../../src/redis.js') = () =>
   isRedisAvailable: () => false,
   disconnectRedis: async () => {},
   redisRetryStrategy: (times: number) => Math.min(times * 200, 5000),
+  // The two client-tuning constants are part of the module's export surface,
+  // so the annotation above requires them here even though a stub whose
+  // `getRedis` returns null never builds a client. Values mirror production;
+  // nothing in these routes reads them.
+  REDIS_COMMAND_TIMEOUT_MS: 5_000,
+  REDIS_MAX_RETRIES_PER_REQUEST: 3,
 });
 
 /**
