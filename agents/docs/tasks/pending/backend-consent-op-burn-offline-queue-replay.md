@@ -187,3 +187,154 @@ by implementers, this is surfaced rather than applied. Run
 4. The frontmatter `applies_when` bullet "Reaching for the house
    `if (redis && isRedisAvailable())` guard on a delete, cleanup, or
    compensating write" stays correct as-is.
+
+---
+
+## Architect re-review (2026-08-31) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `e85d845c`, scoped to `backend/src/lib/fresh-auth.ts`
+and `backend/tests/lib/fresh-auth-consent-op-burn-offline-queue.test.ts`. Eight persona
+lenses, a seven-validator pass, and architect direct verification. Four further findings
+were rejected at validation and are deliberately not listed below.
+
+**The ledger design is sound and three of the four acceptance criteria are met.** Nothing
+below says the approach is wrong or that a claimed fix is absent. Independently verified
+at the commit rather than taken from the implementation note:
+
+- **AC1 holds on every path but one.** The security lens enumerated the full branch matrix
+  of (`redis` null or not, `isRedisAvailable()` true or false, `getdel` resolved or threw,
+  `memStore` hit or miss) and found no combination that returns a burn win while leaving a
+  canonical copy standing without a ledger entry. The single exception is item 1.
+- **AC2 holds by construction.** `spentConsentOps.set` is reachable only when
+  `burnedInMemStore === true`, so a ledger entry can never block a FIRST legitimate use.
+  An attempt to construct a spurious `expired` on a freshly minted proof failed.
+- **AC3 holds empirically, not merely structurally.** The suite was executed during review:
+  it passes in 2.67s and emits a genuine ioredis `MaxRetriesPerRequestError` through
+  `fresh_auth.redis_compensating_del_failed`. `isRedisAvailable()` really is production's
+  `status === 'ready'` predicate applied to a socket that was actually severed, and the
+  queue-rejection mechanic was re-derived from installed ioredis 5.10.1
+  (`retryAttempts % (maxRetriesPerRequest + 1) === 0` triggers the queue flush).
+- **Two attacks were constructed and proved NOT reachable:** a drain `.then()` wiping a
+  ledger entry a newer burn just wrote (the `alreadySpent` short-circuit sits above the
+  `set`, and `burnedInMemStore` cannot be true twice), and a second concurrent consume
+  slipping past the awaited compensating delete (`inFlightConsumes` is added synchronously
+  after a synchronous `has` with no interleaving await, and released only once the burn
+  including that delete settles).
+- **Clean:** project-standards returned zero findings (comment anchors, `config.appTag` key
+  prefixing, carve-out clauses (a) and (b)); no token material reaches any new log path;
+  no usable amplification into the ledger, since every entry costs a full argon2 verify or
+  an ORCID round-trip.
+
+Five items. The theme is that the ledger's stated invariants are not quite the ones the
+code enforces.
+
+### 1. The ledger retires before the canonical key it guards
+
+`spentConsentOps.set(token, memRecord?.expiresAt ?? …)` takes `memRecord.expiresAt`, which
+`issueFreshAuthToken` snapshots BEFORE dispatching `SET … EX`. The canonical key expires at
+set-execution plus TTL, strictly later. `isConsentOpSpent` prunes on the earlier value, and
+`drainSpentConsentOps` drops an expired entry with a bare `continue` that does not delete
+the orphaned key. `consent_op` entries carry no independent absolute-expiry re-check on
+read (unlike the session kind; `issued_at` is documented as informational only), so in the
+trailing window a spent proof reads back out of Redis and authorizes a second critical
+action.
+
+Scope this honestly: the window is ordinary dispatch-to-execute latency, sub-millisecond to
+low-millisecond. The security lens put it at roughly two seconds via the issuance SET
+sitting in the offline queue; that is **wrong** and was corrected at validation, because
+`issueFreshAuthToken` gates its SET behind `isRedisAvailable()` and never dispatches during
+an outage. This is a narrow boundary race, not a wide hole.
+
+Independent of the window's width, the inline comment claiming the chosen basis "can only
+over-guard, never under-guard" is true of the `??` fallback but false of the
+`memRecord?.expiresAt` operand actually taken on every real burn.
+
+Stamp from burn time instead: `spentConsentOps.set(token, Date.now() +
+FRESH_AUTH_TTL_SECONDS * 1000)`. The burn always runs after the SET executed, so burn-time
+plus a full TTL provably dominates the key's expiry with no dependence on the SET
+round-trip, and over-guarding an already-spent proof costs nothing. Correct the comment.
+Have the drain's expiry arm fire the compensating delete before dropping the entry, so a
+retiring entry never leaves an unswept key behind. Add a boundary test that advances past
+the old basis with the canonical key still live and asserts the replay is still refused.
+
+### 2. The documented restart residual is narrower than the code's
+
+The drain docblock says "once Redis is reachable again the key goes, so a later restart
+finds nothing to replay", and the implementation note's accepted residual is a restart
+"between the burn and Redis returning". Neither matches the code. `drainSpentConsentOps`
+has exactly one call site, the 60s `CLEANUP_INTERVAL_MS` tick, and it additionally
+short-circuits on `isRedisAvailable()` sampled once per tick. The true unsafe-restart
+window runs until a tick coincides with a ready client AND that tick's delete lands: up to
+a full interval past "Redis returning", and longer under a server that is only
+intermittently ready. A backend bounce right after a Redis incident clears is a plausible
+operator reflex inside exactly that window.
+
+Arm a one-shot drain on the client's `ready` transition — `redis.ts` already registers a
+`client.on('ready', …)` handler — guarded by a module flag so listeners cannot accumulate
+across reconnects, and keep the 60s tick as the backstop. Then correct both the docblock
+and the residual paragraph so the accepted risk is the one the code actually carries.
+
+### 3. The test's anti-drift claim does not hold
+
+The header and the inline comment state the client carries production's
+`maxRetriesPerRequest` / `commandTimeout` / `retryStrategy` "imported, not copied … so a
+change to the reconnect curve or the retry budget re-tunes the scenario instead of silently
+invalidating it". Only `redisRetryStrategy` is imported; `maxRetriesPerRequest: 3` and
+`commandTimeout: 5_000` are hand-copied literals, and neither constant is exported from
+`redis.ts`. Raising the retry budget in production leaves this suite green while it no
+longer represents production, which is precisely the silent invalidation the comment claims
+to prevent. This matters more than a normal comment slip because the carve-out
+justification in clause (a) rests on that claim.
+
+Export `REDIS_COMMAND_TIMEOUT_MS` and the retry-budget value from `redis.ts` and import both
+here, so the claim becomes true and the suite re-tunes itself.
+
+### 4. The `burnConsentOpEntry` docblock understates when the ledger branch fires
+
+The rewritten paragraph frames the compensating-delete/ledger branch as reached "When the
+Redis leg did not run at all — the client exists but is mid-flap, so `isRedisAvailable()` is
+false". The code guards on `!redisLegRan`, which is also false when `isRedisAvailable()` was
+true and `redis.getdel()` itself threw. Both cases reach the identical branch, and no other
+sentence in that docblock ties the throw case to it. Since this is the paragraph explaining
+why the ledger exists, a reader could wrongly conclude the "available but the command
+failed" case is unprotected, when it already is. Broaden the sentence to name both paths.
+
+### 5. The sibling suite's stated mutation-kill is now void
+
+`fresh-auth-redis-unavailable-burn.test.ts`'s header says in as many words that it is the
+mutation-kill for the compensating delete. After this change that is false: deleting the
+`await redis.del(…)` block leaves every suite in the repo green, because the ledger
+short-circuit and the replay's own `GETDEL` now satisfy each replay-refusal assertion. The
+delete still earns its place — it is what retires the ledger entry promptly and bounds the
+orphan window in item 2 — so leaving it unpinned invites a later refactor to trim it as dead
+weight and silently widen that window to the full TTL.
+
+Add a case to the sibling suite that asserts the canonical key's absence directly
+(`exists` is 0) BEFORE any replay is attempted, which distinguishes the delete from the
+ledger, and update that header so it claims the role it actually plays now.
+
+### Noted, not held
+
+- **Coverage gap flagged independently by three lenses:** `drainSpentConsentOps` has no test
+  of any kind. Its only entry point is the 60s timer, so neither the retry-on-recovery path
+  nor the expiry-prune arm is exercised, and removing the `drainSpentConsentOps(now)` call
+  from the cleanup tick is invisible to the suite. Item 2 changes this function, so the
+  fix for item 2 is the natural place to cover it.
+- The new suite does not call `_stopCleanupForTests()`. The observed run is 2.7s so the tick
+  lands far away in practice, but a worker slower than roughly 57s between this file's
+  import and its assertions would make the suite non-deterministic in both directions.
+- **Pre-existing, not part of this task:** the compensating delete is awaited inside the
+  request path, so a consent-op consume during an outage blocks for the retry budget before
+  the route proceeds. The ledger now makes that await unnecessary for the single-use
+  guarantee, which makes it cheaper to revisit later.
+- **Pre-existing, separate surface:** `backend/src/lib/ipfs-upload-token.ts` implements the
+  same compensating-delete pattern and its comments still assert the offline-queue
+  reasoning this task disproved. Impact there is contained today by the `file_sha256`
+  re-verification at the pin route and the independent pin cap, so this is a
+  correctness-of-claim divergence rather than a live hole. Flagged for a future task, not
+  for this one.
+
+### Architect-owned, still outstanding
+
+Scope item 4 (the convention entry) remains with the architect and does not block the
+implementer. Handled separately from this hold.
