@@ -538,7 +538,7 @@ Because every request is independently signed by a key the user controls, this p
 
 ### Session Invalidation
 
-The mechanism that revokes a light account's outstanding bearer session tokens and open fresh-auth session windows after a security-sensitive event (password reset, seed-phrase recovery, ORCID recovery), so that nothing minted before the event still authenticates.
+The mechanism that revokes a light account's outstanding bearer session tokens and open fresh-auth session windows after a security-sensitive event (password reset, seed-phrase recovery, ORCID recovery, custody upgrade), so that nothing minted before the event still authenticates.
 *Avoid:* JWT revocation, bearer-token revocation.
 
 Each outstanding session token records when it was issued; the platform stores a cutoff time, and any token issued before the cutoff stops authenticating. The token freshly issued by the triggering event is exempted so the user is not logged out by their own action. A session token whose issue time is missing or malformed is rejected outright rather than skipping the check.
