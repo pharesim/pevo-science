@@ -69,6 +69,7 @@ const {
   clearCachedSessionProof,
   clearPasswordFactorMemo,
   resolvePasswordFactor,
+  abandonInFlightAcquisitions,
 } = await import('../../src/lib/fresh-auth.js');
 
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
@@ -662,6 +663,153 @@ describe('the gate never fails open into silence', () => {
 
     expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
     expect(mockBroadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'window-proof' });
+  });
+});
+
+describe('teardown abandons in-flight acquisitions', () => {
+  // The subject-bound scrub that runs on logout and on a cross-user login
+  // clears the proof caches AND abandons the module-level in-flight state as
+  // one act (the auth store routes both through its scrub). These tests drive
+  // the fresh-auth half directly, composed the way that scrub invokes it.
+  function teardownSubjectState() {
+    clearCachedSessionProof();
+    clearPasswordFactorMemo();
+    abandonInFlightAcquisitions();
+  }
+
+  // Real timers in this file; a macrotask hop lets a pending flight advance
+  // through its internal awaits to the point currently blocking it.
+  const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+  beforeEach(() => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+  });
+
+  it('a caller arriving after teardown starts its own acquisition instead of joining the old flight', async () => {
+    const promptResolvers = [];
+    mockReauthModal.request.mockImplementation(
+      () => new Promise((resolve) => { promptResolvers.push(resolve); }),
+    );
+
+    const preTeardown = ensureSessionWindow();
+    await tick();
+    expect(promptResolvers).toHaveLength(1);
+
+    teardownSubjectState();
+
+    const postTeardown = ensureSessionWindow();
+    await tick();
+    // Joining the abandoned flight would mean no second prompt.
+    expect(promptResolvers).toHaveLength(2);
+
+    // The abandoned flight unwinds as a clean cancel; the new one mints.
+    promptResolvers[0](null);
+    promptResolvers[1]('hunter2');
+    expect(await preTeardown).toEqual({ ready: false, cancelled: true });
+    expect(await postTeardown).toEqual({ ready: true, proof: 'window-proof' });
+  });
+
+  it('a mint resolving after teardown does not repopulate the scrubbed window cache', async () => {
+    let resolveMint;
+    mockMintSessionAuthProof.mockReturnValueOnce(
+      new Promise((resolve) => { resolveMint = resolve; }),
+    );
+
+    const pending = ensureSessionWindow();
+    await tick(); // the default prompt answered; the mint round-trip is now pending
+    teardownSubjectState();
+
+    resolveMint(issuance('late-proof'));
+    const outcome = await pending;
+
+    // The late issuance is dropped, not delivered: the caller that started
+    // before the teardown unwinds as a clean cancel and the slot stays empty.
+    expect(outcome).toEqual({ ready: false, cancelled: true });
+    expect(sessionStorage.getItem(PROOF_KEY)).toBeNull();
+
+    // The next acquisition re-auths from scratch rather than finding a
+    // resurrected window (the in-memory mirror included).
+    mockReauthModal.request.mockClear();
+    const next = await ensureSessionWindow();
+    expect(next).toEqual({ ready: true, proof: 'window-proof' });
+    expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
+  });
+
+  it('a factor resolution in flight at teardown is not joined by a later caller', async () => {
+    // The resolution's answer belongs to the subject whose JWT authenticated
+    // the status read; a caller under the next subject must trigger a fresh
+    // read instead of inheriting it.
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStatus = resolve; }),
+    );
+
+    const stale = resolvePasswordFactor();
+    teardownSubjectState();
+
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    const fresh = resolvePasswordFactor();
+
+    resolveStatus({ status: 'ok', data: { hasPassword: true } });
+    expect((await fresh).usesPassword).toBe(false);
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
+    // The abandoned resolution still answers its own original caller.
+    expect((await stale).usesPassword).toBe(true);
+  });
+
+  it('an abandoned flight resolving late does not evict its successor from the in-flight slot', async () => {
+    const promptResolvers = [];
+    mockReauthModal.request.mockImplementation(
+      () => new Promise((resolve) => { promptResolvers.push(resolve); }),
+    );
+
+    const abandoned = ensureSessionWindow();
+    await tick();
+    teardownSubjectState();
+
+    const successor = ensureSessionWindow();
+    await tick();
+    expect(promptResolvers).toHaveLength(2);
+
+    // The abandoned flight resolves first; its cleanup must not clear the
+    // slot the successor now owns...
+    promptResolvers[0](null);
+    expect(await abandoned).toEqual({ ready: false, cancelled: true });
+
+    // ...so a third caller still coalesces onto the successor instead of
+    // opening a third prompt.
+    const joined = ensureSessionWindow();
+    await tick();
+    expect(promptResolvers).toHaveLength(2);
+
+    promptResolvers[1]('hunter2');
+    expect(await successor).toEqual({ ready: true, proof: 'window-proof' });
+    expect(await joined).toEqual({ ready: true, proof: 'window-proof' });
+  });
+
+  it('the scrub drops a window held only in the in-memory mirror', async () => {
+    // A failed storage write parks the window in the module mirror; the
+    // scrub must drop that copy too, or a cross-user login inherits a window
+    // that no storage inspection can see.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded');
+    });
+    try {
+      cacheSessionProof(
+        'mirror-only',
+        new Date(Date.now() + IDLE_MS).toISOString(),
+        new Date(Date.now() + ABSOLUTE_MS).toISOString(),
+      );
+    } finally {
+      setItem.mockRestore();
+    }
+
+    teardownSubjectState();
+
+    const outcome = await ensureSessionWindow();
+    // A surviving mirror would be a silent cache hit with no prompt.
+    expect(outcome).toEqual({ ready: true, proof: 'window-proof' });
+    expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
   });
 });
 

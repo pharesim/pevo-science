@@ -322,6 +322,73 @@ describe('loginPage', () => {
     });
   });
 
+  describe('handleSubmit cross-user re-login scrub', () => {
+    // The authoritative scrub lives in the real auth store's
+    // loginFromResponse; the fixture mirror in fixtures/mock-auth.js
+    // replicates its subject-adoption semantics so this suite can assert the
+    // page's own submit path funnels the response subject through it and
+    // leaves no previous-subject sessionStorage state behind.
+    let sessionStorageData;
+
+    beforeEach(() => {
+      sessionStorageData = {};
+      vi.stubGlobal('sessionStorage', {
+        getItem: vi.fn((key) => sessionStorageData[key] ?? null),
+        setItem: vi.fn((key, val) => { sessionStorageData[key] = val; }),
+        removeItem: vi.fn((key) => { delete sessionStorageData[key]; }),
+      });
+    });
+
+    function seedPreviousSubject(username) {
+      mockAuthStore.username = username;
+      sessionStorageData['pevo_tab_subject'] = username;
+      sessionStorageData['pevo_fresh_auth_session_proof'] = '{"token":"w"}';
+      sessionStorageData['pevo_fresh_auth_consent_op_proof'] = '{"token":"c"}';
+      sessionStorageData['pevo_fresh_auth_return_to'] = '/publish';
+      sessionStorageData['pevo_orcid_mode'] = 'session_auth';
+    }
+
+    it('signing in as a different username leaves no previous-subject state behind', async () => {
+      seedPreviousSubject('alice');
+      mockLoginWithPassword.mockResolvedValue({
+        data: {
+          token: 'jwt-bob', username: 'bob', expires_at: '2099-01-01',
+          custody: 'light', is_accredited: false, accreditation: null,
+        },
+      });
+      const comp = createComponent();
+      comp.emailOrUsername = 'bob@x.com';
+      comp.password = 'Secret1234';
+
+      await comp.handleSubmit();
+
+      expect(mockAuthStore.username).toBe('bob');
+      expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeUndefined();
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+      expect(sessionStorageData['pevo_fresh_auth_return_to']).toBeUndefined();
+      expect(sessionStorageData['pevo_orcid_mode']).toBeUndefined();
+      expect(sessionStorageData['pevo_tab_subject']).toBe('bob');
+    });
+
+    it('signing in again as the same username keeps the cached window', async () => {
+      seedPreviousSubject('alice');
+      mockLoginWithPassword.mockResolvedValue({
+        data: {
+          token: 'jwt-alice-2', username: 'alice', expires_at: '2099-01-01',
+          custody: 'light', is_accredited: false, accreditation: null,
+        },
+      });
+      const comp = createComponent();
+      comp.emailOrUsername = 'alice@x.com';
+      comp.password = 'Secret1234';
+
+      await comp.handleSubmit();
+
+      expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBe('{"token":"w"}');
+      expect(sessionStorageData['pevo_tab_subject']).toBe('alice');
+    });
+  });
+
   describe('handleResendVerification', () => {
     it('calls resendVerification and sets success', async () => {
       mockResendVerification.mockResolvedValue({});

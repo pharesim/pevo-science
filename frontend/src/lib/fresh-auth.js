@@ -550,7 +550,10 @@ export async function resolvePasswordFactor() {
   try {
     return await flight;
   } finally {
-    _factorResolutionInFlight = null;
+    // A teardown (abandonInFlightAcquisitions) may have cleared the slot and
+    // a newer resolution may own it by now; only the flight that installed
+    // itself may clear it.
+    if (_factorResolutionInFlight === flight) _factorResolutionInFlight = null;
   }
 }
 
@@ -595,12 +598,44 @@ export async function beginSessionAuthOrcidRedirect() {
 // way round. Cross-posture collisions on the password factor surface as the
 // modal's own busy sentinel, which callers already handle.
 const _acquireInFlight = { permissive: null, suppressed: null };
+
+// Pairs the in-flight acquisition state with `abandonInFlightAcquisitions()`:
+// a flight captures the generation before its awaits and, when a teardown
+// intervened, declines to cache, deliver, or navigate for a subject this tab
+// no longer represents. Mirrors the `_passwordFactorMemoGeneration` pattern
+// above.
+let _acquireGeneration = 0;
+
+// Abandon the module-level in-flight state when the tab's subject-bound
+// session state is torn down (explicit logout, or a login that changes the
+// JWT subject). Called by the auth store's subject scrub alongside the cache
+// clears; this function owns only the in-flight promises and their
+// generation, while the caches and the password-factor memo keep their own
+// exported clears next to it in that scrub. Two hazards this closes:
+//   - a caller arriving AFTER the teardown must not join a flight started
+//     for the previous subject and inherit its outcome;
+//   - an acquisition still pending at teardown must not repopulate the
+//     just-scrubbed window cache when its mint resolves late (the mint
+//     function writes `cacheSessionProof` on resolve) nor hand its proof to
+//     anyone; the generation bump makes such a flight resolve as a clean
+//     cancel instead.
+export function abandonInFlightAcquisitions() {
+  _acquireGeneration += 1;
+  _acquireInFlight.permissive = null;
+  _acquireInFlight.suppressed = null;
+  _factorResolutionInFlight = null;
+}
+
 async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } = {}) {
   const cached = getCachedSessionProof(minRemainingMs);
   if (cached) return cached;
   const slot = allowRedirect ? 'permissive' : 'suppressed';
   if (_acquireInFlight[slot]) return _acquireInFlight[slot];
 
+  // Captured before any await: a teardown bumping the generation mid-flight
+  // turns every later step into a clean cancel (see
+  // abandonInFlightAcquisitions).
+  const generation = _acquireGeneration;
   const flight = (async () => {
     // The navigation policy for the passwordless outcome, applied in one
     // place: the known-passwordless branch and the assumed-password fallback
@@ -609,11 +644,19 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
       allowRedirect ? beginSessionAuthOrcidRedirect() : FRESH_AUTH_REAUTH_REQUIRED;
 
     const factor = await resolvePasswordFactor();
+    if (generation !== _acquireGeneration) return FRESH_AUTH_CANCELLED;
     if (!factor.usesPassword) return orcidOrRefuse();
 
     const minted = await mintViaPasswordFactor(
       async (password) => {
+        // The prompt can sit open across a teardown; do not spend a mint on
+        // a subject this tab no longer represents.
+        if (generation !== _acquireGeneration) return FRESH_AUTH_CANCELLED;
         const issued = await mintSessionAuthProof(password);
+        // A teardown while the mint round-trip was pending: the scrub has
+        // already emptied the window slot, and this write would repopulate
+        // it under the wrong subject. Drop the issuance and unwind.
+        if (generation !== _acquireGeneration) return FRESH_AUTH_CANCELLED;
         cacheSessionProof(
           issued.fresh_auth_proof,
           issued.expires_at,
@@ -623,6 +666,7 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
       },
       { message: passwordPromptMessage(), assumed: factor.assumed },
     );
+    if (generation !== _acquireGeneration) return FRESH_AUTH_CANCELLED;
     // The assumed factor turned out to be the wrong guess: the account has no
     // password to prompt for, so the ORCID round-trip is the way through.
     if (minted === FRESH_AUTH_ORCID_FALLBACK) return orcidOrRefuse();
@@ -633,7 +677,9 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
   try {
     return await flight;
   } finally {
-    _acquireInFlight[slot] = null;
+    // A teardown may have cleared the slot and a newer flight may have
+    // claimed it since; only the flight that installed itself may clear it.
+    if (_acquireInFlight[slot] === flight) _acquireInFlight[slot] = null;
   }
 }
 

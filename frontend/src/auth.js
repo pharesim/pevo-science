@@ -7,9 +7,18 @@ import {
   clearCachedConsentOpProof,
   clearReturnPath,
   clearPasswordFactorMemo,
+  abandonInFlightAcquisitions,
 } from './lib/fresh-auth.js';
 
 const SESSION_KEY = 'pevo_session';
+// Per-tab marker naming the JWT subject this tab's subject-bound
+// sessionStorage state (fresh-auth proof caches, ORCID flow keys) belongs to.
+// Lives in sessionStorage so it shares that state's lifetime: it survives
+// reloads and the ORCID round-trip alongside the proofs, and a marker that
+// disagrees with an incoming subject is exactly the signal that another
+// subject's leftovers are still in this tab. Written by _adoptSubject,
+// removed by _scrubSubjectBoundState.
+const TAB_SUBJECT_KEY = 'pevo_tab_subject';
 
 export function initAuth() {
   Alpine.store('auth', {
@@ -124,7 +133,15 @@ export function initAuth() {
     // - `custody` is preserve-on-undefined for the same reason: callers
     //   pass an explicit custody (login → 'light', upgrade → 'self',
     //   etc.); omitting it preserves the existing value.
+    //
+    // - Subject adoption: the response's subject (or the current one when
+    //   `username` is omitted, as in the custody-upgrade flow) is adopted
+    //   via _adoptSubject BEFORE any field lands, so a login as a different
+    //   user scrubs the previous subject's state instead of inheriting it
+    //   while a same-subject re-login keeps its live fresh-auth window.
     loginFromResponse(data) {
+      const subject = data.username !== undefined ? data.username : this.username;
+      if (subject) this._adoptSubject(subject);
       if (data.token && data.expires_at) {
         this.token = data.token;
         this.expiresAt = data.expires_at;
@@ -174,6 +191,47 @@ export function initAuth() {
       this.custody = null;
       this._stopAccreditationPolling();
       localStorage.removeItem(SESSION_KEY);
+      this._scrubSubjectBoundState();
+    },
+
+    // THE central subject-change detection point: adopt `username` as the
+    // subject this tab's state belongs to. Every path that (re)establishes
+    // the JWT subject funnels through here — loginFromResponse for all
+    // login-style call sites, _restoreSession for cold loads and the
+    // cross-tab storage event — so a login as a different user runs the same
+    // scrub as an explicit logout and no per-call-site scrub list can drift.
+    //
+    // Same-subject re-login is deliberately NOT a subject change: the live
+    // fresh-auth window and proof caches belong to the same account, and
+    // discarding them would cost the user a re-auth they do not owe. That
+    // covers the custody-upgrade call site too, which omits `username` from
+    // its response and is same-subject by construction.
+    //
+    // The marker read falls back to the in-memory username so the check
+    // still works within a page load when sessionStorage is unavailable
+    // (the fresh-auth window then lives in an in-memory mirror, which the
+    // scrub clears).
+    _adoptSubject(username) {
+      let marker = null;
+      try {
+        marker = sessionStorage.getItem(TAB_SUBJECT_KEY);
+      } catch {
+        /* sessionStorage unavailable; fall back to the in-memory subject */
+      }
+      const previous = marker ?? this.username;
+      if (previous && previous !== username) this._scrubSubjectBoundState();
+      try {
+        sessionStorage.setItem(TAB_SUBJECT_KEY, username);
+      } catch {
+        /* noop */
+      }
+    },
+
+    // THE scrub list for state bound to the JWT subject. Runs on explicit
+    // logout (disconnect) and on any subject change detected by
+    // _adoptSubject. Add any future subject-bound cache HERE, not at a call
+    // site, so every teardown path picks it up.
+    _scrubSubjectBoundState() {
       // Scrub sessionStorage state bound to the JWT subject so cross-user
       // re-login on a shared browser cannot pick up a stale fresh-auth proof
       // or ORCID return-path mode. The session-kind proof is consumed by the
@@ -188,9 +246,14 @@ export function initAuth() {
       // remove a password (recover via ORCID with no new password, B → C in
       // ARCHITECTURE.md § 6.3).
       clearPasswordFactorMemo();
+      // In-flight acquisition promises outlive the caches they feed: abandon
+      // them so a late resolution cannot repopulate the slots just cleared,
+      // nor hand its outcome to a caller arriving under the next subject.
+      abandonInFlightAcquisitions();
       try {
         sessionStorage.removeItem('pevo_orcid_mode');
         sessionStorage.removeItem('pevo_orcid_return_to');
+        sessionStorage.removeItem(TAB_SUBJECT_KEY);
       } catch {
         /* sessionStorage unavailable (private mode); noop */
       }
@@ -205,6 +268,14 @@ export function initAuth() {
       if (!saved) return;
       const { token, username, expiresAt, isAccredited, accreditation, custody } = JSON.parse(saved);
       if (token && username && new Date(expiresAt) > new Date()) {
+        // The restored subject may differ from the one this tab's
+        // sessionStorage state belongs to: a login as another user in a
+        // different tab lands here via the storage event, and a reload after
+        // such a login lands here with the previous subject's proofs still
+        // in this tab. Adoption scrubs them; a same-subject restore (an
+        // ordinary reload, the ORCID round-trip return) keeps the live
+        // window.
+        this._adoptSubject(username);
         this.token = token;
         this.username = username;
         this.isConnected = true;

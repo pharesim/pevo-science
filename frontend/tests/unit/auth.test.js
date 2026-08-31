@@ -26,15 +26,26 @@ vi.mock('../../src/sign-request.js', () => ({
 }));
 
 // Partial mock: the real cache-clearing runs (the scrub assertions below depend
-// on it), with a spy over the password-factor memo drop so the teardown can be
-// asserted without reaching into module-private state.
+// on it), with spies over the password-factor memo drop and the in-flight
+// acquisition teardown so both can be asserted without reaching into
+// module-private state.
 const mockClearPasswordFactorMemo = vi.fn();
+const mockAbandonInFlightAcquisitions = vi.fn();
 vi.mock('../../src/lib/fresh-auth.js', async (importActual) => ({
   ...(await importActual()),
   clearPasswordFactorMemo: (...args) => mockClearPasswordFactorMemo(...args),
+  abandonInFlightAcquisitions: (...args) => mockAbandonInFlightAcquisitions(...args),
 }));
 
 import { initAuth } from '../../src/auth.js';
+// Real implementations from the partially-mocked module: used to seed and
+// observe the fresh-auth window cache (including its in-memory mirror) around
+// the subject-change scrub.
+import {
+  cacheSessionProof,
+  slideSessionWindow,
+  clearCachedSessionProof,
+} from '../../src/lib/fresh-auth.js';
 
 describe('auth store', () => {
   let localStorageData;
@@ -361,6 +372,192 @@ describe('auth store', () => {
       mockClearPasswordFactorMemo.mockClear();
       store.disconnect();
       expect(mockClearPasswordFactorMemo).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('subject change runs the cross-user scrub', () => {
+    // A login that changes the JWT subject must run the same subject-bound
+    // scrub as an explicit logout: the previous subject's fresh-auth proofs,
+    // ORCID flow keys, password-factor memo and in-flight acquisitions must
+    // not be inheritable by the next subject on a shared browser. A
+    // same-subject re-login is NOT a subject change and keeps the live
+    // re-auth window (a re-auth the user does not owe).
+    let sessionStorageData;
+    let throwingSetItemKey;
+
+    const FUTURE_EXPIRY = '2099-01-01';
+
+    function loginAs(username, token = `jwt-${username}`) {
+      store.loginFromResponse({
+        token,
+        expires_at: FUTURE_EXPIRY,
+        username,
+        custody: 'light',
+        is_accredited: false,
+        accreditation: null,
+      });
+    }
+
+    function seedSubjectBoundKeys() {
+      sessionStorageData['pevo_fresh_auth_session_proof'] = JSON.stringify({
+        token: 'window-token',
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+        idlePeriodMs: 900_000,
+      });
+      sessionStorageData['pevo_fresh_auth_consent_op_proof'] = JSON.stringify({ token: 'consent' });
+      sessionStorageData['pevo_fresh_auth_return_to'] = '/publish';
+      sessionStorageData['pevo_orcid_mode'] = 'session_auth';
+      sessionStorageData['pevo_orcid_return_to'] = 'recover';
+    }
+
+    beforeEach(() => {
+      sessionStorageData = {};
+      throwingSetItemKey = null;
+      vi.stubGlobal('sessionStorage', {
+        getItem: vi.fn((key) => sessionStorageData[key] ?? null),
+        setItem: vi.fn((key, val) => {
+          if (key === throwingSetItemKey) throw new Error('quota exceeded');
+          sessionStorageData[key] = val;
+        }),
+        removeItem: vi.fn((key) => { delete sessionStorageData[key]; }),
+      });
+      // The window cache keeps an in-memory mirror in fresh-auth module
+      // state; drop it so one test's window cannot leak into the next.
+      clearCachedSessionProof();
+    });
+
+    it('signing in as a different username scrubs every subject-bound cache', () => {
+      loginAs('alice');
+      seedSubjectBoundKeys();
+      mockClearPasswordFactorMemo.mockClear();
+      mockAbandonInFlightAcquisitions.mockClear();
+
+      loginAs('bob');
+
+      expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeUndefined();
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+      expect(sessionStorageData['pevo_fresh_auth_return_to']).toBeUndefined();
+      expect(sessionStorageData['pevo_orcid_mode']).toBeUndefined();
+      expect(sessionStorageData['pevo_orcid_return_to']).toBeUndefined();
+      expect(mockClearPasswordFactorMemo).toHaveBeenCalled();
+      expect(mockAbandonInFlightAcquisitions).toHaveBeenCalled();
+      // The tab now marks bob as the subject its state belongs to.
+      expect(sessionStorageData['pevo_tab_subject']).toBe('bob');
+      expect(store.username).toBe('bob');
+    });
+
+    it('same-subject re-login preserves the live window and caches', () => {
+      loginAs('alice');
+      seedSubjectBoundKeys();
+      mockClearPasswordFactorMemo.mockClear();
+      mockAbandonInFlightAcquisitions.mockClear();
+
+      loginAs('alice', 'jwt-alice-2');
+
+      expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeDefined();
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeDefined();
+      expect(sessionStorageData['pevo_orcid_mode']).toBe('session_auth');
+      expect(mockClearPasswordFactorMemo).not.toHaveBeenCalled();
+      expect(mockAbandonInFlightAcquisitions).not.toHaveBeenCalled();
+      expect(store.token).toBe('jwt-alice-2');
+    });
+
+    it('a response omitting username is same-subject by construction and preserves the window', () => {
+      // The custody-upgrade flow passes only {token, expires_at, custody}:
+      // the subject stays whoever is signed in, so nothing is scrubbed.
+      loginAs('alice');
+      seedSubjectBoundKeys();
+      mockAbandonInFlightAcquisitions.mockClear();
+
+      store.loginFromResponse({ token: 'jwt-upgraded', expires_at: FUTURE_EXPIRY, custody: 'self' });
+
+      expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeDefined();
+      expect(mockAbandonInFlightAcquisitions).not.toHaveBeenCalled();
+      expect(store.username).toBe('alice');
+      expect(store.custody).toBe('self');
+    });
+
+    it('a cross-tab storage-event login as a different user scrubs this tab', () => {
+      loginAs('alice');
+      seedSubjectBoundKeys();
+
+      const future = new Date(Date.now() + 3600000).toISOString();
+      localStorageData['pevo_session'] = JSON.stringify({
+        token: 'jwt-bob', username: 'bob', expiresAt: future,
+      });
+      store._handleStorageEvent({ key: 'pevo_session', newValue: 'changed' });
+
+      expect(store.username).toBe('bob');
+      expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeUndefined();
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+      expect(sessionStorageData['pevo_orcid_mode']).toBeUndefined();
+      expect(sessionStorageData['pevo_tab_subject']).toBe('bob');
+    });
+
+    it('a cold-load restore under another subject\'s leftover state scrubs it', () => {
+      // Reload after a different-user login in another tab: module state is
+      // fresh (username null) but this tab's sessionStorage still holds the
+      // previous subject's proofs. The per-tab subject marker is what makes
+      // the divergence detectable without any in-memory history.
+      sessionStorageData['pevo_tab_subject'] = 'alice';
+      seedSubjectBoundKeys();
+      const future = new Date(Date.now() + 3600000).toISOString();
+      localStorageData['pevo_session'] = JSON.stringify({
+        token: 'jwt-bob', username: 'bob', expiresAt: future,
+      });
+
+      store._restoreSession();
+
+      expect(store.username).toBe('bob');
+      expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeUndefined();
+      expect(sessionStorageData['pevo_tab_subject']).toBe('bob');
+    });
+
+    it('a same-subject restore keeps the window (ordinary reload, ORCID round-trip return)', () => {
+      sessionStorageData['pevo_tab_subject'] = 'alice';
+      seedSubjectBoundKeys();
+      const future = new Date(Date.now() + 3600000).toISOString();
+      localStorageData['pevo_session'] = JSON.stringify({
+        token: 'jwt-alice', username: 'alice', expiresAt: future,
+      });
+
+      store._restoreSession();
+
+      expect(store.username).toBe('alice');
+      expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeDefined();
+      expect(sessionStorageData['pevo_tab_subject']).toBe('alice');
+    });
+
+    it('disconnect removes the tab-subject marker and abandons in-flight acquisitions', () => {
+      sessionStorageData['pevo_tab_subject'] = 'alice';
+      mockAbandonInFlightAcquisitions.mockClear();
+
+      store.disconnect();
+
+      expect(sessionStorageData['pevo_tab_subject']).toBeUndefined();
+      expect(mockAbandonInFlightAcquisitions).toHaveBeenCalledTimes(1);
+    });
+
+    it('a cross-user login clears the in-memory window mirror, not only the stored copy', () => {
+      loginAs('alice');
+      // A failed storage write parks the window in the fresh-auth module's
+      // in-memory mirror instead of sessionStorage (private mode, quota).
+      throwingSetItemKey = 'pevo_fresh_auth_session_proof';
+      cacheSessionProof(
+        'mirror-only',
+        new Date(Date.now() + 900_000).toISOString(),
+        new Date(Date.now() + 7_200_000).toISOString(),
+      );
+      throwingSetItemKey = null;
+
+      loginAs('bob');
+
+      // A surviving mirror would re-persist itself on the next idle slide;
+      // an empty storage slot afterwards proves the mirror was dropped with
+      // the rest of the subject-bound state.
+      slideSessionWindow();
+      expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeUndefined();
     });
   });
 
