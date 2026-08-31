@@ -442,3 +442,197 @@ consent-op cache shape that predates the `authorIndex`/`claimer` binding fields;
 Redis to reset rate limits. Two fixture cleanups worth a follow-up, both outside
 this task: tighten those submit-button locators, and refresh the consent-op
 shape assertion.
+
+---
+
+## Architect re-review (2026-08-31) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `199c1e13` (frontend paths only), nine reviewer
+personas plus three independent validators on the disputed findings, and architect
+direct verification at the pinned commit.
+
+**Eleven of the twelve held items landed and are enforceable, and the architecture is
+right.** Independently confirmed rather than taken from the signal: item 8's step hoist
+genuinely fails when the flip is moved back below the await (verified by mutation in a
+scratch worktree); item 10a's inverted fixture now makes `Math.min` select the cap, so
+deleting the clamp fails it; item 10b's 10-minute mint fails against a hardcoded
+constant; the publish confirm really does precede the upload legs; both file-input
+handlers clear `e.target.value` only on refusal; and the `authorizing` step sits above
+every await on both pages with a reset on every abort branch.
+
+**Item 2's flagged deviation is correct and is accepted.** `anchoredSpan` clamps to
+`[periodMs/2, periodMs]`, so a freshly cached window always carries at least 450000 ms
+of idle span against a 120000 ms pre-flight margin: an at-issuance under-margin window
+is unreachable, and at `minRemainingMs: 0` the refused-cache guard would have forced a
+mint the broadcast leg would not have needed. Flagging it rather than implementing it
+silently was the right call. The clamp is also correct in both skew directions, because
+a freshly issued window spans one full period of wall time regardless of clock offset.
+
+Also cleared: no comment-anchor rot on added lines, no emdashes in any of the 16 locale
+files, i18n complete with the STUBS sweep entry, and the account-state branches match
+ARCHITECTURE § 6.4's per-state table.
+
+The theme of this round is narrower than the last: **the new outcome vocabulary this
+round introduced is not handled at every surface that consumes it.** Items 1 to 4 are
+one cluster.
+
+### Item 1 — the post-upload gate still navigates, discarding paid-for pins
+
+`publish.js`'s `_windowReady()` and `edit.js`'s three inline gates all call
+`freshAuthWindowReady()` with no options, so `allowRedirect` defaults to true at the
+gates that sit AFTER the IPFS legs. For a passwordless account that is a full-page ORCID
+navigation, and `ipfsCid`, `ipfsFilename`, `documentHash` and `supplementaryFiles` are
+`handleSubmit` locals that the draft does not carry, so the completed pins are lost.
+
+The comment above the pre-broadcast gate states the premise the code then contradicts:
+a deliberate re-auth is worth it for the password factor, which costs a modal, and not
+for the ORCID factor, which costs the work.
+
+Reachability is ordinary, not exotic: the absolute cap is never extended by a slide, so
+any submit landing in the cap's final minutes clears the 120-second entry margin,
+completes real uploads, and trips the redirect on normal latency alone.
+
+Pass `allowRedirect: false` at the three post-upload gates. Keep `allowRedirect: true`
+at the file-selection and submit-entry gates, where nothing has been paid for yet. This
+fix is not safe without item 3.
+
+### Item 2 — an aged upload token still fails to tear down a mismatched session
+
+`uploadFile`'s catch discriminates a remintable `FRESH_AUTH_REQUIRED` and a bare
+`UNAUTHORIZED`, then bare-throws everything else. That last path swallows
+`username_mismatch`, which means the cached proof belongs to a different account than
+the JWT subject. `broadcastWithFreshAuth`, `withSettingsFreshAuth` and
+`withAuthorshipFreshAuth` all call `handleSessionInconsistency()` there, which performs
+a real teardown through `auth.disconnect()`.
+
+The consequence is a wedge rather than a bad message: nothing clears the cache and
+nothing tears down, so every retry resends the same stale proof and returns the same
+generic upload failure until the window's absolute cap or a logout the user has no cue
+to perform, on the core paper-upload path.
+
+Add the `username_mismatch` branch mirroring the three siblings, plus a test asserting
+the teardown fires. The pre-existing login path that makes the stale window reachable is
+filed separately and is not part of this item.
+
+### Item 3 — `reauthRequired` has no branch in either page-facing unwinder
+
+`freshAuthWindowReady` branches on `failed` and `busy` and returns false silently for
+`reauthRequired`; `acquisitionAborted`, the shared unwinder behind all eight broadcast
+call sites, has the same gap. This is item 1 of the previous round verbatim, a gate that
+refuses without telling anyone, reintroduced through an outcome added in the fix for it.
+
+Add a `reauthRequired` branch to both, toasting `common.reauthRequired`, which this
+round already added to all 16 locales. Item 1's fix makes this outcome routine at the
+post-upload gates, so it must land in the same round.
+
+### Item 4 — `_acquireInFlight` coalesces callers across acquisition modes
+
+The in-flight slot is a single module-level promise joined unconditionally, so the
+joining caller's own `allowRedirect` never participates. `windowProof()` is the only
+suppressed caller and the page gates are all permissive, so the modes cross.
+
+The concrete sequence: a passwordless user drops an image into the body editor, which
+fires `uploadFile` with navigation suppressed and without disabling Submit, then clicks
+Submit before that acquisition's status round-trip resolves. The submit joins the
+suppressed promise, inherits the refusal, and with item 3 unfixed is refused in silence,
+despite being entitled to navigate.
+
+Key the in-flight slot on the redirect policy so a caller only joins an acquisition
+sharing its posture. Add the concurrent mixed-mode test neither suite has.
+
+### Item 5 — item 7's busy branches have no regression protection
+
+The `FRESH_AUTH_PROMPT_BUSY` branches landed at five sites: both gates in
+`authorship-consent.js`, both in `settings-fresh-auth.js`, and `acquisitionAborted`.
+Deleting all five leaves `lib-authorship-consent.test.js` and
+`lib-settings-fresh-auth.test.js` at 29 of 29 and the broader suite at 203 of 203;
+no test file contains a mock resolving the busy sentinel. Verified by mutation, not by
+reading.
+
+Add one case per orchestrator asserting the result is `{ cancelled: true }` AND that the
+busy toast fired, with the paired plain-cancel case asserting the toast did NOT fire so
+the two discriminate. Cover the retry gate too, which is a separately deletable branch,
+and add a broadcast-layer case for `acquisitionAborted`.
+
+Note for the next signal block: this is the second round on this task whose per-item
+verification claim did not hold across every item it covered. The claim is worth making
+only per item, against the item's own named test.
+
+### Item 6 — `windowProof()` collapses the busy outcome into a cancellation
+
+The helper branches on `ready`, `reauthRequired` and `failed`, then falls through to
+`UPLOAD_CANCELLED`, so a refuse-while-open at the upload leg reports an upload the user
+cancelled for a prompt they never saw. That is the ambiguity item 7 existed to remove,
+at a surface item 7 did not enumerate.
+
+Latent today, since the only busy producers and the only `uploadFile` callers do not
+share a page, and live the moment a composer reaches the paper page. Add the branch
+mapped to `common.reauthPromptOpen`, plus the `{ ready: false, busy: true }` case
+`lib-ipfs-upload.test.js` is missing.
+
+### Item 7 — `cacheSessionProof` throws where it used to degrade
+
+`anchoredSpan` returns `NaN` for an unparseable deadline, and `cacheSessionProof` feeds
+that into `new Date(now + NaN).toISOString()`, which throws a `RangeError`. The
+`NaN` branch has no other consumer, and `readSessionWindow`'s corruption guard can no
+longer be reached for this class because the throw happens first.
+
+Guard in `cacheSessionProof`: if either anchored span is non-finite, drop the window and
+return. Fail-closed matches how the module treats every other corrupt-entry case. Add a
+unit case asserting a malformed issuance does not throw and leaves the slot empty.
+
+### Item 8 — a stale stored entry can shadow the fresher mirror
+
+`storedWindow()` consults the in-memory mirror only when the storage read comes back
+empty, so a failed write that leaves an older entry readable is served the stale copy.
+The comment claims storage is the single source of truth whenever storage works, which
+the read order does not enforce.
+
+In `persistWindow`'s catch, remove the key before installing the mirror, so a non-empty
+read always implies a current entry and the docblock's claim becomes true by
+construction.
+
+### Item 9 — the retry comment's stated cause cannot occur
+
+The `UNAUTHORIZED` retry is justified in-code by a large file on a slow connection
+straddling the upload token's 60-second TTL. Every request carries a 30-second abort
+composed in `api.js`, so a slow upload aborts well before the token expires; the cited
+cause cannot produce the cited symptom.
+
+Keep the retry, which is a reasonable safety net for the other ways that status arrives.
+Rewrite the comment to state the real reason, and drop the slow-connection story.
+
+### Item 10 — `promptBusy()` is duplicated across the two orchestrators
+
+Byte-identical in `settings-fresh-auth.js` and `authorship-consent.js`, against the
+convention `showPromptBusyToast()` and `handleSessionInconsistency()` already set in the
+same module. Move it beside them in `fresh-auth.js` and import it in both.
+
+### Item 11 — `edit.js`'s in-progress step set states its rationale backwards
+
+`edit.js` derives `isSubmitting` from an inclusion list while `publish.js` uses the
+exclusion form. An inclusion list fails open: a step added later and not registered
+leaves the submit button live. The comment presents the inclusion list as the safer
+choice, which is the wrong way round. This round edited that set to add `authorizing`,
+so it is in the blast radius.
+
+Correct the comment, or adopt `publish.js`'s exclusion form and drop the set.
+
+### Not held, routed elsewhere
+
+The duplicated `attemptOnce` closures in `fresh-auth.js` and `ipfs-upload.js` are
+**dismissed**: two four-line closures are legible where they sit and PEvO has no rule
+against them. The real risk the duplication points at is that nothing pins the
+"every consume site replays the slide" invariant across both implementations; recorded
+here as a residual rather than forced into a cross-module combinator.
+
+The cross-user teardown gap that makes item 2 reachable, where the login paths reissue a
+session for a new username without running `auth.disconnect()`'s scrub, and
+`disconnect()` leaving the in-flight acquisition promise set, is filed as its own task.
+
+Two pre-existing E2E fixture defects the signal named, the strict-mode submit-button
+locator clash and the stale consent-op cache-shape assertion, remain out of scope.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.
