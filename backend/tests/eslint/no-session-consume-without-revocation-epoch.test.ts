@@ -27,6 +27,15 @@
  * otherwise absorb a second, epoch-less consume added to a different handler
  * without changing the file set.
  *
+ * TWO SEAMS, because the type system closes neither on its own. The exported
+ * consume takes the epoch as a required argument, so an external caller cannot
+ * omit it; but the internal surface literal that argument feeds into is
+ * module-private, and making its field required only means an in-module literal
+ * must MENTION the field. Nothing stops a fourth surface from mentioning it as a
+ * literal `undefined`, and nothing outside this file can even name the type to
+ * pin it. So both seams are scanned: the exported consume's call sites, and the
+ * surface literals inside the module.
+ *
  * KNOWN TRADE. The pairing is textual. A caller that reads the epoch in one
  * function and consumes inside a nested arrow declared in another resolves to
  * two different symbols and fails here even though it is correct; the fix is to
@@ -52,6 +61,17 @@ const CONSUME_DEFINITION_RE = /function\s+consumeSessionFreshAuthToken\s*\(/;
  *  `sessionsInvalidatedAtMs`, the callee-side parameter name, deliberately does
  *  not match: it is what the value is called after it arrives. */
 const EPOCH_REF_RE = /\bhiveSessionsInvalidatedAt\b/;
+
+/** Construction of the module-private consume surface, and its definition line.
+ *  Every literal must name the epoch field somewhere in the same function. */
+const SURFACE_CALL_RE = /consumeFreshAuthTokenForSurface\s*\(/;
+const SURFACE_DEFINITION_RE = /function\s+consumeFreshAuthTokenForSurface\s*\(/;
+
+/** The surface field itself, matched by name. A literal that omits it no longer
+ *  compiles, but one that writes `sessionsInvalidatedAtMs: undefined` does, and
+ *  that is the shape this pairs against: the field has to be present, and the
+ *  consume-side scan above is what makes the value it carries the request's. */
+const SURFACE_FIELD_RE = /\bsessionsInvalidatedAtMs\b/;
 
 const sources = sourcesUnder(path.resolve(__dirname, '..', '..', 'src'));
 
@@ -89,6 +109,33 @@ describe('every session-window consume carries the account revocation epoch', ()
     ).toEqual([]);
   });
 
+  it('no consume surface is built without naming the revocation epoch', () => {
+    // The second seam. `FreshAuthConsumeSurface` is module-private, so no test
+    // outside `lib/fresh-auth.ts` can construct one and no `@ts-expect-error`
+    // can pin its shape; making the field required is enforced only by the
+    // compiler at the literals inside that module, and a literal is exactly what
+    // a future surface adds. Pairing each construction with a mention of the
+    // field in the same function is the only check available from out here.
+    const surfaces = occurrencesOf(
+      sources,
+      SURFACE_CALL_RE,
+      (line) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line),
+    );
+    const fields = new Set(occurrencesOf(sources, SURFACE_FIELD_RE, isCommentLine).keys);
+    expect(
+      surfaces.keys.length,
+      `consume surface construction sites:\n${surfaces.sites.join('\n')}`,
+    ).toBeGreaterThan(0);
+    const offenders = surfaces.keys.filter((key) => !fields.has(key));
+    expect(
+      offenders,
+      'these functions build a fresh-auth consume surface without naming ' +
+        'sessionsInvalidatedAtMs, so a session proof reaching them is measured ' +
+        `against no revocation epoch at all:\n${offenders.join('\n')}\n\n` +
+        `all surface sites:\n${surfaces.sites.join('\n')}`,
+    ).toEqual([]);
+  });
+
   it('the matchers fire on a real call and spare imports, prose, and the definition', () => {
     // Planted positives and negatives. Without them an edit that mangles a
     // pattern leaves every result empty and the suite stays green while the
@@ -103,6 +150,12 @@ describe('every session-window consume carries the account revocation epoch', ()
     expect(EPOCH_REF_RE.test('const { hiveSessionsInvalidatedAt } = req;')).toBe(true);
     // The callee-side parameter name is not the request epoch.
     expect(EPOCH_REF_RE.test('  sessionsInvalidatedAtMs,')).toBe(false);
+
+    expect(SURFACE_CALL_RE.test('  return consumeFreshAuthTokenForSurface(token, {')).toBe(true);
+    expect(SURFACE_DEFINITION_RE.test('async function consumeFreshAuthTokenForSurface(')).toBe(true);
+    expect(SURFACE_DEFINITION_RE.test('  return consumeFreshAuthTokenForSurface(token, {')).toBe(false);
+    expect(SURFACE_FIELD_RE.test('    sessionsInvalidatedAtMs: undefined,')).toBe(true);
+    expect(SURFACE_FIELD_RE.test('    acceptSession: false,')).toBe(false);
 
     expect(isCommentLine(' * the epoch travels on req.hiveSessionsInvalidatedAt')).toBe(true);
     expect(isCommentLine('      req.hiveSessionsInvalidatedAt,')).toBe(false);
