@@ -76,3 +76,68 @@ subject), null the slot in the teardown, and guard each flight's `finally` to
 clear only a slot it still owns. Add the cross-identity coalescing test neither
 suite has (a clear landing mid-flight plus a second caller must trigger a fresh
 fetch, not join the stale flight).
+
+---
+
+## UI completion signal (2026-08-31, commits 1b9f2137 + 9ecff448 + 4c3e7c7a)
+
+Implemented in an isolated worktree from `c410a279`, adversarially reviewed by
+three lenses (correctness/races, security/account-state against ARCHITECTURE
+§ 6.1/6.4/6.5, test-quality with mutation probes) plus a re-verification pass,
+then cherry-picked onto main. The addendum landed after the base implementation
+and its remaining item was closed in `4c3e7c7a`.
+
+**Design.** One funnel method on the auth store, `_adoptSubject(username)`,
+called from `loginFromResponse` (before any field lands; subject falls back to
+`this.username` when the response omits it, so the settings custody-upgrade
+sites are same-subject by construction) and from `_restoreSession` (covering
+init, cold load, and the cross-tab storage event). Detection is backed by a
+per-tab sessionStorage marker `pevo_tab_subject` recording which subject the
+tab's sessionStorage state belongs to, with an in-memory fallback to
+`this.username`. The scrub list is not duplicated: `disconnect()`'s block moved
+into `_scrubSubjectBoundState()`, called by both `disconnect()` and
+`_adoptSubject()`.
+
+**Scope 2 / AC 3, both slots.** `lib/fresh-auth.js` exports one teardown,
+`abandonInFlightAcquisitions()`: nulls both `_acquireInFlight` slots and
+`_factorResolutionInFlight` and bumps `_acquireGeneration`. Flights capture the
+generation before any await and re-check it after factor resolution, before
+spending a mint, after the mint round-trip (before `cacheSessionProof`, so a
+late issuance cannot repopulate the scrubbed cache), and after
+`mintViaPasswordFactor` (so the assumed-password ORCID fallback cannot navigate
+post-teardown); stale flights resolve as a clean cancel. Both finally blocks
+are ownership-guarded. Per the addendum, the factor-resolution join is
+identity-keyed on the captured subject, with the cross-identity coalescing test
+(subject swap mid-flight without the scrub; the second caller spends its own
+fetch).
+
+**Scope 3 decision.** Same-subject re-login preserves the live window, caches,
+memo and marker; it is not a subject change and costs no re-auth. Documented at
+`_adoptSubject`, pinned by tests including the username-less custody-upgrade
+shape.
+
+**Verification.** All new tests observed red at base before implementation
+(18 red across 4 files). Every teardown guard in the acquisition path has a
+killing test (verified by per-guard mutation probes, each killed by exactly its
+intended test). ACs 1, 2, 4 driven through the REAL store paths (`initAuth` +
+`loginFromResponse` / `_restoreSession` / `_handleStorageEvent`) and the real
+page surfaces (`pages-login`, `components-sign-in-modal`). Full frontend unit
+suite on the integrated tree: 79 files, 1733 tests green (the 3 vitest errors
+are the documented pre-existing `pages-edit` `_mountEditors` rejections).
+Playwright not run: no visual surface changed and the login flows are covered
+at the unit layer against the real store; flagging the omission explicitly.
+
+**Residuals surfaced for triage, deliberately not fixed here:**
+
+1. (low) `orcid-callback.js` `_handleSessionAuth`/`_handleFreshAuth` cache a
+   proof echoed for the previous subject with no subject/generation guard, so a
+   teardown landing during the one `completeOrcid` round-trip can be followed
+   by a stale cache write. Sub-second cross-tab race; the wide while-at-ORCID
+   window is fail-closed (the scrub removes `pevo_orcid_mode`, so callback init
+   dead-ends first), and the server's `username_mismatch` refusal plus the
+   existing teardown branch self-heal it. Reviewers judged it dismissible under
+   the theoretical-only norm; recorded so the decision is conscious.
+2. (low) `_adoptSubject`'s in-memory fallback (`marker ?? this.username`) is
+   exercised only when `sessionStorage.getItem` itself throws, an environment
+   the suite does not simulate; the fallback is unpinned by tests. Near-
+   theoretical per repo norms.
