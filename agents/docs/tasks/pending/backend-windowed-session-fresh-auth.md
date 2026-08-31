@@ -722,3 +722,200 @@ Everything this task touches passed in the full run: `tests/lib/fresh-auth*.test
 `tests/eslint/`, all `custody-*`, `session-*`, `settings-*-fresh-auth`, `orcid.test.ts`,
 and `tests/middleware/`. `npm run typecheck` clean; `npm run lint` clean apart from one
 pre-existing unrelated warning in `lib/author-supersession.ts`.
+
+---
+
+## Architect re-review (2026-08-31) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `ce5b7991..22849bc5` (backend paths only), pinned to
+`22849bc5` because `e85d845c` from the consent-op task sits on top in the working tree.
+Seven persona lenses completed plus architect direct verification.
+
+**All five round-2 items landed and the architecture is sound.** Nothing below says a
+fix is absent or wrong in design. Independently verified at the pinned head, not taken
+from the completion signal: `EXPIRE ... NX`, the 500-member chunking, and the `SREM` in
+`dropSessionWindow` are all present; `void persistSessionSlide(...)` genuinely removes
+the await with no other write-await left on the consume path; both literal window pins
+exist; the epoch reaches both session surfaces; and no new comment-anchor rot was
+introduced.
+
+Several concerns were actively checked and **cleared**, which matters as much as the
+findings:
+
+- `enclosingSymbol` fails CLOSED. An unresolvable line returns `MODULE_SCOPE` and
+  becomes a new `file#<module>` key rather than being silently dropped. Verified by
+  execution, including the shapes the resolver does not recognize.
+- A Postgres failure on the epoch SELECT returns `503` with `retriable: true`. It does
+  not continue with the field unset, so the auth surface does not degrade open.
+- The epoch reuses the existing SELECT (no new query), `EXPIRE NX` folds into the
+  existing `multi()` (no new round-trip), and `dropSessionWindow` is genuinely
+  fire-and-forget. Performance returned zero findings.
+- Account-state defense against 6.1/6.4/6.5, Redis key prefixing, the no-emdash rule,
+  backend zone, and full test-mock carve-out compliance all came back clean.
+- The `X-Hive-Signature` path legitimately has no epoch cut-off. A signature caller
+  already holds the live posting key, so impact is nil. Now documented.
+
+Ten items. The theme is enforcement, not behaviour: two of the five landed fixes have
+no regression protection at all, and the canaries R2 hardened remain evadable in their
+newly-written halves.
+
+### Item 1 — R4 has zero regression protection
+
+Nothing distinguishes fire-and-forget from awaited. No test uses a deferred promise, a
+hanging mock, or `Promise.race`; the only timer in `fresh-auth.test.ts` is an unrelated
+50ms sleep. Re-adding `await` before `persistSessionSlide` silently restores the full
+stall on every vote, comment, post, review, and edit, and the suite stays green.
+
+This also makes the round-2 signal's claim that every fix was verified by disabling it
+and watching a test go red inaccurate for R4: no test can go red.
+
+Mock `redis.set` to never resolve and assert the consume still resolves promptly.
+
+### Item 2 — The revocation epoch is untested on the upload-token surface
+
+`consumeFreshAuthProof` sets `sessionsInvalidatedAtMs` for the IPFS upload-token route,
+but none of the six upload-token test files contains `sessions_invalidated_at`,
+`hiveSessionsInvalidatedAt`, or the phrase "revocation epoch". Deleting that property
+leaves the whole suite green. R1 is verified on one of its two surfaces.
+
+Add a route-level test on `POST /api/ipfs/upload-token` mirroring the two `revocation
+epoch` tests in `custody-non-consent-fresh-auth.test.ts`.
+
+### Item 3 — The mint canary is defeated by an aliased import
+
+`import { issueSessionFreshAuthToken as mint }` then `await mint(...)` evades both
+scans: the call regex matches neither the import line nor the call site, and the
+aliasing caller never writes the `kind: 'session'` discriminator, so the backstop stays
+green too. This is the blind spot R2 was written to close.
+
+Match the identifier rather than the call shape (keeping the definition-line skip), and
+add an import-site assertion: the set of files importing the symbol must equal
+`routes/custody.ts` and `routes/orcid.ts`.
+
+### Item 4 — A commented-out sweep call satisfies the invalidation canary
+
+The sweep scan is passed no `skipLine` predicate, while the sibling mint canary passes
+`COMMENT_LINE_RE` to its own. A commented-out sweep call therefore registers as a real
+occurrence and pairs with a live column write in the same enclosing symbol. Unlike item
+3 this is an ordinary accident: commenting a call out while debugging and forgetting to
+restore it.
+
+Pass the comment filter to the sweep scan. Deliberately NOT to the write scan, where
+over-matching is fail-closed.
+
+### Item 5 — The epoch parameter is optional, so omission disables the cut-off
+
+Both the third parameter and the surface field are declared with `?`. Omitting them
+yields `undefined`, which the guard treats as no cut-off, silently disabling the
+authoritative half of invalidation and leaving only the best-effort sweep. Not
+reachable today, and nothing mechanical prevents a future surface from omitting it.
+
+The hazard is not hypothetical: `expectWindowClosed` in
+`session-proof-invalidation.test.ts` already calls the consume with two arguments, so
+its three end-to-end tests exercise the sweep only and would stay green if the epoch
+check were deleted outright. Its docblock claims it makes "the same call the broadcast
+route makes"; the route passes a third argument, so that is a fourth false docblock.
+
+Drop the `?` on both declarations. Runtime semantics are unchanged, omission becomes a
+compile error, and that forces the test helper above to state its posture. Fix its
+docblock in the same change.
+
+### Item 6 — The `<=` boundary and the null/undefined semantics are unpinned
+
+Both epoch tests take `Date.now()` after the mint or sleep first, so the
+same-millisecond case is never exercised and mutating `<=` to `<` stays green. That
+case is the realistic race, not an exotic one, and `auth.ts` writing
+`sessions_invalidated_at = NOW()` (transaction-start time) widens it slightly.
+
+Nothing asserts that both `null` and `undefined` mean no cut-off either, so a mutation
+to `!= null`, or to a truthiness check that also mishandles epoch `0`, is invisible.
+
+Plant an entry whose `issued_at` equals the epoch exactly and assert `expired`, plus
+two cheap cases pinning `null` and `undefined`.
+
+### Item 7 — The AC-8 backstop has a route gap and matches only by name
+
+It covers login, signup-finalize, and ORCID `mode='login'`, but not
+`POST /api/auth/session`, `/api/auth/recover`, or `/api/auth/recover/verify`, all three
+of which reissue a JWT and all three of which the mint canary's own message names.
+Composed with item 3, a mint can land on `/api/auth/session` with every guard green.
+
+The detector also matches key names against a two-token pattern, so a proof returned as
+`proof`, `reauth_token`, or `broadcast_token` passes untouched, and it inspects only the
+JSON body, not headers or `Set-Cookie`. The claim that it covers any field "at any depth,
+under any casing" is true for placement and casing but not for naming.
+
+Separately, the ORCID login-mode assertion uses three exact-path checks instead of the
+deep walk the other two surfaces get, leaving the surface most likely to drift with the
+weakest check.
+
+Match proof-shaped values as well as key names, assert over headers and cookies, extend
+to the three uncovered routes, and reuse the deep-walk helper in the ORCID test.
+
+### Item 8 — The 500-member chunk size is not pinned
+
+The 1201-member test correctly pins that chunking loses no members, which is the right
+shape and catches the truncating-sweep bug that an earlier spot-check version missed.
+It does not pin the chunk size: raising the constant far above the member count leaves
+it green.
+
+Spy on `redis.del`, assert the call count equals `ceil(members / chunk)` and that no
+call exceeds the chunk size.
+
+### Item 9 — `issued_at` is synthesized, and its comment is now false
+
+Round 2 promoted `issued_at` from informational metadata to the anchor of the revocation
+comparison, but `validateStoredEntry` was not revisited. It still admits an entry whose
+`issued_at` is missing or non-epoch and synthesizes one from the absolute deadline, so
+the code invents the input to its own revocation decision. The comment still calls the
+field informational.
+
+No live bypass: reaching the fallback needs direct Redis write access. Two latent
+fail-opens remain, though. The epoch-ms check accepts any finite positive absolute
+deadline, so the synthesis is unbounded upward, and any future reduction of the cap
+constant would make legacy entries reconstruct later than they were minted.
+
+Reject a session entry whose `issued_at` is missing or non-epoch instead of synthesizing
+one, and rewrite the comment to state that it is the revocation anchor, set at mint and
+carried unchanged through every slide.
+
+### Item 10 — Both canary regexes under-match
+
+The discriminator pattern requires a trailing comma and single quotes, so a single-line
+`{ kind: 'session' }` or a double-quoted spelling evades it. There is no prettier config
+and no eslint quote or comma-dangle rule in `backend/` to force the matched style. This
+is the one scan meant to be name-independent, and it is defeated by a quote character.
+
+The revocation-write pattern misses several ordinary SQL spellings of the same write,
+and under-matching there is fail-open: an unmatched write is never required to pair with
+a sweep.
+
+Relax the discriminator pattern and move the type-position exclusions into the skip
+predicate rather than relying on the comma. Use the bare column name as the write
+signal and allowlist the one known read site. Extend the planted negatives to cover the
+bypass shapes in both.
+
+### Architect follow-ups, discharged in this round
+
+The deferred contract-docs sweep is **done**, landed at `bfdc3eb2`. Four passages
+rewritten: the `custody.md` TBD placeholder, the 6.4.1 "useless without a live session"
+bullet that stated the requirement as an unmet MUST, the 6.7 title and opening, and the
+6.7 client-visible-effect paragraph. That also settles the 6.6 same-commit rule, which
+the three round-2 commits did not honour for these sections. Nothing in this hold block
+depends on it.
+
+### Not in this round, unchanged from the round-2 routing
+
+The module split, the consent-op compensating `DEL`, and the `as number` casts stay in
+their own task files. The cap-crossing loop test runtime and the `Math.min` clamp remain
+below threshold.
+
+Note for the canary work in items 3, 4, 7 and 10: the round-2 fix **complied** with
+`solutions/conventions/source-discipline-canaries-must-assert-at-call-site-not-file-granularity`,
+which governs ASSERTION granularity. Every item above sits on the DETECTION axis, which
+that entry explicitly scoped out ("a regex can match precisely at call shape and the
+canary can still be blind"). The rule was followed; these are where it set its boundary.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.
