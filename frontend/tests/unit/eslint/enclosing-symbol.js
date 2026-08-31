@@ -9,6 +9,16 @@
  * assertion becomes a set of `file#symbol` pairs, so a new call site inside a
  * new handler is a new member even when its file was already there.
  *
+ * The keys are necessary, not sufficient. A key inherits the file-level
+ * absorption one level down whenever it covers more than the one licensed
+ * occurrence: a symbol NAME that recurs as a declaration in its file (an
+ * idiom local declared by more than one coalescer) collapses distinct
+ * declarations onto one key, and a single wide declaration (a page template
+ * literal) puts hundreds of lines under one key. {@link occurrencesOf}
+ * therefore also reports each key's occurrence count, so a consumer can pin
+ * licensed widths and catch an occurrence ADDED under a licensed key, not
+ * just one minting a new key.
+ *
  * Resolution is textual, not a parse. That is a deliberate trade, because a
  * canary that needs a compiler to run is a canary people delete, and it is
  * why {@link enclosingSymbol} is exercised by planted positives and negatives
@@ -42,10 +52,11 @@
  * case is a WRONG symbol, and how that fails depends on the assertion
  * consuming it:
  *
- *  - SET-EQUALITY assertions (occurrence keys compared to an exact allowed
- *    set) fail closed: a wrong symbol is a new member and therefore a red
- *    bar, never a silent pass. Every canary currently built on this module
- *    asserts set-equality. The claim is scoped to that shape on purpose.
+ *  - SET-EQUALITY assertions (occurrence keys, or keys with their per-key
+ *    counts, compared to an exact allowed set or map) fail closed: a wrong
+ *    symbol is a new member and therefore a red bar, never a silent pass.
+ *    Every canary currently built on this module asserts that shape. The
+ *    claim is scoped to it on purpose.
  *
  *  - PAIRING assertions (every occurrence of X needs a Y under the same key)
  *    do NOT inherit the property: two unrelated occurrences that both resolve
@@ -226,8 +237,18 @@ export function isCommentLine(line) {
 }
 
 /**
- * Every `file#symbol` occurrence of `pattern` across `files`, plus a
- * human-readable site list for assertion messages.
+ * Every `file#symbol` occurrence of `pattern` across `files`: the sorted
+ * distinct `keys`, a `counts` object mapping each key to its number of
+ * matching lines, and a human-readable site list for assertion messages.
+ *
+ * The counts exist because a key alone can absorb (see the file docblock):
+ * an occurrence added inside a colliding declaration name or a wide template
+ * literal resolves to a key its consumer already licensed, so key
+ * set-equality stays green while the addition lives. A consumer that pins
+ * each licensed key's exact width instead turns that addition into a
+ * mismatch. The residual a width pin cannot see is a constant-width
+ * REPLACEMENT, an offending rewrite of the licensed lines themselves; that
+ * edit touches licensed lines directly and is left to review of the diff.
  *
  * `skipLine` drops a matched line before it is counted, for a definition site
  * that necessarily matches the pattern it defines, say. It receives the
@@ -236,16 +257,18 @@ export function isCommentLine(line) {
  * needs that).
  */
 export function occurrencesOf(files, pattern, skipLine) {
-  const keys = new Set();
+  const tally = new Map();
   const sites = [];
   for (const { rel, lines } of files) {
     lines.forEach((line, i) => {
       if (!pattern.test(line)) return;
       if (skipLine?.(line, i, lines)) return;
       const symbol = enclosingSymbol(lines, i);
-      keys.add(`${rel}#${symbol}`);
+      const key = `${rel}#${symbol}`;
+      tally.set(key, (tally.get(key) ?? 0) + 1);
       sites.push(`${rel}:${i + 1} (${symbol}) ${line.trim()}`);
     });
   }
-  return { keys: [...keys].sort(), sites };
+  const keys = [...tally.keys()].sort();
+  return { keys, counts: Object.fromEntries(keys.map((k) => [k, tally.get(k)])), sites };
 }

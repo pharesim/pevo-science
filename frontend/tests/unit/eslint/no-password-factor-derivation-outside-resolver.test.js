@@ -28,9 +28,23 @@
  * are named individually, including the rendering-only read in
  * `pages/settings.js`, which is a legitimate member rather than a
  * pattern-excluded one so that a DIFFERENT offending shape in the same file
- * is still caught. Every assertion here is set-equality against a fixed
- * allowed list, the shape under which an unresolvable or wrongly resolved
- * symbol fails closed as an unexpected member.
+ * is still caught. Every assertion here is equality against a fixed allowed
+ * map, the shape under which an unresolvable or wrongly resolved symbol
+ * fails closed as an unexpected member.
+ *
+ * WIDTH. Each licensed key is additionally pinned to its exact occurrence
+ * count, because a key-level set inherits the file-level absorption one
+ * level down in two shapes this tree writes today. A licensed key whose
+ * declaration NAME is a recurring idiom absorbs by collision: the resolver's
+ * in-flight local shares its name with the session acquisition coalescer's
+ * local in the same module, so a status read added inside THAT coalescer
+ * resolves to the licensed key. And a licensed key naming a wide region
+ * absorbs by extent: the settings template literal is hundreds of markup
+ * lines under one key, so an inline factor expression anywhere in it lands
+ * on the licensed member. Pinning the width turns both into a red bar: any
+ * occurrence added under a licensed key moves its count, and a deliberate
+ * change to a licensed site is a two-sided edit (the code and the pinned
+ * width).
  *
  * DETECTION. The occurrence scan matches the NAME `fetchEmailStatus`, not a
  * call shape: a call-shaped pattern is defeated by one line, since
@@ -60,12 +74,14 @@
  *     rebinding shape that writes neither the function's name nor the
  *     property's.
  *
- * Residual, pinned in prose rather than silently absorbed: the settings page
- * template literal is licensed as one member for its rendering read, so an
- * inline factor decision written entirely as a template expression inside
- * that one literal would resolve to the same key. Factor decisions live in
- * component methods, which resolve to their own keys; a reviewer seeing
- * factor logic inline in markup has a second reason to reject it.
+ * Residual, pinned in prose rather than silently absorbed: the width pin
+ * catches every ADDED occurrence under a licensed key, but a constant-width
+ * REPLACEMENT does not move a count. Rewriting a licensed line itself into a
+ * factor decision (the settings section gate turned into a factor branch, or
+ * the resolver's own status read reshaped without changing how many lines
+ * write the name) stays green. That shape edits the licensed lines directly,
+ * which is the edit a review diff cannot miss, and factor logic inline in
+ * markup gives a reviewer a second reason to reject it.
  */
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
@@ -170,39 +186,50 @@ const CONSUME_THE_RESOLVER =
   'a per-surface answer that disagrees about the unavailable-status case routes users ' +
   'into a full-page ORCID navigation that discards their work. Only a read that cannot ' +
   'influence which factor a user is offered (pure display of account status) may join ' +
-  'the allowed list.';
+  'the allowed map. Each licensed site is pinned at its exact occurrence count: a new ' +
+  'read under an already-licensed key is a violation at that site, not a license, and a ' +
+  'deliberate change to a licensed site updates its pinned count in the same change.';
 
-/** The only sites that may name the status fetch. The fresh-auth member is
- *  the resolver's coalesced in-flight resolution: `resolvePasswordFactor`
- *  wraps its status read in an immediately-invoked function assigned to a
- *  `flight` local so concurrent callers share one request, and that local is
- *  the nearest enclosing declaration the resolver machinery names. The
- *  narrowness is a feature: a status read added to `resolvePasswordFactor`
- *  outside its in-flight wrapper is a NEW key and a red bar, and renaming the
- *  local is a deliberate two-sided edit (the code and this entry). The
- *  settings member is the rendering-only read: `loadEmailStatus` stores the
- *  whole status for display and its fresh-auth context deliberately passes no
- *  factor state. */
-const ALLOWED_STATUS_FETCH_SITES = [
-  'lib/fresh-auth.js#flight',
-  'pages/settings.js#loadEmailStatus',
-];
+/** The only sites that may name the status fetch, each pinned to its exact
+ *  occurrence width. The fresh-auth member is the resolver's coalesced
+ *  in-flight resolution: `resolvePasswordFactor` wraps its status read in an
+ *  immediately-invoked function assigned to a `flight` local so concurrent
+ *  callers share one request, and that local is the nearest enclosing
+ *  declaration the resolver machinery names. The narrowness is a feature: a
+ *  status read added to `resolvePasswordFactor` outside its in-flight wrapper
+ *  is a NEW key and a red bar, and renaming the local is a deliberate
+ *  two-sided edit (the code and this entry). The name `flight` is the
+ *  module's in-flight idiom rather than unique to the resolver: the session
+ *  acquisition coalescer declares the same local, so an occurrence inside it
+ *  resolves to this SAME key, and the pinned width of one is what keeps that
+ *  sibling region from absorbing a derivation of its own. The settings member
+ *  is the rendering-only read: `loadEmailStatus` stores the whole status for
+ *  display and its fresh-auth context deliberately passes no factor state. */
+const ALLOWED_STATUS_FETCH_SITES = {
+  'lib/fresh-auth.js#flight': 1,
+  'pages/settings.js#loadEmailStatus': 1,
+};
 
 /** The only modules that may hold a reference to the status fetch at all.
  *  The api module defines it and imports nothing. */
 const ALLOWED_STATUS_FETCH_IMPORTERS = ['lib/fresh-auth.js', 'pages/settings.js'];
 
-/** The only sites that may read or write the password-state discriminator:
- *  the resolver's in-flight resolution (the factor decision itself), the
- *  settings page template (the section gate on the set-password affordance, a
- *  rendering surface by construction), and the set-password success handler
- *  (patches the stored status so the section collapses; a write of display
- *  state, not a factor decision). */
-const ALLOWED_PASSWORD_STATE_SITES = [
-  'lib/fresh-auth.js#flight',
-  'pages/settings.js#handleSetPassword',
-  'pages/settings.js#template',
-];
+/** The only sites that may read or write the password-state discriminator,
+ *  each pinned to its exact occurrence width: the resolver's in-flight
+ *  resolution (the factor decision itself, every line of it), the settings
+ *  page template (the section gate on the set-password affordance plus the
+ *  markup comment explaining it; an HTML comment inside the literal is
+ *  template content to this scan on purpose, since prose there can become an
+ *  attribute expression without minting a new key), and the set-password
+ *  success handler (patches the stored status so the section collapses; a
+ *  write of display state, not a factor decision). A width moved by an
+ *  innocent edit, a reworded markup comment or reshaped resolver internals,
+ *  is re-pinned here in the same change; that noise is the loud direction. */
+const ALLOWED_PASSWORD_STATE_SITES = {
+  'lib/fresh-auth.js#flight': 6,
+  'pages/settings.js#handleSetPassword': 1,
+  'pages/settings.js#template': 2,
+};
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sources = sourcesUnder(path.resolve(here, '..', '..', '..', 'src'));
@@ -218,10 +245,10 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(rels).toContain('pages/settings.js');
   });
 
-  it('only the factor resolver and the settings rendering read name the status fetch', () => {
-    const { keys, sites } = occurrencesOf(sources, STATUS_FETCH_IDENT_RE, skipStatusFetchLine);
-    expect(keys, `${CONSUME_THE_RESOLVER}\nstatus-fetch occurrence sites:\n${sites.join('\n')}`).toEqual(
-      [...ALLOWED_STATUS_FETCH_SITES].sort(),
+  it('only the factor resolver and the settings rendering read name the status fetch, at pinned widths', () => {
+    const { counts, sites } = occurrencesOf(sources, STATUS_FETCH_IDENT_RE, skipStatusFetchLine);
+    expect(counts, `${CONSUME_THE_RESOLVER}\nstatus-fetch occurrence sites:\n${sites.join('\n')}`).toEqual(
+      ALLOWED_STATUS_FETCH_SITES,
     );
   });
 
@@ -237,14 +264,14 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     ).toEqual([...ALLOWED_STATUS_FETCH_IMPORTERS].sort());
   });
 
-  it('only the resolver, the settings template, and the set-password patch touch hasPassword', () => {
-    const { keys, sites } = occurrencesOf(sources, HAS_PASSWORD_RE, isCommentLine);
+  it('only the resolver, the settings template, and the set-password patch touch hasPassword, at pinned widths', () => {
+    const { counts, sites } = occurrencesOf(sources, HAS_PASSWORD_RE, isCommentLine);
     expect(
-      keys,
+      counts,
       `${CONSUME_THE_RESOLVER}\nA factor decision can avoid calling the status fetch when ` +
         'the status object arrives second-hand, but it cannot avoid reading hasPassword.\n' +
         `password-state occurrence sites:\n${sites.join('\n')}`,
-    ).toEqual([...ALLOWED_PASSWORD_STATE_SITES].sort());
+    ).toEqual(ALLOWED_PASSWORD_STATE_SITES);
   });
 
   it('no module re-exports the api module wholesale', () => {
@@ -410,6 +437,72 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(occurrencesOf([aliased], STATUS_FETCH_IDENT_RE, skipStatusFetchLine).keys).toEqual([
       `pages/anything.js#${MODULE_SCOPE}`,
     ]);
+  });
+
+  it('an occurrence added under a licensed key widens its pinned count instead of hiding', () => {
+    // The two absorbing shapes the width pin exists for. A key-level set
+    // alone is blind to both: the added occurrence resolves to a key that is
+    // already licensed, so key set-equality stays green with the violation
+    // live. The pinned per-key count is the discriminator.
+
+    // COLLISION: the module's in-flight idiom names two coalescers' locals
+    // identically, so a derivation planted inside the unlicensed coalescer
+    // resolves to the licensed key. Its count is what refuses the absorb.
+    const collidingCoalescers = {
+      rel: 'lib/fresh-auth.js',
+      lines: [
+        'export async function resolvePasswordFactor() {',
+        '  const flight = (async () => {',
+        '    const status = await fetchEmailStatus();',
+        '  })();',
+        '}',
+        '',
+        'async function acquireSessionProof() {',
+        '  const flight = (async () => {',
+        '    const hasPassword = (await fetchEmailStatus())?.data?.hasPassword;',
+        '  })();',
+        '}',
+      ],
+    };
+    const { counts: fetchCounts } = occurrencesOf(
+      [collidingCoalescers],
+      STATUS_FETCH_IDENT_RE,
+      skipStatusFetchLine,
+    );
+    expect(fetchCounts).toEqual({ 'lib/fresh-auth.js#flight': 2 });
+    expect(fetchCounts['lib/fresh-auth.js#flight']).not.toBe(
+      ALLOWED_STATUS_FETCH_SITES['lib/fresh-auth.js#flight'],
+    );
+
+    // EXTENT: every read inside the one wide template literal resolves to
+    // the template's key, so an inline factor expression in the markup adds
+    // width rather than a member. The section gate alone is one unit; the
+    // gate plus an inline decision is two.
+    const gateOnly = {
+      rel: 'pages/settings.js',
+      lines: [
+        'const template = `',
+        '  <template x-if="emailStatus.hasPassword === false">',
+        '  </template>',
+        '`;',
+      ],
+    };
+    const gatePlusInlineDecision = {
+      rel: 'pages/settings.js',
+      lines: [
+        'const template = `',
+        '  <template x-if="emailStatus.hasPassword === false">',
+        '  </template>',
+        '  <button @click="emailStatus.hasPassword ? openPasswordModal() : startOrcidRedirect()">',
+        '`;',
+      ],
+    };
+    expect(occurrencesOf([gateOnly], HAS_PASSWORD_RE, isCommentLine).counts).toEqual({
+      'pages/settings.js#template': 1,
+    });
+    expect(occurrencesOf([gatePlusInlineDecision], HAS_PASSWORD_RE, isCommentLine).counts).toEqual({
+      'pages/settings.js#template': 2,
+    });
   });
 
   it('the password-state scan sees reads a factor decision cannot avoid writing', () => {
