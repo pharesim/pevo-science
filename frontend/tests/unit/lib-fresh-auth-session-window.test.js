@@ -348,6 +348,55 @@ describe('password-factor memo', () => {
     expect((await resolvePasswordFactor()).usesPassword).toBe(false);
     expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
   });
+
+  it('a successful mint under an assumed factor is memoized: no re-fetch, and no fallback on a later 401', async () => {
+    // The mint route VERIFYING the password outranks anything the status
+    // endpoint could report. Without the mint-success report the tab keeps
+    // re-guessing while the status read stays rate-limited, and a later
+    // mistype fires the navigating ORCID fallback at an account that just
+    // proved its password exists.
+    mockFetchEmailStatus.mockRejectedValue(new Error('rate limited'));
+    expect((await ensureSessionWindow()).ready).toBe(true);
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+
+    // The next resolution rides the mint-proven memo instead of re-guessing.
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: false });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+
+    // And a later mistype re-prompts as a typo (spent re-auth), never as the
+    // assumed-password ORCID round-trip.
+    clearCachedSessionProof();
+    mockMintSessionAuthProof.mockRejectedValue(
+      Object.assign(new Error('wrong password'), { code: 'UNAUTHORIZED' }),
+    );
+    expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('a clear landing while the mint prompt sits open vetoes the mint-success memo write', async () => {
+    // The mint-success report mirrors the status-fetch write's
+    // capture-before-await discipline: the generation is captured before the
+    // prompt opens, so a subject scrub while the modal sits open declines
+    // the write rather than re-memoizing for a subject the tab no longer
+    // represents.
+    mockFetchEmailStatus.mockRejectedValue(new Error('rate limited'));
+    let openPrompt;
+    mockReauthModal.request.mockReturnValueOnce(
+      new Promise((resolve) => { openPrompt = resolve; }),
+    );
+
+    const pending = ensureSessionWindow();
+    // A macrotask hop: the factor resolves as assumed and the prompt opens.
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    clearPasswordFactorMemo();
+    openPrompt('hunter2');
+    expect((await pending).ready).toBe(true);
+
+    // A vetoed write means the next resolution still re-fetches.
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: true });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('one re-auth act per window', () => {

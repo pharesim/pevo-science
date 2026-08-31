@@ -151,15 +151,29 @@ export function handleSessionInconsistency() {
 //     (`opts.assumed`) and the mint 401'd — see below.
 // A non-auth error on the FIRST attempt (transport, 503, VALIDATION_ERROR)
 // propagates so the caller's op-level handler surfaces the real cause.
+//
+// A successful mint additionally reports into the password-factor memo (see
+// `beginPasswordMintReport`): the mint route verifying the password is the
+// strongest evidence the account has one, so an ASSUMED factor that just
+// minted is not re-guessed on the next resolution while the status read
+// stays unavailable.
 export async function mintViaPasswordFactor(mintFn, { message, assumed = false }) {
   const modal = Alpine.store('reauthModal');
+  // Captured BEFORE the prompt opens: a subject scrub landing while the
+  // modal sits open must veto the memo write (see beginPasswordMintReport).
+  const reportMintSuccess = beginPasswordMintReport();
+  const attemptMint = async (password) => {
+    const minted = await mintFn(password);
+    reportMintSuccess(minted);
+    return minted;
+  };
 
   let password = await modal.request({ message });
   if (password === REAUTH_PROMPT_BUSY) return FRESH_AUTH_PROMPT_BUSY;
   if (password === null || password === undefined) return FRESH_AUTH_CANCELLED;
 
   try {
-    return await mintFn(password);
+    return await attemptMint(password);
   } catch (err) {
     // A non-auth error on the first attempt (transport, 503) propagates as an
     // unexpected failure; only a wrong password (UNAUTHORIZED) re-prompts.
@@ -180,7 +194,7 @@ export async function mintViaPasswordFactor(mintFn, { message, assumed = false }
     if (password === REAUTH_PROMPT_BUSY) return FRESH_AUTH_PROMPT_BUSY;
     if (password === null || password === undefined) return FRESH_AUTH_CANCELLED;
     try {
-      return await mintFn(password);
+      return await attemptMint(password);
     } catch {
       // Last re-prompt spent: a second auth failure, or any transport error on
       // the retry mint, means re-auth could not be completed. Surface the
@@ -495,7 +509,9 @@ export function clearReturnPath() {
 // re-fetching on every acquisition is pure latency. The negative and assumed
 // answers are deliberately NOT memoized — a passwordless user who sets a
 // password in settings must be able to use it on their next acquisition, and
-// a guess must never harden into a fact. The memo is keyed on the
+// a guess must never harden into a fact. A successful password MINT under an
+// assumed factor is no longer a guess — the backend verified the password —
+// so it does memoize, via `beginPasswordMintReport`. The memo is keyed on the
 // authenticated username so a re-login as a different account in the same tab
 // cannot inherit it, and `auth.disconnect()` drops it outright alongside the
 // proof caches.
@@ -524,6 +540,38 @@ let _factorResolutionSubject = null;
 export function clearPasswordFactorMemo() {
   _passwordFactorMemo = null;
   _passwordFactorMemoGeneration += 1;
+}
+
+// The memo's second writer: a successful password mint. The mint route
+// VERIFIED the password, which outranks anything the status endpoint could
+// report — and keeps working while that endpoint is rate-limited (per IP, so
+// a shared university network can keep it unavailable across a whole
+// session). Without this report an ASSUMED factor stays a guess after a
+// successful mint, the next resolution re-guesses, and one later mistype
+// fires the navigating ORCID fallback at an account that just proved its
+// password exists. Every mint success reports, observed or assumed — the
+// evidence is identical, and for an already-memoized observed answer the
+// write is an idempotent refresh. `mintViaPasswordFactor` owns the report for
+// all of its callers (the session acquisition and the settings and authorship
+// orchestrators), so no mint surface can forget it.
+//
+// Both the subject and the generation are captured BEFORE the prompt opens,
+// mirroring the status-fetch write's capture-before-await shape: a subject
+// scrub landing while the modal sits open bumps the generation (via
+// `clearPasswordFactorMemo`) and so vetoes the write, instead of the late
+// success re-memoizing for a subject this tab no longer represents.
+function beginPasswordMintReport() {
+  const username = Alpine.store('auth')?.username;
+  const generation = _passwordFactorMemoGeneration;
+  return (minted) => {
+    // Only a proof string is a mint success. A mint callback may resolve to
+    // a sentinel instead (the session acquisition's teardown path unwinds as
+    // a clean cancel), and that proves nothing about the password.
+    if (typeof minted !== 'string') return;
+    if (username && generation === _passwordFactorMemoGeneration) {
+      _passwordFactorMemo = username;
+    }
+  };
 }
 
 export async function resolvePasswordFactor() {

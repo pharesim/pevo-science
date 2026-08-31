@@ -388,15 +388,41 @@ describe('withSettingsFreshAuth', () => {
   });
 
   it('an assumed password rejected at the RETRY mint also redirects rather than dead-ending', async () => {
+    // The initial proof comes from the consent-op cache (an earlier ORCID
+    // round-trip), NOT from a password mint: a successful mint proves the
+    // password exists and upgrades the resolver's answer to observed, after
+    // which a retry 401 re-prompts. Only a still-unproven assumed password
+    // may hand the retry to the ORCID round-trip.
     statusUnavailable();
-    mockMintSettingsActionProof
-      .mockResolvedValueOnce('proof-1')
-      .mockRejectedValueOnce(codedError('UNAUTHORIZED'));
+    mockGetCachedConsentOpProof.mockReturnValueOnce('cached-proof');
+    mockMintSettingsActionProof.mockRejectedValue(codedError('UNAUTHORIZED'));
     run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ redirect: true });
     expect(mockBeginOrcid).toHaveBeenCalledWith('change_email');
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('a successful mint under an ASSUMED factor upgrades it: a retry mistype re-prompts, never redirects', async () => {
+    // The initial mint succeeding IS the proof the account has a password —
+    // stronger evidence than the unavailable status endpoint could give. The
+    // retry gate must ride that proof (no second status fetch) and treat its
+    // 401 as a typo: re-prompt inline instead of firing the full-page ORCID
+    // fallback at a proven password-holder.
+    statusUnavailable();
+    mockMintSettingsActionProof
+      .mockResolvedValueOnce('proof-1')
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockResolvedValueOnce('proof-2');
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockResolvedValueOnce({ ok: 1 });
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ ok: { ok: 1 } });
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+    expect(reauthRequest).toHaveBeenCalledTimes(3);
+    expect(run).toHaveBeenNthCalledWith(2, 'proof-2');
   });
 
   // ─── Refuse-while-open (busy) discriminates from a cancel ────────────────

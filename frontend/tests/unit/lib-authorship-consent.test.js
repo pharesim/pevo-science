@@ -241,6 +241,48 @@ describe('withAuthorshipFreshAuth', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('an assumed password rejected at the RETRY mint also redirects rather than dead-ending', async () => {
+    // The retry-gate fallback arm, separately deletable from the initial
+    // gate's (which the mint-rejection case above pins via resolveProof).
+    // The initial proof comes from the consent-op cache (an earlier ORCID
+    // round-trip), NOT from a password mint: a successful mint proves the
+    // password exists and upgrades the resolver's answer to observed, after
+    // which a retry 401 re-prompts. Only a still-unproven assumed password
+    // may hand the retry to the ORCID round-trip.
+    statusUnavailable();
+    mockGetCachedConsentOpProof.mockReturnValueOnce('cached-proof');
+    mockMintAuthorshipFreshAuthProof.mockRejectedValue(
+      Object.assign(new Error('UNAUTHORIZED'), { code: 'UNAUTHORIZED' }),
+    );
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ redirect: true });
+    expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('a successful mint under an ASSUMED factor upgrades it: a retry mistype re-prompts, never redirects', async () => {
+    // The initial mint succeeding IS the proof the account has a password —
+    // stronger evidence than the unavailable status endpoint could give. The
+    // retry gate must ride that proof (no second status fetch) and treat its
+    // 401 as a typo: re-prompt inline instead of throwing the user off the
+    // paper page into the full-page ORCID fallback.
+    statusUnavailable();
+    mockMintAuthorshipFreshAuthProof
+      .mockResolvedValueOnce('proof-1')
+      .mockRejectedValueOnce(Object.assign(new Error('UNAUTHORIZED'), { code: 'UNAUTHORIZED' }))
+      .mockResolvedValueOnce('proof-2');
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockResolvedValueOnce({ tx_id: 'tx2' });
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ ok: { tx_id: 'tx2' } });
+    expect(mockBeginAuthorshipOrcid).not.toHaveBeenCalled();
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+    expect(reauthRequest).toHaveBeenCalledTimes(3);
+    expect(run).toHaveBeenNthCalledWith(2, 'proof-2');
+  });
+
   it('an observed password that 401s still re-prompts instead of redirecting', async () => {
     // The escape hatch is for guesses only: an observed password's 401 is a
     // typo and earns the second prompt.
