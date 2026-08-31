@@ -628,3 +628,50 @@ refused-replay-retirement gap below.
 - Rejected at validation, for the record: a maintainability finding to extract
   the ledger subsystem from `fresh-auth.ts` — already tracked as in-scope by the
   blocked module-split task, and no codified rule anchors it.
+
+---
+
+## Backend re-review signal (2026-08-31, round 3, commit 60c9c6bb)
+
+Both held items landed in one commit.
+
+**Item 1 — expiry arm drops what it cannot sweep.** The arm now reads
+`if (!client) continue;` before the dispatch-then-drop pair, so an expired
+entry is retired only when its sweep can be issued; while no client is
+reachable it is kept and goes on refusing its proof. The expiry-arm comment
+was rewritten around the resurrection mechanism the hold traced
+(`autoResendUnfulfilledCommands` re-executing an unreplied issuing `SET` with
+a fresh full `EX`), states the growth bound (the same per-burn set the live
+arm already retains, retiring on the first client-holding drain), and the
+drain docblock's opening paragraph now states the retirement condition. The
+test formerly named `drops a ledger entry past its deadline even with no
+reachable client` is reshaped to `keeps a ledger entry past its deadline
+while no client is reachable` and pins keep-not-drop plus the refusal the
+retention preserves (a replay after the past-deadline drain pass is still
+refused); the reachable-client expiry sweep case in
+`fresh-auth-redis-unavailable-burn.test.ts` is unchanged, as prescribed.
+
+**Item 2 — bare-`.has` consume-path kill.** New case `a past-deadline ledger
+entry still refuses the consume itself` in the ledger-retirement block of
+`fresh-auth-redis-unavailable-burn.test.ts`: canonical key present in Redis,
+in-memory record absent, ledger entry planted past deadline via
+`_setSpentConsentOpForTests`, then `consumeFreshAuthToken` directly with no
+drain call first; refused with reason `expired`. The optional retirement
+assertion from the hold is included: after the refusal the ledger size is 0
+and the key is gone, which also pins the refused replay's own
+`if (redisLegRan)` retirement (the first noted-not-held gap).
+
+Mutation-confirmed against the committed baseline, each probe killing exactly
+its intended test: restoring the bare drop fails the reshaped keep test;
+restoring prune-on-read semantics in `isConsentOpSpent` (even with the
+corrected deadline basis) fails the new consume-path case.
+
+Green: `npm run typecheck` (src + tests), `npm run lint` (the one
+pre-existing `author-supersession.ts` warning), and the three fresh-auth
+suites (`fresh-auth.test.ts`, `fresh-auth-redis-unavailable-burn.test.ts`,
+`fresh-auth-consent-op-burn-offline-queue.test.ts`, 116 tests).
+
+The other noted-not-held items are untouched by choice: the listener-count
+pin, the stalled-server end-to-end origin, and the `afterEach` recovery
+boolean are all below the hold line and none is load-bearing for the two
+invariants this round pins.
