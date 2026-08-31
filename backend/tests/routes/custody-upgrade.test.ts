@@ -75,6 +75,13 @@ const { getAppPool } = await import('../../src/app-db.js');
 const { config } = await import('../../src/config.js');
 const { clearRateLimitKeys } = await import('../support/redis-helpers.js');
 const { expectNoSessionProof } = await import('../support/session-proof-shape.js');
+const {
+  issueSessionFreshAuthToken,
+  consumeSessionFreshAuthToken,
+  _setMemStoreEntryForTests,
+  SESSION_FRESH_AUTH_IDLE_SECONDS,
+  SESSION_FRESH_AUTH_ABSOLUTE_SECONDS,
+} = await import('../../src/lib/fresh-auth.js');
 
 const app = createApp();
 const RUN_ID = Date.now();
@@ -324,6 +331,128 @@ describe.skipIf(!dbReachable)(
       expect(rows[0].upgraded_at).not.toBeNull();
       // password_hash is preserved (still NULL — § 6.2: "preserved").
       expect(rows[0].password_hash).toBeNull();
+    });
+
+    // ─── Session invalidation on upgrade ───────────────────────────────
+    // Upgrade is the fourth credential-rotating route (after the password
+    // reset and the two recovery phases): keys rotate, server custody ends,
+    // and a new JWT is issued. Credentials minted under the previous custody
+    // model must not survive it — neither the bearer JWTs nor any open
+    // session-proof window. The end-to-end legs for the other three writers
+    // live in session-proof-invalidation.test.ts; this one needs the mocked
+    // chain fixtures above, so it lives here.
+
+    it('upgrade closes outstanding session-proof windows and revokes prior JWTs', async () => {
+      const pool = getAppPool()!;
+      const preUpgradeJwt = bearerForLight(STATE_A_USER);
+      const issued = await issueSessionFreshAuthToken(STATE_A_USER, 'password');
+      // Pre-condition: the window really is open. No epoch is supplied here or
+      // in the post-upgrade consume below, so only the storage sweep can close
+      // it — the same scoping discipline the invalidation suite uses.
+      expect(
+        (await consumeSessionFreshAuthToken(issued.token, STATE_A_USER, undefined)).valid,
+      ).toBe(true);
+
+      const proof = buildProofBody(STATE_A_USER, wifA);
+      getAccountsMock.mockResolvedValue([fakeChainAccount(proof.derived_pubkey)]);
+      const res = await request(app)
+        .post('/api/custody/upgrade')
+        .set('Authorization', preUpgradeJwt)
+        .send(proof);
+      expect(res.status).toBe(200);
+
+      // The sweep leg: the storage tiers alone refuse the window.
+      const swept = await consumeSessionFreshAuthToken(issued.token, STATE_A_USER, undefined);
+      expect(swept.valid).toBe(false);
+      if (!swept.valid) {
+        expect(swept.reason).toBe('expired');
+      }
+
+      // The revocation epoch was stamped alongside the credential rotation.
+      const { rows } = await pool.query<{ sessions_invalidated_at: Date | null }>(
+        'SELECT sessions_invalidated_at FROM accounts WHERE username = $1',
+        [STATE_A_USER],
+      );
+      expect(rows[0].sessions_invalidated_at).not.toBeNull();
+
+      // The upgrade consumed its limiter slot; clear it so the two JWT
+      // assertions below reach the layers they test instead of a 429.
+      await clearRateLimitKeys(['custody-upgrade']);
+
+      // A pre-upgrade JWT dies at the middleware on its next request.
+      const replay = await request(app)
+        .post('/api/custody/upgrade')
+        .set('Authorization', preUpgradeJwt)
+        .send(buildProofBody(STATE_A_USER, wifA));
+      expect(replay.status).toBe(401);
+      expect(replay.body.error.code).toBe('SESSION_INVALIDATED');
+
+      // The reissued token survives the same-second revocation it was minted
+      // beside (its reissuedAt claim carries the stored epoch): it reaches the
+      // handler's custody gate and draws the 403 a self-custody JWT earns,
+      // instead of dying at the middleware with a 401.
+      const reissued = await request(app)
+        .post('/api/custody/upgrade')
+        .set('Authorization', `Bearer ${res.body.data.token}`)
+        .send(buildProofBody(STATE_A_USER, wifA));
+      expect(reissued.status).toBe(403);
+      expect(reissued.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('the epoch check alone closes a window the sweep never reached', async () => {
+      // The sweep is best-effort: it misses a window whose index entry never
+      // landed, one re-planted by an in-flight consume, and everything when
+      // Redis is down. The authoritative close is the revocation epoch the
+      // upgrade stamped, applied at the next consume. Withhold the sweep's
+      // effect by re-planting the window into the in-memory tier after the
+      // upgrade, then show the stored epoch still refuses it.
+      const pool = getAppPool()!;
+      const issued = await issueSessionFreshAuthToken(STATE_B_USER, 'password');
+
+      const proof = buildProofBody(STATE_B_USER, wifB);
+      getAccountsMock.mockResolvedValue([fakeChainAccount(proof.derived_pubkey)]);
+      const res = await request(app)
+        .post('/api/custody/upgrade')
+        .set('Authorization', bearerForLight(STATE_B_USER))
+        .send(proof);
+      expect(res.status).toBe(200);
+
+      const { rows } = await pool.query<{ sessions_invalidated_at: Date | null }>(
+        'SELECT sessions_invalidated_at FROM accounts WHERE username = $1',
+        [STATE_B_USER],
+      );
+      expect(rows[0].sessions_invalidated_at).not.toBeNull();
+      const epochMs = rows[0].sessions_invalidated_at!.getTime();
+
+      // Re-plant the swept window, minted-before-the-epoch, into the tier the
+      // sweep cannot reliably reach.
+      const now = Date.now();
+      _setMemStoreEntryForTests(
+        issued.token,
+        {
+          username: STATE_B_USER,
+          mechanism: 'password',
+          issued_at: epochMs - 60_000,
+          kind: 'session',
+          idle_expires_at: now + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000,
+          absolute_expires_at: now + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+        },
+        now + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000 + 60_000,
+      );
+
+      // Control: with no epoch, the re-planted window is alive — so the
+      // refusal below is attributable to the epoch and nothing else.
+      expect(
+        (await consumeSessionFreshAuthToken(issued.token, STATE_B_USER, undefined)).valid,
+      ).toBe(true);
+
+      // With the account's stored epoch, the window is dead regardless of
+      // what the storage tiers hold.
+      const result = await consumeSessionFreshAuthToken(issued.token, STATE_B_USER, epochMs);
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.reason).toBe('expired');
+      }
     });
 
     // ─── State D: already-upgraded ─────────────────────────────────────

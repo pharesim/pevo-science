@@ -1400,11 +1400,12 @@ export async function invalidateSessionFreshAuthTokens(username: string): Promis
     );
   }
 
-  // Never throws. The callers are password-reset and recovery handlers whose
-  // account mutation has already committed: rejecting here would tell the user
-  // the reset failed when it succeeded, and they would retry with a password
-  // that is no longer current. The catch spans the sweep rather than guarding
-  // individual lines, so the contract is structural.
+  // Never throws. The callers are credential-rotating handlers (password
+  // reset, the two recovery paths, custody upgrade) whose account mutation has
+  // already committed: rejecting here would tell the user the rotation failed
+  // when it succeeded, and they would retry against credentials that are no
+  // longer current. The catch spans the sweep rather than guarding individual
+  // lines, so the contract is structural.
   try {
     for (const [token, stored] of memStore) {
       if (stored.entry.kind === 'session' && stored.entry.username === username) {

@@ -11,12 +11,15 @@
  * writer of `sessions_invalidated_at` must also call
  * `invalidateSessionFreshAuthTokens`.
  *
- * There are three such writers, and this suite drives all three end to end
+ * There are four such writers. This suite drives three of them end to end
  * through their real routes:
  *   - `POST /api/auth/reset` — the emailed password-reset token.
  *   - `POST /api/auth/recover` — the ORCID branch, which reissues a JWT.
  *   - `POST /api/auth/recover/verify` — phase 2 of memo-key recovery, which
  *     applies the staged swap inside a transaction and then reissues a JWT.
+ * The fourth, `POST /api/custody/upgrade`, needs the mocked-chain fixtures its
+ * own suite owns, so its end-to-end leg lives in `custody-upgrade.test.ts`;
+ * the whole-tree scans below still cover it like any other toucher.
  *
  * "The window is closed" is asserted by consuming the proof through the real
  * `consumeSessionFreshAuthToken` against the real store the broadcast route
@@ -472,6 +475,7 @@ describe('every toucher of the revocation column also closes session-proof windo
     expect(touches.keys, `revocation-column sites:\n${touches.sites.join('\n')}`).toEqual(
       expect.arrayContaining([
         'routes/auth.ts#POST /reset',
+        'routes/custody.ts#POST /upgrade',
         'routes/recover.ts#POST /recover',
         'routes/recover.ts#POST /recover/verify',
       ]),
@@ -484,6 +488,42 @@ describe('every toucher of the revocation column also closes session-proof windo
         'have cut off. If one of these only READS the column, add its exact ' +
         `line to READ_ONLY_LINES:\n${offenders.join('\n')}\n\n` +
         `all sites:\n${touches.sites.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('every credential-rotating route stamps the revocation epoch', () => {
+    // The INVERSE direction of the pairing above, which on its own is
+    // one-directional: it requires every writer of the epoch to sweep, and
+    // never requires a route that rotates credentials to write the epoch in
+    // the first place. A rotation that skips the stamp is invisible to it —
+    // the exact shape the custody upgrade sat in until it was noticed, with
+    // every outstanding window and bearer JWT surviving a change of the
+    // account's whole authentication posture.
+    //
+    // The set is pinned by name because "rotates credentials" has no greppable
+    // signal: a `password_hash` write is also how signup creates an account
+    // (no sessions exist yet to revoke), a custody flip is also how signup
+    // finalization lands, and enumerating those exemptions would just re-state
+    // this list as its inverse. The names are the routes whose semantics
+    // replace an EXISTING account's authentication material: the password
+    // reset, both recovery phases, and the custody upgrade. A new
+    // credential-rotating route belongs in this list, and its handler must
+    // stamp the column — the pairing above then forces the sweep too, so one
+    // membership buys both halves of invalidation.
+    const CREDENTIAL_ROTATING_SITES = [
+      'routes/auth.ts#POST /reset',
+      'routes/custody.ts#POST /upgrade',
+      'routes/recover.ts#POST /recover',
+      'routes/recover.ts#POST /recover/verify',
+    ];
+    const { touches } = unsweptWriters(sources);
+    const missing = CREDENTIAL_ROTATING_SITES.filter((site) => !touches.keys.includes(site));
+    expect(
+      missing,
+      'these routes rotate account credentials without stamping ' +
+        'sessions_invalidated_at, so every bearer JWT and session-proof ' +
+        'window issued before the rotation keeps working after it:\n' +
+        `${missing.join('\n')}\n\nall column sites:\n${touches.sites.join('\n')}`,
     ).toEqual([]);
   });
 

@@ -35,6 +35,7 @@ import {
   adminActionFreshAuthTarget,
   isAdminFreshAuthAction,
   validFreshAuthActionsMessage,
+  invalidateSessionFreshAuthTokens,
   isConsentOpAction,
   isCreditOpAction,
   issueFreshAuthToken,
@@ -1492,22 +1493,50 @@ router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLi
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid upgrade proof');
     }
 
-    // Overwrite and NULL encrypted keys, set upgraded_at
+    // Overwrite and NULL encrypted keys, set upgraded_at, and stamp the
+    // session-revocation epoch in the same statement. Upgrade rotates the
+    // account's entire authentication posture: the chain keys changed, the
+    // server's signing custody ends, and every credential minted under the
+    // light-custody model predates that change. Credentials issued before the
+    // rotation must not keep working after it, which is the same posture the
+    // password-reset and recovery writers take — bearer JWTs die via this
+    // epoch (the middleware rejects tokens minted at or before it), and any
+    // open session-proof window dies via the same epoch on its next consume
+    // plus the storage sweep below. The epoch is computed in Node rather than
+    // SQL NOW() so the exact epoch-ms can ride in the reissued token's
+    // `reissuedAt` claim, which is how the middleware spares the one JWT this
+    // very response hands back from the same-second revocation.
+    const invalidatedAt = new Date();
     await pool.query(
       `UPDATE accounts
        SET posting_key_enc = NULL, iv_posting = NULL,
            memo_key_enc = NULL, iv_memo = NULL,
-           upgraded_at = NOW()
+           upgraded_at = NOW(),
+           sessions_invalidated_at = $2
        WHERE username = $1`,
-      [username],
+      [username, invalidatedAt],
     );
+
+    // Close any open session-proof window alongside the JWT revocation the
+    // UPDATE above just stamped, BEFORE the reissued token is built, so no
+    // proof outlives the reissue. The sweep reclaims storage; the epoch is
+    // the authoritative close. Never throws; the account mutation has
+    // already committed and the caller must still receive their new token.
+    // The residual a surviving window would represent here is bounded — the
+    // broadcast route refuses non-light custody before consuming a proof, so
+    // what dies with the window is the ability to mint IPFS upload tokens
+    // against a credential issued under the previous custody model.
+    await invalidateSessionFreshAuthTokens(username);
 
     // Audit log (non-blocking)
     logCustodyBroadcast(username, 'upgrade').catch(() => {});
 
-    // Issue new JWT with custody: "self"
+    // Issue new JWT with custody: "self". `reissuedAt` carries the exact
+    // stored revocation epoch-ms so the middleware's identity match lets this
+    // token survive the revocation it was minted beside; every earlier token
+    // for the account fails the match and is rejected from its next request.
     const token = jwt.sign(
-      { sub: username, custody: 'self' },
+      { sub: username, custody: 'self', reissuedAt: invalidatedAt.getTime() },
       config.sessionSecret,
       { expiresIn: '24h' },
     );

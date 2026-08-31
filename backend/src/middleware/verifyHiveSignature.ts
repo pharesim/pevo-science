@@ -185,12 +185,14 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
               // revoke the legitimate reissued one). Revoke any token issued at or
               // before the invalidation second EXCEPT the token reissued by that
               // very event — identified by a `reissuedAt` claim carrying the exact
-              // stored sessions_invalidated_at epoch-ms (set at the reissue site in
-              // routes/recover.ts). Identity, not timestamp, picks the survivor.
+              // stored sessions_invalidated_at epoch-ms (set at the reissue sites in
+              // routes/recover.ts and the custody-upgrade handler). Identity, not
+              // timestamp, picks the survivor.
               //
-              // Scope of the exemption: it is keyed ONLY to the recover.ts reissue
-              // sites, which write sessions_invalidated_at from a Node Date and
-              // embed that exact epoch-ms as reissuedAt. A password reset that
+              // Scope of the exemption: it is keyed ONLY to the reissue sites that
+              // revoke-and-reissue in one act — the two recover.ts handlers and the
+              // custody upgrade — which write sessions_invalidated_at from a Node
+              // Date and embed that exact epoch-ms as reissuedAt. A password reset that
               // invalidates sessions WITHOUT reissuing — /api/auth/reset sets
               // sessions_invalidated_at and returns no token, leaving the user to
               // re-authenticate via /api/auth/login — mints its fresh session on the
