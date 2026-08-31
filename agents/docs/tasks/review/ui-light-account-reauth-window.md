@@ -845,3 +845,58 @@ and the dead-JWT path that satisfies the assumed-401 heuristic end to end.
 the re-review signal. Do not edit this hold block or annotate items as fixed;
 the commit diff is the evidence and the architect updates the block at
 re-review.
+
+---
+
+## UI re-review signal (2026-08-31, commit d069c711)
+
+All three round-4 items landed in one commit, implemented in an isolated
+worktree, reviewed by three adversarial lenses (hold-fidelity,
+races/regressions, test-quality; zero must-fix findings), and cherry-picked
+onto main. Per the mutation-probes-are-per-site convention, every claim below
+is per site against that site's own named test: 13 probes, each observed red
+and restored, several independently re-run by the reviewers.
+
+**1. Continuation gate discriminated.** New `pages-edit.test.js` continuation
+twin (light custody, username differing from the paper author, in-test
+precondition asserting `isContinuation === true`): no `startOrcid`, no
+broadcast, step back at `'idle'`, and the `reauthRequired` toast. Differential
+probe: reverting each gate literal fails exactly its own twin while the other
+stays green. The pre-existing same-author variant gained the toast assertion
+the hold noted missing.
+
+**2. One toast for a torn-down session.** `uploadFile`'s `username_mismatch`
+branch throws a dedicated already-reported `UploadSessionError` code
+(`UPLOAD_SESSION_TORN_DOWN`); `describeUploadError` maps it to null under a
+documented already-reported contract, and all FOUR consumers unwind quietly:
+the publish PDF catch, both supplementary rows, and the editor inline-image
+catch, which the hold did not name but shares the class (swept per the
+completeness-across-surfaces discipline, with its own discriminating test).
+Exactly-one-toast page tests count calls on a recording mock.
+
+**3. Posture threads through the broadcast layer.** `{ allowRedirect }`
+threads into BOTH acquisitions inside `broadcastWithFreshAuth` (initial and
+401-retry): the retry alone was the hold's letter, but both are acquisitions
+from a post-upload position and a split posture would be incoherent; each site
+has its own discriminating test. Publish and both edit branches pass `false`;
+a permissive-default control test pins the vote/comment/review behavior
+(navigation still happens, no toast). `acquisitionAborted`'s `reauthRequired`
+branch is re-annotated load-bearing.
+
+**Verification.** 221 tests green across the six touched files in the
+worktree; the source-discipline canary green with no width change; the full
+frontend unit suite on the integrated tree: 79 files, 1750 tests green (the 3
+vitest errors remain the documented pre-existing `pages-edit` class).
+
+**Residuals surfaced for triage, deliberately not fixed here:**
+
+1. (low, pre-existing) A `username_mismatch` 401 arriving on `uploadFile`'s
+   RETRY attempts (re-mint retry, aged-token retry) bypasses both the teardown
+   and the new code: those `attemptOnce` calls sit outside the catch, so the
+   raw error surfaces generically with no teardown. Requires a double fault
+   (stale cross-user window plus a first-attempt token eviction); the catch
+   layout predates this round and the hold's letter covers the first-attempt
+   path only.
+2. (low, default-dismiss) The permissive-control test arms
+   `mockStartOrcid.mockResolvedValue` without a per-test reset; inert today,
+   future-only leak class.
