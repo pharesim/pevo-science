@@ -329,3 +329,116 @@ was that no split is needed yet and PEvO has no file-length rule; the seam is re
 here for whenever the next responsibility lands. Separately, the architect is documenting
 `absolute_expires_at` and the window model in `api-contracts/custody.md` and `orcid.md`,
 which closes the wire-shape caveat this task opened with.
+
+---
+
+## UI re-review signal (2026-08-31, commit 199c1e13)
+
+All twelve hold items landed. Each behavioral fix carries a test that fails when
+the fix is reverted (probes run against the committed baseline, one revert at a
+time); the two low items are refactors covered by the existing suites.
+
+**1. The gate cannot fail open.** `freshAuthWindowReady` wraps acquisition in a
+`try`, toasts the re-auth failure, and returns false, so a 503 / 429 / transport
+error at the mint refuses the work instead of escaping past the caller's own
+`try`. Separately, a failed `sessionStorage` write now leaves the window in an
+in-memory mirror that `readSessionWindow` falls back to when the storage read is
+empty; the mirror is written ONLY on a failed write, so storage stays the single
+source of truth whenever it works and a cleared storage cannot resurrect a stale
+window.
+
+**2. Skew first, then the upload slide.** (a) Both deadlines are re-anchored to
+the client clock at issuance via `anchoredSpan`, which trusts the measured span
+only inside a plausible band around the mirrored backend period (15 min idle /
+2 h absolute, as `api-contracts/custody.md` now documents): above the period the
+client clock trails the server's, below half the period the measurement is skew
+rather than a shorter backend period. That covers both directions — the
+over-long inference that buys a mid-flow 401, and the under-margin inference
+that loops a passwordless account through ORCID.
+
+  One deviation from the prescription, deliberate: the "refuse to cache a window
+  already under the margin" guard is NOT implemented. It does not break the
+  loop it was aimed at — refusing to cache leaves the gate re-minting exactly as
+  a cached-but-stale window does, so the ORCID round-trip repeats either way,
+  and at `minRemainingMs: 0` it would force an extra mint the broadcast leg
+  would not have needed. The band clamp is what actually closes the lockout, and
+  it makes an at-issuance under-margin window unreachable. Flagged here rather
+  than implemented silently.
+
+  (b) `uploadFile` now slides after every successful `uploadFileToIpfs`, both
+  attempts, through a shared `attemptOnce` helper.
+
+**3. An aged upload token no longer evicts the window.** The catch discriminates:
+`FRESH_AUTH_REQUIRED` with a remintable reason clears the window and re-acquires;
+a plain `UNAUTHORIZED` from the upload leg retries the two-step, which cache-hits
+the live window. A non-remintable `FRESH_AUTH_REQUIRED` (wrong mechanism, a
+binding mismatch) surfaces rather than looping a mint that cannot fix it.
+
+**4 + 5. One seam, built once.** `ensureSessionWindow({ allowRedirect: false })`
+suppresses only the navigating branch; the password factor still prompts inline.
+`uploadFile` uses it for every leg, which covers the editor's inline image (no
+gate of its own) and mid-batch re-acquisition alike: a passwordless account gets
+`UPLOAD_REAUTH_REQUIRED` mapped to a re-authenticate-and-retry toast, with the
+composition and any completed pins intact.
+
+**6. Margin at the gates, never in the legs.** `windowProof` passes
+`minRemainingMs: 0`. The publish confirm moved ahead of the upload legs, and both
+pages re-check the margin immediately before the broadcast.
+
+**7. Refuse-while-open is distinguishable.** `reauthModal.request()` resolves
+`REAUTH_PROMPT_BUSY` instead of the `null` a cancel resolves.
+`mintViaPasswordFactor` maps it to `FRESH_AUTH_PROMPT_BUSY` at both prompts. The
+session path surfaces `{ ready: false, busy: true }` and toasts; the consent-op
+and settings orchestrators toast and unwind through their existing
+`{ cancelled: true }`, so no call site grew a branch — the sentinel is distinct
+internally, the message is the user-visible difference.
+
+**8. Same-tick double submit blocked.** `step` leaves `'idle'` before the first
+await on both pages (a new `authorizing` step, added to edit's
+`STEP_IN_PROGRESS`), and resets to `'idle'` on every abort branch. The user also
+gets a spinner during re-auth instead of a live-looking button.
+
+**9. Refused file input cleared**, mirroring the supplementary handler.
+
+**10. Both fixtures inverted.** The cap fixture now seeds a window whose idle
+period would overshoot the cap, so deleting the clamp fails it. A new case mints
+with a 10-minute period the client must learn; hardcoding the constant fails it.
+A `seedWindow` helper writes aged windows directly, since issuance now anchors
+and clamps what it is handed.
+
+**11.** `attemptOnce(proof)` extracted in `broadcastWithFreshAuth`; the same
+shape used in `ipfs-upload.js`.
+
+**12.** The no-op edit detection is hoisted above the gate, alongside the
+hoisted head/target resolution it needs.
+
+**AC 2** now holds at every surface: the inline-image gap the architect
+identified is closed by the non-navigating acquisition (items 4/5), which is a
+clean refusal rather than the pre-change `UPLOAD_REAUTH_UNAVAILABLE` block. The
+`review.js` / `comment-composer.js` first-write redirect is unchanged and still
+out of scope.
+
+**i18n.** Four new keys (`common.reauthRequired`, `common.reauthPromptOpen`,
+`publish.stepAuthorizing`, `edit.stepAuthorizing`) stubbed across all 16 locales
+with a `STUBS.md` sweep entry.
+
+### Verification
+
+Full frontend unit suite green: 78 files, 1648 tests (up from 1627; the 3
+unhandled `_mountEditors` errors vitest reports are pre-existing, confirmed
+against a clean-HEAD worktree). `npm run build` clean.
+
+**E2E: no regression.** Playwright full suite, one worker, test-mode stack:
+23 failed / 45 passed / 4 skipped, matching the failure count this task's prior
+round recorded post-change. `non-consent-fresh-auth.spec.js` — the spec covering
+this surface, updated for client anchoring — passes. Every failure sampled is a
+pre-existing fixture defect that never reaches the changed code: the dominant
+class is the strict-mode `form button[type="submit"]` clash against the
+always-in-DOM global reauth modal (it fails at the locator, before the click, so
+`publish.spec.js` and the `edit-paper.spec.js` no-changes/non-head specs never
+executed the reordered submit at all); `settings-orcid-factor.spec.js` asserts a
+consent-op cache shape that predates the `authorIndex`/`claimer` binding fields;
+`coauthor-accredited-prefill.spec.js` 429s because global-setup could not reach
+Redis to reset rate limits. Two fixture cleanups worth a follow-up, both outside
+this task: tighten those submit-button locators, and refresh the consent-op
+shape assertion.
