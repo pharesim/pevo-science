@@ -46,7 +46,10 @@ vi.mock('alpinejs', () => ({
   default: {
     store: vi.fn((name) => {
       if (name === 'reauthModal') return { request: (...a) => reauthRequest(...a) };
-      if (name === 'auth') return { disconnect: (...a) => authDisconnect(...a) };
+      // `username` matches the LIGHT ctx below so the shared resolver's
+      // username-keyed memo branches are live in this suite; without it the
+      // memo is never read or written and the retry-gate reuse is untestable.
+      if (name === 'auth') return { disconnect: (...a) => authDisconnect(...a), username: 'alice' };
       if (name === 'toast') return { show: (...a) => toastShow(...a) };
       if (name === 'i18n') return { messages: i18nMessages };
       return null;
@@ -339,6 +342,61 @@ describe('withSettingsFreshAuth', () => {
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ ok: { ok: 1 } });
     expect(run).toHaveBeenNthCalledWith(2, 'proof-2');
+  });
+
+  it('the 401 retry gate reuses the memoized factor instead of a second status read', async () => {
+    // The initial gate observed hasPassword true and memoized it; the retry
+    // gate must ride that memo rather than spending the rate-limited status
+    // budget again mid-action.
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockResolvedValueOnce({ ok: 1 });
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ ok: { ok: 1 } });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+  });
+
+  // ─── Assumed-password 401 at the mint falls back to the ORCID factor ─────
+
+  it('an assumed password the backend rejects at the mint falls back to the ORCID redirect', async () => {
+    // With the status unavailable the password factor is a guess. The mint's
+    // 401 is the first hard evidence the account has no password, and a
+    // second prompt would dead-end change_email / delete_account for exactly
+    // the accounts whose only registered factor is ORCID. One prompt, then
+    // the round-trip.
+    statusUnavailable();
+    mockMintSettingsActionProof.mockRejectedValue(codedError('UNAUTHORIZED'));
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ redirect: true });
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    expect(mockBeginOrcid).toHaveBeenCalledWith('change_email');
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('an observed password that 401s still re-prompts instead of redirecting', async () => {
+    // The escape hatch is for guesses only: an observed password's 401 is a
+    // typo and earns the second prompt.
+    mockMintSettingsActionProof
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockResolvedValueOnce('proof-ok');
+    reauthRequest.mockResolvedValueOnce('wrong').mockResolvedValueOnce('right');
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ ok: { data: { ok: true } } });
+    expect(reauthRequest).toHaveBeenCalledTimes(2);
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
+  });
+
+  it('an assumed password rejected at the RETRY mint also redirects rather than dead-ending', async () => {
+    statusUnavailable();
+    mockMintSettingsActionProof
+      .mockResolvedValueOnce('proof-1')
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'));
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ redirect: true });
+    expect(mockBeginOrcid).toHaveBeenCalledWith('change_email');
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   // ─── Refuse-while-open (busy) discriminates from a cancel ────────────────

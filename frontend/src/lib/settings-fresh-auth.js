@@ -7,10 +7,11 @@ import {
   FRESH_AUTH_CANCELLED,
   FRESH_AUTH_MINT_FAILED,
   FRESH_AUTH_PROMPT_BUSY,
+  FRESH_AUTH_ORCID_FALLBACK,
   REMINTABLE_REASONS,
   mintViaPasswordFactor,
   passwordPromptMessage,
-  accountUsesPasswordFactor,
+  resolvePasswordFactor,
   handleSessionInconsistency,
   promptBusy,
 } from './fresh-auth.js';
@@ -43,12 +44,15 @@ import {
  */
 
 // Bind the password factor to this surface's mint call. The prompt/re-prompt
-// flow and the CANCELLED/MINT_FAILED outcomes live in the shared
-// mintViaPasswordFactor (fresh-auth.js); only the action-bound mint differs.
-function mintViaPassword(action) {
+// flow and the CANCELLED/MINT_FAILED/ORCID_FALLBACK outcomes live in the
+// shared mintViaPasswordFactor (fresh-auth.js); only the action-bound mint
+// differs. `assumed` is the resolver's observed-vs-guessed flag, threaded
+// through so an assumed password the backend 401s hands the action to the
+// ORCID factor rather than a second prompt.
+function mintViaPassword(action, assumed) {
   return mintViaPasswordFactor(
     (password) => mintSettingsActionProof(action, password),
-    { message: passwordPromptMessage() },
+    { message: passwordPromptMessage(), assumed },
   );
 }
 
@@ -56,29 +60,35 @@ function mintViaPassword(action) {
 // its target account is passwordless BY DEFINITION (filling a null hash is what
 // the action exists to do), so ORCID is the only factor registered on it no
 // matter what the account status reports. Every other action defers to
-// `accountUsesPasswordFactor`, which owns the fetch, the memo, and the
-// unknown-status-falls-through-to-password direction. Centralized here so the
-// initial mint (`resolveProof`) and the 401-retry gate (`withSettingsFreshAuth`)
-// cannot drift on the exception.
-async function usesPasswordFactor(action) {
-  if (action === 'set_password') return false;
-  return accountUsesPasswordFactor();
+// `resolvePasswordFactor`, which owns the fetch, the memo, the coalescing, and
+// the unknown-status-falls-through-to-password direction. Centralized here so
+// the initial mint (`resolveProof`) and the 401-retry gate
+// (`withSettingsFreshAuth`) cannot drift on the exception.
+async function passwordFactorFor(action) {
+  if (action === 'set_password') return { usesPassword: false, assumed: false };
+  return resolvePasswordFactor();
 }
 
 // Resolve a fresh-auth proof for `action` on a light account. Returns the proof
 // string, FRESH_AUTH_REDIRECT_PENDING (ORCID round-trip started), CANCELLED
 // (password modal dismissed), or MINT_FAILED (password re-auth exhausted).
 // Factor selection: a freshly-returned ORCID proof in the consent-op cache
-// wins; otherwise the password factor when `usesPasswordFactor` holds;
-// otherwise the ORCID factor.
+// wins; otherwise the password factor when `passwordFactorFor` holds;
+// otherwise the ORCID factor. An ASSUMED password the backend 401s falls back
+// to the ORCID round-trip — the settings page has no unsaved state worth more
+// than completing the action.
 async function resolveProof(action, { username }) {
   const cached = getCachedConsentOpProof(action, username, '');
   if (cached) return cached;
 
-  if (await usesPasswordFactor(action)) {
-    return mintViaPassword(action);
+  const factor = await passwordFactorFor(action);
+  if (!factor.usesPassword) return beginSettingsActionOrcidFreshAuth(action);
+
+  const minted = await mintViaPassword(action, factor.assumed);
+  if (minted === FRESH_AUTH_ORCID_FALLBACK) {
+    return beginSettingsActionOrcidFreshAuth(action);
   }
-  return beginSettingsActionOrcidFreshAuth(action);
+  return minted;
 }
 
 /**
@@ -107,7 +117,7 @@ async function resolveProof(action, { username }) {
  *   ('admin_grant_role', 'admin_grant_accreditation', etc.). Only the value
  *   matters to the backend's proof target; the orchestrator special-cases
  *   'set_password' (ORCID-only factor) and otherwise defers factor selection to
- *   the shared `accountUsesPasswordFactor` resolver.
+ *   the shared `resolvePasswordFactor` resolver.
  * @param {{ custody: string, username: string }} ctx
  * @param {(proof: string|undefined) => Promise<any>} run
  */
@@ -147,23 +157,34 @@ export async function withSettingsFreshAuth(action, ctx, run) {
     // re-minting the same factor — they fall through to freshAuthFailed.
     const remintable = REMINTABLE_REASONS.includes(err.details?.reason);
 
-    // Only the PASSWORD factor can retry inline. The ORCID factor would have to
-    // re-run beginSettingsActionOrcidFreshAuth — a full-page OAuth redirect —
-    // which near the 5-minute proof TTL risks a re-OAuth loop. For ORCID-factor
-    // accounts surface a terminal re-auth failure so the user restarts
-    // deliberately rather than bouncing through ORCID a second time.
-    if (remintable && (await usesPasswordFactor(action))) {
-      const retry = await mintViaPassword(action);
-      if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
-      if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };
-      if (retry === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
-      try {
-        const ok = await run(retry);
-        clearCachedConsentOpProof();
-        return { ok };
-      } catch (retryErr) {
-        if (retryErr?.code === 'FRESH_AUTH_REQUIRED') return { freshAuthFailed: true };
-        throw retryErr;
+    // Only the PASSWORD factor can retry inline. A KNOWN-ORCID account would
+    // have to re-run beginSettingsActionOrcidFreshAuth — a full-page OAuth
+    // redirect — which near the 5-minute proof TTL risks a re-OAuth loop, so
+    // it surfaces a terminal re-auth failure and the user restarts
+    // deliberately. The one exception is the ASSUMED-password 401 at the
+    // retry mint below: there the 401 is new information (the account has no
+    // password), the user has just engaged by typing one, and without the
+    // redirect the action dead-ends — each pass through it costs a typed
+    // password plus a full OAuth round-trip, so it cannot tight-loop.
+    if (remintable) {
+      const factor = await passwordFactorFor(action);
+      if (factor.usesPassword) {
+        const retry = await mintViaPassword(action, factor.assumed);
+        if (retry === FRESH_AUTH_ORCID_FALLBACK) {
+          await beginSettingsActionOrcidFreshAuth(action);
+          return { redirect: true };
+        }
+        if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
+        if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };
+        if (retry === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
+        try {
+          const ok = await run(retry);
+          clearCachedConsentOpProof();
+          return { ok };
+        } catch (retryErr) {
+          if (retryErr?.code === 'FRESH_AUTH_REQUIRED') return { freshAuthFailed: true };
+          throw retryErr;
+        }
       }
     }
 

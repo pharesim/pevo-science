@@ -341,6 +341,15 @@ const template = `
                 <div class="animate-pulse h-4 bg-parchment-dark rounded w-48"></div>
               </div>
 
+              <!-- Status unavailable: assert nothing, offer a retry. -->
+              <template x-if="!emailLoading && emailStatusError">
+                <div class="py-2">
+                  <p class="text-sm text-ink-muted mb-3" x-text="$t('settings.emailStatusLoadFailed')"></p>
+                  <button type="button" data-testid="email-status-retry" @click="loadEmailStatus()"
+                          class="btn-primary" x-text="$t('common.retry')"></button>
+                </div>
+              </template>
+
               <template x-if="!emailLoading && emailStatus">
                 <div>
                   <!-- State 1: No email -->
@@ -508,6 +517,13 @@ export function initSettingsPage() {
 
     // Email management state
     emailStatus: null,
+    // A failed status fetch asserts NOTHING: `emailStatus` stays null (which
+    // hides every section that branches on it, the set-a-password one
+    // included) and this flag renders a retry affordance instead. A
+    // fabricated status here once drew the set-password section at accounts
+    // that already had one, and that section's action is `set_password`,
+    // whose only factor is a full-page ORCID navigation.
+    emailStatusError: false,
     emailLoading: true,
     newEmail: '',
     emailSubmitting: false,
@@ -820,11 +836,16 @@ export function initSettingsPage() {
 
     async loadEmailStatus() {
       this.emailLoading = true;
+      this.emailStatusError = false;
       try {
         const res = await fetchEmailStatus();
         this.emailStatus = res.data;
       } catch {
-        this.emailStatus = { hasEmail: false, custody: 'self', hasPassword: false };
+        // Assert nothing about the account on a failed fetch — see the
+        // `emailStatusError` declaration for why a fabricated status is
+        // dangerous here. The template renders a retry affordance instead.
+        this.emailStatus = null;
+        this.emailStatusError = true;
       } finally {
         this.emailLoading = false;
       }
@@ -834,7 +855,7 @@ export function initSettingsPage() {
     // a body proof is sent at all (light → proof required on the JWT path;
     // self-custody → the per-request Keychain signature is already fresh).
     // Password-vs-ORCID factor selection is NOT passed in: it lives in
-    // `accountUsesPasswordFactor` (lib/fresh-auth.js), so a failed status fetch
+    // `resolvePasswordFactor` (lib/fresh-auth.js), so a failed status fetch
     // on this page cannot route the user to a different factor than the same
     // account gets anywhere else.
     _freshAuthCtx() {

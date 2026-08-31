@@ -3796,3 +3796,21 @@ pt: edit.stepAuthorizing
 sv: edit.stepAuthorizing
 tr: edit.stepAuthorizing
 zh: edit.stepAuthorizing
+
+### Added 2026-08-31 (ui-haspassword-factor-resolution-divergence)
+
+ar: settings.emailStatusLoadFailed
+cs: settings.emailStatusLoadFailed
+da: settings.emailStatusLoadFailed
+de: settings.emailStatusLoadFailed
+es: settings.emailStatusLoadFailed
+fa: settings.emailStatusLoadFailed
+fr: settings.emailStatusLoadFailed
+he: settings.emailStatusLoadFailed
+it: settings.emailStatusLoadFailed
+nl: settings.emailStatusLoadFailed
+pl: settings.emailStatusLoadFailed
+pt: settings.emailStatusLoadFailed
+sv: settings.emailStatusLoadFailed
+tr: settings.emailStatusLoadFailed
+zh: settings.emailStatusLoadFailed

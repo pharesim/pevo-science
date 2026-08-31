@@ -365,7 +365,7 @@ export function initAdminPage() {
     },
 
     // No factor hint travels in the ctx: password-vs-ORCID is resolved by
-    // `accountUsesPasswordFactor` (lib/fresh-auth.js) so every surface offers
+    // `resolvePasswordFactor` (lib/fresh-auth.js) so every surface offers
     // the same account the same factor.
     _freshAuthCtx() {
       return {

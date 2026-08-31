@@ -348,7 +348,7 @@ describe('adminPage', () => {
     }
 
     it('hands the orchestrator custody and username only, with no factor hint', async () => {
-      // Factor selection belongs to the shared accountUsesPasswordFactor, not to
+      // Factor selection belongs to the shared resolvePasswordFactor, not to
       // this page. A page-local answer diverges from every other surface the
       // moment the status fetch fails.
       mockPromoteAdmin.mockResolvedValue({ status: 'ok', data: {} });

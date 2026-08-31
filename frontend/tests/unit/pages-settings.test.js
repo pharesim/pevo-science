@@ -236,13 +236,50 @@ describe('settingsPage', () => {
       expect(comp.emailLoading).toBe(false);
     });
 
-    it('defaults to no email on error', async () => {
+    it('asserts nothing on a failed fetch: null status plus a retry flag', async () => {
+      // The old fallback fabricated `hasPassword: false`, which drew the
+      // set-a-password section at accounts that already had one — and that
+      // section's action is set_password, whose only factor is a full-page
+      // ORCID navigation. A transient status failure must never render its
+      // way into that branch.
       mockFetchEmailStatus.mockRejectedValue(new Error('fail'));
       const comp = createComponent();
 
       await comp.loadEmailStatus();
 
-      expect(comp.emailStatus).toEqual({ hasEmail: false, custody: 'self', hasPassword: false });
+      expect(comp.emailStatus).toBeNull();
+      expect(comp.emailStatusError).toBe(true);
+      expect(comp.emailLoading).toBe(false);
+    });
+
+    it('a failed fetch does not draw the set-password section', async () => {
+      // Mirrors the template gates verbatim: the set-password section renders
+      // on `!emailLoading && emailStatus && emailStatus.hasPassword === false`,
+      // and the retry affordance on `!emailLoading && emailStatusError`.
+      mockFetchEmailStatus.mockRejectedValue(new Error('fail'));
+      const comp = createComponent();
+
+      await comp.loadEmailStatus();
+
+      const drawsSetPassword =
+        !comp.emailLoading && !!comp.emailStatus && comp.emailStatus.hasPassword === false;
+      const drawsRetry = !comp.emailLoading && comp.emailStatusError;
+      expect(drawsSetPassword).toBe(false);
+      expect(drawsRetry).toBe(true);
+    });
+
+    it('a retry after a failed fetch clears the error flag and renders the status', async () => {
+      mockFetchEmailStatus
+        .mockRejectedValueOnce(new Error('fail'))
+        .mockResolvedValueOnce({ data: { hasEmail: true, email: 'a***@x.com', verified: true, hasPassword: false } });
+      const comp = createComponent();
+
+      await comp.loadEmailStatus();
+      expect(comp.emailStatusError).toBe(true);
+
+      await comp.loadEmailStatus();
+      expect(comp.emailStatusError).toBe(false);
+      expect(comp.emailStatus).toMatchObject({ hasEmail: true });
     });
   });
 

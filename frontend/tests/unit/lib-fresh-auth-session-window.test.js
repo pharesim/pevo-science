@@ -68,7 +68,7 @@ const {
   slideSessionWindow,
   clearCachedSessionProof,
   clearPasswordFactorMemo,
-  accountUsesPasswordFactor,
+  resolvePasswordFactor,
 } = await import('../../src/lib/fresh-auth.js');
 
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
@@ -199,40 +199,90 @@ describe('factor selection', () => {
     );
     expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
   });
+
+  it('an assumed password the backend rejects falls back to the ORCID round-trip', async () => {
+    // With the status unavailable the password factor is a GUESS, and the
+    // backend's 401 is the first hard evidence the account has no password.
+    // Re-prompting would dead-end the action for exactly the accounts whose
+    // only registered factor is the one not being offered; one prompt, then
+    // the round-trip.
+    mockFetchEmailStatus.mockRejectedValue(new Error('rate limited'));
+    mockMintSessionAuthProof.mockRejectedValue(
+      Object.assign(new Error('null hash'), { code: 'UNAUTHORIZED' }),
+    );
+
+    const outcome = await ensureSessionWindow();
+
+    expect(outcome).toEqual({ ready: false, redirect: true });
+    expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
+    expect(mockStartOrcid).toHaveBeenCalledWith('session_auth', {});
+    expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+  });
+
+  it('an assumed-password 401 with navigation suppressed refuses instead of redirecting', async () => {
+    // The fallback obeys the same navigation policy as the known-passwordless
+    // branch: a caller already holding work the user would lose gets the
+    // non-navigating refusal, not a round-trip fired out from under it.
+    mockFetchEmailStatus.mockRejectedValue(new Error('rate limited'));
+    mockMintSessionAuthProof.mockRejectedValue(
+      Object.assign(new Error('null hash'), { code: 'UNAUTHORIZED' }),
+    );
+
+    const outcome = await ensureSessionWindow({ allowRedirect: false });
+
+    expect(outcome).toEqual({ ready: false, reauthRequired: true });
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(window.location.href).toBe('');
+  });
+
+  it('an observed password that 401s re-prompts and never falls back to ORCID', async () => {
+    // The escape hatch is for guesses only: when the status SAID the account
+    // has a password, a 401 is a typo and earns the second prompt.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    mockMintSessionAuthProof.mockRejectedValue(
+      Object.assign(new Error('wrong password'), { code: 'UNAUTHORIZED' }),
+    );
+
+    const outcome = await ensureSessionWindow();
+
+    expect(outcome).toEqual({ ready: false, failed: true });
+    expect(mockReauthModal.request).toHaveBeenCalledTimes(2);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+  });
 });
 
 describe('password-factor memo', () => {
   it('a password holder is asked once per tab, not once per acquisition', async () => {
     // An account that has a password cannot lose one without a navigation that
     // resets module state, so re-fetching the status on every acquisition is
-    // pure latency in front of the modal.
+    // pure latency in front of the modal. A memo hit is an OBSERVED answer.
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
 
-    expect(await accountUsesPasswordFactor()).toBe(true);
-    expect(await accountUsesPasswordFactor()).toBe(true);
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: false });
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: false });
 
     expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
   });
 
   it('a passwordless answer is re-checked, so a password set in settings takes effect', async () => {
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
-    expect(await accountUsesPasswordFactor()).toBe(false);
+    expect((await resolvePasswordFactor()).usesPassword).toBe(false);
 
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
-    expect(await accountUsesPasswordFactor()).toBe(true);
+    expect((await resolvePasswordFactor()).usesPassword).toBe(true);
 
     expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
   });
 
   it('a re-login as a different account cannot inherit the memo', async () => {
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
-    expect(await accountUsesPasswordFactor()).toBe(true);
+    expect((await resolvePasswordFactor()).usesPassword).toBe(true);
 
     // Same tab, different subject: the memo is username-keyed, so the second
     // account's own status decides its factor.
     mockAuthStore.username = 'bob';
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
-    expect(await accountUsesPasswordFactor()).toBe(false);
+    expect((await resolvePasswordFactor()).usesPassword).toBe(false);
   });
 
   it('clearing the memo retires a stale positive for the same account', async () => {
@@ -241,19 +291,61 @@ describe('password-factor memo', () => {
     // the one thing that would keep answering for the account it was written
     // against.
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
-    expect(await accountUsesPasswordFactor()).toBe(true);
+    expect((await resolvePasswordFactor()).usesPassword).toBe(true);
 
     clearPasswordFactorMemo();
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
-    expect(await accountUsesPasswordFactor()).toBe(false);
+    expect((await resolvePasswordFactor()).usesPassword).toBe(false);
   });
 
-  it('an unavailable status is never memoized as a password holder', async () => {
+  it('an unavailable status resolves as an ASSUMED password, never memoized', async () => {
+    // The guess must not harden into a fact: the next resolution re-fetches,
+    // and the `assumed` flag is what lets a 401 at the mint route the caller
+    // to ORCID instead of a second prompt for a password that may not exist.
     mockFetchEmailStatus.mockRejectedValue(new Error('network down'));
-    expect(await accountUsesPasswordFactor()).toBe(true);
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: true });
 
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
-    expect(await accountUsesPasswordFactor()).toBe(false);
+    expect((await resolvePasswordFactor()).usesPassword).toBe(false);
+  });
+
+  it('a status response missing the field is an ASSUMED answer too', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: {} });
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: true });
+  });
+
+  it('concurrent resolutions coalesce onto one status request', async () => {
+    // The resolver has direct callers at several surfaces with no shared gate
+    // above it. Two racing callers must not each spend the rate-limited
+    // status budget, nor land on different factors when one request succeeds
+    // and its sibling transiently fails.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+
+    const [a, b] = await Promise.all([resolvePasswordFactor(), resolvePasswordFactor()]);
+
+    expect(a).toEqual({ usesPassword: false, assumed: false });
+    expect(b).toEqual({ usesPassword: false, assumed: false });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('a clear landing mid-resolution is not undone by the resolving fetch', async () => {
+    // `auth.disconnect()` can clear the memo while a status fetch is in
+    // flight; the fetch resolving afterwards must not resurrect the answer it
+    // was started for. The generation captured before the await declines the
+    // write.
+    let resolveFetch;
+    mockFetchEmailStatus.mockReturnValueOnce(new Promise((res) => { resolveFetch = res; }));
+
+    const pending = resolvePasswordFactor();
+    clearPasswordFactorMemo();
+    resolveFetch({ status: 'ok', data: { hasPassword: true } });
+    expect(await pending).toEqual({ usesPassword: true, assumed: false });
+
+    // Had the memo been written after the clear, this would be a memo hit
+    // with no second fetch.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    expect((await resolvePasswordFactor()).usesPassword).toBe(false);
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
   });
 });
 

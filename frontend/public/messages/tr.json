@@ -1176,6 +1176,7 @@
     "metadataSaved": "Profile details updated.",
     "metadataUpdateFailed": "Could not update your profile details. Please try again.",
     "emailUpdateFailed": "Could not update your email. Please try again. If the problem persists, contact support.",
+    "emailStatusLoadFailed": "Could not load your account status. Please try again.",
     "emailDeleteFailed": "Could not delete your email. Please try again. If the problem persists, contact support.",
     "orcidLinkFailed": "Could not start the ORCID link flow. Please try again. If the problem persists, contact support.",
     "adminConsoleLink": "Admin console"

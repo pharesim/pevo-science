@@ -93,10 +93,17 @@ export const REMINTABLE_REASONS = Object.freeze(['missing', 'expired', 'malforme
 //                         account's only factor is a full-page ORCID
 //                         round-trip and the caller asked for acquisition
 //                         without navigation (see `allowRedirect`).
+//   FRESH_AUTH_ORCID_FALLBACK  the password factor was ASSUMED (the account
+//                         status was unavailable) and the backend rejected the
+//                         mint: the account most likely has no password, so
+//                         the caller hands the action to its own ORCID factor
+//                         instead of demanding a second password that may not
+//                         exist.
 export const FRESH_AUTH_CANCELLED = Symbol('fresh_auth_cancelled');
 export const FRESH_AUTH_MINT_FAILED = Symbol('fresh_auth_mint_failed');
 export const FRESH_AUTH_PROMPT_BUSY = Symbol('fresh_auth_prompt_busy');
 export const FRESH_AUTH_REAUTH_REQUIRED = Symbol('fresh_auth_reauth_required');
+export const FRESH_AUTH_ORCID_FALLBACK = Symbol('fresh_auth_orcid_fallback');
 
 // Default re-auth modal prompt. Lib code cannot use the `$t` magic helper; read
 // the i18n store directly with an English fallback. Called by every
@@ -139,10 +146,12 @@ export function handleSessionInconsistency() {
 //   - FRESH_AUTH_CANCELLED if the modal was dismissed at either prompt;
 //   - FRESH_AUTH_MINT_FAILED if re-auth is spent (a second wrong password, or any
 //     transport error on the retry mint);
-//   - FRESH_AUTH_PROMPT_BUSY if another action's prompt already owns the modal.
+//   - FRESH_AUTH_PROMPT_BUSY if another action's prompt already owns the modal;
+//   - FRESH_AUTH_ORCID_FALLBACK if the password factor was ASSUMED
+//     (`opts.assumed`) and the mint 401'd — see below.
 // A non-auth error on the FIRST attempt (transport, 503, VALIDATION_ERROR)
 // propagates so the caller's op-level handler surfaces the real cause.
-export async function mintViaPasswordFactor(mintFn, { message }) {
+export async function mintViaPasswordFactor(mintFn, { message, assumed = false }) {
   const modal = Alpine.store('reauthModal');
 
   let password = await modal.request({ message });
@@ -155,6 +164,17 @@ export async function mintViaPasswordFactor(mintFn, { message }) {
     // A non-auth error on the first attempt (transport, 503) propagates as an
     // unexpected failure; only a wrong password (UNAUTHORIZED) re-prompts.
     if (err?.code !== 'UNAUTHORIZED') throw err;
+
+    // When the password factor was ASSUMED rather than observed — the account
+    // status was unavailable and the unknown fell through to the prompt — a
+    // 401 here is at least as likely "no password registered" as a typo. A
+    // second prompt would dead-end a genuinely passwordless account (there is
+    // no password to get right, and the mint route burns a sentinel hash to
+    // keep the two cases indistinguishable), so hand the caller back to its
+    // ORCID factor instead. An account that really has a password only lands
+    // here by mistyping while the status read is down, and its ORCID factor
+    // completes the action too.
+    if (assumed) return FRESH_AUTH_ORCID_FALLBACK;
 
     password = await modal.request({ message });
     if (password === REAUTH_PROMPT_BUSY) return FRESH_AUTH_PROMPT_BUSY;
@@ -465,31 +485,77 @@ export function clearReturnPath() {
 // page state, so a transient status failure must never be the thing that fires
 // it at someone who could have typed a password instead.
 //
+// The answer is `{ usesPassword, assumed }`: `usesPassword` picks the factor,
+// and `assumed` records whether that pick was observed from the account status
+// or guessed because the status was unavailable. The distinction matters at
+// exactly one point — a 401 at a password mint. Against an observed password
+// that is a typo and earns a re-prompt; against an assumed one it is at least
+// as likely "no password registered", and a second prompt would dead-end an
+// account whose only registered factor is ORCID. `mintViaPasswordFactor`
+// consumes the flag and hands such callers back to their ORCID factor.
+//
 // A positive answer is memoized per username for the tab: an account that has
 // a password cannot lose one without a navigation that resets module state, so
-// re-fetching on every acquisition is pure latency. The negative answer is
-// deliberately NOT memoized — a passwordless user who sets a password in
-// settings must be able to use it on their next acquisition. The memo is keyed
-// on the authenticated username so a re-login as a different account in the
-// same tab cannot inherit it, and `auth.disconnect()` drops it outright
-// alongside the proof caches.
+// re-fetching on every acquisition is pure latency. The negative and assumed
+// answers are deliberately NOT memoized — a passwordless user who sets a
+// password in settings must be able to use it on their next acquisition, and
+// a guess must never harden into a fact. The memo is keyed on the
+// authenticated username so a re-login as a different account in the same tab
+// cannot inherit it, and `auth.disconnect()` drops it outright alongside the
+// proof caches.
 let _passwordFactorMemo = null;
+// Pairs the memo with `clearPasswordFactorMemo()`: a clear landing while a
+// status fetch is in flight must not be undone by that fetch resolving
+// afterwards, so the writer captures the generation before its await and
+// declines the write when a clear happened in between.
+let _passwordFactorMemoGeneration = 0;
+// Concurrent resolutions coalesce onto one status request. The resolver has
+// direct callers on several surfaces (session acquisition, both consent-op
+// orchestrators, and their retry gates), and two racing callers must not each
+// spend the rate-limited status budget — nor land on different factors when
+// one request succeeds and its sibling transiently fails. Mirrors the
+// in-flight pattern of `_acquireInFlight` below.
+let _factorResolutionInFlight = null;
 
 export function clearPasswordFactorMemo() {
   _passwordFactorMemo = null;
+  _passwordFactorMemoGeneration += 1;
 }
 
-export async function accountUsesPasswordFactor() {
+export async function resolvePasswordFactor() {
   const username = Alpine.store('auth')?.username;
-  if (username && _passwordFactorMemo === username) return true;
-  let hasPassword;
-  try {
-    hasPassword = (await fetchEmailStatus())?.data?.hasPassword;
-  } catch {
-    hasPassword = undefined;
+  if (username && _passwordFactorMemo === username) {
+    return { usesPassword: true, assumed: false };
   }
-  if (hasPassword === true && username) _passwordFactorMemo = username;
-  return hasPassword !== false;
+  if (_factorResolutionInFlight) return _factorResolutionInFlight;
+
+  const flight = (async () => {
+    const generation = _passwordFactorMemoGeneration;
+    let hasPassword;
+    try {
+      hasPassword = (await fetchEmailStatus())?.data?.hasPassword;
+    } catch {
+      hasPassword = undefined;
+    }
+    if (
+      hasPassword === true &&
+      username &&
+      generation === _passwordFactorMemoGeneration
+    ) {
+      _passwordFactorMemo = username;
+    }
+    return {
+      usesPassword: hasPassword !== false,
+      assumed: hasPassword !== true && hasPassword !== false,
+    };
+  })();
+
+  _factorResolutionInFlight = flight;
+  try {
+    return await flight;
+  } finally {
+    _factorResolutionInFlight = null;
+  }
 }
 
 // Start the ORCID round-trip that opens a session window. The only factor a
@@ -540,11 +606,12 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
   if (_acquireInFlight[slot]) return _acquireInFlight[slot];
 
   const flight = (async () => {
-    if (!(await accountUsesPasswordFactor())) {
+    const factor = await resolvePasswordFactor();
+    if (!factor.usesPassword) {
       if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
       return beginSessionAuthOrcidRedirect();
     }
-    return mintViaPasswordFactor(
+    const minted = await mintViaPasswordFactor(
       async (password) => {
         const issued = await mintSessionAuthProof(password);
         cacheSessionProof(
@@ -554,8 +621,16 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
         );
         return issued.fresh_auth_proof;
       },
-      { message: passwordPromptMessage() },
+      { message: passwordPromptMessage(), assumed: factor.assumed },
     );
+    // The assumed factor turned out to be the wrong guess: the account has no
+    // password to prompt for, so the ORCID round-trip is the way through —
+    // under the same navigation policy as the known-passwordless branch above.
+    if (minted === FRESH_AUTH_ORCID_FALLBACK) {
+      if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
+      return beginSessionAuthOrcidRedirect();
+    }
+    return minted;
   })();
 
   _acquireInFlight[slot] = flight;

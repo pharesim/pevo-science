@@ -93,7 +93,7 @@ describe('paperDetailPage', () => {
   });
 
   // The page hands the consent-op orchestrator custody and identity ONLY. The
-  // password-vs-ORCID factor is resolved by the shared accountUsesPasswordFactor
+  // password-vs-ORCID factor is resolved by the shared resolvePasswordFactor
   // (lib/fresh-auth.js); a page-local answer here is what let a failed status
   // fetch on this page fire a full-page ORCID redirect at an account that the
   // settings page would have shown an inline password prompt.

@@ -1470,7 +1470,7 @@ export function initPaperDetailPage() {
     // password-vs-ORCID factor is NOT resolved here — a page-local answer
     // diverges from every other surface the moment the status fetch fails, and
     // the ORCID branch is a full-page navigation that discards the page. That
-    // lives in `accountUsesPasswordFactor` (lib/fresh-auth.js).
+    // lives in `resolvePasswordFactor` (lib/fresh-auth.js).
     _authCtx() {
       const auth = this.$store.auth;
       return { custody: auth.custody, username: auth.username };

@@ -7,10 +7,11 @@ import {
   FRESH_AUTH_CANCELLED,
   FRESH_AUTH_MINT_FAILED,
   FRESH_AUTH_PROMPT_BUSY,
+  FRESH_AUTH_ORCID_FALLBACK,
   REMINTABLE_REASONS,
   mintViaPasswordFactor,
   passwordPromptMessage,
-  accountUsesPasswordFactor,
+  resolvePasswordFactor,
   handleSessionInconsistency,
   promptBusy,
 } from './fresh-auth.js';
@@ -40,7 +41,9 @@ import {
  *     available to a user permitted to consent — but it is NOT the fallback for
  *     an unknown status: navigating away from a paper page costs the user their
  *     place, so an unresolved status takes the inline prompt and lets the
- *     backend reject a genuinely passwordless account.
+ *     backend reject a genuinely passwordless account. Only after such a
+ *     rejection confirms there is no password does the op fall back to the
+ *     round-trip, because at that point the redirect is the only way through.
  *
  * `target` is the normalized op descriptor:
  *   { action, rootAuthor, rootPermlink, authorIndex?, claimer? }
@@ -49,12 +52,15 @@ import {
  */
 
 // Bind the password factor to this surface's mint call. The prompt/re-prompt
-// flow and the CANCELLED/MINT_FAILED outcomes live in the shared
-// mintViaPasswordFactor (fresh-auth.js); only the target-bound mint differs.
-function mintViaPassword(target) {
+// flow and the CANCELLED/MINT_FAILED/ORCID_FALLBACK outcomes live in the
+// shared mintViaPasswordFactor (fresh-auth.js); only the target-bound mint
+// differs. `assumed` is the resolver's observed-vs-guessed flag, threaded
+// through so an assumed password the backend 401s hands the op to the ORCID
+// factor rather than a second prompt.
+function mintViaPassword(target, assumed) {
   return mintViaPasswordFactor(
     (password) => mintAuthorshipFreshAuthProof(target, password),
-    { message: passwordPromptMessage() },
+    { message: passwordPromptMessage(), assumed },
   );
 }
 
@@ -71,12 +77,20 @@ function getCachedProof(target) {
 // Resolve a target-bound proof for a light account. A freshly-returned ORCID
 // proof in the consent-op cache wins; otherwise the factor the shared resolver
 // selects — the inline password prompt unless the account is KNOWN to be
-// passwordless, in which case the ORCID round-trip.
+// passwordless, in which case the ORCID round-trip. An ASSUMED password the
+// backend 401s also falls back to the round-trip: navigating away from the
+// paper page costs the user their place, but the alternative is an op that
+// cannot complete at all.
 async function resolveProof(target) {
   const cached = getCachedProof(target);
   if (cached) return cached;
-  if (await accountUsesPasswordFactor()) return mintViaPassword(target);
-  return beginAuthorshipOrcidFreshAuth(target);
+  const factor = await resolvePasswordFactor();
+  if (!factor.usesPassword) return beginAuthorshipOrcidFreshAuth(target);
+  const minted = await mintViaPassword(target, factor.assumed);
+  if (minted === FRESH_AUTH_ORCID_FALLBACK) {
+    return beginAuthorshipOrcidFreshAuth(target);
+  }
+  return minted;
 }
 
 /**
@@ -129,24 +143,36 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
     clearCachedConsentOpProof();
 
     // Re-mintable reasons (missing/expired/malformed) retry inline ONLY on the
-    // password factor. The ORCID factor would need a second full-page OAuth
-    // redirect near the 5-minute TTL (re-OAuth loop risk); surface a terminal
-    // failure so the user restarts deliberately. `wrong_mechanism` and the 403
-    // username/target/kind mismatches are not fixable by re-minting the same
-    // factor — they fall through to freshAuthFailed.
+    // password factor. A KNOWN-ORCID account would need a second full-page
+    // OAuth redirect near the 5-minute TTL (re-OAuth loop risk); it surfaces a
+    // terminal failure so the user restarts deliberately. The one exception is
+    // the ASSUMED-password 401 at the retry mint: there the 401 is new
+    // information (the account has no password), the user has just engaged by
+    // typing one, and without the redirect the op dead-ends — each pass costs
+    // a typed password plus a full OAuth round-trip, so it cannot tight-loop.
+    // `wrong_mechanism` and the 403 username/target/kind mismatches are not
+    // fixable by re-minting the same factor — they fall through to
+    // freshAuthFailed.
     const remintable = REMINTABLE_REASONS.includes(err.details?.reason);
-    if (remintable && (await accountUsesPasswordFactor())) {
-      const retry = await mintViaPassword(target);
-      if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
-      if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };
-      if (retry === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
-      try {
-        const ok = await run(retry);
-        clearCachedConsentOpProof();
-        return { ok };
-      } catch (retryErr) {
-        if (retryErr?.code === 'FRESH_AUTH_REQUIRED') return { freshAuthFailed: true };
-        throw retryErr;
+    if (remintable) {
+      const factor = await resolvePasswordFactor();
+      if (factor.usesPassword) {
+        const retry = await mintViaPassword(target, factor.assumed);
+        if (retry === FRESH_AUTH_ORCID_FALLBACK) {
+          await beginAuthorshipOrcidFreshAuth(target);
+          return { redirect: true };
+        }
+        if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
+        if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };
+        if (retry === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
+        try {
+          const ok = await run(retry);
+          clearCachedConsentOpProof();
+          return { ok };
+        } catch (retryErr) {
+          if (retryErr?.code === 'FRESH_AUTH_REQUIRED') return { freshAuthFailed: true };
+          throw retryErr;
+        }
       }
     }
 

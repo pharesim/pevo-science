@@ -51,7 +51,10 @@ vi.mock('alpinejs', () => ({
   default: {
     store: vi.fn((name) => {
       if (name === 'reauthModal') return { request: (...a) => reauthRequest(...a) };
-      if (name === 'auth') return { disconnect: (...a) => authDisconnect(...a) };
+      // `username` matches the LIGHT ctx below so the shared resolver's
+      // username-keyed memo branches are live in this suite; without it the
+      // memo is never read or written and the retry-gate reuse is untestable.
+      if (name === 'auth') return { disconnect: (...a) => authDisconnect(...a), username: 'carol' };
       if (name === 'toast') return { show: (...a) => toastShow(...a) };
       if (name === 'i18n') return { messages: null };
       return null;
@@ -207,6 +210,48 @@ describe('withAuthorshipFreshAuth', () => {
     const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
     expect(out).toEqual({ ok: { tx_id: 'tx2' } });
     expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('the 401 retry gate reuses the memoized factor instead of a second status read', async () => {
+    // The initial gate observed hasPassword true and memoized it; the retry
+    // gate must ride that memo rather than spending the rate-limited status
+    // budget again mid-op.
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockResolvedValueOnce({ tx_id: 'tx2' });
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ ok: { tx_id: 'tx2' } });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('an assumed password the backend rejects at the mint falls back to the ORCID redirect', async () => {
+    // With the status unavailable the password factor is a guess, and the
+    // mint's 401 is the first hard evidence the account has no password. A
+    // second prompt would dead-end every consent op for exactly the accounts
+    // whose only registered factor is ORCID; one prompt, then the round-trip.
+    statusUnavailable();
+    mockMintAuthorshipFreshAuthProof.mockRejectedValue(
+      Object.assign(new Error('UNAUTHORIZED'), { code: 'UNAUTHORIZED' }),
+    );
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ redirect: true });
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('an observed password that 401s still re-prompts instead of redirecting', async () => {
+    // The escape hatch is for guesses only: an observed password's 401 is a
+    // typo and earns the second prompt.
+    mockMintAuthorshipFreshAuthProof
+      .mockRejectedValueOnce(Object.assign(new Error('UNAUTHORIZED'), { code: 'UNAUTHORIZED' }))
+      .mockResolvedValueOnce('proof-ok');
+    reauthRequest.mockResolvedValueOnce('wrong').mockResolvedValueOnce('right');
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ ok: { tx_id: 'tx1' } });
+    expect(reauthRequest).toHaveBeenCalledTimes(2);
+    expect(mockBeginAuthorshipOrcid).not.toHaveBeenCalled();
   });
 
   it('non-fresh-auth errors propagate to the caller', async () => {
