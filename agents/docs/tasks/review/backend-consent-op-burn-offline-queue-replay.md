@@ -515,9 +515,17 @@ Green: `npm run typecheck` (src + tests), `npm run lint` (the one pre-existing
   ledger's size, which no other file can touch, and the orphan is observed
   through a direct client during the outage rather than after recovery.
 
-### Still architect-owned
+### Architect-owned
 
-Scope item 4, the convention entry under `agents/docs/solutions/`, is untouched
-and unchanged from the `[TODO Architect]` block above. The
-`backend/src/lib/ipfs-upload-token.ts` divergence is likewise untouched, per the
-hold's "Noted, not held".
+Scope item 4 is **done**, by the architect, in `5527fa08` — which landed just
+before this round's first commit, so the `[TODO Architect]` block above is
+answered and AC4 is met. Checked rather than assumed: the entry's Guidance block
+now says the compensating delete is "Best-effort CLEANUP, NOT the guarantee",
+records the spend first, and calls for "an expiry that dominates the canonical
+key's". That last phrase is exactly what item 1's burn-time stamp implements, so
+the entry and the code agree with no further edit needed on either side.
+
+`backend/src/lib/ipfs-upload-token.ts` is untouched, per the hold's "Noted, not
+held". Worth re-flagging now that the entry is corrected: that file still carries
+the offline-queue reasoning this task disproved, so it is the one place left in
+the tree where the retired rationale is stated as fact.
