@@ -364,3 +364,83 @@ stale consent-op cache-shape assertion, out of scope. Dev routing restored.
 For the architect's § 6.4 doc pass the hold reserved: the code now also
 carries the assumed-401 ORCID fallback, which that pass may want to state
 alongside the unknown-status fallback direction.
+
+---
+
+## Architect re-review (2026-08-31, round 3) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `ab5a2fac` + `bc3d6095` (frontend paths only),
+eight reviewer personas plus an independent validation batch. Every item below
+survived validation under fresh inspection.
+
+**All five round-2 items are verified genuinely landed.** Independently
+confirmed rather than taken from the signal: the observed-vs-assumed resolver
+with `FRESH_AUTH_ORCID_FALLBACK` intercepted by strict equality at all five mint
+call sites (the Symbol cannot leak as a proof), the nothing-asserted
+failed-status render with a working retry affordance, real in-flight coalescing
+asserting fetch call-counts, a generation counter correct under every clear
+interleaving, and live memo branches in both orchestrator suites. The old
+resolver name is gone tree-wide, `set_password` never consults the resolver, and
+`bc3d6095` is behavior-preserving by isolated diff. Security re-verified the
+round-1 posture: no new timing or state oracle (the fallback branches only on
+client-local state plus a 401 the network already sees), every redirect still
+funnels through the host allowlist, and the memo cannot be poisoned across
+accounts. Project-standards clean, including all 16 new locale strings and the
+account-state trace against § 6.1/6.4 (`assumed` is a client-side confidence
+label, not a new state).
+
+Two items, both narrow.
+
+### Item 1 — port the retry-mint fallback test to the authorship suite
+
+The settings suite pins "an assumed password rejected at the RETRY mint also
+redirects rather than dead-ending"; the authorship suite mirrors only the two
+initial-gate cases, so its retry-gate `FRESH_AUTH_ORCID_FALLBACK` branch is a
+separately deletable arm with the whole suite green (the suite's assumed-401
+case asserts `run` is never called, which confines it to `resolveProof`). The
+round-2 signal was honest that only two of three were mirrored; the review holds
+the gap, not the claim. Port the settings pattern with authorship bindings:
+status unavailable, initial mint succeeds so `run` fires and rejects a
+remintable `FRESH_AUTH_REQUIRED`, the retry mint 401s; assert
+`{ redirect: true }`, `beginAuthorshipOrcidFreshAuth` called with the target,
+and `run` called exactly once.
+
+### Item 2 — a successful assumed mint upgrades the memo to observed
+
+The memo write keys only off `hasPassword === true` from the status fetch; no
+mint-success path records anything. A user who mints successfully under an
+ASSUMED factor has proven the password exists with stronger evidence than the
+status endpoint could give, yet the tab still re-guesses on the next resolution
+while the status read stays unavailable (30/60s per IP, shared university NAT),
+and one later mistype then fires the full-page ORCID redirect that discards
+paper-page state — for exactly the proven password-holder the escape hatch was
+not aimed at. On a successful mint under `assumed`, write the username memo
+under the same generation check the status-fetch write uses (the shared
+`mintViaPasswordFactor` cannot see the username, so surface the success to the
+resolver rather than duplicating the write per caller). Add the missing case: an
+assumed-factor mint success followed by a later resolution performs no second
+status fetch and never reaches the fallback.
+
+### Not held, routed elsewhere
+
+The byte-identical retry-gate ladders this round grew in the two orchestrators
+are filed, together with the sibling review's outcome-dispatch triplication, as
+`ui-fresh-auth-shared-dispatch-and-retry-gate`; item 1's twin-coverage asymmetry
+is a symptom of that clone, but the test port is held here because it guards a
+live branch now.
+
+The new `_factorResolutionInFlight` slot's identity gap (joined with no username
+comparison; survives `clearPasswordFactorMemo()`) is routed into the already
+filed `ui-cross-user-session-teardown` task, whose scope item 2 and AC 3 cover
+exactly this class — see the architect addendum appended there naming this
+second slot.
+
+Soft-bucket items carried into the architect's § 6.4 doc pass: the
+suppressed-posture assumed-401 batch-abort trade, and the dead-JWT path that
+satisfies the assumed-401 heuristic (a distinct backend code for the middleware
+401 is the durable fix and is a backend/doc decision, not this task's).
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is
+the re-review signal. Do not edit this hold block or annotate items as fixed;
+the commit diff is the evidence and the architect updates the block at
+re-review.
