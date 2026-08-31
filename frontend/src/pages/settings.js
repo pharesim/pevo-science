@@ -833,10 +833,10 @@ export function initSettingsPage() {
     // Context for the settings fresh-auth orchestrator. `custody` gates whether
     // a body proof is sent at all (light → proof required on the JWT path;
     // self-custody → the per-request Keychain signature is already fresh).
-    // Password-vs-ORCID factor selection is NOT passed in: the orchestrator
-    // resolves it through the shared `accountUsesPasswordFactor`, so a failed
-    // status fetch on this page cannot route the user to a different factor
-    // than the same account gets anywhere else.
+    // Password-vs-ORCID factor selection is NOT passed in: it lives in
+    // `accountUsesPasswordFactor` (lib/fresh-auth.js), so a failed status fetch
+    // on this page cannot route the user to a different factor than the same
+    // account gets anywhere else.
     _freshAuthCtx() {
       return {
         custody: this.custody,

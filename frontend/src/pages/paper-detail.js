@@ -1466,12 +1466,11 @@ export function initPaperDetailPage() {
     },
 
     // Resolve the fresh-auth context. `custody` is all the orchestrator needs
-    // from the page: self-custody sends no body proof, and for light accounts
-    // the password-vs-ORCID factor is resolved by the shared
-    // `accountUsesPasswordFactor` (fresh-auth.js), which owns the status fetch
-    // and its memo. Resolving it here too is what let a failed fetch on this
-    // page fire a full-page ORCID redirect at an account that settings would
-    // have shown a password prompt.
+    // from the page: it decides whether a body proof is sent at all. The
+    // password-vs-ORCID factor is NOT resolved here — a page-local answer
+    // diverges from every other surface the moment the status fetch fails, and
+    // the ORCID branch is a full-page navigation that discards the page. That
+    // lives in `accountUsesPasswordFactor` (lib/fresh-auth.js).
     _authCtx() {
       const auth = this.$store.auth;
       return { custody: auth.custody, username: auth.username };

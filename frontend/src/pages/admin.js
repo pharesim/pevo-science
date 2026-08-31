@@ -364,8 +364,9 @@ export function initAdminPage() {
       }
     },
 
-    // Password-vs-ORCID factor selection is resolved by the orchestrator through
-    // the shared `accountUsesPasswordFactor`, not carried here — see settings.
+    // No factor hint travels in the ctx: password-vs-ORCID is resolved by
+    // `accountUsesPasswordFactor` (lib/fresh-auth.js) so every surface offers
+    // the same account the same factor.
     _freshAuthCtx() {
       return {
         custody: this.custody,
