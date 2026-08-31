@@ -60,3 +60,19 @@ independent validator traced it to confirm that a `username_mismatch` refusal at
 the IPFS upload leg is a live path rather than a theoretical one. The held task
 adds the client-side teardown branch that handles the refusal; this task removes
 the cause.
+
+**Architect addendum (2026-08-31, from the hasPassword-divergence round-3
+review):** the factor-resolution rework added a SECOND module-level in-flight
+slot with the same shape, `_factorResolutionInFlight` in `lib/fresh-auth.js`.
+It is joined with no identity comparison, and `clearPasswordFactorMemo()`
+(which `disconnect()` calls) bumps the memo generation without nulling the
+slot, so a status fetch pending across a same-tab disconnect and re-login hands
+the previous account's `{ usesPassword, assumed }` answer to the new account's
+first resolution (one-shot; the memo write is generation-guarded, and the next
+resolution self-corrects). Four reviewers converged on it independently. Scope
+item 2 and acceptance criterion 3 apply to BOTH slots: identity-key the join
+(a caller only shares a flight whose captured username matches the current auth
+subject), null the slot in the teardown, and guard each flight's `finally` to
+clear only a slot it still owns. Add the cross-identity coalescing test neither
+suite has (a clear landing mid-flight plus a second caller must trigger a fresh
+fetch, not join the stale flight).
