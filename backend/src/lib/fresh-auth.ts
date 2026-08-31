@@ -931,20 +931,24 @@ const inFlightConsumes = new Set<string>();
 const spentConsentOps = new Map<string, number>();
 
 /** Has this consent-op proof already been burned against an unconfirmed
- *  canonical copy?
+ *  canonical copy? Membership alone, deliberately: an entry past its deadline
+ *  still answers yes.
  *
- *  Prunes on read. The prune is what bounds the map, NOT a guarantee that the
- *  entry stopped guarding something live — an entry deliberately outlives the
- *  canonical key it guards (see the deadline basis above), so by the time it
- *  prunes, the key it was standing in for has already lapsed in Redis. */
+ *  This predicate does NOT retire entries, and that asymmetry with
+ *  `drainSpentConsentOps` is the point. Retiring an entry is only safe when it
+ *  is paired with a sweep of the key it was guarding — the drain issues that
+ *  sweep, and this cannot: it runs inside `burnConsentOpEntry` two statements
+ *  ahead of that call's own `GETDEL`, so a fire-and-forget delete here would
+ *  race the burn it is deciding. Dropping the entry bare instead is the worse
+ *  half of the same trade: the very next `GETDEL` would find a key the deadline
+ *  said had lapsed, and report it as a win.
+ *
+ *  Answering yes past the deadline costs nothing. A proof whose ledger entry has
+ *  expired is a proof whose own TTL ran out a full interval earlier, so the only
+ *  presentation this refuses is one that was going to be refused anyway. The
+ *  drain is what bounds the map, on a tick that always runs in production. */
 function isConsentOpSpent(token: string): boolean {
-  const expiresAt = spentConsentOps.get(token);
-  if (expiresAt === undefined) return false;
-  if (expiresAt <= Date.now()) {
-    spentConsentOps.delete(token);
-    return false;
-  }
-  return true;
+  return spentConsentOps.has(token);
 }
 
 /** Retry the compensating deletes a flap left undone, and drop ledger entries
@@ -959,17 +963,23 @@ function isConsentOpSpent(token: string): boolean {
  *  be written:
  *
  *   - `armDrainOnReady` runs this on the client's next `ready` transition. That
- *     covers the flap arm, where the entry was written precisely because the
- *     client had left `ready` and so is guaranteed to re-enter it on recovery.
+ *     covers every entry written while the client was off `ready` and going to
+ *     re-enter it: the flap arm, and equally a connection that dropped
+ *     mid-`GETDEL`. ioredis moves the client to `close`/`reconnecting` the
+ *     moment the socket closes and does not reject the in-flight command until
+ *     the retry-ceiling flush some way into the outage, so the arming that
+ *     follows that throw is in place before the recovery `ready`.
  *   - The periodic cleanup tick runs it as a backstop, and is the SOLE sweeper
- *     for the other arm: when the ledger entry was written because the burn's
- *     `GETDEL` threw while the client was still `ready` (a mid-command drop, or
- *     `commandTimeout` against a stalled server), the client never left `ready`,
- *     so no further `ready` transition is emitted to arm anything on.
+ *     for one narrower arm: a `commandTimeout` against a connected-but-stalled
+ *     server, where the socket stays open, the client never leaves `ready`, and
+ *     no further `ready` transition is emitted to arm anything on.
  *
  *  Residual, accordingly: a restart before EITHER a ready-armed drain or a
  *  cleanup tick has landed the delete leaves the orphaned key readable for the
- *  rest of its TTL with no process-local entry left to refuse it.
+ *  rest of its TTL with no process-local entry left to refuse it. The stalled-
+ *  server arm is the wider of the two windows, and also the one where an
+ *  operator is most likely to bounce the backend, since a stalled Redis presents
+ *  as a hanging API.
  *
  *  Deletes are fire-and-forget: a retry that fails leaves the entry in place for
  *  the next trigger, which is exactly the state it was already in. */
@@ -1025,11 +1035,13 @@ const drainArmedClients = new WeakSet<Redis>();
 /** Sweep on reconnect. Kept as a named function so the listener identity is
  *  stable and `drainArmedClients` is the only thing preventing duplicates.
  *
- *  The `try`/`catch` is not defensive padding: EventEmitter invokes listeners
- *  synchronously from inside `emit`, and this module is not the only subscriber
- *  to that event — a throw here would abort the emit and skip the Redis
- *  module's own `ready` work. Nothing is lost by swallowing, because the
- *  periodic tick retries the same drain. */
+ *  The `try`/`catch` is not defensive padding. ioredis dispatches its status
+ *  events from a `process.nextTick`, so this listener runs with no surrounding
+ *  handler on the stack: a throw escaping it is an uncaught exception, and this
+ *  process installs an `uncaughtException` handler that flushes and exits. That
+ *  would end the backend during precisely the Redis recovery this sweep exists
+ *  to serve. Nothing is lost by swallowing, because the periodic tick retries
+ *  the same drain. */
 function onRedisReadyDrain(): void {
   try {
     drainSpentConsentOps(Date.now());
@@ -1864,11 +1876,12 @@ async function burnConsentOpEntry(token: string): Promise<boolean> {
   }
 
   if (!redisLegRan && burnedInMemStore && redis) {
-    // Arm the reconnect sweep before anything can fail. The compensating delete
-    // below is awaited and, during a flap, does not settle until the retry
-    // budget is spent seconds later — a `ready` transition landing inside that
-    // window is exactly the case the sweep exists to catch, so arming after the
-    // try/catch would miss it and defer the entry to the periodic tick.
+    // Arm the reconnect sweep alongside the ledger write, because this branch is
+    // the only thing that ever gives that sweep work to do. Placement relative to
+    // the delete below is not load-bearing: a `ready` that lands while the delete
+    // is still queued resends it rather than needing a sweep, and the case the
+    // sweep does cover — a `ready` after the queued delete was already rejected —
+    // is past the catch either way.
     armDrainOnReady(redis);
     // Record the burn first. Ordering is the point: if the delete below is the
     // thing that establishes single-use, an outage that outlives the offline
@@ -2176,6 +2189,16 @@ export function _resetFreshAuthMemStoreForTests(): void {
  *  waiting out a full TTL. */
 export function _drainSpentConsentOpsForTests(now: number): void {
   drainSpentConsentOps(now);
+}
+
+/** Test-only hook: plants a ledger entry with a caller-chosen deadline.
+ *  The only production writer is the burn's compensating-delete branch, which is
+ *  reachable only during a genuine Redis outage, and an entry it writes is a full
+ *  TTL from retiring. Seeding directly is what lets the drain's expiry arm — and
+ *  the periodic tick that calls it — be exercised against a REACHABLE client,
+ *  which is the arm that issues the sweep. */
+export function _setSpentConsentOpForTests(token: string, expiresAt: number): void {
+  spentConsentOps.set(token, expiresAt);
 }
 
 /** Test-only hook: how many consent-op proofs are currently held spent.

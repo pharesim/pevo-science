@@ -379,13 +379,21 @@ describe('consent-op burn across a Redis outage that outlives the offline queue'
     expect(first.valid).toBe(true);
     expect(_getSpentConsentOpsSizeForTests()).toBe(1);
 
-    // Still severed, so the drain holds no reachable client. The entry must be
-    // dropped regardless: chaining the drop onto a delete that cannot be issued
-    // would leak an entry per burn for the whole of an outage. Driven with a
-    // future clock rather than by waiting out a real TTL. Nothing is asserted
-    // about the canonical key here — the entry's deadline is a full TTL past the
-    // key's own, so by the time this arm fires in production Redis has already
-    // expired it, and asserting a removal would be pinning a no-op.
+    // First, the arm that carries the single-use guarantee: a drain pass that
+    // finds no reachable client must leave a LIVE entry alone. This is the arm
+    // the 60s tick takes for the whole of an outage, and dropping an entry here
+    // would retire the refusal while the orphaned key is still readable, which
+    // is precisely the replay the ledger exists to close.
+    _drainSpentConsentOpsForTests(Date.now());
+    expect(_getSpentConsentOpsSizeForTests()).toBe(1);
+
+    // Then the expiry arm, still severed, so the drain holds no reachable
+    // client. The entry must be dropped regardless: chaining the drop onto a
+    // delete that cannot be issued would leak an entry per burn for the whole of
+    // an outage. Driven with a future clock rather than by waiting out a real
+    // TTL. Nothing is asserted about the canonical key here, because with no
+    // client there is no delete to observe; the sweep this arm issues when a
+    // client IS reachable is pinned in `fresh-auth-redis-unavailable-burn.test.ts`.
     _drainSpentConsentOpsForTests(Date.now() + 400_000);
     expect(_getSpentConsentOpsSizeForTests()).toBe(0);
   }, 60_000);

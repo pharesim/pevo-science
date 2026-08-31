@@ -1,6 +1,14 @@
 /**
  * A consent-op burn whose Redis leg was skipped still removes the canonical key,
- * and removes it WHILE the client is not ready.
+ * and removes it inside the window where the burn believed Redis was unavailable.
+ *
+ * Precision about "unavailable", because it is the whole subject: what this file
+ * controls is the `isRedisAvailable()` PREDICATE, not the socket. The client
+ * underneath is genuinely connected throughout (the suite refuses to run
+ * otherwise), which is exactly what makes the assertion possible — a delete
+ * issued in the window where the burn read "not available" still reaches a live
+ * server, so its absence from the keyspace is observable immediately rather than
+ * after a reconnect.
  *
  * The burn reads `isRedisAvailable()` (ioredis `status === 'ready'`) before it
  * touches Redis at all. During a reconnect that predicate is false while
@@ -13,12 +21,13 @@
  * window where a readiness gate would skip it and leave the key behind.
  *
  * That guard shape is this suite's subject, and the `exists === 0` assertion
- * BEFORE any replay is what pins it: deleting the compensating `DEL` leaves the
- * key standing, and re-gating it on `isRedisAvailable()` skips it in this exact
- * window, and both mutations fail here while surviving everywhere else. The
- * sibling tests in `fresh-auth.test.ts` cannot cover the guard shape: they
- * simulate a flap by rejecting a single command, which leaves
- * `isRedisAvailable()` true, so a readiness-gated delete would still run there.
+ * BEFORE any replay is what pins it. Two mutations fail against it: deleting the
+ * compensating `DEL` leaves the key standing, and re-gating that delete on
+ * `isRedisAvailable()` skips it in this exact window. The SECOND is the one only
+ * this suite catches. `fresh-auth.test.ts`'s rejecting-burn companion carries the
+ * same key-absence assertion and kills the first, but it reaches the branch by
+ * rejecting a single command with the predicate left real, so `isRedisAvailable()`
+ * is true there and a readiness-gated delete would still run.
  *
  * What this suite is NOT: the mutation-kill for single-use. Single-use no longer
  * rests on this delete landing — the spent-proof ledger refuses a replay whether
@@ -46,7 +55,7 @@
  *       `GETDEL` with the readiness predicate left real.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { config } from '../../src/config.js';
 
 const { redisReady } = vi.hoisted(() => ({ redisReady: { value: true } }));
@@ -60,7 +69,13 @@ const {
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   issueFreshAuthToken,
+  FRESH_AUTH_TTL_SECONDS,
   _resetFreshAuthMemStoreForTests,
+  _setSpentConsentOpForTests,
+  _getSpentConsentOpsSizeForTests,
+  _drainSpentConsentOpsForTests,
+  _stopCleanupForTests,
+  _restartCleanupForTests,
 } = await import('../../src/lib/fresh-auth.js');
 const { getRedis } = await import('../../src/redis.js');
 
@@ -89,7 +104,7 @@ beforeEach(() => {
 });
 
 describe('consent-op burn during a Redis reconnect', () => {
-  it.skipIf(!redisPresent)('removes the canonical key while the client is still not ready', async () => {
+  it.skipIf(!redisPresent)('removes the canonical key inside the window where the burn saw Redis as unavailable', async () => {
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('flap-window', 'password', TARGET);
     const key = `${config.appTag}:fresh_auth:token:${issued.token}`;
@@ -107,13 +122,14 @@ describe('consent-op burn during a Redis reconnect', () => {
 
     // The assertion this suite exists for, taken BEFORE any replay so it
     // attributes the key's removal to the compensating delete rather than to
-    // the ledger or to a later presentation's own `GETDEL`. Still under the
-    // not-ready window, which is what makes it a kill for the existence-not-
-    // readiness guard shape specifically.
+    // the ledger or to a later presentation's own `GETDEL`. Still inside the
+    // window where the burn read "not available", which is what makes it a kill
+    // for the existence-not-readiness guard shape specifically.
     expect(await redis.exists(key)).toBe(0);
 
-    // Reconnected. The replay must be refused; with the key gone this is the
-    // read path reporting `expired`, and the ledger refuses it independently.
+    // Predicate restored. The replay must be refused, and here that is the read
+    // path finding nothing: the delete landed, so the ledger entry was retired
+    // on the spot and is not what refuses this one.
     redisReady.value = true;
     const replay = await consumeFreshAuthToken(issued.token, 'flap-window', TARGET_HASH);
     expect(replay.valid).toBe(false);
@@ -133,5 +149,73 @@ describe('consent-op burn during a Redis reconnect', () => {
     if (result.valid) {
       expect(result.mechanism).toBe('orcid');
     }
+  });
+});
+
+/** The drain's own retirement paths, driven against a REACHABLE client.
+ *
+ *  The burn only ever stamps a ledger entry a full TTL out, and only during a
+ *  genuine outage, so neither the arm that issues the sweep nor the tick that
+ *  calls it is reachable from a burn inside a test run: by the time an entry
+ *  could expire on its own the client is long gone. Seeding the ledger directly
+ *  is what closes that, and this file is where it belongs, because the client
+ *  here is genuinely connected and the swept key is therefore observable. */
+describe('spent-proof ledger retirement', () => {
+  const seedKey = (token: string) => `${config.appTag}:fresh_auth:token:${token}`;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    // Stop-then-start, not a bare start: the fake-timer case leaves an interval
+    // that was created under faked timers and would never fire again, and
+    // `_restartCleanupForTests` is a no-op while one is already registered.
+    _stopCleanupForTests();
+    _restartCleanupForTests();
+  });
+
+  it.skipIf(!redisPresent)('sweeps the canonical key when it drops an entry past its deadline', async () => {
+    const redis = getRedis()!;
+    const token = 'ledger-expiry-sweep-token';
+    const key = seedKey(token);
+    // A key that is deliberately still alive when its ledger entry retires. In
+    // production the entry's deadline dominates the key's, so this pairing only
+    // arises through the residuals the burn documents (a re-executed issuing
+    // `SET`, or the app clock stepping forward relative to Redis). Recreating it
+    // directly is the only way to execute the sweep the drain issues for exactly
+    // those cases.
+    await redis.set(key, '{}', 'EX', FRESH_AUTH_TTL_SECONDS);
+    _setSpentConsentOpForTests(token, Date.now() - 1);
+    expect(_getSpentConsentOpsSizeForTests()).toBe(1);
+
+    _drainSpentConsentOpsForTests(Date.now());
+    expect(_getSpentConsentOpsSizeForTests()).toBe(0);
+
+    // The delete is fire-and-forget, so the entry drops first and the key
+    // follows. Without the sweep the key would sit out the rest of its TTL with
+    // no ledger entry left to refuse it, which is the orphan the drain exists to
+    // prevent.
+    for (let i = 0; i < 40 && (await redis.exists(key)) === 1; i++) {
+      await new Promise((res) => setTimeout(res, 25));
+    }
+    expect(await redis.exists(key)).toBe(0);
+  });
+
+  it.skipIf(!redisPresent)('retires an expired entry from the periodic cleanup tick', async () => {
+    const token = 'ledger-tick-token';
+    _setSpentConsentOpForTests(token, Date.now() + 1_000);
+    expect(_getSpentConsentOpsSizeForTests()).toBe(1);
+
+    // The tick is the SOLE retirement path for an entry written while the client
+    // stayed `ready` (a `commandTimeout` against a stalled server emits no later
+    // `ready` transition to sweep on), so its call into the drain has to be
+    // pinned. Fake timers are safe here only because the interval is recreated
+    // under them and the connection is healthy, so no ioredis reconnect or
+    // command timer is pending to be frozen.
+    _stopCleanupForTests();
+    vi.useFakeTimers();
+    _restartCleanupForTests();
+    vi.setSystemTime(Date.now() + 400_000);
+    vi.advanceTimersByTime(60_000);
+
+    expect(_getSpentConsentOpsSizeForTests()).toBe(0);
   });
 });
