@@ -750,3 +750,98 @@ fallback (landed at `ab5a2fac`) routes through this task's `allowRedirect`
 seam, so the fallback obeys the same suppression the post-upload gates rely
 on; covered by "an assumed-password 401 with navigation suppressed refuses
 instead of redirecting".
+
+---
+
+## Architect re-review (2026-08-31, round 4) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `21ba36cf` + `bc3d6095` (frontend paths only), nine
+reviewer personas plus an independent validation batch. Every item below survived
+validation under fresh inspection.
+
+**Ten of the eleven round-3 items are verified genuinely landed**, with their
+discriminating tests independently re-probed rather than taken from the signal:
+the posture-keyed in-flight slots, the fail-closed `cacheSessionProof` guard, the
+mirror-shadowing removal, all five busy-toast pairs, the `username_mismatch`
+teardown call itself, the `windowProof` busy branch, the retry-comment rewrite,
+the shared `promptBusy`, and the `isSubmitting` exclusion form. `bc3d6095` was
+traced behavior-preserving branch-for-branch by three reviewers independently.
+Security, project-standards (emdash scope, comment anchors, i18n stubs), and the
+frontend-races lens all came back clean.
+
+Three items. Two are residue on round-3 items 1 and 2; the third is a design
+decision the review surfaced and the architect has accepted.
+
+### Item 1 — the continuation branch's suppressed gate has no discriminating test
+
+The round-3 signal's claim "probed separately per page" does not hold for one of
+the three post-upload gates. `edit.js` carries two mutually exclusive
+pre-broadcast gates passing `allowRedirect: false` (the continuation branch and
+the same-author branch). The new `pages-edit.test.js` case exercises only the
+same-author site: `unchangedLightComponent()`'s fixture resolves
+`isContinuation === false` (author equals username, no chain), and every test
+that does reach `isContinuation === true` runs non-light custody, which
+short-circuits `ensureSessionWindow` before `allowRedirect` is consulted.
+Reverting the continuation gate's suppression alone leaves the whole suite
+green, silently reintroducing the pin-discarding ORCID redirect for continuation
+edits specifically.
+
+Add a continuation-postured, light-custody twin of "a passwordless window
+closing during the uploads refuses without navigation" (username differing from
+the paper's author so `isContinuation` resolves true), asserting no `startOrcid`
+call, no broadcast, and `step` back at `'idle'` — and carry the reauthRequired
+toast assertion its publish sibling already has, which the edit variant
+currently omits.
+
+### Item 2 — the username_mismatch teardown double-reports
+
+Round 3's item 2 fix tears down correctly but rethrows the raw
+`FRESH_AUTH_REQUIRED` error, and `describeUploadError` has no mapping for it, so
+the page layer stacks the generic upload-failure surface on top of the teardown's
+own re-login toast: `publish.js`'s PDF catch toasts "Upload failed" immediately
+after "Session inconsistency detected. Please sign in again." (the toast store
+does not dedupe), and the inline supplementary/edit error rows invite a retry
+that cannot succeed until re-login. The settings and authorship siblings avoid
+the double report by returning a structured sentinel instead of rethrowing.
+Confirmed independently by three reviewers.
+
+Throw a dedicated already-reported `UploadSessionError` code from the
+`username_mismatch` branch (mirroring `FRESH_AUTH_REDIRECT_PENDING`'s
+message-suppression contract on the broadcast surface) and quiet or map it at the
+pages, so the teardown's toast is the only message. Add the page-level test the
+suites are missing: exactly one toast for this scenario.
+
+### Item 3 — thread the redirect posture through the broadcast layer's 401-retry
+
+`broadcastWithFreshAuth`'s 401-retry re-acquires with the permissive default, so
+after a suppressed pre-broadcast gate passes, a window invalidated server-side
+between that gate and the broadcast still fires the full-page ORCID navigation
+with the completed pins in `handleSubmit` locals — this task's loss mode, one
+layer down from the gates round 3 fixed. The trigger is no longer exotic: the
+backend now closes open session windows on custody upgrade, and a password reset
+does the same, so another tab can invalidate mid-submit.
+
+Thread an `{ allowRedirect }` option through `broadcastWithFreshAuth` to its
+re-acquisition; the post-upload call sites (publish, both edit branches) pass
+`false`, and the `reauthRequired` branch in `acquisitionAborted` — currently
+annotated as defensive and unreachable — becomes the load-bearing unwinder. The
+vote/comment/review call sites keep the permissive default. Add the missing
+test: a passwordless account's remintable 401 at the broadcast leg from a
+post-upload position refuses with the toast instead of navigating.
+
+### Not held, routed elsewhere
+
+The outcome-to-toast dispatch triplication across `freshAuthWindowReady`,
+`acquisitionAborted`, and `windowProof` (plus the three near-identical toast
+helpers) is filed as its own task together with the sibling review's retry-gate
+ladder finding: `ui-fresh-auth-shared-dispatch-and-retry-gate`. Not a defect
+today; every current outcome is handled at every site.
+
+Soft-bucket items carried into the architect's reserved § 6.4 doc pass rather
+than held: the suppressed assumed-401 batch-abort trade at `orcidOrRefuse()`,
+and the dead-JWT path that satisfies the assumed-401 heuristic end to end.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is
+the re-review signal. Do not edit this hold block or annotate items as fixed;
+the commit diff is the evidence and the architect updates the block at
+re-review.
