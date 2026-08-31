@@ -375,6 +375,18 @@ describe.skipIf(!dbReachable)(
       );
       expect(rows[0].sessions_invalidated_at).not.toBeNull();
 
+      // The reissued token carries the exact stored epoch-ms as its
+      // reissuedAt claim. This identity is what the middleware's same-second
+      // exemption keys on, and pinning it here is deterministic where the
+      // 403-not-401 assertion below only exercises it when the mint lands in
+      // the revocation's own second.
+      const reissuedPayload = jwt.verify(res.body.data.token, config.sessionSecret) as {
+        reissuedAt?: number;
+        custody?: string;
+      };
+      expect(reissuedPayload.custody).toBe('self');
+      expect(reissuedPayload.reissuedAt).toBe(rows[0].sessions_invalidated_at!.getTime());
+
       // The upgrade consumed its limiter slot; clear it so the two JWT
       // assertions below reach the layers they test instead of a 429.
       await clearRateLimitKeys(['custody-upgrade']);
