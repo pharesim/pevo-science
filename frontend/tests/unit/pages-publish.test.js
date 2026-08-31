@@ -679,6 +679,43 @@ describe('publishPage', () => {
       expect(broadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'window-2' });
     });
 
+    it('a passwordless window closing during the uploads refuses without navigation', async () => {
+      // The pre-broadcast gate sits AFTER the IPFS legs, and the CIDs live in
+      // handleSubmit locals the draft does not carry. For the password factor
+      // a deliberate re-auth there costs a modal; for the ORCID factor it
+      // would cost the completed pins, so the navigating factor is suppressed
+      // and the user gets the re-authenticate toast with the form intact.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+        token: 'live-window',
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+        idlePeriodMs: 900_000,
+      }));
+      mockSessionUpload.mockImplementation(async () => {
+        // Stand in for a slow upload: leave the window with seconds on it.
+        const raw = JSON.parse(sessionStorage.getItem('pevo_fresh_auth_session_proof'));
+        raw.expiresAt = new Date(Date.now() + 5_000).toISOString();
+        sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify(raw));
+        return { data: { cid: 'bafy', filename: 'paper.pdf' } };
+      });
+
+      const comp = lightComponent();
+      comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+      await comp.handleSubmit();
+
+      // The pins were paid for, and neither a navigation nor a broadcast
+      // followed; the refusal was told to the user and the form is intact.
+      expect(mockSessionUpload).toHaveBeenCalledTimes(1);
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(broadcastOps).not.toHaveBeenCalled();
+      expect(comp.step).toBe('idle');
+      expect(mockStores.toast.show).toHaveBeenCalledWith(
+        'Please confirm your identity again, then try once more.',
+        'error',
+      );
+    });
+
     it('acquires the window before the upload leg, not after it', async () => {
       const order = [];
       mockMintSessionAuthProof.mockImplementation(async () => {

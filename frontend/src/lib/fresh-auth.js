@@ -218,6 +218,18 @@ function persistWindow(entry) {
   } catch {
     // The window still covers the rest of this page load through the mirror;
     // only surviving the ORCID round-trip (a full page load) needs storage.
+    //
+    // Drop any older stored entry before installing the mirror. A failed
+    // write can leave a stale window readable (quota hit after an earlier
+    // successful write), and the read consults storage before the mirror, so
+    // without the removal the stale copy would shadow the fresher one. With
+    // it, a non-empty storage read always implies a current entry by
+    // construction.
+    try {
+      sessionStorage.removeItem(PROOF_KEY);
+    } catch {
+      /* unreadable storage falls back to the mirror on read anyway */
+    }
     _memoryWindow = entry;
   }
 }
@@ -306,6 +318,14 @@ export function cacheSessionProof(token, expiresAt, absoluteExpiresAt) {
   const now = Date.now();
   const idlePeriodMs = anchoredSpan(expiresAt, SESSION_IDLE_PERIOD_MS);
   const absoluteSpanMs = anchoredSpan(absoluteExpiresAt, SESSION_ABSOLUTE_PERIOD_MS);
+  // An unparseable deadline anchors to NaN, and `new Date(now + NaN)` throws a
+  // RangeError at toISOString — from a cache write no caller expects to
+  // reject. Fail closed instead, matching every other corrupt-entry case in
+  // this module: drop the slot and let the next consumer re-auth.
+  if (!Number.isFinite(idlePeriodMs) || !Number.isFinite(absoluteSpanMs)) {
+    dropWindow();
+    return;
+  }
   persistWindow({
     token,
     expiresAt: new Date(now + idlePeriodMs).toISOString(),
@@ -499,17 +519,27 @@ export async function beginSessionAuthOrcidRedirect() {
 //
 // Concurrent callers — a submit and a vote button racing in the same tick, or a
 // page batch and an inline editor image — are coalesced through the
-// module-level `_acquireInFlight` promise, so only one password modal or one
-// redirect is ever in flight. That coalescing is what lets the upload layer
-// drop its own prompt-serialization gate: the singleton reauth modal is never
-// asked twice concurrently.
-let _acquireInFlight = null;
+// module-level `_acquireInFlight` promises, so only one password modal or one
+// redirect is ever in flight per posture. That coalescing is what lets the
+// upload layer drop its own prompt-serialization gate: the singleton reauth
+// modal is never asked twice concurrently by callers sharing a posture.
+//
+// The slot is keyed on the redirect policy: a caller only joins an
+// acquisition that shares its `allowRedirect` posture. Joined promises hand
+// the joiner the FIRST caller's outcome, and the two postures resolve the
+// passwordless branch oppositely — suppressed refuses where permissive
+// navigates — so a submit entitled to navigate must never inherit the
+// refusal of an inline-image acquisition it happened to race, nor the other
+// way round. Cross-posture collisions on the password factor surface as the
+// modal's own busy sentinel, which callers already handle.
+const _acquireInFlight = { permissive: null, suppressed: null };
 async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } = {}) {
   const cached = getCachedSessionProof(minRemainingMs);
   if (cached) return cached;
-  if (_acquireInFlight) return _acquireInFlight;
+  const slot = allowRedirect ? 'permissive' : 'suppressed';
+  if (_acquireInFlight[slot]) return _acquireInFlight[slot];
 
-  _acquireInFlight = (async () => {
+  const flight = (async () => {
     if (!(await accountUsesPasswordFactor())) {
       if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
       return beginSessionAuthOrcidRedirect();
@@ -528,10 +558,11 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
     );
   })();
 
+  _acquireInFlight[slot] = flight;
   try {
-    return await _acquireInFlight;
+    return await flight;
   } finally {
-    _acquireInFlight = null;
+    _acquireInFlight[slot] = null;
   }
 }
 
@@ -591,13 +622,36 @@ function showReauthFailedToast() {
 
 // The message a refused-while-open acquisition owes the user. The action was
 // dropped before the user saw a prompt for it, so saying nothing would look
-// like the button did nothing at all. Shared by every orchestrator that prompts
-// through the singleton modal so the collision reads the same everywhere.
-export function showPromptBusyToast() {
+// like the button did nothing at all. Reaches the consent-op and settings
+// orchestrators through `promptBusy` below, and the session path through the
+// gate and broadcast unwinders, so the collision reads the same everywhere.
+function showPromptBusyToast() {
   const msg =
     Alpine.store('i18n')?.messages?.common?.reauthPromptOpen ||
     'Finish the confirmation already open, then try again.';
   Alpine.store('toast')?.show(msg, 'error');
+}
+
+// The message a suppressed acquisition owes the user when no window is open
+// and the account's only factor navigates. The work was refused before
+// anything was lost — that is the point of suppressing — but a refusal that
+// says nothing reads as a dead button, so tell the user the way through:
+// re-authenticate, then try again.
+function showReauthRequiredToast() {
+  const msg =
+    Alpine.store('i18n')?.messages?.common?.reauthRequired ||
+    'Please confirm your identity again, then try once more.';
+  Alpine.store('toast')?.show(msg, 'error');
+}
+
+// The refuse-while-open outcome as the orchestrators' callers see it: toast
+// the way out, then unwind through the existing clean-abort outcome so call
+// sites need no new branch — the message is the whole difference from a
+// cancel. Shared by the settings and authorship orchestrators (both gates
+// each) so the collision cannot read differently between surfaces.
+export function promptBusy() {
+  showPromptBusyToast();
+  return { cancelled: true };
 }
 
 // Page-level acquire-before-commit gate: acquire the window, surface the one
@@ -623,6 +677,7 @@ export async function freshAuthWindowReady(opts) {
   if (outcome.ready) return true;
   if (outcome.failed) showReauthFailedToast();
   if (outcome.busy) showPromptBusyToast();
+  if (outcome.reauthRequired) showReauthRequiredToast();
   return false;
 }
 
@@ -717,6 +772,11 @@ function acquisitionAborted(proof) {
   if (typeof proof === 'string') return false;
   if (proof === FRESH_AUTH_MINT_FAILED) showReauthFailedToast();
   if (proof === FRESH_AUTH_PROMPT_BUSY) showPromptBusyToast();
+  // Defensive: the broadcast path always acquires permissively, and the
+  // posture-keyed in-flight slots keep it from inheriting a suppressed
+  // acquisition's refusal — but an outcome added to the vocabulary must not
+  // be silently swallowed here if a future caller ever threads it through.
+  if (proof === FRESH_AUTH_REAUTH_REQUIRED) showReauthRequiredToast();
   return true;
 }
 

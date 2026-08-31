@@ -43,10 +43,12 @@ const mockReauthModal = { request: vi.fn() };
 const LOCALIZED_SENTINEL = 'LOCALIZED-i18n-bundle-source-sentinel';
 const FALLBACK_ENGLISH = 'Session inconsistency detected. Please sign in again.';
 const REAUTH_FAILED_SENTINEL = 'LOCALIZED-reauth-failed-sentinel';
+const PROMPT_BUSY_SENTINEL = 'LOCALIZED-prompt-busy-sentinel';
 const mockI18nStore = {
   messages: {
     auth: { sessionInconsistency: LOCALIZED_SENTINEL },
     settings: { reauthFailed: REAUTH_FAILED_SENTINEL },
+    common: { reauthPromptOpen: PROMPT_BUSY_SENTINEL },
   },
 };
 const mockRouterStore = {};
@@ -77,6 +79,7 @@ vi.mock('alpinejs', () => ({
 
 const { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } =
   await import('../../src/lib/fresh-auth.js');
+const { REAUTH_PROMPT_BUSY } = await import('../../src/components/reauth-modal.js');
 
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
 
@@ -262,6 +265,47 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
     expect(mockBroadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'minted' });
     expect(mockBroadcastOps.mock.calls[0][2].freshAuthProof).not.toBe('expired-token');
+  });
+
+  it('a prompt owned by another action refuses the broadcast WITH the busy toast', async () => {
+    // The reauth modal is a singleton; a consent-op or settings prompt already
+    // open resolves this acquisition to the busy sentinel. Dropping that in
+    // silence would lose the action with no feedback — the ambiguity the
+    // sentinel exists to remove.
+    mockReauthModal.request.mockResolvedValue(REAUTH_PROMPT_BUSY);
+
+    const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+    expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(mockToastStore.show).toHaveBeenCalledWith(PROMPT_BUSY_SENTINEL, 'error');
+  });
+
+  it('a dismissed prompt at acquisition aborts with NO toast — busy and cancel discriminate', async () => {
+    // The paired case: a cancel is the user's own decision to stop and
+    // warrants no message. If this one ever toasts, the busy branch above has
+    // stopped discriminating.
+    mockReauthModal.request.mockResolvedValue(null);
+
+    const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+    expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(mockToastStore.show).not.toHaveBeenCalled();
+  });
+
+  it('a busy refusal at the 401 retry gate also toasts instead of dropping silently', async () => {
+    // The retry gate re-acquires through the same path, so it owes the same
+    // message when the modal is owned by a different action mid-retry.
+    setWindow('proof-b');
+    mockBroadcastOps.mockRejectedValueOnce(freshAuthError(401, 'expired'));
+    mockReauthModal.request.mockResolvedValue(REAUTH_PROMPT_BUSY);
+
+    const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+    expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(PROMPT_BUSY_SENTINEL, 'error');
   });
 
   it('non-light custody bypasses acquisition entirely (Keychain users)', async () => {

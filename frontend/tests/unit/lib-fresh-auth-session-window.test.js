@@ -444,6 +444,49 @@ describe('window model', () => {
     expect(cached().idlePeriodMs).toBeGreaterThan(IDLE_MS - 5_000);
     expect(cached().idlePeriodMs).toBeLessThanOrEqual(IDLE_MS);
   });
+
+  it('a malformed issuance deadline drops the window instead of throwing', () => {
+    // An unparseable deadline anchors to NaN, and an unguarded write would
+    // throw a RangeError out of a cache call no consumer expects to reject —
+    // the corruption guard on the read side can never fire if the write throws
+    // first. Fail closed: the slot ends empty and the next consumer re-auths.
+    for (const [idle, absolute] of [
+      ['not-a-date', new Date(Date.now() + ABSOLUTE_MS).toISOString()],
+      [new Date(Date.now() + IDLE_MS).toISOString(), 'garbage'],
+      [undefined, undefined],
+    ]) {
+      seedWindow('previous-window', { idleInMs: IDLE_MS });
+
+      expect(() => cacheSessionProof('t', idle, absolute)).not.toThrow();
+      expect(cached()).toBeNull();
+    }
+  });
+
+  it('a failed write cannot leave a stale stored entry shadowing the fresher mirror', async () => {
+    // The read consults storage before the in-memory mirror, so a failed write
+    // that leaves an OLDER entry readable would serve the stale copy. The
+    // failed-write path removes the key before installing the mirror, so a
+    // non-empty storage read always implies a current entry.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    seedWindow('stale-window', { idleInMs: IDLE_MS });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded');
+    });
+    try {
+      cacheSessionProof(
+        'fresh-window',
+        new Date(Date.now() + IDLE_MS).toISOString(),
+        new Date(Date.now() + ABSOLUTE_MS).toISOString(),
+      );
+    } finally {
+      setItem.mockRestore();
+    }
+
+    const outcome = await ensureSessionWindow();
+
+    expect(outcome).toEqual({ ready: true, proof: 'fresh-window' });
+    expect(mockReauthModal.request).not.toHaveBeenCalled();
+  });
 });
 
 describe('acquire-before-commit', () => {
@@ -567,5 +610,55 @@ describe('collisions and suppressed navigation', () => {
 
     expect(outcome).toEqual({ ready: true, proof: 'window-proof' });
     expect(window.location.href).toBe('');
+  });
+
+  it('a suppressed refusal is told to the user, not returned in silence', async () => {
+    // The page gate refuses without a prompt ever appearing; a gate that
+    // just returns false leaves a dead-looking button — the same silence the
+    // failed and busy outcomes already toast their way out of.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+
+    expect(await freshAuthWindowReady({ allowRedirect: false })).toBe(false);
+    expect(mockToastStore.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+  });
+
+  it('concurrent callers with opposite redirect postures do not inherit each other', async () => {
+    // The in-flight slot is keyed on the redirect policy. A single shared slot
+    // hands the joiner the first caller's outcome, and the two postures resolve
+    // the passwordless branch oppositely — so a submit entitled to navigate
+    // could inherit an inline-image acquisition's refusal, or a suppressed leg
+    // could inherit a navigation fired out from under the work it protects.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+
+    const [suppressed, permissive] = await Promise.all([
+      ensureSessionWindow({ allowRedirect: false }),
+      ensureSessionWindow(),
+    ]);
+
+    expect(suppressed).toEqual({ ready: false, reauthRequired: true });
+    expect(permissive).toEqual({ ready: false, redirect: true });
+    // The permissive caller ran its own acquisition rather than joining the
+    // suppressed one: exactly one round-trip started.
+    expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+    expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+  });
+
+  it('concurrent callers sharing the suppressed posture still coalesce', async () => {
+    // Keying by posture must not cost same-posture coalescing: two upload legs
+    // in one batch still resolve one status read, not one each.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+
+    const [a, b] = await Promise.all([
+      ensureSessionWindow({ allowRedirect: false }),
+      ensureSessionWindow({ allowRedirect: false }),
+    ]);
+
+    expect(a.proof).toBe('window-proof');
+    expect(b.proof).toBe('window-proof');
+    expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
+    expect(mockMintSessionAuthProof).toHaveBeenCalledTimes(1);
   });
 });

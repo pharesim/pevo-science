@@ -722,9 +722,15 @@ export function initPublishPage() {
     // Gated on accreditation: an unaccredited visitor can reach this form and
     // fill it in, but never submit it, so making them re-authenticate to attach
     // a file would buy nothing and cost a passwordless one a round-trip.
-    async _windowReady() {
+    //
+    // `opts` passes through to the gate. The file-selection and submit-entry
+    // gates allow the navigating factor — nothing has been paid for yet, so
+    // the worst case is re-picking a file. The pre-broadcast gate must not:
+    // by then the uploads are paid for, and their CIDs live in handleSubmit
+    // locals the draft does not carry.
+    async _windowReady(opts) {
       if (!this.isAccredited) return true;
-      return freshAuthWindowReady();
+      return freshAuthWindowReady(opts);
     },
 
     async handlePdfChange(e) {
@@ -941,8 +947,12 @@ export function initPublishPage() {
         // The margin is applied at the gates, never inside a leg — and the
         // broadcast is the last gate. Uploads are already paid for, so a window
         // that closed while they ran is worth one deliberate re-auth here
-        // rather than a 401 discovered mid-broadcast.
-        if (!await this._windowReady()) { this.step = 'idle'; return; }
+        // rather than a 401 discovered mid-broadcast. Worth it only for the
+        // password factor, which costs a modal: the ORCID factor is a
+        // navigation that would discard the completed pins, so it is
+        // suppressed and a passwordless account gets a re-authenticate toast
+        // with the form intact instead.
+        if (!await this._windowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
         if (!this._mounted) return;
 
         this.step = 'broadcasting';

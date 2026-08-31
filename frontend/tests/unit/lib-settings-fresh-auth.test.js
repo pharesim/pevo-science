@@ -56,6 +56,7 @@ vi.mock('alpinejs', () => ({
 
 import { withSettingsFreshAuth } from '../../src/lib/settings-fresh-auth.js';
 import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
+import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
 
 // Mirrors the real `ApiRequestError` shape (api.js): a `code` plus optional
 // `details`, and crucially NO `status` field. The orchestrator's 401-retry gate
@@ -338,6 +339,45 @@ describe('withSettingsFreshAuth', () => {
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ ok: { ok: 1 } });
     expect(run).toHaveBeenNthCalledWith(2, 'proof-2');
+  });
+
+  // ─── Refuse-while-open (busy) discriminates from a cancel ────────────────
+  //
+  // The reauth modal is a singleton; a prompt for a DIFFERENT action already
+  // open resolves this one to the busy sentinel before the user ever sees it.
+  // The orchestrator unwinds through the same { cancelled } outcome a cancel
+  // takes — call sites need no new branch — and the busy toast is the whole
+  // difference. These cases pin both halves of that discrimination; without
+  // them the busy branches are deletable with every suite still green.
+
+  it('a prompt owned by another action unwinds as { cancelled } WITH the busy toast', async () => {
+    reauthRequest.mockResolvedValue(REAUTH_PROMPT_BUSY);
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ cancelled: true });
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(expect.any(String), 'error');
+    expect(mockMintSettingsActionProof).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a plain cancel unwinds with NO toast, so busy and cancel stay distinguishable', async () => {
+    reauthRequest.mockResolvedValue(null);
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ cancelled: true });
+    expect(toastShow).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a busy refusal at the 401 retry gate also toasts instead of dropping silently', async () => {
+    // The retry gate is a separately deletable branch from the initial one.
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+    reauthRequest
+      .mockResolvedValueOnce('hunter2')
+      .mockResolvedValueOnce(REAUTH_PROMPT_BUSY);
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ cancelled: true });
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it('an ORCID-factor 401-on-arrival is terminal, not a second redirect (re-OAuth-loop guard)', async () => {

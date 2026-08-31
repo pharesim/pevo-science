@@ -26,14 +26,6 @@ import diff_match_patch from 'diff-match-patch';
 
 const ABSTRACT_MAX_CHARS = 2000;
 
-// Step state machine. handleSubmit() walks through these in order; the
-// terminal states are 'success' and 'error'. STEP_IN_PROGRESS is a
-// positive-set inclusion list rather than a negative-space exclusion
-// against {idle, success, error} — adding a new step name without
-// updating the exclusion would have silently re-enabled the Submit
-// button mid-flight (state-machine correctness smell).
-const STEP_IN_PROGRESS = ['authorizing', 'diffing', 'uploading', 'broadcasting'];
-
 function composePostBody(abstract, fullText) {
   if (!fullText) return '## Abstract\n\n' + abstract;
   return '## Abstract\n\n' + abstract + '\n\n---\n\n' + fullText;
@@ -497,8 +489,13 @@ export function initEditPage() {
       return max + 1;
     },
 
+    // Exclusion against the three resting states, mirroring publish.js. The
+    // exclusion form fails closed: a step name added later and not registered
+    // anywhere still reads as in-progress and keeps the Submit button
+    // disabled, where an inclusion list would silently re-enable it
+    // mid-flight.
     get isSubmitting() {
-      return STEP_IN_PROGRESS.includes(this.step);
+      return this.step !== 'idle' && this.step !== 'success' && this.step !== 'error';
     },
 
     get stepMessage() {
@@ -1146,8 +1143,12 @@ export function initEditPage() {
           // The margin is applied at the gates, never inside a leg — and the
           // broadcast is the last gate. Uploads are already paid for, so a
           // window that closed while they ran is worth one deliberate re-auth
-          // here rather than a 401 discovered mid-broadcast.
-          if (!await freshAuthWindowReady()) { this.step = 'idle'; return; }
+          // here rather than a 401 discovered mid-broadcast. Worth it only for
+          // the password factor, which costs a modal: the ORCID factor is a
+          // navigation that would discard the completed pins, so it is
+          // suppressed and a passwordless account gets a re-authenticate toast
+          // with the form intact instead.
+          if (!await freshAuthWindowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
           if (!this._mounted) return;
 
           this.step = 'broadcasting';
@@ -1231,9 +1232,10 @@ export function initEditPage() {
             },
           };
 
-          // See the continuation branch: the margin belongs at the gates, and
-          // the broadcast is the last one.
-          if (!await freshAuthWindowReady()) { this.step = 'idle'; return; }
+          // See the continuation branch: the margin belongs at the gates, the
+          // broadcast is the last one, and past the uploads the navigating
+          // factor is suppressed so completed pins are never discarded.
+          if (!await freshAuthWindowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
           if (!this._mounted) return;
 
           this.step = 'broadcasting';

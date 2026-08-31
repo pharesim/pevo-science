@@ -33,10 +33,12 @@ vi.mock('../../src/api.js', async (importOriginal) => {
 const mockEnsureSessionWindow = vi.fn();
 const mockClearCachedSessionProof = vi.fn();
 const mockSlideSessionWindow = vi.fn();
+const mockHandleSessionInconsistency = vi.fn();
 vi.mock('../../src/lib/fresh-auth.js', () => ({
   ensureSessionWindow: (...a) => mockEnsureSessionWindow(...a),
   clearCachedSessionProof: (...a) => mockClearCachedSessionProof(...a),
   slideSessionWindow: (...a) => mockSlideSessionWindow(...a),
+  handleSessionInconsistency: (...a) => mockHandleSessionInconsistency(...a),
   REMINTABLE_REASONS: ['missing', 'expired', 'malformed'],
 }));
 
@@ -46,6 +48,7 @@ import {
   UPLOAD_CANCELLED,
   UPLOAD_REAUTH_FAILED,
   UPLOAD_REAUTH_REQUIRED,
+  UPLOAD_REAUTH_BUSY,
 } from '../../src/lib/ipfs-upload.js';
 import { ApiRequestError } from '../../src/api.js';
 
@@ -63,6 +66,7 @@ describe('uploadFile', () => {
     mockEnsureSessionWindow.mockReset();
     mockClearCachedSessionProof.mockReset();
     mockSlideSessionWindow.mockReset();
+    mockHandleSessionInconsistency.mockReset();
     mockEnsureSessionWindow.mockResolvedValue({ ready: true, proof: 'window-1' });
     mockUploadFileToIpfs.mockResolvedValue(okUpload('bafy'));
   });
@@ -147,10 +151,12 @@ describe('uploadFile', () => {
     expect(mockSlideSessionWindow).toHaveBeenCalledTimes(1);
   });
 
-  it('an aged-out upload token retries without destroying the window', async () => {
+  it('a refused upload token retries without destroying the window', async () => {
     // UNAUTHORIZED comes from the upload leg and means the single-use upload
-    // token outlived its short TTL -- routine for a large file on a slow
-    // connection. It says nothing about the session window, so clearing the
+    // token was refused -- a token store evicted between the two steps, or a
+    // token already consumed by a duplicate request (a slow transfer cannot be
+    // the cause: the 30-second request abort in api.js fires long before the
+    // token's TTL). It says nothing about the session window, so clearing the
     // window here charges the user a full re-auth act for a stale token.
     mockUploadFileToIpfs
       .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
@@ -215,6 +221,31 @@ describe('uploadFile', () => {
     expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
   });
 
+  it('a prompt owned by another action surfaces as busy, never as a cancel', async () => {
+    // The user never saw a prompt for this upload, so reporting an upload they
+    // cancelled is the silent-drop ambiguity the busy sentinel exists to
+    // remove: the message must say another confirmation is open.
+    mockEnsureSessionWindow.mockResolvedValue({ ready: false, busy: true });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({ code: UPLOAD_REAUTH_BUSY });
+    expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
+  });
+
+  it('a mismatched session tears down instead of wedging on retries', async () => {
+    // username_mismatch means the cached proof belongs to a different account
+    // than the JWT subject; no re-mint can fix that pair. Without the teardown
+    // nothing clears the state, so every retry resends the same stale proof
+    // and the paper-upload path wedges behind a generic failure.
+    mockUploadFileToIpfs.mockRejectedValue(freshAuthRejected('username_mismatch'));
+
+    await expect(uploadFile(file())).rejects.toMatchObject({ code: 'FRESH_AUTH_REQUIRED' });
+    expect(mockHandleSessionInconsistency).toHaveBeenCalledTimes(1);
+    // No blind retry against the same mismatched pair, and no local cache
+    // clear: the teardown's disconnect drops the window itself.
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(1);
+    expect(mockClearCachedSessionProof).not.toHaveBeenCalled();
+  });
+
   it('never blocks a passwordless account up front', async () => {
     // The retired State-C block ("Uploads require a password on this account")
     // dead-ended ORCID-only accounts before any prompt. A passwordless account
@@ -234,6 +265,7 @@ describe('describeUploadError', () => {
     expect(describeUploadError({ code: UPLOAD_CANCELLED })).toBe('common.uploadCancelled');
     expect(describeUploadError({ code: UPLOAD_REAUTH_FAILED })).toBe('settings.reauthFailed');
     expect(describeUploadError({ code: UPLOAD_REAUTH_REQUIRED })).toBe('common.reauthRequired');
+    expect(describeUploadError({ code: UPLOAD_REAUTH_BUSY })).toBe('common.reauthPromptOpen');
     expect(describeUploadError({ code: 'INTERNAL_ERROR' })).toBe('common.uploadFailed');
     expect(describeUploadError(null)).toBe('common.uploadFailed');
     expect(describeUploadError(undefined)).toBe('common.uploadFailed');

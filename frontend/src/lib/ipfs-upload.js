@@ -3,6 +3,7 @@ import {
   ensureSessionWindow,
   slideSessionWindow,
   clearCachedSessionProof,
+  handleSessionInconsistency,
   REMINTABLE_REASONS,
 } from './fresh-auth.js';
 
@@ -12,6 +13,7 @@ import {
 export const UPLOAD_CANCELLED = 'UPLOAD_CANCELLED';
 export const UPLOAD_REAUTH_FAILED = 'UPLOAD_REAUTH_FAILED';
 export const UPLOAD_REAUTH_REQUIRED = 'UPLOAD_REAUTH_REQUIRED';
+export const UPLOAD_REAUTH_BUSY = 'UPLOAD_REAUTH_BUSY';
 
 class UploadSessionError extends Error {
   constructor(code, message) {
@@ -31,6 +33,8 @@ export function describeUploadError(err) {
       return 'settings.reauthFailed';
     case UPLOAD_REAUTH_REQUIRED:
       return 'common.reauthRequired';
+    case UPLOAD_REAUTH_BUSY:
+      return 'common.reauthPromptOpen';
     default:
       return 'common.uploadFailed';
   }
@@ -64,9 +68,13 @@ export function describeUploadError(err) {
 //
 // A dismissed modal and an in-flight redirect both surface as UPLOAD_CANCELLED:
 // the user is either stopping deliberately or navigating away, and neither
-// warrants an error. A spent re-auth surfaces as UPLOAD_REAUTH_FAILED, and a
+// warrants an error. A spent re-auth surfaces as UPLOAD_REAUTH_FAILED, a
 // suppressed round-trip as UPLOAD_REAUTH_REQUIRED — re-authenticate, then
-// resubmit, with the form still intact.
+// resubmit, with the form still intact — and a prompt already owned by a
+// different action as UPLOAD_REAUTH_BUSY. The busy case must not fall through
+// to UPLOAD_CANCELLED: the user never saw a prompt for this upload, so
+// reporting an upload they cancelled is exactly the silent-drop ambiguity the
+// busy sentinel exists to remove.
 async function windowProof() {
   const outcome = await ensureSessionWindow({ minRemainingMs: 0, allowRedirect: false });
   if (outcome.ready) return outcome.proof;
@@ -75,6 +83,9 @@ async function windowProof() {
   }
   if (outcome.failed) {
     throw new UploadSessionError(UPLOAD_REAUTH_FAILED, 'Re-authentication failed');
+  }
+  if (outcome.busy) {
+    throw new UploadSessionError(UPLOAD_REAUTH_BUSY, 'Another confirmation is open');
   }
   throw new UploadSessionError(UPLOAD_CANCELLED, 'Upload cancelled');
 }
@@ -110,12 +121,30 @@ export async function uploadFile(file) {
       clearCachedSessionProof();
       return attemptOnce(file, await windowProof());
     }
+    // username_mismatch means the cached proof belongs to a different account
+    // than the JWT subject — a corrupted session no re-mint can fix, because
+    // every re-acquisition would replay the same mismatched pair. Tear the
+    // session down and force re-login via the shared teardown, matching the
+    // broadcast, settings, and authorship siblings; without it every retry
+    // resends the same stale proof and the paper-upload path wedges behind a
+    // generic failure until the window's cap. The teardown disconnects (which
+    // drops the cached window) and shows the re-login toast; the rethrow
+    // aborts the batch through the page layer's existing error handling.
+    if (err?.code === 'FRESH_AUTH_REQUIRED' && err.details?.reason === 'username_mismatch') {
+      handleSessionInconsistency();
+      throw err;
+    }
     // UNAUTHORIZED comes from the upload leg (`/ipfs/upload`) and means the
-    // single-use upload token aged out of its short TTL — a large file on a
-    // slow connection straddles it routinely. That says nothing about the
-    // session window, so clearing it here would destroy a live window and
-    // charge the user a full re-auth act for a stale 60-second token. Retry the
-    // two-step instead; the window is still open and this is a cache hit.
+    // single-use upload token was refused. Not because a slow transfer outlived
+    // the token's TTL — every request carries a 30-second abort composed in
+    // api.js, so an upload aborts long before a 60-second token expires — but
+    // through the other ways that status arrives: a token store evicted or
+    // restarted between the two steps, or a token already consumed by a
+    // duplicate of this request. None of that says anything about the session
+    // window (the window is only consulted at the pre-flight), so clearing it
+    // here would destroy a live window and charge the user a full re-auth act.
+    // Retry the two-step once as a safety net; the pre-flight cache-hits the
+    // live window and mints a fresh token.
     if (err?.code === 'UNAUTHORIZED') {
       return attemptOnce(file, await windowProof());
     }

@@ -12,7 +12,7 @@ import {
   passwordPromptMessage,
   accountUsesPasswordFactor,
   handleSessionInconsistency,
-  showPromptBusyToast,
+  promptBusy,
 } from './fresh-auth.js';
 
 /**
@@ -56,15 +56,6 @@ function mintViaPassword(target) {
     (password) => mintAuthorshipFreshAuthProof(target, password),
     { message: passwordPromptMessage() },
   );
-}
-
-// A prompt for a different action already owns the singleton modal, so this
-// one never reached the user. Tell them which way out there is, then unwind
-// through the existing clean-abort outcome — call sites need no new branch,
-// and the message is the whole difference from a cancel.
-function promptBusy() {
-  showPromptBusyToast();
-  return { cancelled: true };
 }
 
 function getCachedProof(target) {

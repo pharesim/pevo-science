@@ -61,6 +61,7 @@ vi.mock('alpinejs', () => ({
 
 import { withAuthorshipFreshAuth } from '../../src/lib/authorship-consent.js';
 import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
+import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
 
 // Mirrors the signer.js broadcastOps error shape consumed by the orchestrator:
 // a `code` (FRESH_AUTH_REQUIRED) plus `details.reason`. The retry gate keys on
@@ -212,5 +213,43 @@ describe('withAuthorshipFreshAuth', () => {
     mockGetCachedConsentOpProof.mockReturnValue('cached-proof');
     run.mockRejectedValueOnce(codedError('FORBIDDEN'));
     await expect(withAuthorshipFreshAuth(TARGET, LIGHT, run)).rejects.toThrow('FORBIDDEN');
+  });
+
+  // ─── Refuse-while-open (busy) discriminates from a cancel ────────────────
+  //
+  // The reauth modal is a singleton, and a vote and an authorship action on
+  // the same paper page can collide on it. The refused action unwinds through
+  // the same { cancelled } outcome a cancel takes — the busy toast is the
+  // whole difference, and without these cases the busy branches are deletable
+  // with every suite still green.
+
+  it('a prompt owned by another action unwinds as { cancelled } WITH the busy toast', async () => {
+    reauthRequest.mockResolvedValue(REAUTH_PROMPT_BUSY);
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ cancelled: true });
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(expect.any(String), 'error');
+    expect(mockMintAuthorshipFreshAuthProof).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a plain cancel unwinds with NO toast, so busy and cancel stay distinguishable', async () => {
+    reauthRequest.mockResolvedValue(null);
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ cancelled: true });
+    expect(toastShow).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a busy refusal at the 401 retry gate also toasts instead of dropping silently', async () => {
+    // The retry gate is a separately deletable branch from the initial one.
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+    reauthRequest
+      .mockResolvedValueOnce('hunter2')
+      .mockResolvedValueOnce(REAUTH_PROMPT_BUSY);
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ cancelled: true });
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });

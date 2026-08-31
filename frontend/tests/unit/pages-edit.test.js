@@ -85,6 +85,7 @@ vi.mock('alpinejs', () => ({
 import Alpine from 'alpinejs';
 import { broadcastOps } from '../../src/signer.js';
 import { fetchPaper, fetchPaperEnrichment } from '../../src/api.js';
+import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
 import { initEditPage } from '../../src/pages/edit.js';
 
 // Sentinel the DOM-bound field / toast must NOT contain.
@@ -373,21 +374,23 @@ describe('editPage handleSubmit sanitization', () => {
     });
   });
 
-  // STEP_IN_PROGRESS is a positive-set inclusion list used by isSubmitting.
-  // Mirrors the parameterized table pattern in pages-publish.test.js and
-  // pages-review.test.js. A regression that drops a step name from
-  // STEP_IN_PROGRESS would silently re-enable Submit mid-flight; the
-  // unrecognized-step case pins the positive-set semantics so a typo or
-  // future step name keeps the button disabled by default.
+  // isSubmitting derives from step by EXCLUSION against the three resting
+  // states {idle, success, error}, mirroring publish.js. Mirrors the
+  // parameterized table pattern in pages-publish.test.js and
+  // pages-review.test.js. The exclusion form fails closed: an unrecognized or
+  // future step name reads as in-progress and keeps Submit disabled, where an
+  // inclusion list would silently re-enable the button mid-flight for any
+  // step it did not register.
   describe('isSubmitting', () => {
     it.each([
       ['idle', false],
       ['success', false],
       ['error', false],
+      ['authorizing', true],
       ['diffing', true],
       ['uploading', true],
       ['broadcasting', true],
-      ['unknown-future-step', false],
+      ['unknown-future-step', true],
     ])('step=%s -> isSubmitting=%s', (step, expected) => {
       const comp = createComponent();
       comp.step = step;
@@ -1714,6 +1717,10 @@ describe('editPage re-auth window ordering', () => {
       mechanism: 'password',
     });
     sessionStorage.clear();
+    // The real fresh-auth.js memoizes a positive password answer per username
+    // for the tab, and this suite reuses one username, so a prior test's
+    // password-holder answer would decide a later test's factor.
+    clearPasswordFactorMemo();
   });
 
   afterEach(() => {
@@ -1765,6 +1772,44 @@ describe('editPage re-auth window ordering', () => {
 
     await pending;
     expect(comp.step).toBe('success');
+  });
+
+  it('a passwordless window closing during the uploads refuses without navigation', async () => {
+    // The pre-broadcast gate sits AFTER the supplementary uploads, and the
+    // uploaded CIDs live in handleSubmit locals the draft does not carry. The
+    // navigating factor is suppressed there, so a passwordless account gets
+    // the re-authenticate toast with the pins and the form intact instead of
+    // an ORCID round-trip that discards them.
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+      token: 'live-window',
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      idlePeriodMs: 900_000,
+    }));
+    mockSessionUpload.mockImplementation(async () => {
+      // Stand in for a slow upload: leave the window with seconds on it.
+      const raw = JSON.parse(sessionStorage.getItem('pevo_fresh_auth_session_proof'));
+      raw.expiresAt = new Date(Date.now() + 5_000).toISOString();
+      sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify(raw));
+      return { data: { cid: 'bafy', filename: 'data.pdf' } };
+    });
+
+    const comp = unchangedLightComponent();
+    comp.supplementaryFiles = [{
+      file: new Blob(['x'], { type: 'application/pdf' }),
+      fileName: 'data.pdf',
+      description: '',
+      cid: null,
+      error: null,
+      uploading: false,
+    }];
+    await comp.handleSubmit();
+
+    expect(mockSessionUpload).toHaveBeenCalledTimes(1);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(broadcastOps).not.toHaveBeenCalled();
+    expect(comp.step).toBe('idle');
   });
 });
 
