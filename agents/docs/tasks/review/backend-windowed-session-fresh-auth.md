@@ -919,3 +919,343 @@ canary can still be blind"). The rule was followed; these are where it set its b
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit
 diff is the evidence and the architect updates the block at re-review.
+
+---
+
+## Backend re-review signal (2026-08-31)
+
+Round-3 fixes landed in two commits on `main`:
+
+- `b9526720` — items 1 through 10.
+- `129f5538` — one gap a mutation probe found in item 5's own fix, held back
+  a commit so the probe ran against a committed baseline.
+
+Before implementing, each of the ten findings was independently re-derived
+against the tree rather than taken from the hold: all ten reproduce. Item 6 is
+the one partial, and the correction is in its entry below. Every claim of
+"killed" here was verified by disabling the landed fix and watching the named
+test go red, then restoring; seventeen probes, all killed, listed per item.
+
+### Item 1 — the detached slide persist
+
+`tests/lib/fresh-auth.test.ts` gains one test that mocks `redis.set` to a
+promise that never settles and races the consume against a sentinel timer. The
+test pins TWO properties of the same two statements, because verification found
+a second mutation of that pair with no coverage at all: moving the unconditional
+`memStore.set` inside `persistSessionSlide` behind the network write. That is
+the natural-looking "only refresh the backup once the canonical write is
+confirmed" refactor, it falsifies the sentence `consumeSessionWindow`'s docblock
+uses to justify the detachment, and under a slow Redis it closes every active
+user's window at its mint-time idle deadline. So the test's second half drives a
+consume past the mint-time deadline with `redis.get` rejected, which can only
+succeed if the in-memory tier already carries the slide.
+
+Probes: `await persistSessionSlide(...)` → red on the race. Deferring the
+in-memory write behind the `await redis.set` → red on the second half.
+
+Redis-gated by necessity, and the file says so: with no Redis
+`persistSessionSlide` returns before its first await, so awaited and detached
+are genuinely indistinguishable and no Redis-free variant of this pin exists.
+
+### Item 2 — the epoch on the upload-token surface
+
+New `tests/routes/ipfs-upload-token-revocation-epoch.test.ts`. Neither existing
+home works: `ipfs-upload-token.test.ts` mocks both `verifyHiveSignature` and
+`getAppPool`, so `req.hiveSessionsInvalidatedAt` is `undefined` on every request
+there and no epoch can reach the route; the real-path signature file sends no
+Authorization header, so the proof consume short-circuits before the gate.
+
+The new file mocks NOTHING. Every request declares a structurally invalid
+`file_sha256`, so it stops at the handler's shape check, which sits after
+`requireFreshAuth` and before the accreditation HAF read. The 401-versus-400
+discrimination is the whole assertion, which removes the HAF dependency and the
+mock the accreditation gate would otherwise have needed.
+
+Three specs: a pre-epoch window refused 401 `expired` while the proof is still
+in the store, a post-epoch window reaching descriptor validation (the control
+that stops a comparison rejecting on any non-null column), and an epoch stamped
+at EXACTLY the window's `issued_at` after a first consume has slid it. That
+third one carries the route-level half of item 6's boundary and additionally
+pins that the slide does not rewrite the anchor.
+
+Probes: deleting the epoch from the surface literal in `consumeFreshAuthProof` →
+two red. Flipping `acceptSession` to false → three red.
+
+### Item 3 — the aliased-import evasion
+
+The mint scan matches the IDENTIFIER now, not the call shape, with a skip
+predicate for the definition, comment lines, and unaliased import specifiers.
+The specifier skip is VETOED by an `as` on the line, and that veto is the whole
+mechanism: an alias becomes a module-scope occurrence, which is never an allowed
+key. Two details are load-bearing and both were found by execution rather than
+by reading: the closing-brace branch of the specifier pattern requires a
+following `from`, or an object literal holding the reference is spared too; and
+the veto cannot be folded into the specifier pattern, because duplicate
+specifiers for one exported name are legal and the unaliased half would buy the
+aliased half a skip.
+
+Added alongside, per the hold: a file-granular import-site assertion, since a
+module that imports the mint can call it under any local name. File-granular
+deliberately, because an import always sits at module scope and the symbol half
+of every key would be a constant.
+
+Also added, because verification found the discriminator backstop does not cover
+it: a scan pinning `persistSessionSlide`'s caller set. A helper that
+spread-copies an already validated entry with a pushed-out deadline extends a
+window while writing neither the mint's name nor the discriminator, and that
+persister is the chokepoint it must reach.
+
+Probes: an `issueSessionFreshAuthToken as mint` specifier plus a `mint(...)` call
+in `handleLogin` → red, naming `routes/orcid.ts#<module>`. A window-extending
+helper calling the persister under a new name → red.
+
+### Item 4 — the commented-out sweep
+
+`isCommentLine` and `isCommentedOut` are now exported from
+`tests/support/enclosing-symbol.ts`, and `occurrencesOf`'s skip predicate
+receives the line index and the file so a predicate can decide from context.
+The sweep scan takes `isCommentedOut`, which also covers the block-comment
+toggle: an editor toggling a multi-line selection prefixes only the first line,
+so the dead call keeps its indentation and its `await` and reads as live code to
+any predicate that judges a line by its own first characters.
+
+The real fix is structural: the whole-tree assertion and every synthetic probe
+now route through ONE `unsweptWriters` helper. A probe that rebuilt the scan
+with its own arguments would stay green when the real scan lost its filter,
+which is the regression the probes exist to catch and which the real tree cannot
+show, since no writer is commented out today.
+
+**Deviation from the hold, flagged deliberately.** The hold says to pass the
+comment filter to the sweep scan and NOT to the write scan. The write scan does
+now carry `isCommentLine`, and it has to: item 10 broadens the write signal to
+the bare column name, which matches every docblock mention across the module,
+the middleware, and two route files. Without the skip each mention becomes an
+occurrence that must pair with a sweep in its own enclosing symbol and the suite
+goes red on documentation alone. The hold's rationale still holds for everything
+that is not a comment, and the docblock says so: prose cannot write a column.
+
+Probes: dropping the filter → three red. Substituting the shape-only predicate
+for the block-aware one → the block probe red, the line-comment probe still
+green, which is exactly the mutant the narrower fix could not kill.
+
+### Item 5 — the optional epoch
+
+Both `?` dropped, typed `number | null | undefined`. `consumeFreshAuthToken`
+writes `sessionsInvalidatedAtMs: undefined` explicitly with the reason.
+
+The 38 two-argument test call sites are routed through one
+`consumeSessionNoEpoch` helper rather than gaining 38 bare `undefined`s: the
+finding's point is that the no-epoch posture must be STATED, and 38 bare
+arguments state it zero times while one named helper with a docblock states it
+once. The one call that does drive the cut-off calls the real function with
+three arguments.
+
+`expectWindowClosed` now passes `undefined` explicitly, and its docblock and the
+suite header say why: withholding the epoch is what scopes those three
+assertions to the SWEEP. Handing the real epoch in would make them pass for a
+writer that stamped the column and never swept, which is the exact omission that
+suite exists to catch. A matching `expectWindowOpen` replaces the four inline
+open-window assertions.
+
+A new canary, `tests/eslint/no-session-consume-without-revocation-epoch.test.ts`,
+covers what the type cannot say: that the value passed is the request's epoch
+and not a literal. It pairs each consume call with a `hiveSessionsInvalidatedAt`
+reference in the same enclosing symbol.
+
+Probes: restoring the `?` on the parameter → `typecheck:tests` red on the unused
+`@ts-expect-error`. Substituting a literal `undefined` at the broadcast call
+site → the new canary red.
+
+A third probe SURVIVED and produced the second commit. `FreshAuthConsumeSurface`
+is module-private, so making its field required only forces an in-module literal
+to MENTION the field, and nothing outside `lib/fresh-auth.ts` can name the type
+to pin its shape: restoring the `?` on the field and dropping it from the
+consent-op literal left the whole suite green. The canary now pairs each
+`consumeFreshAuthTokenForSurface` construction with a mention of the field in
+the same symbol; re-probed, red.
+
+### Item 6 — the boundary and the null semantics
+
+Verified as PARTIALLY confirmed. The `<=` half is exactly as the hold describes
+and is now pinned. The null/undefined half needs its rationale corrected, and
+the correction matters because otherwise the next reviewer hunts for a kill that
+does not exist: the mutations the hold names (`!= null`, a truthiness check
+mishandling epoch 0) are NOT killable at this seam. `isEpochMs` forces
+`issued_at > 0` whenever the cap is in the future, and with a past cap the next
+deadline check returns the identical result through the same drop, so
+`typeof x === 'number'`, `x != null` and a truthiness check agree on every
+reachable input. TypeScript also forbids a non-number non-nullish at every call
+site. The honest kill for an explicit `null` case is a null-SPECIFIC fail-closed
+edit, and the general fail-closed inversion is already killed many times over by
+the existing two-argument consumes. Both cases are kept on that basis.
+
+Placed at unit level, where the consume takes the epoch as a direct argument, so
+the test controls both sides of the comparison exactly. At route level the mint
+reads its own clock and the epoch round-trips through Postgres, so an
+exact-equality test there would be a flake; the route-level half of the boundary
+rides on the upload-token spec above, which computes the anchor from the mint's
+own reported cap instead of guessing it.
+
+`plantSessionEntry` gains a defaulted `issuedAt` parameter, so the deadline
+callers are untouched and the epoch cases decouple the anchor from both
+deadlines. Five cases: same-millisecond, one-millisecond-after with the epoch
+snapped to a whole second (without the snap the floor-to-seconds mutation
+escapes one time in a thousand), explicit `null`, absent, and two verification
+found uncovered — the drop of the rejected window from the tier that served it,
+and that a slide leaves `issued_at` alone.
+
+Probes: `<=` → `<` → red. A null-specific fail-closed edit → red. Deriving the
+anchor from the cap → red.
+
+### Item 7 — the AC-8 route gap and the name-only detector
+
+The detector moves to `tests/support/session-proof-shape.ts` and gains a second,
+independent tell: a value of exactly 64 hex characters, bounded on both sides by
+a non-hex character and matched as a substring. That is what
+`issueSessionFreshAuthToken` mints, the token IS the store key the consume looks
+up, so a regression cannot re-encode it and still have a working client. The
+substring form reaches a proof inside a `Set-Cookie` value or a redirect query
+parameter. Verified non-colliding against the JWT these routes return beside it
+(a period is non-hex, so a run cannot cross a segment boundary, and the
+signature segment is 43 characters), against the 32-hex ORCID state, a 128-hex
+digest, express's weak ETag, and helmet's CSP hash. The signup-binding cookie
+emits the same shape and is not a broadcast credential, so its value is exempt
+by cookie name while its name is still checked.
+
+Headers and `Set-Cookie` are walked, and a cookie's own name is tested
+explicitly, since it lives inside the header value.
+
+Coverage: `POST /api/auth/session` on BOTH its branches (Bearer, which is the
+branch that reads the revocation column, and a real Hive signature), the two
+recovery routes in the invalidation suite where their fixtures already live, the
+ORCID login branch switched from three exact-path checks to the deep walk, plus
+the Keychain link and the custody upgrade in their own suites.
+
+An inverted control runs the detector against the ONE licensed mint's real 200
+and asserts it throws. Every other planted case is a hand-built literal, so
+without it a helper that read a supertest response wrongly would report no
+offenders for all of them and leave every no-proof assertion in the suite
+vacuously green.
+
+Closing the class rather than the instance: the mint canary now pins the set of
+`jwt.sign` sites as a coverage registry. All eight have a wire-level assertion.
+A new session-issuing route is a red bar that says "add the assertion, then pin
+the site".
+
+Probes: a `fresh_auth_proof` field on the token-refresh response → red. The same
+grant renamed to `reauth_token` with a real 64-hex value, which the name tell
+alone cannot see → red. A brand-new session-issuing route → the registry red.
+
+### Item 8 — the chunk size
+
+The 1202-member real-Redis test keeps its survivor count and gains a
+pass-through `redis.del` spy asserting the exact width sequence
+`[500, 500, 202, 1]` (three member batches plus the index key's own single-argument
+delete). Widths are read out before `mockRestore()`, which clears recorded calls.
+
+A second test pins the bound independently of any fixture size, because every
+assertion in the first is a function of its member count: a sweep that batched
+only ABOVE a threshold and kept a one-round-trip fast path below it passes all
+of them while reinstating the unbounded spread for exactly the accounts the
+batching protects. `smembers` is stubbed to a synthetic 200k index and `del` to
+a no-op, so only the arithmetic runs and no Redis traffic is issued; the
+real-path companion for the same risk class is the 1202-member test beside it.
+
+Probes: widening the constant to 500000 → both red. A size-conditional unbounded
+fast path → only the scale test red, which is the point of having it.
+
+### Item 9 — the synthesized anchor
+
+`validateStoredEntry` rejects a session entry whose `issued_at` is missing or
+non-epoch instead of reconstructing it, and the three comments that called the
+field informational now call it the revocation anchor. No behaviour change: the
+field is a required stored member written at every issue and carried through
+every slide, so nothing a deployed build produces reaches the reject, and the
+reject surfaces as the same 401 a closed window already produces.
+
+Three tests. Two prove a bad anchor is refused (missing, and a non-epoch value —
+a presence-only guard passes the second). The third proves the SURVIVING anchor
+is the stored one: a guard that rejects and then still hands the comparison the
+cap-derived value passes both of the others. It plants a deliberately
+cap-inconsistent entry, because every real mint sets the cap to the mint instant
+plus the window, where the two readings coincide.
+
+Probes: restoring the synthesis → two red. Keeping the guard but deriving the
+returned anchor anyway → the third red.
+
+### Item 10 — the under-matching patterns
+
+The discriminator pattern accepts any quote style, an optional trailing comma,
+and a quoted key. Type positions are removed per-OCCURRENCE rather than by a
+whole-line skip, because a skip keyed on a utility-type name hides a
+construction that merely shares the line with one, and a typed local declared
+from a narrowed type is the natural way to write exactly that.
+
+The revocation-write signal is the bare column name. The middleware's three read
+lines are exempted by exact LINE, not by enclosing symbol: a symbol-wide
+exemption would cover any write later added inside the middleware, and the
+obvious guard against that is the same under-matching form this change abandons.
+A staleness test asserts each exemption still matches exactly one line, so the
+per-line anchor cannot rot silently. The synthetic-handler probe grows a
+quoted-identifier write, a template-literal write wrapping before the `=`, and a
+commented-out sweep, none of which the old signal saw correctly.
+
+Probes: a construction written `kind: "session"` inside `lib/fresh-auth.ts` →
+red (it was a silent pass before). Reverting the write signal to the
+`column = value` form → red.
+
+### Contract docs
+
+Nothing wire-visible changed this round. The one behavioural edge is item 9: a
+session entry whose stored `issued_at` is missing or malformed now reports 401
+`malformed` rather than being admitted with a reconstructed anchor. It is
+unreachable for anything the mint writes, needs direct store-write access to
+produce, and both reasons are already-documented 401s, so no contract passage
+turns false. The sweep landed at `bfdc3eb2` stays correct as written.
+
+### Suite state
+
+`npx vitest run` (full backend): **2526 passed, 20 failed across 8
+files, 10 skipped.** Every one of the eight is accounted for and none is a
+suite this task touches.
+
+- Seven are the standing pre-existing failures, confirmed by spec name rather
+  than by file name: `accreditation.test.ts` (the two broadcast-attempts-cap
+  specs), `reviews.test.ts` (the two SQL-accreditation-gate specs),
+  `idempotency-real-haf`, `papers-enrichment-parity-gate`,
+  `accreditation-idempotency`, `profile-auth-bypass`,
+  `cast-hardening-author-index-weight`.
+- One, `signup-verify-activation-recovery.test.ts`, is the known load-induced
+  class: its lock-wait-budget spec blew a 33-second budget under full-suite
+  concurrency. It passes in isolation in under 8 seconds, verified.
+
+Everything this task touches passed in the full run: `tests/lib/fresh-auth*`,
+all of `tests/eslint/`, every `custody-*`, `session-*` and `ipfs-upload-token*`
+file, `orcid.test.ts`, `signup-verify.test.ts`, the `settings-*` fresh-auth
+suites, `accreditation-metadata-edit`, the two `admin-*` fresh-auth suites, and
+`tests/middleware/`.
+
+`npm run typecheck` (src + tests) clean. `npm run lint` clean apart from the one
+pre-existing unrelated warning in `lib/author-supersession.ts`.
+
+### Not in this round, unchanged from the hold's routing
+
+The module split, the consent-op compensating `DEL`, and the `as number` casts
+stay in their own task files. The cap-crossing loop test runtime and the
+`Math.min` clamp remain below threshold.
+
+### Residuals recorded, deliberately not chased
+
+Named so they are not mistaken for coverage. The construction scan is
+line-oriented, so a session entry assembled by spread or shorthand property is
+outside its reach; widening the signal to a bare `kind,` would drag
+`validateStoredEntry` into the allowlist and dilute the "exactly two
+construction sites" claim, so it is an architect decision rather than a
+unilateral one. The write-to-sweep pairing is by enclosing symbol, not control
+flow, so a write on an early-return branch of a handler that sweeps further down
+still pairs. A trailing comment on an otherwise-live code line is not stripped
+before matching, in either canary, because a comment marker also occurs inside
+string literals and truncating there would drop a real reference; such a line
+matches and goes red, which is loud rather than silent. And the coverage
+registry pins whole handlers, so a mint on a conditional branch of a covered
+handler that no fixture enters is out of its reach.
