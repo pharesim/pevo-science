@@ -173,7 +173,7 @@ The window is described by **two** ISO-8601 deadlines, and it ends at whichever 
 
 Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request whose bundle does NOT contain a consent op, or on `POST /api/ipfs/upload-token` (see [ipfs.md](ipfs.md)). The same live proof satisfies both, so an upload plus its post costs one re-auth act in total.
 
-A window that has closed reports 401 `FRESH_AUTH_REQUIRED` with `details.reason: "expired"`, regardless of which of the two deadlines was reached. A password reset or account recovery also ends outstanding session proofs for the account, surfacing as the same 401. (The durability of that invalidation is being tightened; this doc will state the exact guarantee once that lands.)
+A window that has closed reports 401 `FRESH_AUTH_REQUIRED` with `details.reason: "expired"`, regardless of which of the two deadlines was reached. A password reset or account recovery also ends outstanding session proofs for the account, surfacing as the same 401. On the JWT auth path, the consume compares the proof's mint time against the account's `sessions_invalidated_at` timestamp, read fresh from Postgres on the same request, and rejects any window minted at or before it. This holds whether or not the background cleanup sweep has reached the window yet, so a reset closes a live session window immediately rather than racing a cache pass. On the `X-Hive-Signature` auth path this per-request check does not run; a stale window there is closed only by the background sweep or by its own idle or absolute deadline.
 
 **Rate limit:** 10 requests per account per minute.
 
