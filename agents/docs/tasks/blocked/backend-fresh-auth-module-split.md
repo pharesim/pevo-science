@@ -91,3 +91,25 @@ was written. The consent-op burn now also carries the `spentConsentOps` ledger
 and its drain, which belong with the consent-op lifecycle in the post-split
 layout, and `isConsentOpSpent` / `drainSpentConsentOps` are consent-op-only so
 they do not push anything into the shared store module.
+
+---
+
+## [BLOCKED by Architect] (2026-08-31) — named cause resolved, block re-characterized
+
+`backend-windowed-session-fresh-auth` is archived, so the originally-named
+blocker is gone. This task is still not startable, for the same reason stated
+one layer over: `backend-consent-op-burn-offline-queue-replay` is now the task
+actively reworking `backend/src/lib/fresh-auth.ts`, it landed two rounds of
+changes into that module today, and it currently sits in `tasks/review/`
+awaiting an architect pass.
+
+This task's own sequencing rationale is what keeps it blocked, not a new
+constraint: a structural split is safest against a settled, green suite, and
+mixing large-scale code movement into a module another task is mid-flight in
+would make both diffs harder to review. Nothing about that argument was
+specific to the windowed-session work.
+
+Move back to `pending/` once `backend-consent-op-burn-offline-queue-replay` is
+archived and no other task holds an open diff against `fresh-auth.ts`. Check
+that condition against the tree at the time rather than against this note, since
+the module has attracted a steady queue of work.
