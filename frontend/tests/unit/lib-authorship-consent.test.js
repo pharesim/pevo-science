@@ -12,12 +12,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // modules are mint transport + cache, not auth-verification paths; the proof's
 // cryptographic binding is verified server-side (backend integration tests).
 const mockMintAuthorshipFreshAuthProof = vi.fn();
+const mockFetchEmailStatus = vi.fn();
 vi.mock('../../src/api.js', () => ({
   mintAuthorshipFreshAuthProof: (...a) => mockMintAuthorshipFreshAuthProof(...a),
+  // Factor selection runs through the REAL shared resolver (importActual below),
+  // which reads the account status. This mock is what the resolver sees.
+  fetchEmailStatus: (...a) => mockFetchEmailStatus(...a),
   // The real fresh-auth.js (loaded via importActual below) imports these at
   // module load; stub them so the import resolves. Never called from here.
   startOrcid: vi.fn(),
   consentOpRequestFields: vi.fn(),
+  mintSessionAuthProof: vi.fn(),
 }));
 
 // signer.js is a module-load dependency of the real fresh-auth.js; mock it so the
@@ -55,6 +60,7 @@ vi.mock('alpinejs', () => ({
 }));
 
 import { withAuthorshipFreshAuth } from '../../src/lib/authorship-consent.js';
+import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
 
 // Mirrors the signer.js broadcastOps error shape consumed by the orchestrator:
 // a `code` (FRESH_AUTH_REQUIRED) plus `details.reason`. The retry gate keys on
@@ -64,13 +70,22 @@ const codedError = (code, reason) =>
 
 // An approve target binds the richest set (paper + slot + claimer).
 const TARGET = { action: 'approve_authorship', rootAuthor: 'alice', rootPermlink: 'perm', authorIndex: 2, claimer: 'bob' };
-const LIGHT = { custody: 'light', username: 'carol', hasPassword: true };
-const LIGHT_NOPW = { custody: 'light', username: 'carol', hasPassword: false };
+// The ctx carries no factor hint any more: the orchestrator resolves
+// password-vs-ORCID through the shared resolver, so the account status is the
+// only thing that moves it. These helpers set what the resolver sees.
+const LIGHT = { custody: 'light', username: 'carol' };
+const passwordless = () =>
+  mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+const statusUnavailable = () => mockFetchEmailStatus.mockRejectedValue(new Error('Failed to fetch'));
 
 describe('withAuthorshipFreshAuth', () => {
   let run;
   beforeEach(() => {
     mockMintAuthorshipFreshAuthProof.mockReset();
+    mockFetchEmailStatus.mockReset();
+    // The resolver memoizes a positive answer per username for the tab; drop it
+    // so one test's password-holder cannot decide the next test's factor.
+    clearPasswordFactorMemo();
     mockGetCachedConsentOpProof.mockReset();
     mockClearCachedConsentOpProof.mockReset();
     mockBeginAuthorshipOrcid.mockReset();
@@ -78,6 +93,7 @@ describe('withAuthorshipFreshAuth', () => {
     authDisconnect.mockReset();
     toastShow.mockReset();
     mockGetCachedConsentOpProof.mockReturnValue(null);
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
     reauthRequest.mockResolvedValue('hunter2');
     mockMintAuthorshipFreshAuthProof.mockResolvedValue('minted-proof');
     mockBeginAuthorshipOrcid.mockResolvedValue(null); // redirect-pending sentinel
@@ -112,7 +128,8 @@ describe('withAuthorshipFreshAuth', () => {
   });
 
   it('ORCID factor: cache miss + no password → redirect (no password prompt)', async () => {
-    const out = await withAuthorshipFreshAuth(TARGET, LIGHT_NOPW, run);
+    passwordless();
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
     expect(reauthRequest).not.toHaveBeenCalled();
     expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET);
     expect(out).toEqual({ redirect: true });
@@ -138,9 +155,10 @@ describe('withAuthorshipFreshAuth', () => {
 
   it('401 re-mintable (ORCID factor, no password) → freshAuthFailed, no inline re-OAuth', async () => {
     // First call resolves a cached proof so we reach run(); run then 401s.
+    passwordless();
     mockGetCachedConsentOpProof.mockReturnValueOnce('cached-proof');
     run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
-    const out = await withAuthorshipFreshAuth(TARGET, LIGHT_NOPW, run);
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
     expect(out).toEqual({ freshAuthFailed: true });
     // No second full-page ORCID redirect attempted inline.
     expect(mockBeginAuthorshipOrcid).not.toHaveBeenCalled();
@@ -164,6 +182,30 @@ describe('withAuthorshipFreshAuth', () => {
     expect(out).toEqual({ sessionInconsistent: true });
     expect(authDisconnect).toHaveBeenCalledTimes(1);
     expect(toastShow).toHaveBeenCalledWith(expect.any(String), 'error');
+  });
+
+  it('an unavailable account status prompts for a password instead of redirecting', async () => {
+    // The failure direction the shared resolver enforces, on the surface where
+    // it costs the most: a full-page ORCID navigation from a paper page throws
+    // away the reader's scroll position, open modals, and in-flight state. A
+    // transient status failure must not be what triggers it.
+    statusUnavailable();
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ ok: { tx_id: 'tx1' } });
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    expect(mockBeginAuthorshipOrcid).not.toHaveBeenCalled();
+  });
+
+  it('an unavailable status on the 401 retry gate retries inline instead of dead-ending', async () => {
+    // The retry gate reads the same resolver as the initial mint, so the two
+    // cannot disagree about which factor this account has.
+    statusUnavailable();
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockResolvedValueOnce({ tx_id: 'tx2' });
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ ok: { tx_id: 'tx2' } });
+    expect(run).toHaveBeenCalledTimes(2);
   });
 
   it('non-fresh-auth errors propagate to the caller', async () => {

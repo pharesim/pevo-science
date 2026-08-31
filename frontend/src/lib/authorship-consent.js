@@ -10,6 +10,7 @@ import {
   REMINTABLE_REASONS,
   mintViaPasswordFactor,
   passwordPromptMessage,
+  accountUsesPasswordFactor,
   handleSessionInconsistency,
   showPromptBusyToast,
 } from './fresh-auth.js';
@@ -30,12 +31,16 @@ import {
  *
  * Two factors, selected by account state:
  *   - PASSWORD: prompt via the global reauth modal, then mint at
- *     `/custody/fresh-auth`. Used when the account has a password. Inline.
+ *     `/custody/fresh-auth`. The default factor: used unless the account is
+ *     known to be passwordless. Inline (no navigation).
  *   - ORCID: a full-page OAuth round-trip (`beginAuthorshipOrcidFreshAuth`),
  *     whose proof the `/orcid/callback` handler lands in the consent-op cache.
- *     The factor for ORCID-only (passwordless) accounts, and the safe fallback
- *     when the factor is unknown — every accredited account has a linked ORCID,
- *     so the ORCID factor is always available to a user permitted to consent.
+ *     The factor for accounts whose status explicitly reports no password.
+ *     Every accredited account has a linked ORCID, so this factor is always
+ *     available to a user permitted to consent — but it is NOT the fallback for
+ *     an unknown status: navigating away from a paper page costs the user their
+ *     place, so an unresolved status takes the inline prompt and lets the
+ *     backend reject a genuinely passwordless account.
  *
  * `target` is the normalized op descriptor:
  *   { action, rootAuthor, rootPermlink, authorIndex?, claimer? }
@@ -73,12 +78,13 @@ function getCachedProof(target) {
 }
 
 // Resolve a target-bound proof for a light account. A freshly-returned ORCID
-// proof in the consent-op cache wins; otherwise the password factor when the
-// account has a password; otherwise the ORCID factor.
-async function resolveProof(target, { hasPassword }) {
+// proof in the consent-op cache wins; otherwise the factor the shared resolver
+// selects — the inline password prompt unless the account is KNOWN to be
+// passwordless, in which case the ORCID round-trip.
+async function resolveProof(target) {
   const cached = getCachedProof(target);
   if (cached) return cached;
-  if (hasPassword) return mintViaPassword(target);
+  if (await accountUsesPasswordFactor()) return mintViaPassword(target);
   return beginAuthorshipOrcidFreshAuth(target);
 }
 
@@ -101,7 +107,7 @@ async function resolveProof(target, { hasPassword }) {
  * transport error) propagate to the caller, which keeps its op-level handling.
  *
  * @param {{action: string, rootAuthor: string, rootPermlink: string, authorIndex?: number|null, claimer?: string|null}} target
- * @param {{ custody: string, username: string, hasPassword: boolean }} ctx
+ * @param {{ custody: string, username: string }} ctx
  * @param {(proof: string|undefined) => Promise<any>} run
  */
 export async function withAuthorshipFreshAuth(target, ctx, run) {
@@ -111,7 +117,7 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
     return { ok: await run(undefined) };
   }
 
-  const proof = await resolveProof(target, ctx);
+  const proof = await resolveProof(target);
   if (proof === FRESH_AUTH_REDIRECT_PENDING) return { redirect: true };
   if (proof === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
   if (proof === FRESH_AUTH_CANCELLED) return { cancelled: true };
@@ -138,7 +144,7 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
     // username/target/kind mismatches are not fixable by re-minting the same
     // factor — they fall through to freshAuthFailed.
     const remintable = REMINTABLE_REASONS.includes(err.details?.reason);
-    if (remintable && ctx.hasPassword) {
+    if (remintable && (await accountUsesPasswordFactor())) {
       const retry = await mintViaPassword(target);
       if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
       if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };

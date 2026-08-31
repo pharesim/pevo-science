@@ -92,6 +92,25 @@ describe('paperDetailPage', () => {
     mockStores.router.params = { author: 'alice', permlink: 'my-paper' };
   });
 
+  // The page hands the consent-op orchestrator custody and identity ONLY. The
+  // password-vs-ORCID factor is resolved by the shared accountUsesPasswordFactor
+  // (lib/fresh-auth.js); a page-local answer here is what let a failed status
+  // fetch on this page fire a full-page ORCID redirect at an account that the
+  // settings page would have shown an inline password prompt.
+  describe('_authCtx carries no factor hint', () => {
+    it('returns custody and username and nothing else, for a light account', () => {
+      mockStores.auth.custody = 'light';
+      const comp = createComponent();
+      expect(comp._authCtx()).toEqual({ custody: 'light', username: 'alice' });
+    });
+
+    it('returns custody and username and nothing else, for self-custody', () => {
+      mockStores.auth.custody = 'self';
+      const comp = createComponent();
+      expect(comp._authCtx()).toEqual({ custody: 'self', username: 'alice' });
+    });
+  });
+
   // Factory-exposure regression guard: the discipline badge in the page
   // template (`x-text="titleCaseDiscipline(paper.discipline)"`) fires a
   // silent ReferenceError if the helper isn't on the Alpine data factory.

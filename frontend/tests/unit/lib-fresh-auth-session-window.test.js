@@ -67,6 +67,8 @@ const {
   cacheSessionProof,
   slideSessionWindow,
   clearCachedSessionProof,
+  clearPasswordFactorMemo,
+  accountUsesPasswordFactor,
 } = await import('../../src/lib/fresh-auth.js');
 
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
@@ -105,10 +107,11 @@ beforeEach(() => {
   sessionStorage.clear();
   clearCachedSessionProof();
   mockAuthStore.custody = 'light';
-  // A fresh username per test defeats the tab-lifetime password-factor memo,
-  // which would otherwise carry a `hasPassword: true` answer from one test's
-  // account into the next test's differently-provisioned one.
-  mockAuthStore.username = `user-${Math.random().toString(36).slice(2)}`;
+  mockAuthStore.username = 'alice';
+  // Drop the tab-lifetime password-factor memo, which would otherwise carry a
+  // `hasPassword: true` answer from one test's account into the next test's
+  // differently-provisioned one.
+  clearPasswordFactorMemo();
   mockReauthModal.request.mockResolvedValue('hunter2');
   mockMintSessionAuthProof.mockImplementation(async () => issuance('window-proof'));
   mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
@@ -195,6 +198,62 @@ describe('factor selection', () => {
       Object.assign(new Error('nope'), { code: 'UNAUTHORIZED' }),
     );
     expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
+  });
+});
+
+describe('password-factor memo', () => {
+  it('a password holder is asked once per tab, not once per acquisition', async () => {
+    // An account that has a password cannot lose one without a navigation that
+    // resets module state, so re-fetching the status on every acquisition is
+    // pure latency in front of the modal.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+
+    expect(await accountUsesPasswordFactor()).toBe(true);
+    expect(await accountUsesPasswordFactor()).toBe(true);
+
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('a passwordless answer is re-checked, so a password set in settings takes effect', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    expect(await accountUsesPasswordFactor()).toBe(false);
+
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    expect(await accountUsesPasswordFactor()).toBe(true);
+
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('a re-login as a different account cannot inherit the memo', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    expect(await accountUsesPasswordFactor()).toBe(true);
+
+    // Same tab, different subject: the memo is username-keyed, so the second
+    // account's own status decides its factor.
+    mockAuthStore.username = 'bob';
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    expect(await accountUsesPasswordFactor()).toBe(false);
+  });
+
+  it('clearing the memo retires a stale positive for the same account', async () => {
+    // What `auth.disconnect()` calls. A password can disappear from an account
+    // that had one (recover via ORCID with no new password), and the memo is
+    // the one thing that would keep answering for the account it was written
+    // against.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    expect(await accountUsesPasswordFactor()).toBe(true);
+
+    clearPasswordFactorMemo();
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    expect(await accountUsesPasswordFactor()).toBe(false);
+  });
+
+  it('an unavailable status is never memoized as a password holder', async () => {
+    mockFetchEmailStatus.mockRejectedValue(new Error('network down'));
+    expect(await accountUsesPasswordFactor()).toBe(true);
+
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    expect(await accountUsesPasswordFactor()).toBe(false);
   });
 });
 

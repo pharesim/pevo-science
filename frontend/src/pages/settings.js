@@ -833,13 +833,14 @@ export function initSettingsPage() {
     // Context for the settings fresh-auth orchestrator. `custody` gates whether
     // a body proof is sent at all (light → proof required on the JWT path;
     // self-custody → the per-request Keychain signature is already fresh).
-    // `hasPassword` drives the password-vs-ORCID factor choice for change-email
-    // and delete-account (set-password is always ORCID, handled in the lib).
+    // Password-vs-ORCID factor selection is NOT passed in: the orchestrator
+    // resolves it through the shared `accountUsesPasswordFactor`, so a failed
+    // status fetch on this page cannot route the user to a different factor
+    // than the same account gets anywhere else.
     _freshAuthCtx() {
       return {
         custody: this.custody,
         username: this.username,
-        hasPassword: this.emailStatus?.hasPassword === true,
       };
     },
 

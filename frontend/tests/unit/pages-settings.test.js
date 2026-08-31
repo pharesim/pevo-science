@@ -324,6 +324,26 @@ describe('settingsPage', () => {
       expect(comp.emailMessage).toBe('settings.emailVerificationSent');
     });
 
+    it('hands the orchestrator custody and username only, even when the status fetch failed', async () => {
+      // The divergence this guards: the page used to derive a factor hint from
+      // emailStatus, whose failure fallback reads `hasPassword: false`. A single
+      // transient status failure then sent a password holder to a full-page
+      // ORCID redirect from here while the same account got an inline prompt
+      // elsewhere. Factor selection now lives entirely in the shared resolver.
+      mockSubmitEmail.mockResolvedValue({});
+      mockFetchEmailStatus.mockRejectedValue(new Error('network down'));
+      const comp = createComponent();
+      await comp.loadEmailStatus();
+      comp.newEmail = 'new@x.com';
+
+      await comp.handleEmailSubmit();
+
+      expect(mockWithSettingsFreshAuth.mock.calls[0][1]).toEqual({
+        custody: 'light',
+        username: 'alice',
+      });
+    });
+
     it('aborts cleanly on an ORCID redirect (no success message, no error)', async () => {
       mockWithSettingsFreshAuth.mockResolvedValueOnce({ redirect: true });
       const comp = createComponent();

@@ -347,6 +347,20 @@ describe('adminPage', () => {
       comp.requestPromote();
     }
 
+    it('hands the orchestrator custody and username only, with no factor hint', async () => {
+      // Factor selection belongs to the shared accountUsesPasswordFactor, not to
+      // this page. A page-local answer diverges from every other surface the
+      // moment the status fetch fails.
+      mockPromoteAdmin.mockResolvedValue({ status: 'ok', data: {} });
+      const comp = createComponent();
+      stagePromote(comp);
+      await comp.runConfirmed();
+      expect(mockWithSettingsFreshAuth.mock.calls[0][1]).toEqual({
+        custody: 'light',
+        username: 'alice',
+      });
+    });
+
     it('happy path: runs the action with the staged fresh-auth action, toasts, reloads, resets', async () => {
       mockPromoteAdmin.mockResolvedValue({ status: 'ok', data: {} });
       mockFetchAdminRoster.mockResolvedValue({ data: { tier: 'super_admin', roster: [] } });

@@ -432,30 +432,44 @@ export function clearReturnPath() {
   }
 }
 
-// Which factor opens a session window for this account. `hasPassword` from the
-// account status is the discriminator: ONLY an explicit `false` routes to the
-// ORCID round-trip. An unknown or failed status falls through to the password
-// prompt and lets the backend reject a genuinely passwordless account — a
-// transient status failure must not dead-end a valid password holder.
+// THE re-auth factor resolver. Every surface that has to choose between the
+// inline password prompt and the navigating ORCID round-trip calls this one
+// function, so the factor a user is offered cannot depend on which page they
+// happen to be on.
+//
+// `hasPassword` from the account status is the discriminator, and the failure
+// direction is folded in here on purpose: ONLY an explicit `false` routes to
+// ORCID. An unknown, absent, or failed status resolves to the password prompt
+// and lets the backend reject a genuinely passwordless account. That asymmetry
+// is the whole point. The ORCID factor is a full-page navigation that discards
+// page state, so a transient status failure must never be the thing that fires
+// it at someone who could have typed a password instead.
 //
 // A positive answer is memoized per username for the tab: an account that has
-// a password cannot lose one, so re-fetching on every acquisition is pure
-// latency. The negative answer is deliberately NOT memoized — a passwordless
-// user who sets a password in settings must be able to use it on their next
-// acquisition. The memo is keyed on the authenticated username so a re-login
-// as a different account in the same tab cannot inherit it.
+// a password cannot lose one without a navigation that resets module state, so
+// re-fetching on every acquisition is pure latency. The negative answer is
+// deliberately NOT memoized — a passwordless user who sets a password in
+// settings must be able to use it on their next acquisition. The memo is keyed
+// on the authenticated username so a re-login as a different account in the
+// same tab cannot inherit it, and `auth.disconnect()` drops it outright
+// alongside the proof caches.
 let _passwordFactorMemo = null;
-async function accountHasPassword() {
+
+export function clearPasswordFactorMemo() {
+  _passwordFactorMemo = null;
+}
+
+export async function accountUsesPasswordFactor() {
   const username = Alpine.store('auth')?.username;
   if (username && _passwordFactorMemo === username) return true;
+  let hasPassword;
   try {
-    const status = await fetchEmailStatus();
-    const hasPassword = status?.data?.hasPassword;
-    if (hasPassword === true && username) _passwordFactorMemo = username;
-    return hasPassword;
+    hasPassword = (await fetchEmailStatus())?.data?.hasPassword;
   } catch {
-    return undefined;
+    hasPassword = undefined;
   }
+  if (hasPassword === true && username) _passwordFactorMemo = username;
+  return hasPassword !== false;
 }
 
 // Start the ORCID round-trip that opens a session window. The only factor a
@@ -496,8 +510,7 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
   if (_acquireInFlight) return _acquireInFlight;
 
   _acquireInFlight = (async () => {
-    const hasPassword = await accountHasPassword();
-    if (hasPassword === false) {
+    if (!(await accountUsesPasswordFactor())) {
       if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
       return beginSessionAuthOrcidRedirect();
     }

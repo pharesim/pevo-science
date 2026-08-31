@@ -7,12 +7,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // password re-prompt, ORCID redirect, the 401 re-mint+retry, and the 403/wrong-
 // mechanism generic-failure outcome.
 const mockMintSettingsActionProof = vi.fn();
+const mockFetchEmailStatus = vi.fn();
 vi.mock('../../src/api.js', () => ({
   mintSettingsActionProof: (...a) => mockMintSettingsActionProof(...a),
+  // Factor selection runs through the REAL shared resolver (importActual below),
+  // which reads the account status. This mock is what the resolver sees.
+  fetchEmailStatus: (...a) => mockFetchEmailStatus(...a),
   // The real fresh-auth.js (loaded via importActual below) imports these at
   // module load; stub them so the import resolves. Never called from here.
   startOrcid: vi.fn(),
   consentOpRequestFields: vi.fn(),
+  mintSessionAuthProof: vi.fn(),
 }));
 
 // signer.js is a module-load dependency of the real fresh-auth.js; mock it so the
@@ -50,6 +55,7 @@ vi.mock('alpinejs', () => ({
 }));
 
 import { withSettingsFreshAuth } from '../../src/lib/settings-fresh-auth.js';
+import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
 
 // Mirrors the real `ApiRequestError` shape (api.js): a `code` plus optional
 // `details`, and crucially NO `status` field. The orchestrator's 401-retry gate
@@ -61,13 +67,22 @@ import { withSettingsFreshAuth } from '../../src/lib/settings-fresh-auth.js';
 const codedError = (code, reason) =>
   Object.assign(new Error(code), { code, details: reason ? { reason } : undefined });
 
-const LIGHT = { custody: 'light', username: 'alice', hasPassword: true };
-const LIGHT_NOPW = { custody: 'light', username: 'alice', hasPassword: false };
+// The ctx carries no factor hint any more: the orchestrator resolves
+// password-vs-ORCID through the shared resolver, so the account status is the
+// only thing that moves it. These helpers set what the resolver sees.
+const LIGHT = { custody: 'light', username: 'alice' };
+const passwordless = () =>
+  mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+const statusUnavailable = () => mockFetchEmailStatus.mockRejectedValue(new Error('Failed to fetch'));
 
 describe('withSettingsFreshAuth', () => {
   let run;
   beforeEach(() => {
     mockMintSettingsActionProof.mockReset();
+    mockFetchEmailStatus.mockReset();
+    // The resolver memoizes a positive answer per username for the tab; drop it
+    // so one test's password-holder cannot decide the next test's factor.
+    clearPasswordFactorMemo();
     mockGetCachedConsentOpProof.mockReset();
     mockClearCachedConsentOpProof.mockReset();
     mockBeginOrcid.mockReset();
@@ -78,6 +93,7 @@ describe('withSettingsFreshAuth', () => {
     // Defaults: cache miss, password modal returns a password, mint succeeds,
     // ORCID begin returns the redirect-pending sentinel (null).
     mockGetCachedConsentOpProof.mockReturnValue(null);
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
     reauthRequest.mockResolvedValue('hunter2');
     mockMintSettingsActionProof.mockResolvedValue('minted-proof');
     mockBeginOrcid.mockResolvedValue(null);
@@ -133,7 +149,8 @@ describe('withSettingsFreshAuth', () => {
   });
 
   it('passwordless change_email routes to the ORCID factor (redirect)', async () => {
-    const out = await withSettingsFreshAuth('change_email', LIGHT_NOPW, run);
+    passwordless();
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ redirect: true });
     expect(mockBeginOrcid).toHaveBeenCalledWith('change_email');
     expect(reauthRequest).not.toHaveBeenCalled();
@@ -236,7 +253,8 @@ describe('withSettingsFreshAuth', () => {
   // ─── Action coverage across set_password / delete_account, not just change_email ──
 
   it('passwordless delete_account routes to the ORCID factor (redirect)', async () => {
-    const out = await withSettingsFreshAuth('delete_account', LIGHT_NOPW, run);
+    passwordless();
+    const out = await withSettingsFreshAuth('delete_account', LIGHT, run);
     expect(out).toEqual({ redirect: true });
     expect(mockBeginOrcid).toHaveBeenCalledWith('delete_account');
     expect(reauthRequest).not.toHaveBeenCalled();
@@ -260,12 +278,66 @@ describe('withSettingsFreshAuth', () => {
     // set_password is ORCID-only; its action runs post-redirect off a cached
     // consent-op proof. A 403 binding violation there must surface the generic
     // re-auth failure, never a silent re-redirect.
+    passwordless();
     mockGetCachedConsentOpProof.mockReturnValue('cached-orcid-proof');
     run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 'target_mismatch'));
-    const out = await withSettingsFreshAuth('set_password', LIGHT_NOPW, run);
+    const out = await withSettingsFreshAuth('set_password', LIGHT, run);
     expect(out).toEqual({ freshAuthFailed: true });
     expect(run).toHaveBeenCalledWith('cached-orcid-proof');
     expect(mockBeginOrcid).not.toHaveBeenCalled();
+  });
+
+  // ─── Factor resolution goes through the one shared resolver ──────────────
+
+  it('an unavailable account status falls through to the password prompt, never the ORCID redirect', async () => {
+    // The failure direction the shared resolver enforces. The ORCID factor is a
+    // full-page navigation that discards page state, so a transient status
+    // failure must not be what fires it; the prompt runs and the backend is
+    // left to reject a genuinely passwordless account.
+    statusUnavailable();
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ ok: { data: { ok: true } } });
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    expect(mockMintSettingsActionProof).toHaveBeenCalledWith('change_email', 'hunter2');
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
+  });
+
+  it('a status response with no hasPassword field falls through to the password prompt', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasEmail: true } });
+    const out = await withSettingsFreshAuth('delete_account', LIGHT, run);
+    expect(out).toEqual({ ok: { data: { ok: true } } });
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
+  });
+
+  it('an unavailable account status still leaves set_password on the ORCID factor', async () => {
+    // The one deliberate exception: set_password targets a passwordless account
+    // by definition, so it is ORCID-only regardless of what the status says (or
+    // fails to say). The exception must survive the unknown-status fallthrough.
+    statusUnavailable();
+    const out = await withSettingsFreshAuth('set_password', LIGHT, run);
+    expect(out).toEqual({ redirect: true });
+    expect(mockBeginOrcid).toHaveBeenCalledWith('set_password');
+    expect(reauthRequest).not.toHaveBeenCalled();
+  });
+
+  it('set_password never consults the account status at all', async () => {
+    const out = await withSettingsFreshAuth('set_password', LIGHT, run);
+    expect(out).toEqual({ redirect: true });
+    expect(mockFetchEmailStatus).not.toHaveBeenCalled();
+  });
+
+  it('an unavailable status on the 401 retry gate retries inline instead of dead-ending', async () => {
+    // The retry gate reads the same resolver as the initial mint, so the two
+    // cannot disagree about which factor this account has.
+    statusUnavailable();
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockResolvedValueOnce({ ok: 1 });
+    mockMintSettingsActionProof.mockResolvedValueOnce('proof-1').mockResolvedValueOnce('proof-2');
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ ok: { ok: 1 } });
+    expect(run).toHaveBeenNthCalledWith(2, 'proof-2');
   });
 
   it('an ORCID-factor 401-on-arrival is terminal, not a second redirect (re-OAuth-loop guard)', async () => {
@@ -273,9 +345,10 @@ describe('withSettingsFreshAuth', () => {
     // expired before the action fired (dawdled near the 5-minute TTL). The
     // retry must NOT re-run beginSettingsActionOrcidFreshAuth (a full-page OAuth
     // redirect → re-OAuth loop); it surfaces a terminal freshAuthFailed.
+    passwordless();
     mockGetCachedConsentOpProof.mockReturnValue('stale-cached-proof');
     run.mockRejectedValue(codedError('FRESH_AUTH_REQUIRED', 'expired'));
-    const out = await withSettingsFreshAuth('change_email', LIGHT_NOPW, run);
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ freshAuthFailed: true });
     expect(run).toHaveBeenCalledTimes(1);
     expect(mockBeginOrcid).not.toHaveBeenCalled();

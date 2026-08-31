@@ -2,7 +2,12 @@ import Alpine from 'alpinejs';
 import { waitForKeychain } from './keychain.js';
 import { fetchAccreditationStatus } from './api.js';
 import { signRequest } from './sign-request.js';
-import { clearCachedSessionProof, clearCachedConsentOpProof, clearReturnPath } from './lib/fresh-auth.js';
+import {
+  clearCachedSessionProof,
+  clearCachedConsentOpProof,
+  clearReturnPath,
+  clearPasswordFactorMemo,
+} from './lib/fresh-auth.js';
 
 const SESSION_KEY = 'pevo_session';
 
@@ -177,6 +182,12 @@ export function initAuth() {
       clearCachedSessionProof();
       clearCachedConsentOpProof();
       clearReturnPath();
+      // The password-factor memo is username-keyed, so cross-account
+      // inheritance is already unreachable; dropping it here also retires a
+      // stale positive for the SAME account after the one transition that can
+      // remove a password (recover via ORCID with no new password, B → C in
+      // ARCHITECTURE.md § 6.3).
+      clearPasswordFactorMemo();
       try {
         sessionStorage.removeItem('pevo_orcid_mode');
         sessionStorage.removeItem('pevo_orcid_return_to');

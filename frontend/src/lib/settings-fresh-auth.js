@@ -10,6 +10,7 @@ import {
   REMINTABLE_REASONS,
   mintViaPasswordFactor,
   passwordPromptMessage,
+  accountUsesPasswordFactor,
   handleSessionInconsistency,
   showPromptBusyToast,
 } from './fresh-auth.js';
@@ -27,12 +28,14 @@ import {
  *
  * Two factors, selected by account state:
  *   - PASSWORD: prompt via the global reauth modal, then mint at
- *     `/custody/fresh-auth`. Used for `change_email` / `delete_account` when the
- *     account has a password. Inline (no navigation).
+ *     `/custody/fresh-auth`. The default factor for `change_email` /
+ *     `delete_account`: used unless the account is known to be passwordless.
+ *     Inline (no navigation).
  *   - ORCID: a full-page OAuth round-trip (`beginSettingsActionOrcidFreshAuth`),
  *     whose proof the `/orcid/callback` handler lands in the consent-op cache.
- *     The only factor for `set_password` (its target account is passwordless),
- *     and the fallback for passwordless `change_email` / `delete_account`.
+ *     The only factor for `set_password` (its target account is passwordless
+ *     by definition), and the fallback for a `change_email` / `delete_account`
+ *     account whose status explicitly reports no password.
  *
  * The settings actions consume a consent-op-kind, target-bound proof — the same
  * cache the ORCID round-trip lands into — so this reuses `getCachedConsentOpProof`
@@ -58,13 +61,17 @@ function promptBusy() {
   return { cancelled: true };
 }
 
-// The PASSWORD factor applies when the account has a password AND the action is
-// not `set_password` (whose target account is passwordless by definition, so
-// ORCID-only). Every other case uses the ORCID factor. Centralized so the
+// `set_password` is the one deliberate exception to the shared factor resolver:
+// its target account is passwordless BY DEFINITION (filling a null hash is what
+// the action exists to do), so ORCID is the only factor registered on it no
+// matter what the account status reports. Every other action defers to
+// `accountUsesPasswordFactor`, which owns the fetch, the memo, and the
+// unknown-status-falls-through-to-password direction. Centralized here so the
 // initial mint (`resolveProof`) and the 401-retry gate (`withSettingsFreshAuth`)
-// cannot drift on this predicate.
-function usesPasswordFactor(action, hasPassword) {
-  return action !== 'set_password' && hasPassword;
+// cannot drift on the exception.
+async function usesPasswordFactor(action) {
+  if (action === 'set_password') return false;
+  return accountUsesPasswordFactor();
 }
 
 // Resolve a fresh-auth proof for `action` on a light account. Returns the proof
@@ -73,11 +80,11 @@ function usesPasswordFactor(action, hasPassword) {
 // Factor selection: a freshly-returned ORCID proof in the consent-op cache
 // wins; otherwise the password factor when `usesPasswordFactor` holds;
 // otherwise the ORCID factor.
-async function resolveProof(action, { username, hasPassword }) {
+async function resolveProof(action, { username }) {
   const cached = getCachedConsentOpProof(action, username, '');
   if (cached) return cached;
 
-  if (usesPasswordFactor(action, hasPassword)) {
+  if (await usesPasswordFactor(action)) {
     return mintViaPassword(action);
   }
   return beginSettingsActionOrcidFreshAuth(action);
@@ -108,8 +115,9 @@ async function resolveProof(action, { username, hasPassword }) {
  *   'edit_accreditation_metadata') or the admin-console authority actions
  *   ('admin_grant_role', 'admin_grant_accreditation', etc.). Only the value
  *   matters to the backend's proof target; the orchestrator special-cases
- *   'set_password' (ORCID-only factor) and otherwise picks factor by hasPassword.
- * @param {{ custody: string, username: string, hasPassword: boolean }} ctx
+ *   'set_password' (ORCID-only factor) and otherwise defers factor selection to
+ *   the shared `accountUsesPasswordFactor` resolver.
+ * @param {{ custody: string, username: string }} ctx
  * @param {(proof: string|undefined) => Promise<any>} run
  */
 export async function withSettingsFreshAuth(action, ctx, run) {
@@ -153,7 +161,7 @@ export async function withSettingsFreshAuth(action, ctx, run) {
     // which near the 5-minute proof TTL risks a re-OAuth loop. For ORCID-factor
     // accounts surface a terminal re-auth failure so the user restarts
     // deliberately rather than bouncing through ORCID a second time.
-    if (remintable && usesPasswordFactor(action, ctx.hasPassword)) {
+    if (remintable && (await usesPasswordFactor(action))) {
       const retry = await mintViaPassword(action);
       if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
       if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };

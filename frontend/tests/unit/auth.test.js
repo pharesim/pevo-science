@@ -25,6 +25,15 @@ vi.mock('../../src/sign-request.js', () => ({
   signRequest: vi.fn(),
 }));
 
+// Partial mock: the real cache-clearing runs (the scrub assertions below depend
+// on it), with a spy over the password-factor memo drop so the teardown can be
+// asserted without reaching into module-private state.
+const mockClearPasswordFactorMemo = vi.fn();
+vi.mock('../../src/lib/fresh-auth.js', async (importActual) => ({
+  ...(await importActual()),
+  clearPasswordFactorMemo: (...args) => mockClearPasswordFactorMemo(...args),
+}));
+
 import { initAuth } from '../../src/auth.js';
 
 describe('auth store', () => {
@@ -343,6 +352,15 @@ describe('auth store', () => {
       store.disconnect();
       expect(sessionStorageData['pevo_orcid_return_to']).toBeUndefined();
       expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_return_to');
+    });
+
+    it('drops the password-factor memo on disconnect', () => {
+      // The memo is username-keyed, so a re-login as someone else cannot
+      // inherit it; this drop also retires a stale positive for the SAME
+      // account after the one transition that removes a password.
+      mockClearPasswordFactorMemo.mockClear();
+      store.disconnect();
+      expect(mockClearPasswordFactorMemo).toHaveBeenCalledTimes(1);
     });
   });
 

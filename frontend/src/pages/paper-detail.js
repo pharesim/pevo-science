@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim, buildConsentCustomJson, fetchEmailStatus, isRetriable503 } from '../api.js';
+import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim, buildConsentCustomJson, isRetriable503 } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { withAuthorshipFreshAuth } from '../lib/authorship-consent.js';
 import { isSlotCredited, creditProfileForSlot as creditProfileForSlotFn, acceptedClaimerForSlot as acceptedClaimerForSlotFn } from '../lib/credit.js';
@@ -887,9 +887,6 @@ export function initPaperDetailPage() {
 
     // Authorship claims / consent affordances
     claimLoading: false,
-    // Lazily-fetched (light accounts only) password-factor availability for the
-    // fresh-auth challenge; null = not yet resolved. See _authCtx().
-    _hasPassword: null,
     // Confirmation modals for the withdraw-credit actions (resign / revoke), and
     // the per-paper "..." actions menu that hosts resign.
     resignModalOpen: false,
@@ -1468,25 +1465,16 @@ export function initPaperDetailPage() {
       this.revokeModalOpen = true;
     },
 
-    // Resolve the fresh-auth context. Self-custody needs none; for light accounts
-    // the password-vs-ORCID factor turns on whether the account carries a
-    // password, fetched lazily once (every accredited account has a linked ORCID,
-    // so an unknown/failed fetch safely falls back to the ORCID factor).
-    async _authCtx() {
+    // Resolve the fresh-auth context. `custody` is all the orchestrator needs
+    // from the page: self-custody sends no body proof, and for light accounts
+    // the password-vs-ORCID factor is resolved by the shared
+    // `accountUsesPasswordFactor` (fresh-auth.js), which owns the status fetch
+    // and its memo. Resolving it here too is what let a failed fetch on this
+    // page fire a full-page ORCID redirect at an account that settings would
+    // have shown a password prompt.
+    _authCtx() {
       const auth = this.$store.auth;
-      const ctx = { custody: auth.custody, username: auth.username, hasPassword: false };
-      if (auth.custody === 'light') {
-        if (this._hasPassword === null) {
-          try {
-            const res = await fetchEmailStatus();
-            this._hasPassword = res?.data?.hasPassword === true;
-          } catch {
-            this._hasPassword = false;
-          }
-        }
-        ctx.hasPassword = this._hasPassword;
-      }
-      return ctx;
+      return { custody: auth.custody, username: auth.username };
     },
 
     async _refreshPending() {
@@ -1502,7 +1490,7 @@ export function initPaperDetailPage() {
     // unexpected broadcast errors for the caller's op-level handler to catch.
     async _broadcastConsentOp(target, op, successKey) {
       const username = this.$store.auth.username;
-      const ctx = await this._authCtx();
+      const ctx = this._authCtx();
       const outcome = await withAuthorshipFreshAuth(
         target,
         ctx,

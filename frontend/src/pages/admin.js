@@ -7,7 +7,6 @@ import {
   adminRetractPaper,
   adminRevokeAuthorship,
   adminApproveAuthorship,
-  fetchEmailStatus,
 } from '../api.js';
 import { withSettingsFreshAuth } from '../lib/settings-fresh-auth.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
@@ -240,9 +239,6 @@ export function initAdminPage() {
     loading: true,
     loadError: null,
 
-    // hasPassword drives the password-vs-ORCID fresh-auth factor (see settings).
-    hasPassword: false,
-
     // Shared confirm/mutation state.
     pendingConfirm: null,
     submitting: false,
@@ -351,18 +347,10 @@ export function initAdminPage() {
       this.loading = true;
       this.loadError = null;
       try {
-        // hasPassword feeds the password-vs-ORCID fresh-auth factor, which only
-        // applies on the light/JWT path; self-custody re-auths via the
-        // per-request Keychain signature regardless, so skip the email fetch
-        // there. Best-effort either way.
-        const [rosterRes, emailRes] = await Promise.all([
-          fetchAdminRoster(),
-          this.custody === 'light' ? fetchEmailStatus().catch(() => null) : Promise.resolve(null),
-        ]);
+        const rosterRes = await fetchAdminRoster();
         if (!this._mounted) return;
         this.tier = rosterRes.data?.tier ?? null;
         this.roster = Array.isArray(rosterRes.data?.roster) ? rosterRes.data.roster : [];
-        this.hasPassword = emailRes?.data?.hasPassword === true;
       } catch (err) {
         if (!this._mounted) return;
         // Sanitization pattern (see settings.handleOrcidLink): raw error only to
@@ -376,11 +364,12 @@ export function initAdminPage() {
       }
     },
 
+    // Password-vs-ORCID factor selection is resolved by the orchestrator through
+    // the shared `accountUsesPasswordFactor`, not carried here — see settings.
     _freshAuthCtx() {
       return {
         custody: this.custody,
         username: this.username,
-        hasPassword: this.hasPassword,
       };
     },
 
