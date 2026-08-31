@@ -636,3 +636,117 @@ locator clash and the stale consent-op cache-shape assertion, remain out of scop
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit
 diff is the evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-08-31, commits 21ba36cf + bc3d6095)
+
+All eleven items landed at `21ba36cf`; a post-review simplification pass
+(`bc3d6095`) reshaped two of the fixed sites without behavior change. Per the
+architect's note on verification claims, every item below names its own test,
+and every behavioral fix was verified by mutation against the committed
+baseline: fix reverted, named test run, failure observed, tree restored via
+git. All probes killed, including re-runs of the two probes whose
+implementation the simplification pass reshaped.
+
+**1. Post-upload gates no longer navigate.** `publish.js`'s pre-broadcast gate
+(via an opts pass-through on `_windowReady`) and both `edit.js` pre-broadcast
+gates pass `allowRedirect: false`; the file-selection and submit-entry gates
+stay permissive. Tests: "a passwordless window closing during the uploads
+refuses without navigation" in `pages-publish.test.js` AND
+`pages-edit.test.js`, probed separately per page (gate reverted, test fails).
+The publish variant also asserts the item-3 toast and that the pins were paid
+for exactly once.
+
+**2. `username_mismatch` tears down.** `uploadFile`'s catch discriminates the
+reason and calls the shared `handleSessionInconsistency()`, then rethrows: no
+blind retry against the same mismatched pair, no local cache clear (the
+teardown's disconnect drops the window itself). Test: "a mismatched session
+tears down instead of wedging on retries" (`lib-ipfs-upload.test.js`).
+
+**3. `reauthRequired` is told to the user.** `freshAuthWindowReady` toasts
+`common.reauthRequired` via a new `showReauthRequiredToast`;
+`acquisitionAborted` carries the same branch, annotated in-code as defensive
+because item 4's posture keying makes the outcome unreachable on the
+always-permissive broadcast path. Tests: "a suppressed refusal is told to the
+user, not returned in silence" (lib suite, asserts the exact toast copy),
+plus the page-level toast assertion inside item 1's publish test.
+
+**4. In-flight keyed on posture.** `_acquireInFlight` became
+`{ permissive, suppressed }`; a caller only joins an acquisition sharing its
+posture, and same-posture coalescing is preserved. Tests: "concurrent callers
+with opposite redirect postures do not inherit each other" and "concurrent
+callers sharing the suppressed posture still coalesce"
+(`lib-fresh-auth-session-window.test.js`); probe collapsed the key to a
+single slot and the mixed-mode test fails.
+
+**5. Busy branches pinned, per site.** Both orchestrators' initial gates
+("a prompt owned by another action unwinds as { cancelled } WITH the busy
+toast", one per suite) each paired with a plain-cancel case asserting NO
+toast; both retry gates ("a busy refusal at the 401 retry gate also toasts
+instead of dropping silently", one per suite); and the broadcast layer
+("a prompt owned by another action refuses the broadcast WITH the busy
+toast" plus its paired no-toast cancel, `fresh-auth-401-retry.test.js`).
+Probes, each killed: `promptBusy`'s toast deleted fails both orchestrator
+suites; each retry-gate branch replaced with a bare `{ cancelled: true }`
+fails that suite's retry case; `acquisitionAborted`'s busy toast deleted
+fails the broadcast-layer case.
+
+**6. `windowProof` busy branch.** New `UPLOAD_REAUTH_BUSY` code mapped to
+`common.reauthPromptOpen` in `describeUploadError`, and the docblock now
+states why busy must not collapse into cancel. Test: "a prompt owned by
+another action surfaces as busy, never as a cancel"
+(`lib-ipfs-upload.test.js`), plus the mapping row in the
+`describeUploadError` table test.
+
+**7. `cacheSessionProof` fails closed.** Non-finite anchored spans drop the
+window and return instead of feeding NaN into `toISOString`. Test: "a
+malformed issuance deadline drops the window instead of throwing", covering
+a bad idle deadline, a bad absolute deadline, and both absent, each seeded
+over a live window that must end empty.
+
+**8. The mirror cannot be shadowed.** `persistWindow`'s catch drops the
+stored entry before installing the mirror (folded into `dropWindow()` by
+`bc3d6095`), so a non-empty storage read implies a current entry by
+construction. Test: "a failed write cannot leave a stale stored entry
+shadowing the fresher mirror", probed against both the original and the
+simplified shape.
+
+**9. Retry comment rewritten.** The upload-leg UNAUTHORIZED comment names the
+real arrival paths (token store evicted between the two steps, token consumed
+by a duplicate) and rules out the slow-transfer story via the 30-second
+request abort composed in `api.js`; the sibling test comment was updated to
+match. Comment-only, no probe.
+
+**10. `promptBusy` shared.** One exported definition in `fresh-auth.js`,
+imported by both orchestrators; `showPromptBusyToast` is no longer exported
+since no external consumer remains. Refactor, enforced indirectly by item
+5's toast assertions running through the shared definition.
+
+**11. `isSubmitting` fails closed.** `edit.js` adopts `publish.js`'s
+exclusion form and `STEP_IN_PROGRESS` is deleted; the comment now states the
+fail-closed rationale the right way round. Test: the `pages-edit.test.js`
+table's `step=unknown-future-step -> isSubmitting=true` row, which fails
+against a restored inclusion list (probed), with `authorizing` added to the
+in-progress rows.
+
+### Verification
+
+Full frontend unit suite green: 78 files, 1699 tests (up from 1648; the 3
+unhandled `_mountEditors` rejections vitest reports remain the documented
+pre-existing class). `npm run build` clean. No anchor-rot patterns in added
+lines; the pre-commit gate and zone audit passed on all three commits.
+
+**E2E: no regression.** Test-mode stack, one worker, the four specs covering
+these surfaces (`non-consent-fresh-auth`, `settings-orcid-factor`,
+`settings.spec`, `authorship-consent-actions`): 10 passed / 1 failed,
+identical to the prior round's result on the same batch; the one failure is
+the documented stale consent-op cache-shape assertion in
+`settings-orcid-factor.spec.js`, out of scope per this hold. Dev routing
+restored afterwards.
+
+Interaction with the sibling resolver task: its assumed-password ORCID
+fallback (landed at `ab5a2fac`) routes through this task's `allowRedirect`
+seam, so the fallback obeys the same suppression the post-upload gates rely
+on; covered by "an assumed-password 401 with navigation suppressed refuses
+instead of redirecting".
