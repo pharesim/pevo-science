@@ -166,12 +166,14 @@ const skipStatusFetchLine = (line, lineIndex, lines) =>
  *  regardless of how the module was named. A namespace import carries no
  *  specifier braces and is likewise left to the occurrence scan. */
 const STATUS_FETCH_IMPORT_RE =
-  /import\s*\{[^}]*\bfetchEmailStatus\b[^}]*\}\s*from\s*(['"])[^'"]*api\.js\1/;
+  /import\s*\{[^}]*\bfetchEmailStatus\b[^}]*\}\s*from\s*(['"])[^'"]*api(?:\.js)?\1/;
 
 /** A wholesale re-export of the api module: rebinds every export, including
  *  the status fetch, under a new module path while writing neither the
  *  function's name nor the property's. No file may hold one. */
-const API_EXPORT_STAR_RE = /\bexport\s*\*\s*(?:as\s+[A-Za-z0-9_$]+\s+)?from\s*(['"])[^'"]*api\.js\1/;
+// The `.js` is optional: Vite resolves extensionless specifiers, so the
+// spelling `from '../api'` binds the same module and must anchor the same.
+const API_EXPORT_STAR_RE = /\bexport\s*\*\s*(?:as\s+[A-Za-z0-9_$]+\s+)?from\s*(['"])[^'"]*api(?:\.js)?\1/;
 
 /** The password-state discriminator. A surface deriving its own factor
  *  decision can avoid calling the status fetch (the object may arrive
@@ -372,6 +374,7 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     // An alias is still an import, and so is a double-quoted specifier.
     expect(STATUS_FETCH_IMPORT_RE.test("import { fetchEmailStatus as f } from '../api.js';")).toBe(true);
     expect(STATUS_FETCH_IMPORT_RE.test('import { fetchEmailStatus } from "./api.js";')).toBe(true);
+    expect(STATUS_FETCH_IMPORT_RE.test("import { fetchEmailStatus } from '../api';")).toBe(true);
     expect(STATUS_FETCH_IMPORT_RE.test("import { submitEmail } from '../api.js';")).toBe(false);
     expect(STATUS_FETCH_IMPORT_RE.test("import { fetchEmailStatus } from './status.js';")).toBe(false);
     // No specifier braces to match; the occurrence scan catches usage sites.
@@ -382,6 +385,8 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(API_EXPORT_STAR_RE.test("export * from './api.js';")).toBe(true);
     expect(API_EXPORT_STAR_RE.test("export * as api from '../api.js';")).toBe(true);
     expect(API_EXPORT_STAR_RE.test('export * from "./api.js";')).toBe(true);
+    expect(API_EXPORT_STAR_RE.test("export * from '../api';")).toBe(true);
+    expect(API_EXPORT_STAR_RE.test("export * from './api-helpers.js';")).toBe(false);
     expect(API_EXPORT_STAR_RE.test("export * from './auth.js';")).toBe(false);
     expect(API_EXPORT_STAR_RE.test("export { fetchEmailStatus } from './api.js';")).toBe(false);
   });
