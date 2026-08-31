@@ -21,10 +21,14 @@ vi.mock('../../src/editor.js', () => ({
 const mockSessionUpload = vi.fn();
 vi.mock('../../src/lib/ipfs-upload.js', () => ({
   uploadFile: (...a) => mockSessionUpload(...a),
+  UPLOAD_SESSION_TORN_DOWN: 'UPLOAD_SESSION_TORN_DOWN',
+  // Mirrors the real mapper, including the null contract for the
+  // already-reported teardown code (the teardown's own toast is the message).
   describeUploadError: (err) =>
-    err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
-      : err?.code === 'UPLOAD_REAUTH_FAILED' ? 'settings.reauthFailed'
-        : 'common.uploadFailed',
+    err?.code === 'UPLOAD_SESSION_TORN_DOWN' ? null
+      : err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+        : err?.code === 'UPLOAD_REAUTH_FAILED' ? 'settings.reauthFailed'
+          : 'common.uploadFailed',
 }));
 
 // The real lib/fresh-auth.js runs in these tests (only its api.js dependencies
@@ -795,6 +799,91 @@ describe('publishPage', () => {
 
       expect(mockFetchEmailStatus).not.toHaveBeenCalled();
       expect(mockStores.reauthModal.request).not.toHaveBeenCalled();
+    });
+
+    it('a torn-down session during the PDF upload shows exactly one toast and no error panel', async () => {
+      // uploadFile's session teardown has already disconnected and shown the
+      // re-login toast by the time its already-reported rejection reaches the
+      // page (the mock stands in for both). The PDF catch must add nothing on
+      // top: no generic upload-failure toast, no error panel, just a clean
+      // unwind to idle with the form intact.
+      mockSessionUpload.mockImplementation(async () => {
+        Alpine.store('toast').show('Session inconsistency detected. Please sign in again.', 'error');
+        const err = new Error('Session torn down. Sign in again.');
+        err.code = 'UPLOAD_SESSION_TORN_DOWN';
+        throw err;
+      });
+
+      const comp = lightComponent();
+      comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+      await comp.handleSubmit();
+
+      expect(mockStores.toast.show).toHaveBeenCalledTimes(1);
+      expect(mockStores.toast.show).toHaveBeenCalledWith(
+        'Session inconsistency detected. Please sign in again.',
+        'error',
+      );
+      expect(comp.step).toBe('idle');
+      expect(comp.errorMessage).toBe('');
+      expect(broadcastOps).not.toHaveBeenCalled();
+    });
+
+    it('a torn-down session during a supplementary upload leaves no inline retry row', async () => {
+      mockSessionUpload.mockImplementation(async () => {
+        Alpine.store('toast').show('Session inconsistency detected. Please sign in again.', 'error');
+        const err = new Error('Session torn down. Sign in again.');
+        err.code = 'UPLOAD_SESSION_TORN_DOWN';
+        throw err;
+      });
+
+      const comp = lightComponent();
+      comp.supplementaryFiles = [
+        { file: { name: 's1.csv', size: 10 }, fileName: 's1.csv', description: '', uploading: false, cid: null, error: null },
+      ];
+      await comp.handleSubmit();
+
+      // The teardown's toast is the only message: no inline row inviting a
+      // retry that cannot succeed until re-login, no error panel on top.
+      expect(mockStores.toast.show).toHaveBeenCalledTimes(1);
+      expect(comp.supplementaryFiles[0].error).toBeNull();
+      expect(comp.supplementaryFiles[0].uploading).toBe(false);
+      expect(comp.step).toBe('idle');
+      expect(comp.errorMessage).toBe('');
+      expect(broadcastOps).not.toHaveBeenCalled();
+    });
+
+    it('a passwordless remintable 401 at the broadcast leg refuses with the toast instead of navigating', async () => {
+      // The pre-broadcast gate passed on a live window, the uploads are paid
+      // for, and the broadcast finds the window closed server-side (another
+      // tab's password reset or custody upgrade ends open windows). The 401
+      // retry's re-acquisition must inherit the suppressed posture the page
+      // passes to broadcastWithFreshAuth: a re-authenticate toast with the
+      // pins in handleSubmit locals intact, never a full-page ORCID
+      // navigation that would discard them.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+        token: 'live-window',
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+        idlePeriodMs: 900_000,
+      }));
+      mockSessionUpload.mockResolvedValue({ data: { cid: 'bafy', filename: 'paper.pdf' } });
+      broadcastOps.mockRejectedValueOnce(Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
+        status: 401, code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' },
+      }));
+
+      const comp = lightComponent();
+      comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+      await comp.handleSubmit();
+
+      // One attempt, no navigating retry, and the refusal was told.
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(comp.step).toBe('idle');
+      expect(mockStores.toast.show).toHaveBeenCalledWith(
+        'Please confirm your identity again, then try once more.',
+        'error',
+      );
     });
   });
 

@@ -4,10 +4,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockUploadFile = vi.fn();
 vi.mock('../../src/lib/ipfs-upload.js', () => ({
   uploadFile: (...a) => mockUploadFile(...a),
+  UPLOAD_SESSION_TORN_DOWN: 'UPLOAD_SESSION_TORN_DOWN',
+  // Mirrors the real mapper, including the null contract for the
+  // already-reported teardown code (the teardown's own toast is the message).
   describeUploadError: (err) =>
-    err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
-      : err?.code === 'UPLOAD_REAUTH_FAILED' ? 'settings.reauthFailed'
-        : 'common.uploadFailed',
+    err?.code === 'UPLOAD_SESSION_TORN_DOWN' ? null
+      : err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+        : err?.code === 'UPLOAD_REAUTH_FAILED' ? 'settings.reauthFailed'
+          : 'common.uploadFailed',
 }));
 
 // Minimal Alpine mock used by PevoEditor._handleImageUpload's dynamic import.
@@ -326,6 +330,30 @@ describe('PevoEditor._handleImageUpload error sanitization', () => {
     expect(warnSpy.mock.calls[0][1]).toBe(err);
     expect(toastShow).toHaveBeenCalledWith('imageUploadFailed', 'error');
     expect(toastShow.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
+    warnSpy.mockRestore();
+  });
+
+  it('a torn-down session adds no image-upload-failed toast on top of the teardown toast', async () => {
+    // uploadFile's session teardown has already shown its own re-login toast
+    // before this already-reported rejection reaches the editor; stacking the
+    // generic image-upload-failed toast on it would double-report.
+    const err = Object.assign(new Error('Session torn down. Sign in again.'), {
+      code: 'UPLOAD_SESSION_TORN_DOWN',
+    });
+    mockUploadFile.mockRejectedValue(err);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const stub = Object.create(PevoEditor.prototype);
+    stub.editor = {};
+    stub.isUploading = false;
+    stub._els = { toolbar: { querySelector: () => null } };
+    stub._t = (key) => key;
+
+    await stub._handleImageUpload({ type: 'image/png', name: 'x.png' });
+
+    expect(toastShow).not.toHaveBeenCalled();
+    // The finally block still restores the uploading flag.
+    expect(stub.isUploading).toBe(false);
     warnSpy.mockRestore();
   });
 });

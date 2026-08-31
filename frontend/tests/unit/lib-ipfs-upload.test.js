@@ -49,6 +49,7 @@ import {
   UPLOAD_REAUTH_FAILED,
   UPLOAD_REAUTH_REQUIRED,
   UPLOAD_REAUTH_BUSY,
+  UPLOAD_SESSION_TORN_DOWN,
 } from '../../src/lib/ipfs-upload.js';
 import { ApiRequestError } from '../../src/api.js';
 
@@ -238,7 +239,14 @@ describe('uploadFile', () => {
     // and the paper-upload path wedges behind a generic failure.
     mockUploadFileToIpfs.mockRejectedValue(freshAuthRejected('username_mismatch'));
 
-    await expect(uploadFile(file())).rejects.toMatchObject({ code: 'FRESH_AUTH_REQUIRED' });
+    // The rejection carries the dedicated already-reported code, not the raw
+    // FRESH_AUTH_REQUIRED error: the teardown's re-login toast has already
+    // spoken, and a raw rethrow used to make the pages stack a generic
+    // upload-failure surface on top of it.
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SESSION_TORN_DOWN,
+      name: 'UploadSessionError',
+    });
     expect(mockHandleSessionInconsistency).toHaveBeenCalledTimes(1);
     // No blind retry against the same mismatched pair, and no local cache
     // clear: the teardown's disconnect drops the window itself.
@@ -269,5 +277,12 @@ describe('describeUploadError', () => {
     expect(describeUploadError({ code: 'INTERNAL_ERROR' })).toBe('common.uploadFailed');
     expect(describeUploadError(null)).toBe('common.uploadFailed');
     expect(describeUploadError(undefined)).toBe('common.uploadFailed');
+  });
+
+  it('maps the already-reported teardown code to null, never to the generic key', () => {
+    // The teardown's re-login toast is the whole message for this code; a
+    // fallthrough into 'common.uploadFailed' is exactly the double-report the
+    // code exists to prevent.
+    expect(describeUploadError({ code: UPLOAD_SESSION_TORN_DOWN })).toBeNull();
   });
 });

@@ -44,11 +44,12 @@ const LOCALIZED_SENTINEL = 'LOCALIZED-i18n-bundle-source-sentinel';
 const FALLBACK_ENGLISH = 'Session inconsistency detected. Please sign in again.';
 const REAUTH_FAILED_SENTINEL = 'LOCALIZED-reauth-failed-sentinel';
 const PROMPT_BUSY_SENTINEL = 'LOCALIZED-prompt-busy-sentinel';
+const REAUTH_REQUIRED_SENTINEL = 'LOCALIZED-reauth-required-sentinel';
 const mockI18nStore = {
   messages: {
     auth: { sessionInconsistency: LOCALIZED_SENTINEL },
     settings: { reauthFailed: REAUTH_FAILED_SENTINEL },
-    common: { reauthPromptOpen: PROMPT_BUSY_SENTINEL },
+    common: { reauthPromptOpen: PROMPT_BUSY_SENTINEL, reauthRequired: REAUTH_REQUIRED_SENTINEL },
   },
 };
 const mockRouterStore = {};
@@ -77,7 +78,7 @@ vi.mock('alpinejs', () => ({
   },
 }));
 
-const { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } =
+const { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING, clearPasswordFactorMemo } =
   await import('../../src/lib/fresh-auth.js');
 const { REAUTH_PROMPT_BUSY } = await import('../../src/components/reauth-modal.js');
 
@@ -306,6 +307,68 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
     expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
     expect(mockToastStore.show).toHaveBeenCalledWith(PROMPT_BUSY_SENTINEL, 'error');
+  });
+
+  it('a passwordless remintable 401 with redirect suppressed refuses with the toast instead of navigating', async () => {
+    // The post-upload posture: publish and edit pass `allowRedirect: false`
+    // because the completed pins live in submit-handler locals. When the
+    // window dies between their suppressed pre-broadcast gate and the
+    // broadcast (another tab's custody upgrade or password reset closes open
+    // windows server-side), the 401 retry's re-acquisition must inherit the
+    // suppression: a passwordless account gets the re-authenticate toast, not
+    // the full-page ORCID round-trip that discards the pins.
+    clearPasswordFactorMemo();
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    setWindow('doomed-proof');
+    mockBroadcastOps.mockRejectedValueOnce(freshAuthError(401, 'expired'));
+
+    const result = await broadcastWithFreshAuth('alice', [['comment', {}]], { allowRedirect: false });
+
+    expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    // One attempt, no retry: the suppressed re-acquisition refused.
+    expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(mockReauthModal.request).not.toHaveBeenCalled();
+    expect(mockToastStore.show).toHaveBeenCalledWith(REAUTH_REQUIRED_SENTINEL, 'error');
+  });
+
+  it('a suppressed call with no window at all refuses up front, before any broadcast', async () => {
+    // The initial acquisition threads the same posture as the retry's: a
+    // passwordless caller that forbids navigation and holds no live window is
+    // refused with the toast rather than bounced to ORCID or silently sent
+    // into a broadcast that must 401.
+    clearPasswordFactorMemo();
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+
+    const result = await broadcastWithFreshAuth('alice', [['comment', {}]], { allowRedirect: false });
+
+    expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(mockToastStore.show).toHaveBeenCalledWith(REAUTH_REQUIRED_SENTINEL, 'error');
+  });
+
+  it('the permissive default still hands a passwordless 401 retry to the ORCID round-trip', async () => {
+    // Control for the suppressed pair above: vote/comment/review call sites
+    // pass no option, and for them the navigating factor remains the way
+    // through. Pins-at-risk suppression is opt-in, not a new global posture.
+    clearPasswordFactorMemo();
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/paper/alice/p1' } });
+    try {
+      setWindow('doomed-proof');
+      mockBroadcastOps.mockRejectedValueOnce(freshAuthError(401, 'expired'));
+
+      const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+      expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+      expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+      expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('non-light custody bypasses acquisition entirely (Keychain users)', async () => {

@@ -904,10 +904,11 @@ function acquisitionAborted(proof) {
   if (typeof proof === 'string') return false;
   if (proof === FRESH_AUTH_MINT_FAILED) showReauthFailedToast();
   if (proof === FRESH_AUTH_PROMPT_BUSY) showPromptBusyToast();
-  // Defensive: the broadcast path always acquires permissively, and the
-  // posture-keyed in-flight slots keep it from inheriting a suppressed
-  // acquisition's refusal — but an outcome added to the vocabulary must not
-  // be silently swallowed here if a future caller ever threads it through.
+  // Load-bearing unwinder for the suppressed broadcast posture: post-upload
+  // call sites pass `allowRedirect: false` through broadcastWithFreshAuth, so
+  // a passwordless account whose window died between the pre-broadcast gate
+  // and the broadcast (or during the 401 retry's re-acquisition) lands here
+  // and gets the re-authenticate toast instead of a silent drop.
   if (proof === FRESH_AUTH_REAUTH_REQUIRED) showReauthRequiredToast();
   return true;
 }
@@ -929,10 +930,21 @@ function acquisitionAborted(proof) {
 //
 // Keychain (self-custody) users skip acquisition entirely; their per-request
 // signed canonical message is the fresh proof.
+//
+// `opts.allowRedirect` (default true) is consumed here, not forwarded to
+// broadcastOps: it threads the redirect posture into every acquisition this
+// wrapper performs, including the 401 retry's re-acquisition. Post-upload
+// call sites (the publish and edit submit sequences) pass `false` so a window
+// invalidated server-side after their suppressed pre-broadcast gate passed
+// cannot fire the full-page ORCID navigation while completed pins sit in
+// submit-handler locals; the vote/comment/review call sites keep the
+// permissive default. The suppressed refusal unwinds through
+// `acquisitionAborted`'s reauthRequired branch with the re-authenticate toast.
 export async function broadcastWithFreshAuth(username, operations, opts = {}) {
+  const { allowRedirect = true, ...broadcastOpts } = opts;
   const auth = Alpine.store('auth');
   if (auth?.custody !== 'light') {
-    return broadcastOps(username, operations, opts);
+    return broadcastOps(username, operations, broadcastOpts);
   }
 
   // One consume of the window: broadcast, then replay the idle slide the
@@ -941,12 +953,12 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
   // lets the client fall behind the server and evict a live token — cannot be
   // reintroduced by editing one branch and not the other.
   const attemptOnce = async (windowProof) => {
-    const res = await broadcastOps(username, operations, { ...opts, freshAuthProof: windowProof });
+    const res = await broadcastOps(username, operations, { ...broadcastOpts, freshAuthProof: windowProof });
     slideSessionWindow();
     return res;
   };
 
-  const proof = await acquireSessionProof();
+  const proof = await acquireSessionProof(0, { allowRedirect });
   if (acquisitionAborted(proof)) return FRESH_AUTH_REDIRECT_PENDING;
 
   try {
@@ -977,7 +989,10 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
         // discriminators (publish.js, vote-buttons.js, vouch-section.js)
         // misclassify the failure and surface the wrong toast.
         try {
-          const reacquired = await acquireSessionProof();
+          // The re-acquisition inherits the caller's redirect posture: a
+          // suppressed call site's retry must refuse (reauthRequired toast)
+          // rather than navigate, exactly like its initial acquisition.
+          const reacquired = await acquireSessionProof(0, { allowRedirect });
           if (acquisitionAborted(reacquired)) return FRESH_AUTH_REDIRECT_PENDING;
           return await attemptOnce(reacquired);
         } catch (retryErr) {

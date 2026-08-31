@@ -14,6 +14,12 @@ export const UPLOAD_CANCELLED = 'UPLOAD_CANCELLED';
 export const UPLOAD_REAUTH_FAILED = 'UPLOAD_REAUTH_FAILED';
 export const UPLOAD_REAUTH_REQUIRED = 'UPLOAD_REAUTH_REQUIRED';
 export const UPLOAD_REAUTH_BUSY = 'UPLOAD_REAUTH_BUSY';
+// Already-reported outcome: the session teardown in `uploadFile` has shown its
+// own re-login toast before this code is thrown, so consumers must surface
+// nothing on top of it (mirrors FRESH_AUTH_REDIRECT_PENDING's
+// message-suppression contract on the broadcast surface). `describeUploadError`
+// maps it to null rather than an i18n key.
+export const UPLOAD_SESSION_TORN_DOWN = 'UPLOAD_SESSION_TORN_DOWN';
 
 class UploadSessionError extends Error {
   constructor(code, message) {
@@ -24,7 +30,10 @@ class UploadSessionError extends Error {
 }
 
 // Map an upload failure to a stable i18n key for the toast / inline message so
-// the page layer never has to branch on raw error codes.
+// the page layer never has to branch on raw error codes. Returns null for the
+// already-reported UPLOAD_SESSION_TORN_DOWN code: the teardown's re-login
+// toast has fired by then, so there is no key to show and callers must stay
+// quiet instead of stacking a generic upload-failure message on top.
 export function describeUploadError(err) {
   switch (err?.code) {
     case UPLOAD_CANCELLED:
@@ -35,6 +44,8 @@ export function describeUploadError(err) {
       return 'common.reauthRequired';
     case UPLOAD_REAUTH_BUSY:
       return 'common.reauthPromptOpen';
+    case UPLOAD_SESSION_TORN_DOWN:
+      return null;
     default:
       return 'common.uploadFailed';
   }
@@ -128,11 +139,16 @@ export async function uploadFile(file) {
     // broadcast, settings, and authorship siblings; without it every retry
     // resends the same stale proof and the paper-upload path wedges behind a
     // generic failure until the window's cap. The teardown disconnects (which
-    // drops the cached window) and shows the re-login toast; the rethrow
-    // aborts the batch through the page layer's existing error handling.
+    // drops the cached window) and shows the re-login toast; the thrown
+    // already-reported code aborts the batch while telling the page layer the
+    // teardown's toast was the whole message — rethrowing the raw error here
+    // used to stack a generic upload-failure surface on top of it.
     if (err?.code === 'FRESH_AUTH_REQUIRED' && err.details?.reason === 'username_mismatch') {
       handleSessionInconsistency();
-      throw err;
+      throw new UploadSessionError(
+        UPLOAD_SESSION_TORN_DOWN,
+        'Session torn down. Sign in again.',
+      );
     }
     // UNAUTHORIZED comes from the upload leg (`/ipfs/upload`) and means the
     // single-use upload token was refused. Not because a slow transfer outlived

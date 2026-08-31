@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache } from '../api.js';
-import { uploadFile, describeUploadError } from '../lib/ipfs-upload.js';
+import { uploadFile, describeUploadError, UPLOAD_SESSION_TORN_DOWN } from '../lib/ipfs-upload.js';
 import {
   broadcastWithFreshAuth,
   freshAuthWindowReady,
@@ -1110,6 +1110,13 @@ export function initEditPage() {
               // Inline error shows the specific reason for a cancelled or
               // failed re-auth and the generic per-file message otherwise; the
               // thrown Error (swallowed by the outer catch) just aborts.
+              // Torn-down session: the teardown's re-login toast already
+              // reported it. No inline row (it would invite a retry that
+              // cannot succeed until re-login) and no error surface on top.
+              if (err?.code === UPLOAD_SESSION_TORN_DOWN) {
+                this.step = 'idle';
+                return;
+              }
               sf.error = this.$t(describeUploadError(err));
               throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
             } finally {
@@ -1152,6 +1159,10 @@ export function initEditPage() {
           if (!this._mounted) return;
 
           this.step = 'broadcasting';
+          // The suppression holds through the broadcast leg: its 401-retry
+          // re-acquires, and a navigating re-acquisition from this
+          // post-upload position would discard the completed pins exactly
+          // like a navigating gate would.
           const continuationOps = [
             ['comment', {
               parent_author: '',
@@ -1172,7 +1183,7 @@ export function initEditPage() {
               extensions: [],
             }],
           ];
-          const continuationResult = await broadcastWithFreshAuth(username, continuationOps);
+          const continuationResult = await broadcastWithFreshAuth(username, continuationOps, { allowRedirect: false });
           if (!this._mounted) return;
           if (continuationResult === FRESH_AUTH_REDIRECT_PENDING) {
             // FRESH_AUTH_REDIRECT_PENDING covers the ORCID redirect-in-flight
@@ -1239,6 +1250,8 @@ export function initEditPage() {
           if (!this._mounted) return;
 
           this.step = 'broadcasting';
+          // See the continuation branch: the suppression holds through the
+          // broadcast leg so the 401-retry cannot navigate either.
           const editOps = [
             ['comment', {
               parent_author: '',
@@ -1250,7 +1263,7 @@ export function initEditPage() {
               json_metadata: JSON.stringify(jsonMetadata),
             }],
           ];
-          const editResult = await broadcastWithFreshAuth(username, editOps);
+          const editResult = await broadcastWithFreshAuth(username, editOps, { allowRedirect: false });
           if (!this._mounted) return;
           if (editResult === FRESH_AUTH_REDIRECT_PENDING) {
             // See continuationResult branch above for rationale; same

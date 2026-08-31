@@ -44,10 +44,14 @@ vi.mock('../../src/api.js', () => ({
 const mockSessionUpload = vi.fn();
 vi.mock('../../src/lib/ipfs-upload.js', () => ({
   uploadFile: (...a) => mockSessionUpload(...a),
+  UPLOAD_SESSION_TORN_DOWN: 'UPLOAD_SESSION_TORN_DOWN',
+  // Mirrors the real mapper, including the null contract for the
+  // already-reported teardown code (the teardown's own toast is the message).
   describeUploadError: (err) =>
-    err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
-      : err?.code === 'UPLOAD_REAUTH_FAILED' ? 'settings.reauthFailed'
-        : 'common.uploadFailed',
+    err?.code === 'UPLOAD_SESSION_TORN_DOWN' ? null
+      : err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
+        : err?.code === 'UPLOAD_REAUTH_FAILED' ? 'settings.reauthFailed'
+          : 'common.uploadFailed',
 }));
 
 vi.mock('../../src/signer.js', () => ({
@@ -1667,6 +1671,42 @@ describe('editPage handleSubmit supplementary-file upload', () => {
     expect(broadcastOps).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
+
+  it('a torn-down session during a supplementary upload leaves no inline retry row', async () => {
+    // uploadFile's session teardown has already disconnected and shown the
+    // re-login toast when its already-reported rejection reaches the page
+    // (the mock stands in for both); the inline row and the error panel must
+    // stay quiet on top of it, and the step machine unwinds to idle.
+    mockSessionUpload.mockImplementation(async () => {
+      Alpine.store('toast').show('Session inconsistency detected. Please sign in again.', 'error');
+      const err = new Error('Session torn down. Sign in again.');
+      err.code = 'UPLOAD_SESSION_TORN_DOWN';
+      throw err;
+    });
+
+    const comp = createComponent();
+    comp.paper = basePaper();
+    fillForm(comp);
+    comp.supplementaryFiles = [{
+      file: new Blob(['x'], { type: 'application/pdf' }),
+      fileName: 'data.pdf',
+      description: 'dataset',
+      cid: null,
+      error: null,
+      uploading: false,
+    }];
+
+    await comp.handleSubmit();
+
+    // The teardown's toast is the only message: no inline row inviting a
+    // retry that cannot succeed until re-login, no error panel on top.
+    expect(mockStores.toast.show).toHaveBeenCalledTimes(1);
+    expect(comp.supplementaryFiles[0].error).toBeNull();
+    expect(comp.supplementaryFiles[0].uploading).toBe(false);
+    expect(comp.step).toBe('idle');
+    expect(comp.errorMessage).toBe('');
+    expect(broadcastOps).not.toHaveBeenCalled();
+  });
 });
 
 describe('editPage re-auth window ordering', () => {
@@ -1708,6 +1748,10 @@ describe('editPage re-auth window ordering', () => {
   }
 
   beforeEach(() => {
+    // Fresh call counts per test (matches the sibling describes): the
+    // exactly-one-toast and never-navigated assertions below must not count
+    // calls made by earlier tests in this describe.
+    vi.clearAllMocks();
     mockStores.reauthModal.request.mockResolvedValue('hunter2');
     mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: true } });
     mockMintSessionAuthProof.mockResolvedValue({
@@ -1810,6 +1854,126 @@ describe('editPage re-auth window ordering', () => {
     expect(mockStartOrcid).not.toHaveBeenCalled();
     expect(broadcastOps).not.toHaveBeenCalled();
     expect(comp.step).toBe('idle');
+    // The refusal was told: a suppressed gate that says nothing reads as a
+    // dead button. Same assertion as the publish sibling.
+    expect(mockStores.toast.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+  });
+
+  it('continuation posture: a passwordless window closing during the uploads refuses without navigation', async () => {
+    // Twin of the same-author case above, selected onto the OTHER
+    // pre-broadcast gate: the continuation and same-author gates are
+    // mutually exclusive branch arms, so a fixture that resolves
+    // isContinuation false proves nothing about this one. A username
+    // differing from the paper's author with no version chain routes the
+    // isContinuation getter to true, so the continuation gate is the one
+    // that must refuse without discarding the pins.
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+      token: 'live-window',
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      idlePeriodMs: 900_000,
+    }));
+    mockSessionUpload.mockImplementation(async () => {
+      // Stand in for a slow upload: leave the window with seconds on it.
+      const raw = JSON.parse(sessionStorage.getItem('pevo_fresh_auth_session_proof'));
+      raw.expiresAt = new Date(Date.now() + 5_000).toISOString();
+      sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify(raw));
+      return { data: { cid: 'bafy', filename: 'data.pdf' } };
+    });
+
+    const comp = unchangedLightComponent();
+    mockStores.auth.username = 'bob';
+    comp.authorName = 'Bob';
+    comp.supplementaryFiles = [{
+      file: new Blob(['x'], { type: 'application/pdf' }),
+      fileName: 'data.pdf',
+      description: '',
+      cid: null,
+      error: null,
+      uploading: false,
+    }];
+    // Fixture-posture proof: this test exercises the continuation gate.
+    expect(comp.isContinuation).toBe(true);
+
+    await comp.handleSubmit();
+
+    expect(mockSessionUpload).toHaveBeenCalledTimes(1);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(broadcastOps).not.toHaveBeenCalled();
+    expect(comp.step).toBe('idle');
+    expect(mockStores.toast.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+  });
+
+  it('same-author posture: a passwordless remintable 401 at the broadcast leg refuses instead of navigating', async () => {
+    // The pre-broadcast gate passed on a live window and the broadcast then
+    // finds it closed server-side (another tab's password reset or custody
+    // upgrade). The 401 retry's re-acquisition must inherit the suppressed
+    // posture the page passes to broadcastWithFreshAuth: re-authenticate
+    // toast with the form intact, never a full-page ORCID navigation.
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+      token: 'live-window',
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      idlePeriodMs: 900_000,
+    }));
+    broadcastOps.mockRejectedValueOnce(Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
+      status: 401, code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' },
+    }));
+
+    const comp = unchangedLightComponent();
+    comp.title = 'A New Title';
+    // Fixture-posture proof: this test exercises the same-author branch.
+    expect(comp.isContinuation).toBe(false);
+
+    await comp.handleSubmit();
+
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(comp.step).toBe('idle');
+    expect(mockStores.toast.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+  });
+
+  it('continuation posture: a passwordless remintable 401 at the broadcast leg refuses instead of navigating', async () => {
+    // Twin of the same-author 401 case, selected onto the continuation
+    // branch's broadcast call: each broadcast call site threads its own
+    // redirect posture, so each needs its own discriminating test.
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+      token: 'live-window',
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      idlePeriodMs: 900_000,
+    }));
+    broadcastOps.mockRejectedValueOnce(Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
+      status: 401, code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' },
+    }));
+
+    const comp = unchangedLightComponent();
+    mockStores.auth.username = 'bob';
+    comp.authorName = 'Bob';
+    // Fixture-posture proof: this test exercises the continuation branch.
+    expect(comp.isContinuation).toBe(true);
+
+    await comp.handleSubmit();
+
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(comp.step).toBe('idle');
+    expect(mockStores.toast.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
   });
 });
 
