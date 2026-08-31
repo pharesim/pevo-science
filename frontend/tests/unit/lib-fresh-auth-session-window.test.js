@@ -811,6 +811,100 @@ describe('teardown abandons in-flight acquisitions', () => {
     expect(outcome).toEqual({ ready: true, proof: 'window-proof' });
     expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
   });
+
+  it('a passwordless answer arriving after teardown does not navigate to ORCID', async () => {
+    // The acquisition was started for the previous subject; if its factor
+    // read resolves passwordless after the scrub, firing the ORCID
+    // round-trip would navigate the next subject's tab on the previous
+    // subject's behalf. The abandoned flight must unwind as a clean cancel.
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStatus = resolve; }),
+    );
+
+    const pending = ensureSessionWindow();
+    await tick(); // the factor read is now pending
+    teardownSubjectState();
+
+    resolveStatus({ status: 'ok', data: { hasPassword: false } });
+    const outcome = await pending;
+
+    expect(outcome).toEqual({ ready: false, cancelled: true });
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(window.location.href).toBe('');
+  });
+
+  it('a password typed into a prompt left open across teardown does not spend a mint', async () => {
+    // The prompt belongs to the previous subject, but the mint request would
+    // ride the tab's CURRENT credentials; no mint may leave the tab.
+    let resolvePrompt;
+    mockReauthModal.request.mockImplementationOnce(
+      () => new Promise((resolve) => { resolvePrompt = resolve; }),
+    );
+
+    const pending = ensureSessionWindow();
+    await tick(); // the prompt is now open
+    teardownSubjectState();
+
+    resolvePrompt('hunter2');
+    const outcome = await pending;
+
+    expect(outcome).toEqual({ ready: false, cancelled: true });
+    expect(mockMintSessionAuthProof).not.toHaveBeenCalled();
+  });
+
+  it('the assumed-password ORCID fallback does not navigate after teardown', async () => {
+    // The status read is down, so the factor is assumed; a mint 401 would
+    // normally hand the caller back to its ORCID factor by full-page
+    // navigation. When the 401 lands after the scrub, that navigation would
+    // fire for a subject this tab no longer represents.
+    mockFetchEmailStatus.mockRejectedValueOnce(new Error('status unreachable'));
+    let rejectMint;
+    mockMintSessionAuthProof.mockReturnValueOnce(
+      new Promise((resolve, reject) => { rejectMint = reject; }),
+    );
+
+    const pending = ensureSessionWindow();
+    await tick(); // the default prompt answered; the mint round-trip is pending
+    teardownSubjectState();
+
+    rejectMint(Object.assign(new Error('bad password'), { code: 'UNAUTHORIZED' }));
+    const outcome = await pending;
+
+    expect(outcome).toEqual({ ready: false, cancelled: true });
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(window.location.href).toBe('');
+  });
+
+  it('a stale factor resolution settling late does not evict its successor from the in-flight slot', async () => {
+    let resolveStale;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStale = resolve; }),
+    );
+
+    const stale = resolvePasswordFactor();
+    teardownSubjectState();
+
+    let resolveSuccessor;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveSuccessor = resolve; }),
+    );
+    const successor = resolvePasswordFactor();
+
+    // The stale resolution settles first; its cleanup must not clear the
+    // slot the successor now owns...
+    resolveStale({ status: 'ok', data: { hasPassword: true } });
+    await stale;
+
+    // ...so a later caller coalesces onto the successor's status request
+    // instead of spending the rate-limited status budget again.
+    const joined = resolvePasswordFactor();
+    resolveSuccessor({ status: 'ok', data: { hasPassword: false } });
+
+    expect((await joined).usesPassword).toBe(false);
+    expect((await successor).usesPassword).toBe(false);
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('collisions and suppressed navigation', () => {
