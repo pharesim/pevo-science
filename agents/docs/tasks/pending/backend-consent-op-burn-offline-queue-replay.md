@@ -529,3 +529,102 @@ the entry and the code agree with no further edit needed on either side.
 held". Worth re-flagging now that the entry is corrected: that file still carries
 the offline-queue reasoning this task disproved, so it is the one place left in
 the tree where the retired rationale is stated as fact.
+
+---
+
+## Architect re-review (2026-08-31, round 3) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on the round-2 diff (`557e5cad` + `026b92bd`),
+eight lenses plus an independent per-finding validation pass. **All five round-2
+hold items verified genuinely landed**, checked in the diff rather than taken
+from the signal: the burn-time stamp and its boundary test, the ready-transition
+drain machinery and its client-swap test, the genuinely-imported redis.ts
+constants, the broadened docblocks at all three sites, and the
+key-absence-before-replay assertions in both sibling suites. Both deliberate
+deviations verified sound against installed ioredis 5.10.1, and the beyond-hold
+`isConsentOpSpent` bare-`.has` change is confirmed a strict refusal-widening
+(AC2 intact). Four of eight lenses returned zero findings (correctness,
+security, reliability, project-standards). The learnings pass confirmed the
+corrected convention entry and the committed code agree, so AC4 stays met.
+
+Two validated findings hold the archive. Both are small and both land on the
+invariants this task exists to pin.
+
+### 1. The drain's expiry arm drops a ledger entry it cannot sweep
+
+`drainSpentConsentOps`'s expiry arm deletes an entry past its deadline
+unconditionally; when `client === null` (the whole of an outage) no sweep can be
+dispatched, so the drop is bare. Validated link-by-link against installed
+ioredis 5.10.1, that bare drop composes into a real AC1 break: an issuing `SET`
+whose socket closed unreplied is retained in `prevCommandQueue`
+(`closeHandler`), any successful mid-outage TCP connect calls
+`resetCommandQueue()` which decouples that deque from every later retry-ceiling
+flush, and `readyHandler` resends it at recovery with a FRESH full `EX` —
+`autoResendUnfulfilledCommands` defaults true and nothing checks whether the
+command's promise already rejected. If the proof was burned during that outage
+and the outage outlasts the ledger deadline, the tick drops the entry bare, the
+recovery ready-drain no-ops on the empty map (`size === 0` early return), the
+resurrected key reappears, and a replay of the already-burned proof returns
+`valid: true` for up to a further TTL. `consent_op` entries carry no
+absolute-expiry re-check on read, so nothing downstream refuses it. The
+preconditions are rare and not attacker-controlled (an outage longer than the
+ledger deadline that begins with an accept-then-fail connect, e.g. a crash loop
+while loading an RDB), but this is the trailing-window replay the ledger exists
+to close, reached through the one state its own comment claims is covered: the
+expiry-arm comment's "degrades to a redundant DEL rather than to a readable
+orphan" is false exactly when `client` is null.
+
+Fix: in the expiry arm, retire an entry only when the sweep can be dispatched —
+`if (!client) continue;` before the drop, keeping the dispatch-then-drop shape
+for the reachable-client case. Growth stays bounded: the kept expired entries
+are the same set the live-entry arm already keeps during an outage, each costing
+an argon2 verify or an ORCID round-trip to create, and all retire on the first
+drain that holds a client. This is deliberately NOT the rejected
+chain-drop-onto-delete shape — it defers the drop only while no delete can be
+issued at all. Correct the expiry-arm comment and the drain docblock's residual
+paragraph so the stated residual matches the new behavior. The test `drops a
+ledger entry past its deadline even with no reachable client` currently pins the
+unsafe bare drop and must be reshaped to pin the new invariant: an expired entry
+with no reachable client is KEPT; the expired-drop-with-sweep case (client
+reachable) stays as is.
+
+### 2. The bare-`.has` read semantics have no consume-path test
+
+The beyond-hold rewrite of `isConsentOpSpent` to membership-only is
+security-relevant and deliberate, but no test drives its
+past-deadline-still-refuses behavior through `consumeFreshAuthToken`: both
+`_setSpentConsentOpForTests` call sites are followed only by drain calls, and
+none of the eleven round-2 mutation probes targets the predicate. Reverting it
+to prune-on-read (even keeping the corrected deadline basis) would reopen the
+residual race item 1 of the round-2 hold closed, with every suite green.
+
+Fix: add a case (natural home: the ledger-retirement block in
+`fresh-auth-redis-unavailable-burn.test.ts`, where the client is genuinely
+connected) that makes the scenario discriminating: plant a past-deadline ledger
+entry via `_setSpentConsentOpForTests` for a token whose canonical key is
+present in Redis and whose `memStore` record is absent, then call
+`consumeFreshAuthToken` directly with NO drain call first, and assert the
+consume is refused (`expired`). Under membership-only the presentation is
+refused and its own `GETDEL` retires both key and entry; under prune-on-read the
+entry is dropped at read time and the `GETDEL` wins, so the mutation returns
+`valid: true` and the test fails — which is the kill this predicate is missing.
+Optionally assert the ledger size afterwards, which also closes the noted
+refused-replay-retirement gap below.
+
+### Noted, not held
+
+- The refused replay's own ledger retirement (`if (redisLegRan)
+  spentConsentOps.delete(token)`) is exercised but unpinned; a one-assertion add
+  inside item 2's new test covers it.
+- `armDrainOnReady`'s WeakSet dedup has no listener-count pin; a regression
+  dropping the guard would double-drain per transition, harmlessly (drains are
+  idempotent).
+- The stalled-server ledger-entry origin (`commandTimeout` with the client stuck
+  `ready`) is never produced end-to-end; the branch reached is byte-identical to
+  the flap arm.
+- The offline-queue suite's `afterEach` discards its recovery `waitFor` boolean,
+  so a failed proxy restart surfaces as confusing next-test failures rather than
+  a clear fixture failure.
+- Rejected at validation, for the record: a maintainability finding to extract
+  the ledger subsystem from `fresh-auth.ts` — already tracked as in-scope by the
+  blocked module-split task, and no codified rule anchors it.
