@@ -12,6 +12,7 @@ applies_when:
   - The reply of a Redis del, setnx, or expire is what ARBITRATES a security outcome (burn winner, lock winner, one-shot authorization) rather than being best-effort bookkeeping
   - Writing or reviewing a dual-tier primitive (Redis canonical plus an in-process Map flap backup) where an entry is written to BOTH tiers at issuance and must be removed from both at consume
   - Reaching for the house `if (redis && isRedisAvailable())` guard on a delete, cleanup, or compensating write, as opposed to a read or a cache fill
+  - Relying on a client's offline queue to carry a command across an outage, on any path where that command's eventual execution is what establishes a security property rather than tidying up after one
   - Writing a Redis-flap test by rejecting a single command; verify the branch under test is actually reached, because a rejected command leaves isRedisAvailable() true and never enters a readiness-gated leg
   - Reviewing any change to consumeFreshAuthToken, consumeSessionFreshAuthToken, consumeFreshAuthProof, or consumeUploadToken
 related_components:
@@ -24,6 +25,7 @@ tags:
   - atomicity
   - read-then-mutate
   - single-use-token
+  - at-most-once
   - fresh-auth
   - replay
   - is-redis-available
@@ -97,10 +99,27 @@ one. Under `GETDEL` that interleaving does not exist: the reply and the removal 
 `status === 'ready'`, and `getRedis()` deliberately keeps returning the same cached client across a
 flap rather than nulling it. So during *any* reconnect the readiness guard skips the Redis delete
 entirely, while the entry was written to both tiers at issuance and the in-memory delete happily
-arbitrates the win. The old compensating delete was guarded on client existence precisely because
-ioredis queues commands while offline and flushes them on reconnect; gating it on readiness is
-exactly what removed that recovery. This defect needs no failing command at all, only a reconnect
-window that spans the consume.
+arbitrates the win. The old compensating delete was guarded on client existence so that ioredis
+would at least queue it and get a chance to flush it on reconnect; gating it on readiness removed
+even that attempt. This defect needs no failing command at all, only a reconnect window that spans
+the consume.
+
+Note what that sentence does *not* claim, and what an earlier version of this entry asserted as
+settled fact: queuing the delete is an attempt at recovery, not a guarantee of one.
+
+**Defect 3: the queued delete is bounded by the retry budget, so it cannot be the guarantee.**
+Found later, by an adversarial pass over the fix for Defects 1 and 2. ioredis does not hold an
+offline-queued command indefinitely. Its reconnect handler flushes the **entire** offline queue with
+`MaxRetriesPerRequestError` whenever the reconnect count reaches a multiple of
+`maxRetriesPerRequest + 1`. On this client (`maxRetriesPerRequest: 3`, `retryStrategy` of
+`min(times * 200, 5000)`) that lands roughly two seconds into an outage, which an ordinary Redis
+restart comfortably outlasts. Past that point the queued delete is discarded unsent, the canonical
+copy stands for the rest of its TTL, and the replay is back — with the compensating delete present,
+correctly guarded, and doing nothing.
+
+So Defect 2's fix is necessary and not sufficient. A guard that lets the command be queued is
+strictly better than one that drops it on the floor. But "the command will eventually run" is not a
+property the client offers, and a security guarantee cannot rest on it.
 
 The in-process `inFlightConsumes` lock does not help. It serializes *concurrent* consumes of one
 token within the single process; a replay after reconnect is sequential and walks straight through
@@ -128,6 +147,10 @@ if (raw) return { raw, fromMemStore: false };
 
 ```ts
 // burnConsentOpEntry — the burn stays a single atomic command.
+// Consulted first, inside the existing per-token critical section: a proof
+// recorded as spent is refused no matter what either tier still reports.
+if (isConsentOpSpent(token)) return false;
+
 let burnedInRedis = false;
 let redisLegRan = false;
 const redis = getRedis();
@@ -139,11 +162,17 @@ if (redis && isRedisAvailable()) {
 }
 const burnedInMemStore = memStore.delete(token);
 
-// Compensating delete for the case where the readiness-gated leg did not run at
-// all. Guarded on the client's EXISTENCE only: ioredis queues it offline and
-// flushes it on reconnect, which is the entire point.
+// Compensating delete for the case where the leg did not run at all. Still
+// guarded on the client's EXISTENCE only, so ioredis can queue it and flush it
+// if the outage is short. Best-effort CLEANUP, NOT the guarantee.
 if (!redisLegRan && burnedInMemStore && redis) {
-  try { await redis.del(KEY_PREFIX + token); } catch (err) { /* best-effort */ }
+  // Record the spend FIRST. A record written before the command survives that
+  // command failing, timing out, or being flushed unsent.
+  spentConsentOps.set(token, /* an expiry that dominates the canonical key's */);
+  try {
+    await redis.del(KEY_PREFIX + token);
+    spentConsentOps.delete(token);   // confirmed gone; nothing left to guard
+  } catch (err) { /* the ledger still refuses the replay */ }
 }
 return burnedInRedis || burnedInMemStore;
 ```
@@ -152,6 +181,29 @@ The winning path now issues `GET` then `GETDEL`. That is one extra round trip, a
 of a discriminated store. The thing that must not be split is *read-and-remove*, not *read*.
 `redisLegRan` is set after the await resolves, so it is false both when the guard skipped the leg
 and when the command rejected; the compensating delete covers both.
+
+**A primitive whose contract is "at most once" needs a record of the spend that survives the
+compensating command never running.** This is the part that took two passes to see. Once the burn is
+arbitrated by a tier that is not the canonical one, no amount of care about *how* the canonical copy
+gets removed can establish single-use, because every version of that removal is a command that may
+not execute. The durable fact has to be "this proof was spent", recorded before the removal is
+attempted and retired only once the removal is confirmed — not "this proof's canonical copy was
+removed", inferred from a command that was merely issued.
+
+Order matters and is the whole trick: write the record, then attempt the delete, then clear the
+record only on a confirmed reply. Written in that order the record survives every way the delete can
+fail. Written the other way round it is decoration.
+
+Give the record an expiry that **dominates** the canonical copy's, or the guard lapses first and the
+replay reopens at the tail of the TTL. Stamp it from the moment of the burn rather than from the
+proof's issuance timestamp: the burn necessarily happens after the canonical `SET` executed, so
+burn-time plus a full TTL is always at or past the key's own expiry, with no dependence on the
+`SET`'s round trip. Over-guarding an already-spent proof costs nothing.
+
+The scope of such a record is the scope of the tier that arbitrated the burn. Here that is one
+process, which is exactly as durable as the `memStore` whose win it is backstopping — past a
+restart, Redis is the sole arbiter either way. A cross-process deployment would need this record to
+be as durable as the canonical tier, which is a different and much heavier design.
 
 **When you move a best-effort compensating call behind a stricter guard, find out what the looser
 guard was for.** "Every other Redis call site in this file is wrapped in
@@ -291,6 +343,17 @@ isolation and the suite re-run:
 - delete the `!redisLegRan && burnedInMemStore && redis` compensating leg, and the stubbed-readiness
   file must go red.
 
+**The second probe no longer kills, and why is the more useful lesson.** Once the spent-proof record
+landed, it — not the compensating delete — is what refuses the replay, so deleting the compensating
+leg now leaves every suite green. The delete still earns its place: it retires the record promptly
+and keeps an orphaned canonical key from outliving the process-local entry guarding it. But that
+demoted role is pinned by no assertion, so the next refactor that reads it as dead weight removes it
+unopposed. When a new layer takes over a guarantee an older layer used to provide, the older layer's
+mutation probe goes quiet without anyone editing a test. Re-run the probes a fix supersedes, and
+re-pin the demoted layer against what it still does — here, by asserting the canonical key's absence
+directly rather than through a second consume, which is the only assertion that distinguishes the
+delete from the record.
+
 Then restore. A test written against a bug you already fixed proves nothing until you have watched
 it fail, and doubly so here, where the neighbouring test with the right *name* was passing under
 both defects the whole time.
@@ -306,8 +369,12 @@ both defects the whole time.
   `conventions/redis-advisory-lock-with-lua-cas-nonce-2026-05-15.md` are the readiness-gated cases
   this rule deliberately does not touch. See the scope paragraph under Guidance.
 - `backend/src/lib/ipfs-upload-token.ts` (`consumeUploadToken`) still carries the original shape:
-  atomic `getdel` plus an existence-guarded compensating `del` on the fallback leg. It is the
-  surviving reference implementation, and its docblock claims it mirrors the fresh-auth primitive.
-  That mirror claim is a two-way obligation. The two now cover different flap classes (fresh-auth
-  also covers the readiness-skip case), so the claim is imprecise until one of them is brought into
-  line.
+  atomic `getdel` plus an existence-guarded compensating `del` on the fallback leg, and no record of
+  the spend. Its docblock claims it mirrors the fresh-auth primitive, and that mirror claim is a
+  two-way obligation. The gap has widened rather than closed: fresh-auth now covers the readiness-skip
+  case (Defect 2) and the retry-budget case (Defect 3), while the upload-token store covers neither
+  and its comments still present the compensating delete as what closes the window. What contains the
+  impact there today is not the delete but the `file_sha256` re-verification at the pin route and the
+  independent pin cap. Treat the divergence as a correctness-of-claim problem: either mirror the
+  record, or downgrade the comments to describe the containment that actually applies. The trap is a
+  future change that widens what an upload token authorizes while reasoning from the older comment.
