@@ -444,3 +444,64 @@ satisfies the assumed-401 heuristic (a distinct backend code for the middleware
 the re-review signal. Do not edit this hold block or annotate items as fixed;
 the commit diff is the evidence and the architect updates the block at
 re-review.
+
+---
+
+## UI re-review signal (2026-08-31, commit 46463131)
+
+Both round-3 items landed in one commit, implemented in an isolated worktree,
+reviewed by three adversarial lenses (hold-fidelity, cross-surface/canary,
+test-quality; zero must-fix findings), and cherry-picked onto main. Per the
+mutation-probes-are-per-site convention, each claim names its own probe; the
+reviewers independently re-ran the probes.
+
+**Item 1 landed with a disclosed fixture deviation that needs ratification.**
+The hold's literal fixture (initial mint succeeds, `run` rejects remintable,
+retry mint 401s, assert `{ redirect: true }`) is unsatisfiable once item 2
+lands: the successful initial mint now writes the memo, the retry gate's
+resolution comes back observed, and the retry 401 re-prompts inline, which is
+exactly item 2's required "never reaches the fallback" for a proven password
+holder. Two reviewers verified the unsatisfiability by independent code trace.
+Both retry-gate fallback tests (the ported authorship one AND the pre-existing
+settings twin, reworked to match) therefore draw their initial proof from the
+consent-op cache (an earlier ORCID round-trip, password never proven), which
+keeps the fallback arm reachable and separately discriminated. Every assert
+the hold names is present: `{ redirect: true }`,
+`beginAuthorshipOrcidFreshAuth` called with the target, `run` called exactly
+once. Probes: deleting the authorship retry-gate fallback arm reddens exactly
+the ported test; deleting the settings arm reddens exactly the reworked twin.
+The displaced initial-mint-succeeds scenario is separately pinned by new
+"upgrades it" tests in both orchestrator suites. The settings-twin rework
+changes what a pre-existing test pins; flagged for conscious ratification
+rather than done silently.
+
+**Item 2.** Every password-mint success reports into the resolver's username
+memo through one resolver-owned, module-private surface
+(`beginPasswordMintReport`, invoked inside the shared `mintViaPasswordFactor`),
+so the session acquisition and both orchestrators report structurally with no
+per-caller calls to forget. Breadth (observed and assumed alike) is documented
+in the helper docblock. Subject and generation are captured BEFORE the prompt
+opens, mirroring the status-fetch write, so a scrub landing while the modal
+sits open vetoes the write. Probes: deleting the report call reddens exactly
+the three named tests (one per suite); widening the generation check reddens
+exactly the scrub-during-modal veto test.
+
+**Verification.** 117/117 across the four edited suites in the worktree plus
+317/317 across neighbor consumers; the source-discipline canary green with NO
+width re-pin (the report writes the memo only and adds no
+`hasPassword`/`fetchEmailStatus` occurrence, confirmed honest by the canary
+lens); full frontend unit suite on the integrated tree: 79 files, 1750 tests
+green.
+
+**Residuals surfaced for triage, deliberately not fixed here:**
+
+1. (low, theoretical-only) A factor-resolution flight already in flight when a
+   concurrent mint succeeds computes its answer solely from its own fetch and
+   never re-reads the memo post-await, so a joiner can still carry
+   `assumed: true` for a proven password holder. Requires a status fetch
+   outliving a full prompt-plus-mint round-trip plus a later mistype;
+   default-dismiss per repo norms.
+2. (low, recommend dismiss) The `typeof minted !== 'string'` sentinel guard in
+   the report helper survives mutation (117/117 green without it); the only
+   non-string production path is always preceded by the generation bump that
+   already vetoes the write.
